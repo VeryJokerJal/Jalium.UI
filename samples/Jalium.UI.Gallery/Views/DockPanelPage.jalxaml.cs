@@ -22,7 +22,7 @@ public partial class DockPanelPage : Page
         {
             Text = "DockPanel",
             FontSize = GalleryTheme.FontSizeTitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 0, 0, 8)
         };
@@ -180,7 +180,7 @@ public partial class DockPanelPage : Page
             {
                 Text = text,
                 Foreground = new SolidColorBrush(Color.White),
-                FontWeight = FontWeight.SemiBold,
+                FontWeight = FontWeights.SemiBold,
                 HorizontalAlignment = HorizontalAlignment.Center,
                 VerticalAlignment = VerticalAlignment.Center
             }
@@ -203,7 +203,7 @@ public partial class DockPanelPage : Page
         {
             Text = titleText,
             FontSize = GalleryTheme.FontSizeSubtitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 16, 0, 4)
         };

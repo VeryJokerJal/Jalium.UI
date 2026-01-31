@@ -102,14 +102,12 @@ public class RepeatButton : ButtonBase
             _timer.Interval = Interval;
         }
 
-        // Raise Click event on the UI thread
-        Dispatcher?.Invoke(() =>
+        // Raise Click event if still pressed
+        if (IsPressed && IsEnabled)
         {
-            if (IsPressed && IsEnabled)
-            {
-                OnClick();
-            }
-        });
+            OnClick();
+            InvalidateVisual();
+        }
     }
 
     #endregion

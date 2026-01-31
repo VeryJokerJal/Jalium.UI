@@ -130,7 +130,7 @@ public class StatusBarItem : ContentControl
     public StatusBarItem()
     {
         Padding = new Thickness(8, 0, 8, 0);
-        VerticalContentAlignment = VerticalAlignment.Center;
+        VerticalAlignment = VerticalAlignment.Center;
     }
 
     #endregion

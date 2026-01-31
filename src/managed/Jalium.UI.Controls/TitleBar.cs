@@ -151,6 +151,7 @@ public class TitleBar : Control
 
         // Set default backdrop effect (Gaussian blur)
         BackdropEffect = new BlurEffect(20f);
+        Background = new SolidColorBrush(Color.FromArgb(200, 32, 32, 32));
 
         CreateButtons();
 
