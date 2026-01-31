@@ -826,13 +826,16 @@ public abstract class TextBoxBase : Control
     {
         var border = BorderThickness;
         var padding = Padding;
-        var contentWidth = RenderSize.Width - border.Left - border.Right - padding.Left - padding.Right;
-        var contentHeight = RenderSize.Height - border.Top - border.Bottom - padding.Top - padding.Bottom;
+        // Round content dimensions to prevent sub-pixel scroll offset calculations
+        // that can cause text jittering when the offset alternates between values
+        var contentWidth = Math.Round(RenderSize.Width - border.Left - border.Right - padding.Left - padding.Right);
+        var contentHeight = Math.Round(RenderSize.Height - border.Top - border.Bottom - padding.Top - padding.Bottom);
 
         if (contentWidth <= 0 || contentHeight <= 0)
             return;
 
-        var lineHeight = GetLineHeight();
+        // Round line height for consistent calculations
+        var lineHeight = Math.Round(GetLineHeight());
 
         var (lineIndex, columnIndex) = GetLineColumnFromCharIndex(_caretIndex);
 
@@ -843,7 +846,7 @@ public abstract class TextBoxBase : Control
         // Get the text before the caret to measure its width
         var lineText = GetLineTextInternal(lineIndex);
         var textBeforeCaret = lineText.Substring(0, Math.Max(0, Math.Min(columnIndex, lineText.Length)));
-        var caretX = MeasureTextWidth(textBeforeCaret);
+        var caretX = Math.Round(MeasureTextWidth(textBeforeCaret));
         var caretY = lineIndex * lineHeight;
 
         // Horizontal scrolling
@@ -857,17 +860,28 @@ public abstract class TextBoxBase : Control
         }
 
         // Vertical scrolling
-        if (caretY < _verticalOffset)
+        // Handle edge case: if content height is less than line height (single-line box smaller than text),
+        // don't scroll vertically to avoid oscillation between offset=0 and offset=1
+        if (contentHeight >= lineHeight)
         {
-            _verticalOffset = caretY;
+            if (caretY < _verticalOffset)
+            {
+                _verticalOffset = caretY;
+            }
+            else if (caretY + lineHeight > _verticalOffset + contentHeight)
+            {
+                _verticalOffset = caretY + lineHeight - contentHeight;
+            }
         }
-        else if (caretY + lineHeight > _verticalOffset + contentHeight)
+        else
         {
-            _verticalOffset = caretY + lineHeight - contentHeight;
+            // Box is too small for even one line - keep offset at 0
+            _verticalOffset = 0;
         }
 
-        _horizontalOffset = Math.Max(0, _horizontalOffset);
-        _verticalOffset = Math.Max(0, _verticalOffset);
+        // Round final offsets to prevent sub-pixel jittering
+        _horizontalOffset = Math.Round(Math.Max(0, _horizontalOffset));
+        _verticalOffset = Math.Round(Math.Max(0, _verticalOffset));
     }
 
     /// <summary>
@@ -884,7 +898,8 @@ public abstract class TextBoxBase : Control
     {
         var border = BorderThickness;
         var padding = Padding;
-        var lineHeight = GetLineHeight();
+        // Round line height for consistent calculations
+        var lineHeight = Math.Round(GetLineHeight());
 
         var contentX = position.X - border.Left - padding.Left + _horizontalOffset;
         var contentY = position.Y - border.Top - padding.Top + _verticalOffset;
@@ -1183,7 +1198,8 @@ public abstract class TextBoxBase : Control
     {
         if (e is MouseWheelEventArgs wheelArgs)
         {
-            var lineHeight = GetLineHeight();
+            // Round line height for consistent scrolling
+            var lineHeight = Math.Round(GetLineHeight());
             var delta = wheelArgs.Delta > 0 ? -3 : 3;
             VerticalOffset += delta * lineHeight;
 

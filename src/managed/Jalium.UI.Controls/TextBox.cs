@@ -599,7 +599,8 @@ public class TextBox : TextBoxBase, IImeSupport
         if (lineIndex < 0 || lineIndex >= _lines.Count)
             return;
 
-        var lineHeight = GetLineHeight();
+        // Round line height for consistent scrolling
+        var lineHeight = Math.Round(GetLineHeight());
         VerticalOffset = lineIndex * lineHeight;
     }
 
@@ -684,7 +685,8 @@ public class TextBox : TextBoxBase, IImeSupport
     {
         var padding = Padding;
         var border = BorderThickness;
-        var lineHeight = GetLineHeight();
+        // Round line height for consistent layout
+        var lineHeight = Math.Round(GetLineHeight());
 
         EnsureLinesValid();
 
@@ -727,7 +729,8 @@ public class TextBox : TextBoxBase, IImeSupport
         var border = BorderThickness;
         var padding = Padding;
         var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-        var lineHeight = GetLineHeight();
+        // Round line height to prevent sub-pixel jittering from floating-point accumulation
+        var lineHeight = Math.Round(GetLineHeight());
 
         EnsureLinesValid();
 
@@ -760,12 +763,12 @@ public class TextBox : TextBoxBase, IImeSupport
             }
         }
 
-        // Content area
+        // Content area - round to pixel boundaries to prevent sub-pixel jittering
         var contentRect = new Rect(
-            border.Left + padding.Left,
-            border.Top + padding.Top,
-            Math.Max(0, bounds.Width - border.Left - border.Right - padding.Left - padding.Right),
-            Math.Max(0, bounds.Height - border.Top - border.Bottom - padding.Top - padding.Bottom));
+            Math.Round(border.Left + padding.Left),
+            Math.Round(border.Top + padding.Top),
+            Math.Max(0, Math.Round(bounds.Width - border.Left - border.Right - padding.Left - padding.Right)),
+            Math.Max(0, Math.Round(bounds.Height - border.Top - border.Bottom - padding.Top - padding.Bottom)));
 
         // Clip to content area
         dc.PushClip(new RectangleGeometry(contentRect));
@@ -777,6 +780,10 @@ public class TextBox : TextBoxBase, IImeSupport
         {
             DrawSelection(dc, contentRect, lineHeight);
         }
+
+        // Round scroll offsets for consistent rendering
+        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
+        var roundedVerticalOffset = Math.Round(_verticalOffset);
 
         // Draw text or placeholder
         if (string.IsNullOrEmpty(text))
@@ -790,7 +797,7 @@ public class TextBox : TextBoxBase, IImeSupport
                     MaxTextWidth = contentRect.Width,
                     MaxTextHeight = contentRect.Height
                 };
-                dc.DrawText(formattedPlaceholder, new Point(contentRect.X - _horizontalOffset, contentRect.Y - _verticalOffset));
+                dc.DrawText(formattedPlaceholder, new Point(contentRect.X - roundedHorizontalOffset, contentRect.Y - roundedVerticalOffset));
             }
         }
         else
@@ -838,12 +845,15 @@ public class TextBox : TextBoxBase, IImeSupport
     {
         var text = Text;
         var textBrush = Foreground ?? new SolidColorBrush(Color.White);
+        // Round scroll offsets to prevent sub-pixel jittering
+        var roundedVerticalOffset = Math.Round(_verticalOffset);
+        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
 
         for (int i = 0; i < _lines.Count; i++)
         {
             var line = _lines[i];
-            // Round to pixel boundaries to prevent sub-pixel jittering
-            var y = Math.Round(contentRect.Y + i * lineHeight - _verticalOffset);
+            // Round y position to prevent sub-pixel jittering from floating-point accumulation errors
+            var y = Math.Round(contentRect.Y + i * lineHeight - roundedVerticalOffset);
 
             // Skip lines outside visible area
             if (y + lineHeight < contentRect.Y || y > contentRect.Y + contentRect.Height)
@@ -856,11 +866,11 @@ public class TextBox : TextBoxBase, IImeSupport
             var formattedText = new FormattedText(lineText, FontFamily ?? "Segoe UI", FontSize)
             {
                 Foreground = textBrush,
-                MaxTextWidth = Math.Max(0, contentRect.Width + _horizontalOffset),
+                MaxTextWidth = Math.Max(0, contentRect.Width + roundedHorizontalOffset),
                 MaxTextHeight = lineHeight
             };
 
-            var x = contentRect.X - _horizontalOffset;
+            var x = contentRect.X - roundedHorizontalOffset;
 
             // Apply text alignment
             var lineWidth = MeasureTextWidth(lineText);
@@ -874,7 +884,7 @@ public class TextBox : TextBoxBase, IImeSupport
             }
 
             // Round to pixel boundaries to prevent sub-pixel jittering
-            dc.DrawText(formattedText, new Point(Math.Round(x), y));
+            dc.DrawText(formattedText, new Point(x, y));
         }
     }
 
@@ -883,6 +893,9 @@ public class TextBox : TextBoxBase, IImeSupport
         // Red wavy underline pen for spelling errors
         var errorPen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 1);
         var text = Text;
+        // Round scroll offsets to prevent sub-pixel jittering
+        var roundedVerticalOffset = Math.Round(_verticalOffset);
+        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
 
         foreach (var error in _spellingErrors)
         {
@@ -891,8 +904,8 @@ public class TextBox : TextBoxBase, IImeSupport
             {
                 var line = _lines[i];
                 var lineEnd = line.StartIndex + line.Length;
-                // Round to pixel boundaries to prevent sub-pixel jittering
-                var y = Math.Round(contentRect.Y + i * lineHeight - _verticalOffset);
+                // Round y position to prevent sub-pixel jittering from floating-point accumulation errors
+                var y = Math.Round(contentRect.Y + i * lineHeight - roundedVerticalOffset);
 
                 // Skip lines outside visible area
                 if (y + lineHeight < contentRect.Y || y > contentRect.Y + contentRect.Height)
@@ -911,7 +924,7 @@ public class TextBox : TextBoxBase, IImeSupport
                         var textBefore = lineText.Substring(0, startInLine);
                         var errorText = lineText.Substring(startInLine, endInLine - startInLine);
 
-                        var startX = Math.Round(contentRect.X + MeasureTextWidth(textBefore) - _horizontalOffset);
+                        var startX = Math.Round(contentRect.X + MeasureTextWidth(textBefore) - roundedHorizontalOffset);
                         var endX = startX + MeasureTextWidth(errorText);
                         var underlineY = y + lineHeight - 2;
 
@@ -952,13 +965,16 @@ public class TextBox : TextBoxBase, IImeSupport
 
         var text = Text;
         var selectionEnd = _selectionStart + _selectionLength;
+        // Round scroll offsets to prevent sub-pixel jittering
+        var roundedVerticalOffset = Math.Round(_verticalOffset);
+        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
 
         for (int i = 0; i < _lines.Count; i++)
         {
             var line = _lines[i];
             var lineEnd = line.StartIndex + line.Length;
-            // Round to pixel boundaries to prevent sub-pixel jittering
-            var y = Math.Round(contentRect.Y + i * lineHeight - _verticalOffset);
+            // Round y position to prevent sub-pixel jittering from floating-point accumulation errors
+            var y = Math.Round(contentRect.Y + i * lineHeight - roundedVerticalOffset);
 
             // Skip lines outside visible area
             if (y + lineHeight < contentRect.Y || y > contentRect.Y + contentRect.Height)
@@ -977,9 +993,10 @@ public class TextBox : TextBoxBase, IImeSupport
                     var selectedText = lineText.Substring(startInLine, endInLine - startInLine);
 
                     // Use measured text widths for accurate selection positioning
-                    // Round to pixel boundaries to prevent sub-pixel jittering
-                    var startX = Math.Round(contentRect.X + MeasureTextWidth(textBefore) - _horizontalOffset);
-                    var width = Math.Round(MeasureTextWidth(selectedText));
+                    var startX = Math.Round(contentRect.X + MeasureTextWidth(textBefore) - roundedHorizontalOffset);
+                    var width = MeasureTextWidth(selectedText);
+                    // Ensure minimum width for visibility (especially for spaces)
+                    width = Math.Max(Math.Round(width), 1);
 
                     var selRect = new Rect(startX, y, width, lineHeight);
                     dc.DrawRectangle(SelectionBrush, null, selRect);
@@ -989,7 +1006,7 @@ public class TextBox : TextBoxBase, IImeSupport
                 if (selectionEnd > lineEnd && i < _lines.Count - 1)
                 {
                     var lineText = text.Substring(line.StartIndex, line.Length);
-                    var startX = Math.Round(contentRect.X + MeasureTextWidth(lineText) - _horizontalOffset);
+                    var startX = Math.Round(contentRect.X + MeasureTextWidth(lineText) - roundedHorizontalOffset);
                     var selRect = new Rect(startX, y, Math.Round(FontSize * 0.3), lineHeight);
                     dc.DrawRectangle(SelectionBrush, null, selRect);
                 }
@@ -1012,9 +1029,13 @@ public class TextBox : TextBoxBase, IImeSupport
         var lineText = GetLineTextInternal(lineIndex);
         var textBeforeCaret = lineText.Substring(0, Math.Min(columnIndex, lineText.Length));
 
-        // Round to pixel boundaries to prevent sub-pixel jittering
-        var x = Math.Round(contentRect.X + MeasureTextWidth(textBeforeCaret) - _horizontalOffset);
-        var y = Math.Round(contentRect.Y + lineIndex * lineHeight - _verticalOffset);
+        // Round scroll offsets to prevent sub-pixel jittering
+        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
+        var roundedVerticalOffset = Math.Round(_verticalOffset);
+
+        var x = Math.Round(contentRect.X + MeasureTextWidth(textBeforeCaret) - roundedHorizontalOffset);
+        // Round y position to prevent sub-pixel jittering from floating-point accumulation errors
+        var y = Math.Round(contentRect.Y + lineIndex * lineHeight - roundedVerticalOffset);
 
         // Draw composition background
         var compositionWidth = MeasureTextWidth(_imeCompositionString);
@@ -1049,12 +1070,8 @@ public class TextBox : TextBoxBase, IImeSupport
         // Update and get the current caret opacity first (needed for animation to progress)
         var caretOpacity = UpdateCaretAnimation();
 
-        // Schedule next frame for continuous animation while focused
-        // This is the fallback mechanism in case the timer doesn't work properly
-        if (IsKeyboardFocused && !IsReadOnly)
-        {
-            InvalidateVisual();
-        }
+        // Note: Caret animation is handled by the timer in TextBoxBase.StartCaretTimer()
+        // which calls InvalidateVisual() at regular intervals. No fallback needed here.
 
         if (CaretBrush == null)
             return;
@@ -1076,9 +1093,13 @@ public class TextBox : TextBoxBase, IImeSupport
         var lineText = GetLineTextInternal(lineIndex);
         var textBeforeCaret = lineText.Substring(0, Math.Min(columnIndex, lineText.Length));
 
-        // Round positions to pixel boundaries to prevent sub-pixel jittering
-        var x = Math.Round(contentRect.X + MeasureTextWidth(textBeforeCaret) - _horizontalOffset);
-        var y = Math.Round(contentRect.Y + lineIndex * lineHeight - _verticalOffset);
+        // Round scroll offsets to prevent sub-pixel jittering
+        var roundedHorizontalOffset = Math.Round(_horizontalOffset);
+        var roundedVerticalOffset = Math.Round(_verticalOffset);
+
+        var x = Math.Round(contentRect.X + MeasureTextWidth(textBeforeCaret) - roundedHorizontalOffset);
+        // Round y position to prevent sub-pixel jittering from floating-point accumulation errors
+        var y = Math.Round(contentRect.Y + lineIndex * lineHeight - roundedVerticalOffset);
 
         // Create a brush with the animated opacity
         Brush caretBrushWithOpacity;
@@ -1296,7 +1317,8 @@ public class TextBox : TextBoxBase, IImeSupport
     {
         EnsureLinesValid();
 
-        var lineHeight = GetLineHeight();
+        // Round line height for consistent positioning
+        var lineHeight = Math.Round(GetLineHeight());
         var (lineIndex, columnIndex) = GetLineColumnFromCharIndex(_caretIndex);
 
         // Ensure valid indices

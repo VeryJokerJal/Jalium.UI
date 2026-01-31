@@ -50,11 +50,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var brush = GetNativeBrush(pen.Brush);
         if (brush == null) return;
 
+        // Round to pixel boundaries to prevent sub-pixel jittering
         _renderTarget.DrawLine(
-            (float)(point0.X + Offset.X),
-            (float)(point0.Y + Offset.Y),
-            (float)(point1.X + Offset.X),
-            (float)(point1.Y + Offset.Y),
+            (float)Math.Round(point0.X + Offset.X),
+            (float)Math.Round(point0.Y + Offset.Y),
+            (float)Math.Round(point1.X + Offset.X),
+            (float)Math.Round(point1.Y + Offset.Y),
             brush,
             (float)pen.Thickness);
     }
@@ -64,8 +65,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        var x = (float)(rectangle.X + Offset.X);
-        var y = (float)(rectangle.Y + Offset.Y);
+        // Round to pixel boundaries to prevent sub-pixel jittering
+        var x = (float)Math.Round(rectangle.X + Offset.X);
+        var y = (float)Math.Round(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
 
@@ -95,8 +97,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        var x = (float)(rectangle.X + Offset.X);
-        var y = (float)(rectangle.Y + Offset.Y);
+        // Round to pixel boundaries to prevent sub-pixel jittering
+        var x = (float)Math.Round(rectangle.X + Offset.X);
+        var y = (float)Math.Round(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
         var rx = (float)radiusX;
@@ -128,8 +131,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        var cx = (float)(center.X + Offset.X);
-        var cy = (float)(center.Y + Offset.Y);
+        // Round to pixel boundaries to prevent sub-pixel jittering
+        var cx = (float)Math.Round(center.X + Offset.X);
+        var cy = (float)Math.Round(center.Y + Offset.Y);
         var rx = (float)radiusX;
         var ry = (float)radiusY;
 
@@ -174,8 +178,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         };
         format.SetTrimming(trimming);
 
-        var x = (float)(origin.X + Offset.X);
-        var y = (float)(origin.Y + Offset.Y);
+        // Round text coordinates to pixel boundaries to prevent sub-pixel jittering
+        // DirectWrite renders text using sub-pixel positioning which can cause visual instability
+        var x = (float)Math.Round(origin.X + Offset.X);
+        var y = (float)Math.Round(origin.Y + Offset.Y);
         var width = (float)formattedText.MaxTextWidth;
         var height = (float)formattedText.MaxTextHeight;
 
@@ -367,8 +373,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var bitmap = GetNativeBitmap(imageSource);
         if (bitmap == null) return;
 
-        var x = (float)(rectangle.X + Offset.X);
-        var y = (float)(rectangle.Y + Offset.Y);
+        // Round to pixel boundaries to prevent sub-pixel jittering
+        var x = (float)Math.Round(rectangle.X + Offset.X);
+        var y = (float)Math.Round(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
 
@@ -386,8 +393,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         // Check if there's any effect to apply
         if (effect == null || !effect.HasEffect) return;
 
-        var x = (float)(rectangle.X + Offset.X);
-        var y = (float)(rectangle.Y + Offset.Y);
+        // Round to pixel boundaries to prevent sub-pixel jittering
+        var x = (float)Math.Round(rectangle.X + Offset.X);
+        var y = (float)Math.Round(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
 
@@ -498,9 +506,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         if (_closed || clipGeometry == null) return;
 
         var bounds = clipGeometry.Bounds;
+        // Round to pixel boundaries to prevent sub-pixel jittering
         _renderTarget.PushClip(
-            (float)(bounds.X + Offset.X),
-            (float)(bounds.Y + Offset.Y),
+            (float)Math.Round(bounds.X + Offset.X),
+            (float)Math.Round(bounds.Y + Offset.Y),
             (float)bounds.Width,
             (float)bounds.Height);
 

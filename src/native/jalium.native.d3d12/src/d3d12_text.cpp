@@ -130,7 +130,9 @@ JaliumResult D3D12TextFormat::MeasureText(
     }
 
     // Fill out the output metrics
-    metrics->width = textMetrics.width;
+    // Use widthIncludingTrailingWhitespace to include trailing spaces in measurement
+    // This is important for caret positioning and selection highlighting of spaces
+    metrics->width = textMetrics.widthIncludingTrailingWhitespace;
     metrics->height = textMetrics.height;
     metrics->lineCount = textMetrics.lineCount;
 
