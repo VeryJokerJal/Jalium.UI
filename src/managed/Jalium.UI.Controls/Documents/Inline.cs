@@ -124,7 +124,7 @@ public class Bold : Span
     /// </summary>
     public Bold()
     {
-        FontWeight = FontWeight.Bold;
+        FontWeight = FontWeights.Bold;
     }
 
     /// <summary>
@@ -146,7 +146,7 @@ public class Italic : Span
     /// </summary>
     public Italic()
     {
-        FontStyle = FontStyle.Italic;
+        FontStyle = FontStyles.Italic;
     }
 
     /// <summary>

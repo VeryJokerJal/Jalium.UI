@@ -262,7 +262,7 @@ public class DevToolsWindow : Window
             Text = text,
             Foreground = new SolidColorBrush(Color.FromRgb(86, 156, 214)),
             FontSize = 14,
-            FontWeight = FontWeight.Bold,
+            FontWeight = FontWeights.Bold,
             Margin = new Thickness(4, 8, 4, 4)
         };
         _propertiesPanel.Children.Add(header);
@@ -275,7 +275,7 @@ public class DevToolsWindow : Window
             Text = sectionName,
             Foreground = new SolidColorBrush(Color.FromRgb(78, 201, 176)),
             FontSize = 12,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(4, 12, 4, 2)
         };
         _propertiesPanel.Children.Add(section);

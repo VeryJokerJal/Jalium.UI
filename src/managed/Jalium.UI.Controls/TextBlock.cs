@@ -43,7 +43,7 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public static readonly DependencyProperty FontWeightProperty =
         DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(TextBlock),
-            new PropertyMetadata(FontWeight.Normal, OnTextChanged));
+            new PropertyMetadata(FontWeights.Normal, OnTextChanged));
 
     /// <summary>
     /// Identifies the TextWrapping dependency property.
@@ -111,7 +111,7 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public FontWeight FontWeight
     {
-        get => (FontWeight)(GetValue(FontWeightProperty) ?? FontWeight.Normal);
+        get => GetValue(FontWeightProperty) is FontWeight fw ? fw : FontWeights.Normal;
         set => SetValue(FontWeightProperty, value);
     }
 
@@ -165,7 +165,7 @@ public class TextBlock : FrameworkElement
         {
             MaxTextWidth = maxWidth,
             MaxTextHeight = double.MaxValue,
-            FontWeight = (int)FontWeight
+            FontWeight = FontWeight.ToOpenTypeWeight()
         };
 
         // Use native text measurement if available
@@ -223,22 +223,6 @@ public class TextBlock : FrameworkElement
     }
 
     #endregion
-}
-
-/// <summary>
-/// Specifies font weight values.
-/// </summary>
-public enum FontWeight
-{
-    Thin = 100,
-    ExtraLight = 200,
-    Light = 300,
-    Normal = 400,
-    Medium = 500,
-    SemiBold = 600,
-    Bold = 700,
-    ExtraBold = 800,
-    Black = 900
 }
 
 /// <summary>

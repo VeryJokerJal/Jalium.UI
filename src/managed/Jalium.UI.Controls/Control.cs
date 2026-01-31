@@ -49,14 +49,35 @@ public class Control : FrameworkElement
     /// </summary>
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(string), typeof(Control),
-            new PropertyMetadata("Segoe UI", OnVisualPropertyChanged));
+            new PropertyMetadata("Segoe UI", OnVisualPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontSize dependency property.
     /// </summary>
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(Control),
-            new PropertyMetadata(14.0, OnLayoutPropertyChanged));
+            new PropertyMetadata(14.0, OnLayoutPropertyChanged, null, inherits: true));
+
+    /// <summary>
+    /// Identifies the FontWeight dependency property.
+    /// </summary>
+    public static readonly DependencyProperty FontWeightProperty =
+        DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(Control),
+            new PropertyMetadata(FontWeights.Normal, OnLayoutPropertyChanged, null, inherits: true));
+
+    /// <summary>
+    /// Identifies the FontStyle dependency property.
+    /// </summary>
+    public static readonly DependencyProperty FontStyleProperty =
+        DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(Control),
+            new PropertyMetadata(FontStyles.Normal, OnLayoutPropertyChanged, null, inherits: true));
+
+    /// <summary>
+    /// Identifies the FontStretch dependency property.
+    /// </summary>
+    public static readonly DependencyProperty FontStretchProperty =
+        DependencyProperty.Register(nameof(FontStretch), typeof(FontStretch), typeof(Control),
+            new PropertyMetadata(FontStretches.Normal, OnLayoutPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the CornerRadius dependency property.
@@ -144,6 +165,33 @@ public class Control : FrameworkElement
     {
         get => (double)(GetValue(FontSizeProperty) ?? 14.0);
         set => SetValue(FontSizeProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the font weight.
+    /// </summary>
+    public FontWeight FontWeight
+    {
+        get => GetValue(FontWeightProperty) is FontWeight fw ? fw : FontWeights.Normal;
+        set => SetValue(FontWeightProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the font style.
+    /// </summary>
+    public FontStyle FontStyle
+    {
+        get => GetValue(FontStyleProperty) is FontStyle fs ? fs : FontStyles.Normal;
+        set => SetValue(FontStyleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the font stretch.
+    /// </summary>
+    public FontStretch FontStretch
+    {
+        get => GetValue(FontStretchProperty) is FontStretch fst ? fst : FontStretches.Normal;
+        set => SetValue(FontStretchProperty, value);
     }
 
     /// <summary>

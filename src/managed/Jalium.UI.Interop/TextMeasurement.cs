@@ -32,7 +32,7 @@ public static class TextMeasurement
             return false;
         }
 
-        var format = GetOrCreateFormat(context, formattedText.FontFamily, (float)formattedText.FontSize, formattedText.FontWeight);
+        var format = GetOrCreateFormat(context, formattedText.FontFamily, (float)formattedText.FontSize, formattedText.FontWeight, formattedText.FontStyle);
         if (format == null || !format.IsValid)
         {
             ApproximateMeasurement(formattedText);
@@ -70,8 +70,9 @@ public static class TextMeasurement
     /// <param name="fontFamily">The font family name.</param>
     /// <param name="fontSize">The font size in DIPs.</param>
     /// <param name="fontWeight">The font weight (400 = normal, 700 = bold).</param>
+    /// <param name="fontStyle">The font style (0 = normal, 1 = italic, 2 = oblique).</param>
     /// <returns>Text metrics containing font information.</returns>
-    public static TextMetrics GetFontMetrics(string fontFamily, double fontSize, int fontWeight = 400)
+    public static TextMetrics GetFontMetrics(string fontFamily, double fontSize, int fontWeight = 400, int fontStyle = 0)
     {
         var context = RenderContext.Current;
         if (context == null || !context.IsValid)
@@ -87,7 +88,7 @@ public static class TextMeasurement
             };
         }
 
-        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight);
+        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, fontWeight, fontStyle);
         if (format == null || !format.IsValid)
         {
             return new TextMetrics
@@ -110,10 +111,11 @@ public static class TextMeasurement
     /// <param name="fontFamily">The font family name.</param>
     /// <param name="fontSize">The font size in DIPs.</param>
     /// <param name="fontWeight">The font weight (400 = normal, 700 = bold).</param>
+    /// <param name="fontStyle">The font style (0 = normal, 1 = italic, 2 = oblique).</param>
     /// <returns>The natural line height in DIPs.</returns>
-    public static double GetLineHeight(string fontFamily, double fontSize, int fontWeight = 400)
+    public static double GetLineHeight(string fontFamily, double fontSize, int fontWeight = 400, int fontStyle = 0)
     {
-        var metrics = GetFontMetrics(fontFamily, fontSize, fontWeight);
+        var metrics = GetFontMetrics(fontFamily, fontSize, fontWeight, fontStyle);
         return metrics.LineHeight;
     }
 
@@ -132,9 +134,9 @@ public static class TextMeasurement
         }
     }
 
-    private static NativeTextFormat? GetOrCreateFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight)
+    private static NativeTextFormat? GetOrCreateFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle = 0)
     {
-        var key = $"{fontFamily}_{fontSize}_{fontWeight}";
+        var key = $"{fontFamily}_{fontSize}_{fontWeight}_{fontStyle}";
 
         lock (_lock)
         {
@@ -145,7 +147,7 @@ public static class TextMeasurement
 
             try
             {
-                var format = context.CreateTextFormat(fontFamily, fontSize, fontWeight, 0);
+                var format = context.CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
                 _formatCache[key] = format;
                 return format;
             }

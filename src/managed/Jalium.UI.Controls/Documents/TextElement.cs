@@ -28,14 +28,14 @@ public abstract class TextElement : DependencyObject
     /// </summary>
     public static readonly DependencyProperty FontWeightProperty =
         DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(TextElement),
-            new PropertyMetadata(FontWeight.Normal));
+            new PropertyMetadata(FontWeights.Normal));
 
     /// <summary>
     /// Identifies the FontStyle dependency property.
     /// </summary>
     public static readonly DependencyProperty FontStyleProperty =
         DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(TextElement),
-            new PropertyMetadata(FontStyle.Normal));
+            new PropertyMetadata(FontStyles.Normal));
 
     /// <summary>
     /// Identifies the Foreground dependency property.
@@ -78,7 +78,7 @@ public abstract class TextElement : DependencyObject
     /// </summary>
     public FontWeight FontWeight
     {
-        get => (FontWeight)(GetValue(FontWeightProperty) ?? FontWeight.Normal);
+        get => GetValue(FontWeightProperty) is FontWeight fw ? fw : FontWeights.Normal;
         set => SetValue(FontWeightProperty, value);
     }
 
@@ -87,7 +87,7 @@ public abstract class TextElement : DependencyObject
     /// </summary>
     public FontStyle FontStyle
     {
-        get => (FontStyle)(GetValue(FontStyleProperty) ?? FontStyle.Normal);
+        get => GetValue(FontStyleProperty) is FontStyle fs ? fs : FontStyles.Normal;
         set => SetValue(FontStyleProperty, value);
     }
 
@@ -148,12 +148,12 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Gets the effective font weight.
     /// </summary>
-    public FontWeight GetEffectiveFontWeight() => GetEffectiveValue(FontWeightProperty, FontWeight.Normal);
+    public FontWeight GetEffectiveFontWeight() => GetEffectiveValue(FontWeightProperty, FontWeights.Normal);
 
     /// <summary>
     /// Gets the effective font style.
     /// </summary>
-    public FontStyle GetEffectiveFontStyle() => GetEffectiveValue(FontStyleProperty, FontStyle.Normal);
+    public FontStyle GetEffectiveFontStyle() => GetEffectiveValue(FontStyleProperty, FontStyles.Normal);
 
     /// <summary>
     /// Gets the effective foreground brush.
@@ -169,28 +169,3 @@ public abstract class TextElement : DependencyObject
     #endregion
 }
 
-/// <summary>
-/// Specifies the font weight.
-/// </summary>
-public enum FontWeight
-{
-    Thin = 100,
-    ExtraLight = 200,
-    Light = 300,
-    Normal = 400,
-    Medium = 500,
-    SemiBold = 600,
-    Bold = 700,
-    ExtraBold = 800,
-    Black = 900
-}
-
-/// <summary>
-/// Specifies the font style.
-/// </summary>
-public enum FontStyle
-{
-    Normal,
-    Italic,
-    Oblique
-}

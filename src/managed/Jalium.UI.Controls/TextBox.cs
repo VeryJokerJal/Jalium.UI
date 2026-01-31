@@ -16,6 +16,15 @@ public class TextBox : TextBoxBase, IImeSupport
     private List<TextLine> _lines = new();
     private bool _linesDirty = true;
 
+    // Text width measurement cache for accurate selection/caret positioning
+    private Dictionary<string, double> _textWidthCache = new();
+    private string? _cachedFontFamily;
+    private double _cachedFontSize;
+    private int _cachedFontWeight;
+    private int _cachedFontStyle;
+    private int _cachedFontStretch;
+    private const int MaxCacheSize = 256;
+
     // IME support
     private bool _isImeComposing;
     private string _imeCompositionString = string.Empty;
@@ -346,12 +355,65 @@ public class TextBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        // Create a FormattedText to measure the actual width
-        var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize);
-        // The Width property should be populated by the rendering system
-        // For now, use a calculation that accounts for variable-width characters
-        // This is a simplified estimation; real implementation would use actual text measurement
-        return EstimateTextWidth(text);
+        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontSize = FontSize > 0 ? FontSize : 14;
+        var fontWeight = FontWeight.ToOpenTypeWeight();
+        var fontStyle = FontStyle.ToOpenTypeStyle();
+        var fontStretch = FontStretch.ToOpenTypeStretch();
+
+        // Check if font settings changed, invalidate cache if so
+        if (_cachedFontFamily != fontFamily ||
+            _cachedFontSize != fontSize ||
+            _cachedFontWeight != fontWeight ||
+            _cachedFontStyle != fontStyle ||
+            _cachedFontStretch != fontStretch)
+        {
+            _textWidthCache.Clear();
+            _cachedFontFamily = fontFamily;
+            _cachedFontSize = fontSize;
+            _cachedFontWeight = fontWeight;
+            _cachedFontStyle = fontStyle;
+            _cachedFontStretch = fontStretch;
+        }
+
+        // Check cache first
+        if (_textWidthCache.TryGetValue(text, out var cachedWidth))
+            return cachedWidth;
+
+        // Use DirectWrite native measurement via FormattedText
+        var formattedText = new FormattedText(text, fontFamily, fontSize)
+        {
+            FontWeight = fontWeight,
+            FontStyle = fontStyle,
+            FontStretch = fontStretch
+        };
+
+        // Measure using native DirectWrite
+        var usedNative = TextMeasurement.MeasureText(formattedText);
+
+        double width;
+        if (usedNative && formattedText.IsMeasured)
+        {
+            // Use accurate native measurement
+            width = formattedText.Width;
+        }
+        else
+        {
+            // Fall back to estimation only when native is unavailable
+            width = EstimateTextWidth(text);
+        }
+
+        // Cache the result (with size limit to prevent memory issues)
+        if (_textWidthCache.Count >= MaxCacheSize)
+        {
+            // Simple eviction: clear half the cache
+            var keysToRemove = _textWidthCache.Keys.Take(MaxCacheSize / 2).ToList();
+            foreach (var key in keysToRemove)
+                _textWidthCache.Remove(key);
+        }
+        _textWidthCache[text] = width;
+
+        return width;
     }
 
     private double EstimateTextWidth(string text)

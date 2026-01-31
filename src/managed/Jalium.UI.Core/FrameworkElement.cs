@@ -178,6 +178,30 @@ public class FrameworkElement : UIElement
 
     #endregion
 
+    #region Property Inheritance
+
+    /// <inheritdoc />
+    public override object? GetValue(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+
+        // Check if we have a local value
+        if (HasLocalValue(dp))
+        {
+            return base.GetValue(dp);
+        }
+
+        // For inheriting properties, check parent chain
+        if (dp.DefaultMetadata.Inherits && VisualParent is FrameworkElement parent)
+        {
+            return parent.GetValue(dp);
+        }
+
+        return base.GetValue(dp);
+    }
+
+    #endregion
+
     #region CLR Properties
 
     /// <summary>

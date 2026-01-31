@@ -350,6 +350,16 @@ public class FormattedText
     public int FontWeight { get; set; } = 400;
 
     /// <summary>
+    /// Gets or sets the font style (0 = normal, 1 = italic, 2 = oblique).
+    /// </summary>
+    public int FontStyle { get; set; } = 0;
+
+    /// <summary>
+    /// Gets or sets the font stretch (5 = normal). Values 1-9 map to DirectWrite font stretch.
+    /// </summary>
+    public int FontStretch { get; set; } = 5;
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="FormattedText"/> class.
     /// </summary>
     public FormattedText(string text, string fontFamily, double fontSize)

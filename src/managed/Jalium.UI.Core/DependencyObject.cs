@@ -20,7 +20,7 @@ public class DependencyObject
     /// </summary>
     /// <param name="dp">The dependency property to get.</param>
     /// <returns>The current effective value.</returns>
-    public object? GetValue(DependencyProperty dp)
+    public virtual object? GetValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
 
@@ -30,6 +30,17 @@ public class DependencyObject
         }
 
         return dp.DefaultMetadata.DefaultValue;
+    }
+
+    /// <summary>
+    /// Gets a value indicating whether this object has a local value set for the specified property.
+    /// </summary>
+    /// <param name="dp">The dependency property to check.</param>
+    /// <returns>True if a local value is set; otherwise, false.</returns>
+    public bool HasLocalValue(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        return _localValues.ContainsKey(dp);
     }
 
     /// <summary>

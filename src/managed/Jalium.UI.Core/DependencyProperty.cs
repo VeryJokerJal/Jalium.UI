@@ -160,10 +160,15 @@ public class PropertyMetadata
     public CoerceValueCallback? CoerceValueCallback { get; }
 
     /// <summary>
+    /// Gets a value indicating whether this property inherits its value from parent elements.
+    /// </summary>
+    public bool Inherits { get; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="PropertyMetadata"/> class.
     /// </summary>
     public PropertyMetadata()
-        : this(null, null, null)
+        : this(null, null, null, false)
     {
     }
 
@@ -172,7 +177,7 @@ public class PropertyMetadata
     /// </summary>
     /// <param name="defaultValue">The default value.</param>
     public PropertyMetadata(object? defaultValue)
-        : this(defaultValue, null, null)
+        : this(defaultValue, null, null, false)
     {
     }
 
@@ -182,7 +187,7 @@ public class PropertyMetadata
     /// <param name="defaultValue">The default value.</param>
     /// <param name="propertyChangedCallback">The property changed callback.</param>
     public PropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback)
-        : this(defaultValue, propertyChangedCallback, null)
+        : this(defaultValue, propertyChangedCallback, null, false)
     {
     }
 
@@ -193,10 +198,23 @@ public class PropertyMetadata
     /// <param name="propertyChangedCallback">The property changed callback.</param>
     /// <param name="coerceValueCallback">The coerce value callback.</param>
     public PropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback, CoerceValueCallback? coerceValueCallback)
+        : this(defaultValue, propertyChangedCallback, coerceValueCallback, false)
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PropertyMetadata"/> class.
+    /// </summary>
+    /// <param name="defaultValue">The default value.</param>
+    /// <param name="propertyChangedCallback">The property changed callback.</param>
+    /// <param name="coerceValueCallback">The coerce value callback.</param>
+    /// <param name="inherits">Whether the property value inherits from parent elements.</param>
+    public PropertyMetadata(object? defaultValue, PropertyChangedCallback? propertyChangedCallback, CoerceValueCallback? coerceValueCallback, bool inherits)
     {
         DefaultValue = defaultValue;
         PropertyChangedCallback = propertyChangedCallback;
         CoerceValueCallback = coerceValueCallback;
+        Inherits = inherits;
     }
 }
 
