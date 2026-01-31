@@ -87,6 +87,20 @@ public class Control : FrameworkElement
             new PropertyMetadata(new CornerRadius(0), OnVisualPropertyChanged));
 
     /// <summary>
+    /// Identifies the HorizontalContentAlignment dependency property.
+    /// </summary>
+    public static readonly DependencyProperty HorizontalContentAlignmentProperty =
+        DependencyProperty.Register(nameof(HorizontalContentAlignment), typeof(HorizontalAlignment), typeof(Control),
+            new PropertyMetadata(HorizontalAlignment.Left, OnLayoutPropertyChanged));
+
+    /// <summary>
+    /// Identifies the VerticalContentAlignment dependency property.
+    /// </summary>
+    public static readonly DependencyProperty VerticalContentAlignmentProperty =
+        DependencyProperty.Register(nameof(VerticalContentAlignment), typeof(VerticalAlignment), typeof(Control),
+            new PropertyMetadata(VerticalAlignment.Top, OnLayoutPropertyChanged));
+
+    /// <summary>
     /// Identifies the Template dependency property.
     /// </summary>
     public static readonly DependencyProperty TemplateProperty =
@@ -201,6 +215,24 @@ public class Control : FrameworkElement
     {
         get => (CornerRadius)(GetValue(CornerRadiusProperty) ?? new CornerRadius(0));
         set => SetValue(CornerRadiusProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the horizontal alignment of the control's content.
+    /// </summary>
+    public HorizontalAlignment HorizontalContentAlignment
+    {
+        get => (HorizontalAlignment)(GetValue(HorizontalContentAlignmentProperty) ?? HorizontalAlignment.Left);
+        set => SetValue(HorizontalContentAlignmentProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the vertical alignment of the control's content.
+    /// </summary>
+    public VerticalAlignment VerticalContentAlignment
+    {
+        get => (VerticalAlignment)(GetValue(VerticalContentAlignmentProperty) ?? VerticalAlignment.Top);
+        set => SetValue(VerticalContentAlignmentProperty, value);
     }
 
     /// <summary>
