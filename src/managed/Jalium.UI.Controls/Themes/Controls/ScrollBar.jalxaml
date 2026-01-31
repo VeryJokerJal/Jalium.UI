@@ -1,0 +1,49 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- Thumb Style -->
+    <!-- ============================================== -->
+    <Style TargetType="Thumb">
+        <Setter Property="Background" Value="{StaticResource ScrollBarThumb}" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="4" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource ScrollBarThumbHover}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsDragging" Value="True">
+                <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- Track Style -->
+    <!-- ============================================== -->
+    <Style TargetType="Track">
+        <Setter Property="Background" Value="{StaticResource ScrollBarTrack}" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ScrollBar Style -->
+    <!-- ============================================== -->
+    <Style TargetType="ScrollBar">
+        <Setter Property="Background" Value="{StaticResource ScrollBarTrack}" />
+        <Setter Property="Foreground" Value="{StaticResource ScrollBarThumb}" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="MinWidth" Value="12" />
+        <Setter Property="MinHeight" Value="12" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource ControlBackgroundDisabled}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+</ResourceDictionary>

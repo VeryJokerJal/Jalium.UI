@@ -22,7 +22,7 @@ public partial class WrapPanelPage : Page
         {
             Text = "WrapPanel",
             FontSize = GalleryTheme.FontSizeTitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 0, 0, 8)
         };
@@ -198,7 +198,7 @@ public partial class WrapPanelPage : Page
             Text = text,
             Foreground = new SolidColorBrush(Color.White),
             FontSize = 12,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             HorizontalAlignment = HorizontalAlignment.Center,
             VerticalAlignment = VerticalAlignment.Center
         };
@@ -215,7 +215,7 @@ public partial class WrapPanelPage : Page
         {
             Text = titleText,
             FontSize = GalleryTheme.FontSizeSubtitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 16, 0, 4)
         };

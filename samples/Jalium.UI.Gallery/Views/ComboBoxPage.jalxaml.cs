@@ -22,7 +22,7 @@ public partial class ComboBoxPage : Page
         {
             Text = "ComboBox",
             FontSize = GalleryTheme.FontSizeTitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 0, 0, 8)
         };
@@ -120,7 +120,7 @@ public partial class ComboBoxPage : Page
         {
             Text = titleText,
             FontSize = GalleryTheme.FontSizeSubtitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 16, 0, 4)
         };

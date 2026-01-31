@@ -1,0 +1,51 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- TabControl Style -->
+    <!-- ============================================== -->
+    <Style TargetType="TabControl">
+        <Setter Property="Background" Value="{StaticResource TabContentBackground}" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{StaticResource TabStripBorder}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="TabStripBackground" Value="{StaticResource TabStripBackground}" />
+        <Setter Property="TabStripBorderBrush" Value="{StaticResource TabStripBorder}" />
+        <Setter Property="TabStripHeight" Value="36" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="FontFamily" Value="Segoe UI" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- TabItem Style -->
+    <!-- ============================================== -->
+    <Style TargetType="TabItem">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+        <Setter Property="Padding" Value="16,10,16,10" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="IndicatorBrush" Value="{StaticResource TabItemIndicator}" />
+        <Setter Property="IndicatorHeight" Value="2" />
+        <Setter Property="SelectedBackground" Value="{StaticResource TabItemSelectedBackground}" />
+        <Setter Property="HoverBackground" Value="{StaticResource TabItemHoverBackground}" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsSelected" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- TabPanel Style -->
+    <!-- ============================================== -->
+    <Style TargetType="TabPanel">
+        <Setter Property="Background" Value="{StaticResource TabStripBackground}" />
+    </Style>
+
+</ResourceDictionary>

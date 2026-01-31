@@ -1,0 +1,103 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- DataGrid Style -->
+    <!-- ============================================== -->
+    <Style TargetType="DataGrid">
+        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="RowHeight" Value="24" />
+        <Setter Property="ColumnHeaderHeight" Value="28" />
+        <Setter Property="RowHeaderWidth" Value="20" />
+        <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="VerticalGridLinesBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="AlternatingRowBackground" Value="#232323" />
+        <Setter Property="RowBackground" Value="Transparent" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- DataGridColumnHeader Style -->
+    <!-- ============================================== -->
+    <Style TargetType="DataGridColumnHeader">
+        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="0,0,1,1" />
+        <Setter Property="Padding" Value="8,4,8,4" />
+        <Setter Property="FontSize" Value="13" />
+        <Setter Property="FontWeight" Value="SemiBold" />
+        <Setter Property="HorizontalContentAlignment" Value="Left" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource HighlightBackground}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsPressed" Value="True">
+                <Setter Property="Background" Value="{StaticResource ControlBackgroundPressed}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- DataGridRowHeader Style -->
+    <!-- ============================================== -->
+    <Style TargetType="DataGridRowHeader">
+        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="0,0,1,1" />
+        <Setter Property="Width" Value="20" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource HighlightBackground}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsRowSelected" Value="True">
+                <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- DataGridCellsPresenter Style -->
+    <!-- ============================================== -->
+    <Style TargetType="DataGridCellsPresenter">
+        <Setter Property="Background" Value="Transparent" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- DataGridColumnHeadersPresenter Style -->
+    <!-- ============================================== -->
+    <Style TargetType="DataGridColumnHeadersPresenter">
+        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- DataGridRowsPresenter Style -->
+    <!-- ============================================== -->
+    <Style TargetType="DataGridRowsPresenter">
+        <Setter Property="Background" Value="Transparent" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- DataGridDetailsPresenter Style -->
+    <!-- ============================================== -->
+    <Style TargetType="DataGridDetailsPresenter">
+        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="0,1,0,0" />
+        <Setter Property="Padding" Value="8" />
+    </Style>
+
+</ResourceDictionary>

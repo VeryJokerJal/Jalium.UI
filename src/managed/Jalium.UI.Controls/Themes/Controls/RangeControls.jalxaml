@@ -1,0 +1,38 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- Slider Style -->
+    <!-- ============================================== -->
+    <Style TargetType="Slider">
+        <Setter Property="Background" Value="{StaticResource SliderTrack}" />
+        <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{StaticResource AccentBrushDisabled}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ProgressBar Style -->
+    <!-- ============================================== -->
+    <Style TargetType="ProgressBar">
+        <Setter Property="Background" Value="{StaticResource SliderTrack}" />
+        <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="2" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- TickBar Style -->
+    <!-- ============================================== -->
+    <Style TargetType="TickBar">
+        <Setter Property="Fill" Value="{StaticResource TextSecondary}" />
+    </Style>
+
+</ResourceDictionary>

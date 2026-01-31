@@ -1,0 +1,38 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- Border Style -->
+    <!-- ============================================== -->
+    <Style TargetType="Border">
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ScrollViewer Style -->
+    <!-- ============================================== -->
+    <Style TargetType="ScrollViewer">
+        <Setter Property="Background" Value="Transparent" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- VirtualizingStackPanel Style -->
+    <!-- ============================================== -->
+    <Style TargetType="VirtualizingStackPanel">
+        <Setter Property="Background" Value="Transparent" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ToolTip Style -->
+    <!-- ============================================== -->
+    <Style TargetType="ToolTip">
+        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="8,4,8,4" />
+        <Setter Property="CornerRadius" Value="4" />
+    </Style>
+
+</ResourceDictionary>
