@@ -1,7 +1,7 @@
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents a control that can be dragged by the user, typically used in scrollbars and sliders.

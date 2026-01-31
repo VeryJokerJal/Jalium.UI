@@ -126,6 +126,11 @@ public class Setter
     public DependencyProperty? Property { get; set; }
 
     /// <summary>
+    /// Gets or sets the property name (used for runtime resolution when TargetName is specified).
+    /// </summary>
+    internal string? PropertyName { get; set; }
+
+    /// <summary>
     /// Gets or sets the value to set.
     /// </summary>
     public object? Value { get; set; }
@@ -151,6 +156,28 @@ public class Setter
     {
         Property = property;
         Value = value;
+    }
+
+    /// <summary>
+    /// Gets the resolved DependencyProperty for the given target element.
+    /// When TargetName is specified, resolves against the target element's type.
+    /// </summary>
+    internal DependencyProperty? GetResolvedProperty(FrameworkElement target)
+    {
+        // If no TargetName or no PropertyName stored, use the pre-resolved Property
+        if (string.IsNullOrEmpty(TargetName) || string.IsNullOrEmpty(PropertyName))
+            return Property;
+
+        // Resolve property against the actual target element's type
+        var targetType = target.GetType();
+        var dpField = targetType.GetField($"{PropertyName}Property",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.FlattenHierarchy);
+
+        if (dpField?.GetValue(null) is DependencyProperty resolvedDp)
+            return resolvedDp;
+
+        // Fall back to pre-resolved property
+        return Property;
     }
 
     /// <summary>
@@ -296,17 +323,23 @@ public abstract class Trigger
     {
         foreach (var setter in Setters)
         {
-            if (setter.Property == null) continue;
+            // Get the actual target element (may be different from element if TargetName is specified)
+            var target = GetSetterTarget(element, setter.TargetName);
+            if (target == null) continue;
+
+            // Resolve the property against the actual target type
+            var property = setter.GetResolvedProperty(target);
+            if (property == null) continue;
 
             // Store the current value (which is the style's base value or local value)
-            var key = (element, setter.Property);
+            var key = (target, property);
             if (!_preTriggerValues.ContainsKey(key))
             {
-                _preTriggerValues[key] = element.GetValue(setter.Property);
+                _preTriggerValues[key] = target.GetValue(property);
             }
 
             // Apply the trigger's value
-            element.SetValue(setter.Property, setter.Value);
+            target.SetValue(property, setter.Value);
         }
 
         // Invalidate visual to ensure re-render
@@ -320,19 +353,70 @@ public abstract class Trigger
     {
         foreach (var setter in Setters)
         {
-            if (setter.Property == null) continue;
+            // Get the actual target element (may be different from element if TargetName is specified)
+            var target = GetSetterTarget(element, setter.TargetName);
+            if (target == null) continue;
 
-            var key = (element, setter.Property);
+            // Resolve the property against the actual target type
+            var property = setter.GetResolvedProperty(target);
+            if (property == null) continue;
+
+            var key = (target, property);
             if (_preTriggerValues.TryGetValue(key, out var preTriggerValue))
             {
                 // Restore the pre-trigger value (style's base value)
-                element.SetValue(setter.Property, preTriggerValue);
+                target.SetValue(property, preTriggerValue);
                 _preTriggerValues.Remove(key);
             }
         }
 
         // Invalidate visual to ensure re-render
         element.InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Gets the target element for a setter, resolving TargetName if specified.
+    /// </summary>
+    private static FrameworkElement? GetSetterTarget(FrameworkElement element, string? targetName)
+    {
+        if (string.IsNullOrEmpty(targetName))
+            return element;
+
+        // Look up named element in the template scope
+        var found = element.FindName(targetName) as FrameworkElement;
+        if (found != null)
+            return found;
+
+        // If that fails, search the visual tree
+        return SearchVisualTreeForName(element, targetName);
+    }
+
+    /// <summary>
+    /// Recursively searches the visual tree for an element with the specified name.
+    /// </summary>
+    private static FrameworkElement? SearchVisualTreeForName(Visual? visual, string name)
+    {
+        if (visual == null) return null;
+
+        // Check if this element has the name we're looking for
+        if (visual is FrameworkElement fe && fe.Name == name)
+        {
+            return fe;
+        }
+
+        // Search children
+        var childCount = visual.VisualChildrenCount;
+        for (int i = 0; i < childCount; i++)
+        {
+            var child = visual.GetVisualChild(i);
+            var result = SearchVisualTreeForName(child, name);
+            if (result != null)
+            {
+                return result;
+            }
+        }
+
+        return null;
     }
 
     /// <summary>

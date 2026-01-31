@@ -1,0 +1,56 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- Button Style with ControlTemplate -->
+    <!-- ============================================== -->
+    <!-- Note: This file is for future use when MergedDictionaries is supported.
+         Currently, the Button style is defined in Generic.jalxaml -->
+
+    <Style TargetType="Button">
+        <Setter Property="Background" Value="{StaticResource ControlBackground}" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="12,6,12,6" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="MinWidth" Value="60" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="Button">
+                    <Border
+                        x:Name="Border"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Padding="{TemplateBinding Padding}">
+                        <ContentPresenter
+                            HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                            VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+                    </Border>
+                    <ControlTemplate.Triggers>
+                        <PropertyTrigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Border" Property="Background" Value="{StaticResource ControlBackgroundHover}" />
+                            <Setter TargetName="Border" Property="BorderBrush" Value="{StaticResource ControlBorderHover}" />
+                        </PropertyTrigger>
+                        <PropertyTrigger Property="IsPressed" Value="True">
+                            <Setter TargetName="Border" Property="Background" Value="{StaticResource ControlBackgroundPressed}" />
+                        </PropertyTrigger>
+                        <PropertyTrigger Property="IsEnabled" Value="False">
+                            <Setter TargetName="Border" Property="Background" Value="{StaticResource ControlBackgroundDisabled}" />
+                            <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
+                            <Setter TargetName="Border" Property="BorderBrush" Value="{StaticResource ControlBorderDisabled}" />
+                        </PropertyTrigger>
+                    </ControlTemplate.Triggers>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

@@ -1,0 +1,85 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- Theme Colors (Dark Theme) -->
+    <!-- ============================================== -->
+    <!-- Note: This file is for future use when MergedDictionaries is supported.
+         Currently, colors are defined in Generic.jalxaml -->
+
+    <!-- Background Colors -->
+    <SolidColorBrush x:Key="ControlBackground" Color="#373737" />
+    <SolidColorBrush x:Key="ControlBackgroundHover" Color="#464646" />
+    <SolidColorBrush x:Key="ControlBackgroundPressed" Color="#1E1E1E" />
+    <SolidColorBrush x:Key="ControlBackgroundDisabled" Color="#282828" />
+
+    <!-- Text Colors -->
+    <SolidColorBrush x:Key="TextPrimary" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="TextSecondary" Color="#B4B4B4" />
+    <SolidColorBrush x:Key="TextDisabled" Color="#5A5A5A" />
+    <SolidColorBrush x:Key="TextPlaceholder" Color="#787878" />
+
+    <!-- Border Colors -->
+    <SolidColorBrush x:Key="ControlBorder" Color="#505050" />
+    <SolidColorBrush x:Key="ControlBorderHover" Color="#646464" />
+    <SolidColorBrush x:Key="ControlBorderFocused" Color="#0078D4" />
+    <SolidColorBrush x:Key="ControlBorderDisabled" Color="#323232" />
+
+    <!-- Accent Colors -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#0078D4" />
+    <SolidColorBrush x:Key="AccentBrushHover" Color="#1A91EB" />
+    <SolidColorBrush x:Key="AccentBrushPressed" Color="#005FAA" />
+    <SolidColorBrush x:Key="AccentBrushDisabled" Color="#003C6A" />
+
+    <!-- Window/Surface Colors -->
+    <SolidColorBrush x:Key="WindowBackground" Color="#1E1E1E" />
+    <SolidColorBrush x:Key="SurfaceBackground" Color="#2D2D2D" />
+
+    <!-- CheckBox/RadioButton Toggle Colors -->
+    <SolidColorBrush x:Key="ToggleUncheckedBackground" Color="#2D2D2D" />
+    <SolidColorBrush x:Key="ToggleUncheckedBackgroundHover" Color="#373737" />
+    <SolidColorBrush x:Key="ToggleUncheckedBackgroundPressed" Color="#232323" />
+    <SolidColorBrush x:Key="ToggleUncheckedBorder" Color="#8C8C8C" />
+    <SolidColorBrush x:Key="ToggleUncheckedBorderHover" Color="#A0A0A0" />
+    <SolidColorBrush x:Key="ToggleCheckedBackground" Color="#0078D4" />
+    <SolidColorBrush x:Key="ToggleCheckedBackgroundHover" Color="#1A91EB" />
+    <SolidColorBrush x:Key="ToggleCheckedBorder" Color="#0078D4" />
+    <SolidColorBrush x:Key="ToggleCheckedBorderHover" Color="#1A91EB" />
+    <SolidColorBrush x:Key="ToggleDisabledBackground" Color="#282828" />
+    <SolidColorBrush x:Key="ToggleDisabledBorder" Color="#464646" />
+    <SolidColorBrush x:Key="CheckMark" Color="#FFFFFF" />
+
+    <!-- TabControl Colors -->
+    <SolidColorBrush x:Key="TabStripBackground" Color="#2D2D2D" />
+    <SolidColorBrush x:Key="TabStripBorder" Color="#3C3C3C" />
+    <SolidColorBrush x:Key="TabItemSelectedBackground" Color="#373737" />
+    <SolidColorBrush x:Key="TabItemHoverBackground" Color="#414141" />
+    <SolidColorBrush x:Key="TabItemIndicator" Color="#0078D4" />
+    <SolidColorBrush x:Key="TabContentBackground" Color="#1E1E1E" />
+
+    <!-- Title Bar Colors -->
+    <SolidColorBrush x:Key="TitleBarBackground" Color="#202020" />
+    <SolidColorBrush x:Key="TitleBarText" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="TitleBarButtonBackground" Color="Transparent" />
+    <SolidColorBrush x:Key="TitleBarButtonHover" Color="#3C3C3C" />
+    <SolidColorBrush x:Key="TitleBarButtonPressed" Color="#2D2D2D" />
+    <SolidColorBrush x:Key="TitleBarCloseButtonHover" Color="#E81123" />
+    <SolidColorBrush x:Key="TitleBarCloseButtonPressed" Color="#C80F1E" />
+    <SolidColorBrush x:Key="TitleBarGlyph" Color="#FFFFFF" />
+
+    <!-- ScrollBar Colors -->
+    <SolidColorBrush x:Key="ScrollBarTrack" Color="#282828" />
+    <SolidColorBrush x:Key="ScrollBarThumb" Color="#505050" />
+    <SolidColorBrush x:Key="ScrollBarThumbHover" Color="#646464" />
+
+    <!-- Slider Colors -->
+    <SolidColorBrush x:Key="SliderTrack" Color="#3C3C3C" />
+    <SolidColorBrush x:Key="SliderFill" Color="#0078D4" />
+    <SolidColorBrush x:Key="SliderThumb" Color="#FFFFFF" />
+
+    <!-- Selection Colors -->
+    <SolidColorBrush x:Key="SelectionBackground" Color="#0078D4" />
+    <SolidColorBrush x:Key="HighlightBackground" Color="#3C3C3C" />
+
+</ResourceDictionary>

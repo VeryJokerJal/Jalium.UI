@@ -2,7 +2,7 @@ using System.Timers;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Base class for text editing controls.

@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents a control that allows the user to select items from among its child elements.

@@ -81,6 +81,7 @@ public class JalxamlSourceGenerator : IIncrementalGenerator
         sb.AppendLine("#pragma warning disable CS0649 // Field is never assigned - wired up by JALXAML loader at runtime");
         sb.AppendLine();
         sb.AppendLine("using Jalium.UI.Controls;");
+        sb.AppendLine("using Jalium.UI.Controls.Primitives;");
         sb.AppendLine("using Jalium.UI.Markup;");
         sb.AppendLine();
 

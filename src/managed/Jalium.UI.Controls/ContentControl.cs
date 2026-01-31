@@ -61,6 +61,16 @@ public class ContentControl : Control
     /// </summary>
     protected virtual void OnContentChanged(object? oldContent, object? newContent)
     {
+        // If we have a template, the ContentPresenter in the template will handle content display
+        // via template bindings. We only need to handle direct content if no template is applied.
+        if (Template != null)
+        {
+            // Template's ContentPresenter will pick up the change via binding
+            InvalidateMeasure();
+            return;
+        }
+
+        // No template - manage content element directly
         // Remove old content from visual tree
         if (_contentElement != null)
         {
@@ -83,12 +93,33 @@ public class ContentControl : Control
     /// </summary>
     protected UIElement? ContentElement => _contentElement;
 
+    /// <summary>
+    /// Gets whether this control has a template applied.
+    /// </summary>
+    private bool HasTemplate => Template != null;
+
     /// <inheritdoc />
-    public override int VisualChildrenCount => _contentElement != null ? 1 : 0;
+    public override int VisualChildrenCount
+    {
+        get
+        {
+            // When using templates, delegate to base class (Control) which handles template root
+            if (HasTemplate)
+                return base.VisualChildrenCount;
+
+            // No template - use direct content element
+            return _contentElement != null ? 1 : 0;
+        }
+    }
 
     /// <inheritdoc />
     public override Visual? GetVisualChild(int index)
     {
+        // When using templates, delegate to base class (Control) which handles template root
+        if (HasTemplate)
+            return base.GetVisualChild(index);
+
+        // No template - use direct content element
         if (index == 0 && _contentElement != null)
             return _contentElement;
         throw new ArgumentOutOfRangeException(nameof(index));
@@ -97,6 +128,11 @@ public class ContentControl : Control
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // When using templates, let base class handle it (which measures template root)
+        if (HasTemplate)
+            return base.MeasureOverride(availableSize);
+
+        // No template - measure content element directly
         if (_contentElement != null)
         {
             var padding = Padding;
@@ -118,6 +154,11 @@ public class ContentControl : Control
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
+        // When using templates, let base class handle it (which arranges template root)
+        if (HasTemplate)
+            return base.ArrangeOverride(finalSize);
+
+        // No template - arrange content element directly
         if (_contentElement is FrameworkElement fe)
         {
             var padding = Padding;

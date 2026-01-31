@@ -3,7 +3,7 @@ using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using System.Runtime.InteropServices;
 
-namespace Jalium.UI.Controls;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Specifies the placement of a Popup relative to its target element.

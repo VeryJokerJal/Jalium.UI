@@ -113,6 +113,7 @@ public class Control : FrameworkElement
 
     private FrameworkElement? _templateRoot;
     private bool _templateApplied;
+    private ControlTemplate? _appliedTemplate;
 
     #endregion
 
@@ -275,6 +276,13 @@ public class Control : FrameworkElement
                 // Add to visual tree
                 AddVisualChild(_templateRoot);
 
+                // Attach template triggers to the templated control (not the template root)
+                foreach (var trigger in template.Triggers)
+                {
+                    trigger.Attach(this);
+                }
+                _appliedTemplate = template;
+
                 // Call OnApplyTemplate for derived classes to get template parts
                 OnApplyTemplate();
 
@@ -337,6 +345,16 @@ public class Control : FrameworkElement
 
     private void ClearTemplateContent()
     {
+        // Detach triggers from old template
+        if (_appliedTemplate != null)
+        {
+            foreach (var trigger in _appliedTemplate.Triggers)
+            {
+                trigger.Detach(this);
+            }
+            _appliedTemplate = null;
+        }
+
         if (_templateRoot != null)
         {
             RemoveVisualChild(_templateRoot);
@@ -354,6 +372,9 @@ public class Control : FrameworkElement
             parent.RegisterName(element.Name, element);
         }
 
+        // Resolve deferred template bindings
+        ResolveDeferredTemplateBindings(element, parent);
+
         // Process children
         var childCount = element.VisualChildrenCount;
         for (int i = 0; i < childCount; i++)
@@ -363,6 +384,43 @@ public class Control : FrameworkElement
                 SetTemplatedParentRecursive(child, parent);
             }
         }
+    }
+
+    /// <summary>
+    /// Resolves deferred template bindings on an element.
+    /// </summary>
+    private static void ResolveDeferredTemplateBindings(FrameworkElement element, FrameworkElement templatedParent)
+    {
+        var deferredBindings = element.GetDeferredTemplateBindings();
+        if (deferredBindings == null || deferredBindings.Count == 0)
+            return;
+
+        var parentType = templatedParent.GetType();
+
+        foreach (var (targetPropertyName, deferred) in deferredBindings)
+        {
+            // Find the source DependencyProperty on the templated parent
+            var sourcePropertyField = parentType.GetField($"{deferred.PropertyPath}Property",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.FlattenHierarchy);
+
+            if (sourcePropertyField?.GetValue(null) is not DependencyProperty sourceProperty)
+                continue;
+
+            // Find the target DependencyProperty on the element
+            var elementType = element.GetType();
+            var targetPropertyField = elementType.GetField($"{targetPropertyName}Property",
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.FlattenHierarchy);
+
+            if (targetPropertyField?.GetValue(null) is not DependencyProperty targetProperty)
+                continue;
+
+            // Create and apply the template binding
+            var binding = new TemplateBinding(sourceProperty);
+            element.SetBinding(targetProperty, binding);
+        }
+
+        // Clear the deferred bindings after resolution
+        element.ClearDeferredTemplateBindings();
     }
 
     /// <inheritdoc />

@@ -273,6 +273,55 @@ public class NullExtension : MarkupExtension
 }
 
 /// <summary>
+/// XAML markup extension for template binding.
+/// Binds a property of a template element to a property of the templated parent.
+/// </summary>
+public class TemplateBindingExtension : MarkupExtension
+{
+    /// <summary>
+    /// Gets or sets the property path to bind to on the templated parent.
+    /// </summary>
+    public string? Path { get; set; }
+
+    /// <summary>
+    /// Gets or sets the converter.
+    /// </summary>
+    public IValueConverter? Converter { get; set; }
+
+    /// <summary>
+    /// Gets or sets the converter parameter.
+    /// </summary>
+    public object? ConverterParameter { get; set; }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="TemplateBindingExtension"/> class.
+    /// </summary>
+    public TemplateBindingExtension()
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="TemplateBindingExtension"/> class with the specified path.
+    /// </summary>
+    /// <param name="path">The property path.</param>
+    public TemplateBindingExtension(string path)
+    {
+        Path = path;
+    }
+
+    /// <inheritdoc />
+    public override object? ProvideValue(IServiceProvider serviceProvider)
+    {
+        if (string.IsNullOrEmpty(Path))
+            return null;
+
+        // Return a deferred template binding that will be resolved
+        // when the templated parent is set
+        return new DeferredTemplateBinding(Path, Converter, ConverterParameter);
+    }
+}
+
+/// <summary>
 /// XAML markup extension for x:Type.
 /// </summary>
 public class TypeExtension : MarkupExtension
@@ -398,6 +447,7 @@ internal static class MarkupExtensionParser
         {
             "binding" => CreateBindingExtension(parameters),
             "staticresource" => CreateStaticResourceExtension(parameters),
+            "templatebinding" => CreateTemplateBindingExtension(parameters),
             "null" => new NullExtension(),
             "type" => CreateTypeExtension(parameters),
             _ => null
@@ -476,6 +526,44 @@ internal static class MarkupExtensionParser
     {
         var typeName = parameters.Trim();
         return new TypeExtension(typeName);
+    }
+
+    private static TemplateBindingExtension CreateTemplateBindingExtension(string parameters)
+    {
+        var extension = new TemplateBindingExtension();
+
+        if (string.IsNullOrWhiteSpace(parameters))
+            return extension;
+
+        // Parse parameters - first positional parameter is Path
+        var parts = SplitParameters(parameters);
+        foreach (var part in parts)
+        {
+            var equalsIndex = part.IndexOf('=');
+            if (equalsIndex < 0)
+            {
+                // Positional parameter (first one is Path/Property name)
+                extension.Path = part.Trim();
+            }
+            else
+            {
+                var paramName = part.Substring(0, equalsIndex).Trim();
+                var paramValue = part.Substring(equalsIndex + 1).Trim();
+
+                switch (paramName.ToLowerInvariant())
+                {
+                    case "path":
+                    case "property":
+                        extension.Path = paramValue;
+                        break;
+                    case "converterparameter":
+                        extension.ConverterParameter = paramValue;
+                        break;
+                }
+            }
+        }
+
+        return extension;
     }
 
     private static List<string> SplitParameters(string parameters)

@@ -22,7 +22,7 @@ public partial class TreeViewPage : Page
         {
             Text = "TreeView",
             FontSize = GalleryTheme.FontSizeTitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 0, 0, 8)
         };
@@ -184,7 +184,7 @@ public partial class TreeViewPage : Page
         {
             Text = titleText,
             FontSize = GalleryTheme.FontSizeSubtitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 16, 0, 4)
         };

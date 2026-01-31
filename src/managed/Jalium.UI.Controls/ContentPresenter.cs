@@ -156,12 +156,15 @@ public class ContentPresenter : FrameworkElement
     #region Template Binding
 
     /// <inheritdoc />
-    protected override void OnVisualParentChanged(Visual? oldParent)
+    protected override void OnTemplatedParentChanged(FrameworkElement? oldParent, FrameworkElement? newParent)
     {
-        base.OnVisualParentChanged(oldParent);
+        base.OnTemplatedParentChanged(oldParent, newParent);
 
-        // When added to the visual tree, try to set up template bindings
-        if (!_templateBindingsApplied && TemplatedParent != null)
+        // Reset binding state when templated parent changes
+        _templateBindingsApplied = false;
+
+        // When templated parent is set, apply template bindings
+        if (newParent != null)
         {
             ApplyTemplateBindings();
         }
@@ -239,8 +242,21 @@ public class ContentPresenter : FrameworkElement
     {
         if (_contentElement != null)
         {
-            _contentElement.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
-            // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
+            var contentDesired = _contentElement.DesiredSize;
+
+            // Calculate content size - for Stretch use full size, otherwise use desired size
+            double contentWidth = HorizontalAlignment == HorizontalAlignment.Stretch
+                ? finalSize.Width
+                : Math.Min(contentDesired.Width, finalSize.Width);
+            double contentHeight = VerticalAlignment == VerticalAlignment.Stretch
+                ? finalSize.Height
+                : Math.Min(contentDesired.Height, finalSize.Height);
+
+            // Arrange content at (0, 0) - alignment positioning is handled by ArrangeCore
+            _contentElement.Arrange(new Rect(0, 0, contentWidth, contentHeight));
+
+            // Return actual render size so ArrangeCore can apply alignment
+            return new Size(contentWidth, contentHeight);
         }
 
         return finalSize;

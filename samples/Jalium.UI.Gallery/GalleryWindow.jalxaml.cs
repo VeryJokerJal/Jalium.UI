@@ -53,9 +53,9 @@ public partial class GalleryWindow : Window
         { "backdropeffects", () => new BackdropEffectsPage() },
         { "datagrid", () => new DataGridPage() },
         { "autocompletebox", () => new AutoCompleteBoxPage() },
-        { "datepicker", () => new DatePickerPage() },
-        { "colorpicker", () => new ColorPickerPage() },
-        { "expander", () => new ExpanderPage() },
+        //{ "datepicker", () => new DatePickerPage() },
+        //{ "colorpicker", () => new ColorPickerPage() },
+        //{ "expander", () => new ExpanderPage() },
         { "groupbox", () => new GroupBoxPage() },
         { "statusbar", () => new StatusBarPage() },
         { "label", () => new LabelPage() },
@@ -368,7 +368,7 @@ public partial class GalleryWindow : Window
         {
             Text = $"Page: {pageTag}",
             FontSize = GalleryTheme.FontSizeSubtitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             HorizontalAlignment = HorizontalAlignment.Center,
             Margin = new Thickness(0, 0, 0, 8)

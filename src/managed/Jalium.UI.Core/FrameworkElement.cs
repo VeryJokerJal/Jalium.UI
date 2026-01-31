@@ -130,6 +130,11 @@ public class FrameworkElement : UIElement
     /// </summary>
     private Dictionary<string, FrameworkElement>? _namedElements;
 
+    /// <summary>
+    /// Stores deferred template bindings that will be resolved when the templated parent is set.
+    /// </summary>
+    private Dictionary<string, DeferredTemplateBinding>? _deferredTemplateBindings;
+
     #endregion
 
     #region Template Properties
@@ -144,7 +149,18 @@ public class FrameworkElement : UIElement
     /// </summary>
     internal void SetTemplatedParent(FrameworkElement? parent)
     {
+        var oldParent = _templatedParent;
         _templatedParent = parent;
+        OnTemplatedParentChanged(oldParent, parent);
+    }
+
+    /// <summary>
+    /// Called when the templated parent changes.
+    /// </summary>
+    /// <param name="oldParent">The old templated parent.</param>
+    /// <param name="newParent">The new templated parent.</param>
+    protected virtual void OnTemplatedParentChanged(FrameworkElement? oldParent, FrameworkElement? newParent)
+    {
     }
 
     /// <summary>
@@ -181,6 +197,35 @@ public class FrameworkElement : UIElement
 
         // Try parent's scope
         return (VisualParent as FrameworkElement)?.FindName(name);
+    }
+
+    /// <summary>
+    /// Stores a deferred template binding for resolution when templated parent is set.
+    /// </summary>
+    /// <param name="targetPropertyName">The name of the property on this element to bind.</param>
+    /// <param name="binding">The deferred template binding.</param>
+    internal void AddDeferredTemplateBinding(string targetPropertyName, DeferredTemplateBinding binding)
+    {
+        _deferredTemplateBindings ??= new Dictionary<string, DeferredTemplateBinding>();
+        _deferredTemplateBindings[targetPropertyName] = binding;
+    }
+
+    /// <summary>
+    /// Gets the deferred template bindings stored on this element.
+    /// </summary>
+    /// <returns>The dictionary of deferred bindings, or null if none.</returns>
+    internal Dictionary<string, DeferredTemplateBinding>? GetDeferredTemplateBindings()
+    {
+        return _deferredTemplateBindings;
+    }
+
+    /// <summary>
+    /// Clears deferred template bindings after resolution.
+    /// </summary>
+    internal void ClearDeferredTemplateBindings()
+    {
+        _deferredTemplateBindings?.Clear();
+        _deferredTemplateBindings = null;
     }
 
     #endregion

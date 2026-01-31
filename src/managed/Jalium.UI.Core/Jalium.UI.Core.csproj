@@ -10,6 +10,7 @@
     <InternalsVisibleTo Include="Jalium.UI.Input" />
     <InternalsVisibleTo Include="Jalium.UI.Controls" />
     <InternalsVisibleTo Include="Jalium.UI.Interop" />
+    <InternalsVisibleTo Include="Jalium.UI.Xaml" />
   </ItemGroup>
 
 </Project>

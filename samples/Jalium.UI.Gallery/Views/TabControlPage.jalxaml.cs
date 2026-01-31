@@ -22,7 +22,7 @@ public partial class TabControlPage : Page
         {
             Text = "TabControl",
             FontSize = GalleryTheme.FontSizeTitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 0, 0, 8)
         };
@@ -176,7 +176,7 @@ public partial class TabControlPage : Page
         {
             Text = titleText,
             FontSize = GalleryTheme.FontSizeSubtitle,
-            FontWeight = FontWeight.SemiBold,
+            FontWeight = FontWeights.SemiBold,
             Foreground = GalleryTheme.TextPrimaryBrush,
             Margin = new Thickness(0, 16, 0, 4)
         };

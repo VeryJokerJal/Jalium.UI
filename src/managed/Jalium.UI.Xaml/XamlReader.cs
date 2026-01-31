@@ -3,6 +3,7 @@ using System.Reflection;
 using System.Xml;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Markup;
@@ -176,6 +177,18 @@ public static class XamlReader
     {
         var elementName = reader.LocalName;
         var namespaceUri = reader.NamespaceURI;
+
+        // Special handling for ControlTemplate - need to capture visual tree as factory
+        if (elementName == "ControlTemplate" && existingInstance == null)
+        {
+            return ParseControlTemplate(reader, context);
+        }
+
+        // Special handling for DataTemplate
+        if (elementName == "DataTemplate" && existingInstance == null)
+        {
+            return ParseDataTemplate(reader, context);
+        }
 
         object instance;
 
@@ -464,6 +477,228 @@ public static class XamlReader
         }
     }
 
+    /// <summary>
+    /// Parses a ControlTemplate element, capturing its visual tree as a factory function.
+    /// </summary>
+    private static ControlTemplate ParseControlTemplate(XmlReader reader, XamlParserContext context)
+    {
+        var template = new ControlTemplate();
+        Type? targetType = null;
+
+        // Parse attributes
+        if (reader.HasAttributes)
+        {
+            for (int i = 0; i < reader.AttributeCount; i++)
+            {
+                reader.MoveToAttribute(i);
+                var attrName = reader.LocalName;
+                var attrValue = reader.Value;
+                var prefix = reader.Prefix;
+
+                // Skip xmlns declarations
+                if (prefix == "xmlns" || reader.Name == "xmlns")
+                    continue;
+
+                if (attrName == "TargetType")
+                {
+                    targetType = TypeConverterRegistry.ConvertValue(attrValue, typeof(Type)) as Type;
+                    template.TargetType = targetType;
+                }
+            }
+            reader.MoveToElement();
+        }
+
+        if (reader.IsEmptyElement)
+            return template;
+
+        // Parse content
+        int depth = reader.Depth;
+        string? visualTreeXml = null;
+        var capturedTargetType = targetType; // Capture for closure
+
+        while (reader.Read())
+        {
+        ProcessElement:
+            if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == depth)
+                break;
+
+            if (reader.NodeType == XmlNodeType.Element)
+            {
+                var localName = reader.LocalName;
+
+                if (localName == "ControlTemplate.Triggers")
+                {
+                    // Parse triggers collection
+                    ParseTriggersCollection(reader, template.Triggers, context, capturedTargetType);
+                }
+                else if (!localName.Contains('.') && visualTreeXml == null)
+                {
+                    // This is the visual tree root - capture the XML (only capture once)
+                    visualTreeXml = reader.ReadOuterXml();
+                    // After ReadOuterXml(), reader is positioned at the next sibling element
+                    // We need to process this position without calling Read() again
+                    if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == depth)
+                        break;
+                    if (reader.NodeType == XmlNodeType.Element)
+                        goto ProcessElement;
+                }
+            }
+        }
+
+        // Set the visual tree factory if we captured XML
+        if (!string.IsNullOrEmpty(visualTreeXml))
+        {
+            var capturedXml = visualTreeXml;
+            template.SetVisualTree(() => CreateVisualTreeFromXml(capturedXml, context));
+        }
+
+        return template;
+    }
+
+    /// <summary>
+    /// Parses a DataTemplate element, capturing its content as a factory function.
+    /// </summary>
+    private static DataTemplate ParseDataTemplate(XmlReader reader, XamlParserContext context)
+    {
+        var template = new DataTemplate();
+
+        // Parse attributes
+        if (reader.HasAttributes)
+        {
+            for (int i = 0; i < reader.AttributeCount; i++)
+            {
+                reader.MoveToAttribute(i);
+                var attrName = reader.LocalName;
+                var attrValue = reader.Value;
+                var prefix = reader.Prefix;
+
+                // Skip xmlns declarations
+                if (prefix == "xmlns" || reader.Name == "xmlns")
+                    continue;
+
+                if (attrName == "DataType")
+                {
+                    template.DataType = TypeConverterRegistry.ConvertValue(attrValue, typeof(Type)) as Type;
+                }
+            }
+            reader.MoveToElement();
+        }
+
+        if (reader.IsEmptyElement)
+            return template;
+
+        // Parse content - find the visual tree root
+        int depth = reader.Depth;
+        string? visualTreeXml = null;
+
+        while (reader.Read())
+        {
+            if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == depth)
+                break;
+
+            if (reader.NodeType == XmlNodeType.Element && !reader.LocalName.Contains('.'))
+            {
+                // This is the visual tree root - capture the XML
+                visualTreeXml = reader.ReadOuterXml();
+                break; // DataTemplate only has one root
+            }
+        }
+
+        // Set the visual tree factory if we captured XML
+        if (!string.IsNullOrEmpty(visualTreeXml))
+        {
+            var capturedXml = visualTreeXml;
+            template.SetVisualTree(() => CreateVisualTreeFromXml(capturedXml, context));
+        }
+
+        return template;
+    }
+
+    /// <summary>
+    /// Creates a visual tree from captured XML string.
+    /// </summary>
+    private static FrameworkElement CreateVisualTreeFromXml(string xml, XamlParserContext parentContext)
+    {
+        // Wrap the XML in a dummy root element with namespace declarations
+        // This is necessary because ReadOuterXml() doesn't include inherited xmlns declarations
+        var wrappedXml = $@"<_TemplateRoot
+            xmlns=""http://schemas.microsoft.com/winfx/2006/xaml/presentation""
+            xmlns:x=""http://schemas.microsoft.com/winfx/2006/xaml"">{xml}</_TemplateRoot>";
+
+        var settings = new XmlReaderSettings
+        {
+            IgnoreComments = true,
+            IgnoreWhitespace = true,
+            IgnoreProcessingInstructions = true,
+            ConformanceLevel = ConformanceLevel.Document
+        };
+
+        using var stringReader = new StringReader(wrappedXml);
+        using var xmlReader = XmlReader.Create(stringReader, settings);
+
+        // Move to the wrapper element
+        while (xmlReader.Read() && xmlReader.NodeType != XmlNodeType.Element) { }
+
+        if (xmlReader.NodeType != XmlNodeType.Element || xmlReader.LocalName != "_TemplateRoot")
+            throw new XamlParseException("Template visual tree is empty.");
+
+        // Move to the actual template root element
+        if (!xmlReader.Read())
+            throw new XamlParseException("Template visual tree is empty.");
+
+        while (xmlReader.NodeType != XmlNodeType.Element)
+        {
+            if (!xmlReader.Read())
+                throw new XamlParseException("Template visual tree is empty.");
+        }
+
+        // Create a new context that inherits from parent
+        var context = new XamlParserContext();
+        context.IsParsingTemplate = true;
+
+        // Parse the element
+        var result = ParseElement(xmlReader, context);
+
+        if (result is not FrameworkElement fe)
+            throw new XamlParseException($"Template visual tree root must be a FrameworkElement, got {result?.GetType().Name ?? "null"}.");
+
+        return fe;
+    }
+
+    /// <summary>
+    /// Parses a Triggers collection within a ControlTemplate.
+    /// </summary>
+    private static void ParseTriggersCollection(XmlReader reader, IList<Trigger> triggers, XamlParserContext context, Type? targetType)
+    {
+        int depth = reader.Depth;
+
+        while (reader.Read())
+        {
+            if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == depth)
+                break;
+
+            if (reader.NodeType == XmlNodeType.Element)
+            {
+                var triggerName = reader.LocalName;
+
+                // Use the standard element parsing for triggers
+                context.PushTemplateTargetType(targetType);
+                try
+                {
+                    var trigger = ParseElement(reader, context);
+                    if (trigger is Trigger t)
+                    {
+                        triggers.Add(t);
+                    }
+                }
+                finally
+                {
+                    context.PopTemplateTargetType();
+                }
+            }
+        }
+    }
+
     private static bool IsCollectionType(Type type)
     {
         if (type.IsArray) return true;
@@ -516,9 +751,14 @@ public static class XamlReader
             // Special handling for DependencyProperty type (for Setter.Property, PropertyTrigger.Property, etc.)
             if (property.PropertyType == typeof(DependencyProperty))
             {
-                // Find the target type from the parent Style
-                var parentStyle = context.FindParent<Style>();
-                var targetType = parentStyle?.TargetType;
+                // Find the target type - first check template target type (for ControlTemplate.Triggers),
+                // then fall back to parent Style's TargetType
+                var targetType = context.GetTemplateTargetType();
+                if (targetType == null)
+                {
+                    var parentStyle = context.FindParent<Style>();
+                    targetType = parentStyle?.TargetType;
+                }
 
                 if (targetType != null)
                 {
@@ -526,6 +766,14 @@ public static class XamlReader
                     if (dp != null)
                     {
                         property.SetValue(instance, dp);
+
+                        // Store the property name for Setters that have TargetName
+                        // (need runtime resolution against actual target element type)
+                        if (instance is Setter setter)
+                        {
+                            setter.PropertyName = stringValue;
+                        }
+
                         return;
                     }
                 }
@@ -533,12 +781,19 @@ public static class XamlReader
                 return;
             }
 
-            // Check for markup extension (e.g., {Binding ...})
+            // Check for markup extension (e.g., {Binding ...}, {TemplateBinding ...})
             if (MarkupExtensionParser.TryParse(stringValue, instance, property, context, out var extensionResult))
             {
                 // Binding is already set by the extension, no need to set the property
                 if (extensionResult is BindingExpressionBase)
                     return;
+
+                // Handle DeferredTemplateBinding - store for later resolution
+                if (extensionResult is DeferredTemplateBinding deferredBinding && instance is FrameworkElement fe)
+                {
+                    fe.AddDeferredTemplateBinding(propertyName, deferredBinding);
+                    return;
+                }
 
                 value = extensionResult;
             }
@@ -776,7 +1031,28 @@ internal class XamlParserContext : IAmbientResourceProvider
     private readonly Dictionary<string, Type> _typeCache = new();
     private readonly Dictionary<string, object> _namedElements = new();
     private readonly Stack<object> _parentStack = new();
+    private readonly Stack<Type?> _templateTargetTypeStack = new();
     private string? _currentResourceKey;
+
+    /// <summary>
+    /// Gets or sets whether we're currently parsing a template.
+    /// </summary>
+    public bool IsParsingTemplate { get; set; }
+
+    /// <summary>
+    /// Pushes a template target type onto the stack (for resolving properties in template triggers).
+    /// </summary>
+    public void PushTemplateTargetType(Type? targetType) => _templateTargetTypeStack.Push(targetType);
+
+    /// <summary>
+    /// Pops a template target type from the stack.
+    /// </summary>
+    public void PopTemplateTargetType() { if (_templateTargetTypeStack.Count > 0) _templateTargetTypeStack.Pop(); }
+
+    /// <summary>
+    /// Gets the current template target type.
+    /// </summary>
+    public Type? GetTemplateTargetType() => _templateTargetTypeStack.Count > 0 ? _templateTargetTypeStack.Peek() : null;
 
     /// <summary>
     /// Sets the current resource key (from x:Key attribute).

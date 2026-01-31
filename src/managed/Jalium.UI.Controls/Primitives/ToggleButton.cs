@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Base class for controls that can switch states, such as CheckBox and RadioButton.
