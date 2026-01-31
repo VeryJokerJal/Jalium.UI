@@ -31,6 +31,16 @@ public abstract class TextBoxBase : Control
     protected bool _caretVisible = true;
 
     /// <summary>
+    /// The current caret opacity (0.0 to 1.0) for smooth animation.
+    /// </summary>
+    protected double _caretOpacity = 1.0;
+
+    /// <summary>
+    /// The start time of the current animation cycle.
+    /// </summary>
+    protected DateTime _caretAnimationStart;
+
+    /// <summary>
     /// The last time the caret blinked.
     /// </summary>
     protected DateTime _lastCaretBlink;
@@ -38,7 +48,12 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// The caret blink interval in milliseconds.
     /// </summary>
-    protected const int CaretBlinkInterval = 500;
+    protected const int CaretBlinkInterval = 530;
+
+    /// <summary>
+    /// The duration of the fade animation in milliseconds.
+    /// </summary>
+    protected const int CaretFadeDuration = 150;
 
     /// <summary>
     /// Whether the user is currently selecting text.
@@ -706,7 +721,75 @@ public abstract class TextBoxBase : Control
     protected void ResetCaretBlink()
     {
         _caretVisible = true;
+        _caretOpacity = 1.0;
         _lastCaretBlink = DateTime.Now;
+        _caretAnimationStart = DateTime.Now;
+    }
+
+    /// <summary>
+    /// Updates the caret animation state and returns the current opacity.
+    /// Call this during rendering to get smooth animated opacity.
+    /// </summary>
+    /// <returns>The current caret opacity (0.0 to 1.0).</returns>
+    protected double UpdateCaretAnimation()
+    {
+        var now = DateTime.Now;
+        var elapsed = (now - _lastCaretBlink).TotalMilliseconds;
+
+        // Calculate which phase we're in
+        var cycleTime = CaretBlinkInterval + CaretFadeDuration;
+        var timeInCycle = elapsed % (cycleTime * 2);
+
+        double targetOpacity;
+        double animationProgress;
+
+        if (timeInCycle < CaretBlinkInterval)
+        {
+            // Fully visible phase
+            targetOpacity = 1.0;
+            animationProgress = 1.0;
+        }
+        else if (timeInCycle < CaretBlinkInterval + CaretFadeDuration)
+        {
+            // Fading out phase
+            animationProgress = (timeInCycle - CaretBlinkInterval) / CaretFadeDuration;
+            targetOpacity = 1.0 - EaseInOutQuad(animationProgress);
+        }
+        else if (timeInCycle < CaretBlinkInterval + CaretFadeDuration + CaretBlinkInterval)
+        {
+            // Fully hidden phase
+            targetOpacity = 0.0;
+            animationProgress = 1.0;
+        }
+        else
+        {
+            // Fading in phase
+            animationProgress = (timeInCycle - CaretBlinkInterval * 2 - CaretFadeDuration) / CaretFadeDuration;
+            targetOpacity = EaseInOutQuad(animationProgress);
+        }
+
+        _caretOpacity = targetOpacity;
+        _caretVisible = _caretOpacity > 0.01;
+
+        return _caretOpacity;
+    }
+
+    /// <summary>
+    /// Ease-in-out quadratic easing function for smooth animation.
+    /// </summary>
+    /// <param name="t">Progress value from 0.0 to 1.0.</param>
+    /// <returns>The eased value from 0.0 to 1.0.</returns>
+    private static double EaseInOutQuad(double t)
+    {
+        t = Math.Clamp(t, 0.0, 1.0);
+        if (t < 0.5)
+        {
+            return 2.0 * t * t;
+        }
+        else
+        {
+            return 1.0 - Math.Pow(-2.0 * t + 2.0, 2) / 2.0;
+        }
     }
 
     /// <summary>

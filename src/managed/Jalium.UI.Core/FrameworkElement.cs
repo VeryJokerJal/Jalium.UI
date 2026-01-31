@@ -98,6 +98,13 @@ public class FrameworkElement : UIElement
         DependencyProperty.Register(nameof(Style), typeof(Style), typeof(FrameworkElement),
             new PropertyMetadata(null, OnStyleChanged));
 
+    /// <summary>
+    /// Identifies the Cursor dependency property.
+    /// </summary>
+    public static readonly DependencyProperty CursorProperty =
+        DependencyProperty.Register(nameof(Cursor), typeof(Cursor), typeof(FrameworkElement),
+            new PropertyMetadata(null, null, null, inherits: true));
+
     #endregion
 
     #region Internal Fields
@@ -366,6 +373,15 @@ public class FrameworkElement : UIElement
     {
         get => (Style?)GetValue(StyleProperty);
         set => SetValue(StyleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the cursor that displays when the mouse pointer is over this element.
+    /// </summary>
+    public Cursor? Cursor
+    {
+        get => (Cursor?)GetValue(CursorProperty);
+        set => SetValue(CursorProperty, value);
     }
 
     #endregion

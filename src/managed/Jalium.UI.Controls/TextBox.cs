@@ -1038,6 +1038,13 @@ public class TextBox : TextBoxBase, IImeSupport
         if (_isImeComposing)
             return;
 
+        // Update and get the current caret opacity
+        var caretOpacity = UpdateCaretAnimation();
+
+        // Skip drawing if fully transparent
+        if (caretOpacity < 0.01)
+            return;
+
         var (lineIndex, columnIndex) = GetLineColumnFromCharIndex(_caretIndex);
         var lineText = GetLineTextInternal(lineIndex);
         var textBeforeCaret = lineText.Substring(0, Math.Min(columnIndex, lineText.Length));
@@ -1045,8 +1052,27 @@ public class TextBox : TextBoxBase, IImeSupport
         var x = contentRect.X + MeasureTextWidth(textBeforeCaret) - _horizontalOffset;
         var y = contentRect.Y + lineIndex * lineHeight - _verticalOffset;
 
-        var caretPen = new Pen(CaretBrush, 1.5);
+        // Create a brush with the animated opacity
+        Brush caretBrushWithOpacity;
+        if (CaretBrush is SolidColorBrush solidBrush)
+        {
+            var color = solidBrush.Color;
+            var alpha = (byte)(color.A * caretOpacity);
+            caretBrushWithOpacity = new SolidColorBrush(Color.FromArgb(alpha, color.R, color.G, color.B));
+        }
+        else
+        {
+            caretBrushWithOpacity = CaretBrush;
+        }
+
+        var caretPen = new Pen(caretBrushWithOpacity, 1.5);
         dc.DrawLine(caretPen, new Point(x, y), new Point(x, y + lineHeight));
+
+        // Request continuous rendering for animation
+        if (IsKeyboardFocused && !IsReadOnly)
+        {
+            InvalidateVisual();
+        }
     }
 
     #endregion
