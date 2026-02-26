@@ -8,7 +8,7 @@ public interface IImeSupport
     /// <summary>
     /// Gets the caret position for IME composition window positioning.
     /// </summary>
-    /// <returns>The caret position in screen coordinates.</returns>
+    /// <returns>The caret position in element-local DIPs.</returns>
     Point GetImeCaretPosition();
 
     /// <summary>

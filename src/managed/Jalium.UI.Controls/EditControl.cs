@@ -48,6 +48,13 @@ public class EditControl : Control, IImeSupport
     private static readonly SolidColorBrush s_scopeGuideTooltipBackgroundBrush = new(Color.FromArgb(236, 31, 34, 38));
     private static readonly Pen s_scopeGuideTooltipBorderPen = new(new SolidColorBrush(Color.FromArgb(220, 96, 108, 122)), 1);
     private static readonly SolidColorBrush s_scopeGuideTooltipTextBrush = new(Color.FromRgb(226, 231, 236));
+    private static readonly SolidColorBrush s_minimapBackgroundBrush = new(Color.FromArgb(180, 30, 30, 30));
+    private static readonly SolidColorBrush s_minimapForegroundBrush = new(Color.FromArgb(80, 200, 200, 200));
+    private static readonly SolidColorBrush s_minimapViewportBrush = new(Color.FromArgb(64, 255, 255, 255));
+    private static readonly Pen s_minimapViewportBorderPen = new(new SolidColorBrush(Color.FromArgb(210, 230, 230, 230)), 1);
+    private static readonly SolidColorBrush s_minimapTooltipBackgroundBrush = new(Color.FromArgb(236, 31, 34, 38));
+    private static readonly Pen s_minimapTooltipBorderPen = new(new SolidColorBrush(Color.FromArgb(220, 96, 108, 122)), 1);
+    private static readonly SolidColorBrush s_minimapTooltipTextBrush = new(Color.FromRgb(226, 231, 236));
 
     #endregion
 
@@ -106,12 +113,27 @@ public class EditControl : Control, IImeSupport
     private const double ScopeGuideTooltipOffsetY = 10;
     private const double ScopeGuideTooltipPaddingX = 8;
     private const double ScopeGuideTooltipPaddingY = 4;
+    private const double MinimapTooltipOffsetX = 8;
+    private const double MinimapTooltipPaddingX = 8;
+    private const double MinimapTooltipPaddingY = 4;
+    private const int MinimapTooltipPreviewLineCount = 11;
+    private const int MinimapTooltipPreviewCenterIndex = MinimapTooltipPreviewLineCount / 2;
+    private const int MinimapTooltipMaxPreviewCharsPerLine = 140;
+    private const double MinimapViewportDragActivationDistance = 2;
+    private readonly MinimapRenderer _minimapRenderer = new();
     private Rect _verticalScrollTrackRect = Rect.Empty;
     private Rect _verticalScrollThumbRect = Rect.Empty;
     private Rect _horizontalScrollTrackRect = Rect.Empty;
     private Rect _horizontalScrollThumbRect = Rect.Empty;
+    private Rect _minimapRect = Rect.Empty;
+    private Rect _minimapViewportRect = Rect.Empty;
     private bool _isVerticalScrollBarVisible;
+    private bool _isVerticalScrollBarOverlayingMinimap;
     private bool _isHorizontalScrollBarVisible;
+    private bool _isMinimapDragging;
+    private bool _isMinimapViewportPressPending;
+    private double _minimapDragViewportAnchorY;
+    private Point _minimapViewportPressPoint;
     private ScrollBarDragMode _scrollBarDragMode;
     private double _scrollBarDragStartMouseCoordinate;
     private double _scrollBarDragStartOffset;
@@ -129,6 +151,19 @@ public class EditControl : Control, IImeSupport
     private string _cachedSymbolOccurrenceQuery = string.Empty;
     private int _cachedSymbolOccurrenceVersion = -1;
     private readonly List<FindResult> _cachedSymbolOccurrences = [];
+    private DispatcherTimer? _scrollAnimationTimer;
+    private bool _isScrollAnimating;
+    private bool _isApplyingScrollAnimationStep;
+    private long _lastScrollAnimationTickTime;
+    private double _scrollAnimationTargetVerticalOffset;
+    private double _scrollAnimationTargetHorizontalOffset;
+    private const double DefaultScrollInertiaDurationMs = 300.0;
+    private const double SmoothScrollDurationTailRatio = 0.05;
+    private const double SmoothScrollSnapThreshold = 0.5;
+    private const double SmoothScrollMinSpeedPixelsPerSecond = 60.0;
+    private const double SmoothScrollMaxDeltaTimeSeconds = 0.1;
+    private static int SmoothScrollIntervalMs => CompositionTarget.FrameIntervalMs;
+    private bool _isFollowingBottom;
 
     // Caret blink timer
     private DispatcherTimer? _caretTimer;
@@ -138,6 +173,8 @@ public class EditControl : Control, IImeSupport
     private bool _hasPointerPosition;
     private FoldingSection? _hoveredScopeGuideSection;
     private FoldingSection? _hoveredFoldedHintSection;
+    private bool _isMinimapHovering;
+    private int _minimapHoverLineNumber;
 
     private enum ScrollBarDragMode
     {
@@ -205,6 +242,22 @@ public class EditControl : Control, IImeSupport
     public static readonly DependencyProperty GutterBackgroundProperty =
         DependencyProperty.Register(nameof(GutterBackground), typeof(Brush), typeof(EditControl),
             new PropertyMetadata(new SolidColorBrush(Color.FromRgb(30, 30, 30)), OnVisualPropertyChanged));
+
+    public static readonly DependencyProperty ShowMinimapProperty =
+        DependencyProperty.Register(nameof(ShowMinimap), typeof(bool), typeof(EditControl),
+            new PropertyMetadata(true, OnVisualPropertyChanged));
+
+    public static readonly DependencyProperty IsScrollInertiaEnabledProperty =
+        DependencyProperty.Register(nameof(IsScrollInertiaEnabled), typeof(bool), typeof(EditControl),
+            new PropertyMetadata(true, OnScrollInertiaSettingsChanged));
+
+    public static readonly DependencyProperty ScrollInertiaDurationMsProperty =
+        DependencyProperty.Register(nameof(ScrollInertiaDurationMs), typeof(double), typeof(EditControl),
+            new PropertyMetadata(DefaultScrollInertiaDurationMs, OnScrollInertiaSettingsChanged));
+
+    public static readonly DependencyProperty AutoFollowBottomProperty =
+        DependencyProperty.Register(nameof(AutoFollowBottom), typeof(bool), typeof(EditControl),
+            new PropertyMetadata(false, OnAutoFollowBottomChanged));
 
     #endregion
 
@@ -294,6 +347,32 @@ public class EditControl : Control, IImeSupport
         set => SetValue(GutterBackgroundProperty, value);
     }
 
+    public bool ShowMinimap
+    {
+        get => (bool)GetValue(ShowMinimapProperty)!;
+        set => SetValue(ShowMinimapProperty, value);
+    }
+
+    public bool IsScrollInertiaEnabled
+    {
+        get => (bool)GetValue(IsScrollInertiaEnabledProperty)!;
+        set => SetValue(IsScrollInertiaEnabledProperty, value);
+    }
+
+    public double ScrollInertiaDurationMs
+    {
+        get => (double)GetValue(ScrollInertiaDurationMsProperty)!;
+        set => SetValue(ScrollInertiaDurationMsProperty, value);
+    }
+
+    public bool AutoFollowBottom
+    {
+        get => (bool)GetValue(AutoFollowBottomProperty)!;
+        set => SetValue(AutoFollowBottomProperty, value);
+    }
+
+    public bool IsFollowingBottom => _isFollowingBottom;
+
     public EditControlBehaviorOptions BehaviorOptions
     {
         get => _behaviorOptions;
@@ -375,6 +454,19 @@ public class EditControl : Control, IImeSupport
     internal double VerticalOffsetForTesting => _view.VerticalOffset;
 
     internal double HorizontalOffsetForTesting => _view.HorizontalOffset;
+
+    internal Rect MinimapRectForTesting => _minimapRect;
+
+    internal Rect MinimapViewportRectForTesting => _minimapViewportRect;
+
+    internal bool IsScrollAnimatingForTesting => _isScrollAnimating;
+
+    internal bool IsMinimapTooltipVisibleForTesting => _isMinimapHovering;
+
+    internal int MinimapTooltipLineForTesting => _minimapHoverLineNumber;
+
+    internal string MinimapTooltipTextForTesting =>
+        _minimapHoverLineNumber > 0 ? BuildMinimapTooltipText(_minimapHoverLineNumber, MinimapTooltipMaxPreviewCharsPerLine) : string.Empty;
 
     internal void UpdateScrollBarsForTesting(Size viewportSize)
     {
@@ -476,6 +568,9 @@ public class EditControl : Control, IImeSupport
 
         ApplyLanguageDefaults(Language);
         UpdateFoldingState();
+        _scrollAnimationTargetVerticalOffset = 0;
+        _scrollAnimationTargetHorizontalOffset = 0;
+        _isFollowingBottom = AutoFollowBottom && IsAtBottomWithinTolerance();
     }
 
     #endregion
@@ -516,8 +611,8 @@ public class EditControl : Control, IImeSupport
         _view.UpdateLayout(fontFamily, fontSize);
         UpdateScrollBarLayout(RenderSize);
 
-        double contentWidth = Math.Max(0, RenderSize.Width - (_isVerticalScrollBarVisible ? ScrollBarThickness : 0));
-        double contentHeight = Math.Max(0, RenderSize.Height - (_isHorizontalScrollBarVisible ? ScrollBarThickness : 0));
+        double contentWidth = GetContentRenderWidth(RenderSize.Width);
+        double contentHeight = GetContentRenderHeight(RenderSize.Height);
         var contentSize = new Size(contentWidth, contentHeight);
 
         dc.PushClip(new RectangleGeometry(new Rect(0, 0, RenderSize.Width, RenderSize.Height)));
@@ -590,6 +685,7 @@ public class EditControl : Control, IImeSupport
                     dc.Pop();
             }
 
+            DrawMinimap(dc);
             DrawScrollBars(dc);
         }
         finally
@@ -912,6 +1008,8 @@ public class EditControl : Control, IImeSupport
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
         UpdateCursorForPointer(position);
+        if (TryHandleMinimapMouseDown(mouseArgs, position))
+            return;
         if (TryHandleScrollBarMouseDown(mouseArgs, position))
             return;
         if (TryHandleFoldingMarkerMouseDown(mouseArgs, position))
@@ -985,6 +1083,19 @@ public class EditControl : Control, IImeSupport
         if (e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
             return;
 
+        if (_isMinimapDragging || _isMinimapViewportPressPending)
+        {
+            bool shouldNavigateOnRelease = _isMinimapViewportPressPending && !_isMinimapDragging;
+            _isMinimapDragging = false;
+            _isMinimapViewportPressPending = false;
+            ReleaseMouseCapture();
+            if (shouldNavigateOnRelease)
+                NavigateMinimapToPosition(mouseArgs.GetPosition(this), allowAnimation: true);
+            InvalidateVisual();
+            mouseArgs.Handled = true;
+            return;
+        }
+
         if (_scrollBarDragMode != ScrollBarDragMode.None)
         {
             _scrollBarDragMode = ScrollBarDragMode.None;
@@ -1012,11 +1123,29 @@ public class EditControl : Control, IImeSupport
         _lastPointerPosition = position;
         _hasPointerPosition = true;
         UpdateCursorForPointer(position);
-        double contentWidth = Math.Max(0, RenderSize.Width - (_isVerticalScrollBarVisible ? ScrollBarThickness : 0));
-        double contentHeight = Math.Max(0, RenderSize.Height - (_isHorizontalScrollBarVisible ? ScrollBarThickness : 0));
+        bool minimapHoverChanged = UpdateMinimapHover(position);
+        double contentWidth = GetContentRenderWidth(RenderSize.Width);
+        double contentHeight = GetContentRenderHeight(RenderSize.Height);
+
+        if (_isMinimapViewportPressPending && !_isMinimapDragging && mouseArgs.LeftButton == MouseButtonState.Pressed)
+        {
+            double dx = Math.Abs(position.X - _minimapViewportPressPoint.X);
+            double dy = Math.Abs(position.Y - _minimapViewportPressPoint.Y);
+            if (dx + dy >= MinimapViewportDragActivationDistance)
+                _isMinimapDragging = true;
+        }
+
+        if (_isMinimapDragging)
+        {
+            _hoveredScopeGuideSection = null;
+            _hoveredFoldedHintSection = null;
+            HandleMinimapMouseDrag(mouseArgs);
+            return;
+        }
 
         if (_scrollBarDragMode != ScrollBarDragMode.None)
         {
+            ClearMinimapHover();
             _hoveredScopeGuideSection = null;
             _hoveredFoldedHintSection = null;
             HandleScrollBarMouseDrag(mouseArgs);
@@ -1025,13 +1154,22 @@ public class EditControl : Control, IImeSupport
 
         if (!_isDragging)
         {
+            if (_isMinimapHovering)
+            {
+                _hoveredScopeGuideSection = null;
+                _hoveredFoldedHintSection = null;
+                InvalidateVisual();
+                return;
+            }
+
             bool scopeHoverChanged = UpdateHoveredScopeGuide(position, contentWidth, contentHeight);
             bool foldedHintHoverChanged = UpdateHoveredFoldedHint(position, contentWidth, contentHeight);
-            if (scopeHoverChanged || foldedHintHoverChanged || _hoveredScopeGuideSection != null || _hoveredFoldedHintSection != null)
+            if (minimapHoverChanged || scopeHoverChanged || foldedHintHoverChanged || _hoveredScopeGuideSection != null || _hoveredFoldedHintSection != null)
                 InvalidateVisual();
             return;
         }
 
+        ClearMinimapHover();
         _hoveredScopeGuideSection = null;
         _hoveredFoldedHintSection = null;
 
@@ -1056,7 +1194,8 @@ public class EditControl : Control, IImeSupport
     private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
     {
         _hasPointerPosition = false;
-        if (_hoveredScopeGuideSection == null && _hoveredFoldedHintSection == null)
+        bool minimapHoverCleared = ClearMinimapHover();
+        if (_hoveredScopeGuideSection == null && _hoveredFoldedHintSection == null && !minimapHoverCleared)
             return;
 
         _hoveredScopeGuideSection = null;
@@ -1077,24 +1216,23 @@ public class EditControl : Control, IImeSupport
         {
             double columnsToScroll = 6;
             double delta = -wheelArgs.Delta / 120.0 * columnsToScroll * Math.Max(1, _view.CharWidth);
-            _view.HorizontalOffset += delta;
+            ScrollHorizontallyBy(delta, allowAnimation: true, userInitiated: true);
         }
         else
         {
             double linesToScroll = 3;
             double delta = -wheelArgs.Delta / 120.0 * linesToScroll * Math.Max(1, _view.LineHeight);
-            _view.VerticalOffset += delta;
+            ScrollVerticallyBy(delta, allowAnimation: true, userInitiated: true);
         }
-
-        ClampScrollOffsetsToViewport();
-        UpdateImeWindowIfComposing();
-        InvalidateVisual();
         wheelArgs.Handled = true;
     }
 
     private void UpdateCursorForPointer(Point position)
     {
-        var desiredCursor = IsPointerOverScrollBar(position) || IsPointerOverFoldingMarker(position) || IsPointerOverFoldedSectionHint(position)
+        var desiredCursor = IsPointerOverScrollBar(position)
+            || IsPointerOverMinimap(position)
+            || IsPointerOverFoldingMarker(position)
+            || IsPointerOverFoldedSectionHint(position)
             ? Jalium.UI.Cursors.Arrow
             : Jalium.UI.Cursors.IBeam;
 
@@ -1106,6 +1244,62 @@ public class EditControl : Control, IImeSupport
     {
         return (_isVerticalScrollBarVisible && _verticalScrollTrackRect.Contains(position))
             || (_isHorizontalScrollBarVisible && _horizontalScrollTrackRect.Contains(position));
+    }
+
+    private bool IsPointerOverMinimap(Point position)
+    {
+        return ShowMinimap && !_minimapRect.IsEmpty && _minimapRect.Contains(position);
+    }
+
+    private bool UpdateMinimapHover(Point position)
+    {
+        bool isHovering = ShowMinimap && !_minimapRect.IsEmpty && _minimapRect.Contains(position) && _document.LineCount > 0;
+        int hoverLine = 0;
+        if (isHovering)
+            hoverLine = _minimapRenderer.GetLineFromPoint(position.Y, _minimapRect, _view, _document);
+
+        if (_isMinimapHovering == isHovering && _minimapHoverLineNumber == hoverLine)
+            return false;
+
+        _isMinimapHovering = isHovering;
+        _minimapHoverLineNumber = hoverLine;
+        return true;
+    }
+
+    private bool ClearMinimapHover()
+    {
+        if (!_isMinimapHovering && _minimapHoverLineNumber == 0)
+            return false;
+
+        _isMinimapHovering = false;
+        _minimapHoverLineNumber = 0;
+        return true;
+    }
+
+    private bool TryHandleMinimapMouseDown(MouseButtonEventArgs mouseArgs, Point position)
+    {
+        if (!ShowMinimap || _minimapRect.IsEmpty || !_minimapRect.Contains(position))
+            return false;
+
+        if (!_minimapViewportRect.IsEmpty && _minimapViewportRect.Contains(position))
+        {
+            CancelScrollAnimation();
+            _isMinimapDragging = false;
+            _isMinimapViewportPressPending = true;
+            _minimapViewportPressPoint = position;
+            _minimapDragViewportAnchorY = position.Y - _minimapViewportRect.Y;
+            _isDragging = false;
+            CaptureMouse();
+        }
+        else
+        {
+            _isMinimapViewportPressPending = false;
+            NavigateMinimapToPosition(position, allowAnimation: true);
+        }
+
+        InvalidateVisual();
+        mouseArgs.Handled = true;
+        return true;
     }
 
     private bool IsPointerOverFoldingMarker(Point position)
@@ -1130,6 +1324,7 @@ public class EditControl : Control, IImeSupport
         {
             if (_verticalScrollThumbRect.Contains(position))
             {
+                CancelScrollAnimation();
                 _scrollBarDragMode = ScrollBarDragMode.Vertical;
                 _scrollBarDragStartMouseCoordinate = position.Y;
                 _scrollBarDragStartOffset = _view.VerticalOffset;
@@ -1139,9 +1334,7 @@ public class EditControl : Control, IImeSupport
             else
             {
                 double page = Math.Max(_effectiveViewportHeight * 0.9, Math.Max(1, _view.LineHeight));
-                _view.VerticalOffset += position.Y < _verticalScrollThumbRect.Y ? -page : page;
-                ClampScrollOffsetsToViewport();
-                UpdateImeWindowIfComposing();
+                ScrollVerticallyBy(position.Y < _verticalScrollThumbRect.Y ? -page : page, allowAnimation: true, userInitiated: true);
             }
 
             InvalidateVisual();
@@ -1153,6 +1346,7 @@ public class EditControl : Control, IImeSupport
         {
             if (_horizontalScrollThumbRect.Contains(position))
             {
+                CancelScrollAnimation();
                 _scrollBarDragMode = ScrollBarDragMode.Horizontal;
                 _scrollBarDragStartMouseCoordinate = position.X;
                 _scrollBarDragStartOffset = _view.HorizontalOffset;
@@ -1162,8 +1356,7 @@ public class EditControl : Control, IImeSupport
             else
             {
                 double page = Math.Max(_effectiveTextViewportWidth * 0.9, Math.Max(1, _view.CharWidth));
-                _view.HorizontalOffset += position.X < _horizontalScrollThumbRect.X ? -page : page;
-                ClampScrollOffsetsToViewport();
+                ScrollHorizontallyBy(position.X < _horizontalScrollThumbRect.X ? -page : page, allowAnimation: true, userInitiated: true);
             }
 
             InvalidateVisual();
@@ -1297,8 +1490,8 @@ public class EditControl : Control, IImeSupport
 
     private bool TryGetFoldedSectionHintAt(Point position, out FoldingSection? section, out Rect hintRect)
     {
-        double contentWidth = Math.Max(0, RenderSize.Width - (_isVerticalScrollBarVisible ? ScrollBarThickness : 0));
-        double contentHeight = Math.Max(0, RenderSize.Height - (_isHorizontalScrollBarVisible ? ScrollBarThickness : 0));
+        double contentWidth = GetContentRenderWidth(RenderSize.Width);
+        double contentHeight = GetContentRenderHeight(RenderSize.Height);
         return TryGetFoldedSectionHintAt(position, contentWidth, contentHeight, out section, out hintRect);
     }
 
@@ -1344,7 +1537,8 @@ public class EditControl : Control, IImeSupport
             if (maxOffset > 0)
             {
                 double pixelDelta = position.Y - _scrollBarDragStartMouseCoordinate;
-                _view.VerticalOffset = Math.Clamp(_scrollBarDragStartOffset + (pixelDelta / trackTravel) * maxOffset, 0, maxOffset);
+                double offset = Math.Clamp(_scrollBarDragStartOffset + (pixelDelta / trackTravel) * maxOffset, 0, maxOffset);
+                SetVerticalOffsetImmediate(offset, userInitiated: true, cancelAnimation: true);
             }
         }
         else if (_scrollBarDragMode == ScrollBarDragMode.Horizontal && !_horizontalScrollTrackRect.IsEmpty)
@@ -1354,14 +1548,50 @@ public class EditControl : Control, IImeSupport
             if (maxOffset > 0)
             {
                 double pixelDelta = position.X - _scrollBarDragStartMouseCoordinate;
-                _view.HorizontalOffset = Math.Clamp(_scrollBarDragStartOffset + (pixelDelta / trackTravel) * maxOffset, 0, maxOffset);
+                double offset = Math.Clamp(_scrollBarDragStartOffset + (pixelDelta / trackTravel) * maxOffset, 0, maxOffset);
+                SetHorizontalOffsetImmediate(offset, cancelAnimation: true);
             }
         }
 
-        ClampScrollOffsetsToViewport();
-        UpdateImeWindowIfComposing();
         InvalidateVisual();
         mouseArgs.Handled = true;
+    }
+
+    private void HandleMinimapMouseDrag(MouseEventArgs mouseArgs)
+    {
+        if (_minimapRect.IsEmpty || _minimapRect.Height <= 0)
+            return;
+
+        var position = mouseArgs.GetPosition(this);
+        double dragTop = position.Y - _minimapDragViewportAnchorY;
+        double targetOffset = _minimapRenderer.GetVerticalOffsetFromViewportTop(dragTop, _minimapRect, _view);
+        SetVerticalOffsetImmediate(targetOffset, userInitiated: true, cancelAnimation: true);
+        InvalidateVisual();
+        mouseArgs.Handled = true;
+    }
+
+    private void NavigateMinimapToPosition(Point position, bool allowAnimation)
+    {
+        if (_minimapRect.IsEmpty || _document.LineCount <= 0)
+            return;
+
+        Rect viewportRect = _minimapViewportRect;
+        if (viewportRect.IsEmpty)
+            viewportRect = _minimapRenderer.GetViewportRect(_document, _view, _minimapRect);
+
+        double viewportHeight = Math.Max(0, viewportRect.Height);
+        if (viewportHeight > 0)
+        {
+            double targetViewportTop = position.Y - viewportHeight * 0.5;
+            double targetOffset = _minimapRenderer.GetVerticalOffsetFromViewportTop(targetViewportTop, _minimapRect, _view);
+            SetVerticalOffset(targetOffset, allowAnimation: allowAnimation, userInitiated: true);
+            return;
+        }
+
+        int targetLine = _minimapRenderer.GetLineFromPoint(position.Y, _minimapRect, _view, _document);
+        double targetLineTop = _view.GetAbsoluteLineTop(targetLine);
+        double targetOffsetFallback = targetLineTop - (_effectiveViewportHeight * 0.5);
+        SetVerticalOffset(targetOffsetFallback, allowAnimation: allowAnimation, userInitiated: true);
     }
 
     #endregion
@@ -1383,7 +1613,11 @@ public class EditControl : Control, IImeSupport
             InputMethod.SetTarget(null);
 
         _scrollBarDragMode = ScrollBarDragMode.None;
+        _isMinimapDragging = false;
+        _isMinimapViewportPressPending = false;
+        ClearMinimapHover();
         _isDragging = false;
+        CancelScrollAnimation();
         ReleaseMouseCapture();
         ClearChordState();
         StopCaretTimer();
@@ -1530,43 +1764,42 @@ public class EditControl : Control, IImeSupport
 
     private static bool IsWordChar(char c) => char.IsLetterOrDigit(c) || c == '_';
 
-    private void EnsureCaretVisible()
+    private void EnsureCaretVisible(bool allowAnimation = false)
     {
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
         if (_view.ViewportWidth <= 0 || _view.ViewportHeight <= 0)
         {
-            _view.VerticalOffset = 0;
-            _view.HorizontalOffset = 0;
+            SetScrollOffsetsImmediate(0, 0, userInitiated: false, cancelAnimation: true);
             return;
         }
 
         var caretPoint = _view.GetPointFromOffset(_caret.Offset, ShowLineNumbers);
+        double targetVerticalOffset = _view.VerticalOffset;
+        double targetHorizontalOffset = _view.HorizontalOffset;
 
         // Vertical scrolling
         if (caretPoint.Y < 0)
         {
-            _view.VerticalOffset += caretPoint.Y;
+            targetVerticalOffset += caretPoint.Y;
         }
         else if (caretPoint.Y + _view.LineHeight > _view.ViewportHeight)
         {
-            _view.VerticalOffset += caretPoint.Y + _view.LineHeight - _view.ViewportHeight;
+            targetVerticalOffset += caretPoint.Y + _view.LineHeight - _view.ViewportHeight;
         }
 
         // Horizontal scrolling
         double textAreaLeft = ShowLineNumbers ? _view.TextAreaLeft : 0;
         if (caretPoint.X < textAreaLeft)
         {
-            _view.HorizontalOffset -= textAreaLeft - caretPoint.X;
+            targetHorizontalOffset -= textAreaLeft - caretPoint.X;
         }
         else if (caretPoint.X > _view.ViewportWidth - 20)
         {
-            _view.HorizontalOffset += caretPoint.X - _view.ViewportWidth + 40;
+            targetHorizontalOffset += caretPoint.X - _view.ViewportWidth + 40;
         }
 
-        ClampScrollOffsetsToViewport();
-
-        UpdateImeWindowIfComposing();
+        SetScrollOffsets(targetVerticalOffset, targetHorizontalOffset, allowAnimation, userInitiated: false);
     }
 
     #endregion
@@ -1841,7 +2074,7 @@ public class EditControl : Control, IImeSupport
         string? text;
         try
         {
-            text = Jalium.UI.Interop.Clipboard.GetText();
+            text = Clipboard.GetText();
         }
         catch
         {
@@ -1863,7 +2096,7 @@ public class EditControl : Control, IImeSupport
             if (_behaviorOptions.PreserveLineEndingsOnCopy || IsFeatureEnabled(EditFeature.PreserveCopyLineEndings))
                 text = NormalizeLineEndingsForDocument(text);
 
-            return Jalium.UI.Interop.Clipboard.SetText(text);
+            return Clipboard.SetText(text);
         }
         catch
         {
@@ -2025,10 +2258,7 @@ public class EditControl : Control, IImeSupport
         if (lineNumber < 1 || lineNumber > _document.LineCount) return;
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
-        _view.VerticalOffset = _view.GetAbsoluteLineTop(lineNumber);
-        ClampScrollOffsetsToViewport();
-        UpdateImeWindowIfComposing();
-        InvalidateVisual();
+        SetVerticalOffset(_view.GetAbsoluteLineTop(lineNumber), allowAnimation: true, userInitiated: false);
     }
 
     /// <summary>
@@ -2176,16 +2406,16 @@ public class EditControl : Control, IImeSupport
 
     public void Unindent() => HandleTab(shift: true);
 
-    public void ScrollLineUp() => ScrollVerticallyBy(-Math.Max(1, _view.LineHeight));
+    public void ScrollLineUp() => ScrollVerticallyBy(-Math.Max(1, _view.LineHeight), allowAnimation: true, userInitiated: false);
 
-    public void ScrollLineDown() => ScrollVerticallyBy(Math.Max(1, _view.LineHeight));
+    public void ScrollLineDown() => ScrollVerticallyBy(Math.Max(1, _view.LineHeight), allowAnimation: true, userInitiated: false);
 
     public void ScrollPageUp()
     {
         double page = _effectiveViewportHeight > 0
             ? _effectiveViewportHeight
             : Math.Max(1, _view.LineHeight * Math.Max(1, _view.VisibleLineCount));
-        ScrollVerticallyBy(-Math.Max(page, Math.Max(1, _view.LineHeight)));
+        ScrollVerticallyBy(-Math.Max(page, Math.Max(1, _view.LineHeight)), allowAnimation: true, userInitiated: false);
     }
 
     public void ScrollPageDown()
@@ -2193,20 +2423,29 @@ public class EditControl : Control, IImeSupport
         double page = _effectiveViewportHeight > 0
             ? _effectiveViewportHeight
             : Math.Max(1, _view.LineHeight * Math.Max(1, _view.VisibleLineCount));
-        ScrollVerticallyBy(Math.Max(page, Math.Max(1, _view.LineHeight)));
+        ScrollVerticallyBy(Math.Max(page, Math.Max(1, _view.LineHeight)), allowAnimation: true, userInitiated: false);
     }
 
-    private void ScrollVerticallyBy(double delta)
+    private void ScrollVerticallyBy(double delta, bool allowAnimation, bool userInitiated)
     {
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
         if (_view.ViewportHeight <= 0)
             return;
 
-        _view.VerticalOffset += delta;
-        ClampScrollOffsetsToViewport();
-        UpdateImeWindowIfComposing();
-        InvalidateVisual();
+        double baseOffset = _isScrollAnimating ? _scrollAnimationTargetVerticalOffset : _view.VerticalOffset;
+        SetVerticalOffset(baseOffset + delta, allowAnimation, userInitiated);
+    }
+
+    private void ScrollHorizontallyBy(double delta, bool allowAnimation, bool userInitiated)
+    {
+        EnsureViewLayoutMetrics();
+        UpdateScrollBarLayout(RenderSize);
+        if (_view.ViewportWidth <= 0)
+            return;
+
+        double baseOffset = _isScrollAnimating ? _scrollAnimationTargetHorizontalOffset : _view.HorizontalOffset;
+        SetHorizontalOffset(baseOffset + delta, allowAnimation, userInitiated);
     }
 
     public void ScrollToOffset(int offset)
@@ -2218,25 +2457,25 @@ public class EditControl : Control, IImeSupport
 
         offset = Math.Clamp(offset, 0, _document.TextLength);
         var point = _view.GetPointFromOffset(offset, ShowLineNumbers);
+        double targetVerticalOffset = _view.VerticalOffset;
         if (point.Y < 0)
-            _view.VerticalOffset += point.Y;
+            targetVerticalOffset += point.Y;
         else if (point.Y + _view.LineHeight > _view.ViewportHeight)
-            _view.VerticalOffset += point.Y + _view.LineHeight - _view.ViewportHeight;
+            targetVerticalOffset += point.Y + _view.LineHeight - _view.ViewportHeight;
 
         double textAreaLeft = ShowLineNumbers ? _view.TextAreaLeft : 0;
+        double targetHorizontalOffset = _view.HorizontalOffset;
         if (point.X < textAreaLeft)
-            _view.HorizontalOffset -= textAreaLeft - point.X;
+            targetHorizontalOffset -= textAreaLeft - point.X;
         else if (point.X > _view.ViewportWidth - 20)
-            _view.HorizontalOffset += point.X - _view.ViewportWidth + 40;
+            targetHorizontalOffset += point.X - _view.ViewportWidth + 40;
 
-        ClampScrollOffsetsToViewport();
-        UpdateImeWindowIfComposing();
-        InvalidateVisual();
+        SetScrollOffsets(targetVerticalOffset, targetHorizontalOffset, allowAnimation: true, userInitiated: false);
     }
 
     public void ScrollToCaret()
     {
-        EnsureCaretVisible();
+        EnsureCaretVisible(allowAnimation: true);
         InvalidateVisual();
     }
 
@@ -2248,19 +2487,40 @@ public class EditControl : Control, IImeSupport
         _document.Text = text;
         _caret.Offset = 0;
         _selection.ClearSelection(0);
-        _view.VerticalOffset = 0;
-        _view.HorizontalOffset = 0;
+        SetScrollOffsetsImmediate(0, 0, userInitiated: false, cancelAnimation: true);
         _view.InvalidateVisibleLines();
         InvalidateSemanticOccurrenceCaches();
         _activeFindResult = null;
         _hasSearchQuery = false;
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
+        UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
         UpdateActiveBracketPair();
         UpdateFoldingState();
         OnSelectionChanged();
         OnCaretPositionChanged();
         InvalidateVisual();
+    }
+
+    public void AppendText(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        bool shouldFollowBottom = false;
+        if (AutoFollowBottom)
+        {
+            EnsureViewLayoutMetrics();
+            UpdateScrollBarLayout(RenderSize);
+            shouldFollowBottom = _isFollowingBottom || IsAtBottomWithinTolerance();
+            if (shouldFollowBottom)
+                SetFollowingBottomState(true);
+        }
+
+        _document.Insert(_document.TextLength, text);
+
+        if (shouldFollowBottom)
+            SetVerticalOffsetImmediate(GetMaxVerticalOffset(), userInitiated: false, cancelAnimation: true);
     }
 
     public void DuplicateLineOrSelection()
@@ -2697,7 +2957,7 @@ public class EditControl : Control, IImeSupport
                 string? clipboardText;
                 try
                 {
-                    clipboardText = Jalium.UI.Interop.Clipboard.GetText();
+                    clipboardText = Clipboard.GetText();
                 }
                 catch
                 {
@@ -2894,18 +3154,6 @@ public class EditControl : Control, IImeSupport
         var caretPos = _view.GetPointFromOffset(_caret.Offset, ShowLineNumbers);
         caretPos = new Point(caretPos.X, caretPos.Y + _view.LineHeight);
 
-        // Transform to window coordinates
-        var element = this as UIElement;
-        var parent = element?.VisualParent;
-        while (parent != null)
-        {
-            if (parent is FrameworkElement fe)
-                caretPos = new Point(caretPos.X + fe.Margin.Left, caretPos.Y + fe.Margin.Top);
-            if (parent is Window)
-                break;
-            parent = parent.VisualParent;
-        }
-
         return caretPos;
     }
 
@@ -2980,6 +3228,7 @@ public class EditControl : Control, IImeSupport
             editor.EnsureViewLayoutMetrics();
             editor.UpdateScrollBarLayout(editor.RenderSize);
             editor._view.InvalidateVisibleLines();
+            editor.UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
             editor.InvalidateVisual();
         }
     }
@@ -3006,6 +3255,33 @@ public class EditControl : Control, IImeSupport
     {
         if (d is EditControl editor)
             editor.InvalidateVisual();
+    }
+
+    private static void OnScrollInertiaSettingsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not EditControl editor)
+            return;
+
+        if (editor.IsScrollInertiaEnabled && editor.GetEffectiveScrollInertiaDurationMs() > 0)
+            return;
+
+        editor.SnapScrollAnimationToTargetAndStop();
+    }
+
+    private static void OnAutoFollowBottomChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not EditControl editor)
+            return;
+
+        if (!editor.AutoFollowBottom)
+        {
+            editor.SetFollowingBottomState(false);
+            return;
+        }
+
+        editor.EnsureViewLayoutMetrics();
+        editor.UpdateScrollBarLayout(editor.RenderSize);
+        editor.SetFollowingBottomState(editor.IsAtBottomWithinTolerance());
     }
 
     private static void OnLanguageChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -3047,6 +3323,15 @@ public class EditControl : Control, IImeSupport
         ScheduleFoldingRefreshFromDocumentChange();
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
+
+        if (AutoFollowBottom && _isFollowingBottom)
+        {
+            SetVerticalOffsetImmediate(GetMaxVerticalOffset(), userInitiated: false, cancelAnimation: true);
+        }
+        else
+        {
+            UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
+        }
 
         if (_hasSearchQuery && !string.IsNullOrEmpty(_findReplace.SearchText))
         {
@@ -4110,6 +4395,132 @@ public class EditControl : Control, IImeSupport
         return new Rect(x, y, markerSize, markerSize);
     }
 
+    private double GetMinimapReservedWidth(double viewportWidth)
+    {
+        if (!ShowMinimap || viewportWidth <= 0)
+            return 0;
+
+        return Math.Clamp(_minimapRenderer.Width, 0, viewportWidth);
+    }
+
+    private double GetContentRenderWidth(double viewportWidth)
+    {
+        bool overlayVerticalScrollBar = ShouldOverlayVerticalScrollBarOnMinimap(viewportWidth);
+        double verticalScrollReserve = _isVerticalScrollBarVisible && !overlayVerticalScrollBar ? ScrollBarThickness : 0;
+        return Math.Max(0, viewportWidth - verticalScrollReserve - GetMinimapReservedWidth(viewportWidth));
+    }
+
+    private double GetContentRenderHeight(double viewportHeight)
+    {
+        return Math.Max(0, viewportHeight - (_isHorizontalScrollBarVisible ? ScrollBarThickness : 0));
+    }
+
+    private void DrawMinimap(DrawingContext dc)
+    {
+        _minimapViewportRect = Rect.Empty;
+        if (!ShowMinimap || _minimapRect.IsEmpty || _document.LineCount <= 0)
+            return;
+
+        _minimapRenderer.Render(
+            dc,
+            _document,
+            _view,
+            SyntaxHighlighter,
+            _minimapRect,
+            s_minimapBackgroundBrush,
+            s_minimapForegroundBrush,
+            s_minimapViewportBrush);
+        _minimapViewportRect = _minimapRenderer.GetViewportRect(_document, _view, _minimapRect);
+        if (!_minimapViewportRect.IsEmpty)
+        {
+            var borderRect = new Rect(
+                _minimapViewportRect.X + 0.5,
+                _minimapViewportRect.Y + 0.5,
+                Math.Max(0, _minimapViewportRect.Width - 1),
+                Math.Max(0, _minimapViewportRect.Height - 1));
+            dc.DrawRectangle(null, s_minimapViewportBorderPen, borderRect);
+        }
+
+        DrawMinimapHoverTooltip(dc);
+    }
+
+    private void DrawMinimapHoverTooltip(DrawingContext dc)
+    {
+        if (!_isMinimapHovering || !_hasPointerPosition || _minimapRect.IsEmpty || _document.LineCount <= 0)
+            return;
+
+        int lineNumber = _minimapRenderer.GetLineFromPoint(_lastPointerPosition.Y, _minimapRect, _view, _document);
+        lineNumber = Math.Clamp(lineNumber, 1, _document.LineCount);
+        _minimapHoverLineNumber = lineNumber;
+
+        double availableTextWidth = Math.Max(40, _minimapRect.X - (MinimapTooltipOffsetX + MinimapTooltipPaddingX * 2 + 4));
+        int digits = Math.Max(1, _document.LineCount.ToString().Length);
+        int prefixChars = digits + 3; // marker + line number + space
+        int maxPreviewChars = Math.Clamp((int)Math.Floor(availableTextWidth / Math.Max(1, _view.CharWidth)) - prefixChars, 8, MinimapTooltipMaxPreviewCharsPerLine);
+        string tooltipText = BuildMinimapTooltipText(lineNumber, maxPreviewChars);
+        if (string.IsNullOrWhiteSpace(tooltipText))
+            return;
+
+        string fontFamily = FontFamily ?? "Cascadia Code";
+        double fontSize = FontSize > 0 ? FontSize : 14;
+        var tooltip = new FormattedText(tooltipText, fontFamily, Math.Max(11, fontSize - 1))
+        {
+            Foreground = s_minimapTooltipTextBrush,
+            MaxTextWidth = availableTextWidth,
+            MaxTextHeight = Math.Max(18, _minimapRect.Height - 4),
+            Trimming = TextTrimming.CharacterEllipsis,
+        };
+        TextMeasurement.MeasureText(tooltip);
+
+        double tooltipWidth = Math.Max(24, Math.Ceiling(tooltip.Width + MinimapTooltipPaddingX * 2));
+        double tooltipHeight = Math.Max(20, Math.Ceiling(tooltip.Height + MinimapTooltipPaddingY * 2));
+        double tooltipX = _minimapRect.X - tooltipWidth - MinimapTooltipOffsetX;
+        if (tooltipX < 2)
+            tooltipX = 2;
+
+        double tooltipMaxY = Math.Max(2, _minimapRect.Bottom - tooltipHeight - 2);
+        double textLineHeight = Math.Max(1, tooltip.Height / MinimapTooltipPreviewLineCount);
+        double targetLineCenterY = _lastPointerPosition.Y;
+        double desiredTooltipY = targetLineCenterY - MinimapTooltipPaddingY - (MinimapTooltipPreviewCenterIndex + 0.5) * textLineHeight;
+        double tooltipY = Math.Clamp(desiredTooltipY, 2, tooltipMaxY);
+
+        var tooltipRect = new Rect(tooltipX, tooltipY, tooltipWidth, tooltipHeight);
+        dc.DrawRoundedRectangle(s_minimapTooltipBackgroundBrush, s_minimapTooltipBorderPen, tooltipRect, 3, 3);
+        dc.DrawText(tooltip, new Point(tooltipRect.X + MinimapTooltipPaddingX, tooltipRect.Y + MinimapTooltipPaddingY));
+    }
+
+    private string BuildMinimapTooltipText(int lineNumber, int maxPreviewCharsPerLine)
+    {
+        if (_document.LineCount <= 0)
+            return string.Empty;
+
+        int centerLine = Math.Clamp(lineNumber, 1, _document.LineCount);
+        int digits = Math.Max(1, _document.LineCount.ToString().Length);
+        int maxChars = Math.Clamp(maxPreviewCharsPerLine, 8, MinimapTooltipMaxPreviewCharsPerLine);
+        var lines = new string[MinimapTooltipPreviewLineCount];
+        for (int i = 0; i < MinimapTooltipPreviewLineCount; i++)
+        {
+            int relative = i - MinimapTooltipPreviewCenterIndex;
+            int previewLine = centerLine + relative;
+            bool inRange = previewLine >= 1 && previewLine <= _document.LineCount;
+            string marker = relative == 0 ? ">" : " ";
+            string lineLabel = inRange ? previewLine.ToString().PadLeft(digits) : new string(' ', digits);
+            string lineText = inRange ? TruncateMinimapPreviewLine(_document.GetLineText(previewLine), maxChars) : string.Empty;
+            lines[i] = $"{marker}{lineLabel} {lineText}";
+        }
+
+        return string.Join('\n', lines);
+    }
+
+    private static string TruncateMinimapPreviewLine(string text, int maxChars)
+    {
+        string normalized = text.TrimEnd();
+        if (normalized.Length <= maxChars)
+            return normalized;
+
+        return normalized[..Math.Max(0, maxChars - 3)].TrimEnd() + "...";
+    }
+
     private void DrawScrollBars(DrawingContext dc)
     {
         static Rect InsetRect(Rect rect, double inset)
@@ -4135,7 +4546,7 @@ public class EditControl : Control, IImeSupport
             dc.DrawRoundedRectangle(brush, null, rect, radius, radius);
         }
 
-        if (_isVerticalScrollBarVisible)
+        if (_isVerticalScrollBarVisible && !_isVerticalScrollBarOverlayingMinimap)
         {
             DrawRoundedBar(s_scrollBarTrackBrush, InsetRect(_verticalScrollTrackRect, ScrollBarInnerPadding));
             DrawRoundedBar(
@@ -4151,7 +4562,7 @@ public class EditControl : Control, IImeSupport
                 InsetRect(_horizontalScrollThumbRect, ScrollBarInnerPadding));
         }
 
-        if (_isVerticalScrollBarVisible && _isHorizontalScrollBarVisible)
+        if (_isVerticalScrollBarVisible && _isHorizontalScrollBarVisible && !_isVerticalScrollBarOverlayingMinimap)
         {
             var corner = new Rect(
                 Math.Max(0, RenderSize.Width - ScrollBarThickness),
@@ -4180,19 +4591,27 @@ public class EditControl : Control, IImeSupport
         _verticalScrollThumbRect = Rect.Empty;
         _horizontalScrollTrackRect = Rect.Empty;
         _horizontalScrollThumbRect = Rect.Empty;
+        _minimapRect = Rect.Empty;
+        _minimapViewportRect = Rect.Empty;
         _isVerticalScrollBarVisible = false;
+        _isVerticalScrollBarOverlayingMinimap = false;
         _isHorizontalScrollBarVisible = false;
         _effectiveViewportHeight = Math.Max(0, viewportSize.Height);
-        _effectiveTextViewportWidth = Math.Max(0, GetTextViewportWidth(viewportSize.Width));
+        _effectiveTextViewportWidth = Math.Max(0, GetTextViewportWidth(Math.Max(0, viewportSize.Width - GetMinimapReservedWidth(viewportSize.Width))));
+        _view.ViewportWidth = Math.Max(0, viewportSize.Width);
+        _view.ViewportHeight = Math.Max(0, viewportSize.Height);
 
         if (viewportSize.Width <= 0 || viewportSize.Height <= 0 || _view.LineHeight <= 0 || _view.CharWidth <= 0)
             return;
 
+        double minimapReservedWidth = GetMinimapReservedWidth(viewportSize.Width);
+        bool overlayVerticalScrollBar = ShouldOverlayVerticalScrollBarOnMinimap(viewportSize.Width);
         bool needVertical = false;
         bool needHorizontal = false;
         for (int i = 0; i < 4; i++)
         {
-            double availableWidth = Math.Max(0, viewportSize.Width - (needVertical ? ScrollBarThickness : 0));
+            double verticalScrollReserve = needVertical && !overlayVerticalScrollBar ? ScrollBarThickness : 0;
+            double availableWidth = Math.Max(0, viewportSize.Width - minimapReservedWidth - verticalScrollReserve);
             double availableHeight = Math.Max(0, viewportSize.Height - (needHorizontal ? ScrollBarThickness : 0));
             double textViewportWidth = Math.Max(0, GetTextViewportWidth(availableWidth));
 
@@ -4205,35 +4624,61 @@ public class EditControl : Control, IImeSupport
             needHorizontal = nextHorizontal;
         }
 
-        double finalAvailableWidth = Math.Max(0, viewportSize.Width - (needVertical ? ScrollBarThickness : 0));
+        double finalVerticalScrollReserve = needVertical && !overlayVerticalScrollBar ? ScrollBarThickness : 0;
+        double finalAvailableWidth = Math.Max(0, viewportSize.Width - minimapReservedWidth - finalVerticalScrollReserve);
         double finalAvailableHeight = Math.Max(0, viewportSize.Height - (needHorizontal ? ScrollBarThickness : 0));
         _effectiveViewportHeight = finalAvailableHeight;
         _effectiveTextViewportWidth = Math.Max(0, GetTextViewportWidth(finalAvailableWidth));
+        _view.ViewportWidth = finalAvailableWidth;
+        _view.ViewportHeight = finalAvailableHeight;
 
         _isVerticalScrollBarVisible = needVertical;
         _isHorizontalScrollBarVisible = needHorizontal;
         ClampScrollOffsetsToViewport();
+        if (_isScrollAnimating)
+        {
+            _scrollAnimationTargetVerticalOffset = Math.Clamp(_scrollAnimationTargetVerticalOffset, 0, GetMaxVerticalOffset());
+            _scrollAnimationTargetHorizontalOffset = Math.Clamp(_scrollAnimationTargetHorizontalOffset, 0, GetMaxHorizontalOffset());
+        }
+
+        if (ShowMinimap && minimapReservedWidth > 0 && finalAvailableHeight > 0)
+        {
+            double minimapX = Math.Max(0, viewportSize.Width - minimapReservedWidth - finalVerticalScrollReserve);
+            _minimapRect = new Rect(minimapX, 0, minimapReservedWidth, finalAvailableHeight);
+            _minimapViewportRect = _minimapRenderer.GetViewportRect(_document, _view, _minimapRect);
+        }
 
         if (_isVerticalScrollBarVisible)
         {
-            double trackHeight = finalAvailableHeight;
-            _verticalScrollTrackRect = new Rect(
-                Math.Max(0, viewportSize.Width - ScrollBarThickness),
-                0,
-                ScrollBarThickness,
-                trackHeight);
+            if (overlayVerticalScrollBar && !_minimapRect.IsEmpty)
+            {
+                _isVerticalScrollBarOverlayingMinimap = true;
+                _verticalScrollTrackRect = Rect.Empty;
+                _verticalScrollThumbRect = Rect.Empty;
+            }
+            else
+            {
+                double trackHeight = finalAvailableHeight;
+                double trackX = Math.Max(0, viewportSize.Width - ScrollBarThickness);
 
-            double extent = Math.Max(1, GetVerticalScrollExtent(_effectiveViewportHeight));
-            double thumbHeight = Math.Clamp(trackHeight * (_effectiveViewportHeight / extent), MinScrollBarThumbSize, trackHeight);
-            double maxOffset = GetMaxVerticalOffset();
-            double travel = Math.Max(0, trackHeight - thumbHeight);
-            double thumbY = _verticalScrollTrackRect.Y + (maxOffset <= 0 ? 0 : (_view.VerticalOffset / maxOffset) * travel);
+                _verticalScrollTrackRect = new Rect(
+                    trackX,
+                    0,
+                    ScrollBarThickness,
+                    trackHeight);
 
-            _verticalScrollThumbRect = new Rect(
-                _verticalScrollTrackRect.X,
-                thumbY,
-                ScrollBarThickness,
-                thumbHeight);
+                double extent = Math.Max(1, GetVerticalScrollExtent(_effectiveViewportHeight));
+                double thumbHeight = Math.Clamp(trackHeight * (_effectiveViewportHeight / extent), MinScrollBarThumbSize, trackHeight);
+                double maxOffset = GetMaxVerticalOffset();
+                double travel = Math.Max(0, trackHeight - thumbHeight);
+                double thumbY = _verticalScrollTrackRect.Y + (maxOffset <= 0 ? 0 : (_view.VerticalOffset / maxOffset) * travel);
+
+                _verticalScrollThumbRect = new Rect(
+                    _verticalScrollTrackRect.X,
+                    thumbY,
+                    ScrollBarThickness,
+                    thumbHeight);
+            }
         }
 
         if (_isHorizontalScrollBarVisible)
@@ -4251,12 +4696,17 @@ public class EditControl : Control, IImeSupport
             double travel = Math.Max(0, trackWidth - thumbWidth);
             double thumbX = _horizontalScrollTrackRect.X + (maxOffset <= 0 ? 0 : (_view.HorizontalOffset / maxOffset) * travel);
 
-            _horizontalScrollThumbRect = new Rect(
+                _horizontalScrollThumbRect = new Rect(
                 thumbX,
                 _horizontalScrollTrackRect.Y,
                 thumbWidth,
                 ScrollBarThickness);
         }
+    }
+
+    private bool ShouldOverlayVerticalScrollBarOnMinimap(double viewportWidth)
+    {
+        return ShowMinimap && GetMinimapReservedWidth(viewportWidth) > 0;
     }
 
     private double GetTextViewportWidth(double viewportWidth)
@@ -4319,8 +4769,267 @@ public class EditControl : Control, IImeSupport
 
     private void ClampScrollOffsetsToViewport()
     {
-        _view.VerticalOffset = Math.Clamp(_view.VerticalOffset, 0, GetMaxVerticalOffset());
-        _view.HorizontalOffset = Math.Clamp(_view.HorizontalOffset, 0, GetMaxHorizontalOffset());
+        double maxVerticalOffset = GetMaxVerticalOffset();
+        double maxHorizontalOffset = GetMaxHorizontalOffset();
+        _view.VerticalOffset = Math.Clamp(_view.VerticalOffset, 0, maxVerticalOffset);
+        _view.HorizontalOffset = Math.Clamp(_view.HorizontalOffset, 0, maxHorizontalOffset);
+    }
+
+    private void SetFollowingBottomState(bool value)
+    {
+        _isFollowingBottom = value;
+    }
+
+    private double GetBottomFollowTolerance()
+    {
+        return Math.Max(1, _view.LineHeight * 0.5);
+    }
+
+    private bool IsAtBottomWithinTolerance()
+    {
+        return IsAtBottomWithinTolerance(GetMaxVerticalOffset());
+    }
+
+    private bool IsAtBottomWithinTolerance(double maxVerticalOffset)
+    {
+        return maxVerticalOffset - _view.VerticalOffset <= GetBottomFollowTolerance();
+    }
+
+    private void UpdateFollowingBottomStateAfterVerticalChange(bool userInitiated)
+    {
+        if (!AutoFollowBottom)
+        {
+            SetFollowingBottomState(false);
+            return;
+        }
+
+        double maxOffset = GetMaxVerticalOffset();
+        bool atBottom = maxOffset - _view.VerticalOffset <= GetBottomFollowTolerance();
+        if (userInitiated || _isFollowingBottom || atBottom)
+            SetFollowingBottomState(atBottom);
+    }
+
+    private void SetScrollOffsetsImmediate(double verticalOffset, double horizontalOffset, bool userInitiated, bool cancelAnimation)
+    {
+        if (cancelAnimation && !_isApplyingScrollAnimationStep)
+            CancelScrollAnimation();
+
+        EnsureViewLayoutMetrics();
+        UpdateScrollBarLayout(RenderSize);
+        _view.VerticalOffset = verticalOffset;
+        _view.HorizontalOffset = horizontalOffset;
+        ClampScrollOffsetsToViewport();
+        UpdateFollowingBottomStateAfterVerticalChange(userInitiated);
+        UpdateImeWindowIfComposing();
+        InvalidateVisual();
+    }
+
+    private void SetVerticalOffsetImmediate(double verticalOffset, bool userInitiated, bool cancelAnimation)
+    {
+        SetScrollOffsetsImmediate(verticalOffset, _view.HorizontalOffset, userInitiated, cancelAnimation);
+    }
+
+    private void SetHorizontalOffsetImmediate(double horizontalOffset, bool cancelAnimation)
+    {
+        SetScrollOffsetsImmediate(_view.VerticalOffset, horizontalOffset, userInitiated: false, cancelAnimation: cancelAnimation);
+    }
+
+    private void SetVerticalOffset(double verticalOffset, bool allowAnimation, bool userInitiated)
+    {
+        double horizontalTarget = _isScrollAnimating ? _scrollAnimationTargetHorizontalOffset : _view.HorizontalOffset;
+        SetScrollOffsets(verticalOffset, horizontalTarget, allowAnimation, userInitiated);
+    }
+
+    private void SetHorizontalOffset(double horizontalOffset, bool allowAnimation, bool userInitiated)
+    {
+        double verticalTarget = _isScrollAnimating ? _scrollAnimationTargetVerticalOffset : _view.VerticalOffset;
+        SetScrollOffsets(verticalTarget, horizontalOffset, allowAnimation, userInitiated);
+    }
+
+    private void SetScrollOffsets(double verticalOffset, double horizontalOffset, bool allowAnimation, bool userInitiated)
+    {
+        EnsureViewLayoutMetrics();
+        UpdateScrollBarLayout(RenderSize);
+
+        double maxVerticalOffset = GetMaxVerticalOffset();
+        double maxHorizontalOffset = GetMaxHorizontalOffset();
+        double targetVerticalOffset = Math.Clamp(verticalOffset, 0, maxVerticalOffset);
+        double targetHorizontalOffset = Math.Clamp(horizontalOffset, 0, maxHorizontalOffset);
+        bool animate = allowAnimation && IsScrollInertiaEnabled && GetEffectiveScrollInertiaDurationMs() > 0;
+
+        if (!animate)
+        {
+            SetScrollOffsetsImmediate(targetVerticalOffset, targetHorizontalOffset, userInitiated, cancelAnimation: true);
+            return;
+        }
+
+        _scrollAnimationTargetVerticalOffset = targetVerticalOffset;
+        _scrollAnimationTargetHorizontalOffset = targetHorizontalOffset;
+        if (userInitiated && AutoFollowBottom)
+        {
+            bool targetAtBottom = maxVerticalOffset - targetVerticalOffset <= GetBottomFollowTolerance();
+            SetFollowingBottomState(targetAtBottom);
+        }
+
+        StartScrollAnimation();
+    }
+
+    private void StartScrollAnimation()
+    {
+        if (!IsScrollInertiaEnabled || GetEffectiveScrollInertiaDurationMs() <= 0)
+        {
+            SnapScrollAnimationToTargetAndStop();
+            return;
+        }
+
+        _isScrollAnimating = true;
+        if (_scrollAnimationTimer == null)
+        {
+            _scrollAnimationTimer = new DispatcherTimer();
+            _scrollAnimationTimer.Interval = TimeSpan.FromMilliseconds(SmoothScrollIntervalMs);
+            _scrollAnimationTimer.Tick += OnScrollAnimationTick;
+        }
+
+        if (!_scrollAnimationTimer.IsEnabled)
+        {
+            _lastScrollAnimationTickTime = Environment.TickCount64;
+            _scrollAnimationTimer.Start();
+        }
+
+        OnScrollAnimationTick(null, EventArgs.Empty);
+    }
+
+    private void StopScrollAnimation()
+    {
+        _scrollAnimationTimer?.Stop();
+        _isScrollAnimating = false;
+    }
+
+    private void CancelScrollAnimation()
+    {
+        if (!_isScrollAnimating)
+            return;
+
+        StopScrollAnimation();
+        _scrollAnimationTargetVerticalOffset = _view.VerticalOffset;
+        _scrollAnimationTargetHorizontalOffset = _view.HorizontalOffset;
+    }
+
+    private void SnapScrollAnimationToTargetAndStop()
+    {
+        if (!_isScrollAnimating)
+            return;
+
+        _scrollAnimationTargetVerticalOffset = Math.Clamp(_scrollAnimationTargetVerticalOffset, 0, GetMaxVerticalOffset());
+        _scrollAnimationTargetHorizontalOffset = Math.Clamp(_scrollAnimationTargetHorizontalOffset, 0, GetMaxHorizontalOffset());
+        _isApplyingScrollAnimationStep = true;
+        try
+        {
+            _view.VerticalOffset = _scrollAnimationTargetVerticalOffset;
+            _view.HorizontalOffset = _scrollAnimationTargetHorizontalOffset;
+            ClampScrollOffsetsToViewport();
+        }
+        finally
+        {
+            _isApplyingScrollAnimationStep = false;
+        }
+
+        UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
+        UpdateImeWindowIfComposing();
+        InvalidateVisual();
+        StopScrollAnimation();
+    }
+
+    private void OnScrollAnimationTick(object? sender, EventArgs e)
+    {
+        if (!_isScrollAnimating)
+            return;
+
+        EnsureViewLayoutMetrics();
+        UpdateScrollBarLayout(RenderSize);
+
+        _scrollAnimationTargetVerticalOffset = Math.Clamp(_scrollAnimationTargetVerticalOffset, 0, GetMaxVerticalOffset());
+        _scrollAnimationTargetHorizontalOffset = Math.Clamp(_scrollAnimationTargetHorizontalOffset, 0, GetMaxHorizontalOffset());
+
+        long now = Environment.TickCount64;
+        long elapsedMs = now - _lastScrollAnimationTickTime;
+        if (elapsedMs <= 0)
+            elapsedMs = Math.Max(1, SmoothScrollIntervalMs);
+        _lastScrollAnimationTickTime = now;
+
+        double dtSeconds = Math.Min(elapsedMs / 1000.0, SmoothScrollMaxDeltaTimeSeconds);
+        double alpha = ComputeSmoothAlpha(dtSeconds);
+        double minStep = SmoothScrollMinSpeedPixelsPerSecond * dtSeconds;
+
+        double nextVerticalOffset = _view.VerticalOffset;
+        double nextHorizontalOffset = _view.HorizontalOffset;
+        bool verticalMoved = StepSmoothAxis(_scrollAnimationTargetVerticalOffset, _view.VerticalOffset, alpha, minStep, out nextVerticalOffset);
+        bool horizontalMoved = StepSmoothAxis(_scrollAnimationTargetHorizontalOffset, _view.HorizontalOffset, alpha, minStep, out nextHorizontalOffset);
+
+        if (!verticalMoved && !horizontalMoved)
+        {
+            StopScrollAnimation();
+            return;
+        }
+
+        _isApplyingScrollAnimationStep = true;
+        try
+        {
+            _view.VerticalOffset = nextVerticalOffset;
+            _view.HorizontalOffset = nextHorizontalOffset;
+            ClampScrollOffsetsToViewport();
+        }
+        finally
+        {
+            _isApplyingScrollAnimationStep = false;
+        }
+
+        UpdateFollowingBottomStateAfterVerticalChange(userInitiated: false);
+        UpdateImeWindowIfComposing();
+        InvalidateVisual();
+    }
+
+    private double GetEffectiveScrollInertiaDurationMs()
+    {
+        double duration = ScrollInertiaDurationMs;
+        if (double.IsNaN(duration) || double.IsInfinity(duration))
+            return DefaultScrollInertiaDurationMs;
+        return duration;
+    }
+
+    private double ComputeSmoothAlpha(double dtSeconds)
+    {
+        double durationMs = GetEffectiveScrollInertiaDurationMs();
+        if (durationMs <= 0 || dtSeconds <= 0)
+            return 1.0;
+
+        double durationSeconds = durationMs / 1000.0;
+        double decay = -Math.Log(SmoothScrollDurationTailRatio) / durationSeconds;
+        double alpha = 1.0 - Math.Exp(-decay * dtSeconds);
+        return Math.Clamp(alpha, 0.0, 1.0);
+    }
+
+    private static bool StepSmoothAxis(double target, double current, double alpha, double minStep, out double next)
+    {
+        next = current;
+        double remaining = target - current;
+        if (Math.Abs(remaining) <= 0.01)
+            return false;
+
+        if (Math.Abs(remaining) <= SmoothScrollSnapThreshold)
+        {
+            next = target;
+            return true;
+        }
+
+        double step = remaining * alpha;
+        if (Math.Abs(step) < minStep)
+            step = Math.Sign(remaining) * minStep;
+        if (Math.Abs(step) > Math.Abs(remaining))
+            step = remaining;
+
+        next = current + step;
+        return true;
     }
 
     #endregion
@@ -4522,7 +5231,7 @@ public class EditControl : Control, IImeSupport
 
     private void HandleReplaceShortcut()
     {
-        string? text = Jalium.UI.Interop.Clipboard.GetText();
+        string? text = Clipboard.GetText();
         if (!string.IsNullOrEmpty(text))
             ReplaceCurrent(text);
     }

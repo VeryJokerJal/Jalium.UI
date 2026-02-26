@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace Jalium.UI.Interop;
+namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Provides clipboard operations via Windows API.

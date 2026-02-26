@@ -2596,8 +2596,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     public void UpdateImeCompositionWindow()
     {
-        var target = Keyboard.FocusedElement;
-        if (target == null)
+        var target = Keyboard.FocusedElement as UIElement;
+        if (target == null || target is not IImeSupport imeSupport)
         {
             return;
         }
@@ -2610,18 +2610,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         try
         {
-            // Get caret position from the focused element
-            Point caretPos = Point.Zero;
-            if (target is IImeSupport imeSupport)
+            // Convert focused element local caret position (DIPs) to client-area physical pixels.
+            Point caretPosDip = imeSupport.GetImeCaretPosition();
+            if (target is FrameworkElement frameworkElement)
             {
-                caretPos = imeSupport.GetImeCaretPosition();
+                var targetOriginDip = frameworkElement.TransformToAncestor(null);
+                caretPosDip = new Point(targetOriginDip.X + caretPosDip.X, targetOriginDip.Y + caretPosDip.Y);
             }
 
-            // Convert to screen coordinates
+            int caretX = (int)Math.Round(caretPosDip.X * _dpiScale);
+            int caretY = (int)Math.Round(caretPosDip.Y * _dpiScale);
+
             ImmNativeMethods.COMPOSITIONFORM form = new()
             {
                 dwStyle = ImmNativeMethods.CFS_POINT,
-                ptCurrentPos = new ImmNativeMethods.POINT { x = (int)caretPos.X, y = (int)caretPos.Y }
+                ptCurrentPos = new ImmNativeMethods.POINT { x = caretX, y = caretY }
             };
 
             _ = ImmNativeMethods.ImmSetCompositionWindow(hImc, ref form);
@@ -2631,7 +2634,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             {
                 dwIndex = 0,
                 dwStyle = ImmNativeMethods.CFS_CANDIDATEPOS,
-                ptCurrentPos = new ImmNativeMethods.POINT { x = (int)caretPos.X, y = (int)caretPos.Y + 20 }
+                ptCurrentPos = new ImmNativeMethods.POINT { x = caretX, y = caretY }
             };
 
             _ = ImmNativeMethods.ImmSetCandidateWindow(hImc, ref candidate);

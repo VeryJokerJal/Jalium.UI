@@ -33,6 +33,11 @@
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <!-- Exclude build output artifacts under project directories from default Compile/None globs -->
+    <DefaultItemExcludes>$(DefaultItemExcludes);**\artifacts\**\*;**\bin\**\*;**\obj\**\*</DefaultItemExcludes>
+  </PropertyGroup>
+
   <!-- Default: disable packaging for all projects (opt-in per project) -->
   <PropertyGroup>
     <IsPackable>false</IsPackable>

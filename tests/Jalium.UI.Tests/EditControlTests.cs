@@ -32,6 +32,13 @@ public class EditControlTests
     }
 
     [Fact]
+    public void ShowMinimap_Default_ShouldBeTrue()
+    {
+        var editor = new EditControl();
+        Assert.True(editor.ShowMinimap);
+    }
+
+    [Fact]
     public void Language_Xml_ShouldUseXmlTagFolding()
     {
         var editor = new EditControl();
@@ -418,7 +425,7 @@ public class EditControlTests
     [Fact]
     public void ScrollBars_ShouldShowVerticalForManyLines()
     {
-        var editor = new EditControl();
+        var editor = new EditControl { ShowMinimap = false };
         editor.LoadText(string.Join("\n", Enumerable.Range(1, 120).Select(i => $"line{i}")));
         editor.Arrange(new Rect(0, 0, 220, 120));
         editor.UpdateScrollBarsForTesting(new Size(220, 120));
@@ -430,7 +437,7 @@ public class EditControlTests
     [Fact]
     public void ScrollBars_ShouldShowHorizontalForLongLine()
     {
-        var editor = new EditControl();
+        var editor = new EditControl { ShowMinimap = false };
         editor.LoadText(new string('x', 400));
         editor.Arrange(new Rect(0, 0, 220, 120));
         editor.UpdateScrollBarsForTesting(new Size(220, 120));
@@ -441,7 +448,7 @@ public class EditControlTests
     [Fact]
     public void VerticalScrollBarThumb_Drag_ShouldChangeVerticalOffset()
     {
-        var editor = new EditControl();
+        var editor = new EditControl { ShowMinimap = false };
         editor.LoadText(string.Join("\n", Enumerable.Range(1, 200).Select(i => $"line{i}")));
         editor.Arrange(new Rect(0, 0, 240, 120));
         editor.UpdateScrollBarsForTesting(new Size(240, 120));
@@ -459,7 +466,7 @@ public class EditControlTests
     [Fact]
     public void ShiftMouseWheel_ShouldScrollHorizontally()
     {
-        var editor = new EditControl();
+        var editor = new EditControl { ShowMinimap = false, IsScrollInertiaEnabled = false };
         editor.LoadText(new string('x', 500));
         editor.Arrange(new Rect(0, 0, 240, 120));
         editor.UpdateScrollBarsForTesting(new Size(240, 120));
@@ -468,6 +475,300 @@ public class EditControlTests
         editor.RaiseEvent(CreateMouseWheel(new Point(40, 40), -120, ModifierKeys.Shift));
 
         Assert.True(editor.HorizontalOffsetForTesting > 0);
+    }
+
+    [Fact]
+    public void ShowMinimap_False_ShouldDisableMinimapHitZone()
+    {
+        var editor = new EditControl { ShowMinimap = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 300).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 260, 160));
+        editor.UpdateScrollBarsForTesting(new Size(260, 160));
+
+        var minimapRect = editor.MinimapRectForTesting;
+        Assert.False(minimapRect.IsEmpty);
+
+        editor.ShowMinimap = false;
+        editor.UpdateScrollBarsForTesting(new Size(260, 160));
+        Assert.True(editor.MinimapRectForTesting.IsEmpty);
+
+        var clickPoint = new Point(minimapRect.X + 4, minimapRect.Y + minimapRect.Height * 0.8);
+        double before = editor.VerticalOffsetForTesting;
+        editor.RaiseEvent(CreateMouseDown(clickPoint));
+        editor.RaiseEvent(CreateMouseUp(clickPoint));
+
+        Assert.Equal(before, editor.VerticalOffsetForTesting, precision: 3);
+    }
+
+    [Fact]
+    public void ShowMinimap_True_ShouldUseIntegratedMinimapWithoutStandaloneVerticalThumb()
+    {
+        var editor = new EditControl { ShowMinimap = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 320, 180));
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        var minimapRect = editor.MinimapRectForTesting;
+        var viewportRect = editor.MinimapViewportRectForTesting;
+        var thumb = editor.VerticalScrollBarThumbRectForTesting;
+
+        Assert.True(editor.IsVerticalScrollBarVisibleForTesting);
+        Assert.False(minimapRect.IsEmpty);
+        Assert.False(viewportRect.IsEmpty);
+        Assert.True(thumb.IsEmpty);
+    }
+
+    [Fact]
+    public void Minimap_Click_ShouldMoveVerticalOffsetTowardTarget()
+    {
+        var editor = new EditControl { ShowMinimap = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 320, 180));
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        var minimapRect = editor.MinimapRectForTesting;
+        Assert.False(minimapRect.IsEmpty);
+
+        var clickPoint = new Point(minimapRect.X + minimapRect.Width * 0.5, minimapRect.Y + minimapRect.Height * 0.9);
+        editor.RaiseEvent(CreateMouseDown(clickPoint));
+        editor.RaiseEvent(CreateMouseUp(clickPoint));
+
+        Assert.True(editor.VerticalOffsetForTesting > 0);
+    }
+
+    [Fact]
+    public void MinimapTrack_Click_ShouldNavigateWithAnimation()
+    {
+        var editor = new EditControl { ShowMinimap = true, IsScrollInertiaEnabled = true, ScrollInertiaDurationMs = 3000 };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 320, 180));
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        var minimapRect = editor.MinimapRectForTesting;
+        var viewport = editor.MinimapViewportRectForTesting;
+        Assert.False(minimapRect.IsEmpty);
+        Assert.False(viewport.IsEmpty);
+
+        double clickY = viewport.Bottom + 8;
+        if (clickY >= minimapRect.Bottom - 2)
+            clickY = Math.Max(minimapRect.Y + 2, viewport.Y - 8);
+        Assert.True(clickY < viewport.Y || clickY > viewport.Bottom);
+
+        var clickPoint = new Point(minimapRect.X + minimapRect.Width * 0.5, clickY);
+        editor.RaiseEvent(CreateMouseDown(clickPoint));
+        editor.RaiseEvent(CreateMouseUp(clickPoint));
+
+        double target = GetPrivateField<double>(editor, "_scrollAnimationTargetVerticalOffset");
+        Assert.True(editor.IsScrollAnimatingForTesting);
+        Assert.True(target > 0);
+    }
+
+    [Fact]
+    public void MinimapViewport_ClickWithoutDrag_ShouldNavigateWithAnimation()
+    {
+        var editor = new EditControl { ShowMinimap = true, IsScrollInertiaEnabled = true, ScrollInertiaDurationMs = 3000 };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 320, 180));
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        var minimapRect = editor.MinimapRectForTesting;
+        var viewport = editor.MinimapViewportRectForTesting;
+        Assert.False(minimapRect.IsEmpty);
+        Assert.False(viewport.IsEmpty);
+
+        var clickPoint = new Point(
+            minimapRect.X + minimapRect.Width * 0.5,
+            Math.Min(viewport.Bottom - 2, viewport.Y + viewport.Height * 0.85));
+
+        editor.RaiseEvent(CreateMouseDown(clickPoint));
+        editor.RaiseEvent(CreateMouseUp(clickPoint));
+
+        double target = GetPrivateField<double>(editor, "_scrollAnimationTargetVerticalOffset");
+        Assert.True(editor.IsScrollAnimatingForTesting);
+        Assert.True(target > 0);
+    }
+
+    [Fact]
+    public void MinimapTooltip_MouseMoveWithinMinimap_ShouldFollowPointerLine()
+    {
+        var editor = new EditControl { ShowMinimap = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 320, 180));
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        var minimapRect = editor.MinimapRectForTesting;
+        Assert.False(minimapRect.IsEmpty);
+
+        var topPoint = new Point(minimapRect.X + minimapRect.Width * 0.5, minimapRect.Y + 6);
+        var bottomPoint = new Point(minimapRect.X + minimapRect.Width * 0.5, minimapRect.Bottom - 6);
+
+        editor.RaiseEvent(CreateMouseMove(topPoint, MouseButtonState.Released));
+        int topLine = editor.MinimapTooltipLineForTesting;
+        Assert.True(editor.IsMinimapTooltipVisibleForTesting);
+        Assert.InRange(topLine, 1, editor.Document.LineCount);
+
+        editor.RaiseEvent(CreateMouseMove(bottomPoint, MouseButtonState.Released));
+        int bottomLine = editor.MinimapTooltipLineForTesting;
+        Assert.True(editor.IsMinimapTooltipVisibleForTesting);
+        Assert.True(bottomLine > topLine);
+    }
+
+    [Fact]
+    public void MinimapTooltip_ShouldRenderAtLeast11Lines_WithHoveredLineCentered()
+    {
+        var editor = new EditControl { ShowMinimap = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 320, 180));
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        var minimapRect = editor.MinimapRectForTesting;
+        Assert.False(minimapRect.IsEmpty);
+
+        var middlePoint = new Point(minimapRect.X + minimapRect.Width * 0.5, minimapRect.Y + minimapRect.Height * 0.5);
+        editor.RaiseEvent(CreateMouseMove(middlePoint, MouseButtonState.Released));
+
+        int hoveredLine = editor.MinimapTooltipLineForTesting;
+        Assert.True(editor.IsMinimapTooltipVisibleForTesting);
+        Assert.InRange(hoveredLine, 1, editor.Document.LineCount);
+
+        string tooltip = editor.MinimapTooltipTextForTesting;
+        string[] lines = tooltip.Split('\n');
+        Assert.True(lines.Length >= 11);
+
+        int centerIndex = 11 / 2;
+        string centerLine = lines[centerIndex];
+        Assert.StartsWith(">", centerLine);
+        Assert.Contains(hoveredLine.ToString(), centerLine);
+    }
+
+    [Fact]
+    public void Minimap_ViewportDrag_ShouldContinuouslyUpdateVerticalOffset()
+    {
+        var editor = new EditControl { ShowMinimap = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 320, 180));
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        var viewport = editor.MinimapViewportRectForTesting;
+        Assert.False(viewport.IsEmpty);
+
+        var start = new Point(viewport.X + viewport.Width / 2, viewport.Y + viewport.Height / 2);
+        var end = new Point(start.X, start.Y + 36);
+
+        editor.RaiseEvent(CreateMouseDown(start));
+        editor.RaiseEvent(CreateMouseMove(end, MouseButtonState.Pressed));
+        editor.RaiseEvent(CreateMouseUp(end));
+
+        Assert.True(editor.VerticalOffsetForTesting > 0);
+    }
+
+    [Fact]
+    public void ScrollAnimation_Wheel_ShouldEnterAnimationState()
+    {
+        var editor = new EditControl { ShowMinimap = false, IsScrollInertiaEnabled = true, ScrollInertiaDurationMs = 3000 };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 260, 140));
+        editor.UpdateScrollBarsForTesting(new Size(260, 140));
+
+        editor.RaiseEvent(CreateMouseWheel(new Point(40, 40), -120, ModifierKeys.None));
+
+        Assert.True(editor.IsScrollAnimatingForTesting);
+        Assert.True(editor.VerticalOffsetForTesting > 0);
+    }
+
+    [Fact]
+    public void ScrollAnimation_ScrollPageDown_ShouldUpdateAnimatedTarget()
+    {
+        var editor = new EditControl { ShowMinimap = false, IsScrollInertiaEnabled = true, ScrollInertiaDurationMs = 3000 };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 260, 140));
+        editor.UpdateScrollBarsForTesting(new Size(260, 140));
+
+        editor.ScrollPageDown();
+
+        double target = GetPrivateField<double>(editor, "_scrollAnimationTargetVerticalOffset");
+        Assert.True(editor.IsScrollAnimatingForTesting);
+        Assert.True(target > editor.VerticalOffsetForTesting);
+    }
+
+    [Fact]
+    public void ScrollAnimation_ThumbDrag_ShouldInterruptAnimation()
+    {
+        var editor = new EditControl { ShowMinimap = false, IsScrollInertiaEnabled = true, ScrollInertiaDurationMs = 3000 };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 260, 140));
+        editor.UpdateScrollBarsForTesting(new Size(260, 140));
+
+        editor.RaiseEvent(CreateMouseWheel(new Point(40, 40), -120, ModifierKeys.None));
+        Assert.True(editor.IsScrollAnimatingForTesting);
+
+        var thumb = editor.VerticalScrollBarThumbRectForTesting;
+        var start = new Point(thumb.X + thumb.Width / 2, thumb.Y + thumb.Height / 2);
+        var end = new Point(start.X, start.Y + 40);
+
+        editor.RaiseEvent(CreateMouseDown(start));
+        editor.RaiseEvent(CreateMouseMove(end, MouseButtonState.Pressed));
+        editor.RaiseEvent(CreateMouseUp(end));
+
+        Assert.False(editor.IsScrollAnimatingForTesting);
+        Assert.True(editor.VerticalOffsetForTesting > 0);
+    }
+
+    [Fact]
+    public void AutoFollowBottom_WhenFollowing_ShouldStayAtBottomAfterAppend()
+    {
+        var editor = new EditControl { ShowMinimap = false, IsScrollInertiaEnabled = false, AutoFollowBottom = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 120).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 260, 140));
+        editor.UpdateScrollBarsForTesting(new Size(260, 140));
+        editor.ScrollToLine(editor.Document.LineCount);
+        Assert.True(editor.IsFollowingBottom);
+
+        editor.AppendText("tail\n");
+
+        Assert.True(editor.IsFollowingBottom);
+        AssertAtBottom(editor);
+    }
+
+    [Fact]
+    public void AutoFollowBottom_WhenUserScrollsUp_ShouldStopFollowingOnAppend()
+    {
+        var editor = new EditControl { ShowMinimap = false, IsScrollInertiaEnabled = false, AutoFollowBottom = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 160).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 260, 140));
+        editor.UpdateScrollBarsForTesting(new Size(260, 140));
+        editor.ScrollToLine(editor.Document.LineCount);
+        Assert.True(editor.IsFollowingBottom);
+
+        editor.RaiseEvent(CreateMouseWheel(new Point(40, 40), 120, ModifierKeys.None));
+        double offsetAfterManualScroll = editor.VerticalOffsetForTesting;
+        Assert.False(editor.IsFollowingBottom);
+
+        editor.AppendText("tail\n");
+
+        Assert.Equal(offsetAfterManualScroll, editor.VerticalOffsetForTesting, precision: 3);
+        Assert.False(editor.IsFollowingBottom);
+    }
+
+    [Fact]
+    public void AutoFollowBottom_WhenScrolledBackToBottom_ShouldResumeFollowing()
+    {
+        var editor = new EditControl { ShowMinimap = false, IsScrollInertiaEnabled = false, AutoFollowBottom = true };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 180).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 260, 140));
+        editor.UpdateScrollBarsForTesting(new Size(260, 140));
+        editor.ScrollToLine(editor.Document.LineCount);
+
+        editor.RaiseEvent(CreateMouseWheel(new Point(40, 40), 120, ModifierKeys.None));
+        Assert.False(editor.IsFollowingBottom);
+
+        int guard = 0;
+        while (!editor.IsFollowingBottom && guard++ < 400)
+            editor.RaiseEvent(CreateMouseWheel(new Point(40, 40), -120, ModifierKeys.None));
+
+        Assert.True(editor.IsFollowingBottom);
+        editor.AppendText("tail\n");
+        AssertAtBottom(editor);
     }
 
     [Theory]
@@ -581,7 +882,7 @@ public class EditControlTests
     [Fact]
     public void ScrollPageDown_Command_ShouldMoveVerticalOffset()
     {
-        var editor = new EditControl();
+        var editor = new EditControl { ShowMinimap = false, IsScrollInertiaEnabled = false };
         editor.LoadText(string.Join("\n", Enumerable.Range(1, 200).Select(i => $"line{i}")));
         editor.Arrange(new Rect(0, 0, 240, 120));
         editor.UpdateScrollBarsForTesting(new Size(240, 120));
@@ -594,7 +895,7 @@ public class EditControlTests
     [Fact]
     public void ScrollPageDown_WhenRepeated_ShouldAllowLastLineAtTopButNotBeyond()
     {
-        var editor = new EditControl();
+        var editor = new EditControl { ShowMinimap = false, IsScrollInertiaEnabled = false };
         editor.LoadText(string.Join("\n", Enumerable.Range(1, 1500).Select(i => $"line{i}")));
         editor.Arrange(new Rect(0, 0, 260, 140));
         editor.UpdateScrollBarsForTesting(new Size(260, 140));
@@ -608,6 +909,37 @@ public class EditControlTests
 
         double maxExpected = view.GetAbsoluteLineTop(editor.Document.LineCount);
         Assert.True(editor.VerticalOffsetForTesting <= maxExpected + 0.001);
+    }
+
+    [Fact]
+    public void MinimapViewport_WhenOverscrolledToLastLineTop_ShouldNotStickAtBottomEarly()
+    {
+        var editor = new EditControl { ShowMinimap = true, IsScrollInertiaEnabled = false };
+        editor.LoadText(string.Join("\n", Enumerable.Range(1, 1500).Select(i => $"line{i}")));
+        editor.Arrange(new Rect(0, 0, 320, 180));
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+
+        var view = GetPrivateView(editor);
+        double contentHeight = Math.Max(0, view.TotalContentHeight);
+        double viewportHeight = Math.Max(0, view.ViewportHeight);
+        double lineHeight = Math.Max(1, view.LineHeight);
+        double defaultBottom = Math.Max(0, contentHeight - viewportHeight);
+        double maxOffset = Math.Max(defaultBottom, Math.Max(0, contentHeight - lineHeight));
+
+        InvokePrivateMethod(editor, "SetVerticalOffsetImmediate", defaultBottom, false, true);
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+        var minimapRect = editor.MinimapRectForTesting;
+        var viewportAtDefaultBottom = editor.MinimapViewportRectForTesting;
+
+        InvokePrivateMethod(editor, "SetVerticalOffsetImmediate", maxOffset, false, true);
+        editor.UpdateScrollBarsForTesting(new Size(320, 180));
+        var viewportAtMaxOffset = editor.MinimapViewportRectForTesting;
+
+        Assert.False(minimapRect.IsEmpty);
+        Assert.False(viewportAtDefaultBottom.IsEmpty);
+        Assert.False(viewportAtMaxOffset.IsEmpty);
+        Assert.True(viewportAtDefaultBottom.Bottom < minimapRect.Bottom - 0.5);
+        Assert.InRange(Math.Abs(viewportAtMaxOffset.Bottom - minimapRect.Bottom), 0, 0.5);
     }
 
     [Fact]
@@ -756,6 +1088,30 @@ public class EditControlTests
         var view = value as EditorView;
         Assert.NotNull(view);
         return view!;
+    }
+
+    private static T GetPrivateField<T>(EditControl editor, string fieldName)
+    {
+        var field = typeof(EditControl).GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        var value = field!.GetValue(editor);
+        Assert.NotNull(value);
+        return (T)value;
+    }
+
+    private static void InvokePrivateMethod(EditControl editor, string methodName, params object[] args)
+    {
+        var method = typeof(EditControl).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        method!.Invoke(editor, args);
+    }
+
+    private static void AssertAtBottom(EditControl editor)
+    {
+        var view = GetPrivateView(editor);
+        double expectedBottom = view.GetAbsoluteLineTop(editor.Document.LineCount);
+        double tolerance = Math.Max(1, view.LineHeight * 0.5) + 0.001;
+        Assert.InRange(Math.Abs(expectedBottom - editor.VerticalOffsetForTesting), 0, tolerance);
     }
 
     private static MouseButtonEventArgs CreateMouseDown(Point position)

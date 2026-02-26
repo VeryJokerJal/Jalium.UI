@@ -85,9 +85,14 @@ public abstract class TextBoxBase : Control
     protected const int CaretFadeDuration = 150;
 
     /// <summary>
-    /// Whether the caret animation is subscribed to CompositionTarget.Rendering.
+    /// Timer that drives caret blinking/fading without forcing full-frame rendering.
     /// </summary>
-    private bool _caretSubscribed;
+    private DispatcherTimer? _caretTimer;
+
+    /// <summary>
+    /// Tick interval during fade phases (ms). Hold phases use longer dynamic intervals.
+    /// </summary>
+    private const int CaretAnimationTickMs = 33;
 
     /// <summary>
     /// Whether the user is currently selecting text.
@@ -902,6 +907,11 @@ public abstract class TextBoxBase : Control
         _caretOpacity = 1.0;
         _lastCaretBlink = DateTime.Now;
         _caretAnimationStart = DateTime.Now;
+
+        if (_caretTimer is { IsEnabled: true })
+        {
+            ScheduleNextCaretTick(_lastCaretBlink);
+        }
     }
 
     /// <summary>
@@ -977,6 +987,50 @@ public abstract class TextBoxBase : Control
         {
             return 1.0 - Math.Pow(-2.0 * t + 2.0, 2) / 2.0;
         }
+    }
+
+    /// <summary>
+    /// Schedules the next caret timer tick based on the current blink/fade phase.
+    /// This avoids continuous per-frame invalidation when caret is fully visible/hidden.
+    /// </summary>
+    private void ScheduleNextCaretTick(DateTime now)
+    {
+        if (_caretTimer == null)
+        {
+            return;
+        }
+
+        var elapsed = (now - _lastCaretBlink).TotalMilliseconds;
+        var fullCycleTime = (CaretBlinkInterval + CaretFadeDuration) * 2.0;
+        var timeInCycle = elapsed % fullCycleTime;
+
+        double visibleEnd = CaretBlinkInterval;
+        double fadeOutEnd = CaretBlinkInterval + CaretFadeDuration;
+        double hiddenEnd = CaretBlinkInterval * 2 + CaretFadeDuration;
+
+        double intervalMs;
+        if (timeInCycle < visibleEnd)
+        {
+            // Fully visible hold phase.
+            intervalMs = visibleEnd - timeInCycle;
+        }
+        else if (timeInCycle < fadeOutEnd)
+        {
+            // Fade-out phase.
+            intervalMs = Math.Min(CaretAnimationTickMs, fadeOutEnd - timeInCycle);
+        }
+        else if (timeInCycle < hiddenEnd)
+        {
+            // Fully hidden hold phase.
+            intervalMs = hiddenEnd - timeInCycle;
+        }
+        else
+        {
+            // Fade-in phase.
+            intervalMs = Math.Min(CaretAnimationTickMs, fullCycleTime - timeInCycle);
+        }
+
+        _caretTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, Math.Ceiling(intervalMs)));
     }
 
     /// <summary>
@@ -1442,33 +1496,34 @@ public abstract class TextBoxBase : Control
         if (IsReadOnly)
             return;
 
-        if (!_caretSubscribed)
+        if (_caretTimer == null)
         {
-            _caretSubscribed = true;
-            CompositionTarget.Subscribe();
-            CompositionTarget.Rendering += OnCaretFrame;
+            _caretTimer = new DispatcherTimer(DispatcherPriority.Background);
+            _caretTimer.Tick += OnCaretTimerTick;
         }
+
+        ScheduleNextCaretTick(DateTime.Now);
+        _caretTimer.Start();
     }
 
     private void StopCaretTimer()
     {
-        if (_caretSubscribed)
+        if (_caretTimer != null)
         {
-            _caretSubscribed = false;
-            CompositionTarget.Rendering -= OnCaretFrame;
-            CompositionTarget.Unsubscribe();
+            _caretTimer.Stop();
         }
     }
 
-    private void OnCaretFrame(object? sender, EventArgs e)
+    private void OnCaretTimerTick(object? sender, EventArgs e)
     {
-        // Request a visual update for caret animation.
-        // This runs on the UI thread during CompositionTarget.Rendering phase,
-        // so InvalidateWindow will schedule properly within the frame loop.
-        if (IsKeyboardFocused && !IsReadOnly)
+        if (!IsKeyboardFocused || IsReadOnly)
         {
-            InvalidateVisual();
+            StopCaretTimer();
+            return;
         }
+
+        InvalidateVisual();
+        ScheduleNextCaretTick(DateTime.Now);
     }
 
     #endregion

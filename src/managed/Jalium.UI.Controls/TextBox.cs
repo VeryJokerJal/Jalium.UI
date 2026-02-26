@@ -1339,25 +1339,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     public Point GetImeCaretPosition()
     {
-        // Get the caret position in local coordinates and convert to screen
-        var caretPos = GetCaretScreenPosition();
-
-        // Transform to window coordinates by traversing visual tree
-        var element = this as UIElement;
-        var parent = element?.VisualParent;
-        while (parent != null)
-        {
-            if (parent is FrameworkElement fe)
-            {
-                // Add the margin/position offset
-                caretPos = new Point(caretPos.X + fe.Margin.Left, caretPos.Y + fe.Margin.Top);
-            }
-            if (parent is Window)
-                break;
-            parent = parent.VisualParent;
-        }
-
-        return caretPos;
+        return GetCaretScreenPosition();
     }
 
     private Point GetCaretScreenPosition()
@@ -1626,44 +1608,3 @@ public sealed class TextChangedEventArgs : RoutedEventArgs
 /// </summary>
 public delegate void TextChangedEventHandler(object sender, TextChangedEventArgs e);
 
-/// <summary>
-/// Provides static methods for clipboard operations.
-/// Delegates to native Windows clipboard via P/Invoke.
-/// </summary>
-public static class Clipboard
-{
-    /// <summary>
-    /// Sets text to the clipboard.
-    /// </summary>
-    /// <param name="text">The text to set.</param>
-    public static void SetText(string text)
-    {
-        Interop.Clipboard.SetText(text);
-    }
-
-    /// <summary>
-    /// Gets text from the clipboard.
-    /// </summary>
-    /// <returns>The text from the clipboard, or empty string if no text is available.</returns>
-    public static string GetText()
-    {
-        return Interop.Clipboard.GetText() ?? string.Empty;
-    }
-
-    /// <summary>
-    /// Checks if the clipboard contains text.
-    /// </summary>
-    /// <returns>True if the clipboard contains text, false otherwise.</returns>
-    public static bool ContainsText()
-    {
-        return Interop.Clipboard.ContainsText();
-    }
-
-    /// <summary>
-    /// Clears the clipboard.
-    /// </summary>
-    public static void Clear()
-    {
-        Interop.Clipboard.Clear();
-    }
-}

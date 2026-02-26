@@ -1597,22 +1597,7 @@ public sealed class PasswordBox : Control, IImeSupport
     /// <inheritdoc />
     public Point GetImeCaretPosition()
     {
-        var caretPos = GetCaretScreenPosition();
-
-        var element = this as UIElement;
-        var parent = element?.VisualParent;
-        while (parent != null)
-        {
-            if (parent is FrameworkElement fe)
-            {
-                caretPos = new Point(caretPos.X + fe.Margin.Left, caretPos.Y + fe.Margin.Top);
-            }
-            if (parent is Window)
-                break;
-            parent = parent.VisualParent;
-        }
-
-        return caretPos;
+        return GetCaretScreenPosition();
     }
 
     private Point GetCaretScreenPosition()
