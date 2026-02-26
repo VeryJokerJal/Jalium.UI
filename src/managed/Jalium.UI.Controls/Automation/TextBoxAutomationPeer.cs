@@ -1,4 +1,5 @@
 using Jalium.UI.Automation;
+using Jalium.UI.Controls.Primitives;
 
 namespace Jalium.UI.Controls.Automation;
 
@@ -77,7 +78,7 @@ public class TextBoxBaseAutomationPeer : FrameworkElementAutomationPeer, IValueP
 /// <summary>
 /// Exposes TextBox types to UI Automation.
 /// </summary>
-public class TextBoxAutomationPeer : TextBoxBaseAutomationPeer
+public sealed class TextBoxAutomationPeer : TextBoxBaseAutomationPeer
 {
     /// <summary>
     /// Initializes a new instance of the TextBoxAutomationPeer class.
@@ -136,7 +137,7 @@ public class TextBoxAutomationPeer : TextBoxBaseAutomationPeer
 /// <summary>
 /// Exposes PasswordBox types to UI Automation.
 /// </summary>
-public class PasswordBoxAutomationPeer : FrameworkElementAutomationPeer, IValueProvider
+public sealed class PasswordBoxAutomationPeer : FrameworkElementAutomationPeer, IValueProvider
 {
     /// <summary>
     /// Initializes a new instance of the PasswordBoxAutomationPeer class.

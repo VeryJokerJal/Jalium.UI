@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a resize grip for Window controls.
 /// </summary>
-public class ResizeGrip : Control
+public sealed class ResizeGrip : Control
 {
     #region Private Fields
 

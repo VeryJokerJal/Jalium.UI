@@ -1,11 +1,12 @@
 using Jalium.UI.Automation;
+using Jalium.UI.Controls.Primitives;
 
 namespace Jalium.UI.Controls.Automation;
 
 /// <summary>
 /// Exposes Button types to UI Automation.
 /// </summary>
-public class ButtonAutomationPeer : FrameworkElementAutomationPeer, IInvokeProvider
+public sealed class ButtonAutomationPeer : FrameworkElementAutomationPeer, IInvokeProvider
 {
     /// <summary>
     /// Initializes a new instance of the ButtonAutomationPeer class.

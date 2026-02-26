@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls.Ink;
 /// <summary>
 /// Specifies the appearance of a <see cref="Stroke"/> when rendered.
 /// </summary>
-public class DrawingAttributes : INotifyPropertyChanged
+public sealed class DrawingAttributes : INotifyPropertyChanged
 {
     /// <summary>
     /// The default width value.
@@ -190,7 +190,7 @@ public class DrawingAttributes : INotifyPropertyChanged
     /// <summary>
     /// Raises the <see cref="PropertyChanged"/> event.
     /// </summary>
-    protected virtual void OnPropertyChanged(string propertyName)
+    protected void OnPropertyChanged(string propertyName)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         AttributeChanged?.Invoke(this, EventArgs.Empty);

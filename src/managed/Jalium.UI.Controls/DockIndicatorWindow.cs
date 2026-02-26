@@ -1,0 +1,420 @@
+using System.Diagnostics;
+using System.Runtime.InteropServices;
+using Jalium.UI.Interop;
+using Jalium.UI.Media;
+
+namespace Jalium.UI.Controls;
+
+/// <summary>
+/// Transparent, click-through, topmost native window that renders dock indicator buttons.
+/// Sits above all other windows (including floating dock windows) so indicators are always visible.
+/// Based on the same DirectComposition approach as <see cref="PopupWindow"/>.
+/// </summary>
+internal sealed partial class DockIndicatorWindow : IDisposable
+{
+    private nint _hwnd;
+    private RenderTarget? _renderTarget;
+    private RenderTargetDrawingContext? _drawingContext;
+    private readonly DockIndicatorVisual _visual;
+    private readonly Dispatcher _dispatcher;
+
+    private volatile bool _renderScheduled;
+    private bool _isRendering;
+    private volatile bool _renderRequested;
+    private bool _disposed;
+    private int _width;
+    private int _height;
+    private double _dpiScale = 1.0;
+
+    // Static window class registration
+    private static WndProcDelegate? _wndProcDelegate;
+    private static bool _classRegistered;
+    private static readonly Dictionary<nint, DockIndicatorWindow> _windows = [];
+
+    private delegate nint WndProcDelegate(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    internal DockIndicatorWindow(bool showCenterCross, bool showEdgeButtons)
+    {
+        _visual = new DockIndicatorVisual
+        {
+            ShowCenterCross = showCenterCross,
+            ShowEdgeButtons = showEdgeButtons
+        };
+        _dispatcher = Dispatcher.CurrentDispatcher;
+    }
+
+    /// <summary>
+    /// Creates and shows the indicator window at the specified screen position (physical pixels).
+    /// </summary>
+    internal void Show(nint parentHwnd, int screenX, int screenY, int width, int height, double dpiScale)
+    {
+        if (_hwnd != nint.Zero) return; // Already shown
+
+        _width = width;
+        _height = height;
+        _dpiScale = dpiScale;
+
+        RegisterWindowClass();
+
+        _hwnd = CreateWindowEx(
+            WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TOPMOST
+                | WS_EX_NOREDIRECTIONBITMAP | WS_EX_TRANSPARENT,
+            IndicatorWindowClassName,
+            "",
+            WS_POPUP,
+            screenX, screenY, width, height,
+            parentHwnd,
+            nint.Zero,
+            GetModuleHandle(null),
+            nint.Zero);
+
+        if (_hwnd == nint.Zero) return;
+
+        _windows[_hwnd] = this;
+
+        var context = RenderContext.Current;
+        if (context == null || !context.IsValid)
+            context = new RenderContext(RenderBackend.D3D12);
+
+        _renderTarget = context.CreateRenderTargetForComposition(_hwnd, width, height);
+        var dpi = (float)(dpiScale * 96.0);
+        _renderTarget.SetDpi(dpi, dpi);
+
+        _ = ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
+        ScheduleRender();
+    }
+
+    /// <summary>
+    /// Updates the hovered dock position and re-renders.
+    /// </summary>
+    internal void UpdateIndicator(DockPosition hoveredPosition)
+    {
+        if (_visual.HoveredPosition == hoveredPosition) return;
+        _visual.HoveredPosition = hoveredPosition;
+        ScheduleRender();
+    }
+
+    /// <summary>
+    /// Moves the indicator window to a new screen position and/or size (physical pixels).
+    /// </summary>
+    internal void MoveTo(int screenX, int screenY, int width, int height)
+    {
+        if (_hwnd == nint.Zero) return;
+
+        bool sizeChanged = width != _width || height != _height;
+        _width = width;
+        _height = height;
+
+        _ = SetWindowPos(_hwnd, HWND_TOPMOST, screenX, screenY, width, height,
+            SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+
+        if (sizeChanged && _renderTarget != null)
+            _renderTarget.Resize(width, height);
+
+        ScheduleRender();
+    }
+
+    /// <summary>
+    /// Hides the indicator window without destroying it.
+    /// </summary>
+    internal void Hide()
+    {
+        if (_hwnd != nint.Zero)
+            _ = ShowWindow(_hwnd, SW_HIDE);
+    }
+
+    internal bool IsVisible => _hwnd != nint.Zero;
+
+    #region Rendering
+
+    private void ScheduleRender()
+    {
+        if (_hwnd == nint.Zero || _disposed) return;
+
+        if (_isRendering)
+        {
+            _renderRequested = true;
+            return;
+        }
+
+        if (!_renderScheduled)
+        {
+            _renderScheduled = true;
+            _dispatcher.BeginInvokeCritical(ProcessRender);
+        }
+    }
+
+    private void ProcessRender()
+    {
+        _renderScheduled = false;
+        if (_hwnd == nint.Zero || _disposed) return;
+        RenderFrame();
+    }
+
+    private void RenderFrame()
+    {
+        if (_isRendering) return;
+        _isRendering = true;
+        _renderRequested = false;
+
+        try
+        {
+            if (_renderTarget == null || !_renderTarget.IsValid) return;
+
+            // Layout in DIPs
+            var dipWidth = _width / _dpiScale;
+            var dipHeight = _height / _dpiScale;
+
+            var constraint = new Size(dipWidth, dipHeight);
+            _visual.Measure(constraint);
+            _visual.Arrange(new Rect(0, 0, dipWidth, dipHeight));
+
+            _renderTarget.SetFullInvalidation();
+            _renderTarget.BeginDraw();
+
+            // Clear with fully transparent background
+            _renderTarget.Clear(0f, 0f, 0f, 0f);
+
+            var context = RenderContext.Current;
+            if (context != null)
+            {
+                _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
+                _drawingContext.Offset = Point.Zero;
+                _visual.Render(_drawingContext);
+            }
+
+            _renderTarget.EndDraw();
+            _drawingContext?.TrimCacheIfNeeded();
+        }
+        catch (Exception ex)
+        {
+            LogRenderFailure(ex, "RenderFrame");
+            throw;
+        }
+        finally
+        {
+            _isRendering = false;
+        }
+
+        if (_renderRequested)
+        {
+            _renderRequested = false;
+            ScheduleRender();
+        }
+    }
+
+    private void LogRenderFailure(Exception exception, string fallbackStage)
+    {
+        string stage = fallbackStage;
+        int resultCode = (int)JaliumResult.Unknown;
+        if (exception is RenderPipelineException pipelineException)
+        {
+            stage = pipelineException.Stage;
+            resultCode = pipelineException.ResultCode;
+        }
+
+        double dpi = _dpiScale * 96.0;
+        string backend = _renderTarget?.Backend.ToString() ?? RenderContext.Current?.Backend.ToString() ?? "Unknown";
+
+        Debug.WriteLine(
+            $"RenderFailure windowType={GetType().Name} hwnd=0x{_hwnd.ToInt64():X} size={_width}x{_height} dpi={dpi:F2} backend={backend} stage={stage} resultCode={resultCode}");
+    }
+
+    #endregion
+
+    #region WndProc
+
+    private static void RegisterWindowClass()
+    {
+        if (_classRegistered) return;
+
+        _wndProcDelegate = IndicatorWndProc;
+
+        WNDCLASSEX wc = new()
+        {
+            cbSize = (uint)Marshal.SizeOf<WNDCLASSEX>(),
+            style = 0,
+            lpfnWndProc = Marshal.GetFunctionPointerForDelegate(_wndProcDelegate),
+            hInstance = GetModuleHandle(null),
+            hCursor = nint.Zero,
+            hbrBackground = nint.Zero,
+            lpszClassName = IndicatorWindowClassName
+        };
+
+        var atom = RegisterClassEx(ref wc);
+        if (atom == 0)
+            throw new InvalidOperationException("Failed to register dock indicator window class.");
+
+        _classRegistered = true;
+    }
+
+    private static nint IndicatorWndProc(nint hWnd, uint msg, nint wParam, nint lParam)
+    {
+        if (_windows.TryGetValue(hWnd, out var window))
+        {
+            switch (msg)
+            {
+                case WM_DESTROY:
+                    _ = _windows.Remove(hWnd);
+                    return nint.Zero;
+
+                case WM_ERASEBKGND:
+                    return 1;
+
+                case WM_PAINT:
+                    window.OnPaint();
+                    return nint.Zero;
+
+                case WM_MOUSEACTIVATE:
+                    return MA_NOACTIVATE;
+            }
+        }
+
+        return DefWindowProc(hWnd, msg, wParam, lParam);
+    }
+
+    private void OnPaint()
+    {
+        var ps = new PAINTSTRUCT();
+        _ = BeginPaint(_hwnd, out ps);
+        RenderFrame();
+        EndPaint(_hwnd, ref ps);
+    }
+
+    #endregion
+
+    #region IDisposable
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        _drawingContext = null;
+
+        if (_renderTarget != null)
+        {
+            _renderTarget.Dispose();
+            _renderTarget = null;
+        }
+
+        if (_hwnd != nint.Zero)
+        {
+            _ = _windows.Remove(_hwnd);
+            _ = DestroyWindow(_hwnd);
+            _hwnd = nint.Zero;
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
+    ~DockIndicatorWindow()
+    {
+        Dispose();
+    }
+
+    #endregion
+
+    #region Win32 Interop
+
+    private const string IndicatorWindowClassName = "JaliumDockIndicator";
+
+    // Window styles
+    private const uint WS_POPUP = 0x80000000;
+    private const uint WS_EX_TOOLWINDOW = 0x00000080;
+    private const uint WS_EX_NOACTIVATE = 0x08000000;
+    private const uint WS_EX_TOPMOST = 0x00000008;
+    private const uint WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
+    private const uint WS_EX_TRANSPARENT = 0x00000020;
+
+    // ShowWindow commands
+    private const int SW_HIDE = 0;
+    private const int SW_SHOWNOACTIVATE = 4;
+
+    // SetWindowPos
+    private static readonly nint HWND_TOPMOST = -1;
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_NOOWNERZORDER = 0x0200;
+
+    // Window messages
+    private const uint WM_DESTROY = 0x0002;
+    private const uint WM_PAINT = 0x000F;
+    private const uint WM_ERASEBKGND = 0x0014;
+    private const uint WM_MOUSEACTIVATE = 0x0021;
+
+    // WM_MOUSEACTIVATE return values
+    private const nint MA_NOACTIVATE = 3;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PAINTSTRUCT
+    {
+        public nint hdc;
+        public bool fErase;
+        public RECT rcPaint;
+        public bool fRestore;
+        public bool fIncUpdate;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+        public byte[]? rgbReserved;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int left, top, right, bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WNDCLASSEX
+    {
+        public uint cbSize;
+        public uint style;
+        public nint lpfnWndProc;
+        public int cbClsExtra;
+        public int cbWndExtra;
+        public nint hInstance;
+        public nint hIcon;
+        public nint hCursor;
+        public nint hbrBackground;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string? lpszMenuName;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string lpszClassName;
+        public nint hIconSm;
+    }
+
+    [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern ushort RegisterClassEx(ref WNDCLASSEX lpWndClass);
+
+    [LibraryImport("user32.dll", EntryPoint = "CreateWindowExW", SetLastError = true, StringMarshalling = StringMarshalling.Utf16)]
+    private static partial nint CreateWindowEx(
+        uint dwExStyle, string lpClassName, string lpWindowName, uint dwStyle,
+        int x, int y, int nWidth, int nHeight,
+        nint hWndParent, nint hMenu, nint hInstance, nint lpParam);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool ShowWindow(nint hWnd, int nCmdShow);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool DestroyWindow(nint hWnd);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetWindowPos(nint hWnd, nint hWndInsertAfter, int X, int Y, int cx, int cy, uint uFlags);
+
+    [LibraryImport("user32.dll", EntryPoint = "DefWindowProcW")]
+    private static partial nint DefWindowProc(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    [LibraryImport("kernel32.dll", EntryPoint = "GetModuleHandleW", StringMarshalling = StringMarshalling.Utf16)]
+    private static partial nint GetModuleHandle(string? lpModuleName);
+
+    [DllImport("user32.dll")]
+    private static extern nint BeginPaint(nint hWnd, out PAINTSTRUCT lpPaint);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EndPaint(nint hWnd, ref PAINTSTRUCT lpPaint);
+
+    #endregion
+}

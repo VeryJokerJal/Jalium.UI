@@ -1,3 +1,5 @@
+using Jalium.UI;
+
 namespace Jalium.UI.Interop;
 
 /// <summary>
@@ -5,10 +7,14 @@ namespace Jalium.UI.Interop;
 /// </summary>
 public sealed class RenderTarget : IDisposable
 {
-    private readonly RenderContext _context;
+    private readonly IRenderTargetNative _native;
+    private readonly RenderBackend _backend;
+    private readonly nint _hwnd;
     private nint _handle;
     private bool _disposed;
     private bool _isDrawing;
+    private float _dpiX = 96.0f;
+    private float _dpiY = 96.0f;
 
     /// <summary>
     /// Gets the native handle.
@@ -26,6 +32,11 @@ public sealed class RenderTarget : IDisposable
     public bool IsDrawing => _isDrawing;
 
     /// <summary>
+    /// Gets the backend associated with this render target.
+    /// </summary>
+    public RenderBackend Backend => _backend;
+
+    /// <summary>
     /// Gets or sets the width.
     /// </summary>
     public int Width { get; private set; }
@@ -35,16 +46,33 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     public int Height { get; private set; }
 
-    internal RenderTarget(RenderContext context, nint hwnd, int width, int height)
+    internal RenderTarget(RenderContext context, nint hwnd, int width, int height, bool useComposition = false)
+        : this(context.Backend, context.Handle, hwnd, width, height, useComposition)
     {
-        _context = context;
+    }
+
+    internal RenderTarget(
+        RenderBackend backend,
+        nint contextHandle,
+        nint hwnd,
+        int width,
+        int height,
+        bool useComposition,
+        IRenderTargetNative? native = null)
+    {
+        _native = native ?? DefaultRenderTargetNative.Instance;
+        _backend = backend;
+        _hwnd = hwnd;
         Width = width;
         Height = height;
 
-        _handle = NativeMethods.RenderTargetCreateForHwnd(context.Handle, hwnd, width, height);
+        _handle = useComposition
+            ? _native.CreateForComposition(contextHandle, hwnd, width, height)
+            : _native.CreateForHwnd(contextHandle, hwnd, width, height);
         if (_handle == nint.Zero)
         {
-            throw new InvalidOperationException("Failed to create render target");
+            int resultCode = _native.GetContextLastError(contextHandle);
+            ThrowRenderPipelineException("Create", resultCode);
         }
     }
 
@@ -58,12 +86,11 @@ public sealed class RenderTarget : IDisposable
         ThrowIfDisposed();
         if (width <= 0 || height <= 0) return;
 
-        var result = NativeMethods.RenderTargetResize(_handle, width, height);
-        if (result == 0)
-        {
-            Width = width;
-            Height = height;
-        }
+        int resultCode = _native.Resize(_handle, width, height);
+        ThrowIfNativeFailure("Resize", resultCode);
+
+        Width = width;
+        Height = height;
     }
 
     /// <summary>
@@ -74,7 +101,8 @@ public sealed class RenderTarget : IDisposable
         ThrowIfDisposed();
         if (_isDrawing) return;
 
-        NativeMethods.RenderTargetBeginDraw(_handle);
+        int resultCode = _native.BeginDraw(_handle);
+        ThrowIfNativeFailure("Begin", resultCode);
         _isDrawing = true;
     }
 
@@ -86,8 +114,17 @@ public sealed class RenderTarget : IDisposable
         ThrowIfDisposed();
         if (!_isDrawing) return;
 
-        NativeMethods.RenderTargetEndDraw(_handle);
-        _isDrawing = false;
+        int resultCode;
+        try
+        {
+            resultCode = _native.EndDraw(_handle);
+        }
+        finally
+        {
+            _isDrawing = false;
+        }
+
+        ThrowIfNativeFailure("End", resultCode);
     }
 
     /// <summary>
@@ -201,6 +238,41 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Fills a path with native bezier curve support.
+    /// </summary>
+    public void FillPath(float startX, float startY, float[] commands, NativeBrush brush, int fillRule = 0)
+    {
+        ThrowIfDisposed();
+        if (brush == null || !brush.IsValid || commands == null || commands.Length == 0) return;
+        NativeMethods.FillPath(_handle, startX, startY, commands, commands.Length, brush.Handle, fillRule);
+    }
+
+    /// <summary>
+    /// Strokes a path with native bezier curve support.
+    /// </summary>
+    public void StrokePath(float startX, float startY, float[] commands, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true)
+    {
+        ThrowIfDisposed();
+        if (brush == null || !brush.IsValid || commands == null || commands.Length == 0) return;
+        NativeMethods.StrokePath(_handle, startX, startY, commands, commands.Length, brush.Handle, strokeWidth, closed ? 1 : 0);
+    }
+
+    /// <summary>
+    /// Draws a content area border: fills rect with bottom-only rounded corners,
+    /// strokes U-shape (left + bottom + right, no top) with native D2D arcs.
+    /// </summary>
+    public void DrawContentBorder(float x, float y, float width, float height,
+        float blRadius, float brRadius,
+        NativeBrush? fillBrush, NativeBrush? strokeBrush, float strokeWidth = 1.0f)
+    {
+        ThrowIfDisposed();
+        var fillHandle = (fillBrush != null && fillBrush.IsValid) ? fillBrush.Handle : 0;
+        var strokeHandle = (strokeBrush != null && strokeBrush.IsValid) ? strokeBrush.Handle : 0;
+        if (fillHandle == 0 && strokeHandle == 0) return;
+        NativeMethods.DrawContentBorder(_handle, x, y, width, height, blRadius, brRadius, fillHandle, strokeHandle, strokeWidth);
+    }
+
+    /// <summary>
     /// Draws text.
     /// </summary>
     public void DrawText(string text, NativeTextFormat format, float x, float y, float width, float height, NativeBrush brush)
@@ -239,6 +311,15 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Pushes a rounded rectangle clip using a geometry mask layer.
+    /// </summary>
+    public void PushRoundedRectClip(float x, float y, float width, float height, float rx, float ry)
+    {
+        ThrowIfDisposed();
+        NativeMethods.PushRoundedRectClip(_handle, x, y, width, height, rx, ry);
+    }
+
+    /// <summary>
     /// Pops the current clip.
     /// </summary>
     public void PopClip()
@@ -274,6 +355,39 @@ public sealed class RenderTarget : IDisposable
     {
         ThrowIfDisposed();
         NativeMethods.RenderTargetSetVSync(_handle, enabled ? 1 : 0);
+    }
+
+    /// <summary>
+    /// Sets the DPI for the render target.
+    /// D2D will use this to map DIP coordinates to physical pixels.
+    /// </summary>
+    /// <param name="dpiX">Horizontal DPI (96 = 100% scaling).</param>
+    /// <param name="dpiY">Vertical DPI (96 = 100% scaling).</param>
+    public void SetDpi(float dpiX, float dpiY)
+    {
+        ThrowIfDisposed();
+        _dpiX = dpiX;
+        _dpiY = dpiY;
+        NativeMethods.RenderTargetSetDpi(_handle, dpiX, dpiY);
+    }
+
+    /// <summary>
+    /// Adds a dirty rectangle for partial rendering optimization.
+    /// The native layer uses this to clip D2D drawing and for Present1 dirty rects.
+    /// </summary>
+    public void AddDirtyRect(float x, float y, float width, float height)
+    {
+        ThrowIfDisposed();
+        NativeMethods.RenderTargetAddDirtyRect(_handle, x, y, width, height);
+    }
+
+    /// <summary>
+    /// Marks the entire render target as needing full redraw.
+    /// </summary>
+    public void SetFullInvalidation()
+    {
+        ThrowIfDisposed();
+        _native.SetFullInvalidation(_handle);
     }
 
     /// <summary>
@@ -435,9 +549,195 @@ public sealed class RenderTarget : IDisposable
             screenWidth, screenHeight);
     }
 
+    /// <summary>
+    /// Captures the desktop area at the specified screen coordinates.
+    /// The captured content is cached internally for use by DrawDesktopBackdrop.
+    /// </summary>
+    /// <param name="screenX">Screen X coordinate.</param>
+    /// <param name="screenY">Screen Y coordinate.</param>
+    /// <param name="width">Width to capture.</param>
+    /// <param name="height">Height to capture.</param>
+    public void CaptureDesktopArea(int screenX, int screenY, int width, int height)
+    {
+        ThrowIfDisposed();
+        if (width <= 0 || height <= 0) return;
+        NativeMethods.CaptureDesktopArea(_handle, screenX, screenY, width, height);
+    }
+
+    /// <summary>
+    /// Draws the cached desktop capture with Gaussian blur and tint overlay.
+    /// Must call CaptureDesktopArea first.
+    /// </summary>
+    public void DrawDesktopBackdrop(
+        float x, float y, float width, float height,
+        float blurRadius,
+        float tintR, float tintG, float tintB, float tintOpacity,
+        float noiseIntensity = 0f, float saturation = 1f)
+    {
+        ThrowIfDisposed();
+        NativeMethods.DrawDesktopBackdrop(
+            _handle, x, y, width, height,
+            blurRadius, tintR, tintG, tintB, tintOpacity,
+            noiseIntensity, saturation);
+    }
+
+    /// <summary>
+    /// Begins capturing content into an offscreen bitmap for transition shader effects.
+    /// </summary>
+    /// <param name="slot">0 = old content, 1 = new content.</param>
+    /// <param name="x">X position (in DIPs).</param>
+    /// <param name="y">Y position (in DIPs).</param>
+    /// <param name="w">Width (in DIPs).</param>
+    /// <param name="h">Height (in DIPs).</param>
+    public void BeginTransitionCapture(int slot, float x, float y, float w, float h)
+    {
+        ThrowIfDisposed();
+        NativeMethods.TransitionBeginCapture(_handle, slot, x, y, w, h);
+    }
+
+    /// <summary>
+    /// Ends capturing content for a transition slot and restores the main render target.
+    /// </summary>
+    /// <param name="slot">0 = old content, 1 = new content.</param>
+    public void EndTransitionCapture(int slot)
+    {
+        ThrowIfDisposed();
+        NativeMethods.TransitionEndCapture(_handle, slot);
+    }
+
+    /// <summary>
+    /// Draws the transition shader effect blending old and new content bitmaps.
+    /// </summary>
+    /// <param name="x">X position (in DIPs).</param>
+    /// <param name="y">Y position (in DIPs).</param>
+    /// <param name="w">Width (in DIPs).</param>
+    /// <param name="h">Height (in DIPs).</param>
+    /// <param name="progress">Transition progress (0.0 - 1.0).</param>
+    /// <param name="mode">Shader mode index (0-9).</param>
+    public void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode)
+    {
+        ThrowIfDisposed();
+        NativeMethods.DrawTransitionShader(_handle, x, y, w, h, progress, mode);
+    }
+
+    /// <summary>
+    /// Draws a previously captured transition bitmap to the current render target.
+    /// </summary>
+    public void DrawCapturedTransition(int slot, float x, float y, float w, float h, float opacity)
+    {
+        ThrowIfDisposed();
+        NativeMethods.DrawCapturedTransition(_handle, slot, x, y, w, h, opacity);
+    }
+
+    // ========================================================================
+    // Element Effect Capture & Rendering
+    // ========================================================================
+
+    /// <summary>
+    /// Begins capturing element content into an offscreen bitmap for effect processing.
+    /// </summary>
+    public void BeginEffectCapture(float x, float y, float w, float h)
+    {
+        ThrowIfDisposed();
+        NativeMethods.EffectBeginCapture(_handle, x, y, w, h);
+    }
+
+    /// <summary>
+    /// Ends capturing element content and restores the main render target.
+    /// </summary>
+    public void EndEffectCapture()
+    {
+        ThrowIfDisposed();
+        NativeMethods.EffectEndCapture(_handle);
+    }
+
+    /// <summary>
+    /// Applies a Gaussian blur effect to the captured element content and draws it.
+    /// </summary>
+    public void DrawBlurEffect(float x, float y, float w, float h, float radius)
+    {
+        ThrowIfDisposed();
+        NativeMethods.DrawBlurEffect(_handle, x, y, w, h, radius);
+    }
+
+    /// <summary>
+    /// Applies a drop shadow effect to the captured element content and draws it.
+    /// </summary>
+    public void DrawDropShadowEffect(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a)
+    {
+        ThrowIfDisposed();
+        NativeMethods.DrawDropShadowEffect(_handle, x, y, w, h,
+            blurRadius, offsetX, offsetY, r, g, b, a);
+    }
+
+    /// <summary>
+    /// Draws a liquid glass effect with SDF-based refraction, highlight, and inner shadow.
+    /// </summary>
+    public unsafe void DrawLiquidGlass(
+        float x, float y, float width, float height,
+        float cornerRadius,
+        float blurRadius = 8f,
+        float refractionAmount = 60f,
+        float chromaticAberration = 0f,
+        float tintR = 0.08f, float tintG = 0.08f, float tintB = 0.08f,
+        float tintOpacity = 0.3f,
+        float lightX = -1f, float lightY = -1f,
+        float highlightBoost = 0f,
+        int shapeType = 0,
+        float shapeExponent = 4f,
+        int neighborCount = 0,
+        float fusionRadius = 30f,
+        ReadOnlySpan<float> neighborData = default)
+    {
+        ThrowIfDisposed();
+        fixed (float* pNeighbor = neighborData)
+        {
+            NativeMethods.DrawLiquidGlass(
+                _handle, x, y, width, height,
+                cornerRadius, blurRadius,
+                refractionAmount, chromaticAberration,
+                tintR, tintG, tintB, tintOpacity,
+                lightX, lightY, highlightBoost,
+                shapeType, shapeExponent,
+                neighborCount, fusionRadius, (nint)pNeighbor);
+        }
+    }
+
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+    }
+
+    private void ThrowIfNativeFailure(string stage, int resultCode)
+    {
+        if (resultCode == (int)JaliumResult.Ok)
+        {
+            return;
+        }
+
+        ThrowRenderPipelineException(stage, resultCode);
+    }
+
+    private void ThrowRenderPipelineException(string stage, int resultCode)
+    {
+        // RenderTarget creation can fail with a null handle while context last-error is still OK.
+        int normalizedCode = stage == "Create" && resultCode == (int)JaliumResult.Ok
+            ? (int)JaliumResult.Unknown
+            : resultCode;
+
+        JaliumResult mapped = JaliumResultMapper.FromCode(normalizedCode);
+        throw new RenderPipelineException(
+            stage: stage,
+            result: mapped,
+            resultCode: normalizedCode,
+            hwnd: _hwnd,
+            width: Width,
+            height: Height,
+            dpiX: _dpiX,
+            dpiY: _dpiY,
+            backend: _backend.ToString());
     }
 
     /// <inheritdoc />
@@ -448,13 +748,13 @@ public sealed class RenderTarget : IDisposable
 
         if (_isDrawing)
         {
-            try { NativeMethods.RenderTargetEndDraw(_handle); } catch { }
+            try { _ = _native.EndDraw(_handle); } catch { }
             _isDrawing = false;
         }
 
         if (_handle != nint.Zero)
         {
-            NativeMethods.RenderTargetDestroy(_handle);
+            _native.Destroy(_handle);
             _handle = nint.Zero;
         }
 
@@ -463,6 +763,53 @@ public sealed class RenderTarget : IDisposable
 
     ~RenderTarget()
     {
-        Dispose();
+        _isDrawing = false;
+        _disposed = true;
+        _handle = nint.Zero;
     }
+}
+
+internal interface IRenderTargetNative
+{
+    nint CreateForHwnd(nint context, nint hwnd, int width, int height);
+    nint CreateForComposition(nint context, nint hwnd, int width, int height);
+    int GetContextLastError(nint context);
+    int Resize(nint renderTarget, int width, int height);
+    int BeginDraw(nint renderTarget);
+    int EndDraw(nint renderTarget);
+    void SetFullInvalidation(nint renderTarget);
+    void Destroy(nint renderTarget);
+}
+
+internal sealed class DefaultRenderTargetNative : IRenderTargetNative
+{
+    internal static readonly DefaultRenderTargetNative Instance = new();
+
+    private DefaultRenderTargetNative()
+    {
+    }
+
+    public nint CreateForHwnd(nint context, nint hwnd, int width, int height)
+        => NativeMethods.RenderTargetCreateForHwnd(context, hwnd, width, height);
+
+    public nint CreateForComposition(nint context, nint hwnd, int width, int height)
+        => NativeMethods.RenderTargetCreateForComposition(context, hwnd, width, height);
+
+    public int GetContextLastError(nint context)
+        => NativeMethods.ContextGetLastError(context);
+
+    public int Resize(nint renderTarget, int width, int height)
+        => NativeMethods.RenderTargetResize(renderTarget, width, height);
+
+    public int BeginDraw(nint renderTarget)
+        => NativeMethods.RenderTargetBeginDraw(renderTarget);
+
+    public int EndDraw(nint renderTarget)
+        => NativeMethods.RenderTargetEndDraw(renderTarget);
+
+    public void SetFullInvalidation(nint renderTarget)
+        => NativeMethods.RenderTargetSetFullInvalidation(renderTarget);
+
+    public void Destroy(nint renderTarget)
+        => NativeMethods.RenderTargetDestroy(renderTarget);
 }

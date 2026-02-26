@@ -389,7 +389,7 @@ public class ObservableCollection<T> : IList<T>, IList, INotifyCollectionChanged
 /// Represents a read-only wrapper around an ObservableCollection.
 /// </summary>
 /// <typeparam name="T">The type of elements in the collection.</typeparam>
-public class ReadOnlyObservableCollection<T> : IReadOnlyList<T>, INotifyCollectionChanged, INotifyPropertyChanged
+public sealed class ReadOnlyObservableCollection<T> : IReadOnlyList<T>, INotifyCollectionChanged, INotifyPropertyChanged
 {
     private readonly ObservableCollection<T> _collection;
 

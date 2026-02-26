@@ -60,6 +60,7 @@ public sealed class NativeBitmap : IDisposable
 
     ~NativeBitmap()
     {
-        Dispose();
+        _disposed = true;
+        _handle = nint.Zero;
     }
 }

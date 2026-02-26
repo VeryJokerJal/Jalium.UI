@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 
 namespace Jalium.UI.Controls;
 
@@ -160,7 +160,7 @@ public abstract class FileDialog
             return Array.Empty<(string, string)>();
 
         var parts = Filter.Split('|');
-        var result = new List<(string, string)>();
+        var result = new List<(string, string)>(parts.Length);
 
         for (var i = 0; i + 1 < parts.Length; i += 2)
         {
@@ -176,7 +176,7 @@ public abstract class FileDialog
 /// <summary>
 /// Represents an open file dialog.
 /// </summary>
-public class OpenFileDialog : FileDialog
+public sealed class OpenFileDialog : FileDialog
 {
     #region Properties
 
@@ -353,7 +353,7 @@ public class OpenFileDialog : FileDialog
 /// <summary>
 /// Represents a save file dialog.
 /// </summary>
-public class SaveFileDialog : FileDialog
+public sealed class SaveFileDialog : FileDialog
 {
     #region Properties
 
@@ -516,7 +516,7 @@ public class SaveFileDialog : FileDialog
 /// <summary>
 /// Represents a folder browser dialog.
 /// </summary>
-public class FolderBrowserDialog
+public sealed class FolderBrowserDialog
 {
     #region Properties
 
@@ -663,7 +663,7 @@ public class FolderBrowserDialog
 /// <summary>
 /// Represents a custom place in a file dialog.
 /// </summary>
-public class FileDialogCustomPlace
+public sealed class FileDialogCustomPlace
 {
     /// <summary>
     /// Gets or sets the path of the custom place.

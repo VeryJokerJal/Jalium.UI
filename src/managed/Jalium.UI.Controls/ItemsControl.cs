@@ -12,6 +12,7 @@ public class ItemsControl : Control
 {
     private ItemsPresenter? _itemsPresenter;
     private Panel? _fallbackItemsHost;
+    private ItemContainerGenerator? _itemContainerGenerator;
 
     #region Dependency Properties
 
@@ -28,6 +29,13 @@ public class ItemsControl : Control
     public static readonly DependencyProperty ItemTemplateProperty =
         DependencyProperty.Register(nameof(ItemTemplate), typeof(DataTemplate), typeof(ItemsControl),
             new PropertyMetadata(null, OnItemTemplateChanged));
+
+    /// <summary>
+    /// Identifies the ItemTemplateSelector dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ItemTemplateSelectorProperty =
+        DependencyProperty.Register(nameof(ItemTemplateSelector), typeof(DataTemplateSelector), typeof(ItemsControl),
+            new PropertyMetadata(null, OnItemTemplateSelectorChanged));
 
     /// <summary>
     /// Identifies the ItemsPanel dependency property.
@@ -59,6 +67,15 @@ public class ItemsControl : Control
     }
 
     /// <summary>
+    /// Gets or sets the DataTemplateSelector used to display each item.
+    /// </summary>
+    public DataTemplateSelector? ItemTemplateSelector
+    {
+        get => (DataTemplateSelector?)GetValue(ItemTemplateSelectorProperty);
+        set => SetValue(ItemTemplateSelectorProperty, value);
+    }
+
+    /// <summary>
     /// Gets or sets the template that defines the panel that controls the layout of items.
     /// </summary>
     public ItemsPanelTemplate? ItemsPanel
@@ -76,6 +93,18 @@ public class ItemsControl : Control
     /// Gets the panel that hosts the items.
     /// </summary>
     protected Panel? ItemsHost => _itemsPresenter?.ItemsPanel ?? _fallbackItemsHost;
+
+    /// <summary>
+    /// Gets the ItemContainerGenerator associated with this control.
+    /// </summary>
+    public ItemContainerGenerator ItemContainerGenerator
+    {
+        get
+        {
+            _itemContainerGenerator ??= new ItemContainerGenerator(this);
+            return _itemContainerGenerator;
+        }
+    }
 
     #endregion
 
@@ -146,15 +175,22 @@ public class ItemsControl : Control
     /// </summary>
     protected virtual void PrepareContainerForItem(FrameworkElement element, object item)
     {
+        // Determine the template to use
+        var template = ItemTemplate;
+        if (template == null && ItemTemplateSelector != null)
+        {
+            template = ItemTemplateSelector.SelectTemplate(item, this);
+        }
+
         if (element is ContentPresenter presenter)
         {
             presenter.Content = item;
-            presenter.ContentTemplate = ItemTemplate;
+            presenter.ContentTemplate = template;
         }
         else if (element is ContentControl contentControl)
         {
             contentControl.Content = item;
-            contentControl.ContentTemplate = ItemTemplate;
+            contentControl.ContentTemplate = template;
         }
     }
 
@@ -176,8 +212,17 @@ public class ItemsControl : Control
 
         if (panel == null) return;
 
-        // Clear existing items
+        // Clear existing items from current panel
         panel.Children.Clear();
+
+        // Also clear the old fallback panel if we switched to a template panel
+        // This ensures items previously parented to the fallback are properly disconnected
+        if (_fallbackItemsHost != null && _fallbackItemsHost != panel)
+        {
+            _fallbackItemsHost.Children.Clear();
+            RemoveVisualChild(_fallbackItemsHost);
+            _fallbackItemsHost = null;
+        }
 
         // Add items from ItemsSource or Items collection
         var source = ItemsSource ?? Items;
@@ -334,6 +379,14 @@ public class ItemsControl : Control
         }
     }
 
+    private static void OnItemTemplateSelectorChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is ItemsControl ic)
+        {
+            ic.RefreshItems();
+        }
+    }
+
     private static void OnItemsPanelChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is ItemsControl itemsControl)
@@ -346,16 +399,154 @@ public class ItemsControl : Control
 
     private void OnSourceCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
-        // For simplicity, just refresh all items
-        // A more optimized implementation would handle Add/Remove/Replace/Move individually
-        RefreshItems();
+        // Notify the generator of the change
+        _itemContainerGenerator?.OnCollectionChanged(e);
+
+        // Handle incremental updates for simple cases
+        var panel = ItemsHost;
+        if (panel == null)
+        {
+            RefreshItems();
+            return;
+        }
+
+        switch (e.Action)
+        {
+            case NotifyCollectionChangedAction.Add when e.NewItems != null:
+                int insertIndex = e.NewStartingIndex;
+                foreach (var item in e.NewItems)
+                {
+                    if (item != null)
+                    {
+                        InsertItemToPanel(item, insertIndex);
+                        insertIndex++;
+                    }
+                }
+                break;
+
+            case NotifyCollectionChangedAction.Remove when e.OldItems != null:
+                for (int i = e.OldItems.Count - 1; i >= 0; i--)
+                {
+                    int removeIndex = e.OldStartingIndex + i;
+                    if (removeIndex >= 0 && removeIndex < panel.Children.Count)
+                    {
+                        panel.Children.RemoveAt(removeIndex);
+                    }
+                }
+                break;
+
+            case NotifyCollectionChangedAction.Replace when e.NewItems != null:
+                for (int i = 0; i < e.NewItems.Count; i++)
+                {
+                    int replaceIndex = e.NewStartingIndex + i;
+                    if (replaceIndex >= 0 && replaceIndex < panel.Children.Count && e.NewItems[i] != null)
+                    {
+                        panel.Children.RemoveAt(replaceIndex);
+                        InsertItemToPanel(e.NewItems[i]!, replaceIndex);
+                    }
+                }
+                break;
+
+            default:
+                // Reset, Move, or complex changes: full refresh
+                RefreshItems();
+                break;
+        }
+
+        InvalidateMeasure();
     }
 
     private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         if (ItemsSource == null)
         {
-            RefreshItems();
+            _itemContainerGenerator?.OnCollectionChanged(e);
+
+            var panel = ItemsHost;
+            if (panel == null)
+            {
+                RefreshItems();
+                return;
+            }
+
+            switch (e.Action)
+            {
+                case NotifyCollectionChangedAction.Add when e.NewItems != null:
+                    int insertIndex = e.NewStartingIndex;
+                    foreach (var item in e.NewItems)
+                    {
+                        if (item != null)
+                        {
+                            InsertItemToPanel(item, insertIndex);
+                            insertIndex++;
+                        }
+                    }
+                    break;
+
+                case NotifyCollectionChangedAction.Remove when e.OldItems != null:
+                    for (int i = e.OldItems.Count - 1; i >= 0; i--)
+                    {
+                        int removeIndex = e.OldStartingIndex + i;
+                        if (removeIndex >= 0 && removeIndex < panel.Children.Count)
+                        {
+                            panel.Children.RemoveAt(removeIndex);
+                        }
+                    }
+                    break;
+
+                default:
+                    RefreshItems();
+                    break;
+            }
+
+            InvalidateMeasure();
+        }
+    }
+
+    #endregion
+
+    #region Internal Methods for ItemContainerGenerator
+
+    /// <summary>
+    /// Public wrapper for IsItemItsOwnContainer used by ItemContainerGenerator.
+    /// </summary>
+    internal bool IsItemItsOwnContainerPublic(object item) => IsItemItsOwnContainer(item);
+
+    /// <summary>
+    /// Public wrapper for GetContainerForItem used by ItemContainerGenerator.
+    /// </summary>
+    internal FrameworkElement GetContainerForItemPublic(object item) => GetContainerForItem(item);
+
+    /// <summary>
+    /// Internal wrapper for PrepareContainerForItem used by ItemContainerGenerator.
+    /// </summary>
+    internal void PrepareContainerForItemInternal(FrameworkElement element, object item)
+    {
+        PrepareContainerForItem(element, item);
+    }
+
+    private void InsertItemToPanel(object item, int index)
+    {
+        if (ItemsHost == null) return;
+
+        FrameworkElement container;
+        if (IsItemItsOwnContainer(item))
+        {
+            container = (FrameworkElement)item;
+        }
+        else
+        {
+            container = GetContainerForItem(item);
+            PrepareContainerForItem(container, item);
+        }
+
+        if (index >= 0 && index <= ItemsHost.Children.Count)
+        {
+            ItemsHost.Children.Insert(index, container);
+        }
+        else
+        {
+            ItemsHost.Children.Add(container);
         }
     }
 
@@ -365,7 +556,7 @@ public class ItemsControl : Control
 /// <summary>
 /// Represents a collection of items in an ItemsControl.
 /// </summary>
-public class ItemCollection : IList<object>, INotifyCollectionChanged
+public sealed class ItemCollection : IList<object>, INotifyCollectionChanged
 {
     private readonly List<object> _items = new();
     private readonly ItemsControl _owner;
@@ -483,27 +674,4 @@ public class ItemCollection : IList<object>, INotifyCollectionChanged
     }
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-}
-
-/// <summary>
-/// Describes the template used to generate the panel that controls the layout of items.
-/// </summary>
-public class ItemsPanelTemplate
-{
-    /// <summary>
-    /// Gets or sets the type of panel to create.
-    /// </summary>
-    public Type? PanelType { get; set; }
-
-    /// <summary>
-    /// Creates an instance of the panel.
-    /// </summary>
-    public Panel? CreatePanel()
-    {
-        if (PanelType != null && typeof(Panel).IsAssignableFrom(PanelType))
-        {
-            return Activator.CreateInstance(PanelType) as Panel;
-        }
-        return null;
-    }
 }

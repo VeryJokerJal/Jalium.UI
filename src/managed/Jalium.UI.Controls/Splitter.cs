@@ -1,4 +1,4 @@
-using Jalium.UI.Input;
+﻿using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 using static Jalium.UI.Cursors;
@@ -9,8 +9,14 @@ namespace Jalium.UI.Controls;
 /// Represents a control that provides a draggable divider between two areas.
 /// Used with Grid to create resizable panels.
 /// </summary>
-public class GridSplitter : Control
+public sealed class GridSplitter : Control
 {
+    #region Static Brushes
+
+    private static readonly SolidColorBrush s_draggingBrush = new(Color.FromRgb(0, 120, 212));
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -64,7 +70,7 @@ public class GridSplitter : Control
     /// </summary>
     public GridResizeDirection ResizeDirection
     {
-        get => (GridResizeDirection)(GetValue(ResizeDirectionProperty) ?? GridResizeDirection.Auto);
+        get => (GridResizeDirection)GetValue(ResizeDirectionProperty)!;
         set => SetValue(ResizeDirectionProperty, value);
     }
 
@@ -73,7 +79,7 @@ public class GridSplitter : Control
     /// </summary>
     public GridResizeBehavior ResizeBehavior
     {
-        get => (GridResizeBehavior)(GetValue(ResizeBehaviorProperty) ?? GridResizeBehavior.BasedOnAlignment);
+        get => (GridResizeBehavior)GetValue(ResizeBehaviorProperty)!;
         set => SetValue(ResizeBehaviorProperty, value);
     }
 
@@ -82,7 +88,7 @@ public class GridSplitter : Control
     /// </summary>
     public bool ShowsPreview
     {
-        get => (bool)(GetValue(ShowsPreviewProperty) ?? false);
+        get => (bool)GetValue(ShowsPreviewProperty)!;
         set => SetValue(ShowsPreviewProperty, value);
     }
 
@@ -100,7 +106,7 @@ public class GridSplitter : Control
     /// </summary>
     public double DragIncrement
     {
-        get => (double)(GetValue(DragIncrementProperty) ?? 1.0);
+        get => (double)GetValue(DragIncrementProperty)!;
         set => SetValue(DragIncrementProperty, value);
     }
 
@@ -109,7 +115,7 @@ public class GridSplitter : Control
     /// </summary>
     public double KeyboardIncrement
     {
-        get => (double)(GetValue(KeyboardIncrementProperty) ?? 10.0);
+        get => (double)GetValue(KeyboardIncrementProperty)!;
         set => SetValue(KeyboardIncrementProperty, value);
     }
 
@@ -133,7 +139,6 @@ public class GridSplitter : Control
     public GridSplitter()
     {
         Focusable = true;
-        Background = new SolidColorBrush(Color.FromRgb(60, 60, 60));
         HorizontalAlignment = HorizontalAlignment.Stretch;
         VerticalAlignment = VerticalAlignment.Stretch;
         Cursor = SizeWE; // Default to horizontal resize cursor
@@ -155,7 +160,10 @@ public class GridSplitter : Control
         if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
         {
             Focus();
-            StartDrag(mouseArgs.GetPosition(this));
+            // Use position relative to parent Grid for stable coordinates during drag
+            var grid = GetParentGrid();
+            var relativeTo = grid as UIElement ?? this;
+            StartDrag(mouseArgs.GetPosition(relativeTo));
             e.Handled = true;
         }
     }
@@ -176,7 +184,10 @@ public class GridSplitter : Control
     {
         if (_isDragging && e is MouseEventArgs mouseArgs)
         {
-            UpdateDrag(mouseArgs.GetPosition(this));
+            // Use position relative to parent Grid for stable coordinates during drag
+            var grid = GetParentGrid();
+            var relativeTo = grid as UIElement ?? this;
+            UpdateDrag(mouseArgs.GetPosition(relativeTo));
             e.Handled = true;
         }
     }
@@ -208,6 +219,27 @@ public class GridSplitter : Control
 
             if (delta != 0)
             {
+                // Initialize state that ApplyResize and GetResizeIndices depend on
+                _effectiveResizeDirection = GetEffectiveResizeDirection();
+                var grid = GetParentGrid();
+                if (grid != null)
+                {
+                    var (idx1, idx2) = GetResizeIndices();
+                    if (_effectiveResizeDirection == GridResizeDirection.Columns)
+                    {
+                        _originalDimension1 = idx1 >= 0 && idx1 < grid.ColumnDefinitions.Count
+                            ? grid.ColumnDefinitions[idx1].ActualWidth : 0;
+                        _originalDimension2 = idx2 >= 0 && idx2 < grid.ColumnDefinitions.Count
+                            ? grid.ColumnDefinitions[idx2].ActualWidth : 0;
+                    }
+                    else
+                    {
+                        _originalDimension1 = idx1 >= 0 && idx1 < grid.RowDefinitions.Count
+                            ? grid.RowDefinitions[idx1].ActualHeight : 0;
+                        _originalDimension2 = idx2 >= 0 && idx2 < grid.RowDefinitions.Count
+                            ? grid.RowDefinitions[idx2].ActualHeight : 0;
+                    }
+                }
                 ApplyResize(delta);
                 e.Handled = true;
             }
@@ -233,6 +265,7 @@ public class GridSplitter : Control
         CaptureMouse();
         _isDragging = true;
         _dragStartPoint = position;
+        Background = s_draggingBrush;
         _effectiveResizeDirection = GetEffectiveResizeDirection();
 
         // Store original dimensions
@@ -255,8 +288,6 @@ public class GridSplitter : Control
                     _originalDimension2 = grid.RowDefinitions[index2].ActualHeight;
             }
         }
-
-        InvalidateVisual();
     }
 
     private void UpdateDrag(Point position)
@@ -278,7 +309,7 @@ public class GridSplitter : Control
     {
         ReleaseMouseCapture();
         _isDragging = false;
-        InvalidateVisual();
+        ClearValue(BackgroundProperty);
     }
 
     private void ApplyResize(double delta)
@@ -296,14 +327,16 @@ public class GridSplitter : Control
                 var def1 = grid.ColumnDefinitions[index1];
                 var def2 = grid.ColumnDefinitions[index2];
 
-                var newWidth1 = Math.Max(def1.MinWidth, _originalDimension1 + delta);
-                var newWidth2 = Math.Max(def2.MinWidth, _originalDimension2 - delta);
+                // Clamp delta so neither side goes below its MinWidth
+                var maxForward = _originalDimension2 - def2.MinWidth;
+                var maxBackward = _originalDimension1 - def1.MinWidth;
+                delta = Math.Clamp(delta, -maxBackward, maxForward);
 
-                if (newWidth1 >= def1.MinWidth && newWidth2 >= def2.MinWidth)
-                {
-                    def1.Width = new GridLength(newWidth1, GridUnitType.Pixel);
-                    def2.Width = new GridLength(newWidth2, GridUnitType.Pixel);
-                }
+                var newWidth1 = _originalDimension1 + delta;
+                var newWidth2 = _originalDimension2 - delta;
+
+                def1.Width = new GridLength(newWidth1, GridUnitType.Pixel);
+                def2.Width = new GridLength(newWidth2, GridUnitType.Pixel);
             }
         }
         else
@@ -314,14 +347,16 @@ public class GridSplitter : Control
                 var def1 = grid.RowDefinitions[index1];
                 var def2 = grid.RowDefinitions[index2];
 
-                var newHeight1 = Math.Max(def1.MinHeight, _originalDimension1 + delta);
-                var newHeight2 = Math.Max(def2.MinHeight, _originalDimension2 - delta);
+                // Clamp delta so neither side goes below its MinHeight
+                var maxForward = _originalDimension2 - def2.MinHeight;
+                var maxBackward = _originalDimension1 - def1.MinHeight;
+                delta = Math.Clamp(delta, -maxBackward, maxForward);
 
-                if (newHeight1 >= def1.MinHeight && newHeight2 >= def2.MinHeight)
-                {
-                    def1.Height = new GridLength(newHeight1, GridUnitType.Pixel);
-                    def2.Height = new GridLength(newHeight2, GridUnitType.Pixel);
-                }
+                var newHeight1 = _originalDimension1 + delta;
+                var newHeight2 = _originalDimension2 - delta;
+
+                def1.Height = new GridLength(newHeight1, GridUnitType.Pixel);
+                def2.Height = new GridLength(newHeight2, GridUnitType.Pixel);
             }
         }
 
@@ -383,18 +418,27 @@ public class GridSplitter : Control
 
             case GridResizeBehavior.BasedOnAlignment:
             default:
-                // Based on alignment
+                // Based on alignment (WPF behavior):
+                // Left/Top → PreviousAndCurrent
+                // Right/Bottom → CurrentAndNext
+                // Center/Stretch → PreviousAndNext
                 if (_effectiveResizeDirection == GridResizeDirection.Columns)
                 {
-                    return HorizontalAlignment == HorizontalAlignment.Left
-                        ? (col - 1, col)
-                        : (col, col + 1);
+                    return HorizontalAlignment switch
+                    {
+                        HorizontalAlignment.Left => (col - 1, col),
+                        HorizontalAlignment.Right => (col, col + 1),
+                        _ => (col - 1, col + 1) // Center, Stretch
+                    };
                 }
                 else
                 {
-                    return VerticalAlignment == VerticalAlignment.Top
-                        ? (row - 1, row)
-                        : (row, row + 1);
+                    return VerticalAlignment switch
+                    {
+                        VerticalAlignment.Top => (row - 1, row),
+                        VerticalAlignment.Bottom => (row, row + 1),
+                        _ => (row - 1, row + 1) // Center, Stretch
+                    };
                 }
         }
     }
@@ -427,66 +471,6 @@ public class GridSplitter : Control
         // (needed for Auto resize direction which depends on dimensions)
         UpdateCursor();
         return result;
-    }
-
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(object drawingContext)
-    {
-        if (drawingContext is not DrawingContext dc)
-            return;
-
-        var rect = new Rect(RenderSize);
-
-        // Draw background
-        var bgBrush = _isDragging
-            ? new SolidColorBrush(Color.FromRgb(0, 120, 212))
-            : (Background ?? new SolidColorBrush(Color.FromRgb(60, 60, 60)));
-
-        dc.DrawRectangle(bgBrush, null, rect);
-
-        // Draw grip dots
-        var direction = GetEffectiveResizeDirection();
-        DrawGripDots(dc, rect, direction == GridResizeDirection.Columns);
-    }
-
-    private void DrawGripDots(DrawingContext dc, Rect rect, bool isVertical)
-    {
-        var dotBrush = new SolidColorBrush(Color.FromRgb(120, 120, 120));
-        var dotSize = 2;
-        var spacing = 4;
-        var dotCount = 3;
-
-        var centerX = rect.Width / 2;
-        var centerY = rect.Height / 2;
-
-        if (isVertical)
-        {
-            // Vertical splitter (horizontal resize) - draw dots vertically
-            var totalHeight = (dotCount - 1) * spacing;
-            var startY = centerY - totalHeight / 2;
-
-            for (int i = 0; i < dotCount; i++)
-            {
-                var y = startY + i * spacing;
-                dc.DrawEllipse(dotBrush, null, new Point(centerX, y), dotSize / 2, dotSize / 2);
-            }
-        }
-        else
-        {
-            // Horizontal splitter (vertical resize) - draw dots horizontally
-            var totalWidth = (dotCount - 1) * spacing;
-            var startX = centerX - totalWidth / 2;
-
-            for (int i = 0; i < dotCount; i++)
-            {
-                var x = startX + i * spacing;
-                dc.DrawEllipse(dotBrush, null, new Point(x, centerY), dotSize / 2, dotSize / 2);
-            }
-        }
     }
 
     #endregion

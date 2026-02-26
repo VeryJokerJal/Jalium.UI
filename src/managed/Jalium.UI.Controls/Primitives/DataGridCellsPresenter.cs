@@ -3,7 +3,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a control that displays a row of cells in a DataGrid.
 /// </summary>
-public class DataGridCellsPresenter : Panel
+public sealed class DataGridCellsPresenter : Panel
 {
     #region Dependency Properties
 
@@ -82,7 +82,7 @@ public class DataGridCellsPresenter : Panel
     /// <summary>
     /// Called when the Item property changes.
     /// </summary>
-    protected virtual void OnItemChanged(object? oldItem, object? newItem)
+    protected void OnItemChanged(object? oldItem, object? newItem)
     {
         InvalidateMeasure();
     }

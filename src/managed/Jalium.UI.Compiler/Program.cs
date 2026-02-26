@@ -1,11 +1,11 @@
-using System.Text;
+﻿using System.Text;
 using Jalium.UI.Gpu;
 
 namespace Jalium.UI.Compiler;
 
 /// <summary>
 /// JALXAML 编译器命令行工具
-/// Usage: jalxamlc [options] <input.jalxaml> [output.juib]
+/// Usage: jalxamlc [options] <input.jalxaml> [output.uic]
 ///
 /// Options:
 ///   -o, --output <path>    指定输出文件路径
@@ -15,10 +15,11 @@ namespace Jalium.UI.Compiler;
 ///   -g, --debug            生成调试信息
 ///   -c, --codegen          生成代码隐藏 (.g.cs)
 ///   -n, --namespace <ns>   指定代码生成的根命名空间
+///   -p, --project-dir <dir> 指定项目根目录（用于计算资源名的相对路径）
 ///   -h, --help             显示帮助信息
 ///   -v, --version          显示版本信息
 /// </summary>
-internal class Program
+internal sealed class Program
 {
     private static int Main(string[] args)
     {
@@ -121,13 +122,13 @@ internal class Program
         var fileName = Path.GetFileNameWithoutExtension(inputFile);
         var codePath = Path.Combine(outputDir, fileName + ".g.cs");
 
-        var code = GenerateCode(document, fileName, options.RootNamespace);
+        var code = GenerateCode(document, fileName, options.RootNamespace, inputFile, options.ProjectDirectory);
         File.WriteAllText(codePath, code);
 
         Console.WriteLine($"已生成: {codePath}");
     }
 
-    private static string GenerateCode(JalxamlDocument document, string className, string? rootNamespace)
+    private static string GenerateCode(JalxamlDocument document, string className, string? rootNamespace, string? inputFile = null, string? projectDirectory = null)
     {
         var sb = new StringBuilder();
 
@@ -139,11 +140,11 @@ internal class Program
         sb.AppendLine("#nullable enable");
         sb.AppendLine();
 
-        var ns = document.ClassName?.Contains(".") == true
+        var ns = document.ClassName?.Contains(".", StringComparison.Ordinal) == true
             ? document.ClassName.Substring(0, document.ClassName.LastIndexOf('.'))
             : rootNamespace;
 
-        var actualClassName = document.ClassName?.Contains(".") == true
+        var actualClassName = document.ClassName?.Contains(".", StringComparison.Ordinal) == true
             ? document.ClassName.Substring(document.ClassName.LastIndexOf('.') + 1)
             : className;
 
@@ -166,12 +167,13 @@ internal class Program
 
         sb.AppendLine();
 
-        // 生成 InitializeComponent 方法
+        // 计算嵌入资源名称
+        // 必须与 Jalium.UI.Build.targets 中 EmbedJalxamlSources 的 LogicalName 约定一致:
+        //   $(RootNamespace).%(RecursiveDir)%(Filename).jalxaml
+        var resourceName = ComputeResourceName(rootNamespace, actualClassName, inputFile, projectDirectory);
         sb.AppendLine("    private void InitializeComponent()");
         sb.AppendLine("    {");
-        sb.AppendLine($"        // 加载编译后的 JALXAML 资源");
-        sb.AppendLine($"        var bundle = Jalium.UI.Gpu.UIRuntime.LoadBundle(\"{actualClassName}.juib\");");
-        sb.AppendLine($"        Jalium.UI.Gpu.UIRuntime.ApplyBundle(this, bundle);");
+        sb.AppendLine($"        Jalium.UI.Markup.JalxamlLoader.LoadComponent(this, \"{resourceName}\");");
         sb.AppendLine();
 
         // 初始化命名元素引用
@@ -187,6 +189,44 @@ internal class Program
         return sb.ToString();
     }
 
+    /// <summary>
+    /// 计算嵌入资源名称，与 MSBuild EmbedJalxamlSources 目标保持一致
+    /// 格式: {RootNamespace}.{RelativeDir}.{Filename}.jalxaml
+    /// </summary>
+    private static string ComputeResourceName(string? rootNamespace, string className, string? inputFile, string? projectDirectory)
+    {
+        var fileName = className;
+
+        // 如果有项目目录和输入文件，计算相对路径
+        if (!string.IsNullOrEmpty(inputFile) && !string.IsNullOrEmpty(projectDirectory))
+        {
+            try
+            {
+                var fullInputPath = Path.GetFullPath(inputFile);
+                var fullProjectDir = Path.GetFullPath(projectDirectory);
+                if (!fullProjectDir.EndsWith(Path.DirectorySeparatorChar))
+                    fullProjectDir += Path.DirectorySeparatorChar;
+
+                if (fullInputPath.StartsWith(fullProjectDir, StringComparison.OrdinalIgnoreCase))
+                {
+                    var relativePath = fullInputPath.Substring(fullProjectDir.Length);
+                    // 移除 .jalxaml 扩展名，将路径分隔符替换为点
+                    var withoutExt = Path.ChangeExtension(relativePath, null);
+                    fileName = withoutExt.Replace('\\', '.').Replace('/', '.').TrimStart('.');
+                }
+            }
+            catch
+            {
+                // 回退到使用类名
+            }
+        }
+
+        if (!string.IsNullOrEmpty(rootNamespace))
+            return $"{rootNamespace}.{fileName}.jalxaml";
+
+        return $"{fileName}.jalxaml";
+    }
+
     private static string GetOutputPath(string inputFile, CompilerCliOptions options)
     {
         if (!string.IsNullOrEmpty(options.OutputFile))
@@ -197,7 +237,7 @@ internal class Program
         var fileName = Path.GetFileNameWithoutExtension(inputFile);
         var outputDir = options.OutputDirectory ?? Path.GetDirectoryName(inputFile) ?? ".";
 
-        return Path.Combine(outputDir, fileName + ".juib");
+        return Path.Combine(outputDir, fileName + ".uic");
     }
 
     private static CompilerCliOptions ParseOptions(string[] args)
@@ -254,6 +294,14 @@ internal class Program
                     }
                     break;
 
+                case "-p":
+                case "--project-dir":
+                    if (i + 1 < args.Length)
+                    {
+                        options.ProjectDirectory = args[++i];
+                    }
+                    break;
+
                 default:
                     if (!arg.StartsWith('-'))
                     {
@@ -283,12 +331,13 @@ internal class Program
               -g, --debug            生成调试信息
               -c, --codegen          生成代码隐藏文件 (.g.cs)
               -n, --namespace <ns>   指定代码生成的根命名空间
+              -p, --project-dir <dir> 指定项目根目录（用于计算资源名的相对路径）
               -h, --help             显示帮助信息
               -v, --version          显示版本信息
 
             示例:
               jalxamlc MainWindow.jalxaml
-              jalxamlc -o bin/MainWindow.juib MainWindow.jalxaml
+              jalxamlc -o bin/MainWindow.uic MainWindow.jalxaml
               jalxamlc -c -n MyApp MainWindow.jalxaml
               jalxamlc -d bin *.jalxaml
             """);
@@ -301,7 +350,7 @@ internal class Program
     }
 }
 
-internal class CompilerCliOptions
+internal sealed class CompilerCliOptions
 {
     public List<string> InputFiles { get; } = new();
     public string? OutputFile { get; set; }
@@ -310,4 +359,5 @@ internal class CompilerCliOptions
     public bool Debug { get; set; }
     public bool GenerateCodeBehind { get; set; }
     public string? RootNamespace { get; set; }
+    public string? ProjectDirectory { get; set; }
 }

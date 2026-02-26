@@ -52,7 +52,7 @@ public sealed class VideoDrawing : Drawing
 /// <summary>
 /// Plays media. This is a simplified media player class.
 /// </summary>
-public class MediaPlayer
+public sealed class MediaPlayer
 {
     /// <summary>
     /// Gets or sets the source URI for the media.
@@ -172,7 +172,7 @@ public class MediaPlayer
 /// <summary>
 /// Provides data for media failure events.
 /// </summary>
-public class ExceptionEventArgs : EventArgs
+public sealed class ExceptionEventArgs : EventArgs
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="ExceptionEventArgs"/> class.

@@ -90,7 +90,7 @@ public readonly struct SortDescription : IEquatable<SortDescription>
 /// <summary>
 /// Represents a collection of SortDescription objects.
 /// </summary>
-public class SortDescriptionCollection : IList<SortDescription>, IList, INotifyCollectionChanged
+public sealed class SortDescriptionCollection : IList<SortDescription>, IList, INotifyCollectionChanged
 {
     private readonly List<SortDescription> _sortDescriptions = new();
 
@@ -268,7 +268,7 @@ public class SortDescriptionCollection : IList<SortDescription>, IList, INotifyC
     /// <summary>
     /// Raises the CollectionChanged event.
     /// </summary>
-    protected virtual void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
+    protected void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
     {
         CollectionChanged?.Invoke(this, e);
     }

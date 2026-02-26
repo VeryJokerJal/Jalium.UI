@@ -32,7 +32,7 @@ public enum SelectiveScrollingOrientation
 /// A grid panel that allows child elements to selectively scroll in different directions.
 /// Commonly used in DataGrid to freeze certain rows or columns.
 /// </summary>
-public class SelectiveScrollingGrid : Grid
+public sealed class SelectiveScrollingGrid : Grid
 {
     #region Attached Properties
 

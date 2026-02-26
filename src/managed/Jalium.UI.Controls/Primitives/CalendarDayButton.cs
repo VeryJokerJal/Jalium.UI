@@ -1,4 +1,4 @@
-using Jalium.UI.Interop;
+﻿using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -6,8 +6,23 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a button for a single day in a Calendar control.
 /// </summary>
-public class CalendarDayButton : Button
+public sealed class CalendarDayButton : Button
 {
+    #region Static Brushes & Pens
+
+    private static readonly SolidColorBrush s_selectionBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_highlightBrush = new(Color.FromRgb(60, 60, 60));
+    private static readonly SolidColorBrush s_todayRingBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly Pen s_todayPen = new(s_todayRingBrush, 2);
+    private static readonly SolidColorBrush s_blackedOutFgBrush = new(Color.FromRgb(80, 80, 80));
+    private static readonly SolidColorBrush s_inactiveFgBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_selectedFgBrush = new(Color.White);
+    private static readonly SolidColorBrush s_defaultFgBrush = new(Color.White);
+    private static readonly SolidColorBrush s_strikeBrush = new(Color.FromRgb(150, 80, 80));
+    private static readonly Pen s_strikePen = new(s_strikeBrush, 1);
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -54,7 +69,7 @@ public class CalendarDayButton : Button
     /// </summary>
     public bool IsSelected
     {
-        get => (bool)(GetValue(IsSelectedProperty) ?? false);
+        get => (bool)GetValue(IsSelectedProperty)!;
         set => SetValue(IsSelectedProperty, value);
     }
 
@@ -63,7 +78,7 @@ public class CalendarDayButton : Button
     /// </summary>
     public bool IsToday
     {
-        get => (bool)(GetValue(IsTodayProperty) ?? false);
+        get => (bool)GetValue(IsTodayProperty)!;
         set => SetValue(IsTodayProperty, value);
     }
 
@@ -72,7 +87,7 @@ public class CalendarDayButton : Button
     /// </summary>
     public bool IsBlackedOut
     {
-        get => (bool)(GetValue(IsBlackedOutProperty) ?? false);
+        get => (bool)GetValue(IsBlackedOutProperty)!;
         set => SetValue(IsBlackedOutProperty, value);
     }
 
@@ -81,7 +96,7 @@ public class CalendarDayButton : Button
     /// </summary>
     public bool IsInactive
     {
-        get => (bool)(GetValue(IsInactiveProperty) ?? false);
+        get => (bool)GetValue(IsInactiveProperty)!;
         set => SetValue(IsInactiveProperty, value);
     }
 
@@ -90,7 +105,7 @@ public class CalendarDayButton : Button
     /// </summary>
     public bool IsHighlighted
     {
-        get => (bool)(GetValue(IsHighlightedProperty) ?? false);
+        get => (bool)GetValue(IsHighlightedProperty)!;
         set => SetValue(IsHighlightedProperty, value);
     }
 
@@ -135,22 +150,19 @@ public class CalendarDayButton : Button
         // Draw selection background
         if (IsSelected)
         {
-            var selectionBrush = new SolidColorBrush(Color.FromRgb(0, 120, 212));
-            dc.DrawEllipse(selectionBrush, null, new Point(rect.Width / 2, rect.Height / 2),
+            dc.DrawEllipse(s_selectionBrush, null, new Point(rect.Width / 2, rect.Height / 2),
                 inset.Width / 2, inset.Height / 2);
         }
         else if (IsHighlighted || IsPressed)
         {
-            var highlightBrush = new SolidColorBrush(Color.FromRgb(60, 60, 60));
-            dc.DrawEllipse(highlightBrush, null, new Point(rect.Width / 2, rect.Height / 2),
+            dc.DrawEllipse(s_highlightBrush, null, new Point(rect.Width / 2, rect.Height / 2),
                 inset.Width / 2, inset.Height / 2);
         }
 
         // Draw today indicator (ring around the day)
         if (IsToday && !IsSelected)
         {
-            var todayPen = new Pen(new SolidColorBrush(Color.FromRgb(0, 120, 212)), 2);
-            dc.DrawEllipse(null, todayPen, new Point(rect.Width / 2, rect.Height / 2),
+            dc.DrawEllipse(null, s_todayPen, new Point(rect.Width / 2, rect.Height / 2),
                 inset.Width / 2 - 1, inset.Height / 2 - 1);
         }
 
@@ -160,19 +172,19 @@ public class CalendarDayButton : Button
             Brush fgBrush;
             if (IsBlackedOut)
             {
-                fgBrush = new SolidColorBrush(Color.FromRgb(80, 80, 80));
+                fgBrush = s_blackedOutFgBrush;
             }
             else if (!IsEnabled || IsInactive)
             {
-                fgBrush = new SolidColorBrush(Color.FromRgb(128, 128, 128));
+                fgBrush = s_inactiveFgBrush;
             }
             else if (IsSelected)
             {
-                fgBrush = new SolidColorBrush(Color.White);
+                fgBrush = s_selectedFgBrush;
             }
             else
             {
-                fgBrush = Foreground ?? new SolidColorBrush(Color.White);
+                fgBrush = Foreground ?? s_defaultFgBrush;
             }
 
             var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
@@ -189,8 +201,7 @@ public class CalendarDayButton : Button
         // Draw blacked out strikethrough
         if (IsBlackedOut)
         {
-            var strikePen = new Pen(new SolidColorBrush(Color.FromRgb(150, 80, 80)), 1);
-            dc.DrawLine(strikePen, new Point(4, rect.Height / 2), new Point(rect.Width - 4, rect.Height / 2));
+            dc.DrawLine(s_strikePen, new Point(4, rect.Height / 2), new Point(rect.Width - 4, rect.Height / 2));
         }
     }
 

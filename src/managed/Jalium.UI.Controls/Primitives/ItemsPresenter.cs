@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// Used within the template of an item control to specify the place in the control's
 /// visual tree where the ItemsPanel defined by the ItemsControl is to be added.
 /// </summary>
-public class ItemsPresenter : FrameworkElement
+public sealed class ItemsPresenter : FrameworkElement
 {
     private Panel? _itemsPanel;
     private ItemsControl? _owner;
@@ -49,7 +49,7 @@ public class ItemsPresenter : FrameworkElement
             // Try to get panel from owner's ItemsPanel template
             if (_owner?.ItemsPanel != null)
             {
-                _itemsPanel = _owner.ItemsPanel.CreatePanel();
+                _itemsPanel = _owner.ItemsPanel.CreatePanel() as Panel;
             }
 
             // Default to StackPanel if no template
@@ -83,13 +83,15 @@ public class ItemsPresenter : FrameworkElement
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // Create the panel FIRST so it's available when owner calls RefreshItems
+        var panel = EnsureItemsPanel();
+
         // Try to attach to owner if not already done
         if (_owner == null)
         {
             AttachToOwner();
         }
 
-        var panel = EnsureItemsPanel();
         panel.Measure(availableSize);
         return panel.DesiredSize;
     }

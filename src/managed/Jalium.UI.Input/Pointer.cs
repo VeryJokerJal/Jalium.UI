@@ -85,7 +85,7 @@ public enum PointerUpdateKind
 /// <summary>
 /// Represents a pointer input point.
 /// </summary>
-public class PointerPoint
+public sealed class PointerPoint
 {
     /// <summary>
     /// Gets the unique ID of the pointer.
@@ -156,7 +156,7 @@ public class PointerPoint
 /// <summary>
 /// Properties associated with a pointer point.
 /// </summary>
-public class PointerPointProperties
+public sealed class PointerPointProperties
 {
     /// <summary>
     /// Gets the pressure of the pointer (0.0 - 1.0).
@@ -270,6 +270,11 @@ public class PointerEventArgs : InputEventArgs
     public ModifierKeys KeyModifiers { get; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether pointer promotion should be canceled.
+    /// </summary>
+    public bool Cancel { get; set; }
+
+    /// <summary>
     /// Initializes a new instance of the PointerEventArgs class.
     /// </summary>
     public PointerEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
@@ -310,15 +315,71 @@ public class PointerEventArgs : InputEventArgs
 }
 
 /// <summary>
-/// Event arguments for pointer pressed events.
+/// Event arguments for pointer down events.
 /// </summary>
-public class PointerPressedEventArgs : PointerEventArgs
+public class PointerDownEventArgs : PointerEventArgs
 {
     /// <summary>
     /// Gets a value indicating whether the pointer was pressed during this event.
     /// </summary>
     public bool IsPressed => true;
 
+    /// <summary>
+    /// Initializes a new instance of the PointerDownEventArgs class.
+    /// </summary>
+    public PointerDownEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
+        : base(pointer, modifiers, timestamp)
+    {
+    }
+}
+
+/// <summary>
+/// Event arguments for pointer up events.
+/// </summary>
+public class PointerUpEventArgs : PointerEventArgs
+{
+    /// <summary>
+    /// Initializes a new instance of the PointerUpEventArgs class.
+    /// </summary>
+    public PointerUpEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
+        : base(pointer, modifiers, timestamp)
+    {
+    }
+}
+
+/// <summary>
+/// Event arguments for pointer move events.
+/// </summary>
+public class PointerMoveEventArgs : PointerEventArgs
+{
+    /// <summary>
+    /// Initializes a new instance of the PointerMoveEventArgs class.
+    /// </summary>
+    public PointerMoveEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
+        : base(pointer, modifiers, timestamp)
+    {
+    }
+}
+
+/// <summary>
+/// Event arguments for pointer cancel events.
+/// </summary>
+public class PointerCancelEventArgs : PointerEventArgs
+{
+    /// <summary>
+    /// Initializes a new instance of the PointerCancelEventArgs class.
+    /// </summary>
+    public PointerCancelEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
+        : base(pointer, modifiers, timestamp)
+    {
+    }
+}
+
+/// <summary>
+/// Event arguments for pointer pressed events (legacy alias for PointerDown).
+/// </summary>
+public sealed class PointerPressedEventArgs : PointerDownEventArgs
+{
     /// <summary>
     /// Initializes a new instance of the PointerPressedEventArgs class.
     /// </summary>
@@ -329,9 +390,9 @@ public class PointerPressedEventArgs : PointerEventArgs
 }
 
 /// <summary>
-/// Event arguments for pointer released events.
+/// Event arguments for pointer released events (legacy alias for PointerUp).
 /// </summary>
-public class PointerReleasedEventArgs : PointerEventArgs
+public sealed class PointerReleasedEventArgs : PointerUpEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the PointerReleasedEventArgs class.
@@ -343,9 +404,9 @@ public class PointerReleasedEventArgs : PointerEventArgs
 }
 
 /// <summary>
-/// Event arguments for pointer moved events.
+/// Event arguments for pointer moved events (legacy alias for PointerMove).
 /// </summary>
-public class PointerMovedEventArgs : PointerEventArgs
+public sealed class PointerMovedEventArgs : PointerMoveEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the PointerMovedEventArgs class.
@@ -359,7 +420,7 @@ public class PointerMovedEventArgs : PointerEventArgs
 /// <summary>
 /// Event arguments for pointer wheel changed events.
 /// </summary>
-public class PointerWheelChangedEventArgs : PointerEventArgs
+public sealed class PointerWheelChangedEventArgs : PointerEventArgs
 {
     /// <summary>
     /// Gets the mouse wheel delta.
@@ -378,7 +439,7 @@ public class PointerWheelChangedEventArgs : PointerEventArgs
 /// <summary>
 /// Event arguments for pointer capture lost events.
 /// </summary>
-public class PointerCaptureLostEventArgs : PointerEventArgs
+public sealed class PointerCaptureLostEventArgs : PointerEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the PointerCaptureLostEventArgs class.
@@ -393,6 +454,10 @@ public class PointerCaptureLostEventArgs : PointerEventArgs
 /// Event handler delegates for pointer events.
 /// </summary>
 public delegate void PointerEventHandler(object sender, PointerEventArgs e);
+public delegate void PointerDownEventHandler(object sender, PointerDownEventArgs e);
+public delegate void PointerUpEventHandler(object sender, PointerUpEventArgs e);
+public delegate void PointerMoveEventHandler(object sender, PointerMoveEventArgs e);
+public delegate void PointerCancelEventHandler(object sender, PointerCancelEventArgs e);
 public delegate void PointerPressedEventHandler(object sender, PointerPressedEventArgs e);
 public delegate void PointerReleasedEventHandler(object sender, PointerReleasedEventArgs e);
 public delegate void PointerMovedEventHandler(object sender, PointerMovedEventArgs e);
@@ -405,25 +470,70 @@ public delegate void PointerCaptureLostEventHandler(object sender, PointerCaptur
 public static class PointerEvents
 {
     /// <summary>
-    /// Identifies the PointerPressed routed event.
+    /// Identifies the PreviewPointerDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewPointerDownEvent =
+        UIElement.PreviewPointerDownEvent.AddOwner(typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerDownEvent =
+        UIElement.PointerDownEvent.AddOwner(typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewPointerMove routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewPointerMoveEvent =
+        UIElement.PreviewPointerMoveEvent.AddOwner(typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerMove routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerMoveEvent =
+        UIElement.PointerMoveEvent.AddOwner(typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewPointerUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewPointerUpEvent =
+        UIElement.PreviewPointerUpEvent.AddOwner(typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerUpEvent =
+        UIElement.PointerUpEvent.AddOwner(typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewPointerCancel routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewPointerCancelEvent =
+        UIElement.PreviewPointerCancelEvent.AddOwner(typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerCancel routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerCancelEvent =
+        UIElement.PointerCancelEvent.AddOwner(typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerPressed routed event (legacy alias for PointerDown).
     /// </summary>
     public static readonly RoutedEvent PointerPressedEvent =
-        EventManager.RegisterRoutedEvent("PointerPressed", RoutingStrategy.Bubble,
-            typeof(PointerPressedEventHandler), typeof(UIElement));
+        UIElement.PointerPressedEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
-    /// Identifies the PointerMoved routed event.
+    /// Identifies the PointerMoved routed event (legacy alias for PointerMove).
     /// </summary>
     public static readonly RoutedEvent PointerMovedEvent =
-        EventManager.RegisterRoutedEvent("PointerMoved", RoutingStrategy.Bubble,
-            typeof(PointerMovedEventHandler), typeof(UIElement));
+        UIElement.PointerMovedEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
-    /// Identifies the PointerReleased routed event.
+    /// Identifies the PointerReleased routed event (legacy alias for PointerUp).
     /// </summary>
     public static readonly RoutedEvent PointerReleasedEvent =
-        EventManager.RegisterRoutedEvent("PointerReleased", RoutingStrategy.Bubble,
-            typeof(PointerReleasedEventHandler), typeof(UIElement));
+        UIElement.PointerReleasedEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the PointerEntered routed event.

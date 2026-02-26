@@ -6,7 +6,7 @@ namespace Jalium.UI.Documents;
 /// <summary>
 /// Represents a selection of content between two TextPointer positions.
 /// </summary>
-public class TextRange
+public sealed class TextRange
 {
     #region Fields
 
@@ -215,8 +215,7 @@ public class TextRange
 
     private void SetText(string value)
     {
-        if (value == null)
-            value = string.Empty;
+                    value ??= string.Empty;
 
         // Delete existing content
         DeleteContent();
@@ -551,7 +550,7 @@ public class TextRange
     /// <summary>
     /// Raises the Changed event.
     /// </summary>
-    protected virtual void OnChanged()
+    protected void OnChanged()
     {
         Changed?.Invoke(this, EventArgs.Empty);
     }

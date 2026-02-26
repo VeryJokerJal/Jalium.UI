@@ -10,7 +10,7 @@ namespace Jalium.UI.Controls.DevTools;
 /// Provides visual overlay functionality for highlighting elements in the DevTools.
 /// Uses an animated glowing border effect with a trailing glow that follows the element perimeter.
 /// </summary>
-internal class DevToolsOverlay
+internal sealed class DevToolsOverlay
 {
     private readonly Window _targetWindow;
     private FrameworkElement? _highlightedElement;
@@ -96,7 +96,7 @@ internal class DevToolsOverlay
                 _animationStopwatch.Restart();
                 _animationTimer = new DispatcherTimer
                 {
-                    Interval = TimeSpan.FromMilliseconds(16) // ~60 FPS
+                    Interval = CompositionTarget.FrameInterval
                 };
                 _animationTimer.Tick += OnAnimationTick;
                 _animationTimer.Start();
@@ -108,7 +108,8 @@ internal class DevToolsOverlay
             StopAnimation();
         }
 
-        // Request redraw of target window to show the highlight
+        // Request full redraw — overlay covers entire window (dim + glow)
+        _targetWindow.RequestFullInvalidation();
         _targetWindow.InvalidateWindow();
     }
 
@@ -160,6 +161,7 @@ internal class DevToolsOverlay
                 }
             }
 
+            _targetWindow.RequestFullInvalidation();
             _targetWindow.InvalidateWindow();
         }
         else
@@ -475,6 +477,7 @@ internal class DevToolsOverlay
     {
         _highlightedElement = null;
         StopAnimation();
+        _targetWindow.RequestFullInvalidation();
         _targetWindow.InvalidateWindow();
     }
 }

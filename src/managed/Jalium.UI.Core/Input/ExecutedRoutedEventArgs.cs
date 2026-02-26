@@ -3,7 +3,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Provides data for the Executed and PreviewExecuted routed events.
 /// </summary>
-public class ExecutedRoutedEventArgs : RoutedEventArgs
+public sealed class ExecutedRoutedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the ExecutedRoutedEventArgs class.

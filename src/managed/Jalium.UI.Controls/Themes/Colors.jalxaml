@@ -68,8 +68,12 @@
 
     <!-- ScrollBar Colors -->
     <SolidColorBrush x:Key="ScrollBarTrack" Color="#282828" />
-    <SolidColorBrush x:Key="ScrollBarThumb" Color="#505050" />
-    <SolidColorBrush x:Key="ScrollBarThumbHover" Color="#646464" />
+    <SolidColorBrush x:Key="ScrollBarThumb" Color="#B4B4B4" />
+    <SolidColorBrush x:Key="ScrollBarThumbHover" Color="#C8C8C8" />
+    <SolidColorBrush x:Key="ScrollBarThumbActive" Color="#D6D6D6" />
+    <SolidColorBrush x:Key="ScrollBarArrow" Color="#D2D2D2" />
+    <SolidColorBrush x:Key="ScrollBarArrowHover" Color="#E6E6E6" />
+    <SolidColorBrush x:Key="ScrollBarArrowPressed" Color="#F0F0F0" />
 
     <!-- Slider Colors -->
     <SolidColorBrush x:Key="SliderTrack" Color="#3C3C3C" />
@@ -92,10 +96,46 @@
     <!-- Text Tertiary (for grip lines etc.) -->
     <SolidColorBrush x:Key="TextTertiary" Color="#646464" />
 
+    <!-- DockLayout Colors -->
+    <SolidColorBrush x:Key="DockTabStripBackground" Color="#252525" />
+    <SolidColorBrush x:Key="DockTabStripBorder" Color="#3C3C3C" />
+    <SolidColorBrush x:Key="DockTabItemSelectedBackground" Color="#1E1E1E" />
+    <SolidColorBrush x:Key="DockTabItemHoverBackground" Color="#2D2D2D" />
+    <SolidColorBrush x:Key="DockContentBackground" Color="#1E1E1E" />
+    <SolidColorBrush x:Key="DockSplitterBackground" Color="#252525" />
+    <SolidColorBrush x:Key="DockSplitterHover" Color="#3C3C3C" />
+    <SolidColorBrush x:Key="DockCloseButtonHover" Color="#E81123" />
+
     <!-- InfoBar Colors -->
     <SolidColorBrush x:Key="InfoBarInformationalBackground" Color="#2D4D6D" />
     <SolidColorBrush x:Key="InfoBarSuccessBackground" Color="#2D6D3C" />
     <SolidColorBrush x:Key="InfoBarWarningBackground" Color="#6D5A2D" />
     <SolidColorBrush x:Key="InfoBarErrorBackground" Color="#6D2D2D" />
+
+    <!-- CommandBar / AppBar Colors -->
+    <SolidColorBrush x:Key="CommandBarBackground" Color="#2D2D2D" />
+    <SolidColorBrush x:Key="CommandBarBorderBrush" Color="#3D3D3D" />
+    <SolidColorBrush x:Key="CommandBarOverflowBackground" Color="#333333" />
+    <SolidColorBrush x:Key="AppBarButtonBackground" Color="Transparent" />
+    <SolidColorBrush x:Key="AppBarButtonBackgroundHover" Color="#3D3D3D" />
+    <SolidColorBrush x:Key="AppBarButtonBackgroundPressed" Color="#333333" />
+    <SolidColorBrush x:Key="AppBarButtonForeground" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="AppBarButtonForegroundDisabled" Color="#5A5A5A" />
+    <SolidColorBrush x:Key="AppBarSeparatorForeground" Color="#505050" />
+
+    <!-- MenuBar Colors -->
+    <SolidColorBrush x:Key="MenuBarBackground" Color="Transparent" />
+    <SolidColorBrush x:Key="MenuBarItemBackgroundHover" Color="#3D3D3D" />
+    <SolidColorBrush x:Key="MenuBarItemBackgroundPressed" Color="#333333" />
+
+    <!-- MenuFlyout Colors -->
+    <SolidColorBrush x:Key="MenuFlyoutPresenterBackground" Color="#2D2D30" />
+    <SolidColorBrush x:Key="MenuFlyoutPresenterBorderBrush" Color="#434346" />
+    <SolidColorBrush x:Key="MenuFlyoutItemBackgroundHover" Color="#3E3E40" />
+    <SolidColorBrush x:Key="MenuFlyoutItemBackgroundPressed" Color="#333337" />
+
+    <!-- SwipeControl Colors -->
+    <SolidColorBrush x:Key="SwipeItemBackground" Color="#0078D4" />
+    <SolidColorBrush x:Key="SwipeItemDestructiveBackground" Color="#C42B1C" />
 
 </ResourceDictionary>

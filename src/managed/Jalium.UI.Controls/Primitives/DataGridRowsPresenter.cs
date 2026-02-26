@@ -4,7 +4,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// Represents a control that displays the rows in a DataGrid.
 /// Uses virtualization for efficient rendering of large data sets.
 /// </summary>
-public class DataGridRowsPresenter : VirtualizingStackPanel
+public sealed class DataGridRowsPresenter : VirtualizingStackPanel
 {
     #region CLR Properties
 

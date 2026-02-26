@@ -72,7 +72,7 @@ public abstract class GroupDescription : INotifyPropertyChanged
 /// <summary>
 /// Describes the grouping of items using a property name as the criteria.
 /// </summary>
-public class PropertyGroupDescription : GroupDescription
+public sealed class PropertyGroupDescription : GroupDescription
 {
     private string? _propertyName;
     private IValueConverter? _converter;

@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Primitives;
+﻿namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents an element that has a value within a specific range.
@@ -72,7 +72,7 @@ public abstract class RangeBase : Control
     /// </summary>
     public double Minimum
     {
-        get => (double)(GetValue(MinimumProperty) ?? 0.0);
+        get => (double)GetValue(MinimumProperty)!;
         set => SetValue(MinimumProperty, value);
     }
 
@@ -81,7 +81,7 @@ public abstract class RangeBase : Control
     /// </summary>
     public double Maximum
     {
-        get => (double)(GetValue(MaximumProperty) ?? 1.0);
+        get => (double)GetValue(MaximumProperty)!;
         set => SetValue(MaximumProperty, value);
     }
 
@@ -90,7 +90,7 @@ public abstract class RangeBase : Control
     /// </summary>
     public double Value
     {
-        get => (double)(GetValue(ValueProperty) ?? 0.0);
+        get => (double)GetValue(ValueProperty)!;
         set => SetValue(ValueProperty, value);
     }
 
@@ -99,7 +99,7 @@ public abstract class RangeBase : Control
     /// </summary>
     public double SmallChange
     {
-        get => (double)(GetValue(SmallChangeProperty) ?? 0.1);
+        get => (double)GetValue(SmallChangeProperty)!;
         set => SetValue(SmallChangeProperty, value);
     }
 
@@ -108,7 +108,7 @@ public abstract class RangeBase : Control
     /// </summary>
     public double LargeChange
     {
-        get => (double)(GetValue(LargeChangeProperty) ?? 1.0);
+        get => (double)GetValue(LargeChangeProperty)!;
         set => SetValue(LargeChangeProperty, value);
     }
 

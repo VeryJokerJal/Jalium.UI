@@ -35,7 +35,7 @@ public static class Touch
     /// <summary>
     /// Registers a new touch point.
     /// </summary>
-    internal static TouchDevice RegisterTouchPoint(int pointerId, Point position, UIElement? target)
+    public static TouchDevice RegisterTouchPoint(int pointerId, Point position, UIElement? target)
     {
         var device = new TouchDevice(pointerId, target);
         device.UpdatePosition(position);
@@ -46,7 +46,7 @@ public static class Touch
     /// <summary>
     /// Updates an existing touch point.
     /// </summary>
-    internal static void UpdateTouchPoint(int pointerId, Point position)
+    public static void UpdateTouchPoint(int pointerId, Point position)
     {
         if (_touchDevices.TryGetValue(pointerId, out var device))
         {
@@ -57,7 +57,7 @@ public static class Touch
     /// <summary>
     /// Unregisters a touch point.
     /// </summary>
-    internal static void UnregisterTouchPoint(int pointerId)
+    public static void UnregisterTouchPoint(int pointerId)
     {
         _touchDevices.Remove(pointerId);
     }
@@ -65,7 +65,7 @@ public static class Touch
     /// <summary>
     /// Gets a touch device by its ID.
     /// </summary>
-    internal static TouchDevice? GetDevice(int pointerId)
+    public static TouchDevice? GetDevice(int pointerId)
     {
         _touchDevices.TryGetValue(pointerId, out var device);
         return device;
@@ -75,7 +75,7 @@ public static class Touch
 /// <summary>
 /// Represents a touch input device.
 /// </summary>
-public class TouchDevice
+public sealed class TouchDevice
 {
     private Point _position;
     private Point _previousPosition;
@@ -115,12 +115,12 @@ public class TouchDevice
     /// <summary>
     /// Gets the direct target of this touch device (before capture).
     /// </summary>
-    public UIElement? DirectlyOver { get; internal set; }
+    public UIElement? DirectlyOver { get; set; }
 
     /// <summary>
     /// Initializes a new instance of the TouchDevice class.
     /// </summary>
-    internal TouchDevice(int id, UIElement? target)
+    public TouchDevice(int id, UIElement? target)
     {
         Id = id;
         Target = target;
@@ -130,7 +130,7 @@ public class TouchDevice
     /// <summary>
     /// Updates the position of this touch device.
     /// </summary>
-    internal void UpdatePosition(Point newPosition)
+    public void UpdatePosition(Point newPosition)
     {
         _previousPosition = _position;
         _position = newPosition;
@@ -178,7 +178,7 @@ public class TouchDevice
     /// <summary>
     /// Deactivates this touch device.
     /// </summary>
-    internal void Deactivate()
+    public void Deactivate()
     {
         _isActive = false;
         _capturedElement = null;
@@ -188,7 +188,7 @@ public class TouchDevice
 /// <summary>
 /// Represents a single touch point.
 /// </summary>
-public class TouchPoint
+public sealed class TouchPoint
 {
     /// <summary>
     /// Gets the touch device that reported this point.
@@ -230,7 +230,7 @@ public class TouchPoint
 /// <summary>
 /// Collection of touch points.
 /// </summary>
-public class TouchPointCollection : List<TouchPoint>
+public sealed class TouchPointCollection : List<TouchPoint>
 {
 }
 
@@ -252,13 +252,18 @@ public enum TouchAction
     /// <summary>
     /// A touch point was released.
     /// </summary>
-    Up
+    Up,
+
+    /// <summary>
+    /// A touch point was canceled by the system.
+    /// </summary>
+    Cancel
 }
 
 /// <summary>
 /// Describes the capabilities of a touch device.
 /// </summary>
-public class TouchCapabilities
+public sealed class TouchCapabilities
 {
     /// <summary>
     /// Gets a value indicating whether touch input is present.
@@ -274,12 +279,17 @@ public class TouchCapabilities
 /// <summary>
 /// Event arguments for touch events.
 /// </summary>
-public class TouchEventArgs : InputEventArgs
+public sealed class TouchEventArgs : InputEventArgs
 {
     /// <summary>
     /// Gets the touch device that raised this event.
     /// </summary>
     public TouchDevice TouchDevice { get; }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether downstream pointer promotion should be canceled.
+    /// </summary>
+    public bool Cancel { get; set; }
 
     /// <summary>
     /// Initializes a new instance of the TouchEventArgs class.
@@ -321,22 +331,19 @@ public static class TouchEvents
     /// Identifies the TouchDown routed event.
     /// </summary>
     public static readonly RoutedEvent TouchDownEvent =
-        EventManager.RegisterRoutedEvent("TouchDown", RoutingStrategy.Bubble,
-            typeof(TouchEventHandler), typeof(UIElement));
+        UIElement.TouchDownEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the TouchMove routed event.
     /// </summary>
     public static readonly RoutedEvent TouchMoveEvent =
-        EventManager.RegisterRoutedEvent("TouchMove", RoutingStrategy.Bubble,
-            typeof(TouchEventHandler), typeof(UIElement));
+        UIElement.TouchMoveEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the TouchUp routed event.
     /// </summary>
     public static readonly RoutedEvent TouchUpEvent =
-        EventManager.RegisterRoutedEvent("TouchUp", RoutingStrategy.Bubble,
-            typeof(TouchEventHandler), typeof(UIElement));
+        UIElement.TouchUpEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the TouchEnter routed event.
@@ -356,20 +363,17 @@ public static class TouchEvents
     /// Identifies the PreviewTouchDown routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewTouchDownEvent =
-        EventManager.RegisterRoutedEvent("PreviewTouchDown", RoutingStrategy.Tunnel,
-            typeof(TouchEventHandler), typeof(UIElement));
+        UIElement.PreviewTouchDownEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewTouchMove routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewTouchMoveEvent =
-        EventManager.RegisterRoutedEvent("PreviewTouchMove", RoutingStrategy.Tunnel,
-            typeof(TouchEventHandler), typeof(UIElement));
+        UIElement.PreviewTouchMoveEvent.AddOwner(typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewTouchUp routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewTouchUpEvent =
-        EventManager.RegisterRoutedEvent("PreviewTouchUp", RoutingStrategy.Tunnel,
-            typeof(TouchEventHandler), typeof(UIElement));
+        UIElement.PreviewTouchUpEvent.AddOwner(typeof(UIElement));
 }

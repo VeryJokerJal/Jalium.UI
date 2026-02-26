@@ -21,7 +21,7 @@ public abstract class Inline : TextElement
 /// <summary>
 /// A collection of inline elements.
 /// </summary>
-public class InlineCollection : List<Inline>
+public sealed class InlineCollection : List<Inline>
 {
     private readonly TextElement _parent;
 
@@ -93,7 +93,7 @@ public class InlineCollection : List<Inline>
 /// <summary>
 /// An inline element that contains text.
 /// </summary>
-public class Run : Inline
+public sealed class Run : Inline
 {
     /// <summary>
     /// Gets or sets the text content.
@@ -117,7 +117,7 @@ public class Run : Inline
 /// <summary>
 /// An inline element that displays bold text.
 /// </summary>
-public class Bold : Span
+public sealed class Bold : Span
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="Bold"/> class.
@@ -139,7 +139,7 @@ public class Bold : Span
 /// <summary>
 /// An inline element that displays italic text.
 /// </summary>
-public class Italic : Span
+public sealed class Italic : Span
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="Italic"/> class.
@@ -161,7 +161,7 @@ public class Italic : Span
 /// <summary>
 /// An inline element that displays underlined text.
 /// </summary>
-public class Underline : Span
+public sealed class Underline : Span
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="Underline"/> class.
@@ -210,7 +210,7 @@ public class Span : Inline
 /// <summary>
 /// An inline element that represents a hyperlink.
 /// </summary>
-public class Hyperlink : Span
+public sealed class Hyperlink : Span
 {
     /// <summary>
     /// Identifies the NavigateUri dependency property.
@@ -261,14 +261,14 @@ public class Hyperlink : Span
 /// <summary>
 /// An inline element that represents a line break.
 /// </summary>
-public class LineBreak : Inline
+public sealed class LineBreak : Inline
 {
 }
 
 /// <summary>
 /// An inline element that represents an inline UI element.
 /// </summary>
-public class InlineUIContainer : Inline
+public sealed class InlineUIContainer : Inline
 {
     /// <summary>
     /// Gets or sets the child UI element.

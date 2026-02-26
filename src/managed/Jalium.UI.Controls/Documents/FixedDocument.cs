@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
 
@@ -8,7 +8,7 @@ namespace Jalium.UI.Documents;
 /// Hosts a portable, high fidelity, fixed-format document with read access for user text selection,
 /// keyboard navigation, and search.
 /// </summary>
-public class FixedDocument : FrameworkContentElement, IDocumentPaginatorSource
+public sealed class FixedDocument : FrameworkContentElement, IDocumentPaginatorSource
 {
     private readonly PageContentCollection _pages;
     private FixedDocumentPaginator? _paginator;
@@ -51,7 +51,7 @@ public class FixedDocument : FrameworkContentElement, IDocumentPaginatorSource
 /// <summary>
 /// Provides access to an ordered sequence of pages in a FixedDocument.
 /// </summary>
-public class PageContentCollection : Collection<PageContent>
+public sealed class PageContentCollection : Collection<PageContent>
 {
     private readonly FixedDocument _owner;
 
@@ -88,7 +88,7 @@ public class PageContentCollection : Collection<PageContent>
 /// <summary>
 /// Provides information about a page that is part of a FixedDocument.
 /// </summary>
-public class PageContent : FrameworkElement
+public sealed class PageContent : FrameworkElement
 {
     private FixedPage? _child;
     private Uri? _source;
@@ -148,7 +148,7 @@ public class PageContent : FrameworkElement
 /// <summary>
 /// Provides the content for a high fidelity, fixed-format page.
 /// </summary>
-public class FixedPage : FrameworkElement
+public sealed class FixedPage : FrameworkElement
 {
     private readonly List<UIElement> _children = new();
 
@@ -236,7 +236,7 @@ public class FixedPage : FrameworkElement
     /// </summary>
     public Rect ContentBox
     {
-        get => (Rect)(GetValue(ContentBoxProperty) ?? Rect.Empty);
+        get => (Rect)GetValue(ContentBoxProperty)!;
         set => SetValue(ContentBoxProperty, value);
     }
 
@@ -245,7 +245,7 @@ public class FixedPage : FrameworkElement
     /// </summary>
     public Rect BleedBox
     {
-        get => (Rect)(GetValue(BleedBoxProperty) ?? Rect.Empty);
+        get => (Rect)GetValue(BleedBoxProperty)!;
         set => SetValue(BleedBoxProperty, value);
     }
 
@@ -293,7 +293,7 @@ public class FixedPage : FrameworkElement
 /// <summary>
 /// Represents a sequence of FixedDocument elements.
 /// </summary>
-public class FixedDocumentSequence : FrameworkContentElement, IDocumentPaginatorSource
+public sealed class FixedDocumentSequence : FrameworkContentElement, IDocumentPaginatorSource
 {
     private readonly DocumentReferenceCollection _references;
     private FixedDocumentSequencePaginator? _paginator;
@@ -336,14 +336,14 @@ public class FixedDocumentSequence : FrameworkContentElement, IDocumentPaginator
 /// <summary>
 /// A collection of DocumentReference objects.
 /// </summary>
-public class DocumentReferenceCollection : Collection<DocumentReference>
+public sealed class DocumentReferenceCollection : Collection<DocumentReference>
 {
 }
 
 /// <summary>
 /// References a FixedDocument that is part of a FixedDocumentSequence.
 /// </summary>
-public class DocumentReference : FrameworkElement
+public sealed class DocumentReference : FrameworkElement
 {
     private FixedDocument? _document;
 
@@ -500,7 +500,7 @@ public abstract class DocumentPaginator
 /// <summary>
 /// Represents a page of a document.
 /// </summary>
-public class DocumentPage
+public sealed class DocumentPage
 {
     /// <summary>
     /// A blank document page.
@@ -573,7 +573,7 @@ public delegate void AsyncCompletedEventHandler(object sender, AsyncCompletedEve
 /// <summary>
 /// Event args for GetPageCompleted event.
 /// </summary>
-public class GetPageCompletedEventArgs : AsyncCompletedEventArgs
+public sealed class GetPageCompletedEventArgs : AsyncCompletedEventArgs
 {
     /// <summary>
     /// Gets the document page.
@@ -630,7 +630,7 @@ public class AsyncCompletedEventArgs : EventArgs
 /// <summary>
 /// Paginator for FixedDocument.
 /// </summary>
-internal class FixedDocumentPaginator : DocumentPaginator
+internal sealed class FixedDocumentPaginator : DocumentPaginator
 {
     private readonly FixedDocument _document;
     private Size _pageSize = new(816, 1056); // Default US Letter
@@ -670,7 +670,7 @@ internal class FixedDocumentPaginator : DocumentPaginator
 /// <summary>
 /// Paginator for FixedDocumentSequence.
 /// </summary>
-internal class FixedDocumentSequencePaginator : DocumentPaginator
+internal sealed class FixedDocumentSequencePaginator : DocumentPaginator
 {
     private readonly FixedDocumentSequence _sequence;
     private Size _pageSize = new(816, 1056);

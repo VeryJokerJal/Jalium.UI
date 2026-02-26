@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a Windows toast notification.
 /// </summary>
-public class ToastNotification
+public sealed class ToastNotification
 {
     private readonly string _content;
     private string? _tag;
@@ -218,7 +218,7 @@ public static class ToastNotificationManager
 /// <summary>
 /// Provides methods for showing and hiding toast notifications.
 /// </summary>
-public class ToastNotifier
+public sealed class ToastNotifier
 {
     private readonly string _applicationId;
 
@@ -287,7 +287,7 @@ public class ToastNotifier
     /// <summary>
     /// Shows the notification (platform-specific implementation).
     /// </summary>
-    protected virtual void ShowInternal(ToastNotification notification)
+    protected void ShowInternal(ToastNotification notification)
     {
         // Windows: Use Windows.UI.Notifications API
     }
@@ -295,7 +295,7 @@ public class ToastNotifier
     /// <summary>
     /// Hides the notification (platform-specific implementation).
     /// </summary>
-    protected virtual void HideInternal(ToastNotification notification)
+    protected void HideInternal(ToastNotification notification)
     {
         // Platform-specific implementation
     }
@@ -303,7 +303,7 @@ public class ToastNotifier
     /// <summary>
     /// Gets the notification setting (platform-specific implementation).
     /// </summary>
-    protected virtual NotificationSetting GetSettingInternal()
+    protected NotificationSetting GetSettingInternal()
     {
         return NotificationSetting.Enabled;
     }
@@ -311,7 +311,7 @@ public class ToastNotifier
     /// <summary>
     /// Adds to schedule (platform-specific implementation).
     /// </summary>
-    protected virtual void AddToScheduleInternal(ScheduledToastNotification notification)
+    protected void AddToScheduleInternal(ScheduledToastNotification notification)
     {
         // Platform-specific implementation
     }
@@ -319,7 +319,7 @@ public class ToastNotifier
     /// <summary>
     /// Removes from schedule (platform-specific implementation).
     /// </summary>
-    protected virtual void RemoveFromScheduleInternal(ScheduledToastNotification notification)
+    protected void RemoveFromScheduleInternal(ScheduledToastNotification notification)
     {
         // Platform-specific implementation
     }
@@ -327,7 +327,7 @@ public class ToastNotifier
     /// <summary>
     /// Gets scheduled notifications (platform-specific implementation).
     /// </summary>
-    protected virtual IReadOnlyList<ScheduledToastNotification> GetScheduledToastNotificationsInternal()
+    protected IReadOnlyList<ScheduledToastNotification> GetScheduledToastNotificationsInternal()
     {
         return Array.Empty<ScheduledToastNotification>();
     }
@@ -338,7 +338,7 @@ public class ToastNotifier
 /// <summary>
 /// Represents a scheduled toast notification.
 /// </summary>
-public class ScheduledToastNotification
+public sealed class ScheduledToastNotification
 {
     /// <summary>
     /// Gets the XML content of the notification.
@@ -393,7 +393,7 @@ public class ScheduledToastNotification
 /// <summary>
 /// Provides access to the toast notification history.
 /// </summary>
-public class ToastNotificationHistory
+public sealed class ToastNotificationHistory
 {
     /// <summary>
     /// Removes all notifications for the application.
@@ -432,7 +432,7 @@ public class ToastNotificationHistory
     /// <summary>
     /// Clears all notifications (platform-specific implementation).
     /// </summary>
-    protected virtual void ClearInternal()
+    protected void ClearInternal()
     {
         // Platform-specific implementation
     }
@@ -440,7 +440,7 @@ public class ToastNotificationHistory
     /// <summary>
     /// Removes notifications (platform-specific implementation).
     /// </summary>
-    protected virtual void RemoveInternal(string tag, string? group)
+    protected void RemoveInternal(string tag, string? group)
     {
         // Platform-specific implementation
     }
@@ -448,7 +448,7 @@ public class ToastNotificationHistory
     /// <summary>
     /// Removes group notifications (platform-specific implementation).
     /// </summary>
-    protected virtual void RemoveGroupInternal(string group)
+    protected void RemoveGroupInternal(string group)
     {
         // Platform-specific implementation
     }
@@ -461,7 +461,7 @@ public class ToastNotificationHistory
 /// <summary>
 /// Event arguments for toast activation events.
 /// </summary>
-public class ToastActivatedEventArgs : EventArgs
+public sealed class ToastActivatedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the arguments passed when activated.
@@ -486,7 +486,7 @@ public class ToastActivatedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for toast dismissed events.
 /// </summary>
-public class ToastDismissedEventArgs : EventArgs
+public sealed class ToastDismissedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the reason for dismissal.
@@ -505,7 +505,7 @@ public class ToastDismissedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for toast failed events.
 /// </summary>
-public class ToastFailedEventArgs : EventArgs
+public sealed class ToastFailedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the error that occurred.

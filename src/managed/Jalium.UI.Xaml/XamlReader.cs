@@ -1,3 +1,4 @@
+﻿using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Xml;
@@ -18,7 +19,9 @@ public static class XamlReader
     private const DynamicallyAccessedMemberTypes XamlMemberTypes =
         DynamicallyAccessedMemberTypes.PublicConstructors |
         DynamicallyAccessedMemberTypes.PublicProperties |
-        DynamicallyAccessedMemberTypes.PublicFields;
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicMethods |     // For attached property Set/Get methods
+        DynamicallyAccessedMemberTypes.NonPublicFields;    // For code-behind named element wiring
 
     /// <summary>
     /// Reads XAML input and creates an object tree.
@@ -103,6 +106,25 @@ public static class XamlReader
     /// <param name="assembly">The assembly containing the resource. If null, uses the assembly of the component type.</param>
     public static void LoadComponent(object component, string resourceName, Assembly? assembly = null)
     {
+        LoadComponentCore(component, resourceName, null, assembly);
+    }
+
+    /// <summary>
+    /// Loads a component from XAML with AOT-safe named element output.
+    /// Named elements are collected into the provided dictionary instead of being wired via reflection.
+    /// </summary>
+    /// <param name="component">The component to load XAML into.</param>
+    /// <param name="resourceName">The embedded resource name.</param>
+    /// <param name="namedElements">Dictionary to populate with named elements (x:Name → element instance).</param>
+    /// <param name="assembly">The assembly containing the resource.</param>
+    public static void LoadComponent(object component, string resourceName, Dictionary<string, object> namedElements, Assembly? assembly = null)
+    {
+        ArgumentNullException.ThrowIfNull(namedElements);
+        LoadComponentCore(component, resourceName, namedElements, assembly);
+    }
+
+    private static void LoadComponentCore(object component, string resourceName, Dictionary<string, object>? namedElements, Assembly? assembly)
+    {
         ArgumentNullException.ThrowIfNull(component);
         ArgumentNullException.ThrowIfNull(resourceName);
 
@@ -128,8 +150,10 @@ public static class XamlReader
             var baseUri = new Uri($"resource:///{assembly.GetName().Name}/{resourceName}", UriKind.Absolute);
 
             using var xmlReader = XmlReader.Create(textReader, settings);
-            LoadInternal(xmlReader, component, baseUri, assembly);
+            LoadInternal(xmlReader, component, baseUri, assembly, namedElementsOut: namedElements);
         }
+
+        HotReloadRuntime.RegisterComponent(component);
     }
 
     private static Stream? GetResourceStream(string resourceName, Assembly assembly)
@@ -151,13 +175,15 @@ public static class XamlReader
         return stream;
     }
 
-    private static object LoadInternal(XmlReader reader, object? existingInstance, Uri? baseUri, Assembly? sourceAssembly, ResourceDictionary? parentResourceDictionary = null)
+    private static object LoadInternal(XmlReader reader, object? existingInstance, Uri? baseUri, Assembly? sourceAssembly,
+        ResourceDictionary? parentResourceDictionary = null, Dictionary<string, object>? namedElementsOut = null)
     {
         var context = new XamlParserContext
         {
             BaseUri = baseUri,
             SourceAssembly = sourceAssembly,
-            ParentResourceDictionary = parentResourceDictionary
+            ParentResourceDictionary = parentResourceDictionary,
+            CodeBehindInstance = existingInstance
         };
 
         while (reader.Read())
@@ -166,10 +192,19 @@ public static class XamlReader
             {
                 case XmlNodeType.Element:
                     var result = ParseElement(reader, context, existingInstance);
-                    // Wire up named elements to fields in the component
                     if (existingInstance != null)
                     {
-                        WireUpNamedElements(existingInstance, context.NamedElements);
+                        if (namedElementsOut != null)
+                        {
+                            // AOT-safe path: return named elements to caller for explicit wiring
+                            foreach (var (name, element) in context.NamedElements)
+                                namedElementsOut[name] = element;
+                        }
+                        else
+                        {
+                            // Legacy path: wire up named elements via reflection
+                            WireUpNamedElements(existingInstance, context.NamedElements);
+                        }
                     }
                     return result;
             }
@@ -399,8 +434,7 @@ public static class XamlReader
         var dpField = ownerType.GetField($"{propertyName}Property", BindingFlags.Public | BindingFlags.Static);
         if (dpField != null && instance is DependencyObject depObj)
         {
-            var dp = dpField.GetValue(null) as DependencyProperty;
-            if (dp != null)
+            if (dpField.GetValue(null) is DependencyProperty dp)
             {
                 var convertedValue = TypeConverterRegistry.ConvertValue(value, dp.PropertyType);
                 depObj.SetValue(dp, convertedValue);
@@ -411,8 +445,12 @@ public static class XamlReader
         throw new XamlParseException($"Cannot find attached property setter for: {propertyPath}");
     }
 
-    [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors |
-        DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
+    [return: DynamicallyAccessedMembers(
+        DynamicallyAccessedMemberTypes.PublicConstructors |
+        DynamicallyAccessedMemberTypes.PublicProperties |
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicMethods |
+        DynamicallyAccessedMemberTypes.NonPublicFields)]
     private static Type? FindTypeByName(string typeName)
     {
         // AOT-friendly: Use static type registry
@@ -441,9 +479,10 @@ public static class XamlReader
                     else
                     {
                         // Child element
+                        var explicitKey = TryGetXKey(reader);
                         context.ClearCurrentResourceKey(); // Clear any previous key
                         var child = ParseElement(reader, context);
-                        var resourceKey = context.GetCurrentResourceKey();
+                        var resourceKey = context.GetCurrentResourceKey() ?? explicitKey;
                         AddChild(instance, child, resourceKey);
                         context.ClearCurrentResourceKey(); // Clear after use
                     }
@@ -501,31 +540,60 @@ public static class XamlReader
 
             if (reader.NodeType == XmlNodeType.Element)
             {
+                var explicitKey = TryGetXKey(reader);
+                context.ClearCurrentResourceKey();
                 var childValue = ParseElement(reader, context);
+                var resourceKey = context.GetCurrentResourceKey() ?? explicitKey;
 
                 if (isCollection && propertyValue != null)
                 {
-                    // Add to collection
-                    AddToCollection(propertyValue, childValue);
+                    if (propertyValue is System.Collections.IDictionary dictionary)
+                    {
+                        object? key = resourceKey;
+                        if (key == null && childValue is Style style && style.TargetType != null)
+                        {
+                            key = style.TargetType;
+                        }
+
+                        if (key != null)
+                        {
+                            dictionary[key] = childValue;
+                        }
+                    }
+                    else
+                    {
+                        // Add to collection
+                        AddToCollection(propertyValue, childValue);
+                    }
                 }
                 else
                 {
                     // Set property value
                     property.SetValue(instance, childValue);
                 }
+
+                context.ClearCurrentResourceKey();
             }
         }
+    }
+
+    private static string? TryGetXKey(XmlReader reader)
+    {
+        const string xamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+        return reader.GetAttribute("Key", xamlNamespace);
     }
 
     private static bool IsCollectionType(Type type)
     {
         if (type.IsArray) return true;
+        if (typeof(System.Collections.IDictionary).IsAssignableFrom(type)) return true;
         if (type.IsGenericType)
         {
             var genericDef = type.GetGenericTypeDefinition();
             if (genericDef == typeof(IList<>) ||
                 genericDef == typeof(ICollection<>) ||
-                genericDef == typeof(List<>))
+                genericDef == typeof(List<>) ||
+                genericDef == typeof(IDictionary<,>))
             {
                 return true;
             }
@@ -612,10 +680,7 @@ public static class XamlReader
             template.SourceAssembly = context.SourceAssembly;
 
             // Register the XAML parser callback if not already set
-            if (ControlTemplate.XamlParser == null)
-            {
-                ControlTemplate.XamlParser = ParseTemplateXaml;
-            }
+            ControlTemplate.XamlParser ??= ParseTemplateXaml;
         }
     }
 
@@ -687,10 +752,7 @@ public static class XamlReader
             template.SourceAssembly = context.SourceAssembly;
 
             // Register the XAML parser callback if not already set
-            if (DataTemplate.XamlParser == null)
-            {
-                DataTemplate.XamlParser = ParseTemplateXaml;
-            }
+            DataTemplate.XamlParser ??= ParseTemplateXaml;
         }
     }
 
@@ -790,19 +852,29 @@ public static class XamlReader
         var parentDict = context.FindParentResourceDictionary(resourceDict);
 
         // Use the SourceLoader callback to load the external XAML
-        if (ResourceDictionary.SourceLoader != null)
+        // Wrap in try-catch so a single missing Source doesn't kill the entire ResourceDictionary.
+        // This matches WPF behavior where MergedDictionary failures are non-fatal.
+        try
         {
-            var loadedDict = ResourceDictionary.SourceLoader(resourceDict, sourceUri, context.SourceAssembly);
-            if (loadedDict != null)
+            if (ResourceDictionary.SourceLoader != null)
             {
-                // Copy the loaded content into the current ResourceDictionary
-                resourceDict.CopyFrom(loadedDict);
+                var loadedDict = ResourceDictionary.SourceLoader(resourceDict, sourceUri, context.SourceAssembly);
+                if (loadedDict != null)
+                {
+                    // Copy the loaded content into the current ResourceDictionary
+                    resourceDict.CopyFrom(loadedDict);
+                }
+            }
+            else
+            {
+                // No SourceLoader registered - try to load directly
+                LoadResourceDictionaryFromUri(resourceDict, sourceUri, context, parentDict);
             }
         }
-        else
+        catch (XamlParseException ex)
         {
-            // No SourceLoader registered - try to load directly
-            LoadResourceDictionaryFromUri(resourceDict, sourceUri, context, parentDict);
+            // Log but don't throw - allow remaining MergedDictionaries to load
+            System.Diagnostics.Debug.WriteLine($"[XamlReader] Warning: Failed to load ResourceDictionary Source='{sourceValue}': {ex.Message}");
         }
     }
 
@@ -818,7 +890,7 @@ public static class XamlReader
         var uriString = sourceUri.ToString();
 
         // Handle resource:// URIs (our custom scheme)
-        if (uriString.StartsWith("resource:///"))
+        if (uriString.StartsWith("resource:///", StringComparison.Ordinal))
         {
             var path = uriString.Substring("resource:///".Length);
             // Extract assembly name and resource path (format: AssemblyName/path/to/resource)
@@ -828,9 +900,8 @@ public static class XamlReader
                 var assemblyName = path.Substring(0, firstSlash);
                 resourceName = path.Substring(firstSlash + 1);
 
-                // Try to find the assembly
-                var loadedAssembly = AppDomain.CurrentDomain.GetAssemblies()
-                    .FirstOrDefault(a => a.GetName().Name == assemblyName);
+                // AOT-safe: Use compile-time known assembly references
+                var loadedAssembly = FindAssemblyByName(assemblyName);
                 if (loadedAssembly != null)
                 {
                     assembly = loadedAssembly;
@@ -859,9 +930,8 @@ public static class XamlReader
 
         if (assembly == null)
         {
-            // Try to find Jalium.UI.Controls assembly as fallback for theme resources
-            assembly = AppDomain.CurrentDomain.GetAssemblies()
-                .FirstOrDefault(a => a.GetName().Name == "Jalium.UI.Controls");
+            // AOT-safe: Use compile-time reference for Controls assembly
+            assembly = typeof(Jalium.UI.Controls.Control).Assembly;
         }
 
         if (assembly == null)
@@ -912,15 +982,21 @@ public static class XamlReader
         var type = instance.GetType();
         var property = type.GetProperty(propertyName);
 
-        if (property == null)
+        if (propertyName == "ToolTip")
         {
-            // Property not found - might be a design-time only property, ignore
-            return;
+            System.Diagnostics.Debug.WriteLine($"[XamlReader] SetProperty ToolTip on {type.Name}: property={property?.Name}, canWrite={property?.CanWrite}, value={value}");
         }
 
-        if (!property.CanWrite)
+        if (property == null || !property.CanWrite)
         {
-            return;
+            // Check if it's an event (e.g., Click="OnClick")
+            if (value is string handlerName && TryWireEvent(instance, propertyName, handlerName, context))
+                return;
+
+            if (property == null)
+                return; // Not a property or event, ignore
+            if (!property.CanWrite)
+                return;
         }
 
         // Special handling for ResourceDictionary.Source
@@ -950,7 +1026,14 @@ public static class XamlReader
                         return;
                     }
                 }
-                // If we can't resolve, skip setting the property
+                // Property couldn't be resolved against the Style's TargetType.
+                // This happens when a Setter has TargetName pointing to a different element type
+                // (e.g., Setter TargetName="PART_Chevron" Property="Data" where Data is on Path, not NavigationViewItem).
+                // Store the property name for deferred resolution at runtime.
+                if (instance is Setter setter)
+                {
+                    setter.PropertyName = stringValue;
+                }
                 return;
             }
 
@@ -974,6 +1057,37 @@ public static class XamlReader
         {
             property.SetValue(instance, value);
         }
+    }
+
+    private static bool TryWireEvent(object instance, string eventName, string handlerName, XamlParserContext context)
+    {
+        var codeBehind = context.CodeBehindInstance;
+        if (codeBehind == null)
+            return false;
+
+        var eventInfo = instance.GetType().GetEvent(eventName);
+        if (eventInfo == null)
+            return false;
+
+        var handlerType = eventInfo.EventHandlerType;
+        if (handlerType == null)
+            return false;
+
+        // Find handler method on code-behind instance
+        var codeBehindType = codeBehind.GetType();
+        var method = codeBehindType.GetMethod(handlerName,
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public |
+            System.Reflection.BindingFlags.NonPublic);
+
+        if (method == null)
+            return false;
+
+        var handler = Delegate.CreateDelegate(handlerType, codeBehind, method, throwOnBindFailure: false);
+        if (handler == null)
+            return false;
+
+        eventInfo.AddEventHandler(instance, handler);
+        return true;
     }
 
     [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
@@ -1174,6 +1288,10 @@ public static class XamlReader
         {
             panel.Children.Add(element);
         }
+        else if (parent is ItemsControl itemsControl && child is UIElement itemChild)
+        {
+            itemsControl.Items.Add(itemChild);
+        }
         else if (parent is ContentControl cc)
         {
             cc.Content = child;
@@ -1215,18 +1333,48 @@ public static class XamlReader
             }
         }
     }
+
+    /// <summary>
+    /// AOT-safe assembly lookup by name. Uses compile-time known references for framework assemblies,
+    /// falls back to Assembly.Load for user assemblies.
+    /// </summary>
+    private static Assembly? FindAssemblyByName(string assemblyName)
+    {
+        return assemblyName switch
+        {
+            "Jalium.UI.Core" => typeof(DependencyObject).Assembly,
+            "Jalium.UI.Controls" => typeof(Jalium.UI.Controls.Control).Assembly,
+            "Jalium.UI.Media" => typeof(Jalium.UI.Media.Brush).Assembly,
+            "Jalium.UI.Xaml" => typeof(XamlReader).Assembly,
+            _ => TryLoadAssembly(assemblyName)
+        };
+    }
+
+    private static Assembly? TryLoadAssembly(string assemblyName)
+    {
+        try
+        {
+            return Assembly.Load(new AssemblyName(assemblyName));
+        }
+        catch
+        {
+            return null;
+        }
+    }
 }
 
 /// <summary>
 /// Context for XAML parsing operations.
 /// </summary>
-internal class XamlParserContext : IAmbientResourceProvider
+internal sealed class XamlParserContext : IAmbientResourceProvider
 {
     private readonly Dictionary<string, string> _defaultNamespaces = new()
     {
         ["http://schemas.microsoft.com/winfx/2006/xaml/presentation"] = "Jalium.UI.Controls",
         ["http://schemas.microsoft.com/winfx/2006/xaml"] = "System",
         ["http://schemas.jalium.ui/2024"] = "Jalium.UI.Controls", // Jalium UI namespace
+        ["https://schemas.jalium.dev/jalxaml"] = "Jalium.UI.Controls", // Jalium.dev namespace
+        ["http://schemas.jalium.com/jalxaml"] = "Jalium.UI.Controls", // Jalium.com namespace
         [""] = "Jalium.UI.Controls" // Default namespace
     };
 
@@ -1251,6 +1399,11 @@ internal class XamlParserContext : IAmbientResourceProvider
     /// them to reference resources from already-loaded sibling dictionaries.
     /// </summary>
     public ResourceDictionary? ParentResourceDictionary { get; set; }
+
+    /// <summary>
+    /// Gets or sets the code-behind instance for event handler wiring.
+    /// </summary>
+    public object? CodeBehindInstance { get; set; }
 
     /// <summary>
     /// Sets the current resource key (from x:Key attribute).
@@ -1401,7 +1554,7 @@ internal class XamlParserContext : IAmbientResourceProvider
         }
 
         // Try CLR namespace from the URI
-        if (namespaceUri.StartsWith("clr-namespace:"))
+        if (namespaceUri.StartsWith("clr-namespace:", StringComparison.Ordinal))
         {
             var type = ResolveClrNamespaceType(namespaceUri, typeName);
             if (type != null)
@@ -1455,7 +1608,7 @@ internal class XamlParserContext : IAmbientResourceProvider
             var remainder = ns.Substring(semicolonIndex + 1);
             ns = ns.Substring(0, semicolonIndex);
 
-            if (remainder.StartsWith("assembly="))
+            if (remainder.StartsWith("assembly=", StringComparison.Ordinal))
             {
                 assemblyName = remainder.Substring("assembly=".Length);
             }
@@ -1464,8 +1617,12 @@ internal class XamlParserContext : IAmbientResourceProvider
         return ResolveTypeInNamespace(ns, typeName, assemblyName);
     }
 
-    [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors |
-        DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
+    [return: DynamicallyAccessedMembers(
+        DynamicallyAccessedMemberTypes.PublicConstructors |
+        DynamicallyAccessedMemberTypes.PublicProperties |
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicMethods |
+        DynamicallyAccessedMemberTypes.NonPublicFields)]
     private Type? ResolveTypeInNamespace(string clrNamespace, string typeName, string? assemblyName = null)
     {
         // AOT-friendly: Use static type registry instead of Assembly.GetType
@@ -1545,9 +1702,19 @@ public static class XamlTypeRegistry
         Register<CheckBox>(types);
         Register<RadioButton>(types);
         Register<ComboBox>(types);
+        Register<ComboBoxItem>(types);
         Register<Selector>(types);
         Register<ListBox>(types);
         Register<ListBoxItem>(types);
+        Register<ListView>(types);
+        Register<ListViewItem>(types);
+        Register<GridView>(types);
+        Register<Jalium.UI.Controls.GridViewColumn>(types);
+        Register<GridViewColumnHeader>(types);
+        Register<DataGrid>(types);
+        Register<DataGridRow>(types);
+        Register<DataGridCell>(types);
+        Register<Jalium.UI.Controls.DataGridColumnHeader>(types);
         Register<Slider>(types);
         Register<ProgressBar>(types);
         Register<TabControl>(types);
@@ -1577,6 +1744,46 @@ public static class XamlTypeRegistry
         Register<HyperlinkButton>(types);
         Register<Label>(types);
         Register<InkCanvas>(types);
+        Register<EditControl>(types);
+        Register<Calendar>(types);
+        Register<DatePicker>(types);
+        Register<TimePicker>(types);
+        Register<ColorPicker>(types);
+        Register<StatusBar>(types);
+        Register<Jalium.UI.Controls.StatusBarItem>(types); // Fully qualified to disambiguate from Primitives.StatusBarItem
+        Register<Separator>(types);
+        Register<InfoBar>(types);
+        Register<Thumb>(types);
+        Register<Expander>(types);
+        Register<GroupBox>(types);
+        Register<Viewbox>(types);
+        Register<GridSplitter>(types);
+        Register<DockLayout>(types);
+        Register<DockSplitPanel>(types);
+        Register<DockTabPanel>(types);
+        Register<DockItem>(types);
+        Register<TransitioningContentControl>(types);
+
+        // Icons
+        Register<IconElement>(types);
+        Register<SymbolIcon>(types);
+        Register<FontIcon>(types);
+        Register<PathIcon>(types);
+
+        // Menus & Toolbars controls
+        Register<AppBarButton>(types);
+        Register<AppBarSeparator>(types);
+        Register<AppBarToggleButton>(types);
+        Register<CommandBar>(types);
+        Register<CommandBarFlyout>(types);
+        Register<MenuBar>(types);
+        Register<MenuBarItem>(types);
+        Register<MenuFlyout>(types);
+        Register<MenuFlyoutItem>(types);
+        Register<MenuFlyoutSubItem>(types);
+        Register<MenuFlyoutSeparator>(types);
+        Register<ToggleMenuFlyoutItem>(types);
+        Register<SwipeControl>(types);
 
         // Jalium.UI.Controls.Primitives namespace
         Register<BulletDecorator>(types);
@@ -1615,7 +1822,9 @@ public static class XamlTypeRegistry
     private static void Register<[DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicConstructors |
         DynamicallyAccessedMemberTypes.PublicProperties |
-        DynamicallyAccessedMemberTypes.PublicFields)] T>(Dictionary<string, Type> types)
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicMethods |
+        DynamicallyAccessedMemberTypes.NonPublicFields)] T>(Dictionary<string, Type> types)
     {
         types[typeof(T).Name] = typeof(T);
     }
@@ -1623,8 +1832,12 @@ public static class XamlTypeRegistry
     /// <summary>
     /// Gets a type by its simple name.
     /// </summary>
-    [return: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors |
-        DynamicallyAccessedMemberTypes.PublicProperties | DynamicallyAccessedMemberTypes.PublicFields)]
+    [return: DynamicallyAccessedMembers(
+        DynamicallyAccessedMemberTypes.PublicConstructors |
+        DynamicallyAccessedMemberTypes.PublicProperties |
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicMethods |
+        DynamicallyAccessedMemberTypes.NonPublicFields)]
     public static Type? GetType(string typeName)
     {
         return _types.GetValueOrDefault(typeName);
@@ -1637,7 +1850,9 @@ public static class XamlTypeRegistry
     public static void RegisterType<[DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicConstructors |
         DynamicallyAccessedMemberTypes.PublicProperties |
-        DynamicallyAccessedMemberTypes.PublicFields)] T>()
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicMethods |
+        DynamicallyAccessedMemberTypes.NonPublicFields)] T>()
     {
         _types[typeof(T).Name] = typeof(T);
     }
@@ -1648,16 +1863,411 @@ public static class XamlTypeRegistry
     public static void RegisterType<[DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicConstructors |
         DynamicallyAccessedMemberTypes.PublicProperties |
-        DynamicallyAccessedMemberTypes.PublicFields)] T>(string name)
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicMethods |
+        DynamicallyAccessedMemberTypes.NonPublicFields)] T>(string name)
     {
         _types[name] = typeof(T);
     }
+
+    /// <summary>
+    /// Applies a compiled UI bundle to an existing component instance.
+    /// This is the optimized path for pre-compiled JALXAML binary data.
+    /// </summary>
+    /// <param name="component">The component instance to apply the bundle to.</param>
+    /// <param name="bundle">The compiled UI bundle.</param>
+    public static void ApplyBundle(object component, Gpu.CompiledUIBundle bundle)
+    {
+        ArgumentNullException.ThrowIfNull(component);
+        ArgumentNullException.ThrowIfNull(bundle);
+
+        if (component is not FrameworkElement frameworkElement)
+            return;
+
+        // Fast path: render directly from compiled DrawCommands.
+        frameworkElement.SetCompiledBundle(bundle);
+        var renderer = new BundleRenderer(bundle);
+        frameworkElement.SetBundleRenderCallback(dc => renderer.Render(dc));
+
+        // Build node elements once so named element wiring and fallback tree share the same instances.
+        var nodeElements = BuildNodeElements(bundle);
+
+        // Wire up named elements if the bundle/node metadata provides names.
+        var componentType = component.GetType();
+        foreach (var node in bundle.Nodes)
+        {
+            var nodeName = GetNodeName(bundle, node);
+            if (string.IsNullOrWhiteSpace(nodeName))
+                continue;
+
+            if (!nodeElements.TryGetValue(node.Id, out var element))
+                continue;
+
+            var field = componentType.GetField(nodeName,
+                BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public);
+
+            if (field != null && field.FieldType.IsAssignableFrom(element.GetType()))
+            {
+                field.SetValue(component, element);
+            }
+        }
+
+        // Fallback path: when no precompiled draw commands are available, materialize a basic visual tree.
+        // Disable bundle callback in this mode to avoid duplicate rendering.
+        if (bundle.DrawCommands.Length == 0)
+        {
+            var fallbackRoot = BuildFallbackVisualRoot(bundle, nodeElements);
+            if (fallbackRoot != null)
+            {
+                frameworkElement.SetBundleRenderCallback(null);
+                AttachFallbackVisual(component, fallbackRoot);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets the name of a node from the bundle's metadata (if available).
+    /// </summary>
+    private static string? GetNodeName(Gpu.CompiledUIBundle bundle, Gpu.SceneNode node)
+    {
+        // Future-compatible reflection probe:
+        // if node types later include Name/XName metadata, wire-up starts working automatically.
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+        var nodeType = node.GetType();
+
+        foreach (var propertyName in new[] { "Name", "XName" })
+        {
+            var property = nodeType.GetProperty(propertyName, flags);
+            if (property?.GetValue(node) is string value && !string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Creates a FrameworkElement from a compiled scene node.
+    /// </summary>
+    private static FrameworkElement? CreateElementFromNode(Gpu.CompiledUIBundle bundle, Gpu.SceneNode node, Gpu.Rect absoluteBounds)
+    {
+        FrameworkElement? element = node switch
+        {
+            Gpu.RectNode rect => CreateRectElement(bundle, rect),
+            Gpu.TextNode text => CreateTextElement(bundle, text),
+            Gpu.ImageNode image => CreateImageElement(bundle, image),
+            Gpu.PathNode path => CreatePathElement(bundle, path),
+            Gpu.BackdropFilterNode backdrop => CreateBackdropElement(bundle, backdrop),
+            _ => null
+        };
+
+        if (element == null)
+            return null;
+
+        ApplyNodeLayout(element, node, absoluteBounds);
+        ApplyNodeTransform(bundle, node, element);
+        return element;
+    }
+
+    private static Dictionary<uint, FrameworkElement> BuildNodeElements(Gpu.CompiledUIBundle bundle)
+    {
+        var nodeLookup = bundle.Nodes.ToDictionary(node => node.Id);
+        var boundsCache = new Dictionary<uint, Gpu.Rect>(bundle.Nodes.Length);
+        var elements = new Dictionary<uint, FrameworkElement>(bundle.Nodes.Length);
+
+        foreach (var node in bundle.Nodes.OrderBy(node => node.ZIndex).ThenBy(node => node.Id))
+        {
+            var absoluteBounds = GetAbsoluteBounds(node.Id, nodeLookup, boundsCache);
+            var element = CreateElementFromNode(bundle, node, absoluteBounds);
+            if (element != null)
+            {
+                elements[node.Id] = element;
+            }
+        }
+
+        return elements;
+    }
+
+    private static Canvas? BuildFallbackVisualRoot(Gpu.CompiledUIBundle bundle, Dictionary<uint, FrameworkElement> nodeElements)
+    {
+        if (nodeElements.Count == 0)
+            return null;
+
+        var root = new Canvas();
+        double maxX = 0;
+        double maxY = 0;
+
+        foreach (var node in bundle.Nodes.OrderBy(node => node.ZIndex).ThenBy(node => node.Id))
+        {
+            if (!nodeElements.TryGetValue(node.Id, out var element))
+                continue;
+
+            root.Children.Add(element);
+
+            if (!double.IsNaN(element.Width) && element.Width > 0)
+            {
+                maxX = Math.Max(maxX, Canvas.GetLeft(element) + element.Width);
+            }
+
+            if (!double.IsNaN(element.Height) && element.Height > 0)
+            {
+                maxY = Math.Max(maxY, Canvas.GetTop(element) + element.Height);
+            }
+        }
+
+        if (maxX > 0) root.Width = maxX;
+        if (maxY > 0) root.Height = maxY;
+        return root;
+    }
+
+    private static void AttachFallbackVisual(object component, UIElement root)
+    {
+        switch (component)
+        {
+            case Panel panel:
+                panel.Children.Clear();
+                panel.Children.Add(root);
+                break;
+
+            case Border border:
+                border.Child = root;
+                break;
+
+            case Window window:
+                window.Content = root;
+                break;
+
+            case ContentControl contentControl:
+                contentControl.Content = root;
+                break;
+
+            default:
+                TryAttachFallbackChild(component, root);
+                break;
+        }
+    }
+
+    private static void TryAttachFallbackChild(object parent, UIElement child)
+    {
+        var parentType = parent.GetType();
+        var contentAttr = parentType.GetCustomAttribute<ContentPropertyAttribute>();
+        if (contentAttr == null)
+            return;
+
+        var property = parentType.GetProperty(contentAttr.Name, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+        if (property == null)
+            return;
+
+        var propertyValue = property.GetValue(parent);
+        if (propertyValue is System.Collections.IList list)
+        {
+            list.Add(child);
+            return;
+        }
+
+        if (!property.CanWrite)
+            return;
+
+        if (property.PropertyType.IsAssignableFrom(child.GetType()) || property.PropertyType == typeof(object))
+        {
+            property.SetValue(parent, child);
+        }
+    }
+
+    private static void ApplyNodeLayout(FrameworkElement element, Gpu.SceneNode node, Gpu.Rect bounds)
+    {
+        element.Tag = node.Id;
+        element.Visibility = node.IsVisible ? Visibility.Visible : Visibility.Collapsed;
+
+        if (bounds.Width > 0)
+            element.Width = bounds.Width;
+        if (bounds.Height > 0)
+            element.Height = bounds.Height;
+
+        Canvas.SetLeft(element, bounds.X);
+        Canvas.SetTop(element, bounds.Y);
+        Panel.SetZIndex(element, node.ZIndex);
+    }
+
+    private static void ApplyNodeTransform(Gpu.CompiledUIBundle bundle, Gpu.SceneNode node, FrameworkElement element)
+    {
+        if (!TryGetTransform(bundle, node.TransformIndex, out var transform))
+            return;
+
+        element.RenderTransform = transform;
+    }
+
+    private static bool TryGetTransform(Gpu.CompiledUIBundle bundle, uint transformIndex, out MatrixTransform transform)
+    {
+        transform = null!;
+        if (transformIndex == 0)
+            return false;
+
+        var offset = (int)(transformIndex * 6);
+        if (offset + 5 >= bundle.Transforms.Length)
+            return false;
+
+        transform = new MatrixTransform(new Matrix(
+            bundle.Transforms[offset],
+            bundle.Transforms[offset + 1],
+            bundle.Transforms[offset + 2],
+            bundle.Transforms[offset + 3],
+            bundle.Transforms[offset + 4],
+            bundle.Transforms[offset + 5]));
+        return true;
+    }
+
+    private static Gpu.Rect GetAbsoluteBounds(
+        uint nodeId,
+        IReadOnlyDictionary<uint, Gpu.SceneNode> nodes,
+        Dictionary<uint, Gpu.Rect> cache)
+    {
+        if (cache.TryGetValue(nodeId, out var cached))
+            return cached;
+
+        if (!nodes.TryGetValue(nodeId, out var node))
+            return default;
+
+        var local = GetLocalBounds(node);
+        if (node.ParentId != 0 && nodes.ContainsKey(node.ParentId))
+        {
+            var parent = GetAbsoluteBounds(node.ParentId, nodes, cache);
+            local = new Gpu.Rect(parent.X + local.X, parent.Y + local.Y, local.Width, local.Height);
+        }
+
+        cache[nodeId] = local;
+        return local;
+    }
+
+    private static Gpu.Rect GetLocalBounds(Gpu.SceneNode node)
+    {
+        return node switch
+        {
+            Gpu.RectNode rectNode => rectNode.Bounds,
+            Gpu.TextNode textNode => textNode.Bounds,
+            Gpu.ImageNode imageNode => imageNode.Bounds,
+            Gpu.PathNode pathNode => pathNode.Bounds,
+            Gpu.BackdropFilterNode backdropNode => backdropNode.FilterRegion,
+            _ => default
+        };
+    }
+
+    private static FrameworkElement CreateRectElement(Gpu.CompiledUIBundle bundle, Gpu.RectNode node)
+    {
+        var element = new Border
+        {
+            CornerRadius = ToCornerRadius(node.CornerRadius),
+            BorderThickness = ToThickness(node.BorderThickness)
+        };
+
+        if (TryGetMaterial(bundle, node.MaterialIndex, out var material))
+        {
+            element.Background = CreateBrush(material.BackgroundColor);
+            element.BorderBrush = CreateBrush(material.BorderColor);
+            element.Opacity = material.Opacity / 255.0;
+        }
+
+        return element;
+    }
+
+    private static FrameworkElement CreateTextElement(Gpu.CompiledUIBundle bundle, Gpu.TextNode node)
+    {
+        var element = new TextBlock
+        {
+            Text = $"#{node.TextHash:X16}"
+        };
+
+        if (TryGetMaterial(bundle, node.MaterialIndex, out var material))
+        {
+            element.Foreground = CreateBrush(material.ForegroundColor);
+            element.Opacity = material.Opacity / 255.0;
+        }
+
+        return element;
+    }
+
+    private static FrameworkElement CreateImageElement(Gpu.CompiledUIBundle bundle, Gpu.ImageNode node)
+    {
+        var element = new Image();
+        if (node.TextureIndex < bundle.Textures.Length)
+        {
+            var texture = bundle.Textures[node.TextureIndex];
+            if (!string.IsNullOrWhiteSpace(texture.Path) &&
+                Uri.TryCreate(texture.Path, UriKind.RelativeOrAbsolute, out var uri))
+            {
+                element.Source = new BitmapImage(uri);
+            }
+        }
+
+        if (TryGetMaterial(bundle, node.MaterialIndex, out var material))
+        {
+            element.Opacity = material.Opacity / 255.0;
+        }
+
+        return element;
+    }
+
+    private static FrameworkElement CreatePathElement(Gpu.CompiledUIBundle bundle, Gpu.PathNode node)
+    {
+        var element = new Jalium.UI.Controls.Shapes.Path();
+
+        if (TryGetMaterial(bundle, node.MaterialIndex, out var material))
+        {
+            element.Fill = CreateBrush(material.BackgroundColor);
+            element.Stroke = CreateBrush(material.BorderColor);
+            element.Opacity = material.Opacity / 255.0;
+        }
+
+        return element;
+    }
+
+    private static FrameworkElement CreateBackdropElement(Gpu.CompiledUIBundle bundle, Gpu.BackdropFilterNode node)
+    {
+        // Software fallback representation: keep bounds and opacity to preserve layout/placement.
+        var element = new Border();
+        if (TryGetMaterial(bundle, node.MaterialIndex, out var material))
+        {
+            element.Opacity = material.Opacity / 255.0;
+        }
+
+        return element;
+    }
+
+    private static bool TryGetMaterial(Gpu.CompiledUIBundle bundle, uint materialIndex, out Gpu.Material material)
+    {
+        if (materialIndex < bundle.Materials.Length)
+        {
+            material = bundle.Materials[materialIndex];
+            return true;
+        }
+
+        material = default;
+        return false;
+    }
+
+    private static SolidColorBrush CreateBrush(uint argb) => new(ToColor(argb));
+
+    private static Color ToColor(uint argb)
+    {
+        return Color.FromArgb(
+            (byte)(argb >> 24),
+            (byte)(argb >> 16),
+            (byte)(argb >> 8),
+            (byte)argb);
+    }
+
+    private static Thickness ToThickness(Gpu.Thickness thickness) =>
+        new(thickness.Left, thickness.Top, thickness.Right, thickness.Bottom);
+
+    private static CornerRadius ToCornerRadius(Gpu.CornerRadius cornerRadius) =>
+        new(cornerRadius.TopLeft, cornerRadius.TopRight, cornerRadius.BottomRight, cornerRadius.BottomLeft);
 }
 
 /// <summary>
 /// Exception thrown during XAML parsing.
 /// </summary>
-public class XamlParseException : Exception
+public sealed class XamlParseException : Exception
 {
     public XamlParseException(string message) : base(message) { }
     public XamlParseException(string message, Exception innerException) : base(message, innerException) { }

@@ -7,7 +7,7 @@ namespace Jalium.UI;
 /// which receives its value from the first binding in the collection that produces a value successfully.
 /// </summary>
 [ContentProperty("Bindings")]
-public class PriorityBinding : BindingBase
+public sealed class PriorityBinding : BindingBase
 {
     private readonly Collection<BindingBase> _bindings = new();
 
@@ -33,7 +33,7 @@ public class PriorityBinding : BindingBase
 /// <summary>
 /// Contains instance information about a single instance of a PriorityBinding.
 /// </summary>
-public class PriorityBindingExpression : BindingExpressionBase
+public sealed class PriorityBindingExpression : BindingExpressionBase
 {
     private readonly PriorityBinding _priorityBinding;
     private readonly List<BindingExpressionBase> _bindingExpressions = new();
@@ -185,10 +185,7 @@ public class PriorityBindingExpression : BindingExpressionBase
             }
 
             // Handle TargetNullValue
-            if (activeValue == null)
-            {
-                activeValue = _priorityBinding.TargetNullValue;
-            }
+            activeValue ??= _priorityBinding.TargetNullValue;
 
             // Apply StringFormat if specified
             if (activeValue != null && !string.IsNullOrEmpty(_priorityBinding.StringFormat))

@@ -6,7 +6,7 @@ namespace Jalium.UI.Media;
 /// <summary>
 /// Represents a family of related fonts.
 /// </summary>
-public class FontFamily
+public sealed class FontFamily
 {
     private readonly string _source;
     private readonly FamilyTypefaceCollection _typefaces;
@@ -95,7 +95,7 @@ public class FontFamily
 /// <summary>
 /// Represents a typeface supported by a <see cref="FontFamily"/>.
 /// </summary>
-public class FamilyTypeface
+public sealed class FamilyTypeface
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="FamilyTypeface"/> class.
@@ -141,7 +141,7 @@ public class FamilyTypeface
 /// <summary>
 /// Represents a collection of <see cref="FamilyTypeface"/> objects.
 /// </summary>
-public class FamilyTypefaceCollection : Collection<FamilyTypeface>
+public sealed class FamilyTypefaceCollection : Collection<FamilyTypeface>
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="FamilyTypefaceCollection"/> class.

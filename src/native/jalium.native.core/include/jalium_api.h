@@ -62,6 +62,21 @@ JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_hwnd(
     int32_t height
 );
 
+/// Creates a render target with composition swap chain for per-pixel alpha transparency.
+/// Uses CreateSwapChainForComposition + DirectComposition (WinUI 3 / Avalonia style).
+/// The window must have WS_EX_NOREDIRECTIONBITMAP extended style.
+/// @param ctx The rendering context.
+/// @param hwnd The native window handle (HWND on Windows).
+/// @param width The width in pixels.
+/// @param height The height in pixels.
+/// @return A handle to the created render target, or nullptr on failure.
+JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_composition(
+    JaliumContext* ctx,
+    void* hwnd,
+    int32_t width,
+    int32_t height
+);
+
 /// Destroys a render target.
 /// @param rt The render target to destroy.
 JALIUM_API void jalium_render_target_destroy(JaliumRenderTarget* rt);
@@ -96,6 +111,29 @@ JALIUM_API void jalium_render_target_clear(JaliumRenderTarget* rt, float r, floa
 /// @param rt The render target.
 /// @param enabled 1 to enable VSync, 0 to disable.
 JALIUM_API void jalium_render_target_set_vsync(JaliumRenderTarget* rt, int32_t enabled);
+
+/// Sets the DPI for the render target.
+/// Updates D2D context so DIP coordinates are correctly mapped to physical pixels.
+/// @param rt The render target.
+/// @param dpiX Horizontal DPI (96 = 100% scaling).
+/// @param dpiY Vertical DPI (96 = 100% scaling).
+JALIUM_API void jalium_render_target_set_dpi(JaliumRenderTarget* rt, float dpiX, float dpiY);
+
+// ============================================================================
+// Dirty Rect Management
+// ============================================================================
+
+/// Adds a dirty rectangle for partial rendering optimization.
+/// @param rt The render target.
+/// @param x X coordinate.
+/// @param y Y coordinate.
+/// @param width Width.
+/// @param height Height.
+JALIUM_API void jalium_render_target_add_dirty_rect(JaliumRenderTarget* rt, float x, float y, float width, float height);
+
+/// Marks the entire render target as needing full redraw.
+/// @param rt The render target.
+JALIUM_API void jalium_render_target_set_full_invalidation(JaliumRenderTarget* rt);
 
 // ============================================================================
 // Drawing Commands
@@ -246,6 +284,16 @@ JALIUM_API void jalium_pop_transform(JaliumRenderTarget* rt);
 /// @param height The height.
 JALIUM_API void jalium_push_clip(JaliumRenderTarget* rt, float x, float y, float width, float height);
 
+/// Pushes a rounded rectangle clip onto the stack using a geometry mask layer.
+/// @param rt The render target.
+/// @param x The x coordinate.
+/// @param y The y coordinate.
+/// @param width The width.
+/// @param height The height.
+/// @param rx The x radius of the corners.
+/// @param ry The y radius of the corners.
+JALIUM_API void jalium_push_rounded_rect_clip(JaliumRenderTarget* rt, float x, float y, float width, float height, float rx, float ry);
+
 /// Pops the top clip from the stack.
 /// @param rt The render target.
 JALIUM_API void jalium_pop_clip(JaliumRenderTarget* rt);
@@ -284,6 +332,25 @@ JALIUM_API JaliumBrush* jalium_brush_create_solid(JaliumContext* ctx, float r, f
 JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
     JaliumContext* ctx,
     float startX, float startY, float endX, float endY,
+    const JaliumGradientStop* stops,
+    uint32_t stopCount
+);
+
+/// Creates a radial gradient brush.
+/// @param ctx The rendering context.
+/// @param centerX The center x coordinate.
+/// @param centerY The center y coordinate.
+/// @param radiusX The x radius.
+/// @param radiusY The y radius.
+/// @param originX The gradient origin x coordinate.
+/// @param originY The gradient origin y coordinate.
+/// @param stops Array of gradient stops.
+/// @param stopCount Number of gradient stops.
+/// @return A handle to the created brush, or nullptr on failure.
+JALIUM_API JaliumBrush* jalium_brush_create_radial_gradient(
+    JaliumContext* ctx,
+    float centerX, float centerY, float radiusX, float radiusY,
+    float originX, float originY,
     const JaliumGradientStop* stops,
     uint32_t stopCount
 );
@@ -416,6 +483,203 @@ JALIUM_API JaliumResult jalium_register_backend(JaliumBackend backend, JaliumBac
 /// @param backend The backend type.
 /// @return 1 if available, 0 if not.
 JALIUM_API int32_t jalium_is_backend_available(JaliumBackend backend);
+
+// ============================================================================
+// Desktop Backdrop
+// ============================================================================
+
+/// Captures the desktop area at the specified screen coordinates.
+/// Uses BitBlt from the screen DC to capture what's visible on screen.
+/// The captured content is cached internally for use by jalium_draw_desktop_backdrop.
+/// @param rt The render target.
+/// @param screenX Screen X coordinate.
+/// @param screenY Screen Y coordinate.
+/// @param width Width to capture.
+/// @param height Height to capture.
+JALIUM_API void jalium_capture_desktop_area(
+    JaliumRenderTarget* rt,
+    int32_t screenX, int32_t screenY,
+    int32_t width, int32_t height
+);
+
+/// Draws the cached desktop capture with Gaussian blur and tint overlay.
+/// Must call jalium_capture_desktop_area first to populate the cached capture.
+/// @param rt The render target.
+/// @param x Destination X in render target coordinates.
+/// @param y Destination Y in render target coordinates.
+/// @param w Destination width.
+/// @param h Destination height.
+/// @param blurRadius Blur radius in pixels.
+/// @param tintR Tint color red component (0-1).
+/// @param tintG Tint color green component (0-1).
+/// @param tintB Tint color blue component (0-1).
+/// @param tintOpacity Tint overlay opacity (0-1).
+/// @param noiseIntensity Noise overlay intensity (0-1).
+/// @param saturation Saturation adjustment (1.0 = no change).
+JALIUM_API void jalium_draw_desktop_backdrop(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius,
+    float tintR, float tintG, float tintB, float tintOpacity,
+    float noiseIntensity, float saturation
+);
+
+// ============================================================================
+// Content Transition Shader
+// ============================================================================
+
+/// Begins capturing content into an offscreen bitmap for transition shader effects.
+/// @param rt The render target.
+/// @param slot 0 = old content, 1 = new content.
+/// @param x X position of the transition area (in DIPs).
+/// @param y Y position of the transition area (in DIPs).
+/// @param w Width of the transition area (in DIPs).
+/// @param h Height of the transition area (in DIPs).
+JALIUM_API void jalium_transition_begin_capture(JaliumRenderTarget* rt, int32_t slot,
+    float x, float y, float w, float h);
+
+/// Ends capturing content for a transition slot and restores the main render target.
+/// @param rt The render target.
+/// @param slot 0 = old content, 1 = new content.
+JALIUM_API void jalium_transition_end_capture(JaliumRenderTarget* rt, int32_t slot);
+
+/// Draws the transition shader effect blending old and new content bitmaps.
+/// @param rt The render target.
+/// @param x X position of the transition area (in DIPs).
+/// @param y Y position of the transition area (in DIPs).
+/// @param w Width of the transition area (in DIPs).
+/// @param h Height of the transition area (in DIPs).
+/// @param progress Transition progress (0.0 - 1.0).
+/// @param mode Shader mode index (0-9).
+JALIUM_API void jalium_draw_transition_shader(JaliumRenderTarget* rt,
+    float x, float y, float w, float h, float progress, int32_t mode);
+
+/// Draws a previously captured transition bitmap to the current render target.
+/// @param rt Render target handle.
+/// @param slot Transition slot to draw from (0 or 1).
+/// @param x Destination X position (in DIPs).
+/// @param y Destination Y position (in DIPs).
+/// @param w Destination width (in DIPs).
+/// @param h Destination height (in DIPs).
+/// @param opacity Opacity to apply (0.0 - 1.0).
+JALIUM_API void jalium_draw_captured_transition(JaliumRenderTarget* rt,
+    int32_t slot, float x, float y, float w, float h, float opacity);
+
+// ============================================================================
+// Liquid Glass Effect
+// ============================================================================
+
+/// Draws a liquid glass effect with SDF-based refraction, highlight, and inner shadow.
+/// Captures current render target content, applies Gaussian blur, then renders
+/// the full liquid glass pipeline (refraction + chromatic aberration + edge highlight
+/// + inner shadow + composite) in a single pass.
+/// @param rt The render target.
+/// @param x X position of the glass panel.
+/// @param y Y position of the glass panel.
+/// @param w Width of the glass panel.
+/// @param h Height of the glass panel.
+/// @param cornerRadius Border radius in pixels.
+/// @param blurRadius Gaussian blur radius in pixels (default 8).
+/// @param refractionAmount UV displacement strength in pixels (default 60).
+/// @param chromaticAberration Color dispersion 0-1 (0=off, 1=full).
+/// @param tintR Tint color red component (0-1).
+/// @param tintG Tint color green component (0-1).
+/// @param tintB Tint color blue component (0-1).
+/// @param tintOpacity Tint overlay opacity (0-1).
+// ============================================================================
+// Element Effect Capture & Rendering
+// ============================================================================
+
+/// Begins capturing element content into an offscreen bitmap for effect processing.
+/// All subsequent drawing calls will be redirected to the offscreen bitmap.
+/// @param rt The render target.
+/// @param x X position of the capture area (in DIPs).
+/// @param y Y position of the capture area (in DIPs).
+/// @param w Width of the capture area (in DIPs).
+/// @param h Height of the capture area (in DIPs).
+JALIUM_API void jalium_effect_begin_capture(JaliumRenderTarget* rt,
+    float x, float y, float w, float h);
+
+/// Ends capturing element content and restores the main render target.
+/// @param rt The render target.
+JALIUM_API void jalium_effect_end_capture(JaliumRenderTarget* rt);
+
+/// Applies a Gaussian blur effect to the captured element content and draws it.
+/// Must be called after jalium_effect_begin_capture / jalium_effect_end_capture.
+/// @param rt The render target.
+/// @param x X position to draw at (in DIPs).
+/// @param y Y position to draw at (in DIPs).
+/// @param w Width of the draw area (in DIPs).
+/// @param h Height of the draw area (in DIPs).
+/// @param radius Blur radius (in DIPs).
+JALIUM_API void jalium_draw_blur_effect(JaliumRenderTarget* rt,
+    float x, float y, float w, float h, float radius);
+
+/// Applies a drop shadow effect to the captured element content and draws it.
+/// Draws the shadow (offset + blurred alpha) behind the original content.
+/// Must be called after jalium_effect_begin_capture / jalium_effect_end_capture.
+/// @param rt The render target.
+/// @param x X position to draw at (in DIPs).
+/// @param y Y position to draw at (in DIPs).
+/// @param w Width of the draw area (in DIPs).
+/// @param h Height of the draw area (in DIPs).
+/// @param blurRadius Shadow blur radius (in DIPs).
+/// @param offsetX Shadow X offset (in DIPs).
+/// @param offsetY Shadow Y offset (in DIPs).
+/// @param r Shadow color red (0-1).
+/// @param g Shadow color green (0-1).
+/// @param b Shadow color blue (0-1).
+/// @param a Shadow opacity (0-1).
+JALIUM_API void jalium_draw_drop_shadow_effect(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a);
+
+// ============================================================================
+// Liquid Glass Effect
+// ============================================================================
+
+// ============================================================================
+// Content Border (U-shape, no top edge)
+// ============================================================================
+
+/// Draws a content border with rounded bottom corners (U-shape, no top edge).
+/// The fill covers the full rectangle with bottom rounded corners.
+/// The stroke draws only left + bottom + right edges (open top).
+/// @param rt The render target.
+/// @param x The x coordinate.
+/// @param y The y coordinate.
+/// @param width The width.
+/// @param height The height.
+/// @param blRadius Bottom-left corner radius.
+/// @param brRadius Bottom-right corner radius.
+/// @param fillBrush The brush for the fill (nullable).
+/// @param strokeBrush The brush for the stroke (nullable).
+/// @param strokeWidth The stroke width.
+JALIUM_API void jalium_draw_content_border(
+    JaliumRenderTarget* rt,
+    float x, float y, float width, float height,
+    float blRadius, float brRadius,
+    JaliumBrush* fillBrush, JaliumBrush* strokeBrush,
+    float strokeWidth
+);
+
+JALIUM_API void jalium_draw_liquid_glass(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float cornerRadius,
+    float blurRadius,
+    float refractionAmount,
+    float chromaticAberration,
+    float tintR, float tintG, float tintB, float tintOpacity,
+    float lightX, float lightY,
+    float highlightBoost,
+    int32_t shapeType,
+    float shapeExponent,
+    int32_t neighborCount,
+    float fusionRadius,
+    const float* neighborData
+);
 
 #ifdef __cplusplus
 }

@@ -3,7 +3,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a control that displays the column headers in a DataGrid.
 /// </summary>
-public class DataGridColumnHeadersPresenter : Panel
+public sealed class DataGridColumnHeadersPresenter : Panel
 {
     #region CLR Properties
 

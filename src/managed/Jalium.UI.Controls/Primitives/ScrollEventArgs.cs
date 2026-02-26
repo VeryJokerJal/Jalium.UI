@@ -54,7 +54,7 @@ public enum ScrollEventType
 /// <summary>
 /// Provides data for a Scroll event that occurs when the Thumb of a ScrollBar moves.
 /// </summary>
-public class ScrollEventArgs : RoutedEventArgs
+public sealed class ScrollEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the new value of the ScrollBar after the scroll action.

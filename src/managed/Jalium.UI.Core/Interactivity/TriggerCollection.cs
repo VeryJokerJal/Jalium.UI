@@ -5,7 +5,7 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// Represents a collection of triggers with a shared AssociatedObject.
 /// </summary>
-public class TriggerCollection : Collection<TriggerBase>
+public sealed class TriggerCollection : Collection<TriggerBase>
 {
     private DependencyObject? _associatedObject;
 

@@ -1,4 +1,4 @@
-using Jalium.UI.Controls;
+﻿using Jalium.UI.Controls;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
@@ -6,7 +6,7 @@ namespace Jalium.UI.Documents;
 /// <summary>
 /// A block element that represents a table.
 /// </summary>
-public class Table : Block
+public sealed class Table : Block
 {
     /// <summary>
     /// Identifies the CellSpacing dependency property.
@@ -30,7 +30,7 @@ public class Table : Block
     /// </summary>
     public double CellSpacing
     {
-        get => (double)(GetValue(CellSpacingProperty) ?? 2.0);
+        get => (double)GetValue(CellSpacingProperty)!;
         set => SetValue(CellSpacingProperty, value);
     }
 
@@ -47,7 +47,7 @@ public class Table : Block
 /// <summary>
 /// Represents a column in a table.
 /// </summary>
-public class TableColumn : DependencyObject
+public sealed class TableColumn : DependencyObject
 {
     /// <summary>
     /// Identifies the Width dependency property.
@@ -68,7 +68,7 @@ public class TableColumn : DependencyObject
     /// </summary>
     public GridLength Width
     {
-        get => (GridLength)(GetValue(WidthProperty) ?? new GridLength(1, GridUnitType.Star));
+        get => (GridLength)GetValue(WidthProperty)!;
         set => SetValue(WidthProperty, value);
     }
 
@@ -85,7 +85,7 @@ public class TableColumn : DependencyObject
 /// <summary>
 /// A collection of table columns.
 /// </summary>
-public class TableColumnCollection : List<TableColumn>
+public sealed class TableColumnCollection : List<TableColumn>
 {
     private readonly Table _parent;
 
@@ -101,7 +101,7 @@ public class TableColumnCollection : List<TableColumn>
 /// <summary>
 /// Represents a group of rows in a table.
 /// </summary>
-public class TableRowGroup : TextElement
+public sealed class TableRowGroup : TextElement
 {
     /// <summary>
     /// Gets the collection of rows.
@@ -120,7 +120,7 @@ public class TableRowGroup : TextElement
 /// <summary>
 /// A collection of row groups.
 /// </summary>
-public class TableRowGroupCollection : List<TableRowGroup>
+public sealed class TableRowGroupCollection : List<TableRowGroup>
 {
     private readonly Table _parent;
 
@@ -145,7 +145,7 @@ public class TableRowGroupCollection : List<TableRowGroup>
 /// <summary>
 /// Represents a row in a table.
 /// </summary>
-public class TableRow : TextElement
+public sealed class TableRow : TextElement
 {
     /// <summary>
     /// Gets the collection of cells.
@@ -164,7 +164,7 @@ public class TableRow : TextElement
 /// <summary>
 /// A collection of table rows.
 /// </summary>
-public class TableRowCollection : List<TableRow>
+public sealed class TableRowCollection : List<TableRow>
 {
     private readonly TableRowGroup _parent;
 
@@ -189,7 +189,7 @@ public class TableRowCollection : List<TableRow>
 /// <summary>
 /// Represents a cell in a table row.
 /// </summary>
-public class TableCell : TextElement
+public sealed class TableCell : TextElement
 {
     /// <summary>
     /// Identifies the ColumnSpan dependency property.
@@ -236,7 +236,7 @@ public class TableCell : TextElement
     /// </summary>
     public int ColumnSpan
     {
-        get => (int)(GetValue(ColumnSpanProperty) ?? 1);
+        get => (int)GetValue(ColumnSpanProperty)!;
         set => SetValue(ColumnSpanProperty, value);
     }
 
@@ -245,7 +245,7 @@ public class TableCell : TextElement
     /// </summary>
     public int RowSpan
     {
-        get => (int)(GetValue(RowSpanProperty) ?? 1);
+        get => (int)GetValue(RowSpanProperty)!;
         set => SetValue(RowSpanProperty, value);
     }
 
@@ -254,7 +254,7 @@ public class TableCell : TextElement
     /// </summary>
     public Thickness BorderThickness
     {
-        get => (Thickness)(GetValue(BorderThicknessProperty) ?? new Thickness(1));
+        get => (Thickness)GetValue(BorderThicknessProperty)!;
         set => SetValue(BorderThicknessProperty, value);
     }
 
@@ -272,7 +272,7 @@ public class TableCell : TextElement
     /// </summary>
     public Thickness Padding
     {
-        get => (Thickness)(GetValue(PaddingProperty) ?? new Thickness(5));
+        get => (Thickness)GetValue(PaddingProperty)!;
         set => SetValue(PaddingProperty, value);
     }
 
@@ -304,7 +304,7 @@ public class TableCell : TextElement
 /// <summary>
 /// A collection of table cells.
 /// </summary>
-public class TableCellCollection : List<TableCell>
+public sealed class TableCellCollection : List<TableCell>
 {
     private readonly TableRow _parent;
 

@@ -1,0 +1,170 @@
+﻿<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- Dark brand baseline (purple + orange) -->
+
+    <!-- Background Colors -->
+    <SolidColorBrush x:Key="ControlBackground" Color="#2E2938" />
+    <SolidColorBrush x:Key="ControlBackgroundHover" Color="#3A3448" />
+    <SolidColorBrush x:Key="ControlBackgroundPressed" Color="#241F2D" />
+    <SolidColorBrush x:Key="ControlBackgroundDisabled" Color="#272330" />
+
+    <!-- Text Colors -->
+    <SolidColorBrush x:Key="TextPrimary" Color="#FFF8FF" />
+    <SolidColorBrush x:Key="TextSecondary" Color="#C9BDD9" />
+    <SolidColorBrush x:Key="TextDisabled" Color="#7A7088" />
+    <SolidColorBrush x:Key="TextPlaceholder" Color="#9A8FA9" />
+
+    <!-- Border Colors -->
+    <SolidColorBrush x:Key="ControlBorder" Color="#4E4560" />
+    <SolidColorBrush x:Key="ControlBorderHover" Color="#645A7A" />
+    <SolidColorBrush x:Key="ControlBorderFocused" Color="#7C4DFF" />
+    <SolidColorBrush x:Key="ControlBorderDisabled" Color="#3A3347" />
+
+    <!-- Accent Colors -->
+    <SolidColorBrush x:Key="AccentBrush" Color="#7C4DFF" />
+    <SolidColorBrush x:Key="AccentBrushHover" Color="#956EFF" />
+    <SolidColorBrush x:Key="AccentBrushPressed" Color="#5A2ED5" />
+    <SolidColorBrush x:Key="AccentBrushDisabled" Color="#5D4A8A" />
+
+    <!-- Window/Surface Colors -->
+    <SolidColorBrush x:Key="WindowBackground" Color="#1C1824" />
+    <SolidColorBrush x:Key="SurfaceBackground" Color="#262132" />
+
+    <!-- CheckBox/RadioButton Toggle Colors -->
+    <SolidColorBrush x:Key="ToggleUncheckedBackground" Color="#2D273A" />
+    <SolidColorBrush x:Key="ToggleUncheckedBackgroundHover" Color="#393148" />
+    <SolidColorBrush x:Key="ToggleUncheckedBackgroundPressed" Color="#251F31" />
+    <SolidColorBrush x:Key="ToggleUncheckedBorder" Color="#9A8FB0" />
+    <SolidColorBrush x:Key="ToggleUncheckedBorderHover" Color="#B4A8CC" />
+    <SolidColorBrush x:Key="ToggleCheckedBackground" Color="#7C4DFF" />
+    <SolidColorBrush x:Key="ToggleCheckedBackgroundHover" Color="#956EFF" />
+    <SolidColorBrush x:Key="ToggleCheckedBorder" Color="#7C4DFF" />
+    <SolidColorBrush x:Key="ToggleCheckedBorderHover" Color="#A283FF" />
+    <SolidColorBrush x:Key="ToggleDisabledBackground" Color="#292433" />
+    <SolidColorBrush x:Key="ToggleDisabledBorder" Color="#49405A" />
+    <SolidColorBrush x:Key="CheckMark" Color="#FFFFFF" />
+
+    <!-- TabControl Colors -->
+    <SolidColorBrush x:Key="TabStripBackground" Color="#241F30" />
+    <SolidColorBrush x:Key="TabStripBorder" Color="#3D3550" />
+    <SolidColorBrush x:Key="TabItemSelectedBackground" Color="#322A43" />
+    <SolidColorBrush x:Key="TabItemHoverBackground" Color="#3A314F" />
+    <SolidColorBrush x:Key="TabItemIndicator" Color="#FF8A00" />
+    <SolidColorBrush x:Key="TabContentBackground" Color="#1C1824" />
+
+    <!-- Title Bar Colors -->
+    <SolidColorBrush x:Key="TitleBarBackground" Color="#17141F" />
+    <SolidColorBrush x:Key="TitleBarText" Color="#FFF8FF" />
+    <SolidColorBrush x:Key="TitleBarButtonBackground" Color="Transparent" />
+    <SolidColorBrush x:Key="TitleBarButtonHover" Color="#37304A" />
+    <SolidColorBrush x:Key="TitleBarButtonPressed" Color="#2E2740" />
+    <SolidColorBrush x:Key="TitleBarCloseButtonHover" Color="#E84949" />
+    <SolidColorBrush x:Key="TitleBarCloseButtonPressed" Color="#C83A3A" />
+    <SolidColorBrush x:Key="TitleBarGlyph" Color="#FFF8FF" />
+
+    <!-- ScrollBar Colors -->
+    <SolidColorBrush x:Key="ScrollBarTrack" Color="#231E2D" />
+    <SolidColorBrush x:Key="ScrollBarThumb" Color="#7B6C96" />
+    <SolidColorBrush x:Key="ScrollBarThumbHover" Color="#9081AB" />
+    <SolidColorBrush x:Key="ScrollBarThumbActive" Color="#A092BE" />
+    <SolidColorBrush x:Key="ScrollBarArrow" Color="#DCCEF5" />
+    <SolidColorBrush x:Key="ScrollBarArrowHover" Color="#EEE1FF" />
+    <SolidColorBrush x:Key="ScrollBarArrowPressed" Color="#F7EDFF" />
+
+    <!-- Slider Colors -->
+    <SolidColorBrush x:Key="SliderTrack" Color="#3D3451" />
+    <SolidColorBrush x:Key="SliderFill" Color="#7C4DFF" />
+    <SolidColorBrush x:Key="SliderThumb" Color="#FFF8FF" />
+
+    <!-- Selection Colors -->
+    <SolidColorBrush x:Key="SelectionBackground" Color="#997C4DFF" />
+    <SolidColorBrush x:Key="HighlightBackground" Color="#393148" />
+
+    <!-- Hyperlink Colors -->
+    <SolidColorBrush x:Key="HyperlinkForeground" Color="#A88BFF" />
+    <SolidColorBrush x:Key="HyperlinkForegroundHover" Color="#BCA4FF" />
+    <SolidColorBrush x:Key="HyperlinkForegroundPressed" Color="#8963EA" />
+
+    <!-- ToolTip / Flyout Colors -->
+    <SolidColorBrush x:Key="TooltipBackground" Color="#2A2436" />
+    <SolidColorBrush x:Key="TooltipBorder" Color="#564B69" />
+    <SolidColorBrush x:Key="FlyoutBackground" Color="#2A2436" />
+    <SolidColorBrush x:Key="FlyoutBorderBrush" Color="#5D5073" />
+
+    <!-- Text Tertiary (for grip lines etc.) -->
+    <SolidColorBrush x:Key="TextTertiary" Color="#8A7DA1" />
+
+    <!-- DockLayout Colors -->
+    <SolidColorBrush x:Key="DockTabStripBackground" Color="#1F1A29" />
+    <SolidColorBrush x:Key="DockTabStripBorder" Color="#3B3250" />
+    <SolidColorBrush x:Key="DockTabItemSelectedBackground" Color="#1A1523" />
+    <SolidColorBrush x:Key="DockTabItemHoverBackground" Color="#2A2338" />
+    <SolidColorBrush x:Key="DockContentBackground" Color="#1A1523" />
+    <SolidColorBrush x:Key="DockSplitterBackground" Color="#241E31" />
+    <SolidColorBrush x:Key="DockSplitterHover" Color="#3C3252" />
+    <SolidColorBrush x:Key="DockCloseButtonHover" Color="#E84949" />
+
+    <!-- InfoBar Colors (semantic tokens) -->
+    <SolidColorBrush x:Key="InfoBarInformationalBackground" Color="#2F426B" />
+    <SolidColorBrush x:Key="InfoBarSuccessBackground" Color="#2B6345" />
+    <SolidColorBrush x:Key="InfoBarWarningBackground" Color="#6A5524" />
+    <SolidColorBrush x:Key="InfoBarErrorBackground" Color="#6B2D31" />
+    <SolidColorBrush x:Key="InfoBarInfoBrush" Color="#5CA4FF" />
+    <SolidColorBrush x:Key="InfoBarSuccessBrush" Color="#44C08A" />
+    <SolidColorBrush x:Key="InfoBarWarningBrush" Color="#FFB24A" />
+    <SolidColorBrush x:Key="InfoBarErrorBrush" Color="#FF6E72" />
+
+    <!-- CommandBar / AppBar Colors -->
+    <SolidColorBrush x:Key="CommandBarBackground" Color="#262132" />
+    <SolidColorBrush x:Key="CommandBarBorderBrush" Color="#463E59" />
+    <SolidColorBrush x:Key="CommandBarOverflowBackground" Color="#302944" />
+    <SolidColorBrush x:Key="AppBarButtonBackground" Color="Transparent" />
+    <SolidColorBrush x:Key="AppBarButtonBackgroundHover" Color="#3C3451" />
+    <SolidColorBrush x:Key="AppBarButtonBackgroundPressed" Color="#312A44" />
+    <SolidColorBrush x:Key="AppBarButtonForeground" Color="#FFF8FF" />
+    <SolidColorBrush x:Key="AppBarButtonForegroundDisabled" Color="#7C728C" />
+    <SolidColorBrush x:Key="AppBarSeparatorForeground" Color="#5C5370" />
+
+    <!-- Menu/ContextMenu Colors -->
+    <SolidColorBrush x:Key="MenuBarBackground" Color="Transparent" />
+    <SolidColorBrush x:Key="MenuBarItemBackgroundHover" Color="#3D3452" />
+    <SolidColorBrush x:Key="MenuBarItemBackgroundPressed" Color="#322A45" />
+    <SolidColorBrush x:Key="MenuFlyoutPresenterBackground" Color="#2A2436" />
+    <SolidColorBrush x:Key="MenuFlyoutPresenterBorderBrush" Color="#5B4E70" />
+    <SolidColorBrush x:Key="MenuFlyoutItemBackgroundHover" Color="#3C3452" />
+    <SolidColorBrush x:Key="MenuFlyoutItemBackgroundPressed" Color="#322B46" />
+
+    <!-- SwipeControl Colors -->
+    <SolidColorBrush x:Key="SwipeItemBackground" Color="#7C4DFF" />
+    <SolidColorBrush x:Key="SwipeItemDestructiveBackground" Color="#C42B1C" />
+
+    <!-- Editor Syntax Colors -->
+    <SolidColorBrush x:Key="EditorSyntaxPlainText" Color="#D4D4D4" />
+    <SolidColorBrush x:Key="EditorSyntaxKeyword" Color="#569CD6" />
+    <SolidColorBrush x:Key="EditorSyntaxControlKeyword" Color="#C586C0" />
+    <SolidColorBrush x:Key="EditorSyntaxTypeName" Color="#4EC9B0" />
+    <SolidColorBrush x:Key="EditorSyntaxString" Color="#CE9178" />
+    <SolidColorBrush x:Key="EditorSyntaxCharacter" Color="#D7BA7D" />
+    <SolidColorBrush x:Key="EditorSyntaxNumber" Color="#B5CEA8" />
+    <SolidColorBrush x:Key="EditorSyntaxComment" Color="#6A9955" />
+    <SolidColorBrush x:Key="EditorSyntaxXmlDoc" Color="#608B4E" />
+    <SolidColorBrush x:Key="EditorSyntaxPreprocessor" Color="#9B9B9B" />
+    <SolidColorBrush x:Key="EditorSyntaxOperator" Color="#D4D4D4" />
+    <SolidColorBrush x:Key="EditorSyntaxPunctuation" Color="#4FC1FF" />
+    <SolidColorBrush x:Key="EditorSyntaxIdentifier" Color="#D4D4D4" />
+    <SolidColorBrush x:Key="EditorSyntaxLocalVariable" Color="#9CDCFE" />
+    <SolidColorBrush x:Key="EditorSyntaxParameter" Color="#9CDCFE" />
+    <SolidColorBrush x:Key="EditorSyntaxField" Color="#9CDCFE" />
+    <SolidColorBrush x:Key="EditorSyntaxProperty" Color="#9CDCFE" />
+    <SolidColorBrush x:Key="EditorSyntaxMethod" Color="#DCDCAA" />
+    <SolidColorBrush x:Key="EditorSyntaxNamespace" Color="#4EC9B0" />
+    <SolidColorBrush x:Key="EditorSyntaxAttribute" Color="#C586C0" />
+    <SolidColorBrush x:Key="EditorSyntaxBindingKeyword" Color="#FFC44F" />
+    <SolidColorBrush x:Key="EditorSyntaxBindingParameter" Color="#FF915A" />
+    <SolidColorBrush x:Key="EditorSyntaxBindingPath" Color="#5BD6C9" />
+    <SolidColorBrush x:Key="EditorSyntaxBindingOperator" Color="#90D6FF" />
+    <SolidColorBrush x:Key="EditorSyntaxError" Color="#F44747" />
+
+</ResourceDictionary>

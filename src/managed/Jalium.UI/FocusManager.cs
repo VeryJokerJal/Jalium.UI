@@ -202,8 +202,7 @@ public static class FocusManager
 
     private static void OnFocusedElementChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        var newElement = e.NewValue as IInputElement;
-        if (newElement != null)
+        if (e.NewValue is IInputElement newElement)
         {
             _scopeFocusedElements[d] = newElement;
         }
@@ -310,8 +309,8 @@ public static class KeyboardNavigation
     /// <returns>True if focus was moved.</returns>
     public static bool MoveFocus(TraversalRequest request)
     {
-        var currentFocus = FocusManager.FocusedElement as DependencyObject;
-        if (currentFocus == null) return false;
+        if (FocusManager.FocusedElement is not DependencyObject currentFocus)
+            return false;
 
         var nextElement = FindNextFocusableElement(currentFocus, request.FocusNavigationDirection);
         if (nextElement != null)
@@ -554,7 +553,7 @@ public enum KeyboardNavigationMode
 /// <summary>
 /// Represents a focus traversal request.
 /// </summary>
-public class TraversalRequest
+public sealed class TraversalRequest
 {
     /// <summary>
     /// Gets the focus navigation direction.
@@ -657,7 +656,7 @@ public delegate void AccessKeyEventHandler(object sender, AccessKeyEventArgs e);
 /// <summary>
 /// Provides data for access key events.
 /// </summary>
-public class AccessKeyEventArgs : RoutedEventArgs
+public sealed class AccessKeyEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the access key that was pressed.

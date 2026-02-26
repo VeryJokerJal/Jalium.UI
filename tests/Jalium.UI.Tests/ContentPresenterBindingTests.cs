@@ -1,6 +1,7 @@
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
 
 namespace Jalium.UI.Tests;

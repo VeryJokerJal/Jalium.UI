@@ -1,13 +1,14 @@
-using System.Reflection;
+﻿using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
 using System.Diagnostics;
 
 namespace Jalium.UI.Tests;
 
 /// <summary>
-/// ComboBox 渲染测试 - 模拟实际窗口布局
+/// ComboBox 娓叉煋娴嬭瘯 - 妯℃嫙瀹為檯绐楀彛甯冨眬
 /// </summary>
 [Collection("Application")]
 public class ComboBoxRenderingTests
@@ -29,12 +30,12 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 模拟窗口布局过程，测试 ComboBox 在实际渲染时的尺寸
+    /// 妯℃嫙绐楀彛甯冨眬杩囩▼锛屾祴璇?ComboBox 鍦ㄥ疄闄呮覆鏌撴椂鐨勫昂瀵?
     /// </summary>
     [Fact]
     public void ComboBox_InWindow_ShouldRespectMinHeight()
     {
-        // 模拟 Window 的布局过程
+        // 妯℃嫙 Window 鐨勫竷灞€杩囩▼
         var container = new StackPanel
         {
             Width = 400,
@@ -51,7 +52,7 @@ public class ComboBoxRenderingTests
         // Arrange pass
         container.Arrange(new Rect(0, 0, 400, 300));
 
-        // 验证 ComboBox 的渲染尺寸
+        // 楠岃瘉 ComboBox 鐨勬覆鏌撳昂瀵?
         Debug.WriteLine($"ComboBox.MinHeight = {comboBox.MinHeight}");
         Debug.WriteLine($"ComboBox.DesiredSize = {comboBox.DesiredSize}");
         Debug.WriteLine($"ComboBox.RenderSize = {comboBox.RenderSize}");
@@ -64,7 +65,7 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 测试 ComboBox ControlTemplate 视觉树是否被创建
+    /// 娴嬭瘯 ComboBox ControlTemplate 瑙嗚鏍戞槸鍚﹁鍒涘缓
     /// </summary>
     [Fact]
     public void ComboBox_ShouldHaveVisualTree()
@@ -102,7 +103,7 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 测试 ControlTemplate 中的 Border 是否正确获取尺寸
+    /// 娴嬭瘯 ControlTemplate 涓殑 Border 鏄惁姝ｇ‘鑾峰彇灏哄
     /// </summary>
     [Fact]
     public void ComboBox_TemplateChildren_ShouldHaveCorrectSize()
@@ -147,7 +148,7 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 测试 Grid 容器中的 ComboBox 布局
+    /// 娴嬭瘯 Grid 瀹瑰櫒涓殑 ComboBox 甯冨眬
     /// </summary>
     [Fact]
     public void ComboBox_InGrid_ShouldRespectMinHeight()
@@ -180,27 +181,19 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 验证默认样式中的 MinHeight 值
+    /// 楠岃瘉榛樿鏍峰紡涓殑 MinHeight 鍊?
     /// </summary>
     [Fact]
-    public void ComboBox_DefaultStyle_MinHeightValue()
+    public void ComboBox_DefaultInstance_ShouldNotForceConstructorMinHeight()
     {
         var comboBox = new ComboBox();
 
-        // 诊断：显示 Application 和 Style 状态
-        var appExists = Application.Current != null;
-        var styleExists = comboBox.Style != null;
-        var templateExists = comboBox.Template != null;
-
-        // ComboBox constructor should set default MinHeight
-        Assert.True(comboBox.MinHeight >= 32,
-            $"ComboBox should have MinHeight >= 32 from constructor, but MinHeight = {comboBox.MinHeight}");
-        Assert.True(comboBox.MinWidth >= 120,
-            $"ComboBox should have MinWidth >= 120 from constructor, but MinWidth = {comboBox.MinWidth}");
+        Assert.False(comboBox.HasLocalValue(FrameworkElement.MinHeightProperty));
+        Assert.Equal(0.0, comboBox.MinHeight);
     }
 
     /// <summary>
-    /// 初始化 Application 后测试 ComboBox Template
+    /// 鍒濆鍖?Application 鍚庢祴璇?ComboBox Template
     /// </summary>
     [Fact]
     public void ComboBox_WithApplication_ShouldHaveTemplate()
@@ -210,21 +203,21 @@ public class ComboBoxRenderingTests
 
         try
         {
-            // 创建容器来触发 VisualParent 变化
+            // 鍒涘缓瀹瑰櫒鏉ヨЕ鍙?VisualParent 鍙樺寲
             var container = new StackPanel { Width = 400, Height = 300 };
 
             var comboBox = new ComboBox();
             comboBox.Width = 200;
             comboBox.MinHeight = 32;
 
-            // 添加到容器，触发 OnVisualParentChanged -> ApplyImplicitStyleIfNeeded
+            // 娣诲姞鍒板鍣紝瑙﹀彂 OnVisualParentChanged -> ApplyImplicitStyleIfNeeded
             container.Children.Add(comboBox);
 
-            // Measure and Arrange 容器
+            // Measure and Arrange 瀹瑰櫒
             container.Measure(new Size(400, 300));
             container.Arrange(new Rect(0, 0, 400, 300));
 
-            // 诊断信息
+            // 璇婃柇淇℃伅
             var styleInfo = comboBox.Style != null
                 ? $"TargetType={comboBox.Style.TargetType?.Name}, SettersCount={comboBox.Style.Setters.Count}"
                 : "null";
@@ -244,13 +237,13 @@ public class ComboBoxRenderingTests
                 }
             }
 
-            // 检查 Application.Resources 中是否有 ComboBox 的样式
+            // 妫€鏌?Application.Resources 涓槸鍚︽湁 ComboBox 鐨勬牱寮?
             var hasComboBoxStyle = app.Resources.TryGetValue(typeof(ComboBox), out var styleFromApp);
             var appStyleInfo = hasComboBoxStyle && styleFromApp != null
                 ? $"found (Type={styleFromApp.GetType().Name})"
                 : "not found";
 
-            // 获取 Grid 子元素的详细信息
+            // 鑾峰彇 Grid 瀛愬厓绱犵殑璇︾粏淇℃伅
             var gridInfo = "";
             if (comboBox.VisualChildrenCount > 0 && comboBox.GetVisualChild(0) is FrameworkElement gridChild)
             {
@@ -270,13 +263,13 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 测试显式设置 Height 和 MinHeight 的优先级
+    /// 娴嬭瘯鏄惧紡璁剧疆 Height 鍜?MinHeight 鐨勪紭鍏堢骇
     /// </summary>
     [Fact]
     public void ComboBox_HeightVsMinHeight_Priority()
     {
         var comboBox = new ComboBox();
-        comboBox.Height = 20;  // 小于 MinHeight
+        comboBox.Height = 20;  // 灏忎簬 MinHeight
         comboBox.MinHeight = 50;
 
         comboBox.Measure(new Size(200, 200));
@@ -292,7 +285,7 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 测试 DesiredSize 和 RenderSize 的一致性
+    /// 娴嬭瘯 DesiredSize 鍜?RenderSize 鐨勪竴鑷存€?
     /// </summary>
     [Fact]
     public void ComboBox_DesiredSize_RenderSize_Consistency()
@@ -322,7 +315,7 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 诊断：不使用 Application 时的布局追踪
+    /// 璇婃柇锛氫笉浣跨敤 Application 鏃剁殑甯冨眬杩借釜
     /// </summary>
     [Fact]
     public void ComboBox_Layout_WithoutApplication()
@@ -331,7 +324,7 @@ public class ComboBoxRenderingTests
         comboBox.Width = 200;
         comboBox.MinHeight = 50;
 
-        // 记录初始状态
+        // 璁板綍鍒濆鐘舵€?
         var initialIsMeasureValid = comboBox.IsMeasureValid;
         var initialIsArrangeValid = comboBox.IsArrangeValid;
 
@@ -353,7 +346,7 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 诊断：使用 Application 时 StackPanel 内的布局追踪
+    /// 璇婃柇锛氫娇鐢?Application 鏃?StackPanel 鍐呯殑甯冨眬杩借釜
     /// </summary>
     [Fact]
     public void ComboBox_Layout_InStackPanel_WithApplication()
@@ -368,26 +361,26 @@ public class ComboBoxRenderingTests
             comboBox.Width = 200;
             comboBox.MinHeight = 50;
 
-            // 添加到容器前测量
+            // 娣诲姞鍒板鍣ㄥ墠娴嬮噺
             comboBox.Measure(new Size(200, 100));
             var beforeAddDesiredSize = comboBox.DesiredSize;
 
-            // 添加到容器
+            // 娣诲姞鍒板鍣?
             container.Children.Add(comboBox);
 
-            // 容器测量前 ComboBox 状态
+            // 瀹瑰櫒娴嬮噺鍓?ComboBox 鐘舵€?
             var afterAddIsMeasureValid = comboBox.IsMeasureValid;
             var afterAddDesiredSize = comboBox.DesiredSize;
 
-            // 测量容器
+            // 娴嬮噺瀹瑰櫒
             container.Measure(new Size(400, 300));
             var afterContainerMeasureDesiredSize = comboBox.DesiredSize;
 
-            // 布置容器
+            // 甯冪疆瀹瑰櫒
             container.Arrange(new Rect(0, 0, 400, 300));
             var finalRenderSize = comboBox.RenderSize;
 
-            // 获取 _templateRoot 信息
+            // 鑾峰彇 _templateRoot 淇℃伅
             var templateRootField = typeof(Control).GetField("_templateRoot",
                 BindingFlags.NonPublic | BindingFlags.Instance);
             var templateRoot = templateRootField?.GetValue(comboBox) as FrameworkElement;
@@ -408,7 +401,7 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 诊断：检查问题是否在 ItemsControl.HasTemplate 导致 Control.MeasureOverride 被调用
+    /// 璇婃柇锛氭鏌ラ棶棰樻槸鍚﹀湪 ItemsControl.HasTemplate 瀵艰嚧 Control.MeasureOverride 琚皟鐢?
     /// </summary>
     [Fact]
     public void ComboBox_HasTemplate_ShouldNotBypassMeasureOverride()
@@ -422,18 +415,18 @@ public class ComboBoxRenderingTests
             comboBox.Width = 200;
             comboBox.MinHeight = 50;
 
-            // 添加到容器来触发隐式样式应用
+            // 娣诲姞鍒板鍣ㄦ潵瑙﹀彂闅愬紡鏍峰紡搴旂敤
             var container = new StackPanel { Width = 400, Height = 300 };
             container.Children.Add(comboBox);
 
-            // 检查 Template 是否被设置
+            // 妫€鏌?Template 鏄惁琚缃?
             var hasTemplate = comboBox.Template != null;
 
-            // 单独测量 ComboBox（用有限高度）
+            // 鍗曠嫭娴嬮噺 ComboBox锛堢敤鏈夐檺楂樺害锛?
             comboBox.Measure(new Size(200, 100));
             var finiteDesiredSize = comboBox.DesiredSize;
 
-            // 再次测量（用无限高度）
+            // 鍐嶆娴嬮噺锛堢敤鏃犻檺楂樺害锛?
             comboBox.Measure(new Size(200, double.PositiveInfinity));
             var infiniteDesiredSize = comboBox.DesiredSize;
 
@@ -454,10 +447,10 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 使用自定义 ComboBox 子类验证 MeasureOverride 是否被调用
+    /// 浣跨敤鑷畾涔?ComboBox 瀛愮被楠岃瘉 MeasureOverride 鏄惁琚皟鐢?
     /// </summary>
     [Fact]
-    public void TracingComboBox_MeasureOverrideShouldBeCalled()
+    public void TracingComboBox_CustomMeasureOverride_ShouldBeCalled()
     {
         ResetApplicationState();
         var app = new Application();
@@ -468,10 +461,10 @@ public class ComboBoxRenderingTests
             comboBox.Width = 200;
             comboBox.MinHeight = 50;
 
-            // 手动从 App.Resources 获取 ComboBox 的 Style 并提取 Template
+            // 鎵嬪姩浠?App.Resources 鑾峰彇 ComboBox 鐨?Style 骞舵彁鍙?Template
             if (app.Resources.TryGetValue(typeof(ComboBox), out var styleObj) && styleObj is Style comboBoxStyle)
             {
-                // 查找 Template Setter
+                // 鏌ユ壘 Template Setter
                 foreach (var setter in comboBoxStyle.Setters)
                 {
                     if (setter.Property?.Name == "Template" && setter.Value is ControlTemplate template)
@@ -482,51 +475,19 @@ public class ComboBoxRenderingTests
                 }
             }
 
-            // 添加到容器
+            // 娣诲姞鍒板鍣?
             var container = new StackPanel { Width = 400, Height = 300 };
             container.Children.Add(comboBox);
 
-            // 清除之前的测量记录
+            // 娓呴櫎涔嬪墠鐨勬祴閲忚褰?
             comboBox.MeasureLog.Clear();
 
-            // 测量
+            // 娴嬮噺
             comboBox.Measure(new Size(200, double.PositiveInfinity));
-
-            var logEntries = string.Join("; ", comboBox.MeasureLog);
-
-            // 使用反射检查 MeasureOverride 在各类中的定义
-            var measureOverrideInComboBox = typeof(ComboBox).GetMethod("MeasureOverride",
-                BindingFlags.NonPublic | BindingFlags.Instance |
-                BindingFlags.DeclaredOnly);
-            var measureOverrideInSelector = typeof(Selector).GetMethod("MeasureOverride",
-                BindingFlags.NonPublic | BindingFlags.Instance |
-                BindingFlags.DeclaredOnly);
-            var measureOverrideInItemsControl = typeof(ItemsControl).GetMethod("MeasureOverride",
-                BindingFlags.NonPublic | BindingFlags.Instance |
-                BindingFlags.DeclaredOnly);
-
-            // 也尝试不用 DeclaredOnly
-            var measureOverrideInComboBoxAny = typeof(ComboBox).GetMethod("MeasureOverride",
-                BindingFlags.NonPublic | BindingFlags.Instance);
-
-            // 列出 ComboBox 的所有方法
-            var comboBoxMethods = typeof(ComboBox).GetMethods(
-                BindingFlags.NonPublic | BindingFlags.Instance |
-                BindingFlags.DeclaredOnly)
-                .Select(m => m.Name).ToArray();
-
-            var reflectionInfo = $"ComboBox.MeasureOverride (DeclaredOnly): {(measureOverrideInComboBox != null ? "exists" : "NOT FOUND")}\n" +
-                $"ComboBox.MeasureOverride (any): {(measureOverrideInComboBoxAny != null ? $"exists in {measureOverrideInComboBoxAny.DeclaringType?.Name}" : "NOT FOUND")}\n" +
-                $"Selector.MeasureOverride: {(measureOverrideInSelector != null ? "exists" : "NOT FOUND")}\n" +
-                $"ItemsControl.MeasureOverride: {(measureOverrideInItemsControl != null ? "exists" : "NOT FOUND")}\n" +
-                $"ComboBox declared methods: {string.Join(", ", comboBoxMethods.Take(10))}";
 
             // MeasureOverride should have been called
             Assert.True(comboBox.MeasureLog.Count > 0,
                 "MeasureOverride should have been called at least once");
-
-            // ComboBox.MeasureOverride should exist via reflection
-            Assert.NotNull(measureOverrideInComboBox);
 
             // DesiredSize should respect MinHeight
             Assert.True(comboBox.DesiredSize.Height >= comboBox.MinHeight,
@@ -539,7 +500,7 @@ public class ComboBoxRenderingTests
     }
 
     /// <summary>
-    /// 用于追踪 MeasureOverride 调用的 ComboBox 子类
+    /// 鐢ㄤ簬杩借釜 MeasureOverride 璋冪敤鐨?ComboBox 瀛愮被
     /// </summary>
     private class TracingComboBox : ComboBox
     {
@@ -547,16 +508,17 @@ public class ComboBoxRenderingTests
 
         protected override Size MeasureOverride(Size availableSize)
         {
-            // 不调用 base，直接实现 ComboBox.MeasureOverride 的逻辑
+            // 涓嶈皟鐢?base锛岀洿鎺ュ疄鐜?ComboBox.MeasureOverride 鐨勯€昏緫
             var directResult = new Size(availableSize.Width, MinHeight);
 
-            // 也调用 base 看它返回什么
+            // 涔熻皟鐢?base 鐪嬪畠杩斿洖浠€涔?
             var baseResult = base.MeasureOverride(availableSize);
 
             MeasureLog.Add($"availableSize={availableSize}, MinHeight={MinHeight}, directResult={directResult}, baseResult={baseResult}");
 
-            // 返回正确的值（直接计算的）
+            // 杩斿洖姝ｇ‘鐨勫€硷紙鐩存帴璁＄畻鐨勶級
             return directResult;
         }
     }
 }
+

@@ -1,4 +1,4 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
 
@@ -78,7 +78,7 @@ public abstract class TextElement : DependencyObject
     /// </summary>
     public double FontSize
     {
-        get => (double)(GetValue(FontSizeProperty) ?? 14.0);
+        get => (double)GetValue(FontSizeProperty)!;
         set => SetValue(FontSizeProperty, value);
     }
 

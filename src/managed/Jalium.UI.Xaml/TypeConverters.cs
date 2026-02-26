@@ -24,7 +24,7 @@ public abstract class TypeConverter
 /// <summary>
 /// Converts strings to Thickness values.
 /// </summary>
-public class ThicknessConverter : TypeConverter
+public sealed class ThicknessConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -52,7 +52,7 @@ public class ThicknessConverter : TypeConverter
 /// <summary>
 /// Converts strings to CornerRadius values.
 /// </summary>
-public class CornerRadiusConverter : TypeConverter
+public sealed class CornerRadiusConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -77,7 +77,7 @@ public class CornerRadiusConverter : TypeConverter
 /// <summary>
 /// Converts strings to Brush values.
 /// </summary>
-public class BrushConverter : TypeConverter
+public sealed class BrushConverter : TypeConverter
 {
     private static readonly Dictionary<string, Color> _namedColors = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -160,7 +160,7 @@ public class BrushConverter : TypeConverter
 /// <summary>
 /// Converts strings to Color values.
 /// </summary>
-public class ColorConverter : TypeConverter
+public sealed class ColorConverter : TypeConverter
 {
     private static readonly Dictionary<string, Color> _namedColors = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -242,7 +242,7 @@ public class ColorConverter : TypeConverter
 /// <summary>
 /// Converts strings to GridLength values.
 /// </summary>
-public class GridLengthConverter : TypeConverter
+public sealed class GridLengthConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -272,7 +272,7 @@ public class GridLengthConverter : TypeConverter
 /// <summary>
 /// Converts strings to HorizontalAlignment values.
 /// </summary>
-public class HorizontalAlignmentConverter : TypeConverter
+public sealed class HorizontalAlignmentConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -284,7 +284,7 @@ public class HorizontalAlignmentConverter : TypeConverter
 /// <summary>
 /// Converts strings to VerticalAlignment values.
 /// </summary>
-public class VerticalAlignmentConverter : TypeConverter
+public sealed class VerticalAlignmentConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -296,7 +296,7 @@ public class VerticalAlignmentConverter : TypeConverter
 /// <summary>
 /// Converts strings to Orientation values.
 /// </summary>
-public class OrientationConverter : TypeConverter
+public sealed class OrientationConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -309,7 +309,7 @@ public class OrientationConverter : TypeConverter
 /// Converts string type names to Type objects.
 /// AOT-compatible: uses XamlTypeRegistry for type lookup.
 /// </summary>
-public class TypeTypeConverter : TypeConverter
+public sealed class TypeTypeConverter : TypeConverter
 {
     public override object? ConvertFrom(object? value)
     {
@@ -317,6 +317,31 @@ public class TypeTypeConverter : TypeConverter
 
         // Use the static type registry for AOT compatibility
         return XamlTypeRegistry.GetType(typeName);
+    }
+}
+
+/// <summary>
+/// Converts strings to IconElement values.
+/// Supports Symbol names (for example "Save" or "Symbol.Save") and raw glyph strings.
+/// </summary>
+public sealed class IconElementConverter : TypeConverter
+{
+    public override object? ConvertFrom(object? value)
+    {
+        if (value is not string str) return null;
+        str = str.Trim();
+        if (string.IsNullOrEmpty(str)) return null;
+
+        var symbolName = str.StartsWith("Symbol.", StringComparison.OrdinalIgnoreCase)
+            ? str.Substring("Symbol.".Length)
+            : str;
+
+        if (Enum.TryParse<Symbol>(symbolName, ignoreCase: true, out var symbol))
+        {
+            return new SymbolIcon(symbol);
+        }
+
+        return new FontIcon { Glyph = str };
     }
 }
 
@@ -337,6 +362,7 @@ public static class TypeConverterRegistry
         [typeof(VerticalAlignment)] = new VerticalAlignmentConverter(),
         [typeof(Orientation)] = new OrientationConverter(),
         [typeof(Type)] = new TypeTypeConverter(),
+        [typeof(IconElement)] = new IconElementConverter(),
     };
 
     /// <summary>
@@ -378,19 +404,48 @@ public static class TypeConverterRegistry
             return value;
 
         if (targetType == typeof(double))
-            return double.Parse(value, CultureInfo.InvariantCulture);
+        {
+            // Handle XAML special values
+            if (string.Equals(value, "Auto", StringComparison.OrdinalIgnoreCase))
+                return double.NaN;
+            if (string.Equals(value, "NaN", StringComparison.OrdinalIgnoreCase))
+                return double.NaN;
+            if (string.Equals(value, "Infinity", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "+Infinity", StringComparison.OrdinalIgnoreCase))
+                return double.PositiveInfinity;
+            if (string.Equals(value, "-Infinity", StringComparison.OrdinalIgnoreCase))
+                return double.NegativeInfinity;
+            if (double.TryParse(value, CultureInfo.InvariantCulture, out var d))
+                return d;
+            // Fall through to TypeConverter
+        }
 
         if (targetType == typeof(float))
-            return float.Parse(value, CultureInfo.InvariantCulture);
+        {
+            if (string.Equals(value, "Auto", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "NaN", StringComparison.OrdinalIgnoreCase))
+                return float.NaN;
+            if (float.TryParse(value, CultureInfo.InvariantCulture, out var f))
+                return f;
+        }
 
         if (targetType == typeof(int))
-            return int.Parse(value, CultureInfo.InvariantCulture);
+        {
+            if (int.TryParse(value, CultureInfo.InvariantCulture, out var i))
+                return i;
+        }
 
         if (targetType == typeof(bool))
-            return bool.Parse(value);
+        {
+            if (bool.TryParse(value, out var b))
+                return b;
+        }
 
         if (targetType.IsEnum)
-            return Enum.Parse(targetType, value, ignoreCase: true);
+        {
+            if (Enum.TryParse(targetType, value, ignoreCase: true, out var e))
+                return e;
+        }
 
         var converter = GetConverter(targetType);
         if (converter != null)

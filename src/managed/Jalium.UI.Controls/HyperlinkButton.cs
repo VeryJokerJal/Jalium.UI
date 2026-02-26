@@ -1,4 +1,5 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -10,8 +11,11 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a button that displays as a hyperlink and can navigate to a URI.
 /// </summary>
-public class HyperlinkButton : ButtonBase
+public sealed class HyperlinkButton : ButtonBase
 {
+    // Cached brushes for OnRender
+    private static readonly SolidColorBrush s_hoverBrush = new(Color.FromRgb(0, 51, 153));
+
     #region Dependency Properties
 
     /// <summary>
@@ -46,7 +50,7 @@ public class HyperlinkButton : ButtonBase
     /// </summary>
     public bool IsUnderlined
     {
-        get => (bool)(GetValue(IsUnderlinedProperty) ?? true);
+        get => (bool)GetValue(IsUnderlinedProperty)!;
         set => SetValue(IsUnderlinedProperty, value);
     }
 
@@ -95,6 +99,14 @@ public class HyperlinkButton : ButtonBase
     #region Click Handling
 
     /// <inheritdoc />
+    /// <summary>
+    /// Allowed URI schemes for navigation. Only safe schemes are permitted.
+    /// </summary>
+    private static readonly HashSet<string> AllowedSchemes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "http", "https", "ftp", "ftps", "mailto"
+    };
+
     protected override void OnClick()
     {
         // Try to navigate to the URI if set
@@ -102,17 +114,19 @@ public class HyperlinkButton : ButtonBase
         {
             try
             {
-                var uri = NavigateUri.ToString();
-                // Use shell execute to open URLs in the default browser
-                Process.Start(new ProcessStartInfo
+                // Only allow safe URI schemes to prevent execution of malicious URIs
+                if (AllowedSchemes.Contains(NavigateUri.Scheme))
                 {
-                    FileName = uri,
-                    UseShellExecute = true
-                });
+                    Process.Start(new ProcessStartInfo
+                    {
+                        FileName = NavigateUri.ToString(),
+                        UseShellExecute = true
+                    });
+                }
             }
             catch (Exception)
             {
-                // Navigation failed - silently ignore or could raise an event
+                // Navigation failed - silently ignore
             }
         }
 
@@ -216,7 +230,7 @@ public class HyperlinkButton : ButtonBase
         if (_isHovered || IsPressed)
         {
             // Darken on hover/press
-            fgBrush = new SolidColorBrush(Color.FromRgb(0, 51, 153));
+            fgBrush = s_hoverBrush;
         }
 
         // Draw content

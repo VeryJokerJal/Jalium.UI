@@ -118,7 +118,7 @@ public readonly struct Matrix : IEquatable<Matrix>
 /// <summary>
 /// Applies an arbitrary matrix transform.
 /// </summary>
-public class MatrixTransform : Transform
+public sealed class MatrixTransform : Transform
 {
     /// <summary>
     /// Gets or sets the transform matrix.
@@ -149,7 +149,7 @@ public class MatrixTransform : Transform
 /// <summary>
 /// Scales an object in the 2D coordinate system.
 /// </summary>
-public class ScaleTransform : Transform
+public sealed class ScaleTransform : Transform
 {
     /// <summary>
     /// Gets or sets the X scale factor.
@@ -192,7 +192,7 @@ public class ScaleTransform : Transform
 /// <summary>
 /// Rotates an object in the 2D coordinate system.
 /// </summary>
-public class RotateTransform : Transform
+public sealed class RotateTransform : Transform
 {
     /// <summary>
     /// Gets or sets the rotation angle in degrees.
@@ -234,7 +234,7 @@ public class RotateTransform : Transform
 /// <summary>
 /// Translates an object in the 2D coordinate system.
 /// </summary>
-public class TranslateTransform : Transform
+public sealed class TranslateTransform : Transform
 {
     /// <summary>
     /// Gets or sets the X translation.
@@ -253,7 +253,7 @@ public class TranslateTransform : Transform
 /// <summary>
 /// Skews an object in the 2D coordinate system.
 /// </summary>
-public class SkewTransform : Transform
+public sealed class SkewTransform : Transform
 {
     /// <summary>
     /// Gets or sets the X skew angle in degrees.
@@ -294,7 +294,7 @@ public class SkewTransform : Transform
 /// <summary>
 /// Represents a composite transform that combines multiple transforms.
 /// </summary>
-public class TransformGroup : Transform
+public sealed class TransformGroup : Transform
 {
     private readonly List<Transform> _children = new();
 
@@ -370,7 +370,7 @@ public class TransformGroup : Transform
 /// A composite transform that provides convenient access to common transform operations.
 /// Similar to WPF's CompositeTransform in WinUI.
 /// </summary>
-public class CompositeTransform : Transform
+public sealed class CompositeTransform : Transform
 {
     /// <summary>
     /// Gets or sets the center X coordinate for all transforms.

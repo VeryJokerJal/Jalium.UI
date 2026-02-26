@@ -5,7 +5,7 @@ namespace Jalium.UI.Media;
 /// <summary>
 /// Provides a BitmapSource that can be written to and updated.
 /// </summary>
-public class WriteableBitmap : BitmapSource
+public sealed class WriteableBitmap : BitmapSource
 {
     private byte[] _backBuffer;
     private readonly int _pixelWidth;
@@ -31,27 +31,27 @@ public class WriteableBitmap : BitmapSource
     /// <summary>
     /// Gets the pixel width.
     /// </summary>
-    public int PixelWidth => _pixelWidth;
+    public override int PixelWidth => _pixelWidth;
 
     /// <summary>
     /// Gets the pixel height.
     /// </summary>
-    public int PixelHeight => _pixelHeight;
+    public override int PixelHeight => _pixelHeight;
 
     /// <summary>
     /// Gets the horizontal DPI.
     /// </summary>
-    public double DpiX => _dpiX;
+    public override double DpiX => _dpiX;
 
     /// <summary>
     /// Gets the vertical DPI.
     /// </summary>
-    public double DpiY => _dpiY;
+    public override double DpiY => _dpiY;
 
     /// <summary>
     /// Gets the pixel format.
     /// </summary>
-    public PixelFormat Format => _format;
+    public override PixelFormat Format => _format;
 
     /// <summary>
     /// Gets the stride (bytes per row).

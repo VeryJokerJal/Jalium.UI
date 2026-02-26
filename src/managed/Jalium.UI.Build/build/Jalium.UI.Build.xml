@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Visual Studio 属性页架构
+  定义 JalxamlPage 和 JalxamlApplicationDefinition 在 VS 属性窗口中的显示
+-->
+<ProjectSchemaDefinitions xmlns="http://schemas.microsoft.com/build/2009/properties">
+
+  <!-- JalxamlPage 项类型定义 -->
+  <ContentType Name="JalxamlPage" DisplayName="JALXAML 页面" ItemType="JalxamlPage" />
+
+  <!-- JalxamlApplicationDefinition 项类型定义 -->
+  <ContentType Name="JalxamlApplicationDefinition" DisplayName="JALXAML 应用程序定义" ItemType="JalxamlApplicationDefinition" />
+
+  <!-- 文件扩展名映射 -->
+  <FileExtension Name=".jalxaml" ContentType="JalxamlPage" />
+
+  <!-- JalxamlPage 属性规则 -->
+  <ItemType Name="JalxamlPage" DisplayName="JALXAML 页面" />
+
+  <Rule Name="JalxamlPage"
+        DisplayName="JALXAML 页面"
+        PageTemplate="generic"
+        Description="Jalium.UI XAML 页面文件"
+        OverrideMode="Extend">
+
+    <Rule.DataSource>
+      <DataSource Persistence="ProjectFile" ItemType="JalxamlPage" HasConfigurationCondition="False" />
+    </Rule.DataSource>
+
+    <Rule.Categories>
+      <Category Name="Advanced" DisplayName="高级" />
+      <Category Name="Misc" DisplayName="杂项" />
+    </Rule.Categories>
+
+    <StringProperty Name="Identity" Visible="false" />
+
+    <StringProperty Name="FullPath"
+                    DisplayName="完整路径"
+                    ReadOnly="True"
+                    Category="Misc"
+                    Description="文件的完整路径">
+      <StringProperty.DataSource>
+        <DataSource Persistence="Intrinsic" ItemType="JalxamlPage" PersistedName="Identity" />
+      </StringProperty.DataSource>
+    </StringProperty>
+
+    <EnumProperty Name="BuildAction"
+                  DisplayName="生成操作"
+                  Category="Advanced"
+                  Description="指定编译器如何处理此文件">
+      <EnumValue Name="JalxamlPage" DisplayName="JalxamlPage" IsDefault="True" />
+      <EnumValue Name="None" DisplayName="无" />
+      <EnumValue Name="Resource" DisplayName="资源" />
+      <EnumValue Name="EmbeddedResource" DisplayName="嵌入的资源" />
+    </EnumProperty>
+
+    <EnumProperty Name="CopyToOutputDirectory"
+                  DisplayName="复制到输出目录"
+                  Category="Advanced"
+                  Description="指定是否将此文件复制到输出目录">
+      <EnumValue Name="Never" DisplayName="不复制" IsDefault="True" />
+      <EnumValue Name="Always" DisplayName="始终复制" />
+      <EnumValue Name="PreserveNewest" DisplayName="如果较新则复制" />
+    </EnumProperty>
+
+    <StringProperty Name="SubType"
+                    DisplayName="子类型"
+                    Category="Misc"
+                    Visible="False"
+                    Default="Designer" />
+
+  </Rule>
+
+  <!-- JalxamlApplicationDefinition 属性规则 -->
+  <ItemType Name="JalxamlApplicationDefinition" DisplayName="JALXAML 应用程序定义" />
+
+  <Rule Name="JalxamlApplicationDefinition"
+        DisplayName="JALXAML 应用程序定义"
+        PageTemplate="generic"
+        Description="Jalium.UI 应用程序定义文件"
+        OverrideMode="Extend">
+
+    <Rule.DataSource>
+      <DataSource Persistence="ProjectFile" ItemType="JalxamlApplicationDefinition" HasConfigurationCondition="False" />
+    </Rule.DataSource>
+
+    <Rule.Categories>
+      <Category Name="Advanced" DisplayName="高级" />
+      <Category Name="Misc" DisplayName="杂项" />
+    </Rule.Categories>
+
+    <StringProperty Name="Identity" Visible="false" />
+
+    <StringProperty Name="FullPath"
+                    DisplayName="完整路径"
+                    ReadOnly="True"
+                    Category="Misc"
+                    Description="文件的完整路径">
+      <StringProperty.DataSource>
+        <DataSource Persistence="Intrinsic" ItemType="JalxamlApplicationDefinition" PersistedName="Identity" />
+      </StringProperty.DataSource>
+    </StringProperty>
+
+    <EnumProperty Name="BuildAction"
+                  DisplayName="生成操作"
+                  Category="Advanced"
+                  Description="指定编译器如何处理此文件">
+      <EnumValue Name="JalxamlApplicationDefinition" DisplayName="JalxamlApplicationDefinition" IsDefault="True" />
+      <EnumValue Name="None" DisplayName="无" />
+    </EnumProperty>
+
+  </Rule>
+
+</ProjectSchemaDefinitions>

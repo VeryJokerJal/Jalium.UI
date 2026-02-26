@@ -6,7 +6,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Represents an ordered collection of InputGesture objects.
 /// </summary>
-public class InputGestureCollection : IList<InputGesture>, IList
+public sealed class InputGestureCollection : IList<InputGesture>, IList
 {
     private readonly List<InputGesture> _gestures;
     private readonly bool _isReadOnly;

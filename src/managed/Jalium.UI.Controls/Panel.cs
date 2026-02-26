@@ -6,6 +6,84 @@ namespace Jalium.UI.Controls;
 [ContentProperty("Children")]
 public abstract class Panel : FrameworkElement
 {
+    #region ZIndex Attached Property
+
+    /// <summary>
+    /// Identifies the ZIndex attached property.
+    /// </summary>
+    public static readonly DependencyProperty ZIndexProperty =
+        DependencyProperty.RegisterAttached("ZIndex", typeof(int), typeof(Panel),
+            new PropertyMetadata(0, OnZIndexChanged));
+
+    /// <summary>
+    /// Gets the ZIndex value for a UIElement.
+    /// </summary>
+    public static int GetZIndex(UIElement element) =>
+        (int)(element.GetValue(ZIndexProperty) ?? 0);
+
+    /// <summary>
+    /// Sets the ZIndex value for a UIElement.
+    /// </summary>
+    public static void SetZIndex(UIElement element, int value) =>
+        element.SetValue(ZIndexProperty, value);
+
+    private static void OnZIndexChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element && element.VisualParent is Panel panel)
+        {
+            panel.InvalidateZOrder();
+        }
+    }
+
+    #endregion
+
+    #region ZOrder Sorting
+
+    private int[]? _zOrderMap;
+    private bool _zOrderDirty = true;
+
+    private void InvalidateZOrder()
+    {
+        _zOrderDirty = true;
+        InvalidateVisual();
+    }
+
+    private void EnsureZOrderMap()
+    {
+        if (!_zOrderDirty && _zOrderMap != null && _zOrderMap.Length == Children.Count)
+            return;
+
+        var count = Children.Count;
+        _zOrderMap = new int[count];
+        for (int i = 0; i < count; i++)
+            _zOrderMap[i] = i;
+
+        // Sort indices by ZIndex (stable sort preserves insertion order for equal ZIndex)
+        Array.Sort(_zOrderMap, (a, b) =>
+        {
+            var za = GetZIndex(Children[a]);
+            var zb = GetZIndex(Children[b]);
+            return za != zb ? za.CompareTo(zb) : a.CompareTo(b);
+        });
+
+        _zOrderDirty = false;
+    }
+
+    /// <inheritdoc />
+    public override Visual? GetVisualChild(int index)
+    {
+        if (Children.Count == 0 || index < 0 || index >= Children.Count)
+            throw new ArgumentOutOfRangeException(nameof(index));
+
+        EnsureZOrderMap();
+        return Children[_zOrderMap![index]];
+    }
+
+    /// <inheritdoc />
+    public override int VisualChildrenCount => Children.Count;
+
+    #endregion
+
     /// <summary>
     /// Gets the collection of child elements.
     /// </summary>
@@ -25,6 +103,7 @@ public abstract class Panel : FrameworkElement
     internal void AddVisualChildInternal(UIElement child)
     {
         AddVisualChild(child);
+        InvalidateZOrder();
     }
 
     /// <summary>
@@ -33,13 +112,14 @@ public abstract class Panel : FrameworkElement
     internal void RemoveVisualChildInternal(UIElement child)
     {
         RemoveVisualChild(child);
+        InvalidateZOrder();
     }
 }
 
 /// <summary>
 /// Collection of UI elements for a panel.
 /// </summary>
-public class UIElementCollection : IList<UIElement>
+public sealed class UIElementCollection : IList<UIElement>
 {
     private readonly List<UIElement> _items = new();
     private readonly Panel _parent;

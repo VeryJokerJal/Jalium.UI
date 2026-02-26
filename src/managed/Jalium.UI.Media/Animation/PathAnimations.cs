@@ -26,7 +26,7 @@ public enum PathAnimationSource
 /// <summary>
 /// Animates a Double value along a PathGeometry.
 /// </summary>
-public class DoubleAnimationUsingPath : AnimationTimeline<double>
+public sealed class DoubleAnimationUsingPath : AnimationTimeline<double>
 {
     private bool _isValid;
     private double _accumulatingValue;
@@ -128,7 +128,7 @@ public class DoubleAnimationUsingPath : AnimationTimeline<double>
 /// <summary>
 /// Animates a Point value along a PathGeometry.
 /// </summary>
-public class PointAnimationUsingPath : AnimationTimeline<Point>
+public sealed class PointAnimationUsingPath : AnimationTimeline<Point>
 {
     private bool _isValid;
     private Vector _accumulatingVector;
@@ -209,7 +209,7 @@ public class PointAnimationUsingPath : AnimationTimeline<Point>
 /// <summary>
 /// Animates a Matrix value along a PathGeometry.
 /// </summary>
-public class MatrixAnimationUsingPath : AnimationTimeline<Matrix>
+public sealed class MatrixAnimationUsingPath : AnimationTimeline<Matrix>
 {
     private bool _isValid;
     private double _accumulatingAngle;

@@ -1,4 +1,4 @@
-using System.Text;
+﻿using System.Text;
 
 namespace Jalium.UI.Gpu;
 
@@ -1958,7 +1958,7 @@ public sealed class JalxamlParser
                         break;
                 }
             }
-            else if (localName.EndsWith(".Triggers") || localName == "Style.Triggers")
+            else if (localName.EndsWith(".Triggers", StringComparison.Ordinal) || localName == "Style.Triggers")
             {
                 foreach (var triggerElement in child.Elements())
                 {
@@ -2092,7 +2092,7 @@ public sealed class JalxamlParser
         var localName = element.Name.LocalName;
 
         // 跳过资源定义
-        if (localName.EndsWith(".Resources"))
+        if (localName.EndsWith(".Resources", StringComparison.Ordinal))
             return ParseElement(element.Elements().First());
 
         var elementType = ElementTypeMap.TryGetValue(localName, out var type)
@@ -2256,7 +2256,7 @@ public sealed class JalxamlParser
     private static string? GetAttributeValue(System.Xml.Linq.XElement element, string name)
     {
         // x: 命名空间的属性（如 x:Name, x:Class, x:Key）
-        if (name.StartsWith("x:"))
+        if (name.StartsWith("x:", StringComparison.Ordinal))
         {
             var xName = System.Xml.Linq.XNamespace.Get("http://schemas.microsoft.com/winfx/2006/xaml");
             var attr = element.Attribute(xName + name[2..]);
@@ -2393,11 +2393,11 @@ public sealed class JalxamlParser
     private static uint ParseDuration(string value)
     {
         // 解析 "0:0:0.3" 或 "300ms" 或 "0.3s" 格式
-        if (value.EndsWith("ms"))
+        if (value.EndsWith("ms", StringComparison.Ordinal))
         {
             return uint.TryParse(value[..^2], out var ms) ? ms : 300;
         }
-        if (value.EndsWith("s"))
+        if (value.EndsWith("s", StringComparison.Ordinal))
         {
             return uint.TryParse(value[..^1], out var s) ? s * 1000 : 300;
         }

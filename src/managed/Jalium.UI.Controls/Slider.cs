@@ -6,8 +6,17 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that lets the user select from a range of values by moving a thumb.
 /// </summary>
-public class Slider : Control
+public sealed class Slider : Control
 {
+    // Cached brushes and pens for OnRender
+    private static readonly SolidColorBrush s_trackBrush = new(Color.FromRgb(60, 60, 60));
+    private static readonly SolidColorBrush s_accentBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_accentPressedBrush = new(Color.FromRgb(0, 100, 190));
+    private static readonly SolidColorBrush s_tickBrush = new(Color.FromRgb(100, 100, 100));
+    private static readonly Pen s_tickPen = new(s_tickBrush, 1);
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.FromRgb(255, 255, 255));
+    private static readonly Pen s_thumbBorderPen = new(s_whiteBrush, 2);
+
     #region Dependency Properties
 
     /// <summary>
@@ -109,7 +118,7 @@ public class Slider : Control
     /// </summary>
     public double Minimum
     {
-        get => (double)(GetValue(MinimumProperty) ?? 0.0);
+        get => (double)GetValue(MinimumProperty)!;
         set => SetValue(MinimumProperty, value);
     }
 
@@ -118,7 +127,7 @@ public class Slider : Control
     /// </summary>
     public double Maximum
     {
-        get => (double)(GetValue(MaximumProperty) ?? 100.0);
+        get => (double)GetValue(MaximumProperty)!;
         set => SetValue(MaximumProperty, value);
     }
 
@@ -127,7 +136,7 @@ public class Slider : Control
     /// </summary>
     public double Value
     {
-        get => (double)(GetValue(ValueProperty) ?? 0.0);
+        get => (double)GetValue(ValueProperty)!;
         set => SetValue(ValueProperty, value);
     }
 
@@ -136,7 +145,7 @@ public class Slider : Control
     /// </summary>
     public double SmallChange
     {
-        get => (double)(GetValue(SmallChangeProperty) ?? 1.0);
+        get => (double)GetValue(SmallChangeProperty)!;
         set => SetValue(SmallChangeProperty, value);
     }
 
@@ -145,7 +154,7 @@ public class Slider : Control
     /// </summary>
     public double LargeChange
     {
-        get => (double)(GetValue(LargeChangeProperty) ?? 10.0);
+        get => (double)GetValue(LargeChangeProperty)!;
         set => SetValue(LargeChangeProperty, value);
     }
 
@@ -154,7 +163,7 @@ public class Slider : Control
     /// </summary>
     public Orientation Orientation
     {
-        get => (Orientation)(GetValue(OrientationProperty) ?? Orientation.Horizontal);
+        get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
@@ -163,7 +172,7 @@ public class Slider : Control
     /// </summary>
     public double TickFrequency
     {
-        get => (double)(GetValue(TickFrequencyProperty) ?? 0.0);
+        get => (double)GetValue(TickFrequencyProperty)!;
         set => SetValue(TickFrequencyProperty, value);
     }
 
@@ -172,7 +181,7 @@ public class Slider : Control
     /// </summary>
     public bool IsSnapToTickEnabled
     {
-        get => (bool)(GetValue(IsSnapToTickEnabledProperty) ?? false);
+        get => (bool)GetValue(IsSnapToTickEnabledProperty)!;
         set => SetValue(IsSnapToTickEnabledProperty, value);
     }
 
@@ -286,8 +295,18 @@ public class Slider : Control
     #region Layout
 
     /// <inheritdoc />
+    protected override void OnSizeChanged(SizeChangedInfo sizeInfo)
+    {
+        base.OnSizeChanged(sizeInfo);
+        UpdateSliderLayout();
+    }
+
+    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // MUST measure template children so they get correct PreviousAvailableSize.
+        base.MeasureOverride(availableSize);
+
         if (Orientation == Orientation.Horizontal)
         {
             var height = double.IsNaN(Height) || Height <= 0 ? 24 : Height;
@@ -463,12 +482,11 @@ public class Slider : Control
     /// <inheritdoc />
     protected override void OnRender(object drawingContext)
     {
-        // If using template, let the template handle rendering
+        // Template-based rendering: layout is updated from OnSizeChanged and
+        // property callbacks (NOT here). Modifying child Margin/Width during OnRender
+        // triggers InvalidateMeasure, but UpdateLayout() already ran for this frame.
         if (_thumbBorder != null)
-        {
-            UpdateSliderLayout();
             return;
-        }
 
         if (drawingContext is not DrawingContext dc)
             return;
@@ -493,7 +511,7 @@ public class Slider : Control
 
     private void DrawTrack(DrawingContext dc, Rect bounds)
     {
-        var trackBrush = TrackBrush ?? new SolidColorBrush(Color.FromRgb(60, 60, 60));
+        var trackBrush = TrackBrush ?? s_trackBrush;
 
         Rect trackRect;
         if (Orientation == Orientation.Horizontal)
@@ -512,7 +530,7 @@ public class Slider : Control
 
     private void DrawFilledTrack(DrawingContext dc, Rect bounds)
     {
-        var filledBrush = new SolidColorBrush(Color.FromRgb(0, 120, 212));
+        var filledBrush = s_accentBrush;
         var range = Maximum - Minimum;
         var percentage = range > 0 ? (Value - Minimum) / range : 0;
 
@@ -536,13 +554,15 @@ public class Slider : Control
 
     private void DrawTicks(DrawingContext dc, Rect bounds)
     {
-        var tickBrush = new SolidColorBrush(Color.FromRgb(100, 100, 100));
-        var tickPen = new Pen(tickBrush, 1);
+        var tickPen = s_tickPen;
         var range = Maximum - Minimum;
         if (range <= 0 || TickFrequency <= 0) return;
 
-        for (var value = Minimum; value <= Maximum; value += TickFrequency)
+        var tickCount = (int)Math.Round(range / TickFrequency);
+        for (var i = 0; i <= tickCount; i++)
         {
+            var value = Minimum + i * TickFrequency;
+            if (value > Maximum + 1e-10) break;
             var percentage = (value - Minimum) / range;
 
             if (Orientation == Orientation.Horizontal)
@@ -562,8 +582,8 @@ public class Slider : Control
     {
         var thumbRect = GetThumbRect();
         var thumbBrush = ThumbBrush ?? (_isDragging
-            ? new SolidColorBrush(Color.FromRgb(0, 100, 190))
-            : new SolidColorBrush(Color.FromRgb(0, 120, 212)));
+            ? s_accentPressedBrush
+            : s_accentBrush);
 
         var centerX = thumbRect.X + thumbRect.Width / 2;
         var centerY = thumbRect.Y + thumbRect.Height / 2;
@@ -573,9 +593,7 @@ public class Slider : Control
         dc.DrawEllipse(thumbBrush, null, new Point(centerX, centerY), radius, radius);
 
         // Draw thumb border
-        var borderBrush = new SolidColorBrush(Color.FromRgb(255, 255, 255));
-        var borderPen = new Pen(borderBrush, 2);
-        dc.DrawEllipse(null, borderPen, new Point(centerX, centerY), radius - 1, radius - 1);
+        dc.DrawEllipse(null, s_thumbBorderPen, new Point(centerX, centerY), radius - 1, radius - 1);
     }
 
     #endregion
@@ -593,6 +611,7 @@ public class Slider : Control
             {
                 slider.Value = coercedValue;
             }
+            slider.UpdateSliderLayout();
             slider.InvalidateVisual();
         }
     }
@@ -633,8 +652,9 @@ public class Slider : Control
     /// <summary>
     /// Called when the Value property changes.
     /// </summary>
-    protected virtual void OnValueChanged(double oldValue, double newValue)
+    protected void OnValueChanged(double oldValue, double newValue)
     {
+        UpdateSliderLayout();
         InvalidateVisual();
         RaiseEvent(new RoutedPropertyChangedEventArgs<double>(oldValue, newValue, ValueChangedEvent));
     }

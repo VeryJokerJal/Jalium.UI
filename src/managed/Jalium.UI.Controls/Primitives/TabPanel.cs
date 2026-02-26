@@ -1,9 +1,9 @@
-namespace Jalium.UI.Controls.Primitives;
+﻿namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Handles the layout of TabItem elements on a TabControl.
 /// </summary>
-public class TabPanel : Panel
+public sealed class TabPanel : Panel
 {
     #region Dependency Properties
 
@@ -23,7 +23,7 @@ public class TabPanel : Panel
     /// </summary>
     public Dock TabStripPlacement
     {
-        get => (Dock)(GetValue(TabStripPlacementProperty) ?? Dock.Top);
+        get => (Dock)GetValue(TabStripPlacementProperty)!;
         set => SetValue(TabStripPlacementProperty, value);
     }
 

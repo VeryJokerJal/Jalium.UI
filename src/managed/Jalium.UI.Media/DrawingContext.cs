@@ -87,6 +87,64 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     }
 
     /// <summary>
+    /// Draws a content area border: fills rect with bottom-only rounded corners,
+    /// strokes a U-shape (left + bottom + right, no top) with smooth arcs.
+    /// </summary>
+    public virtual void DrawContentBorder(Brush? fillBrush, Pen? strokePen, Rect rectangle,
+        double bottomLeftRadius, double bottomRightRadius)
+    {
+        if (fillBrush != null)
+            DrawRoundedRectangle(fillBrush, null, rectangle, new CornerRadius(0, 0, bottomRightRadius, bottomLeftRadius));
+        if (strokePen != null)
+        {
+            double x = rectangle.X, y = rectangle.Y;
+            double w = rectangle.Width, h = rectangle.Height;
+            double bl = Math.Min(bottomLeftRadius, Math.Min(w, h) / 2);
+            double br = Math.Min(bottomRightRadius, Math.Min(w, h) / 2);
+
+            var figure = new PathFigure
+            {
+                StartPoint = new Point(x, y),
+                IsClosed = false,
+                IsFilled = false,
+            };
+
+            const double k = 0.5522847498; // cubic Bézier approximation of quarter circle
+
+            // Left edge: top → bottom-left arc start
+            figure.Segments.Add(new LineSegment(new Point(x, y + h - bl)));
+
+            // Bottom-left arc (cubic Bézier)
+            if (bl > 0)
+            {
+                figure.Segments.Add(new BezierSegment(
+                    new Point(x, y + h - bl * (1 - k)),
+                    new Point(x + bl * (1 - k), y + h),
+                    new Point(x + bl, y + h)));
+            }
+
+            // Bottom edge
+            figure.Segments.Add(new LineSegment(new Point(x + w - br, y + h)));
+
+            // Bottom-right arc (cubic Bézier)
+            if (br > 0)
+            {
+                figure.Segments.Add(new BezierSegment(
+                    new Point(x + w - br * (1 - k), y + h),
+                    new Point(x + w, y + h - br * (1 - k)),
+                    new Point(x + w, y + h - br)));
+            }
+
+            // Right edge: bottom-right → top
+            figure.Segments.Add(new LineSegment(new Point(x + w, y)));
+
+            var pathGeometry = new PathGeometry();
+            pathGeometry.Figures.Add(figure);
+            DrawGeometry(null, strokePen, pathGeometry);
+        }
+    }
+
+    /// <summary>
     /// Creates a PathGeometry for a rounded rectangle with non-uniform corner radii.
     /// </summary>
     private static PathGeometry CreateRoundedRectGeometry(Rect rect, CornerRadius cornerRadius)
@@ -309,7 +367,7 @@ public class Pen
 /// <summary>
 /// Describes the dash pattern of a stroke.
 /// </summary>
-public class DashStyle
+public sealed class DashStyle
 {
     /// <summary>
     /// Gets the collection of dash lengths.
@@ -415,7 +473,7 @@ public enum PenLineJoin
 /// <summary>
 /// Represents formatted text for rendering and measurement.
 /// </summary>
-public class FormattedText
+public sealed class FormattedText
 {
     /// <summary>
     /// Gets the text content.
@@ -554,12 +612,27 @@ public abstract class Geometry
     /// Gets the bounding box of this geometry.
     /// </summary>
     public abstract Rect Bounds { get; }
+
+    /// <summary>
+    /// Creates a Geometry from a path markup mini-language string.
+    /// </summary>
+    /// <param name="source">The path data string (e.g., "M 0,0 L 100,100 Z").</param>
+    /// <returns>A PathGeometry parsed from the string.</returns>
+    public static Geometry Parse(string source)
+    {
+        return PathMarkupParser.Parse(source);
+    }
+
+    /// <summary>
+    /// Gets an empty Geometry.
+    /// </summary>
+    public static Geometry Empty { get; } = new GeometryGroup();
 }
 
 /// <summary>
 /// Represents a rectangle geometry with optional rounded corners.
 /// </summary>
-public class RectangleGeometry : Geometry
+public sealed class RectangleGeometry : Geometry
 {
     /// <summary>
     /// Gets or sets the rectangle.
@@ -612,7 +685,7 @@ public class RectangleGeometry : Geometry
 /// <summary>
 /// Represents an ellipse geometry.
 /// </summary>
-public class EllipseGeometry : Geometry
+public sealed class EllipseGeometry : Geometry
 {
     /// <summary>
     /// Gets or sets the center point.
@@ -640,7 +713,7 @@ public class EllipseGeometry : Geometry
 /// <summary>
 /// Represents a line geometry.
 /// </summary>
-public class LineGeometry : Geometry
+public sealed class LineGeometry : Geometry
 {
     /// <summary>
     /// Gets or sets the start point of the line.
@@ -681,7 +754,7 @@ public class LineGeometry : Geometry
 /// <summary>
 /// Represents a composite geometry made up of other geometry objects.
 /// </summary>
-public class GeometryGroup : Geometry
+public sealed class GeometryGroup : Geometry
 {
     /// <summary>
     /// Gets the collection of child geometries.
@@ -713,7 +786,7 @@ public class GeometryGroup : Geometry
 /// <summary>
 /// Represents a geometry that is the combination of two geometries.
 /// </summary>
-public class CombinedGeometry : Geometry
+public sealed class CombinedGeometry : Geometry
 {
     /// <summary>
     /// Gets or sets the first geometry.
@@ -795,7 +868,7 @@ public enum FillRule
 /// <summary>
 /// Represents a complex shape composed of arcs, curves, lines, and rectangles.
 /// </summary>
-public class PathGeometry : Geometry
+public sealed class PathGeometry : Geometry
 {
     /// <summary>
     /// Gets the collection of path figures.
@@ -1150,7 +1223,7 @@ public class PathGeometry : Geometry
 /// <summary>
 /// Represents a subsection of a path geometry.
 /// </summary>
-public class PathFigure
+public sealed class PathFigure
 {
     /// <summary>
     /// Gets or sets the start point of the figure.
@@ -1219,7 +1292,7 @@ public abstract class PathSegment
 /// <summary>
 /// Represents a straight line segment.
 /// </summary>
-public class LineSegment : PathSegment
+public sealed class LineSegment : PathSegment
 {
     /// <summary>
     /// Gets or sets the end point of the line segment.
@@ -1257,7 +1330,7 @@ public class LineSegment : PathSegment
 /// <summary>
 /// Represents a series of connected line segments.
 /// </summary>
-public class PolyLineSegment : PathSegment
+public sealed class PolyLineSegment : PathSegment
 {
     /// <summary>
     /// Gets the collection of points defining the poly line.
@@ -1292,7 +1365,7 @@ public class PolyLineSegment : PathSegment
 /// <summary>
 /// Represents an elliptical arc segment.
 /// </summary>
-public class ArcSegment : PathSegment
+public sealed class ArcSegment : PathSegment
 {
     /// <summary>
     /// Gets or sets the end point of the arc.
@@ -1368,7 +1441,7 @@ public enum SweepDirection
 /// <summary>
 /// Represents a cubic Bezier curve segment.
 /// </summary>
-public class BezierSegment : PathSegment
+public sealed class BezierSegment : PathSegment
 {
     /// <summary>
     /// Gets or sets the first control point.
@@ -1418,7 +1491,7 @@ public class BezierSegment : PathSegment
 /// <summary>
 /// Represents a series of cubic Bezier curve segments.
 /// </summary>
-public class PolyBezierSegment : PathSegment
+public sealed class PolyBezierSegment : PathSegment
 {
     /// <summary>
     /// Gets the collection of points (in groups of 3: control1, control2, end).
@@ -1435,7 +1508,7 @@ public class PolyBezierSegment : PathSegment
 /// <summary>
 /// Represents a quadratic Bezier curve segment.
 /// </summary>
-public class QuadraticBezierSegment : PathSegment
+public sealed class QuadraticBezierSegment : PathSegment
 {
     /// <summary>
     /// Gets or sets the control point.
@@ -1478,7 +1551,7 @@ public class QuadraticBezierSegment : PathSegment
 /// <summary>
 /// Represents a series of quadratic Bezier curve segments.
 /// </summary>
-public class PolyQuadraticBezierSegment : PathSegment
+public sealed class PolyQuadraticBezierSegment : PathSegment
 {
     /// <summary>
     /// Gets the collection of points (in groups of 2: control, end).

@@ -209,30 +209,99 @@ public class Grid : Panel
         double availableColumnSpace = Math.Max(0, availableSize.Width - fixedColumnWidth);
 
         // Distribute star space
+        // When available size is infinite (e.g. inside ScrollViewer), treat star as Auto (WPF behavior)
         if (totalRowStars > 0)
         {
-            double starUnitHeight = availableRowSpace / totalRowStars;
-            for (int i = 0; i < rowCount; i++)
+            if (double.IsPositiveInfinity(availableRowSpace))
             {
-                if (rowStarValues[i] > 0)
+                // Treat star rows as Auto: measure children and use their desired height
+                foreach (var child in Children)
                 {
-                    var def = rowDefs[i];
-                    rowHeights[i] = Math.Clamp(starUnitHeight * rowStarValues[i], def.MinHeight, def.MaxHeight);
+                    if (child is not FrameworkElement fe) continue;
+                    var row = Math.Min(GetRow(child), rowCount - 1);
+                    var rowSpan = Math.Min(GetRowSpan(child), rowCount - row);
+                    bool inStarRow = false;
+                    for (int i = row; i < row + rowSpan; i++)
+                    {
+                        if (rowStarValues[i] > 0) { inStarRow = true; break; }
+                    }
+                    if (inStarRow)
+                    {
+                        fe.Measure(new Size(availableSize.Width, double.PositiveInfinity));
+                        if (rowSpan == 1)
+                        {
+                            var def = rowDefs[row];
+                            rowHeights[row] = Math.Max(rowHeights[row],
+                                Math.Clamp(fe.DesiredSize.Height, def.MinHeight, def.MaxHeight));
+                        }
+                    }
+                }
+            }
+            else
+            {
+                double starUnitHeight = availableRowSpace / totalRowStars;
+                for (int i = 0; i < rowCount; i++)
+                {
+                    if (rowStarValues[i] > 0)
+                    {
+                        var def = rowDefs[i];
+                        rowHeights[i] = Math.Clamp(starUnitHeight * rowStarValues[i], def.MinHeight, def.MaxHeight);
+                    }
                 }
             }
         }
 
         if (totalColumnStars > 0)
         {
-            double starUnitWidth = availableColumnSpace / totalColumnStars;
-            for (int i = 0; i < columnCount; i++)
+            if (double.IsPositiveInfinity(availableColumnSpace))
             {
-                if (columnStarValues[i] > 0)
+                // Treat star columns as Auto: measure children and use their desired width
+                foreach (var child in Children)
                 {
-                    var def = columnDefs[i];
-                    columnWidths[i] = Math.Clamp(starUnitWidth * columnStarValues[i], def.MinWidth, def.MaxWidth);
+                    if (child is not FrameworkElement fe) continue;
+                    var column = Math.Min(GetColumn(child), columnCount - 1);
+                    var columnSpan = Math.Min(GetColumnSpan(child), columnCount - column);
+                    bool inStarColumn = false;
+                    for (int i = column; i < column + columnSpan; i++)
+                    {
+                        if (columnStarValues[i] > 0) { inStarColumn = true; break; }
+                    }
+                    if (inStarColumn)
+                    {
+                        fe.Measure(new Size(double.PositiveInfinity, availableSize.Height));
+                        if (columnSpan == 1)
+                        {
+                            var def = columnDefs[column];
+                            columnWidths[column] = Math.Max(columnWidths[column],
+                                Math.Clamp(fe.DesiredSize.Width, def.MinWidth, def.MaxWidth));
+                        }
+                    }
                 }
             }
+            else
+            {
+                double starUnitWidth = availableColumnSpace / totalColumnStars;
+                for (int i = 0; i < columnCount; i++)
+                {
+                    if (columnStarValues[i] > 0)
+                    {
+                        var def = columnDefs[i];
+                        columnWidths[i] = Math.Clamp(starUnitWidth * columnStarValues[i], def.MinWidth, def.MaxWidth);
+                    }
+                }
+            }
+        }
+
+        // Store auto sizes (and star-as-auto sizes) in definitions so ArrangeOverride can read them
+        for (int i = 0; i < rowCount; i++)
+        {
+            if (rowDefs[i].Height.IsAuto || (rowStarValues[i] > 0 && double.IsPositiveInfinity(availableRowSpace)))
+                rowDefs[i].ActualHeight = rowHeights[i];
+        }
+        for (int i = 0; i < columnCount; i++)
+        {
+            if (columnDefs[i].Width.IsAuto || (columnStarValues[i] > 0 && double.IsPositiveInfinity(availableColumnSpace)))
+                columnDefs[i].ActualWidth = columnWidths[i];
         }
 
         // Measure all children with their final available sizes
@@ -329,26 +398,78 @@ public class Grid : Panel
 
         if (totalRowStars > 0)
         {
-            double starUnitHeight = availableRowSpace / totalRowStars;
-            for (int i = 0; i < rowCount; i++)
+            if (double.IsPositiveInfinity(availableRowSpace))
             {
-                if (rowStarValues[i] > 0)
+                // Use measured sizes from MeasureOverride (star treated as Auto)
+                for (int i = 0; i < rowCount; i++)
                 {
-                    var def = rowDefs[i];
-                    rowHeights[i] = Math.Clamp(starUnitHeight * rowStarValues[i], def.MinHeight, def.MaxHeight);
+                    if (rowStarValues[i] > 0)
+                        rowHeights[i] = rowDefs[i].ActualHeight;
+                }
+            }
+            else
+            {
+                double starUnitHeight = availableRowSpace / totalRowStars;
+                double allocatedStarHeight = 0;
+                int lastStarRow = -1;
+                for (int i = 0; i < rowCount; i++)
+                {
+                    if (rowStarValues[i] > 0)
+                    {
+                        var def = rowDefs[i];
+                        rowHeights[i] = Math.Clamp(starUnitHeight * rowStarValues[i], def.MinHeight, def.MaxHeight);
+                        allocatedStarHeight += rowHeights[i];
+                        lastStarRow = i;
+                    }
+                }
+                // Give remaining pixels to last star row to avoid floating-point gaps
+                if (lastStarRow >= 0)
+                {
+                    double remainder = availableRowSpace - allocatedStarHeight;
+                    if (Math.Abs(remainder) > 0.001)
+                    {
+                        var def = rowDefs[lastStarRow];
+                        rowHeights[lastStarRow] = Math.Clamp(rowHeights[lastStarRow] + remainder, def.MinHeight, def.MaxHeight);
+                    }
                 }
             }
         }
 
         if (totalColumnStars > 0)
         {
-            double starUnitWidth = availableColumnSpace / totalColumnStars;
-            for (int i = 0; i < columnCount; i++)
+            if (double.IsPositiveInfinity(availableColumnSpace))
             {
-                if (columnStarValues[i] > 0)
+                // Use measured sizes from MeasureOverride (star treated as Auto)
+                for (int i = 0; i < columnCount; i++)
                 {
-                    var def = columnDefs[i];
-                    columnWidths[i] = Math.Clamp(starUnitWidth * columnStarValues[i], def.MinWidth, def.MaxWidth);
+                    if (columnStarValues[i] > 0)
+                        columnWidths[i] = columnDefs[i].ActualWidth;
+                }
+            }
+            else
+            {
+                double starUnitWidth = availableColumnSpace / totalColumnStars;
+                double allocatedStarWidth = 0;
+                int lastStarColumn = -1;
+                for (int i = 0; i < columnCount; i++)
+                {
+                    if (columnStarValues[i] > 0)
+                    {
+                        var def = columnDefs[i];
+                        columnWidths[i] = Math.Clamp(starUnitWidth * columnStarValues[i], def.MinWidth, def.MaxWidth);
+                        allocatedStarWidth += columnWidths[i];
+                        lastStarColumn = i;
+                    }
+                }
+                // Give remaining pixels to last star column to avoid floating-point gaps
+                if (lastStarColumn >= 0)
+                {
+                    double remainder = availableColumnSpace - allocatedStarWidth;
+                    if (Math.Abs(remainder) > 0.001)
+                    {
+                        var def = columnDefs[lastStarColumn];
+                        columnWidths[lastStarColumn] = Math.Clamp(columnWidths[lastStarColumn] + remainder, def.MinWidth, def.MaxWidth);
+                    }
                 }
             }
         }

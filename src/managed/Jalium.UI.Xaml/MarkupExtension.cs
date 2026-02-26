@@ -1,4 +1,4 @@
-using Jalium.UI;
+﻿using Jalium.UI;
 using Jalium.UI.Controls;
 using System.Reflection;
 
@@ -36,7 +36,7 @@ public interface IProvideValueTarget
 /// <summary>
 /// Implementation of IProvideValueTarget for XAML parsing.
 /// </summary>
-internal class ProvideValueTarget : IProvideValueTarget
+internal sealed class ProvideValueTarget : IProvideValueTarget
 {
     public object? TargetObject { get; set; }
     public object? TargetProperty { get; set; }
@@ -45,7 +45,7 @@ internal class ProvideValueTarget : IProvideValueTarget
 /// <summary>
 /// Service provider for markup extensions.
 /// </summary>
-internal class MarkupExtensionServiceProvider : IServiceProvider
+internal sealed class MarkupExtensionServiceProvider : IServiceProvider
 {
     private readonly Dictionary<Type, object> _services = new();
 
@@ -74,7 +74,7 @@ public interface IAmbientResourceProvider
 /// <summary>
 /// Implementation of IAmbientResourceProvider that searches through a stack of resource dictionaries.
 /// </summary>
-internal class AmbientResourceProvider : IAmbientResourceProvider
+internal sealed class AmbientResourceProvider : IAmbientResourceProvider
 {
     private readonly List<ResourceDictionary> _resourceDictionaries = new();
 
@@ -102,7 +102,7 @@ internal class AmbientResourceProvider : IAmbientResourceProvider
 /// <summary>
 /// XAML markup extension for data binding.
 /// </summary>
-public class BindingExtension : MarkupExtension
+public sealed class BindingExtension : MarkupExtension
 {
     /// <summary>
     /// Gets or sets the path to the binding source property.
@@ -209,7 +209,7 @@ public class BindingExtension : MarkupExtension
 /// <summary>
 /// XAML markup extension for static resources.
 /// </summary>
-public class StaticResourceExtension : MarkupExtension
+public sealed class StaticResourceExtension : MarkupExtension
 {
     /// <summary>
     /// Gets or sets the resource key.
@@ -273,7 +273,7 @@ public class StaticResourceExtension : MarkupExtension
 /// XAML markup extension for dynamic resources.
 /// Unlike StaticResource, DynamicResource updates when the resource changes.
 /// </summary>
-public class DynamicResourceExtension : MarkupExtension
+public sealed class DynamicResourceExtension : MarkupExtension
 {
     /// <summary>
     /// Gets or sets the resource key.
@@ -306,49 +306,27 @@ public class DynamicResourceExtension : MarkupExtension
         var targetObject = provideValueTarget?.TargetObject as DependencyObject;
         var targetProperty = provideValueTarget?.TargetProperty as DependencyProperty;
 
-        if (targetObject != null && targetProperty != null)
+        if (targetObject is FrameworkElement targetElement && targetProperty != null)
         {
-            // Set up a dynamic resource reference
-            var reference = new DynamicResourceReference(ResourceKey);
-            targetObject.SetValue(targetProperty, reference);
-
-            // Register for resource changes
-            if (targetObject is FrameworkElement fe)
-            {
-                fe.ResourcesChanged += (s, e) =>
-                {
-                    var value = ResourceLookup.FindResource(fe, ResourceKey);
-                    if (value != null && value is not DynamicResourceReference)
-                    {
-                        targetObject.SetValue(targetProperty, value);
-                    }
-                };
-
-                // Try to resolve the initial value
-                var initialValue = ResourceLookup.FindResource(fe, ResourceKey);
-                if (initialValue != null)
-                {
-                    return initialValue;
-                }
-            }
-
-            return reference;
+            // Register runtime tracking for dynamic updates and return the current effective value.
+            DynamicResourceBindingOperations.SetDynamicResource(targetElement, targetProperty, ResourceKey);
+            return ResourceLookup.FindResource(targetElement, ResourceKey);
         }
 
-        // If we can't set up dynamic binding, fall back to static lookup
         if (provideValueTarget?.TargetObject is FrameworkElement element)
         {
-            return ResourceLookup.FindResource(element, ResourceKey);
+            return ResourceLookup.FindResource(element, ResourceKey) ?? new DynamicResourceReference(ResourceKey);
         }
 
-        return null;
+        // For deferred cases (e.g., Setter.Value), preserve the reference so style runtime can resolve it.
+        return new DynamicResourceReference(ResourceKey);
     }
 }
 
 /// <summary>
 /// Represents a reference to a dynamic resource that will be resolved at runtime.
 /// </summary>
-public class DynamicResourceReference
+public sealed class DynamicResourceReference : IDynamicResourceReference
 {
     /// <summary>
     /// Gets the resource key.
@@ -367,7 +345,7 @@ public class DynamicResourceReference
 /// <summary>
 /// XAML markup extension for x:Null.
 /// </summary>
-public class NullExtension : MarkupExtension
+public sealed class NullExtension : MarkupExtension
 {
     /// <inheritdoc />
     public override object? ProvideValue(IServiceProvider serviceProvider) => null;
@@ -377,7 +355,7 @@ public class NullExtension : MarkupExtension
 /// XAML markup extension for x:Static.
 /// Retrieves static fields, properties, constants, or enum values.
 /// </summary>
-public class StaticExtension : MarkupExtension
+public sealed class StaticExtension : MarkupExtension
 {
     /// <summary>
     /// Gets or sets the member name (in TypeName.MemberName format).
@@ -452,27 +430,8 @@ public class StaticExtension : MarkupExtension
 
     private static Type? ResolveType(string typeName)
     {
-        // Try to resolve the type from common namespaces
-        var namespaces = new[]
-        {
-            "Jalium.UI.Controls",
-            "Jalium.UI",
-            "Jalium.UI.Media",
-            "Jalium.UI.Input",
-            "System"
-        };
-
-        foreach (var ns in namespaces)
-        {
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                var type = assembly.GetType($"{ns}.{typeName}");
-                if (type != null) return type;
-            }
-        }
-
-        // Try fully qualified name
-        return Type.GetType(typeName);
+        // AOT-safe: Use static type registry instead of AppDomain scanning
+        return XamlTypeRegistry.GetType(typeName);
     }
 }
 
@@ -480,7 +439,7 @@ public class StaticExtension : MarkupExtension
 /// XAML markup extension for x:Array.
 /// Creates an array of the specified type.
 /// </summary>
-public class ArrayExtension : MarkupExtension
+public sealed class ArrayExtension : MarkupExtension
 {
     private readonly List<object?> _items = new();
 
@@ -541,7 +500,7 @@ public class ArrayExtension : MarkupExtension
 /// <summary>
 /// XAML markup extension for x:Type.
 /// </summary>
-public class TypeExtension : MarkupExtension
+public sealed class TypeExtension : MarkupExtension
 {
     /// <summary>
     /// Gets or sets the type name.
@@ -578,8 +537,8 @@ public class TypeExtension : MarkupExtension
         if (string.IsNullOrEmpty(TypeName))
             return null;
 
-        // Try to resolve the type
-        return System.Type.GetType(TypeName);
+        // AOT-safe: Use static type registry instead of Type.GetType
+        return XamlTypeRegistry.GetType(TypeName);
     }
 }
 
@@ -587,7 +546,7 @@ public class TypeExtension : MarkupExtension
 /// XAML markup extension for TemplateBinding.
 /// Binds a property in a control template to a property on the templated parent.
 /// </summary>
-public class TemplateBindingExtension : MarkupExtension
+public sealed class TemplateBindingExtension : MarkupExtension
 {
     /// <summary>
     /// Gets or sets the name of the property on the templated parent to bind to.
@@ -636,7 +595,7 @@ public class TemplateBindingExtension : MarkupExtension
 /// <summary>
 /// A deferred template binding that resolves the property name when the TemplatedParent is available.
 /// </summary>
-public class DeferredTemplateBinding : BindingBase
+public sealed class DeferredTemplateBinding : BindingBase
 {
     /// <summary>
     /// Gets the property name to bind to on the templated parent.
@@ -663,7 +622,7 @@ public class DeferredTemplateBinding : BindingBase
 /// Binding expression for a deferred template binding.
 /// Resolves the property name against the TemplatedParent's type when activated.
 /// </summary>
-internal class DeferredTemplateBindingExpression : BindingExpressionBase
+internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
 {
     private readonly DeferredTemplateBinding _binding;
     private FrameworkElement? _templatedParent;
@@ -847,7 +806,7 @@ internal static class MarkupExtensionParser
     private static MarkupExtension? CreateMarkupExtension(string name, string parameters)
     {
         // Handle special x: namespace extensions
-        if (name.StartsWith("x:"))
+        if (name.StartsWith("x:", StringComparison.Ordinal))
         {
             name = name.Substring(2);
         }
@@ -1034,47 +993,56 @@ internal static class MarkupExtensionParser
             }
         }
 
-        // Try to resolve the type from common namespaces
-        var controlsNamespace = "Jalium.UI.Controls";
-        var coreNamespace = "Jalium.UI";
-
-        // Try with Controls namespace first
-        var fullTypeName = $"{controlsNamespace}.{cleanName}, Jalium.UI.Controls";
-        var type = Type.GetType(fullTypeName);
-        if (type != null) return type;
-
-        // Try with Core namespace
-        fullTypeName = $"{coreNamespace}.{cleanName}, Jalium.UI.Core";
-        type = Type.GetType(fullTypeName);
-        if (type != null) return type;
-
-        // Try the type name as-is (might be fully qualified)
-        type = Type.GetType(cleanName);
-        if (type != null) return type;
-
-        // Search loaded assemblies
-        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            type = assembly.GetType($"{controlsNamespace}.{cleanName}");
-            if (type != null) return type;
-
-            type = assembly.GetType($"{coreNamespace}.{cleanName}");
-            if (type != null) return type;
-        }
-
-        return null;
+        // AOT-safe: Use static type registry instead of AppDomain scanning / Type.GetType
+        return XamlTypeRegistry.GetType(cleanName);
     }
 
     private static StaticResourceExtension CreateStaticResourceExtension(string parameters)
     {
-        var key = parameters.Trim();
+        var key = ParseResourceKey(parameters);
         return new StaticResourceExtension(key);
     }
 
     private static DynamicResourceExtension CreateDynamicResourceExtension(string parameters)
     {
-        var key = parameters.Trim();
+        var key = ParseResourceKey(parameters);
         return new DynamicResourceExtension(key);
+    }
+
+    private static object ParseResourceKey(string parameters)
+    {
+        var trimmed = parameters.Trim();
+        if (string.IsNullOrEmpty(trimmed))
+            return string.Empty;
+
+        var parts = SplitParameters(trimmed);
+        string keyText = trimmed;
+        foreach (var part in parts)
+        {
+            var equalsIndex = part.IndexOf('=');
+            if (equalsIndex <= 0)
+                continue;
+
+            var name = part.Substring(0, equalsIndex).Trim();
+            if (!name.Equals("ResourceKey", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            keyText = part[(equalsIndex + 1)..].Trim();
+            break;
+        }
+
+        keyText = keyText.Trim().Trim('"', '\'');
+
+        // Support x:Type resource keys: {StaticResource {x:Type Button}}
+        // should look up the Type key instead of the literal string.
+        if (keyText.StartsWith("{x:Type", StringComparison.OrdinalIgnoreCase))
+        {
+            var type = ResolveType(keyText);
+            if (type != null)
+                return type;
+        }
+
+        return keyText;
     }
 
     private static StaticExtension CreateStaticExtension(string parameters)

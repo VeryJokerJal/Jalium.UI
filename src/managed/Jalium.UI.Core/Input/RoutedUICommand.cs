@@ -3,7 +3,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Defines an ICommand that is routed through the element tree and contains a text property.
 /// </summary>
-public class RoutedUICommand : RoutedCommand
+public sealed class RoutedUICommand : RoutedCommand
 {
     private string _text;
 

@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls.Shapes;
 /// <summary>
 /// Draws a polygon, which is a connected series of lines that form a closed shape.
 /// </summary>
-public class Polygon : Shape
+public sealed class Polygon : Shape
 {
     /// <summary>
     /// Identifies the Points dependency property.

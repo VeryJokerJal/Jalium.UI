@@ -50,7 +50,7 @@ public enum TextPointerContext
 /// <summary>
 /// Represents an immutable position in a FlowDocument.
 /// </summary>
-public class TextPointer : IComparable<TextPointer>
+public sealed class TextPointer : IComparable<TextPointer>
 {
     #region Fields
 

@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls.Shapes;
 /// <summary>
 /// Represents a collection of Point values that can be individually accessed by index.
 /// </summary>
-public class PointCollection : IList<Point>, IList, INotifyCollectionChanged
+public sealed class PointCollection : IList<Point>, IList, INotifyCollectionChanged
 {
     private readonly List<Point> _points = new();
 
@@ -210,7 +210,7 @@ public class PointCollection : IList<Point>, IList, INotifyCollectionChanged
     /// <summary>
     /// Raises the CollectionChanged event.
     /// </summary>
-    protected virtual void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
+    protected void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
     {
         CollectionChanged?.Invoke(this, e);
     }

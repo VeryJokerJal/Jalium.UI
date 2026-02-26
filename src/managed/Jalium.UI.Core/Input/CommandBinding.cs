@@ -3,7 +3,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Binds a RoutedCommand to the event handlers that implement the command.
 /// </summary>
-public class CommandBinding
+public sealed class CommandBinding
 {
     /// <summary>
     /// Initializes a new instance of the CommandBinding class.

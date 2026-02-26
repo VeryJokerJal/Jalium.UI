@@ -1,3 +1,5 @@
+using Jalium.UI.Media.Animation;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>
@@ -25,6 +27,30 @@ public class ContentControl : Control
             new PropertyMetadata(null, OnContentTemplateChanged));
 
     /// <summary>
+    /// Identifies the ContentTemplateSelector dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ContentTemplateSelectorProperty =
+        DependencyProperty.Register(nameof(ContentTemplateSelector), typeof(DataTemplateSelector), typeof(ContentControl),
+            new PropertyMetadata(null, OnContentTemplateSelectorChanged));
+
+    /// <summary>
+    /// Identifies the ContentTransition dependency property.
+    /// When set, content changes are animated using the specified transition.
+    /// </summary>
+    public static readonly DependencyProperty ContentTransitionProperty =
+        DependencyProperty.Register(nameof(ContentTransition), typeof(ContentTransition), typeof(ContentControl),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Identifies the TransitionMode dependency property.
+    /// Provides a shortcut to set common transitions without creating a ContentTransition instance.
+    /// Used when <see cref="ContentTransition"/> is null.
+    /// </summary>
+    public static readonly DependencyProperty TransitionModeProperty =
+        DependencyProperty.Register(nameof(TransitionMode), typeof(TransitionMode?), typeof(ContentControl),
+            new PropertyMetadata(null));
+
+    /// <summary>
     /// Gets or sets the content of this control.
     /// </summary>
     public object? Content
@@ -40,6 +66,35 @@ public class ContentControl : Control
     {
         get => (DataTemplate?)GetValue(ContentTemplateProperty);
         set => SetValue(ContentTemplateProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the DataTemplateSelector used to choose a template for content.
+    /// </summary>
+    public DataTemplateSelector? ContentTemplateSelector
+    {
+        get => (DataTemplateSelector?)GetValue(ContentTemplateSelectorProperty);
+        set => SetValue(ContentTemplateSelectorProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the content transition animation.
+    /// When set, content changes are animated using this transition.
+    /// </summary>
+    public ContentTransition? ContentTransition
+    {
+        get => (ContentTransition?)GetValue(ContentTransitionProperty);
+        set => SetValue(ContentTransitionProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the transition mode shortcut.
+    /// Used when <see cref="ContentTransition"/> is null.
+    /// </summary>
+    public TransitionMode? TransitionMode
+    {
+        get => (TransitionMode?)GetValue(TransitionModeProperty);
+        set => SetValue(TransitionModeProperty, value);
     }
 
     /// <summary>
@@ -89,6 +144,15 @@ public class ContentControl : Control
         }
     }
 
+    private static void OnContentTemplateSelectorChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is ContentControl control)
+        {
+            // Re-apply content with new selector
+            control.OnContentChanged(null, control.Content);
+        }
+    }
+
     /// <summary>
     /// Called when the Content property changes.
     /// </summary>
@@ -108,9 +172,45 @@ public class ContentControl : Control
                 _contentElement = newElement;
                 AddVisualChild(newElement);
             }
+            else if (newContent != null)
+            {
+                // Handle non-UIElement content (string, ViewModel objects, etc.)
+                var element = CreateContentElementForDirectMode(newContent);
+                if (element != null)
+                {
+                    _contentElement = element;
+                    AddVisualChild(element);
+                }
+            }
         }
 
         InvalidateMeasure();
+    }
+
+    /// <summary>
+    /// Creates a visual element for non-UIElement content in direct mode.
+    /// </summary>
+    private FrameworkElement? CreateContentElementForDirectMode(object content)
+    {
+        // Apply DataTemplate if available
+        if (ContentTemplate != null)
+        {
+            var templateContent = ContentTemplate.LoadContent();
+            if (templateContent != null)
+            {
+                templateContent.DataContext = content;
+                return templateContent;
+            }
+        }
+
+        // Create TextBlock for string content
+        if (content is string text)
+        {
+            return new TextBlock { Text = text, Foreground = Foreground };
+        }
+
+        // For other objects, use ToString()
+        return new TextBlock { Text = content.ToString() ?? string.Empty, Foreground = Foreground };
     }
 
     #region Visual Children

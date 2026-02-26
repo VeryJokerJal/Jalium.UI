@@ -5,7 +5,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// A command whose sole purpose is to relay its functionality to other objects by invoking delegates.
 /// </summary>
-public class RelayCommand : ICommand
+public sealed class RelayCommand : ICommand
 {
     private readonly Action<object?> _execute;
     private readonly Func<object?, bool>? _canExecute;
@@ -88,7 +88,7 @@ public class RelayCommand : ICommand
 /// A generic command whose sole purpose is to relay its functionality to other objects by invoking delegates.
 /// </summary>
 /// <typeparam name="T">The type of the command parameter.</typeparam>
-public class RelayCommand<T> : ICommand
+public sealed class RelayCommand<T> : ICommand
 {
     private readonly Action<T?> _execute;
     private readonly Func<T?, bool>? _canExecute;

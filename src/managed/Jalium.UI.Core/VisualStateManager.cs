@@ -1,9 +1,27 @@
 namespace Jalium.UI;
 
 /// <summary>
+/// Interface for storyboards used in visual state transitions.
+/// Implemented by Storyboard in Jalium.UI.Media.Animation.
+/// </summary>
+public interface IStoryboard
+{
+    /// <summary>
+    /// Begins the storyboard on the specified element.
+    /// </summary>
+    /// <param name="containingObject">The element that contains the named targets.</param>
+    void Begin(FrameworkElement? containingObject);
+
+    /// <summary>
+    /// Stops the storyboard.
+    /// </summary>
+    void Stop();
+}
+
+/// <summary>
 /// Represents a visual state that an element can be in.
 /// </summary>
-public class VisualState
+public sealed class VisualState
 {
     private readonly List<Setter> _setters = new();
 
@@ -16,6 +34,11 @@ public class VisualState
     /// Gets the collection of setters to apply when this state is active.
     /// </summary>
     public IList<Setter> Setters => _setters;
+
+    /// <summary>
+    /// Gets or sets the Storyboard that runs when the control enters this state.
+    /// </summary>
+    public IStoryboard? Storyboard { get; set; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="VisualState"/> class.
@@ -37,7 +60,7 @@ public class VisualState
 /// <summary>
 /// Contains mutually exclusive visual states and manages transitions between them.
 /// </summary>
-public class VisualStateGroup
+public sealed class VisualStateGroup
 {
     private readonly List<VisualState> _states = new();
     private readonly List<VisualTransition> _transitions = new();
@@ -136,11 +159,16 @@ public class VisualStateGroup
             // Immediate transition (no animation)
             if (_currentState != null)
             {
+                // Stop previous state's storyboard if running
+                _currentState.Storyboard?.Stop();
                 RemoveStateSetters(_currentState, _attachedElement);
             }
 
             _currentState = newState;
             ApplyStateSetters(newState, _attachedElement);
+
+            // Begin new state's storyboard if present
+            newState.Storyboard?.Begin(_attachedElement);
         }
 
         _attachedElement.InvalidateVisual();
@@ -193,6 +221,9 @@ public class VisualStateGroup
                 animation = transition.AnimationFactory(property.PropertyType, fromValue, toValue, transition.GeneratedDuration);
             }
 
+            // Fallback: generate default animation for common types
+            animation ??= CreateDefaultAnimation(property.PropertyType, fromValue, toValue, transition.GeneratedDuration);
+
             // Apply animation or immediate value
             if (animation != null)
             {
@@ -224,6 +255,15 @@ public class VisualStateGroup
                 }
             }
         }
+
+        // Stop old state's storyboard
+        fromState?.Storyboard?.Stop();
+
+        // Begin transition storyboard if present
+        transition.Storyboard?.Begin(_attachedElement);
+
+        // Begin new state's storyboard
+        toState.Storyboard?.Begin(_attachedElement);
 
         _currentState = toState;
     }
@@ -269,12 +309,32 @@ public class VisualStateGroup
             state.Setters[i].Remove(element);
         }
     }
+
+    /// <summary>
+    /// Gets or sets the global default animation factory used when no custom factory is provided.
+    /// This is typically set by the animation layer (Jalium.UI.Media.Animation) at startup.
+    /// </summary>
+    public static Func<Type, object?, object?, TimeSpan, IAnimationTimeline?>? DefaultAnimationFactory { get; set; }
+
+    private static IAnimationTimeline? CreateDefaultAnimation(Type propertyType, object? fromValue, object? toValue, TimeSpan duration)
+    {
+        if (duration <= TimeSpan.Zero) return null;
+
+        // Use the registered default animation factory if available
+        if (DefaultAnimationFactory != null)
+        {
+            return DefaultAnimationFactory(propertyType, fromValue, toValue, duration);
+        }
+
+        // No default factory registered, cannot auto-generate animations
+        return null;
+    }
 }
 
 /// <summary>
 /// Defines a transition between visual states.
 /// </summary>
-public class VisualTransition
+public sealed class VisualTransition
 {
     /// <summary>
     /// Gets or sets the name of the state to transition from.
@@ -299,6 +359,11 @@ public class VisualTransition
     /// This is called for each property that changes during the transition.
     /// </summary>
     public Func<Type, object?, object?, TimeSpan, IAnimationTimeline?>? AnimationFactory { get; set; }
+
+    /// <summary>
+    /// Gets or sets the Storyboard that runs during the transition.
+    /// </summary>
+    public IStoryboard? Storyboard { get; set; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="VisualTransition"/> class.

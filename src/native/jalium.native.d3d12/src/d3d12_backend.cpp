@@ -1,6 +1,8 @@
 #include "d3d12_backend.h"
 #include "d3d12_render_target.h"
 #include "d3d12_resources.h"
+#include "liquid_glass_effects.h"
+#include "transition_shader_effect.h"
 #include <vector>
 
 #pragma comment(lib, "d3d12.lib")
@@ -166,6 +168,15 @@ bool D3D12Backend::CreateD2DDevice() {
         return false;
     }
 
+    // Register custom D2D1 effects
+    ComPtr<ID2D1Factory1> factory1;
+    hr = d2dFactory_.As(&factory1);
+    if (SUCCEEDED(hr) && factory1) {
+        LiquidGlassEffect::Register(factory1.Get());
+        TransitionShaderEffect::Register(factory1.Get());
+        // Registration failure is non-fatal; effects will fall back gracefully
+    }
+
     return true;
 }
 
@@ -193,7 +204,20 @@ RenderTarget* D3D12Backend::CreateRenderTarget(void* hwnd, int32_t width, int32_
         return nullptr;
     }
 
-    auto rt = new D3D12RenderTarget(this, hwnd, width, height);
+    auto rt = new D3D12RenderTarget(this, hwnd, width, height, false);
+    if (!rt->Initialize()) {
+        delete rt;
+        return nullptr;
+    }
+    return rt;
+}
+
+RenderTarget* D3D12Backend::CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height) {
+    if (!initialized_ && !Initialize()) {
+        return nullptr;
+    }
+
+    auto rt = new D3D12RenderTarget(this, hwnd, width, height, true);
     if (!rt->Initialize()) {
         delete rt;
         return nullptr;
@@ -210,6 +234,14 @@ Brush* D3D12Backend::CreateLinearGradientBrush(
     const JaliumGradientStop* stops, uint32_t stopCount)
 {
     return new D3D12LinearGradientBrush(startX, startY, endX, endY, stops, stopCount);
+}
+
+Brush* D3D12Backend::CreateRadialGradientBrush(
+    float centerX, float centerY, float radiusX, float radiusY,
+    float originX, float originY,
+    const JaliumGradientStop* stops, uint32_t stopCount)
+{
+    return new D3D12RadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount);
 }
 
 TextFormat* D3D12Backend::CreateTextFormat(

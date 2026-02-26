@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// This element is inserted into the PART_ContentHost of the control's template.
 /// Similar to WPF's TextBoxView.
 /// </summary>
-internal class TextBoxContentHost : FrameworkElement
+internal sealed class TextBoxContentHost : FrameworkElement
 {
     private readonly TextBoxBase _owner;
 

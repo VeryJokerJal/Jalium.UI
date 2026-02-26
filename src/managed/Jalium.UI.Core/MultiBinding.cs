@@ -69,7 +69,7 @@ public class MultiBinding : BindingBase
 /// <summary>
 /// Contains instance information about a single instance of a MultiBinding.
 /// </summary>
-public class MultiBindingExpression : BindingExpressionBase
+public sealed class MultiBindingExpression : BindingExpressionBase
 {
     private readonly MultiBinding _multiBinding;
     private readonly List<BindingExpressionBase> _bindingExpressions = new();
@@ -110,12 +110,11 @@ public class MultiBindingExpression : BindingExpressionBase
             var shadowProperty = CreateShadowProperty(_bindingExpressions.Count);
             var childExpression = binding.CreateBindingExpression(Target, shadowProperty);
             _bindingExpressions.Add(childExpression);
-
-            // Subscribe to changes
-            Target.PropertyChangedInternal += OnChildBindingChanged;
-
             childExpression.Activate();
         }
+
+        // Subscribe once (not per child binding) to property changes
+        Target.PropertyChangedInternal += OnChildBindingChanged;
 
         // Initial update
         UpdateTarget();
@@ -181,6 +180,8 @@ public class MultiBindingExpression : BindingExpressionBase
                 _multiBinding.ConverterParameter,
                 _multiBinding.ConverterCulture ?? CultureInfo.CurrentCulture);
 
+            if (sourceValues == null) return;
+
             // Update each child binding's source
             for (int i = 0; i < _bindingExpressions.Count && i < sourceValues.Length; i++)
             {
@@ -236,14 +237,18 @@ public class MultiBindingExpression : BindingExpressionBase
             // Apply StringFormat if specified
             if (targetValue != null && !string.IsNullOrEmpty(_multiBinding.StringFormat))
             {
-                targetValue = string.Format(_multiBinding.StringFormat, targetValue);
+                try
+                {
+                    targetValue = string.Format(_multiBinding.StringFormat, targetValue);
+                }
+                catch (FormatException)
+                {
+                    // Invalid StringFormat — use unconverted value rather than crashing
+                }
             }
 
             // Handle FallbackValue and TargetNullValue
-            if (targetValue == null)
-            {
-                targetValue = _multiBinding.TargetNullValue ?? _multiBinding.FallbackValue;
-            }
+            targetValue ??= _multiBinding.TargetNullValue ?? _multiBinding.FallbackValue;
 
             Target.SetValue(TargetProperty, targetValue);
         }
@@ -275,22 +280,25 @@ public class MultiBindingExpression : BindingExpressionBase
         return BindingMode.OneWay;
     }
 
-    // Cache for shadow properties
-    private static readonly Dictionary<int, DependencyProperty> _shadowProperties = new();
+    // Shadow properties are per-instance to avoid collisions between multiple MultiBindings
+    private static int s_nextInstanceId;
+    private readonly int _instanceId = Interlocked.Increment(ref s_nextInstanceId);
+    private static readonly Dictionary<long, DependencyProperty> _shadowProperties = new();
     private static readonly object _shadowPropertyLock = new();
 
-    private static DependencyProperty CreateShadowProperty(int index)
+    private DependencyProperty CreateShadowProperty(int index)
     {
+        long key = ((long)_instanceId << 32) | (uint)index;
         lock (_shadowPropertyLock)
         {
-            if (!_shadowProperties.TryGetValue(index, out var property))
+            if (!_shadowProperties.TryGetValue(key, out var property))
             {
                 property = DependencyProperty.RegisterAttached(
-                    $"_MultiBindingShadow{index}",
+                    $"_MultiBindingShadow_{_instanceId}_{index}",
                     typeof(object),
                     typeof(MultiBindingExpression),
                     new PropertyMetadata(null));
-                _shadowProperties[index] = property;
+                _shadowProperties[key] = property;
             }
             return property;
         }

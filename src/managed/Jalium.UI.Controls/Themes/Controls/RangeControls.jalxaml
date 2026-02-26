@@ -1,4 +1,4 @@
-<ResourceDictionary
+﻿<ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
@@ -6,10 +6,10 @@
     <!-- ProgressBar Style -->
     <!-- ============================================== -->
     <Style TargetType="ProgressBar">
-        <Setter Property="Background" Value="{StaticResource SliderTrack}" />
-        <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
-        <Setter Property="ProgressBrush" Value="{StaticResource AccentBrush}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource SliderTrack}" />
+        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="ProgressBrush" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="MinHeight" Value="4" />
@@ -35,7 +35,7 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="ProgressBrush" Value="{StaticResource AccentBrushDisabled}" />
+                <Setter Property="ProgressBrush" Value="{DynamicResource AccentBrushDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -44,9 +44,9 @@
     <!-- Slider Style -->
     <!-- ============================================== -->
     <Style TargetType="Slider">
-        <Setter Property="Background" Value="{StaticResource SliderTrack}" />
-        <Setter Property="Foreground" Value="{StaticResource AccentBrush}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource SliderTrack}" />
+        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="MinHeight" Value="24" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Slider">
@@ -84,7 +84,7 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{StaticResource AccentBrushDisabled}" />
+                <Setter Property="Foreground" Value="{DynamicResource AccentBrushDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -93,15 +93,15 @@
     <!-- TickBar Style -->
     <!-- ============================================== -->
     <Style TargetType="TickBar">
-        <Setter Property="Fill" Value="{StaticResource TextSecondary}" />
+        <Setter Property="Fill" Value="{DynamicResource TextSecondary}" />
     </Style>
 
     <!-- ============================================== -->
     <!-- Thumb Style -->
     <!-- ============================================== -->
     <Style TargetType="Thumb">
-        <Setter Property="Background" Value="{StaticResource ControlBackground}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="2" />
         <Setter Property="Width" Value="12" />
@@ -116,9 +116,9 @@
                     <!-- Grip Lines -->
                     <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
                         <StackPanel Orientation="Vertical" VerticalAlignment="Center">
-                            <Border Height="1" Width="6" Background="{StaticResource TextTertiary}" Margin="0,0,0,2" />
-                            <Border Height="1" Width="6" Background="{StaticResource TextTertiary}" Margin="0,0,0,2" />
-                            <Border Height="1" Width="6" Background="{StaticResource TextTertiary}" />
+                            <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" Margin="0,0,0,2" />
+                            <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" Margin="0,0,0,2" />
+                            <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" />
                         </StackPanel>
                     </Grid>
                 </Border>
@@ -127,17 +127,18 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{StaticResource ControlBorderHover}" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsDragging" Value="True">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundPressed}" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundDisabled}" />
-                <Setter Property="BorderBrush" Value="{StaticResource ControlBorderDisabled}" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
 
 </ResourceDictionary>
+

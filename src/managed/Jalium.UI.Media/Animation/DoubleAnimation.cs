@@ -3,7 +3,7 @@ namespace Jalium.UI.Media.Animation;
 /// <summary>
 /// Animates the value of a double property between two target values.
 /// </summary>
-public class DoubleAnimation : AnimationTimeline<double>
+public sealed class DoubleAnimation : AnimationTimeline<double>
 {
     #region Dependency Properties
 
@@ -125,7 +125,7 @@ public class DoubleAnimation : AnimationTimeline<double>
 /// <summary>
 /// Animates the value of a Color property between two target values.
 /// </summary>
-public class ColorAnimation : AnimationTimeline<Color>
+public sealed class ColorAnimation : AnimationTimeline<Color>
 {
     #region Dependency Properties
 
@@ -235,7 +235,7 @@ public class ColorAnimation : AnimationTimeline<Color>
 /// <summary>
 /// Animates the value of a Point property between two target values.
 /// </summary>
-public class PointAnimation : AnimationTimeline<Point>
+public sealed class PointAnimation : AnimationTimeline<Point>
 {
     #region Dependency Properties
 
@@ -314,7 +314,7 @@ public class PointAnimation : AnimationTimeline<Point>
 /// <summary>
 /// Animates the value of a Thickness property between two target values.
 /// </summary>
-public class ThicknessAnimation : AnimationTimeline<Thickness>
+public sealed class ThicknessAnimation : AnimationTimeline<Thickness>
 {
     #region Dependency Properties
 

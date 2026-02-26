@@ -1,3 +1,4 @@
+﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -21,7 +22,7 @@ public class Control : FrameworkElement
     /// </summary>
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(Control),
-            new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged));
+            new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the BorderBrush dependency property.
@@ -151,7 +152,7 @@ public class Control : FrameworkElement
     /// </summary>
     public Thickness BorderThickness
     {
-        get => (Thickness)(GetValue(BorderThicknessProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(BorderThicknessProperty)!;
         set => SetValue(BorderThicknessProperty, value);
     }
 
@@ -160,7 +161,7 @@ public class Control : FrameworkElement
     /// </summary>
     public Thickness Padding
     {
-        get => (Thickness)(GetValue(PaddingProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(PaddingProperty)!;
         set => SetValue(PaddingProperty, value);
     }
 
@@ -178,7 +179,7 @@ public class Control : FrameworkElement
     /// </summary>
     public double FontSize
     {
-        get => (double)(GetValue(FontSizeProperty) ?? 14.0);
+        get => (double)GetValue(FontSizeProperty)!;
         set => SetValue(FontSizeProperty, value);
     }
 
@@ -214,7 +215,7 @@ public class Control : FrameworkElement
     /// </summary>
     public CornerRadius CornerRadius
     {
-        get => (CornerRadius)(GetValue(CornerRadiusProperty) ?? new CornerRadius(0));
+        get => (CornerRadius)GetValue(CornerRadiusProperty)!;
         set => SetValue(CornerRadiusProperty, value);
     }
 
@@ -223,7 +224,7 @@ public class Control : FrameworkElement
     /// </summary>
     public HorizontalAlignment HorizontalContentAlignment
     {
-        get => (HorizontalAlignment)(GetValue(HorizontalContentAlignmentProperty) ?? HorizontalAlignment.Left);
+        get => (HorizontalAlignment)GetValue(HorizontalContentAlignmentProperty)!;
         set => SetValue(HorizontalContentAlignmentProperty, value);
     }
 
@@ -232,7 +233,7 @@ public class Control : FrameworkElement
     /// </summary>
     public VerticalAlignment VerticalContentAlignment
     {
-        get => (VerticalAlignment)(GetValue(VerticalContentAlignmentProperty) ?? VerticalAlignment.Top);
+        get => (VerticalAlignment)GetValue(VerticalContentAlignmentProperty)!;
         set => SetValue(VerticalContentAlignmentProperty, value);
     }
 

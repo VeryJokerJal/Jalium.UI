@@ -2,10 +2,20 @@
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
-    <ResourceDictionary.MergedDictionaries>
-        <!-- Colors must be loaded first as all other styles depend on them -->
-        <ResourceDictionary Source="Colors.jalxaml" />
+    <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Dark">
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="DarkTheme.jalxaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Light">
+            <ResourceDictionary.MergedDictionaries>
+                <ResourceDictionary Source="LightTheme.jalxaml" />
+            </ResourceDictionary.MergedDictionaries>
+        </ResourceDictionary>
+    </ResourceDictionary.ThemeDictionaries>
 
+    <ResourceDictionary.MergedDictionaries>
         <!-- Control Styles -->
         <ResourceDictionary Source="Controls/Button.jalxaml" />
         <ResourceDictionary Source="Controls/TextControls.jalxaml" />
@@ -22,6 +32,9 @@
         <ResourceDictionary Source="Controls/ScrollBar.jalxaml" />
         <ResourceDictionary Source="Controls/Calendar.jalxaml" />
         <ResourceDictionary Source="Controls/Primitives.jalxaml" />
+        <ResourceDictionary Source="Controls/Media.jalxaml" />
+        <ResourceDictionary Source="Controls/DockLayout.jalxaml" />
+        <ResourceDictionary Source="Controls/MenusToolbars.jalxaml" />
     </ResourceDictionary.MergedDictionaries>
 
 </ResourceDictionary>

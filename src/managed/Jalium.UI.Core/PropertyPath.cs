@@ -388,14 +388,21 @@ public sealed class PropertyPath
 
     private static Type? FindType(string typeName)
     {
-        // Search in loaded assemblies
+        // AOT-safe: Use the registered type resolver (XamlTypeRegistry) first
+        if (TypeResolver.ResolveTypeByName != null)
+        {
+            var type = TypeResolver.ResolveTypeByName(typeName);
+            if (type != null)
+                return type;
+        }
+
+        // Fallback: Search in loaded assemblies (works in non-AOT scenarios)
         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
             var type = assembly.GetType(typeName);
             if (type != null)
                 return type;
 
-            // Try with Jalium.UI namespace
             type = assembly.GetType($"Jalium.UI.{typeName}");
             if (type != null)
                 return type;
@@ -417,7 +424,7 @@ public sealed class PropertyPath
 /// <summary>
 /// Provides a type converter for PropertyPath.
 /// </summary>
-public class PropertyPathConverter : TypeConverter
+public sealed class PropertyPathConverter : TypeConverter
 {
     /// <summary>
     /// Determines whether this converter can convert from the specified source type.

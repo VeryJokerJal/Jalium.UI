@@ -1,3 +1,5 @@
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Interop;
 
 /// <summary>
@@ -17,6 +19,11 @@ public sealed class NativeBrush : IDisposable
     /// Gets whether the brush is valid.
     /// </summary>
     public bool IsValid => _handle != nint.Zero && !_disposed;
+
+    /// <summary>
+    /// Gets or sets the cached color used for cache invalidation.
+    /// </summary>
+    internal Color CachedColor { get; set; }
 
     /// <summary>
     /// Gets the color components.
@@ -40,6 +47,32 @@ public sealed class NativeBrush : IDisposable
         }
     }
 
+    internal NativeBrush(RenderContext context,
+        float startX, float startY, float endX, float endY,
+        float[] stops, uint stopCount)
+    {
+        _handle = NativeMethods.BrushCreateLinearGradient(
+            context.Handle, startX, startY, endX, endY, stops, stopCount);
+        if (_handle == nint.Zero)
+        {
+            throw new InvalidOperationException("Failed to create linear gradient brush");
+        }
+    }
+
+    internal NativeBrush(RenderContext context,
+        float centerX, float centerY, float radiusX, float radiusY,
+        float originX, float originY,
+        float[] stops, uint stopCount)
+    {
+        _handle = NativeMethods.BrushCreateRadialGradient(
+            context.Handle, centerX, centerY, radiusX, radiusY,
+            originX, originY, stops, stopCount);
+        if (_handle == nint.Zero)
+        {
+            throw new InvalidOperationException("Failed to create radial gradient brush");
+        }
+    }
+
     /// <inheritdoc />
     public void Dispose()
     {
@@ -57,6 +90,7 @@ public sealed class NativeBrush : IDisposable
 
     ~NativeBrush()
     {
-        Dispose();
+        _disposed = true;
+        _handle = nint.Zero;
     }
 }

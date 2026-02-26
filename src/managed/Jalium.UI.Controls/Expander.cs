@@ -1,12 +1,13 @@
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a control that displays a header and has a collapsible content area.
 /// </summary>
-public class Expander : ContentControl
+public sealed class Expander : ContentControl
 {
     #region Dependency Properties
 
@@ -83,7 +84,7 @@ public class Expander : ContentControl
     /// </summary>
     public bool IsExpanded
     {
-        get => (bool)(GetValue(IsExpandedProperty) ?? false);
+        get => (bool)GetValue(IsExpandedProperty)!;
         set => SetValue(IsExpandedProperty, value);
     }
 
@@ -101,7 +102,7 @@ public class Expander : ContentControl
     /// </summary>
     public ExpandDirection ExpandDirection
     {
-        get => (ExpandDirection)(GetValue(ExpandDirectionProperty) ?? ExpandDirection.Down);
+        get => (ExpandDirection)GetValue(ExpandDirectionProperty)!;
         set => SetValue(ExpandDirectionProperty, value);
     }
 
@@ -116,15 +117,6 @@ public class Expander : ContentControl
 
     #endregion
 
-    #region Private Fields
-
-    private const double HeaderHeight = 36;
-    private const double ChevronSize = 12;
-    private const double ChevronMargin = 12;
-    private UIElement? _headerElement;
-
-    #endregion
-
     #region Constructor
 
     /// <summary>
@@ -133,9 +125,9 @@ public class Expander : ContentControl
     public Expander()
     {
         Focusable = true;
+        UseTemplateContentManagement();
 
-        // Register input handlers
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
+        // Register keyboard handler
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
     }
 
@@ -146,36 +138,61 @@ public class Expander : ContentControl
     private Border? _headerBorder;
     private Border? _contentBorder;
     private Shapes.Path? _chevron;
+    private DispatcherTimer? _animationTimer;
 
     /// <inheritdoc />
     protected override void OnApplyTemplate()
     {
+        // Unsubscribe from old header border
+        if (_headerBorder != null)
+        {
+            _headerBorder.RemoveHandler(MouseDownEvent, new RoutedEventHandler(OnHeaderMouseDown));
+        }
+
         base.OnApplyTemplate();
         _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
         _contentBorder = GetTemplateChild("PART_ContentBorder") as Border;
         _chevron = GetTemplateChild("PART_Chevron") as Shapes.Path;
+
+        // Subscribe to header border click
+        if (_headerBorder != null)
+        {
+            _headerBorder.AddHandler(MouseDownEvent, new RoutedEventHandler(OnHeaderMouseDown));
+        }
+
+        // Sync initial state without animation
+        if (_contentBorder != null)
+        {
+            if (IsExpanded)
+            {
+                _contentBorder.Visibility = Visibility.Visible;
+                if (_chevron != null)
+                {
+                    var rt = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
+                    rt.Angle = 90;
+                    _chevron.RenderTransform = rt;
+                }
+            }
+            else
+            {
+                _contentBorder.Visibility = Visibility.Collapsed;
+            }
+        }
     }
 
     #endregion
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnHeaderMouseDown(object sender, RoutedEventArgs e)
     {
         if (!IsEnabled) return;
 
         if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
         {
-            var position = mouseArgs.GetPosition(this);
-
-            // Check if click is in header area
-            var headerRect = GetHeaderRect();
-            if (headerRect.Contains(position))
-            {
-                Focus();
-                Toggle();
-                e.Handled = true;
-            }
+            Focus();
+            Toggle();
+            e.Handled = true;
         }
     }
 
@@ -196,247 +213,6 @@ public class Expander : ContentControl
     private void Toggle()
     {
         IsExpanded = !IsExpanded;
-    }
-
-    private Rect GetHeaderRect()
-    {
-        switch (ExpandDirection)
-        {
-            case ExpandDirection.Down:
-                return new Rect(0, 0, RenderSize.Width, HeaderHeight);
-            case ExpandDirection.Up:
-                return new Rect(0, RenderSize.Height - HeaderHeight, RenderSize.Width, HeaderHeight);
-            case ExpandDirection.Left:
-                return new Rect(RenderSize.Width - HeaderHeight, 0, HeaderHeight, RenderSize.Height);
-            case ExpandDirection.Right:
-                return new Rect(0, 0, HeaderHeight, RenderSize.Height);
-            default:
-                return new Rect(0, 0, RenderSize.Width, HeaderHeight);
-        }
-    }
-
-    #endregion
-
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        var padding = Padding;
-        var border = BorderThickness;
-
-        var headerSize = MeasureHeader(availableSize);
-        var contentSize = Size.Empty;
-
-        if (IsExpanded && Content != null)
-        {
-            var contentAvailable = new Size(
-                Math.Max(0, availableSize.Width - padding.TotalWidth - border.TotalWidth),
-                Math.Max(0, availableSize.Height - HeaderHeight - padding.TotalHeight - border.TotalHeight));
-
-            contentSize = MeasureContent(contentAvailable);
-        }
-
-        var isVertical = ExpandDirection == ExpandDirection.Down || ExpandDirection == ExpandDirection.Up;
-
-        if (isVertical)
-        {
-            return new Size(
-                Math.Max(headerSize.Width, contentSize.Width) + padding.TotalWidth + border.TotalWidth,
-                HeaderHeight + (IsExpanded ? contentSize.Height : 0) + padding.TotalHeight + border.TotalHeight);
-        }
-        else
-        {
-            return new Size(
-                HeaderHeight + (IsExpanded ? contentSize.Width : 0) + padding.TotalWidth + border.TotalWidth,
-                Math.Max(headerSize.Height, contentSize.Height) + padding.TotalHeight + border.TotalHeight);
-        }
-    }
-
-    private Size MeasureHeader(Size availableSize)
-    {
-        if (Header is string text)
-        {
-            var fontFamily = FontFamily ?? "Segoe UI";
-            var fontSize = FontSize > 0 ? FontSize : 14;
-            var formattedText = new FormattedText(text, fontFamily, fontSize);
-            Interop.TextMeasurement.MeasureText(formattedText);
-            return new Size(formattedText.Width + ChevronSize + ChevronMargin * 2, HeaderHeight);
-        }
-
-        if (Header is UIElement element)
-        {
-            element.Measure(availableSize);
-            return new Size(element.DesiredSize.Width + ChevronSize + ChevronMargin * 2, HeaderHeight);
-        }
-
-        return new Size(ChevronSize + ChevronMargin * 2, HeaderHeight);
-    }
-
-    private Size MeasureContent(Size availableSize)
-    {
-        if (Content is UIElement element)
-        {
-            element.Measure(availableSize);
-            return element.DesiredSize;
-        }
-
-        if (Content is string text)
-        {
-            var fontFamily = FontFamily ?? "Segoe UI";
-            var fontSize = FontSize > 0 ? FontSize : 14;
-            var formattedText = new FormattedText(text, fontFamily, fontSize);
-            Interop.TextMeasurement.MeasureText(formattedText);
-            return new Size(formattedText.Width, formattedText.Height);
-        }
-
-        return Size.Empty;
-    }
-
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        if (IsExpanded && ContentElement is FrameworkElement fe)
-        {
-            var padding = Padding;
-            var border = BorderThickness;
-
-            Rect contentRect;
-            switch (ExpandDirection)
-            {
-                case ExpandDirection.Down:
-                    contentRect = new Rect(
-                        padding.Left + border.Left,
-                        HeaderHeight + padding.Top + border.Top,
-                        Math.Max(0, finalSize.Width - padding.TotalWidth - border.TotalWidth),
-                        Math.Max(0, finalSize.Height - HeaderHeight - padding.TotalHeight - border.TotalHeight));
-                    break;
-                case ExpandDirection.Up:
-                    contentRect = new Rect(
-                        padding.Left + border.Left,
-                        padding.Top + border.Top,
-                        Math.Max(0, finalSize.Width - padding.TotalWidth - border.TotalWidth),
-                        Math.Max(0, finalSize.Height - HeaderHeight - padding.TotalHeight - border.TotalHeight));
-                    break;
-                default:
-                    contentRect = new Rect(
-                        padding.Left + border.Left,
-                        HeaderHeight + padding.Top + border.Top,
-                        Math.Max(0, finalSize.Width - padding.TotalWidth - border.TotalWidth),
-                        Math.Max(0, finalSize.Height - HeaderHeight - padding.TotalHeight - border.TotalHeight));
-                    break;
-            }
-
-            fe.Arrange(contentRect);
-        }
-
-        return finalSize;
-    }
-
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(object drawingContext)
-    {
-        // If using template, let the template handle rendering
-        if (_contentBorder != null)
-        {
-            return;
-        }
-
-        if (drawingContext is not DrawingContext dc)
-            return;
-
-        var rect = new Rect(RenderSize);
-        var cornerRadius = CornerRadius;
-
-        // Draw background
-        if (Background != null)
-        {
-            dc.DrawRoundedRectangle(Background, null, rect, cornerRadius);
-        }
-
-        // Draw border
-        if (BorderBrush != null && BorderThickness.TotalWidth > 0)
-        {
-            var pen = new Pen(BorderBrush, BorderThickness.Left);
-            dc.DrawRoundedRectangle(null, pen, rect, cornerRadius);
-        }
-
-        // Draw header
-        DrawHeader(dc);
-
-        // Draw content if expanded
-        if (IsExpanded)
-        {
-            DrawContent(dc);
-        }
-    }
-
-    private void DrawHeader(DrawingContext dc)
-    {
-        var headerRect = GetHeaderRect();
-
-        // Draw header background
-        var headerBg = HeaderBackground ?? new SolidColorBrush(Color.FromRgb(45, 45, 45));
-        dc.DrawRectangle(headerBg, null, headerRect);
-
-        // Draw chevron
-        var chevronX = headerRect.X + ChevronMargin;
-        var chevronY = headerRect.Y + (headerRect.Height - ChevronSize) / 2;
-        DrawChevron(dc, chevronX, chevronY, IsExpanded);
-
-        // Draw header text
-        if (Header is string headerText && Foreground != null)
-        {
-            var formattedText = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
-            {
-                Foreground = Foreground
-            };
-            Interop.TextMeasurement.MeasureText(formattedText);
-
-            var textX = headerRect.X + ChevronSize + ChevronMargin * 2;
-            var textY = headerRect.Y + (headerRect.Height - formattedText.Height) / 2;
-            dc.DrawText(formattedText, new Point(textX, textY));
-        }
-    }
-
-    private void DrawChevron(DrawingContext dc, double x, double y, bool expanded)
-    {
-        var chevronBrush = Foreground ?? new SolidColorBrush(Color.White);
-        var chevronPen = new Pen(chevronBrush, 2);
-
-        if (expanded)
-        {
-            // Down arrow (expanded)
-            dc.DrawLine(chevronPen, new Point(x, y + 4), new Point(x + ChevronSize / 2, y + ChevronSize - 4));
-            dc.DrawLine(chevronPen, new Point(x + ChevronSize / 2, y + ChevronSize - 4), new Point(x + ChevronSize, y + 4));
-        }
-        else
-        {
-            // Right arrow (collapsed)
-            dc.DrawLine(chevronPen, new Point(x + 4, y), new Point(x + ChevronSize - 4, y + ChevronSize / 2));
-            dc.DrawLine(chevronPen, new Point(x + ChevronSize - 4, y + ChevronSize / 2), new Point(x + 4, y + ChevronSize));
-        }
-    }
-
-    private void DrawContent(DrawingContext dc)
-    {
-        if (Content is string contentText && Foreground != null)
-        {
-            var formattedText = new FormattedText(contentText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
-            {
-                Foreground = Foreground
-            };
-            Interop.TextMeasurement.MeasureText(formattedText);
-
-            var padding = Padding;
-            var textX = padding.Left;
-            var textY = HeaderHeight + padding.Top;
-            dc.DrawText(formattedText, new Point(textX, textY));
-        }
     }
 
     #endregion
@@ -478,9 +254,26 @@ public class Expander : ContentControl
     /// <summary>
     /// Called when the expanded state changes.
     /// </summary>
-    protected virtual void OnExpandedChanged(bool oldValue, bool newValue)
+    protected void OnExpandedChanged(bool oldValue, bool newValue)
     {
-        InvalidateMeasure();
+        if (_contentBorder != null)
+        {
+            if (newValue)
+            {
+                _animationTimer = ExpandCollapseAnimator.AnimateExpand(
+                    _contentBorder, _animationTimer, _chevron);
+            }
+            else
+            {
+                _animationTimer = ExpandCollapseAnimator.AnimateCollapse(
+                    _contentBorder, _animationTimer, _chevron);
+            }
+        }
+        else
+        {
+            // Fallback: no template applied yet, just toggle visibility
+            InvalidateMeasure();
+        }
 
         if (newValue)
         {

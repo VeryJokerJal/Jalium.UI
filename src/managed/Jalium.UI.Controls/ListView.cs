@@ -1,14 +1,18 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using System.Reflection;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// Represents a control that displays a list of data items.
+/// Represents a control that displays a list of data items with optional column view.
 /// </summary>
-public class ListView : ListBox
+public sealed class ListView : ListBox
 {
+    private StackPanel? _columnHeadersHost;
+    private Border? _columnHeadersBorder;
+
     /// <summary>
     /// Identifies the View dependency property.
     /// </summary>
@@ -32,6 +36,87 @@ public class ListView : ListBox
     {
     }
 
+    /// <inheritdoc />
+    protected override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+
+        _columnHeadersHost = GetTemplateChild("PART_ColumnHeadersHost") as StackPanel;
+        _columnHeadersBorder = GetTemplateChild("PART_ColumnHeadersBorder") as Border;
+
+        RefreshColumnHeaders();
+    }
+
+    /// <inheritdoc />
+    protected override FrameworkElement GetContainerForItem(object item)
+    {
+        return new ListViewItem();
+    }
+
+    /// <inheritdoc />
+    protected override bool IsItemItsOwnContainer(object item)
+    {
+        return item is ListViewItem;
+    }
+
+    /// <inheritdoc />
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
+    {
+        base.PrepareContainerForItem(element, item);
+
+        if (element is ListViewItem listViewItem)
+        {
+            listViewItem.Content = item;
+            listViewItem.ContentTemplate = ItemTemplate;
+            listViewItem.ParentListBox = this;
+            listViewItem.IsSelected = item == SelectedItem;
+
+            // If using GridView, set up cells
+            if (View is GridView gridView)
+            {
+                listViewItem.SetupGridViewCells(gridView, item);
+            }
+        }
+    }
+
+    private void RefreshColumnHeaders()
+    {
+        if (_columnHeadersHost == null) return;
+
+        _columnHeadersHost.Children.Clear();
+
+        if (View is GridView gridView && gridView.Columns.Count > 0)
+        {
+            // Show header border
+            if (_columnHeadersBorder != null)
+            {
+                _columnHeadersBorder.Visibility = Visibility.Visible;
+            }
+
+            foreach (var column in gridView.Columns)
+            {
+                var header = new GridViewColumnHeader
+                {
+                    Column = column,
+                    Content = column.Header,
+                    Width = double.IsNaN(column.Width) ? 120 : column.Width
+                };
+
+                column.ActualWidth = header.Width;
+
+                _columnHeadersHost.Children.Add(header);
+            }
+        }
+        else
+        {
+            // Hide header border when not using GridView
+            if (_columnHeadersBorder != null)
+            {
+                _columnHeadersBorder.Visibility = Visibility.Collapsed;
+            }
+        }
+    }
+
     private static void OnViewChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var listView = (ListView)d;
@@ -40,14 +125,19 @@ public class ListView : ListBox
 
         oldView?.OnViewDetached(listView);
         newView?.OnViewAttached(listView);
+
+        listView.RefreshColumnHeaders();
+        listView.InvalidateMeasure();
     }
 }
 
 /// <summary>
 /// Represents an item in a ListView control.
 /// </summary>
-public class ListViewItem : ListBoxItem
+public sealed class ListViewItem : ListBoxItem
 {
+    private StackPanel? _cellsPanel;
+
     static ListViewItem()
     {
     }
@@ -57,6 +147,93 @@ public class ListViewItem : ListBoxItem
     /// </summary>
     public ListViewItem()
     {
+    }
+
+    /// <inheritdoc />
+    protected override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        _cellsPanel = GetTemplateChild("PART_CellsPanel") as StackPanel;
+    }
+
+    /// <summary>
+    /// Sets up cells for GridView column display.
+    /// </summary>
+    internal void SetupGridViewCells(GridView gridView, object item)
+    {
+        if (_cellsPanel == null) return;
+
+        // Remove any default ContentPresenter and replace with column cells
+        _cellsPanel.Children.Clear();
+
+        foreach (var column in gridView.Columns)
+        {
+            var cellWidth = double.IsNaN(column.Width) ? 120 : column.Width;
+
+            // If the column has a CellTemplate, use ContentPresenter to render it
+            if (column.CellTemplate != null)
+            {
+                var presenter = new ContentPresenter
+                {
+                    Content = item,
+                    ContentTemplate = column.CellTemplate,
+                    Width = cellWidth,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                _cellsPanel.Children.Add(presenter);
+            }
+            else
+            {
+                // Fall back to text rendering using DisplayMemberBinding or header name
+                var cellValue = GetPropertyValue(item, column);
+                var cellText = new TextBlock
+                {
+                    Text = cellValue?.ToString() ?? "",
+                    Width = cellWidth,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(8, 0, 8, 0)
+                };
+                _cellsPanel.Children.Add(cellText);
+            }
+        }
+    }
+
+    private static object? GetPropertyValue(object item, GridViewColumn column)
+    {
+        // Try DisplayMemberBinding path
+        if (column.DisplayMemberBinding is Jalium.UI.Binding binding && !string.IsNullOrEmpty(binding.Path?.Path))
+        {
+            return ResolvePropertyPath(item, binding.Path.Path);
+        }
+
+        // Try header name as property name fallback
+        var headerText = column.Header?.ToString();
+        if (!string.IsNullOrEmpty(headerText))
+        {
+            var value = ResolvePropertyPath(item, headerText);
+            if (value != null) return value;
+        }
+
+        // If item is a string or simple type, return it directly
+        if (item is string || item.GetType().IsPrimitive)
+        {
+            return item;
+        }
+
+        return null;
+    }
+
+    private static object? ResolvePropertyPath(object obj, string path)
+    {
+        var current = obj;
+        foreach (var part in path.Split('.'))
+        {
+            if (current == null) return null;
+            var prop = current.GetType().GetProperty(part, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+            if (prop == null) return null;
+            current = prop.GetValue(current);
+        }
+        return current;
     }
 }
 
@@ -93,7 +270,7 @@ public abstract class ViewBase : DependencyObject
 /// <summary>
 /// Represents a view mode that displays data items in columns for a ListView control.
 /// </summary>
-public class GridView : ViewBase
+public sealed class GridView : ViewBase
 {
     private readonly GridViewColumnCollection _columns;
 
@@ -194,7 +371,7 @@ public class GridView : ViewBase
     /// </summary>
     public bool AllowsColumnReorder
     {
-        get => (bool)(GetValue(AllowsColumnReorderProperty) ?? true);
+        get => (bool)GetValue(AllowsColumnReorderProperty)!;
         set => SetValue(AllowsColumnReorderProperty, value);
     }
 
@@ -216,7 +393,7 @@ public class GridView : ViewBase
 /// <summary>
 /// Represents a column that displays data in a GridView.
 /// </summary>
-public class GridViewColumn : DependencyObject
+public sealed class GridViewColumn : DependencyObject
 {
     /// <summary>
     /// Identifies the Header dependency property.
@@ -331,7 +508,7 @@ public class GridViewColumn : DependencyObject
     /// </summary>
     public double Width
     {
-        get => (double)(GetValue(WidthProperty) ?? double.NaN);
+        get => (double)GetValue(WidthProperty)!;
         set => SetValue(WidthProperty, value);
     }
 
@@ -371,14 +548,14 @@ public class GridViewColumn : DependencyObject
 /// <summary>
 /// Represents a collection of GridViewColumn objects.
 /// </summary>
-public class GridViewColumnCollection : ObservableCollection<GridViewColumn>
+public sealed class GridViewColumnCollection : ObservableCollection<GridViewColumn>
 {
 }
 
 /// <summary>
 /// Represents the header for a GridViewColumn.
 /// </summary>
-public class GridViewColumnHeader : ButtonBase
+public sealed class GridViewColumnHeader : ContentControl
 {
     /// <summary>
     /// Identifies the Column dependency property.
@@ -400,6 +577,17 @@ public class GridViewColumnHeader : ButtonBase
     /// Gets the role of the column header.
     /// </summary>
     public GridViewColumnHeaderRole Role { get; internal set; }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="GridViewColumnHeader"/> class.
+    /// </summary>
+    public GridViewColumnHeader()
+    {
+        // Use template-based content management so the ControlTemplate's
+        // ContentPresenter handles displaying column header text
+        UseTemplateContentManagement();
+        Focusable = false;
+    }
 }
 
 /// <summary>

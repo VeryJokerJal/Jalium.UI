@@ -1,18 +1,40 @@
 namespace Jalium.UI.Gpu;
 
 /// <summary>
+/// UI 运行时宿主接口 - 抽象 AnimationController/InputHandler/StateManager 对运行时的依赖
+/// UIRuntime (V1) 和 UIRuntimeV2 都实现此接口
+/// </summary>
+internal interface IUIRuntimeHost
+{
+    CompiledUIBundle? CurrentBundle { get; }
+    IRenderBackend Backend { get; }
+    nint InstanceBuffer { get; }
+    AnimationController Animator { get; }
+    InteractiveRegion? HitTest(float x, float y);
+    void TriggerStateTransition(uint nodeId, TriggerType trigger);
+    void UpdateNodeProperty(uint nodeId, AnimatableProperty property, float value);
+}
+
+/// <summary>
 /// UI 运行时 - 执行编译后的 UI Bundle
 /// 类似于 GPU 着色器管线的运行时
 /// </summary>
-public sealed class UIRuntime : IDisposable
+public sealed class UIRuntime : IDisposable, IUIRuntimeHost
 {
     private readonly IRenderBackend _backend;
     private readonly AnimationController _animationController;
     private readonly InputHandler _inputHandler;
     private readonly StateManager _stateManager;
+    private readonly NodeStore _nodeStore = new();
+    private readonly PropertyStore _propertyStore = new();
+    private readonly ResourceStore _resourceStore = new();
+    private readonly ReactiveGraph _reactiveGraph = new();
+    private readonly DisplayList _displayList = new();
+    private readonly Dictionary<uint, int> _nodeIndexById = new();
 
     private CompiledUIBundle? _currentBundle;
     private bool _isDirty = true;
+    private bool _displayListDirty = true;
 
     // GPU 资源
     private nint _vertexBuffer;
@@ -22,7 +44,16 @@ public sealed class UIRuntime : IDisposable
     private readonly Dictionary<uint, nint> _textureHandles = new();
     private readonly Dictionary<uint, nint> _glyphAtlasHandles = new();
 
-    // Internal accessors for nested classes
+    // IUIRuntimeHost explicit implementation
+    CompiledUIBundle? IUIRuntimeHost.CurrentBundle => _currentBundle;
+    IRenderBackend IUIRuntimeHost.Backend => _backend;
+    nint IUIRuntimeHost.InstanceBuffer => _instanceBuffer;
+    AnimationController IUIRuntimeHost.Animator => _animationController;
+    InteractiveRegion? IUIRuntimeHost.HitTest(float x, float y) => HitTest(x, y);
+    void IUIRuntimeHost.TriggerStateTransition(uint nodeId, TriggerType trigger) => TriggerStateTransition(nodeId, trigger);
+    void IUIRuntimeHost.UpdateNodeProperty(uint nodeId, AnimatableProperty property, float value) => UpdateNodeProperty(nodeId, property, value);
+
+    // Internal accessors for backward compatibility
     internal CompiledUIBundle? CurrentBundle => _currentBundle;
     internal IRenderBackend Backend => _backend;
     internal nint InstanceBuffer => _instanceBuffer;
@@ -48,6 +79,7 @@ public sealed class UIRuntime : IDisposable
         }
 
         _currentBundle = bundle;
+        InitializeRuntimeStores(bundle);
 
         // 上传 GPU 资源
         UploadResources();
@@ -59,6 +91,7 @@ public sealed class UIRuntime : IDisposable
         _animationController.Initialize(bundle.Curves, bundle.AnimationTargets, bundle.AnimationValues);
 
         _isDirty = true;
+        _displayListDirty = true;
     }
 
     /// <summary>
@@ -68,6 +101,27 @@ public sealed class UIRuntime : IDisposable
     {
         var bundle = BundleSerializer.Load(path);
         LoadBundle(bundle);
+    }
+
+    private void InitializeRuntimeStores(CompiledUIBundle bundle)
+    {
+        _nodeStore.Load(bundle.Nodes);
+        _propertyStore.Clear();
+        _resourceStore.Clear();
+        _reactiveGraph.Clear();
+        _nodeIndexById.Clear();
+
+        for (int i = 0; i < bundle.Nodes.Length; i++)
+        {
+            var node = bundle.Nodes[i];
+            _nodeIndexById[node.Id] = i;
+
+            if (node.ParentId != 0)
+            {
+                // Layout/render dirtiness bubbles up to parent containers.
+                _reactiveGraph.AddEdge(node.Id, node.ParentId, DirtyFlags.Layout | DirtyFlags.Render);
+            }
+        }
     }
 
     private void UploadResources()
@@ -91,6 +145,7 @@ public sealed class UIRuntime : IDisposable
         {
             var handle = _backend.LoadTexture(texRef.Path, texRef.Format);
             _textureHandles[index] = handle;
+            _resourceStore.Set(index, handle);
         }
 
         // 上传字形图集
@@ -98,6 +153,7 @@ public sealed class UIRuntime : IDisposable
         {
             var handle = _backend.CreateGlyphAtlas(atlasRef.FontId, atlasRef.FontSize, atlasRef.Width, atlasRef.Height);
             _glyphAtlasHandles[index] = handle;
+            _resourceStore.Set(index + 10_000, handle);
         }
     }
 
@@ -223,6 +279,8 @@ public sealed class UIRuntime : IDisposable
             _stateManager.ProcessTransitions();
             _isDirty = true;
         }
+
+        FlushReactiveInvalidations();
     }
 
     /// <summary>
@@ -232,6 +290,13 @@ public sealed class UIRuntime : IDisposable
     {
         if (_currentBundle == null) return;
 
+        FlushReactiveInvalidations();
+
+        if (!_isDirty && !_propertyStore.HasDirty(DirtyFlags.All))
+        {
+            return;
+        }
+
         // 更新 Uniform（视口尺寸、时间）
         if (_isDirty)
         {
@@ -239,11 +304,18 @@ public sealed class UIRuntime : IDisposable
             _isDirty = false;
         }
 
-        // 执行绘制命令
-        foreach (var command in _currentBundle.DrawCommands)
+        if (_displayListDirty)
         {
-            ExecuteCommand(command);
+            RebuildDisplayList(_currentBundle);
+            _displayListDirty = false;
         }
+
+        var dirtyRenderNodes = _propertyStore.GetDirtyNodes(
+            DirtyFlags.Layout | DirtyFlags.Render | DirtyFlags.Transform | DirtyFlags.Clip | DirtyFlags.Resource);
+
+        RenderDisplayList(dirtyRenderNodes, viewportWidth, viewportHeight);
+
+        _propertyStore.ClearDirty(DirtyFlags.All);
     }
 
     private void UpdateUniformBuffer(int width, int height)
@@ -260,6 +332,195 @@ public sealed class UIRuntime : IDisposable
         _backend.UpdateBuffer(_uniformBuffer, 0, data);
     }
 
+    private void FlushReactiveInvalidations()
+    {
+        if (!_reactiveGraph.HasPendingInvalidations)
+        {
+            return;
+        }
+
+        _reactiveGraph.Propagate((nodeId, flags) =>
+        {
+            _propertyStore.MarkDirty(nodeId, flags);
+            if ((flags & (DirtyFlags.Layout | DirtyFlags.Render | DirtyFlags.Transform | DirtyFlags.Clip | DirtyFlags.Resource)) != 0)
+            {
+                _displayListDirty = true;
+            }
+        });
+    }
+
+    private void RebuildDisplayList(CompiledUIBundle bundle)
+    {
+        _displayList.Clear();
+
+        var hasClip = false;
+        var hasTransform = false;
+
+        foreach (var command in bundle.DrawCommands)
+        {
+            switch (command)
+            {
+                case SetClipCommand setClip:
+                    if (hasClip)
+                    {
+                        _displayList.Add(DisplayCommand.PopClip());
+                    }
+
+                    _displayList.Add(DisplayCommand.PushClip(setClip.ClipRect));
+                    hasClip = true;
+                    break;
+
+                case SetTransformCommand setTransform:
+                    if (hasTransform)
+                    {
+                        _displayList.Add(DisplayCommand.PopTransform());
+                    }
+
+                    _displayList.Add(DisplayCommand.PushTransform(setTransform.TransformIndex));
+                    hasTransform = true;
+                    break;
+
+                case DrawRectBatchCommand rectBatch:
+                    for (uint i = 0; i < rectBatch.InstanceCount; i++)
+                    {
+                        var instanceOffset = rectBatch.InstanceBufferOffset + i;
+                        _displayList.Add(DisplayCommand.DrawRect(
+                            ResolveNodeId((int)instanceOffset),
+                            instanceOffset,
+                            1,
+                            rectBatch.TextureIndex));
+                    }
+                    break;
+
+                case DrawTextBatchCommand textBatch:
+                    _displayList.Add(DisplayCommand.DrawText(
+                        ResolveNodeId((int)textBatch.InstanceBufferOffset),
+                        textBatch.InstanceBufferOffset,
+                        textBatch.GlyphCount,
+                        textBatch.GlyphAtlasIndex));
+                    break;
+
+                case DrawImageBatchCommand imageBatch:
+                    for (uint i = 0; i < imageBatch.InstanceCount; i++)
+                    {
+                        var instanceOffset = imageBatch.InstanceBufferOffset + i;
+                        _displayList.Add(DisplayCommand.DrawImage(
+                            ResolveNodeId((int)instanceOffset),
+                            instanceOffset,
+                            1,
+                            imageBatch.TextureIndex));
+                    }
+                    break;
+
+                default:
+                    _displayList.Add(DisplayCommand.Native(command));
+                    break;
+            }
+        }
+
+        if (hasTransform)
+        {
+            _displayList.Add(DisplayCommand.PopTransform());
+        }
+
+        if (hasClip)
+        {
+            _displayList.Add(DisplayCommand.PopClip());
+        }
+    }
+
+    private void RenderDisplayList(IReadOnlySet<uint> dirtyRenderNodes, int viewportWidth, int viewportHeight)
+    {
+        var shouldFilterByNode = dirtyRenderNodes.Count > 0;
+        var hasDrawnAnything = false;
+
+        foreach (var displayCommand in _displayList.Commands)
+        {
+            if (shouldFilterByNode &&
+                displayCommand.NodeId != 0 &&
+                !dirtyRenderNodes.Contains(displayCommand.NodeId))
+            {
+                continue;
+            }
+
+            switch (displayCommand.Type)
+            {
+                case DisplayCommandType.PushClip:
+                    _backend.SetScissorRect(
+                        (int)displayCommand.Rect.X,
+                        (int)displayCommand.Rect.Y,
+                        (int)displayCommand.Rect.Width,
+                        (int)displayCommand.Rect.Height);
+                    break;
+
+                case DisplayCommandType.PopClip:
+                    _backend.SetScissorRect(0, 0, viewportWidth, viewportHeight);
+                    break;
+
+                case DisplayCommandType.PushTransform:
+                case DisplayCommandType.PopTransform:
+                    // Transform stack is baked into instance data. Reserved for future GPU-side transform stack.
+                    break;
+
+                case DisplayCommandType.DrawRect:
+                    ExecuteRectBatch(new DrawRectBatchCommand
+                    {
+                        InstanceBufferOffset = displayCommand.InstanceOffset,
+                        InstanceCount = displayCommand.InstanceCount,
+                        TextureIndex = displayCommand.ResourceIndex
+                    });
+                    hasDrawnAnything = true;
+                    break;
+
+                case DisplayCommandType.DrawText:
+                    ExecuteTextBatch(new DrawTextBatchCommand
+                    {
+                        GlyphAtlasIndex = displayCommand.ResourceIndex,
+                        InstanceBufferOffset = displayCommand.InstanceOffset,
+                        GlyphCount = displayCommand.InstanceCount
+                    });
+                    hasDrawnAnything = true;
+                    break;
+
+                case DisplayCommandType.DrawImage:
+                    ExecuteImageBatch(new DrawImageBatchCommand
+                    {
+                        TextureIndex = displayCommand.ResourceIndex,
+                        InstanceBufferOffset = displayCommand.InstanceOffset,
+                        InstanceCount = displayCommand.InstanceCount
+                    });
+                    hasDrawnAnything = true;
+                    break;
+
+                case DisplayCommandType.NativeCommand:
+                    if (displayCommand.NativeCommand != null)
+                    {
+                        ExecuteCommand(displayCommand.NativeCommand);
+                        hasDrawnAnything = true;
+                    }
+                    break;
+            }
+        }
+
+        if (!hasDrawnAnything && _currentBundle != null && dirtyRenderNodes.Count == 0)
+        {
+            foreach (var command in _currentBundle.DrawCommands)
+            {
+                ExecuteCommand(command);
+            }
+        }
+    }
+
+    private uint ResolveNodeId(int instanceIndex)
+    {
+        if (_currentBundle == null || instanceIndex < 0 || instanceIndex >= _currentBundle.Nodes.Length)
+        {
+            return 0;
+        }
+
+        return _currentBundle.Nodes[instanceIndex].Id;
+    }
+
     private void ExecuteCommand(DrawCommand command)
     {
         switch (command)
@@ -270,6 +531,10 @@ public sealed class UIRuntime : IDisposable
 
             case DrawTextBatchCommand textBatch:
                 ExecuteTextBatch(textBatch);
+                break;
+
+            case DrawImageBatchCommand imageBatch:
+                ExecuteImageBatch(imageBatch);
                 break;
 
             case SetClipCommand setClip:
@@ -315,6 +580,27 @@ public sealed class UIRuntime : IDisposable
         // 实例化绘制
         _backend.DrawIndexedInstanced(
             indexCount: 6, // 矩形的 6 个索引
+            instanceCount: batch.InstanceCount,
+            firstIndex: 0,
+            baseVertex: 0,
+            firstInstance: batch.InstanceBufferOffset
+        );
+    }
+
+    private void ExecuteImageBatch(DrawImageBatchCommand batch)
+    {
+        _backend.BindVertexBuffer(_vertexBuffer);
+        _backend.BindIndexBuffer(_indexBuffer);
+        _backend.BindInstanceBuffer(_instanceBuffer);
+        _backend.BindUniformBuffer(_uniformBuffer);
+
+        if (batch.TextureIndex > 0 && _textureHandles.TryGetValue(batch.TextureIndex, out var textureHandle))
+        {
+            _backend.BindTexture(0, textureHandle);
+        }
+
+        _backend.DrawIndexedInstanced(
+            indexCount: 6,
             instanceCount: batch.InstanceCount,
             firstIndex: 0,
             baseVertex: 0,
@@ -428,18 +714,12 @@ public sealed class UIRuntime : IDisposable
     {
         if (_currentBundle == null) return;
 
-        // 查找节点索引
-        var nodeIndex = -1;
-        for (int i = 0; i < _currentBundle.Nodes.Length; i++)
+        if (!_nodeIndexById.TryGetValue(nodeId, out var nodeIndex))
         {
-            if (_currentBundle.Nodes[i].Id == nodeId)
-            {
-                nodeIndex = i;
-                break;
-            }
+            return;
         }
 
-        if (nodeIndex < 0) return;
+        var metadata = GetPropertyMetadata(property);
 
         // 实例缓冲区布局（80 bytes per instance）:
         // offset 0:  位置 X (4 bytes)
@@ -480,7 +760,47 @@ public sealed class UIRuntime : IDisposable
             _backend.UpdateBuffer(_instanceBuffer, offset, data);
         }
 
+        _propertyStore.SetFloat(nodeId, metadata.PropertyId, value, metadata);
+        _reactiveGraph.Invalidate(nodeId, metadata.DirtyFlags);
+        _displayListDirty |= (metadata.DirtyFlags &
+            (DirtyFlags.Layout | DirtyFlags.Render | DirtyFlags.Transform | DirtyFlags.Clip)) != 0;
+
         _isDirty = true;
+    }
+
+    private static RenderPropertyMetadata GetPropertyMetadata(AnimatableProperty property)
+    {
+        var propertyId = unchecked((ushort)property);
+        var dirtyFlags = property switch
+        {
+            AnimatableProperty.X or
+            AnimatableProperty.Y or
+            AnimatableProperty.Width or
+            AnimatableProperty.Height or
+            AnimatableProperty.BorderThicknessLeft or
+            AnimatableProperty.BorderThicknessTop or
+            AnimatableProperty.BorderThicknessRight or
+            AnimatableProperty.BorderThicknessBottom => DirtyFlags.Layout | DirtyFlags.Render,
+
+            AnimatableProperty.TranslateX or
+            AnimatableProperty.TranslateY or
+            AnimatableProperty.ScaleX or
+            AnimatableProperty.ScaleY or
+            AnimatableProperty.Rotation => DirtyFlags.Transform | DirtyFlags.Render,
+
+            AnimatableProperty.Opacity or
+            AnimatableProperty.BackgroundColor or
+            AnimatableProperty.BorderColor or
+            AnimatableProperty.ForegroundColor or
+            AnimatableProperty.CornerRadiusTopLeft or
+            AnimatableProperty.CornerRadiusTopRight or
+            AnimatableProperty.CornerRadiusBottomRight or
+            AnimatableProperty.CornerRadiusBottomLeft => DirtyFlags.Render,
+
+            _ => DirtyFlags.Render
+        };
+
+        return new RenderPropertyMetadata(propertyId, dirtyFlags);
     }
 
     /// <summary>
@@ -516,6 +836,13 @@ public sealed class UIRuntime : IDisposable
         {
             _backend.DestroyTexture(handle);
         }
+
+        _resourceStore.Clear();
+        _propertyStore.Clear();
+        _nodeStore.Clear();
+        _reactiveGraph.Clear();
+        _displayList.Clear();
+        _nodeIndexById.Clear();
     }
 
     // 标准矩形顶点（单位正方形）
@@ -538,14 +865,14 @@ public sealed class UIRuntime : IDisposable
 /// </summary>
 internal sealed class AnimationController
 {
-    private readonly UIRuntime _runtime;
+    private readonly IUIRuntimeHost _runtime;
     private AnimationCurve[] _curves = [];
     private AnimationTarget[] _targets = [];
     private byte[] _values = [];
 
     private readonly List<ActiveAnimation> _activeAnimations = new();
 
-    public AnimationController(UIRuntime runtime)
+    public AnimationController(IUIRuntimeHost runtime)
     {
         _runtime = runtime;
     }
@@ -671,12 +998,12 @@ internal sealed class AnimationController
 /// </summary>
 internal sealed class InputHandler
 {
-    private readonly UIRuntime _runtime;
+    private readonly IUIRuntimeHost _runtime;
     private InteractiveRegion? _hoveredRegion;
     private InteractiveRegion? _pressedRegion;
     private InteractiveRegion? _focusedRegion;
 
-    public InputHandler(UIRuntime runtime)
+    public InputHandler(IUIRuntimeHost runtime)
     {
         _runtime = runtime;
     }
@@ -919,14 +1246,14 @@ internal sealed class InputHandler
 /// </summary>
 internal sealed class StateManager
 {
-    private readonly UIRuntime _runtime;
+    private readonly IUIRuntimeHost _runtime;
     private StateTransition[] _transitions = [];
     private readonly Dictionary<uint, uint> _nodeStates = new(); // nodeId -> stateId
     private readonly Queue<(uint nodeId, TriggerType trigger)> _pendingTriggers = new();
 
     public bool HasPendingTransitions => _pendingTriggers.Count > 0;
 
-    public StateManager(UIRuntime runtime)
+    public StateManager(IUIRuntimeHost runtime)
     {
         _runtime = runtime;
     }
@@ -1145,8 +1472,10 @@ public interface IRenderBackend
 /// </summary>
 public static class BundleSerializer
 {
-    private const uint Magic = 0x4A554942; // "JUIB" - Jalium UI Bundle
     private const ushort CurrentVersion = 1;
+    private static ReadOnlySpan<byte> JuibMagic => "JUIB"u8;
+    private static ReadOnlySpan<byte> LegacyUicMagic => "JUIC"u8;
+    private static ReadOnlySpan<byte> LegacyJuibMagicFromUInt32 => [0x42, 0x49, 0x55, 0x4A];
 
     // 节点类型标识
     private const byte NodeType_Rect = 1;
@@ -1188,8 +1517,7 @@ public static class BundleSerializer
         using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
 
         // 写入头部
-        writer.Write(Magic);
-        writer.Write(CurrentVersion);
+        WriteHeader(writer);
 
         // 写入各部分
         WriteNodeArray(writer, bundle.Nodes);
@@ -1215,16 +1543,27 @@ public static class BundleSerializer
     public static CompiledUIBundle Load(string path)
     {
         using var fs = File.OpenRead(path);
-        using var reader = new BinaryReader(fs);
+        return Load(fs);
+    }
+
+    /// <summary>
+    /// 从内存加载 Bundle（用于 Source Generator 嵌入的二进制数据）
+    /// </summary>
+    public static CompiledUIBundle Load(ReadOnlySpan<byte> data)
+    {
+        using var ms = new MemoryStream(data.ToArray());
+        return Load(ms);
+    }
+
+    /// <summary>
+    /// 从流加载 Bundle
+    /// </summary>
+    public static CompiledUIBundle Load(Stream stream)
+    {
+        using var reader = new BinaryReader(stream, System.Text.Encoding.UTF8, leaveOpen: true);
 
         // 验证头部
-        var magic = reader.ReadUInt32();
-        if (magic != Magic)
-            throw new InvalidDataException("Invalid bundle file format");
-
-        var version = reader.ReadUInt16();
-        if (version != CurrentVersion)
-            throw new InvalidDataException($"Unsupported bundle version: {version}");
+        var version = ReadAndValidateHeader(reader);
 
         // 读取各部分
         return new CompiledUIBundle
@@ -1246,6 +1585,36 @@ public static class BundleSerializer
             StateTransitions = ReadStateTransitionArray(reader),
             BackdropFilterParams = ReadBackdropFilterParamsArray(reader)
         };
+    }
+
+    private static void WriteHeader(BinaryWriter writer)
+    {
+        writer.Write(JuibMagic);
+        writer.Write(CurrentVersion);
+    }
+
+    private static ushort ReadAndValidateHeader(BinaryReader reader)
+    {
+        Span<byte> magic = stackalloc byte[4];
+        var bytesRead = reader.Read(magic);
+        if (bytesRead != magic.Length)
+            throw new InvalidDataException("Invalid bundle file format: missing header.");
+
+        if (!IsSupportedMagic(magic))
+            throw new InvalidDataException("Invalid bundle file format.");
+
+        var version = reader.ReadUInt16();
+        if (version != CurrentVersion)
+            throw new InvalidDataException($"Unsupported bundle version: {version}");
+
+        return version;
+    }
+
+    private static bool IsSupportedMagic(ReadOnlySpan<byte> magic)
+    {
+        return magic.SequenceEqual(JuibMagic) ||
+               magic.SequenceEqual(LegacyUicMagic) ||
+               magic.SequenceEqual(LegacyJuibMagicFromUInt32);
     }
 
     #region Node Serialization
@@ -2176,6 +2545,111 @@ public static class BundleSerializer
 public sealed class SubmitCommand : DrawCommand
 {
     public override DrawCommandType CommandType => DrawCommandType.Submit;
+}
+
+#endregion
+
+#region Extended Render Backend Interface (Shader Pipeline)
+
+/// <summary>
+/// 扩展渲染后端接口 - 支持完整的 GPU Shader Pipeline
+/// 在 IRenderBackend 基础上增加：Shader 编译、PSO 管理、资源创建、命令缓冲区执行
+/// </summary>
+public interface IRenderBackendEx : IRenderBackend
+{
+    // ===== Shader 编译 =====
+
+    /// <summary>
+    /// 编译着色器
+    /// </summary>
+    nint CompileShader(string source, string entryPoint, Shaders.ShaderStage stage);
+
+    /// <summary>
+    /// 销毁着色器
+    /// </summary>
+    void DestroyShader(nint shader);
+
+    // ===== Pipeline State Object =====
+
+    /// <summary>
+    /// 创建图形/计算管线状态对象
+    /// </summary>
+    nint CreatePipelineState(Pipeline.PipelineStateDesc desc);
+
+    /// <summary>
+    /// 销毁管线状态对象
+    /// </summary>
+    void DestroyPipelineState(nint pso);
+
+    // ===== Root Signature =====
+
+    /// <summary>
+    /// 创建根签名
+    /// </summary>
+    nint CreateRootSignature(Pipeline.RootSignatureType type);
+
+    /// <summary>
+    /// 销毁根签名
+    /// </summary>
+    void DestroyRootSignature(nint rootSig);
+
+    // ===== 扩展资源管理 =====
+
+    /// <summary>
+    /// 创建 GPU 缓冲区
+    /// </summary>
+    nint CreateBuffer(int size, Resources.BufferUsage usage);
+
+    /// <summary>
+    /// 创建 2D 纹理
+    /// </summary>
+    nint CreateTexture2D(int width, int height, TextureFormat format, Resources.TextureUsage usage);
+
+    /// <summary>
+    /// 创建 Shader Resource View
+    /// </summary>
+    Resources.DescriptorHandle CreateSrv(nint resource);
+
+    /// <summary>
+    /// 创建 Constant Buffer View
+    /// </summary>
+    Resources.DescriptorHandle CreateCbv(nint buffer, int offset, int size);
+
+    /// <summary>
+    /// 创建 Unordered Access View
+    /// </summary>
+    Resources.DescriptorHandle CreateUav(nint resource);
+
+    // ===== 命令缓冲区执行 =====
+
+    /// <summary>
+    /// 执行录制好的命令缓冲区
+    /// </summary>
+    void ExecuteCommandBuffer(Commands.GpuCommandBuffer commands);
+
+    // ===== 同步 =====
+
+    /// <summary>
+    /// 发出 GPU fence 信号，返回 fence 值
+    /// </summary>
+    ulong Signal();
+
+    /// <summary>
+    /// 等待 GPU fence 完成
+    /// </summary>
+    void WaitForFence(ulong fenceValue);
+
+    // ===== 设备信息 =====
+
+    /// <summary>
+    /// 获取 native 设备句柄（用于共享资源）
+    /// </summary>
+    nint DeviceHandle { get; }
+
+    /// <summary>
+    /// 获取 native 命令队列句柄
+    /// </summary>
+    nint CommandQueueHandle { get; }
 }
 
 #endregion

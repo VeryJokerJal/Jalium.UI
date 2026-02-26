@@ -29,7 +29,7 @@ public enum TextDecorationLocation
 /// <summary>
 /// Represents a text decoration, such as an underline.
 /// </summary>
-public class TextDecoration
+public sealed class TextDecoration
 {
     /// <summary>
     /// Gets or sets the location of the text decoration.
@@ -113,7 +113,7 @@ public enum TextDecorationUnit
 /// <summary>
 /// Represents a collection of TextDecoration objects.
 /// </summary>
-public class TextDecorationCollection : List<TextDecoration>
+public sealed class TextDecorationCollection : List<TextDecoration>
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="TextDecorationCollection"/> class.
@@ -167,16 +167,13 @@ public static class TextDecorations
     {
         get
         {
-            if (_underline == null)
-            {
-                _underline = new TextDecorationCollection
+            _underline ??= new TextDecorationCollection
                 {
                     new TextDecoration
                     {
                         Location = TextDecorationLocation.Underline
                     }
                 };
-            }
             return _underline;
         }
     }
@@ -188,16 +185,13 @@ public static class TextDecorations
     {
         get
         {
-            if (_strikethrough == null)
-            {
-                _strikethrough = new TextDecorationCollection
+            _strikethrough ??= new TextDecorationCollection
                 {
                     new TextDecoration
                     {
                         Location = TextDecorationLocation.Strikethrough
                     }
                 };
-            }
             return _strikethrough;
         }
     }
@@ -209,16 +203,13 @@ public static class TextDecorations
     {
         get
         {
-            if (_overLine == null)
-            {
-                _overLine = new TextDecorationCollection
+            _overLine ??= new TextDecorationCollection
                 {
                     new TextDecoration
                     {
                         Location = TextDecorationLocation.OverLine
                     }
                 };
-            }
             return _overLine;
         }
     }
@@ -230,16 +221,13 @@ public static class TextDecorations
     {
         get
         {
-            if (_baseline == null)
-            {
-                _baseline = new TextDecorationCollection
+            _baseline ??= new TextDecorationCollection
                 {
                     new TextDecoration
                     {
                         Location = TextDecorationLocation.Baseline
                     }
                 };
-            }
             return _baseline;
         }
     }

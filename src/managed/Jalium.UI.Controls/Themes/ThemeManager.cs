@@ -1,18 +1,93 @@
-using System.Reflection;
+﻿using System.Reflection;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Themes;
 
 /// <summary>
-/// Manages theme initialization and application.
+/// Theme variants supported by Jalium brand theme.
+/// </summary>
+public enum ThemeVariant
+{
+    Dark,
+    Light
+}
+
+/// <summary>
+/// Brand theme options used for one-shot runtime theme application.
+/// </summary>
+public sealed class BrandThemeOptions
+{
+    public ThemeVariant Theme { get; init; } = ThemeVariant.Dark;
+
+    public Color AccentColor { get; init; } = ThemeManager.DefaultPrimaryAccentColor;
+
+    public string? DisplayFontFamily { get; init; }
+
+    public string? BodyFontFamily { get; init; }
+
+    public string? MonoFontFamily { get; init; }
+}
+
+/// <summary>
+/// Manages theme initialization and runtime brand theme application.
 /// </summary>
 public static class ThemeManager
 {
+    private const string ThemeRefreshVersionKey = "__ThemeManager.Version";
+
     private static bool _initialized;
+    private static int _themeVersion;
+    private static Application? _application;
+    private static ResourceDictionary? _genericThemeDictionary;
+    private static ResourceDictionary? _accentDictionary;
+    private static ResourceDictionary? _typographyDictionary;
+    private static bool _suppressRefresh;
+
+    /// <summary>
+    /// Default brand primary accent (purple).
+    /// </summary>
+    public static readonly Color DefaultPrimaryAccentColor = Color.FromRgb(0x7C, 0x4D, 0xFF);
+
+    /// <summary>
+    /// Default brand secondary accent (orange).
+    /// </summary>
+    public static readonly Color DefaultSecondaryAccentColor = Color.FromRgb(0xFF, 0x8A, 0x00);
 
     /// <summary>
     /// The resource name of the Generic theme file.
     /// </summary>
     public const string GenericThemeResourceName = "Jalium.UI.Controls.Themes.Generic.jalxaml";
+
+    /// <summary>
+    /// Delegate for loading XAML content from a stream.
+    /// Set by the Jalium.UI.Xaml assembly via ModuleInitializer to avoid circular dependency.
+    /// </summary>
+    public static Func<Stream, string, Assembly, ResourceDictionary?>? XamlLoader { get; set; }
+
+    /// <summary>
+    /// Gets the currently active theme variant.
+    /// </summary>
+    public static ThemeVariant CurrentTheme { get; private set; } = ThemeVariant.Dark;
+
+    /// <summary>
+    /// Gets the current primary accent color.
+    /// </summary>
+    public static Color CurrentAccentColor { get; private set; } = DefaultPrimaryAccentColor;
+
+    /// <summary>
+    /// Gets the current display font family.
+    /// </summary>
+    public static string CurrentDisplayFontFamily { get; private set; } = "Segoe UI";
+
+    /// <summary>
+    /// Gets the current body font family.
+    /// </summary>
+    public static string CurrentBodyFontFamily { get; private set; } = "Segoe UI";
+
+    /// <summary>
+    /// Gets the current monospace font family.
+    /// </summary>
+    public static string CurrentMonospaceFontFamily { get; private set; } = "Cascadia Mono";
 
     /// <summary>
     /// Initializes the default theme for the application.
@@ -21,95 +96,134 @@ public static class ThemeManager
     /// <param name="app">The application instance.</param>
     public static void Initialize(Application app)
     {
-        if (_initialized)
-            return;
-
         ArgumentNullException.ThrowIfNull(app);
 
-        // Try to load the Generic theme using XamlReader via reflection
-        // This avoids circular dependency between Controls and Xaml projects
-        var theme = LoadGenericThemeViaReflection();
-        if (theme != null)
+        _application = app;
+        ResourceDictionary.CurrentThemeKey = CurrentTheme.ToString();
+
+        if (_initialized)
         {
-            app.Resources.MergedDictionaries.Add(theme);
+            ForceThemeRefresh();
+            return;
         }
 
+        if (XamlLoader == null)
+        {
+            // XamlLoader not registered yet - Jalium.UI.Xaml module initializer hasn't run.
+            // This will be retried when the Xaml assembly is first accessed.
+            return;
+        }
+
+        _genericThemeDictionary = LoadGenericTheme();
+        if (_genericThemeDictionary != null)
+        {
+            app.Resources.MergedDictionaries.Add(_genericThemeDictionary);
+        }
+
+        _accentDictionary = BuildAccentDictionary(CurrentAccentColor);
+        _typographyDictionary = BuildTypographyDictionary(CurrentDisplayFontFamily, CurrentBodyFontFamily, CurrentMonospaceFontFamily);
+
+        app.Resources.MergedDictionaries.Add(_accentDictionary);
+        app.Resources.MergedDictionaries.Add(_typographyDictionary);
+
         _initialized = true;
+        ForceThemeRefresh();
     }
 
     /// <summary>
-    /// Loads the Generic theme using XamlReader via reflection.
-    /// This avoids compile-time dependency on the Xaml project.
+    /// Applies a theme variant at runtime.
     /// </summary>
-    private static ResourceDictionary? LoadGenericThemeViaReflection()
+    public static void ApplyTheme(ThemeVariant theme)
     {
+        CurrentTheme = theme;
+        ResourceDictionary.CurrentThemeKey = theme.ToString();
+
+        if (_application != null)
+        {
+            // Accent derived resources depend on current theme (notably disabled variants).
+            ReplaceManagedDictionary(ref _accentDictionary, BuildAccentDictionary(CurrentAccentColor));
+        }
+
+        ForceThemeRefresh();
+    }
+
+    /// <summary>
+    /// Applies a runtime accent color and regenerates derived accent tokens.
+    /// </summary>
+    public static void ApplyAccent(Color accent)
+    {
+        CurrentAccentColor = accent;
+
+        if (_application == null)
+            return;
+
+        ReplaceManagedDictionary(ref _accentDictionary, BuildAccentDictionary(accent));
+        ForceThemeRefresh();
+    }
+
+    /// <summary>
+    /// Applies runtime typography tokens.
+    /// </summary>
+    public static void ApplyTypography(string display, string body, string mono)
+    {
+        CurrentDisplayFontFamily = NormalizeFontFamily(display, "Segoe UI");
+        CurrentBodyFontFamily = NormalizeFontFamily(body, "Segoe UI");
+        CurrentMonospaceFontFamily = NormalizeFontFamily(mono, "Cascadia Mono");
+
+        if (_application == null)
+            return;
+
+        ReplaceManagedDictionary(
+            ref _typographyDictionary,
+            BuildTypographyDictionary(CurrentDisplayFontFamily, CurrentBodyFontFamily, CurrentMonospaceFontFamily));
+
+        ForceThemeRefresh();
+    }
+
+    /// <summary>
+    /// Applies brand theme in one call (theme + accent + typography).
+    /// </summary>
+    public static void ApplyBrandTheme(BrandThemeOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+
+        _suppressRefresh = true;
         try
         {
-            // Try to find the Jalium.UI.Xaml assembly
-            var xamlAssembly = AppDomain.CurrentDomain.GetAssemblies()
-                .FirstOrDefault(a => a.GetName().Name == "Jalium.UI.Xaml");
-
-            if (xamlAssembly == null)
-            {
-                // Try to load it
-                try
-                {
-                    xamlAssembly = Assembly.Load("Jalium.UI.Xaml");
-                }
-                catch
-                {
-                    return null;
-                }
-            }
-
-            // Get XamlReader type
-            var xamlReaderType = xamlAssembly.GetType("Jalium.UI.Markup.XamlReader");
-            if (xamlReaderType == null)
-            {
-                return null;
-            }
-
-            // Get the Load(Stream, string, Assembly) method for proper context
-            var loadMethod = xamlReaderType.GetMethod("Load", [typeof(Stream), typeof(string), typeof(Assembly)]);
-            if (loadMethod == null)
-            {
-                // Fallback to Load(Stream) if new overload not available
-                loadMethod = xamlReaderType.GetMethod("Load", [typeof(Stream)]);
-                if (loadMethod == null)
-                {
-                    return null;
-                }
-
-                // Get the theme stream
-                using var stream = GetGenericThemeStream();
-                if (stream == null)
-                {
-                    return null;
-                }
-
-                // Invoke XamlReader.Load(stream)
-                var result = loadMethod.Invoke(null, [stream]);
-                return result as ResourceDictionary;
-            }
-
-            // Get the theme stream
-            using var themeStream = GetGenericThemeStream();
-            if (themeStream == null)
-            {
-                return null;
-            }
-
-            // Invoke XamlReader.Load(stream, resourceName, assembly) with proper context
-            var themeResult = loadMethod.Invoke(null, [themeStream, "Themes/Generic.jalxaml", ControlsAssembly]);
-            return themeResult as ResourceDictionary;
+            ApplyTheme(options.Theme);
+            ApplyAccent(options.AccentColor);
+            ApplyTypography(
+                options.DisplayFontFamily ?? CurrentDisplayFontFamily,
+                options.BodyFontFamily ?? CurrentBodyFontFamily,
+                options.MonoFontFamily ?? CurrentMonospaceFontFamily);
         }
-        catch (Exception ex)
+        finally
         {
-            // Get the real exception (reflection wraps in TargetInvocationException)
-            var realException = ex is System.Reflection.TargetInvocationException tie ? tie.InnerException ?? ex : ex;
-            // Re-throw to make the error visible during development
-            throw new InvalidOperationException($"Failed to load Generic theme: {realException.Message}", realException);
+            _suppressRefresh = false;
         }
+
+        ForceThemeRefresh();
+    }
+
+    /// <summary>
+    /// Loads the Generic theme using the registered XamlLoader callback.
+    /// This avoids compile-time dependency on the Xaml project (AOT-safe).
+    /// </summary>
+    private static ResourceDictionary? LoadGenericTheme()
+    {
+        if (XamlLoader == null)
+        {
+            // XamlLoader not registered - Jalium.UI.Xaml assembly not initialized.
+            return null;
+        }
+
+        using var stream = GetGenericThemeStream();
+        if (stream == null)
+        {
+            return null;
+        }
+
+        return XamlLoader(stream, "Themes/Generic.jalxaml", ControlsAssembly);
     }
 
     /// <summary>
@@ -154,5 +268,115 @@ public static class ThemeManager
     internal static void Reset()
     {
         _initialized = false;
+        _application = null;
+        _genericThemeDictionary = null;
+        _accentDictionary = null;
+        _typographyDictionary = null;
+        _themeVersion = 0;
+        _suppressRefresh = false;
+
+        CurrentTheme = ThemeVariant.Dark;
+        CurrentAccentColor = DefaultPrimaryAccentColor;
+        CurrentDisplayFontFamily = "Segoe UI";
+        CurrentBodyFontFamily = "Segoe UI";
+        CurrentMonospaceFontFamily = "Cascadia Mono";
+
+        ResourceDictionary.CurrentThemeKey = null;
+    }
+
+    private static void ReplaceManagedDictionary(ref ResourceDictionary? current, ResourceDictionary replacement)
+    {
+        if (_application == null)
+        {
+            current = replacement;
+            return;
+        }
+
+        var dictionaries = _application.Resources.MergedDictionaries;
+        var index = current == null ? -1 : dictionaries.IndexOf(current);
+
+        if (index >= 0)
+        {
+            dictionaries[index] = replacement;
+        }
+        else
+        {
+            dictionaries.Add(replacement);
+        }
+
+        current = replacement;
+    }
+
+    private static void ForceThemeRefresh()
+    {
+        if (_application == null || _suppressRefresh)
+            return;
+
+        DynamicResourceBindingOperations.RefreshAll();
+
+        _themeVersion++;
+        _application.Resources[ThemeRefreshVersionKey] = _themeVersion;
+    }
+
+    private static ResourceDictionary BuildAccentDictionary(Color accent)
+    {
+        var hover = Blend(accent, Color.White, 0.18);
+        var pressed = Blend(accent, Color.Black, 0.24);
+        var disabledBlendTarget = CurrentTheme == ThemeVariant.Dark
+            ? Color.FromRgb(0x66, 0x66, 0x66)
+            : Color.FromRgb(0xB8, 0xB8, 0xB8);
+        var disabled = Blend(accent, disabledBlendTarget, 0.58);
+        var selection = Color.FromArgb(0x99, accent.R, accent.G, accent.B);
+        var weakSelection = Color.FromArgb(0x4D, accent.R, accent.G, accent.B);
+
+        var dictionary = new ResourceDictionary
+        {
+            ["AccentBrush"] = new SolidColorBrush(accent),
+            ["AccentBrushHover"] = new SolidColorBrush(hover),
+            ["AccentBrushPressed"] = new SolidColorBrush(pressed),
+            ["AccentBrushDisabled"] = new SolidColorBrush(disabled),
+            ["SelectionBackground"] = new SolidColorBrush(selection),
+            ["SelectionBackgroundWeak"] = new SolidColorBrush(weakSelection),
+            ["AppBarButtonForeground"] = new SolidColorBrush(accent),
+            ["AppBarButtonForegroundDisabled"] = new SolidColorBrush(disabled),
+            ["ProgressRingForeground"] = new SolidColorBrush(accent),
+            ["BrandPrimaryAccentBrush"] = new SolidColorBrush(accent),
+            ["BrandSecondaryAccentBrush"] = new SolidColorBrush(DefaultSecondaryAccentColor),
+            ["BrandPrimaryAccentColor"] = accent,
+            ["BrandSecondaryAccentColor"] = DefaultSecondaryAccentColor
+        };
+
+        return dictionary;
+    }
+
+    private static ResourceDictionary BuildTypographyDictionary(string display, string body, string mono)
+    {
+        return new ResourceDictionary
+        {
+            ["DisplayFontFamily"] = display,
+            ["BodyFontFamily"] = body,
+            ["MonoFontFamily"] = mono
+        };
+    }
+
+    private static string NormalizeFontFamily(string? value, string fallback)
+    {
+        return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+    }
+
+    private static Color Blend(Color color, Color target, double factor)
+    {
+        factor = Math.Clamp(factor, 0.0, 1.0);
+
+        static byte Lerp(byte from, byte to, double t)
+        {
+            return (byte)Math.Clamp((int)Math.Round(from + ((to - from) * t)), 0, 255);
+        }
+
+        return Color.FromArgb(
+            Lerp(color.A, target.A, factor),
+            Lerp(color.R, target.R, factor),
+            Lerp(color.G, target.G, factor),
+            Lerp(color.B, target.B, factor));
     }
 }

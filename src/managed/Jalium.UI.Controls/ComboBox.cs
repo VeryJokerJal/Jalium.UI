@@ -1,6 +1,8 @@
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
-using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
@@ -13,6 +15,17 @@ public class ComboBox : Selector
     private ToggleButton? _toggleButton;
     private StackPanel? _itemsPanel;
     private bool _isDropDownOpen;
+
+    // Animation
+    private Shapes.Path? _arrowPath;
+    private RotateTransform? _arrowRotate;
+    private DispatcherTimer? _animationTimer;
+    private bool _isCloseAnimating;
+
+    private const double OpenDurationMs = 250;
+    private const double CloseDurationMs = 180;
+    private static readonly CubicEase OpenEase = new() { EasingMode = EasingMode.EaseOut };
+    private static readonly CubicEase CloseEase = new() { EasingMode = EasingMode.EaseIn };
 
     #region Dependency Properties
 
@@ -111,15 +124,18 @@ public class ComboBox : Selector
 
     public ComboBox()
     {
-        // Default values - will be overridden by style
-        MinHeight = 32;
         MinWidth = 120;
+        Focusable = true;
+        SizeChanged += OnComboBoxSizeChanged;
 
         // Initialize SelectionBoxItem with placeholder
         SelectionBoxItem = PlaceholderText;
 
         // Set up mouse handling for toggle
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
+
+        // Set up keyboard handling for navigation
+        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
     }
 
     /// <inheritdoc />
@@ -156,6 +172,16 @@ public class ComboBox : Selector
             _popup.Closed += OnPopupClosed;
         }
 
+        UpdatePopupPlacementAndWidth();
+
+        // Find the arrow Path inside ToggleButton's template for rotation animation
+        _arrowPath = FindDescendant<Shapes.Path>(_toggleButton);
+        if (_arrowPath != null)
+        {
+            _arrowRotate = new RotateTransform();
+            _arrowPath.RenderTransform = _arrowRotate;
+        }
+
         // Update selection box
         UpdateSelectionBoxItem();
     }
@@ -172,8 +198,45 @@ public class ComboBox : Selector
 
     private void OnPopupClosed(object? sender, EventArgs e)
     {
+        // If CloseDropDown's animation is already handling the close, skip
+        if (_isCloseAnimating) return;
+
+        // Popup was closed externally (light dismiss / StaysOpen=false)
+        // The popup is already gone, so just animate the arrow back
+        _animationTimer?.Stop();
         _isDropDownOpen = false;
+
+        if (_toggleButton != null)
+            _toggleButton.IsChecked = false;
+
+        // Animate arrow back to 0° (popup child is already hidden)
+        if (_arrowRotate != null && Math.Abs(_arrowRotate.Angle) > 0.5)
+        {
+            var arrowStartAngle = _arrowRotate.Angle;
+            var startTime = Environment.TickCount64;
+
+            _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
+            _animationTimer.Tick += (s, ev) =>
+            {
+                var elapsed = Environment.TickCount64 - startTime;
+                var progress = Math.Min(1.0, elapsed / CloseDurationMs);
+                var eased = CloseEase.Ease(progress);
+
+                _arrowRotate.Angle = arrowStartAngle * (1.0 - eased);
+                _arrowPath!.InvalidateVisual();
+
+                if (progress >= 1.0)
+                {
+                    _animationTimer!.Stop();
+                    _arrowRotate.Angle = 0;
+                    _arrowPath!.InvalidateVisual();
+                }
+            };
+            _animationTimer.Start();
+        }
+
         SetValue(IsDropDownOpenProperty, false);
+        DropDownClosed?.Invoke(this, EventArgs.Empty);
     }
 
     private void OnMouseDownHandler(object sender, RoutedEventArgs e)
@@ -181,6 +244,76 @@ public class ComboBox : Selector
         // Toggle dropdown
         IsDropDownOpen = !IsDropDownOpen;
         e.Handled = true;
+    }
+
+    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled) return;
+        if (e is not KeyEventArgs keyArgs) return;
+
+        switch (keyArgs.Key)
+        {
+            case Key.Down:
+                if (SelectedIndex < Items.Count - 1)
+                    SelectedIndex++;
+                e.Handled = true;
+                break;
+
+            case Key.Up:
+                if (SelectedIndex > 0)
+                    SelectedIndex--;
+                e.Handled = true;
+                break;
+
+            case Key.Enter:
+                if (IsDropDownOpen)
+                {
+                    CloseDropDown();
+                }
+                else
+                {
+                    OpenDropDown();
+                }
+                e.Handled = true;
+                break;
+
+            case Key.Escape:
+                if (IsDropDownOpen)
+                {
+                    CloseDropDown();
+                    e.Handled = true;
+                }
+                break;
+
+            case Key.Space:
+                if (IsDropDownOpen)
+                    CloseDropDown();
+                else
+                    OpenDropDown();
+                e.Handled = true;
+                break;
+
+            case Key.Home:
+                if (Items.Count > 0)
+                    SelectedIndex = 0;
+                e.Handled = true;
+                break;
+
+            case Key.End:
+                if (Items.Count > 0)
+                    SelectedIndex = Items.Count - 1;
+                e.Handled = true;
+                break;
+
+            case Key.F4:
+                // F4 toggles dropdown (standard Windows behavior)
+                if (IsDropDownOpen)
+                    CloseDropDown();
+                else
+                    OpenDropDown();
+                e.Handled = true;
+                break;
+        }
     }
 
     private static void OnIsDropDownOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -222,11 +355,18 @@ public class ComboBox : Selector
     {
         if (_isDropDownOpen) return;
 
-        // Populate dropdown items if we have an items panel
+        // Cancel any close animation in progress
+        if (_isCloseAnimating)
+        {
+            _animationTimer?.Stop();
+            _isCloseAnimating = false;
+        }
+
         PopulateDropdownItems();
 
         if (_popup != null)
         {
+            UpdatePopupPlacementAndWidth();
             _popup.IsOpen = true;
         }
 
@@ -237,17 +377,15 @@ public class ComboBox : Selector
             _toggleButton.IsChecked = true;
         }
 
+        // Animate: arrow 0→180°, popup child fade+slide in
+        AnimateOpen();
+
         DropDownOpened?.Invoke(this, EventArgs.Empty);
     }
 
     private void CloseDropDown()
     {
         if (!_isDropDownOpen) return;
-
-        if (_popup != null)
-        {
-            _popup.IsOpen = false;
-        }
 
         _isDropDownOpen = false;
 
@@ -256,8 +394,170 @@ public class ComboBox : Selector
             _toggleButton.IsChecked = false;
         }
 
+        // Animate: arrow 180→0°, popup child fade+slide out, then close popup
+        AnimateClose();
+
         DropDownClosed?.Invoke(this, EventArgs.Empty);
     }
+
+    private void OnComboBoxSizeChanged(object? sender, SizeChangedEventArgs e)
+    {
+        UpdatePopupPlacementAndWidth();
+    }
+
+    private void UpdatePopupPlacementAndWidth()
+    {
+        if (_popup == null) return;
+
+        _popup.PlacementTarget = this;
+
+        var popupWidth = ActualWidth;
+        if (popupWidth <= 0 || double.IsNaN(popupWidth) || double.IsInfinity(popupWidth))
+        {
+            if (!double.IsNaN(Width) && !double.IsInfinity(Width) && Width > 0)
+                popupWidth = Width;
+        }
+
+        if (popupWidth > 0 && !double.IsNaN(popupWidth) && !double.IsInfinity(popupWidth))
+        {
+            _popup.Width = popupWidth;
+            _popup.MinWidth = popupWidth;
+            _popup.MaxWidth = popupWidth;
+        }
+    }
+
+    #region Animation
+
+    private void AnimateOpen()
+    {
+        _animationTimer?.Stop();
+
+        var popupChild = _popup?.Child as FrameworkElement;
+
+        // Initial state: transparent + shifted up
+        if (popupChild != null)
+        {
+            popupChild.Opacity = 0;
+            popupChild.RenderOffset = new Point(0, -8);
+        }
+
+        var arrowStartAngle = _arrowRotate?.Angle ?? 0;
+        var startTime = Environment.TickCount64;
+
+        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
+        _animationTimer.Tick += (s, e) =>
+        {
+            var elapsed = Environment.TickCount64 - startTime;
+            var progress = Math.Min(1.0, elapsed / OpenDurationMs);
+            var eased = OpenEase.Ease(progress);
+
+            // Arrow: rotate to 180°
+            if (_arrowRotate != null)
+            {
+                _arrowRotate.Angle = arrowStartAngle + (180.0 - arrowStartAngle) * eased;
+                _arrowPath!.InvalidateVisual();
+            }
+
+            // Popup child: fade in + slide down
+            if (popupChild != null)
+            {
+                popupChild.Opacity = eased;
+                popupChild.RenderOffset = new Point(0, -8 * (1.0 - eased));
+            }
+
+            if (progress >= 1.0)
+            {
+                _animationTimer!.Stop();
+                if (popupChild != null)
+                {
+                    popupChild.Opacity = 1;
+                    popupChild.RenderOffset = default;
+                }
+                if (_arrowRotate != null)
+                {
+                    _arrowRotate.Angle = 180;
+                    _arrowPath!.InvalidateVisual();
+                }
+            }
+        };
+        _animationTimer.Start();
+    }
+
+    private void AnimateClose()
+    {
+        _animationTimer?.Stop();
+
+        var popupChild = _popup?.Child as FrameworkElement;
+        var arrowStartAngle = _arrowRotate?.Angle ?? 180;
+        var startOpacity = popupChild?.Opacity ?? 1.0;
+        var startOffsetY = popupChild?.RenderOffset.Y ?? 0;
+        var startTime = Environment.TickCount64;
+
+        _isCloseAnimating = true;
+
+        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
+        _animationTimer.Tick += (s, e) =>
+        {
+            var elapsed = Environment.TickCount64 - startTime;
+            var progress = Math.Min(1.0, elapsed / CloseDurationMs);
+            var eased = CloseEase.Ease(progress);
+
+            // Arrow: rotate back to 0°
+            if (_arrowRotate != null)
+            {
+                _arrowRotate.Angle = arrowStartAngle * (1.0 - eased);
+                _arrowPath!.InvalidateVisual();
+            }
+
+            // Popup child: fade out + slide up
+            if (popupChild != null)
+            {
+                popupChild.Opacity = startOpacity * (1.0 - eased);
+                popupChild.RenderOffset = new Point(0, startOffsetY + (-8 - startOffsetY) * eased);
+            }
+
+            if (progress >= 1.0)
+            {
+                _animationTimer!.Stop();
+
+                // Actually close the popup after animation completes
+                // Keep _isCloseAnimating=true until AFTER popup closes to prevent OnPopupClosed re-entry
+                if (_popup != null)
+                {
+                    _popup.IsOpen = false;
+                }
+                _isCloseAnimating = false;
+
+                // Reset state
+                if (popupChild != null)
+                {
+                    popupChild.Opacity = 1;
+                    popupChild.RenderOffset = default;
+                }
+                if (_arrowRotate != null)
+                {
+                    _arrowRotate.Angle = 0;
+                    _arrowPath!.InvalidateVisual();
+                }
+            }
+        };
+        _animationTimer.Start();
+    }
+
+    private static T? FindDescendant<T>(Visual? root) where T : Visual
+    {
+        if (root == null) return null;
+        for (int i = 0; i < root.VisualChildrenCount; i++)
+        {
+            var child = root.GetVisualChild(i);
+            if (child is T match) return match;
+            var result = FindDescendant<T>(child);
+            if (result != null) return result;
+        }
+        return null;
+    }
+
+    #endregion
 
     private void PopulateDropdownItems()
     {
@@ -322,54 +622,13 @@ public class ComboBox : Selector
 
         return item.ToString() ?? string.Empty;
     }
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        // ComboBox needs to respect MinHeight for proper sizing
-        var baseSize = base.MeasureOverride(availableSize);
-
-        // If base returned infinite height (template has no height constraint),
-        // use MinHeight instead. ComboBox is a fixed-height control.
-        var height = baseSize.Height;
-        if (double.IsInfinity(height) || double.IsNaN(height))
-        {
-            height = MinHeight;
-        }
-        else
-        {
-            height = Math.Max(height, MinHeight);
-        }
-
-        return new Size(baseSize.Width, height);
-    }
-
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        // Ensure MinHeight is respected in arrange
-        var arrangedSize = base.ArrangeOverride(finalSize);
-
-        var height = arrangedSize.Height;
-        if (double.IsInfinity(height) || double.IsNaN(height))
-        {
-            height = MinHeight;
-        }
-        else
-        {
-            height = Math.Max(height, MinHeight);
-        }
-
-        return new Size(arrangedSize.Width, height);
-    }
 }
 
 /// <summary>
 /// Represents an item in a ComboBox.
 /// </summary>
-public class ComboBoxItem : ContentControl
+public sealed class ComboBoxItem : ContentControl
 {
-    private bool _isMouseOver;
     private bool _isPressed;
 
     /// <summary>
@@ -395,30 +654,12 @@ public class ComboBoxItem : ContentControl
 
     public ComboBoxItem()
     {
-        Background = new SolidColorBrush(Color.Transparent);
-        Foreground = new SolidColorBrush(Color.White);
-        Padding = new Thickness(8, 4, 8, 4);
-        MinHeight = 28;
+        // Use ControlTemplate-based rendering (defined in SelectionControls.jalxaml)
+        UseTemplateContentManagement();
 
-        // Set up mouse event handlers
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
+        // Set up mouse event handlers for click behavior
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-    }
-
-    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
-    {
-        _isMouseOver = true;
-        // State change handled by style triggers via IsMouseOver property
-        InvalidateVisual();
-    }
-
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
-    {
-        _isMouseOver = false;
-        // State change handled by style triggers via IsMouseOver property
-        InvalidateVisual();
     }
 
     private void OnMouseDownHandler(object sender, RoutedEventArgs e)
@@ -438,9 +679,6 @@ public class ComboBoxItem : ContentControl
 
         if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
         {
-            // Fire click if mouse was pressed on this item and is still over it
-            // In popup context, we simplify by just checking wasPressed since
-            // the user clicking on the same item they pressed is the expected behavior
             if (_isPressed)
             {
                 _isPressed = false;
@@ -458,50 +696,5 @@ public class ComboBoxItem : ContentControl
         {
             _isPressed = false;
         }
-    }
-
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        return new Size(availableSize.Width, MinHeight);
-    }
-
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        return finalSize;
-    }
-
-    protected override void OnRender(object drawingContextObj)
-    {
-        if (drawingContextObj is not DrawingContext dc)
-        {
-            base.OnRender(drawingContextObj);
-            return;
-        }
-
-        var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
-
-        // Draw background
-        if (Background != null)
-        {
-            dc.DrawRectangle(Background, null, bounds);
-        }
-
-        // Draw content text
-        var contentText = Content?.ToString() ?? "";
-        if (!string.IsNullOrEmpty(contentText))
-        {
-            var fontMetrics = TextMeasurement.GetFontMetrics("Segoe UI", 14);
-            var text = new FormattedText(contentText, "Segoe UI", 14)
-            {
-                Foreground = Foreground ?? new SolidColorBrush(Color.White),
-                MaxTextWidth = ActualWidth - Padding.Left - Padding.Right,
-                MaxTextHeight = ActualHeight - Padding.Top - Padding.Bottom
-            };
-
-            var textY = (ActualHeight - fontMetrics.LineHeight) / 2;
-            dc.DrawText(text, new Point(Padding.Left, textY));
-        }
-
-        // Note: Do not call base.OnRender - ComboBoxItem handles all rendering directly
     }
 }

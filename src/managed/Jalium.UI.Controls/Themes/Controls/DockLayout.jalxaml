@@ -1,0 +1,38 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- DockLayout -->
+    <Style TargetType="DockLayout">
+        <Setter Property="Background" Value="{StaticResource WindowBackground}" />
+    </Style>
+
+    <!-- DockTabPanel -->
+    <Style TargetType="DockTabPanel">
+        <Setter Property="Background" Value="{StaticResource DockContentBackground}" />
+        <Setter Property="TabStripBackground" Value="{StaticResource DockTabStripBackground}" />
+        <Setter Property="TabStripBorderBrush" Value="{StaticResource DockTabStripBorder}" />
+        <Setter Property="TabStripHeight" Value="28" />
+        <Setter Property="FontSize" Value="12" />
+    </Style>
+
+    <!-- DockItem -->
+    <Style TargetType="DockItem">
+        <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+        <Setter Property="SelectedBackground" Value="{StaticResource DockTabItemSelectedBackground}" />
+        <Setter Property="HoverBackground" Value="{StaticResource DockTabItemHoverBackground}" />
+        <Setter Property="IndicatorBrush" Value="{StaticResource AccentBrush}" />
+        <Setter Property="Padding" Value="10,5,10,5" />
+        <Style.Triggers>
+            <PropertyTrigger Property="IsSelected" Value="True">
+                <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- DockSplitBar (internal) -->
+    <Style TargetType="DockSplitBar">
+        <Setter Property="Background" Value="{StaticResource DockSplitterBackground}" />
+    </Style>
+
+</ResourceDictionary>

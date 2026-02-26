@@ -19,7 +19,7 @@ public abstract class Brush
 /// <summary>
 /// Paints an area with a solid color.
 /// </summary>
-public class SolidColorBrush : Brush
+public sealed class SolidColorBrush : Brush
 {
     /// <summary>
     /// Gets or sets the color of the brush.
@@ -71,7 +71,7 @@ public abstract class GradientBrush : Brush
 /// <summary>
 /// Paints an area with a linear gradient.
 /// </summary>
-public class LinearGradientBrush : GradientBrush
+public sealed class LinearGradientBrush : GradientBrush
 {
     /// <summary>
     /// Gets or sets the starting point of the gradient.
@@ -114,7 +114,7 @@ public class LinearGradientBrush : GradientBrush
 /// <summary>
 /// Paints an area with a radial gradient.
 /// </summary>
-public class RadialGradientBrush : GradientBrush
+public sealed class RadialGradientBrush : GradientBrush
 {
     /// <summary>
     /// Gets or sets the center of the gradient.
@@ -140,7 +140,7 @@ public class RadialGradientBrush : GradientBrush
 /// <summary>
 /// Describes a single color and its position in a gradient.
 /// </summary>
-public class GradientStop
+public sealed class GradientStop
 {
     /// <summary>
     /// Gets or sets the color at this stop.
@@ -258,7 +258,7 @@ public abstract class TileBrush : Brush
 /// <summary>
 /// Paints an area with an image.
 /// </summary>
-public class ImageBrush : TileBrush
+public sealed class ImageBrush : TileBrush
 {
     /// <summary>
     /// Gets or sets the image source.
@@ -288,7 +288,7 @@ public class ImageBrush : TileBrush
 /// <summary>
 /// Paints an area with a Drawing.
 /// </summary>
-public class DrawingBrush : TileBrush
+public sealed class DrawingBrush : TileBrush
 {
     /// <summary>
     /// Gets or sets the Drawing that defines the content of this brush.
@@ -318,7 +318,7 @@ public class DrawingBrush : TileBrush
 /// <summary>
 /// Paints an area with a visual element.
 /// </summary>
-public class VisualBrush : TileBrush
+public sealed class VisualBrush : TileBrush
 {
     /// <summary>
     /// Gets or sets the visual that provides the content for the brush.

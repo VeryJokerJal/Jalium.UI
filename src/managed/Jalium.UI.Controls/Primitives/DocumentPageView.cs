@@ -1,12 +1,22 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents a view that displays a single page of a document.
 /// </summary>
-public class DocumentPageView : FrameworkElement
+public sealed class DocumentPageView : FrameworkElement
 {
+    #region Static Brushes & Pens
+
+    private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(240, 240, 240));
+    private static readonly SolidColorBrush s_pageBrush = new(Color.White);
+    private static readonly SolidColorBrush s_shadowBrush = new(Color.FromArgb(32, 0, 0, 0));
+    private static readonly SolidColorBrush s_borderBrush = new(Color.FromRgb(200, 200, 200));
+    private static readonly Pen s_borderPen = new(s_borderBrush, 1);
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -55,7 +65,7 @@ public class DocumentPageView : FrameworkElement
     /// </summary>
     public int PageNumber
     {
-        get => (int)(GetValue(PageNumberProperty) ?? 0);
+        get => (int)GetValue(PageNumberProperty)!;
         set => SetValue(PageNumberProperty, value);
     }
 
@@ -64,7 +74,7 @@ public class DocumentPageView : FrameworkElement
     /// </summary>
     public Stretch Stretch
     {
-        get => (Stretch)(GetValue(StretchProperty) ?? Stretch.Uniform);
+        get => (Stretch)GetValue(StretchProperty)!;
         set => SetValue(StretchProperty, value);
     }
 
@@ -73,7 +83,7 @@ public class DocumentPageView : FrameworkElement
     /// </summary>
     public StretchDirection StretchDirection
     {
-        get => (StretchDirection)(GetValue(StretchDirectionProperty) ?? StretchDirection.Both);
+        get => (StretchDirection)GetValue(StretchDirectionProperty)!;
         set => SetValue(StretchDirectionProperty, value);
     }
 
@@ -189,27 +199,23 @@ public class DocumentPageView : FrameworkElement
         if (DocumentPage?.Visual == null)
         {
             // Draw placeholder
-            var placeholderBrush = new SolidColorBrush(Color.FromRgb(240, 240, 240));
-            dc.DrawRectangle(placeholderBrush, null, new Rect(RenderSize));
+            dc.DrawRectangle(s_placeholderBrush, null, new Rect(RenderSize));
             return;
         }
 
         // The actual page visual would be rendered here
         // For now, draw a representation
-        var pageBrush = new SolidColorBrush(Color.White);
-        var shadowBrush = new SolidColorBrush(Color.FromArgb(32, 0, 0, 0));
 
         // Draw shadow
         var shadowRect = new Rect(2, 2, RenderSize.Width, RenderSize.Height);
-        dc.DrawRectangle(shadowBrush, null, shadowRect);
+        dc.DrawRectangle(s_shadowBrush, null, shadowRect);
 
         // Draw page
         var pageRect = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-        dc.DrawRectangle(pageBrush, null, pageRect);
+        dc.DrawRectangle(s_pageBrush, null, pageRect);
 
         // Draw border
-        var borderPen = new Pen(new SolidColorBrush(Color.FromRgb(200, 200, 200)), 1);
-        dc.DrawRectangle(null, borderPen, pageRect);
+        dc.DrawRectangle(null, s_borderPen, pageRect);
     }
 
     #endregion

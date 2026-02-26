@@ -27,12 +27,21 @@ public:
     /// Creates a render target for a window handle.
     virtual RenderTarget* CreateRenderTarget(void* hwnd, int32_t width, int32_t height) = 0;
 
+    /// Creates a render target with composition swap chain for per-pixel alpha transparency.
+    virtual RenderTarget* CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height) = 0;
+
     /// Creates a solid color brush.
     virtual Brush* CreateSolidBrush(float r, float g, float b, float a) = 0;
 
     /// Creates a linear gradient brush.
     virtual Brush* CreateLinearGradientBrush(
         float startX, float startY, float endX, float endY,
+        const JaliumGradientStop* stops, uint32_t stopCount) = 0;
+
+    /// Creates a radial gradient brush.
+    virtual Brush* CreateRadialGradientBrush(
+        float centerX, float centerY, float radiusX, float radiusY,
+        float originX, float originY,
         const JaliumGradientStop* stops, uint32_t stopCount) = 0;
 
     /// Creates a text format.
@@ -99,6 +108,25 @@ public:
     /// @param closed Whether to close the polygon.
     virtual void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed) = 0;
 
+    /// Fills a path defined by a command buffer (lines + bezier curves).
+    /// Command encoding: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey].
+    virtual void FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule) = 0;
+
+    /// Strokes a path defined by a command buffer (lines + bezier curves).
+    virtual void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed) = 0;
+
+    /// Draws a content area border: fills a rect with bottom-only rounded corners,
+    /// then strokes a U-shape (left + bottom + right, no top) with the same radii.
+    /// @param x,y,w,h The content area rectangle.
+    /// @param blRadius Bottom-left corner radius.
+    /// @param brRadius Bottom-right corner radius.
+    /// @param fillBrush Brush for background fill (may be null).
+    /// @param strokeBrush Brush for border stroke (may be null).
+    /// @param strokeWidth Border line width.
+    virtual void DrawContentBorder(float x, float y, float w, float h,
+        float blRadius, float brRadius,
+        Brush* fillBrush, Brush* strokeBrush, float strokeWidth) = 0;
+
     /// Draws text.
     virtual void RenderText(
         const wchar_t* text, uint32_t textLength,
@@ -115,6 +143,9 @@ public:
     /// Pushes a clip rectangle.
     virtual void PushClip(float x, float y, float w, float h) = 0;
 
+    /// Pushes a rounded rectangle clip using a geometry mask layer.
+    virtual void PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry) = 0;
+
     /// Pops a clip.
     virtual void PopClip() = 0;
 
@@ -127,6 +158,23 @@ public:
     /// Sets whether VSync is enabled.
     /// When disabled, Present returns immediately for faster frame updates during resize.
     virtual void SetVSyncEnabled(bool enabled) = 0;
+
+    /// Sets the DPI for the render target.
+    /// Updates D2D context DPI so DIP coordinates are correctly mapped to physical pixels.
+    /// @param dpiX Horizontal DPI (96 = 100% scaling).
+    /// @param dpiY Vertical DPI (96 = 100% scaling).
+    virtual void SetDpi(float dpiX, float dpiY) = 0;
+
+    /// Adds a dirty rectangle to the current frame's dirty list.
+    /// The rectangle will be used for partial rendering optimization.
+    /// @param x X coordinate.
+    /// @param y Y coordinate.
+    /// @param w Width.
+    /// @param h Height.
+    virtual void AddDirtyRect(float x, float y, float w, float h) = 0;
+
+    /// Marks the entire render target as dirty, forcing a full redraw.
+    virtual void SetFullInvalidation() = 0;
 
     /// Draws a bitmap.
     virtual void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity) = 0;
@@ -215,6 +263,121 @@ public:
         float strokeWidth,
         float dimOpacity,
         float screenWidth, float screenHeight) = 0;
+
+    /// Captures the desktop area at the specified screen coordinates.
+    /// Uses BitBlt from the screen DC to capture what's visible at that position.
+    /// The captured content is cached internally and used by DrawDesktopBackdrop.
+    /// @param screenX Screen X coordinate.
+    /// @param screenY Screen Y coordinate.
+    /// @param width Width to capture.
+    /// @param height Height to capture.
+    virtual void CaptureDesktopArea(int32_t screenX, int32_t screenY, int32_t width, int32_t height) {}
+
+    /// Draws the cached desktop capture with Gaussian blur and tint overlay.
+    /// Must call CaptureDesktopArea first to populate the cached capture.
+    /// @param x Destination X in render target coordinates.
+    /// @param y Destination Y in render target coordinates.
+    /// @param w Destination width.
+    /// @param h Destination height.
+    /// @param blurRadius Blur radius in pixels.
+    /// @param tintR Tint color red component (0-1).
+    /// @param tintG Tint color green component (0-1).
+    /// @param tintB Tint color blue component (0-1).
+    /// @param tintOpacity Tint overlay opacity (0-1).
+    /// @param noiseIntensity Noise overlay intensity (0-1).
+    /// @param saturation Saturation adjustment (1.0 = no change).
+    virtual void DrawDesktopBackdrop(
+        float x, float y, float w, float h,
+        float blurRadius,
+        float tintR, float tintG, float tintB, float tintOpacity,
+        float noiseIntensity, float saturation) {}
+
+    /// Begins capturing content into an offscreen bitmap for transition shader effects.
+    /// @param slot 0 = old content, 1 = new content.
+    /// @param x X position of the transition area (in DIPs).
+    /// @param y Y position of the transition area (in DIPs).
+    /// @param w Width of the transition area (in DIPs).
+    /// @param h Height of the transition area (in DIPs).
+    virtual void BeginTransitionCapture(int slot, float x, float y, float w, float h) {}
+
+    /// Ends capturing content for a transition slot and restores the main render target.
+    /// @param slot 0 = old content, 1 = new content.
+    virtual void EndTransitionCapture(int slot) {}
+
+    /// Draws the transition shader effect blending old and new content bitmaps.
+    /// @param x X position of the transition area (in DIPs).
+    /// @param y Y position of the transition area (in DIPs).
+    /// @param w Width of the transition area (in DIPs).
+    /// @param h Height of the transition area (in DIPs).
+    /// @param progress Transition progress (0.0 - 1.0).
+    /// @param mode Shader mode index (0-9).
+    virtual void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode) {}
+
+    /// Draws a previously captured transition bitmap to the current render target.
+    /// @param slot Transition slot to draw from (0 or 1).
+    /// @param x Destination X position (in DIPs).
+    /// @param y Destination Y position (in DIPs).
+    /// @param w Destination width (in DIPs).
+    /// @param h Destination height (in DIPs).
+    /// @param opacity Opacity to apply (0.0 - 1.0).
+    virtual void DrawCapturedTransition(int slot, float x, float y, float w, float h, float opacity) {}
+
+    // ========================================================================
+    // Element Effect Capture & Rendering
+    // ========================================================================
+
+    /// Begins capturing element content into an offscreen bitmap for effect processing.
+    /// @param x X position of the capture area (in DIPs).
+    /// @param y Y position of the capture area (in DIPs).
+    /// @param w Width of the capture area (in DIPs).
+    /// @param h Height of the capture area (in DIPs).
+    virtual void BeginEffectCapture(float x, float y, float w, float h) {}
+
+    /// Ends capturing element content and restores the main render target.
+    virtual void EndEffectCapture() {}
+
+    /// Applies a Gaussian blur effect to the captured element content and draws it.
+    /// @param x X position to draw at (in DIPs).
+    /// @param y Y position to draw at (in DIPs).
+    /// @param w Width of the draw area (in DIPs).
+    /// @param h Height of the draw area (in DIPs).
+    /// @param radius Blur radius (in DIPs).
+    virtual void DrawBlurEffect(float x, float y, float w, float h, float radius) {}
+
+    /// Applies a drop shadow effect to the captured element content and draws it.
+    /// Draws the shadow first (offset + blurred alpha), then the original content on top.
+    /// @param x X position to draw at (in DIPs).
+    /// @param y Y position to draw at (in DIPs).
+    /// @param w Width of the draw area (in DIPs).
+    /// @param h Height of the draw area (in DIPs).
+    /// @param blurRadius Shadow blur radius (in DIPs).
+    /// @param offsetX Shadow X offset (in DIPs).
+    /// @param offsetY Shadow Y offset (in DIPs).
+    /// @param r Shadow color red (0-1).
+    /// @param g Shadow color green (0-1).
+    /// @param b Shadow color blue (0-1).
+    /// @param a Shadow opacity (0-1).
+    virtual void DrawDropShadowEffect(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a) {}
+
+    /// Draws a liquid glass effect with SDF-based refraction, highlight, and inner shadow.
+    /// Captures current render target content, applies blur, then renders the full
+    /// liquid glass pipeline in a single custom D2D1 effect pass.
+    virtual void DrawLiquidGlass(
+        float x, float y, float w, float h,
+        float cornerRadius,
+        float blurRadius,
+        float refractionAmount,
+        float chromaticAberration,
+        float tintR, float tintG, float tintB, float tintOpacity,
+        float lightX, float lightY,
+        float highlightBoost = 0.0f,
+        int shapeType = 0,
+        float shapeExponent = 4.0f,
+        int neighborCount = 0,
+        float fusionRadius = 30.0f,
+        const float* neighborData = nullptr) {}
 
 protected:
     int32_t width_ = 0;

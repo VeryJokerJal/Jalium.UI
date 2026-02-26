@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Provides a container for a group of commands or controls.
 /// </summary>
-public class ToolBar : HeaderedItemsControl
+public sealed class ToolBar : HeaderedItemsControl
 {
     #region Dependency Properties
 
@@ -61,7 +61,7 @@ public class ToolBar : HeaderedItemsControl
     /// </summary>
     public int Band
     {
-        get => (int)(GetValue(BandProperty) ?? 0);
+        get => (int)GetValue(BandProperty)!;
         set => SetValue(BandProperty, value);
     }
 
@@ -70,7 +70,7 @@ public class ToolBar : HeaderedItemsControl
     /// </summary>
     public int BandIndex
     {
-        get => (int)(GetValue(BandIndexProperty) ?? 0);
+        get => (int)GetValue(BandIndexProperty)!;
         set => SetValue(BandIndexProperty, value);
     }
 
@@ -79,7 +79,7 @@ public class ToolBar : HeaderedItemsControl
     /// </summary>
     public bool IsOverflowOpen
     {
-        get => (bool)(GetValue(IsOverflowOpenProperty) ?? false);
+        get => (bool)GetValue(IsOverflowOpenProperty)!;
         set => SetValue(IsOverflowOpenProperty, value);
     }
 
@@ -93,7 +93,7 @@ public class ToolBar : HeaderedItemsControl
     /// </summary>
     public Orientation Orientation
     {
-        get => (Orientation)(GetValue(OrientationProperty) ?? Orientation.Horizontal);
+        get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
@@ -158,7 +158,7 @@ public class ToolBar : HeaderedItemsControl
 /// <summary>
 /// Represents a container that handles the layout of a ToolBar.
 /// </summary>
-public class ToolBarTray : FrameworkElement
+public sealed class ToolBarTray : FrameworkElement
 {
     private readonly ObservableCollection<ToolBar> _toolBars;
 
@@ -199,7 +199,7 @@ public class ToolBarTray : FrameworkElement
     /// </summary>
     public Orientation Orientation
     {
-        get => (Orientation)(GetValue(OrientationProperty) ?? Orientation.Horizontal);
+        get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
@@ -208,7 +208,7 @@ public class ToolBarTray : FrameworkElement
     /// </summary>
     public bool IsLocked
     {
-        get => (bool)(GetValue(IsLockedProperty) ?? false);
+        get => (bool)GetValue(IsLockedProperty)!;
         set => SetValue(IsLockedProperty, value);
     }
 

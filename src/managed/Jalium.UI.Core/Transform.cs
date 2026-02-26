@@ -36,7 +36,7 @@ public abstract class GeneralTransform
 /// <summary>
 /// Provides a way to group multiple transforms.
 /// </summary>
-public class GeneralTransformGroup : GeneralTransform
+public sealed class GeneralTransformGroup : GeneralTransform
 {
     private readonly List<GeneralTransform> _transforms = new();
 
@@ -108,7 +108,7 @@ public class GeneralTransformGroup : GeneralTransform
 /// <summary>
 /// Represents a 2D translation transform.
 /// </summary>
-public class TranslateTransform2D : GeneralTransform
+public sealed class TranslateTransform2D : GeneralTransform
 {
     /// <summary>
     /// Gets the X offset.

@@ -5,7 +5,7 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// Represents a collection of actions with a shared AssociatedObject.
 /// </summary>
-public class TriggerActionCollection : Collection<TriggerAction>
+public sealed class TriggerActionCollection : Collection<TriggerAction>
 {
     private DependencyObject? _associatedObject;
 

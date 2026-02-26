@@ -1,4 +1,4 @@
-namespace Jalium.UI.Controls.Primitives;
+﻿namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Provides an abstract base class for document viewing controls.
@@ -103,7 +103,7 @@ public abstract class DocumentViewerBase : Control
     /// </summary>
     public double Zoom
     {
-        get => (double)(GetValue(ZoomProperty) ?? 100.0);
+        get => (double)GetValue(ZoomProperty)!;
         set => SetValue(ZoomProperty, value);
     }
 
@@ -112,7 +112,7 @@ public abstract class DocumentViewerBase : Control
     /// </summary>
     public double MinZoom
     {
-        get => (double)(GetValue(MinZoomProperty) ?? 5.0);
+        get => (double)GetValue(MinZoomProperty)!;
         set => SetValue(MinZoomProperty, value);
     }
 
@@ -121,7 +121,7 @@ public abstract class DocumentViewerBase : Control
     /// </summary>
     public double MaxZoom
     {
-        get => (double)(GetValue(MaxZoomProperty) ?? 5000.0);
+        get => (double)GetValue(MaxZoomProperty)!;
         set => SetValue(MaxZoomProperty, value);
     }
 
@@ -130,31 +130,31 @@ public abstract class DocumentViewerBase : Control
     /// </summary>
     public double ZoomIncrement
     {
-        get => (double)(GetValue(ZoomIncrementProperty) ?? 10.0);
+        get => (double)GetValue(ZoomIncrementProperty)!;
         set => SetValue(ZoomIncrementProperty, value);
     }
 
     /// <summary>
     /// Gets a value indicating whether navigation to the next page is possible.
     /// </summary>
-    public bool CanGoToNextPage => (bool)(GetValue(CanGoToNextPageProperty) ?? false);
+    public bool CanGoToNextPage => (bool)GetValue(CanGoToNextPageProperty)!;
 
     /// <summary>
     /// Gets a value indicating whether navigation to the previous page is possible.
     /// </summary>
-    public bool CanGoToPreviousPage => (bool)(GetValue(CanGoToPreviousPageProperty) ?? false);
+    public bool CanGoToPreviousPage => (bool)GetValue(CanGoToPreviousPageProperty)!;
 
     /// <summary>
     /// Gets the total page count.
     /// </summary>
-    public int PageCount => (int)(GetValue(PageCountProperty) ?? 0);
+    public int PageCount => (int)GetValue(PageCountProperty)!;
 
     /// <summary>
     /// Gets or sets the current master page number.
     /// </summary>
     public int MasterPageNumber
     {
-        get => (int)(GetValue(MasterPageNumberProperty) ?? 0);
+        get => (int)GetValue(MasterPageNumberProperty)!;
         set => SetValue(MasterPageNumberProperty, value);
     }
 
@@ -367,7 +367,7 @@ public abstract class DocumentPaginator
 /// <summary>
 /// Represents a page of a document.
 /// </summary>
-public class DocumentPage
+public sealed class DocumentPage
 {
     /// <summary>
     /// Gets the visual content of the page.

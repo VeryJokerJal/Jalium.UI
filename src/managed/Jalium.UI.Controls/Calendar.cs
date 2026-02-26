@@ -1,3 +1,4 @@
+﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -7,8 +8,24 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a calendar control for selecting dates.
 /// </summary>
-public class Calendar : Control
+public sealed class Calendar : Control
 {
+    #region Static Brushes & Pens
+
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_headerBgBrush = new(Color.FromRgb(55, 55, 55));
+    private static readonly SolidColorBrush s_hoverBrush = new(Color.FromArgb(40, 255, 255, 255));
+    private static readonly SolidColorBrush s_arrowNormalBrush = new(Color.FromRgb(200, 200, 200));
+    private static readonly Pen s_arrowNormalPen = new(s_arrowNormalBrush, 2);
+    private static readonly Pen s_arrowHoveredPen = new(s_whiteBrush, 2);
+    private static readonly SolidColorBrush s_dayHeaderBrush = new(Color.FromRgb(160, 160, 160));
+    private static readonly SolidColorBrush s_accentBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly Pen s_todayPen = new(s_accentBrush, 2);
+    private static readonly SolidColorBrush s_unselectableBrush = new(Color.FromRgb(80, 80, 80));
+    private static readonly SolidColorBrush s_otherMonthBrush = new(Color.FromRgb(100, 100, 100));
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -114,7 +131,7 @@ public class Calendar : Control
     /// </summary>
     public DateTime DisplayDate
     {
-        get => (DateTime)(GetValue(DisplayDateProperty) ?? DateTime.Today);
+        get => (DateTime)GetValue(DisplayDateProperty)!;
         set => SetValue(DisplayDateProperty, value);
     }
 
@@ -150,7 +167,7 @@ public class Calendar : Control
     /// </summary>
     public bool IsTodayHighlighted
     {
-        get => (bool)(GetValue(IsTodayHighlightedProperty) ?? true);
+        get => (bool)GetValue(IsTodayHighlightedProperty)!;
         set => SetValue(IsTodayHighlightedProperty, value);
     }
 
@@ -159,7 +176,7 @@ public class Calendar : Control
     /// </summary>
     public CalendarSelectionMode SelectionMode
     {
-        get => (CalendarSelectionMode)(GetValue(SelectionModeProperty) ?? CalendarSelectionMode.SingleDate);
+        get => (CalendarSelectionMode)GetValue(SelectionModeProperty)!;
         set => SetValue(SelectionModeProperty, value);
     }
 
@@ -188,6 +205,10 @@ public class Calendar : Control
     private Rect _prevButtonRect;
     private Rect _nextButtonRect;
     private Rect _monthYearRect;
+    private int _hoveredRow = -1;
+    private int _hoveredCol = -1;
+    private bool _isHoveringPrev;
+    private bool _isHoveringNext;
 
     #endregion
 
@@ -206,11 +227,18 @@ public class Calendar : Control
 
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
 
         CalculateDayGrid();
     }
 
     #endregion
+
+    /// <summary>
+    /// Occurs when a date cell is clicked (used internally by DatePicker to close popup).
+    /// </summary>
+    internal event EventHandler<DateTime>? DateClicked;
 
     #region Input Handling
 
@@ -249,12 +277,67 @@ public class Calendar : Control
                         if (IsDateSelectable(date))
                         {
                             SelectDate(date);
+                            DateClicked?.Invoke(this, date);
                         }
                         e.Handled = true;
                         return;
                     }
                 }
             }
+        }
+    }
+
+    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled) return;
+
+        if (e is MouseEventArgs mouseArgs)
+        {
+            var position = mouseArgs.GetPosition(this);
+            var newRow = -1;
+            var newCol = -1;
+
+            for (int row = 0; row < Rows; row++)
+            {
+                for (int col = 0; col < Columns; col++)
+                {
+                    if (_dayCells[row, col].Contains(position))
+                    {
+                        newRow = row;
+                        newCol = col;
+                        break;
+                    }
+                }
+                if (newRow >= 0) break;
+            }
+
+            var hoverChanged = newRow != _hoveredRow || newCol != _hoveredCol;
+            _hoveredRow = newRow;
+            _hoveredCol = newCol;
+
+            var newHoveringPrev = _prevButtonRect.Contains(position);
+            var newHoveringNext = _nextButtonRect.Contains(position);
+            if (newHoveringPrev != _isHoveringPrev || newHoveringNext != _isHoveringNext)
+            {
+                _isHoveringPrev = newHoveringPrev;
+                _isHoveringNext = newHoveringNext;
+                hoverChanged = true;
+            }
+
+            if (hoverChanged)
+                InvalidateVisual();
+        }
+    }
+
+    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    {
+        if (_hoveredRow != -1 || _hoveredCol != -1 || _isHoveringPrev || _isHoveringNext)
+        {
+            _hoveredRow = -1;
+            _hoveredCol = -1;
+            _isHoveringPrev = false;
+            _isHoveringNext = false;
+            InvalidateVisual();
         }
     }
 
@@ -441,22 +524,21 @@ public class Calendar : Control
         var headerRect = new Rect(x, y, width, HeaderHeight);
 
         // Draw header background
-        var headerBg = new SolidColorBrush(Color.FromRgb(55, 55, 55));
-        dc.DrawRectangle(headerBg, null, headerRect);
+        dc.DrawRectangle(s_headerBgBrush, null, headerRect);
 
         // Draw previous button
         _prevButtonRect = new Rect(x + 4, y + 4, 28, 28);
-        DrawNavigationButton(dc, _prevButtonRect, false);
+        DrawNavigationButton(dc, _prevButtonRect, false, _isHoveringPrev);
 
         // Draw next button
         _nextButtonRect = new Rect(x + width - 32, y + 4, 28, 28);
-        DrawNavigationButton(dc, _nextButtonRect, true);
+        DrawNavigationButton(dc, _nextButtonRect, true, _isHoveringNext);
 
         // Draw month/year text
         var monthYearText = DisplayDate.ToString("MMMM yyyy");
         var formattedText = new FormattedText(monthYearText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
         {
-            Foreground = Foreground ?? new SolidColorBrush(Color.White),
+            Foreground = Foreground ?? s_whiteBrush,
             FontWeight = 600
         };
         TextMeasurement.MeasureText(formattedText);
@@ -468,10 +550,14 @@ public class Calendar : Control
         _monthYearRect = new Rect(textX, textY, formattedText.Width, formattedText.Height);
     }
 
-    private void DrawNavigationButton(DrawingContext dc, Rect rect, bool isNext)
+    private void DrawNavigationButton(DrawingContext dc, Rect rect, bool isNext, bool isHovered)
     {
-        var arrowBrush = new SolidColorBrush(Color.White);
-        var arrowPen = new Pen(arrowBrush, 2);
+        if (isHovered)
+        {
+            dc.DrawRoundedRectangle(s_hoverBrush, null, rect, new CornerRadius(4));
+        }
+
+        var arrowPen = isHovered ? s_arrowHoveredPen : s_arrowNormalPen;
 
         var centerX = rect.X + rect.Width / 2;
         var centerY = rect.Y + rect.Height / 2;
@@ -500,7 +586,7 @@ public class Calendar : Control
 
             var formattedText = new FormattedText(dayName, FontFamily ?? "Segoe UI", 11)
             {
-                Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 160))
+                Foreground = s_dayHeaderBrush
             };
             TextMeasurement.MeasureText(formattedText);
 
@@ -529,54 +615,60 @@ public class Calendar : Control
                 var isSelected = SelectedDate.HasValue && date.Date == SelectedDate.Value.Date;
                 var isSelectable = IsDateSelectable(date);
 
-                DrawDayCell(dc, cellRect, date.Day, isCurrentMonth, isToday, isSelected, isSelectable);
+                var isHovered = row == _hoveredRow && col == _hoveredCol;
+                DrawDayCell(dc, cellRect, date.Day, isCurrentMonth, isToday, isSelected, isSelectable, isHovered);
             }
         }
     }
 
-    private void DrawDayCell(DrawingContext dc, Rect rect, int day, bool isCurrentMonth, bool isToday, bool isSelected, bool isSelectable)
+    private void DrawDayCell(DrawingContext dc, Rect rect, int day, bool isCurrentMonth, bool isToday, bool isSelected, bool isSelectable, bool isHovered)
     {
+        // Draw hover highlight
+        if (isHovered && !isSelected && isSelectable)
+        {
+            dc.DrawEllipse(s_hoverBrush, null,
+                new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2),
+                rect.Width / 2 - 2, rect.Height / 2 - 2);
+        }
+
         // Draw selection or today highlight
         if (isSelected)
         {
-            var selectBrush = new SolidColorBrush(Color.FromRgb(0, 120, 212));
-            dc.DrawEllipse(selectBrush, null,
+            dc.DrawEllipse(s_accentBrush, null,
                 new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2),
                 rect.Width / 2 - 2, rect.Height / 2 - 2);
         }
         else if (isToday && IsTodayHighlighted)
         {
-            var todayBrush = new SolidColorBrush(Color.FromRgb(0, 120, 212));
-            var todayPen = new Pen(todayBrush, 2);
-            dc.DrawEllipse(null, todayPen,
+            dc.DrawEllipse(null, s_todayPen,
                 new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2),
                 rect.Width / 2 - 2, rect.Height / 2 - 2);
         }
 
         // Draw day number
         var dayText = day.ToString();
-        Color textColor;
+        Brush textBrush;
 
         if (isSelected)
         {
-            textColor = Color.White;
+            textBrush = s_whiteBrush;
         }
         else if (!isSelectable)
         {
-            textColor = Color.FromRgb(80, 80, 80);
+            textBrush = s_unselectableBrush;
         }
         else if (!isCurrentMonth)
         {
-            textColor = Color.FromRgb(100, 100, 100);
+            textBrush = s_otherMonthBrush;
         }
         else
         {
-            textColor = Color.White;
+            textBrush = s_whiteBrush;
         }
 
         var formattedText = new FormattedText(dayText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 13)
         {
-            Foreground = new SolidColorBrush(textColor)
+            Foreground = textBrush
         };
         TextMeasurement.MeasureText(formattedText);
 
@@ -655,7 +747,7 @@ public enum CalendarSelectionMode
 /// <summary>
 /// Provides data for the DisplayDateChanged event.
 /// </summary>
-public class CalendarDateChangedEventArgs : RoutedEventArgs
+public sealed class CalendarDateChangedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the previous display date.

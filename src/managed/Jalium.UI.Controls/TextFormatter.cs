@@ -329,7 +329,7 @@ public class TextFormatter
 /// <summary>
 /// Represents a formatted region in text.
 /// </summary>
-public class FormattedRegion
+public sealed class FormattedRegion
 {
     /// <summary>
     /// Gets the start index of the region.
@@ -392,7 +392,7 @@ public enum FormattedRegionType
 /// <summary>
 /// Represents the result of formatting input.
 /// </summary>
-public class FormattingResult
+public sealed class FormattingResult
 {
     /// <summary>
     /// Gets or sets the start position of text to correct.

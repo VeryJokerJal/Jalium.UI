@@ -116,6 +116,14 @@ internal static partial class NativeMethods
     internal static partial nint RenderTargetCreateForHwnd(nint context, nint hwnd, int width, int height);
 
     /// <summary>
+    /// Creates a render target with composition swap chain for per-pixel alpha transparency.
+    /// Uses CreateSwapChainForComposition + DirectComposition.
+    /// The window must have WS_EX_NOREDIRECTIONBITMAP extended style.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_create_for_composition")]
+    internal static partial nint RenderTargetCreateForComposition(nint context, nint hwnd, int width, int height);
+
+    /// <summary>
     /// Destroys a render target.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_destroy")]
@@ -150,6 +158,24 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_vsync")]
     internal static partial void RenderTargetSetVSync(nint renderTarget, int enabled);
+
+    /// <summary>
+    /// Sets the DPI for the render target so D2D maps DIP coordinates to physical pixels.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_dpi")]
+    internal static partial void RenderTargetSetDpi(nint renderTarget, float dpiX, float dpiY);
+
+    /// <summary>
+    /// Adds a dirty rectangle for partial rendering optimization.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_add_dirty_rect")]
+    internal static partial void RenderTargetAddDirtyRect(nint renderTarget, float x, float y, float width, float height);
+
+    /// <summary>
+    /// Marks the entire render target as needing full redraw.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_full_invalidation")]
+    internal static partial void RenderTargetSetFullInvalidation(nint renderTarget);
 
     #endregion
 
@@ -221,6 +247,26 @@ internal static partial class NativeMethods
     internal static partial void DrawPolygon(nint renderTarget, float[] points, int pointCount, nint brush, float strokeWidth, int closed);
 
     /// <summary>
+    /// Fills a path with lines and bezier curves.
+    /// Commands: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey].
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_fill_path")]
+    internal static partial void FillPath(nint renderTarget, float startX, float startY, float[] commands, int commandLength, nint brush, int fillRule);
+
+    /// <summary>
+    /// Strokes a path with lines and bezier curves.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_stroke_path")]
+    internal static partial void StrokePath(nint renderTarget, float startX, float startY, float[] commands, int commandLength, nint brush, float strokeWidth, int closed);
+
+    /// <summary>
+    /// Draws a content area border: fills with bottom-only rounded corners, strokes U-shape (no top).
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_content_border")]
+    internal static partial void DrawContentBorder(nint renderTarget, float x, float y, float width, float height,
+        float blRadius, float brRadius, nint fillBrush, nint strokeBrush, float strokeWidth);
+
+    /// <summary>
     /// Draws text.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_text", StringMarshalling = StringMarshalling.Utf16)]
@@ -286,6 +332,86 @@ internal static partial class NativeMethods
         float dimOpacity,
         float screenWidth, float screenHeight);
 
+    /// <summary>
+    /// Begins capturing content into an offscreen bitmap for transition shader effects.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_transition_begin_capture")]
+    internal static partial void TransitionBeginCapture(nint renderTarget, int slot,
+        float x, float y, float w, float h);
+
+    /// <summary>
+    /// Ends capturing content for a transition slot and restores the main render target.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_transition_end_capture")]
+    internal static partial void TransitionEndCapture(nint renderTarget, int slot);
+
+    /// <summary>
+    /// Draws the transition shader effect blending old and new content bitmaps.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_transition_shader")]
+    internal static partial void DrawTransitionShader(nint renderTarget,
+        float x, float y, float w, float h, float progress, int mode);
+
+    /// <summary>
+    /// Draws a previously captured transition bitmap to the current render target.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_captured_transition")]
+    internal static partial void DrawCapturedTransition(nint renderTarget,
+        int slot, float x, float y, float w, float h, float opacity);
+
+    // ========================================================================
+    // Element Effect Capture & Rendering
+    // ========================================================================
+
+    /// <summary>
+    /// Begins capturing element content into an offscreen bitmap for effect processing.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_effect_begin_capture")]
+    internal static partial void EffectBeginCapture(nint renderTarget,
+        float x, float y, float w, float h);
+
+    /// <summary>
+    /// Ends capturing element content and restores the main render target.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_effect_end_capture")]
+    internal static partial void EffectEndCapture(nint renderTarget);
+
+    /// <summary>
+    /// Applies a Gaussian blur effect to the captured element content and draws it.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_blur_effect")]
+    internal static partial void DrawBlurEffect(nint renderTarget,
+        float x, float y, float w, float h, float radius);
+
+    /// <summary>
+    /// Applies a drop shadow effect to the captured element content and draws it.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_drop_shadow_effect")]
+    internal static partial void DrawDropShadowEffect(nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a);
+
+    /// <summary>
+    /// Draws a liquid glass effect with SDF-based refraction, highlight, and inner shadow.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_liquid_glass")]
+    internal static partial void DrawLiquidGlass(
+        nint renderTarget,
+        float x, float y, float width, float height,
+        float cornerRadius,
+        float blurRadius,
+        float refractionAmount,
+        float chromaticAberration,
+        float tintR, float tintG, float tintB, float tintOpacity,
+        float lightX, float lightY,
+        float highlightBoost,
+        int shapeType,
+        float shapeExponent,
+        int neighborCount,
+        float fusionRadius,
+        nint neighborData);
+
     #endregion
 
     #region Transform and Clip
@@ -307,6 +433,12 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_push_clip")]
     internal static partial void PushClip(nint renderTarget, float x, float y, float width, float height);
+
+    /// <summary>
+    /// Pushes a rounded rectangle clip using a geometry mask layer.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_push_rounded_rect_clip")]
+    internal static partial void PushRoundedRectClip(nint renderTarget, float x, float y, float width, float height, float rx, float ry);
 
     /// <summary>
     /// Pops the current clip.
@@ -335,6 +467,25 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_brush_create_solid")]
     internal static partial nint BrushCreateSolid(nint context, float r, float g, float b, float a);
+
+    /// <summary>
+    /// Creates a linear gradient brush.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_brush_create_linear_gradient")]
+    internal static partial nint BrushCreateLinearGradient(
+        nint context,
+        float startX, float startY, float endX, float endY,
+        float[] stops, uint stopCount);
+
+    /// <summary>
+    /// Creates a radial gradient brush.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_brush_create_radial_gradient")]
+    internal static partial nint BrushCreateRadialGradient(
+        nint context,
+        float centerX, float centerY, float radiusX, float radiusY,
+        float originX, float originY,
+        float[] stops, uint stopCount);
 
     /// <summary>
     /// Destroys a brush.
@@ -421,6 +572,23 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_bitmap")]
     internal static partial void DrawBitmap(nint renderTarget, nint bitmap, float x, float y, float width, float height, float opacity);
+
+    /// <summary>
+    /// Captures the desktop area at the specified screen coordinates.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_capture_desktop_area")]
+    internal static partial void CaptureDesktopArea(nint renderTarget, int screenX, int screenY, int width, int height);
+
+    /// <summary>
+    /// Draws the cached desktop capture with blur and tint overlay.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_desktop_backdrop")]
+    internal static partial void DrawDesktopBackdrop(
+        nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius,
+        float tintR, float tintG, float tintB, float tintOpacity,
+        float noiseIntensity, float saturation);
 
     #endregion
 

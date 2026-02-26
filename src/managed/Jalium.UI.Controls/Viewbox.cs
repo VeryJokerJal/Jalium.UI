@@ -1,4 +1,4 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -59,10 +59,16 @@ public enum StretchDirection
 /// <summary>
 /// Defines a content decorator that can stretch and scale a single child to fill the available space.
 /// </summary>
-public class Viewbox : FrameworkElement
+[ContentProperty("Child")]
+public sealed class Viewbox : FrameworkElement
 {
     private FrameworkElement? _child;
     private ScaleTransform? _scaleTransform;
+
+    public Viewbox()
+    {
+        ClipToBounds = true;
+    }
 
     #region Dependency Properties
 
@@ -96,7 +102,7 @@ public class Viewbox : FrameworkElement
     /// </summary>
     public Stretch Stretch
     {
-        get => (Stretch)(GetValue(StretchProperty) ?? Stretch.Uniform);
+        get => (Stretch)GetValue(StretchProperty)!;
         set => SetValue(StretchProperty, value);
     }
 
@@ -105,7 +111,7 @@ public class Viewbox : FrameworkElement
     /// </summary>
     public StretchDirection StretchDirection
     {
-        get => (StretchDirection)(GetValue(StretchDirectionProperty) ?? StretchDirection.Both);
+        get => (StretchDirection)GetValue(StretchDirectionProperty)!;
         set => SetValue(StretchDirectionProperty, value);
     }
 
@@ -271,6 +277,12 @@ public class Viewbox : FrameworkElement
                     break;
             }
         }
+
+        // Guard against zero/negative scale (e.g. when child has zero DesiredSize)
+        if (scaleX <= 0) scaleX = 1.0;
+        if (scaleY <= 0) scaleY = 1.0;
+        if (double.IsNaN(scaleX) || double.IsInfinity(scaleX)) scaleX = 1.0;
+        if (double.IsNaN(scaleY) || double.IsInfinity(scaleY)) scaleY = 1.0;
 
         return new Size(scaleX, scaleY);
     }

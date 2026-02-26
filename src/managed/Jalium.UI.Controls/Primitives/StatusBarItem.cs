@@ -1,4 +1,4 @@
-using Jalium.UI.Interop;
+﻿using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -6,8 +6,16 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents an item in a StatusBar control.
 /// </summary>
-public class StatusBarItem : ContentControl
+public sealed class StatusBarItem : ContentControl
 {
+    #region Static Brushes & Pens
+
+    private static readonly SolidColorBrush s_defaultFgBrush = new(Color.White);
+    private static readonly SolidColorBrush s_separatorBrush = new(Color.FromRgb(100, 100, 100));
+    private static readonly Pen s_separatorPen = new(s_separatorBrush, 1);
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -26,7 +34,7 @@ public class StatusBarItem : ContentControl
     /// </summary>
     public bool Separator
     {
-        get => (bool)(GetValue(SeparatorProperty) ?? false);
+        get => (bool)GetValue(SeparatorProperty)!;
         set => SetValue(SeparatorProperty, value);
     }
 
@@ -84,7 +92,7 @@ public class StatusBarItem : ContentControl
         // Draw content
         if (Content is string text)
         {
-            var fgBrush = Foreground ?? new SolidColorBrush(Color.White);
+            var fgBrush = Foreground ?? s_defaultFgBrush;
             var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 12)
             {
                 Foreground = fgBrush
@@ -100,9 +108,7 @@ public class StatusBarItem : ContentControl
         if (Separator)
         {
             var separatorX = rect.Width - 5;
-            var separatorBrush = new SolidColorBrush(Color.FromRgb(100, 100, 100));
-            var separatorPen = new Pen(separatorBrush, 1);
-            dc.DrawLine(separatorPen, new Point(separatorX, 4), new Point(separatorX, rect.Height - 4));
+            dc.DrawLine(s_separatorPen, new Point(separatorX, 4), new Point(separatorX, rect.Height - 4));
         }
     }
 

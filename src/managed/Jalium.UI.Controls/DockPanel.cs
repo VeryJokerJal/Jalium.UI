@@ -1,9 +1,9 @@
-namespace Jalium.UI.Controls;
+﻿namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Defines an area where you can arrange child elements either horizontally or vertically, relative to each other.
 /// </summary>
-public class DockPanel : Panel
+public sealed class DockPanel : Panel
 {
     #region Attached Properties
 
@@ -62,7 +62,7 @@ public class DockPanel : Panel
     /// </summary>
     public bool LastChildFill
     {
-        get => (bool)(GetValue(LastChildFillProperty) ?? true);
+        get => (bool)GetValue(LastChildFillProperty)!;
         set => SetValue(LastChildFillProperty, value);
     }
 
@@ -88,8 +88,8 @@ public class DockPanel : Panel
 
         for (int i = 0; i < children.Count; i++)
         {
-            var child = children[i] as UIElement;
-            if (child == null) continue;
+            if (children[i] is not UIElement child)
+                continue;
 
             var dock = GetDock(child);
             bool isLast = i == lastIndex && LastChildFill;
@@ -161,8 +161,8 @@ public class DockPanel : Panel
 
         for (int i = 0; i < children.Count; i++)
         {
-            var child = children[i] as UIElement;
-            if (child == null) continue;
+            if (children[i] is not UIElement child)
+                continue;
 
             var dock = GetDock(child);
             bool isLast = i == lastIndex && LastChildFill;

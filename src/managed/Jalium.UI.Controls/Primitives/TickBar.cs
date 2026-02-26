@@ -1,4 +1,4 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -31,8 +31,14 @@ public enum TickBarPlacement
 /// <summary>
 /// Represents a control that draws a set of tick marks for a Slider control.
 /// </summary>
-public class TickBar : FrameworkElement
+public sealed class TickBar : FrameworkElement
 {
+    #region Static Brushes
+
+    private static readonly SolidColorBrush s_defaultFillBrush = new(Color.FromRgb(100, 100, 100));
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -121,7 +127,7 @@ public class TickBar : FrameworkElement
     /// </summary>
     public double Minimum
     {
-        get => (double)(GetValue(MinimumProperty) ?? 0.0);
+        get => (double)GetValue(MinimumProperty)!;
         set => SetValue(MinimumProperty, value);
     }
 
@@ -130,7 +136,7 @@ public class TickBar : FrameworkElement
     /// </summary>
     public double Maximum
     {
-        get => (double)(GetValue(MaximumProperty) ?? 100.0);
+        get => (double)GetValue(MaximumProperty)!;
         set => SetValue(MaximumProperty, value);
     }
 
@@ -139,7 +145,7 @@ public class TickBar : FrameworkElement
     /// </summary>
     public double TickFrequency
     {
-        get => (double)(GetValue(TickFrequencyProperty) ?? 1.0);
+        get => (double)GetValue(TickFrequencyProperty)!;
         set => SetValue(TickFrequencyProperty, value);
     }
 
@@ -175,7 +181,7 @@ public class TickBar : FrameworkElement
     /// </summary>
     public bool IsDirectionReversed
     {
-        get => (bool)(GetValue(IsDirectionReversedProperty) ?? false);
+        get => (bool)GetValue(IsDirectionReversedProperty)!;
         set => SetValue(IsDirectionReversedProperty, value);
     }
 
@@ -184,7 +190,7 @@ public class TickBar : FrameworkElement
     /// </summary>
     public double ReservedSpace
     {
-        get => (double)(GetValue(ReservedSpaceProperty) ?? 0.0);
+        get => (double)GetValue(ReservedSpaceProperty)!;
         set => SetValue(ReservedSpaceProperty, value);
     }
 
@@ -193,7 +199,7 @@ public class TickBar : FrameworkElement
     /// </summary>
     public bool IsSelectionRangeEnabled
     {
-        get => (bool)(GetValue(IsSelectionRangeEnabledProperty) ?? false);
+        get => (bool)GetValue(IsSelectionRangeEnabledProperty)!;
         set => SetValue(IsSelectionRangeEnabledProperty, value);
     }
 
@@ -202,7 +208,7 @@ public class TickBar : FrameworkElement
     /// </summary>
     public double SelectionStart
     {
-        get => (double)(GetValue(SelectionStartProperty) ?? -1.0);
+        get => (double)GetValue(SelectionStartProperty)!;
         set => SetValue(SelectionStartProperty, value);
     }
 
@@ -211,7 +217,7 @@ public class TickBar : FrameworkElement
     /// </summary>
     public double SelectionEnd
     {
-        get => (double)(GetValue(SelectionEndProperty) ?? -1.0);
+        get => (double)GetValue(SelectionEndProperty)!;
         set => SetValue(SelectionEndProperty, value);
     }
 
@@ -247,7 +253,7 @@ public class TickBar : FrameworkElement
         if (range <= 0)
             return;
 
-        var tickBrush = Fill ?? new SolidColorBrush(Color.FromRgb(100, 100, 100));
+        var tickBrush = Fill ?? s_defaultFillBrush;
         var tickPen = new Pen(tickBrush, 1);
 
         var isHorizontal = Placement == TickBarPlacement.Top || Placement == TickBarPlacement.Bottom;
@@ -378,7 +384,7 @@ public class TickBar : FrameworkElement
 /// <summary>
 /// Represents a collection of double values.
 /// </summary>
-public class DoubleCollection : List<double>
+public sealed class DoubleCollection : List<double>
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="DoubleCollection"/> class.

@@ -5,7 +5,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Provides data for keyboard events.
 /// </summary>
-public class KeyEventArgs : InputEventArgs
+public sealed class KeyEventArgs : InputEventArgs
 {
     /// <summary>
     /// Gets the key that was pressed or released.
@@ -94,12 +94,27 @@ public delegate void KeyEventHandler(object sender, KeyEventArgs e);
 /// <summary>
 /// Provides data for text input events.
 /// </summary>
-public class TextCompositionEventArgs : InputEventArgs
+public sealed class TextCompositionEventArgs : InputEventArgs
 {
     /// <summary>
     /// Gets the text that was input.
     /// </summary>
     public string Text { get; }
+
+    /// <summary>
+    /// Gets the system text (Alt+key combinations).
+    /// </summary>
+    public string SystemText => TextComposition?.SystemText ?? string.Empty;
+
+    /// <summary>
+    /// Gets the control text (Ctrl+key combinations).
+    /// </summary>
+    public string ControlText => TextComposition?.ControlText ?? string.Empty;
+
+    /// <summary>
+    /// Gets the <see cref="TextComposition"/> object associated with this event, if any.
+    /// </summary>
+    public TextComposition? TextComposition { get; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="TextCompositionEventArgs"/> class.
@@ -111,6 +126,23 @@ public class TextCompositionEventArgs : InputEventArgs
         : base(routedEvent, timestamp)
     {
         Text = text;
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="TextCompositionEventArgs"/> class
+    /// with a <see cref="Input.TextComposition"/> object.
+    /// </summary>
+    /// <param name="routedEvent">The routed event.</param>
+    /// <param name="composition">The text composition.</param>
+    /// <param name="timestamp">The event timestamp.</param>
+    public TextCompositionEventArgs(RoutedEvent routedEvent, TextComposition composition, int timestamp)
+        : base(routedEvent, timestamp)
+    {
+        TextComposition = composition;
+        // Provide the best available text: try Text, then SystemText, then ControlText
+        Text = !string.IsNullOrEmpty(composition.Text) ? composition.Text
+            : !string.IsNullOrEmpty(composition.SystemText) ? composition.SystemText
+            : composition.ControlText;
     }
 
     /// <inheritdoc />

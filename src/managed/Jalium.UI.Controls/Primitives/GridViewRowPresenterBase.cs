@@ -102,7 +102,7 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
 /// <summary>
 /// Represents a collection of GridView columns.
 /// </summary>
-public class GridViewColumnCollection : ObservableCollection<GridViewColumn>
+public sealed class GridViewColumnCollection : ObservableCollection<GridViewColumn>
 {
 }
 

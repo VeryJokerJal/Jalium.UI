@@ -4,6 +4,8 @@ set(HEADERS
     include/d3d12_backend.h
     include/d3d12_render_target.h
     include/d3d12_resources.h
+    include/liquid_glass_effects.h
+    include/transition_shader_effect.h
 )
 
 set(SOURCES
@@ -13,6 +15,8 @@ set(SOURCES
     src/d3d12_bitmap.cpp
     src/d3d12_text.cpp
     src/d3d12_init.cpp
+    src/liquid_glass_effects.cpp
+    src/transition_shader_effect.cpp
 )
 
 add_library(${PROJECT_NAME} SHARED ${HEADERS} ${SOURCES})
@@ -39,6 +43,8 @@ target_link_libraries(${PROJECT_NAME}
         d3dcompiler
         dwrite
         d2d1
+        dcomp
+        dxguid
 )
 
 # Set output name

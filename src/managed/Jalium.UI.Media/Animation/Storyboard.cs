@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using Jalium.UI;
 
 namespace Jalium.UI.Media.Animation;
@@ -6,15 +6,15 @@ namespace Jalium.UI.Media.Animation;
 /// <summary>
 /// A container timeline that provides object and property targeting information for its child animations.
 /// </summary>
-public class Storyboard : Timeline
+public sealed class Storyboard : Timeline, IStoryboard
 {
     private static readonly HashSet<Storyboard> _activeStoryboards = new();
     private static readonly object _lock = new();
 
     private readonly List<AnimationClock> _clocks = new();
     private readonly List<(AnimationClock Clock, DependencyObject Target, DependencyProperty Property, object? OriginalValue)> _activeAnimations = new();
-    private System.Threading.Timer? _timer;
     private bool _isRunning;
+    private bool _subscribedToRendering;
 
     /// <summary>
     /// Stops all active storyboards. Called during application shutdown.
@@ -166,7 +166,16 @@ public class Storyboard : Timeline
         if (_clocks.Count > 0)
         {
             _isRunning = true;
-            _timer = new System.Threading.Timer(OnTimerTick, null, 0, 16); // ~60 FPS
+
+            // Subscribe to the centralized frame timer instead of creating
+            // a per-Storyboard System.Threading.Timer. This ensures all
+            // storyboards tick in the same Dispatcher batch → single render.
+            if (!_subscribedToRendering)
+            {
+                _subscribedToRendering = true;
+                CompositionTarget.Rendering += OnRenderingTick;
+                CompositionTarget.Subscribe();
+            }
 
             lock (_lock)
             {
@@ -181,8 +190,7 @@ public class Storyboard : Timeline
     public void Stop()
     {
         _isRunning = false;
-        _timer?.Dispose();
-        _timer = null;
+        UnsubscribeFromRendering();
 
         lock (_lock)
         {
@@ -203,10 +211,10 @@ public class Storyboard : Timeline
                 // The DependencyObject.ClearAnimatedValue will handle HoldEnd vs Stop behavior
                 uiElement.ClearAnimatedValue(property);
             }
-            else if (clock.Timeline.FillBehavior == FillBehavior.Stop && originalValue != null)
+            else
             {
-                // Fallback for non-UIElement targets
-                target.SetValue(property, originalValue);
+                // Fallback for non-UIElement targets: restore original value on Stop()
+                target.SetValue(property, originalValue ?? property.DefaultMetadata.DefaultValue);
             }
         }
 
@@ -247,19 +255,16 @@ public class Storyboard : Timeline
         }
     }
 
-    private void OnTimerTick(object? state)
+    /// <summary>
+    /// Called by CompositionTarget.Rendering on the UI thread, once per frame.
+    /// Already on UI thread — no marshaling needed.
+    /// </summary>
+    private void OnRenderingTick(object? sender, EventArgs e)
     {
         if (!_isRunning) return;
 
-        var allCompleted = true;
-
         foreach (var (clock, target, property, originalValue) in _activeAnimations)
         {
-            if (clock.IsRunning)
-            {
-                allCompleted = false;
-            }
-
             clock.Tick();
 
             if (clock.Timeline is AnimationTimeline animationTimeline)
@@ -283,24 +288,28 @@ public class Storyboard : Timeline
             }
         }
 
-        if (allCompleted)
+        // Check completion AFTER all Tick() calls to avoid off-by-one-frame delay
+        if (_activeAnimations.All(a => !a.Clock.IsRunning))
         {
             _isRunning = false;
-            _timer?.Dispose();
-            _timer = null;
+            UnsubscribeFromRendering();
             OnCompleted();
         }
     }
 
     private void OnClockCompleted(object? sender, EventArgs e)
     {
-        // Check if all clocks are completed
-        if (_clocks.All(c => !c.IsRunning))
+        // Completion is handled by OnRenderingTick to avoid double-firing OnCompleted.
+        // This callback is intentionally left empty.
+    }
+
+    private void UnsubscribeFromRendering()
+    {
+        if (_subscribedToRendering)
         {
-            _isRunning = false;
-            _timer?.Dispose();
-            _timer = null;
-            OnCompleted();
+            _subscribedToRendering = false;
+            CompositionTarget.Rendering -= OnRenderingTick;
+            CompositionTarget.Unsubscribe();
         }
     }
 
@@ -355,7 +364,7 @@ public class Storyboard : Timeline
         var propertyName = propertyPath.Path;
 
         // Handle nested property paths like "(UIElement.Opacity)"
-        if (propertyName.StartsWith("(") && propertyName.EndsWith(")"))
+        if (propertyName.StartsWith("(", StringComparison.Ordinal) && propertyName.EndsWith(")", StringComparison.Ordinal))
         {
             propertyName = propertyName.Substring(1, propertyName.Length - 2);
             var dotIndex = propertyName.LastIndexOf('.');
@@ -378,32 +387,5 @@ public class Storyboard : Timeline
     private static object GetDefaultValue(DependencyProperty property)
     {
         return property.DefaultMetadata.DefaultValue ?? 0.0;
-    }
-}
-
-/// <summary>
-/// Represents a property path for targeting animations.
-/// </summary>
-public class PropertyPath
-{
-    /// <summary>
-    /// Gets the path string.
-    /// </summary>
-    public string Path { get; }
-
-    /// <summary>
-    /// Creates a new property path.
-    /// </summary>
-    public PropertyPath(string path)
-    {
-        Path = path;
-    }
-
-    /// <summary>
-    /// Creates a new property path from a dependency property.
-    /// </summary>
-    public PropertyPath(DependencyProperty property)
-    {
-        Path = property.Name;
     }
 }

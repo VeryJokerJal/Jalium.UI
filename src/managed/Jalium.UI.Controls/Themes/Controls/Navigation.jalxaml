@@ -1,4 +1,4 @@
-<ResourceDictionary
+﻿<ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
@@ -6,8 +6,9 @@
     <!-- NavigationView Style -->
     <!-- ============================================== -->
     <Style TargetType="NavigationView">
-        <Setter Property="Background" Value="{StaticResource WindowBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
     </Style>
 
     <!-- ============================================== -->
@@ -15,18 +16,80 @@
     <!-- ============================================== -->
     <Style TargetType="NavigationViewItem">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="Padding" Value="12,10,12,10" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="Margin" Value="4,2,4,2" />
         <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="NavigationViewItem">
+                <StackPanel>
+                    <!-- Item Row -->
+                    <Border Name="PART_ItemBorder"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Height="36">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="Auto" />
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Selection Indicator -->
+                            <Border Name="PART_SelectionIndicator"
+                                    Grid.Column="0"
+                                    Width="3"
+                                    Height="16"
+                                    CornerRadius="1.5"
+                                    Background="{DynamicResource AccentBrush}"
+                                    Margin="4,0,0,0"
+                                    VerticalAlignment="Center"
+                                    Visibility="Collapsed" />
+
+                            <!-- Indent Spacer -->
+                            <Border Name="PART_IndentSpacer"
+                                    Grid.Column="1"
+                                    Width="12" />
+
+                            <!-- Content -->
+                            <ContentPresenter Grid.Column="2"
+                                              VerticalAlignment="Center"
+                                              Margin="0,0,12,0" />
+
+                            <!-- Expand/Collapse Chevron -->
+                            <Path Name="PART_Chevron"
+                                  Grid.Column="3"
+                                  Data="M173.731 104.928 L173.731 919.072 c0 45.467 35.892 82.191 80.688 82.191 20.786 0 39.625-8.127 53.893-21.134 L841.126 574.011 c35.363-27.178 42.801-78.468 15.957-114.638 -4.581-6.334-9.956-11.867-15.957-16.209 L301.673 32.407 c-35.363-26.902-86.091-19.655-112.607 16.48 -11.171 14.836-16.279 31.857-16.279 48.953 Z"
+                                  Fill="{DynamicResource TextSecondary}"
+                                  Width="8"
+                                  Height="8"
+                                  Stretch="Uniform"
+                                  VerticalAlignment="Center"
+                                  Margin="0,0,12,0"
+                                  Visibility="Collapsed" />
+                        </Grid>
+                    </Border>
+
+                    <!-- Children Panel -->
+                    <StackPanel Name="PART_ChildrenPanel"
+                                Orientation="Vertical"
+                                Visibility="Collapsed" />
+                </StackPanel>
+            </ControlTemplate>
+        </Setter>
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundHover}" />
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter Property="Background" Value="{StaticResource ControlBackground}" />
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource ControlBackground}" />
+                <Setter TargetName="PART_SelectionIndicator" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
+            <!-- Chevron rotation is animated by code-behind via ExpandCollapseAnimator -->
         </Style.Triggers>
     </Style>
 
 </ResourceDictionary>
+

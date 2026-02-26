@@ -208,6 +208,10 @@ public sealed class NativeTextFormat : IDisposable
 
     ~NativeTextFormat()
     {
-        Dispose();
+        // Do NOT call native destroy from finalizer.
+        // The native context (DWrite factory) may already be destroyed,
+        // causing stack overflow or access violation during shutdown.
+        _disposed = true;
+        _handle = nint.Zero;
     }
 }

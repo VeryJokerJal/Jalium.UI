@@ -1,4 +1,4 @@
-using Jalium.UI.Input;
+﻿using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a custom title bar control for windows.
 /// </summary>
-public class TitleBar : Control
+public sealed class TitleBar : Control
 {
     #region Dependency Properties
 
@@ -64,7 +64,7 @@ public class TitleBar : Control
     /// </summary>
     public bool IsMaximized
     {
-        get => (bool)(GetValue(IsMaximizedProperty) ?? false);
+        get => (bool)GetValue(IsMaximizedProperty)!;
         set => SetValue(IsMaximizedProperty, value);
     }
 
@@ -73,7 +73,7 @@ public class TitleBar : Control
     /// </summary>
     public bool ShowMinimizeButton
     {
-        get => (bool)(GetValue(ShowMinimizeButtonProperty) ?? true);
+        get => (bool)GetValue(ShowMinimizeButtonProperty)!;
         set => SetValue(ShowMinimizeButtonProperty, value);
     }
 
@@ -82,7 +82,7 @@ public class TitleBar : Control
     /// </summary>
     public bool ShowMaximizeButton
     {
-        get => (bool)(GetValue(ShowMaximizeButtonProperty) ?? true);
+        get => (bool)GetValue(ShowMaximizeButtonProperty)!;
         set => SetValue(ShowMaximizeButtonProperty, value);
     }
 
@@ -91,7 +91,7 @@ public class TitleBar : Control
     /// </summary>
     public bool ShowCloseButton
     {
-        get => (bool)(GetValue(ShowCloseButtonProperty) ?? true);
+        get => (bool)GetValue(ShowCloseButtonProperty)!;
         set => SetValue(ShowCloseButtonProperty, value);
     }
 

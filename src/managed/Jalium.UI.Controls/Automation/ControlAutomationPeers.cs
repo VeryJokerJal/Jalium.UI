@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Jalium.UI.Automation;
+using Jalium.UI.Controls.Primitives;
 
 namespace Jalium.UI.Controls.Automation;
 
@@ -8,7 +9,7 @@ namespace Jalium.UI.Controls.Automation;
 /// <summary>
 /// Exposes ListBox types to UI Automation.
 /// </summary>
-public class ListBoxAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
+public sealed class ListBoxAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
 {
     /// <summary>
     /// Initializes a new instance of the ListBoxAutomationPeer class.
@@ -61,7 +62,7 @@ public class ListBoxAutomationPeer : FrameworkElementAutomationPeer, ISelectionP
 /// <summary>
 /// Exposes ListBoxItem types to UI Automation.
 /// </summary>
-public class ListBoxItemAutomationPeer : FrameworkElementAutomationPeer, ISelectionItemProvider, IScrollItemProvider
+public sealed class ListBoxItemAutomationPeer : FrameworkElementAutomationPeer, ISelectionItemProvider, IScrollItemProvider
 {
     /// <summary>
     /// Initializes a new instance of the ListBoxItemAutomationPeer class.
@@ -156,7 +157,7 @@ public class ListBoxItemAutomationPeer : FrameworkElementAutomationPeer, ISelect
 /// <summary>
 /// Exposes ComboBox types to UI Automation.
 /// </summary>
-public class ComboBoxAutomationPeer : FrameworkElementAutomationPeer, IExpandCollapseProvider, ISelectionProvider
+public sealed class ComboBoxAutomationPeer : FrameworkElementAutomationPeer, IExpandCollapseProvider, ISelectionProvider
 {
     /// <summary>
     /// Initializes a new instance of the ComboBoxAutomationPeer class.
@@ -239,7 +240,7 @@ public class ComboBoxAutomationPeer : FrameworkElementAutomationPeer, IExpandCol
 /// <summary>
 /// Exposes TreeView types to UI Automation.
 /// </summary>
-public class TreeViewAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
+public sealed class TreeViewAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
 {
     /// <summary>
     /// Initializes a new instance of the TreeViewAutomationPeer class.
@@ -291,7 +292,7 @@ public class TreeViewAutomationPeer : FrameworkElementAutomationPeer, ISelection
 /// <summary>
 /// Exposes TreeViewItem types to UI Automation.
 /// </summary>
-public class TreeViewItemAutomationPeer : FrameworkElementAutomationPeer, IExpandCollapseProvider, ISelectionItemProvider, IScrollItemProvider
+public sealed class TreeViewItemAutomationPeer : FrameworkElementAutomationPeer, IExpandCollapseProvider, ISelectionItemProvider, IScrollItemProvider
 {
     /// <summary>
     /// Initializes a new instance of the TreeViewItemAutomationPeer class.
@@ -429,7 +430,7 @@ public class TreeViewItemAutomationPeer : FrameworkElementAutomationPeer, IExpan
 /// <summary>
 /// Exposes Slider types to UI Automation.
 /// </summary>
-public class SliderAutomationPeer : FrameworkElementAutomationPeer, IRangeValueProvider
+public sealed class SliderAutomationPeer : FrameworkElementAutomationPeer, IRangeValueProvider
 {
     /// <summary>
     /// Initializes a new instance of the SliderAutomationPeer class.
@@ -499,7 +500,7 @@ public class SliderAutomationPeer : FrameworkElementAutomationPeer, IRangeValueP
 /// <summary>
 /// Exposes ProgressBar types to UI Automation.
 /// </summary>
-public class ProgressBarAutomationPeer : FrameworkElementAutomationPeer, IRangeValueProvider
+public sealed class ProgressBarAutomationPeer : FrameworkElementAutomationPeer, IRangeValueProvider
 {
     /// <summary>
     /// Initializes a new instance of the ProgressBarAutomationPeer class.
@@ -567,7 +568,7 @@ public class ProgressBarAutomationPeer : FrameworkElementAutomationPeer, IRangeV
 /// <summary>
 /// Exposes TabControl types to UI Automation.
 /// </summary>
-public class TabControlAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
+public sealed class TabControlAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
 {
     /// <summary>
     /// Initializes a new instance of the TabControlAutomationPeer class.
@@ -619,7 +620,7 @@ public class TabControlAutomationPeer : FrameworkElementAutomationPeer, ISelecti
 /// <summary>
 /// Exposes TabItem types to UI Automation.
 /// </summary>
-public class TabItemAutomationPeer : FrameworkElementAutomationPeer, ISelectionItemProvider
+public sealed class TabItemAutomationPeer : FrameworkElementAutomationPeer, ISelectionItemProvider
 {
     /// <summary>
     /// Initializes a new instance of the TabItemAutomationPeer class.
@@ -709,7 +710,7 @@ public class TabItemAutomationPeer : FrameworkElementAutomationPeer, ISelectionI
 /// <summary>
 /// Exposes Menu types to UI Automation.
 /// </summary>
-public class MenuAutomationPeer : FrameworkElementAutomationPeer
+public sealed class MenuAutomationPeer : FrameworkElementAutomationPeer
 {
     /// <summary>
     /// Initializes a new instance of the MenuAutomationPeer class.
@@ -734,7 +735,7 @@ public class MenuAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes MenuItem types to UI Automation.
 /// </summary>
-public class MenuItemAutomationPeer : FrameworkElementAutomationPeer, IExpandCollapseProvider, IInvokeProvider, IToggleProvider
+public sealed class MenuItemAutomationPeer : FrameworkElementAutomationPeer, IExpandCollapseProvider, IInvokeProvider, IToggleProvider
 {
     /// <summary>
     /// Initializes a new instance of the MenuItemAutomationPeer class.
@@ -851,7 +852,7 @@ public class MenuItemAutomationPeer : FrameworkElementAutomationPeer, IExpandCol
 /// <summary>
 /// Exposes ScrollViewer types to UI Automation.
 /// </summary>
-public class ScrollViewerAutomationPeer : FrameworkElementAutomationPeer, IScrollProvider
+public sealed class ScrollViewerAutomationPeer : FrameworkElementAutomationPeer, IScrollProvider
 {
     /// <summary>
     /// Initializes a new instance of the ScrollViewerAutomationPeer class.
@@ -1019,7 +1020,7 @@ public class ScrollViewerAutomationPeer : FrameworkElementAutomationPeer, IScrol
 /// <summary>
 /// Exposes Window types to UI Automation.
 /// </summary>
-public class WindowAutomationPeer : FrameworkElementAutomationPeer
+public sealed class WindowAutomationPeer : FrameworkElementAutomationPeer
 {
     /// <summary>
     /// Initializes a new instance of the WindowAutomationPeer class.
@@ -1056,7 +1057,7 @@ public class WindowAutomationPeer : FrameworkElementAutomationPeer
 /// <summary>
 /// Exposes DataGrid types to UI Automation.
 /// </summary>
-public class DataGridAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
+public sealed class DataGridAutomationPeer : FrameworkElementAutomationPeer, ISelectionProvider
 {
     /// <summary>
     /// Initializes a new instance of the DataGridAutomationPeer class.

@@ -5,7 +5,7 @@ namespace Jalium.UI.Data;
 /// <summary>
 /// Converts a boolean value to a Visibility value.
 /// </summary>
-public class BooleanToVisibilityConverter : IValueConverter
+public sealed class BooleanToVisibilityConverter : IValueConverter
 {
     /// <summary>
     /// Gets or sets a value indicating whether to invert the conversion.
@@ -36,7 +36,7 @@ public class BooleanToVisibilityConverter : IValueConverter
 /// <summary>
 /// Inverts a boolean value.
 /// </summary>
-public class InverseBooleanConverter : IValueConverter
+public sealed class InverseBooleanConverter : IValueConverter
 {
     /// <inheritdoc />
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
@@ -54,7 +54,7 @@ public class InverseBooleanConverter : IValueConverter
 /// <summary>
 /// Converts null to a boolean value.
 /// </summary>
-public class NullToBooleanConverter : IValueConverter
+public sealed class NullToBooleanConverter : IValueConverter
 {
     /// <summary>
     /// Gets or sets the value to return when the input is null.
@@ -77,7 +77,7 @@ public class NullToBooleanConverter : IValueConverter
 /// <summary>
 /// Converts null to a Visibility value.
 /// </summary>
-public class NullToVisibilityConverter : IValueConverter
+public sealed class NullToVisibilityConverter : IValueConverter
 {
     /// <summary>
     /// Gets or sets the visibility to use when the value is null.
@@ -105,7 +105,7 @@ public class NullToVisibilityConverter : IValueConverter
 /// <summary>
 /// Converts a string to uppercase or lowercase.
 /// </summary>
-public class StringCaseConverter : IValueConverter
+public sealed class StringCaseConverter : IValueConverter
 {
     /// <summary>
     /// Gets or sets a value indicating whether to convert to uppercase.
@@ -132,7 +132,7 @@ public class StringCaseConverter : IValueConverter
 /// <summary>
 /// Compares two values for equality.
 /// </summary>
-public class EqualityConverter : IValueConverter
+public sealed class EqualityConverter : IValueConverter
 {
     /// <summary>
     /// Gets or sets the value to compare against.
@@ -160,7 +160,7 @@ public class EqualityConverter : IValueConverter
 /// <summary>
 /// Multiplies a numeric value by a factor.
 /// </summary>
-public class MultiplyConverter : IValueConverter
+public sealed class MultiplyConverter : IValueConverter
 {
     /// <summary>
     /// Gets or sets the multiplication factor.
@@ -202,7 +202,7 @@ public class MultiplyConverter : IValueConverter
 /// <summary>
 /// Adds a constant to a numeric value.
 /// </summary>
-public class AddConverter : IValueConverter
+public sealed class AddConverter : IValueConverter
 {
     /// <summary>
     /// Gets or sets the value to add.
@@ -243,7 +243,7 @@ public class AddConverter : IValueConverter
 /// <summary>
 /// Converts an enum value to a boolean indicating whether it equals a specified value.
 /// </summary>
-public class EnumToBooleanConverter : IValueConverter
+public sealed class EnumToBooleanConverter : IValueConverter
 {
     /// <inheritdoc />
     public object? Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
@@ -268,7 +268,7 @@ public class EnumToBooleanConverter : IValueConverter
 /// <summary>
 /// Formats a date/time value.
 /// </summary>
-public class DateTimeFormatConverter : IValueConverter
+public sealed class DateTimeFormatConverter : IValueConverter
 {
     /// <summary>
     /// Gets or sets the format string.

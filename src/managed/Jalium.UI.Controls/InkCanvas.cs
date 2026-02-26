@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Provides an area for ink collection and display.
 /// </summary>
-public class InkCanvas : FrameworkElement
+public sealed class InkCanvas : FrameworkElement
 {
     #region Private Fields
 
@@ -133,7 +133,7 @@ public class InkCanvas : FrameworkElement
     /// </summary>
     public double EraserDiameter
     {
-        get => (double)(GetValue(EraserDiameterProperty) ?? 8.0);
+        get => (double)GetValue(EraserDiameterProperty)!;
         set => SetValue(EraserDiameterProperty, value);
     }
 
@@ -189,7 +189,11 @@ public class InkCanvas : FrameworkElement
     /// <inheritdoc/>
     protected override Size MeasureOverride(Size availableSize)
     {
-        return availableSize;
+        // Clamp infinite dimensions to zero to avoid layout crashes
+        // when InkCanvas is inside unconstrained containers (e.g. ScrollViewer).
+        return new Size(
+            double.IsInfinity(availableSize.Width) ? 0 : availableSize.Width,
+            double.IsInfinity(availableSize.Height) ? 0 : availableSize.Height);
     }
 
     /// <inheritdoc/>
@@ -447,7 +451,7 @@ public class InkCanvas : FrameworkElement
     /// <summary>
     /// Raises the <see cref="StrokeCollected"/> event.
     /// </summary>
-    protected virtual void OnStrokeCollected(InkCanvasStrokeCollectedEventArgs e)
+    protected void OnStrokeCollected(InkCanvasStrokeCollectedEventArgs e)
     {
         StrokeCollected?.Invoke(this, e);
     }
@@ -455,7 +459,7 @@ public class InkCanvas : FrameworkElement
     /// <summary>
     /// Raises the <see cref="StrokeErasing"/> event.
     /// </summary>
-    protected virtual void OnStrokeErasing(InkCanvasStrokeErasingEventArgs e)
+    protected void OnStrokeErasing(InkCanvasStrokeErasingEventArgs e)
     {
         StrokeErasing?.Invoke(this, e);
     }
@@ -466,7 +470,7 @@ public class InkCanvas : FrameworkElement
 /// <summary>
 /// Provides data for the <see cref="InkCanvas.StrokeCollected"/> event.
 /// </summary>
-public class InkCanvasStrokeCollectedEventArgs : EventArgs
+public sealed class InkCanvasStrokeCollectedEventArgs : EventArgs
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="InkCanvasStrokeCollectedEventArgs"/> class.
@@ -486,7 +490,7 @@ public class InkCanvasStrokeCollectedEventArgs : EventArgs
 /// <summary>
 /// Provides data for the <see cref="InkCanvas.StrokeErasing"/> event.
 /// </summary>
-public class InkCanvasStrokeErasingEventArgs : EventArgs
+public sealed class InkCanvasStrokeErasingEventArgs : EventArgs
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="InkCanvasStrokeErasingEventArgs"/> class.
@@ -506,4 +510,120 @@ public class InkCanvasStrokeErasingEventArgs : EventArgs
     /// Gets or sets a value indicating whether to cancel the erase operation.
     /// </summary>
     public bool Cancel { get; set; }
+}
+
+/// <summary>
+/// Provides data for the <see cref="InkCanvas.SelectionMoving"/> and <see cref="InkCanvas.SelectionResizing"/> events.
+/// </summary>
+public sealed class InkCanvasSelectionEditingEventArgs : EventArgs
+{
+    public InkCanvasSelectionEditingEventArgs(Rect oldRectangle, Rect newRectangle)
+    {
+        OldRectangle = oldRectangle;
+        NewRectangle = newRectangle;
+    }
+
+    /// <summary>Gets the bounds of the selection before the editing operation.</summary>
+    public Rect OldRectangle { get; }
+
+    /// <summary>Gets or sets the bounds of the selection after the editing operation.</summary>
+    public Rect NewRectangle { get; set; }
+
+    /// <summary>Gets or sets a value indicating whether to cancel the operation.</summary>
+    public bool Cancel { get; set; }
+}
+
+/// <summary>
+/// Provides data for the <see cref="InkCanvas.Gesture"/> event.
+/// </summary>
+public sealed class InkCanvasGestureEventArgs : RoutedEventArgs
+{
+    public InkCanvasGestureEventArgs(StrokeCollection strokes, IReadOnlyList<GestureRecognitionResult> gestureRecognitionResults)
+    {
+        Strokes = strokes;
+        GestureRecognitionResults = gestureRecognitionResults;
+    }
+
+    /// <summary>Gets the strokes that represent the gesture.</summary>
+    public StrokeCollection Strokes { get; }
+
+    /// <summary>Gets the recognition results for the gesture.</summary>
+    public IReadOnlyList<GestureRecognitionResult> GestureRecognitionResults { get; }
+
+    /// <summary>Gets or sets a value indicating whether the event should be canceled.</summary>
+    public bool Cancel { get; set; }
+}
+
+/// <summary>
+/// Contains information about a gesture recognition result.
+/// </summary>
+public sealed class GestureRecognitionResult
+{
+    public GestureRecognitionResult(InkCanvasGesture applicationGesture, RecognitionConfidence recognitionConfidence)
+    {
+        ApplicationGesture = applicationGesture;
+        RecognitionConfidence = recognitionConfidence;
+    }
+
+    /// <summary>Gets the recognized gesture.</summary>
+    public InkCanvasGesture ApplicationGesture { get; }
+
+    /// <summary>Gets the confidence level of the recognition.</summary>
+    public RecognitionConfidence RecognitionConfidence { get; }
+}
+
+/// <summary>
+/// Specifies application gestures.
+/// </summary>
+public enum InkCanvasGesture
+{
+    NoGesture = 0,
+    Tap,
+    DoubleTap,
+    RightTap,
+    Drag,
+    RightDrag,
+    ScratchOut,
+    Circle,
+    Check,
+    Curlicue,
+    DoubleCurlicue,
+    Triangle,
+    Square,
+    Star,
+    ArrowUp,
+    ArrowDown,
+    ArrowLeft,
+    ArrowRight,
+    Up,
+    Down,
+    Left,
+    Right,
+    UpDown,
+    DownUp,
+    LeftRight,
+    RightLeft,
+    UpLeftLong,
+    UpRightLong,
+    DownLeftLong,
+    DownRightLong,
+    UpLeft,
+    UpRight,
+    DownLeft,
+    DownRight,
+    LeftUp,
+    LeftDown,
+    RightUp,
+    RightDown,
+    Exclamation
+}
+
+/// <summary>
+/// Specifies the level of confidence for a recognition result.
+/// </summary>
+public enum RecognitionConfidence
+{
+    Strong,
+    Intermediate,
+    Poor
 }

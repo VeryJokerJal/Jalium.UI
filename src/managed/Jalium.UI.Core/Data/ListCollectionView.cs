@@ -9,7 +9,7 @@ namespace Jalium.UI.Data;
 /// <summary>
 /// Represents a CollectionView for collections that implement IList.
 /// </summary>
-public class ListCollectionView : CollectionView, IEditableCollectionView
+public sealed class ListCollectionView : CollectionView, IEditableCollectionView
 {
     private readonly IList _internalList;
     private object? _editItem;

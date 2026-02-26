@@ -1,0 +1,27 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- Image Style                                     -->
+    <!-- ============================================== -->
+    <Style TargetType="Image">
+        <Setter Property="Stretch" Value="Uniform" />
+        <Setter Property="HorizontalAlignment" Value="Center" />
+        <Setter Property="VerticalAlignment" Value="Center" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="Image">
+                <Border Name="PART_Container"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Padding="{TemplateBinding Padding}"
+                        ClipToBounds="True">
+                    <!-- ImageHost is injected programmatically in OnApplyTemplate -->
+                </Border>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

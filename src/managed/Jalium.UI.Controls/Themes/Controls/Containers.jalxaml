@@ -42,7 +42,7 @@
                         BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="{TemplateBinding CornerRadius}"
                         Padding="{TemplateBinding Padding}">
-                    <ContentPresenter />
+                    <ContentPresenter VerticalAlignment="Center" />
                 </Border>
             </ControlTemplate>
         </Setter>
@@ -61,33 +61,30 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="GroupBox">
                 <Grid>
-                    <Grid.RowDefinitions>
-                        <RowDefinition Height="Auto" />
-                        <RowDefinition Height="*" />
-                    </Grid.RowDefinitions>
-
-                    <!-- Header -->
-                    <Border Name="PART_HeaderBorder"
-                            Grid.Row="0"
-                            Background="{TemplateBinding HeaderBackground}"
-                            Padding="8,0,8,0"
-                            HorizontalAlignment="Left"
-                            Margin="8,0,0,0">
-                        <ContentPresenter Name="PART_Header"
-                                          Content="{TemplateBinding Header}" />
-                    </Border>
-
                     <!-- Content Border with gap for header -->
                     <Border Name="PART_ContentBorder"
-                            Grid.Row="0"
-                            Grid.RowSpan="2"
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Margin="0,10,0,0"
                             Padding="{TemplateBinding Padding}">
-                        <ContentPresenter Margin="0,8,0,0" />
+                        <ContentPresenter Name="PART_ContentPresenter"
+                                          Content="{TemplateBinding Content}"
+                                          ContentTemplate="{TemplateBinding ContentTemplate}"
+                                          ContentTemplateSelector="{TemplateBinding ContentTemplateSelector}" />
+                    </Border>
+
+                    <!-- Header -->
+                    <Border Name="PART_HeaderBorder"
+                            Background="{TemplateBinding HeaderBackground}"
+                            Padding="8,0,8,0"
+                            HorizontalAlignment="Left"
+                            VerticalAlignment="Top"
+                            IsHitTestVisible="False"
+                            Margin="8,0,0,0">
+                        <ContentPresenter Name="PART_Header"
+                                          Content="{TemplateBinding Header}" />
                     </Border>
                 </Grid>
             </ControlTemplate>
@@ -123,12 +120,14 @@
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
 
-                                <!-- Chevron -->
+                                <!-- Chevron (right arrow = collapsed) -->
                                 <Path Name="PART_Chevron"
                                       Grid.Column="0"
-                                      Data="M 0,0 L 4,4 L 0,8"
-                                      Stroke="{TemplateBinding Foreground}"
-                                      StrokeThickness="2"
+                                      Data="M173.731 104.928 L173.731 919.072 c0 45.467 35.892 82.191 80.688 82.191 20.786 0 39.625-8.127 53.893-21.134 L841.126 574.011 c35.363-27.178 42.801-78.468 15.957-114.638-4.581-6.334-9.956-11.867-15.957-16.209 L301.673 32.407 c-35.363-26.902-86.091-19.655-112.607 16.48-11.171 14.836-16.279 31.857-16.279 48.953 Z"
+                                      Fill="{TemplateBinding Foreground}"
+                                      Width="8"
+                                      Height="10"
+                                      Stretch="Uniform"
                                       VerticalAlignment="Center"
                                       Margin="0,0,8,0" />
 
@@ -152,10 +151,7 @@
         </Setter>
 
         <Style.Triggers>
-            <PropertyTrigger Property="IsExpanded" Value="True">
-                <Setter TargetName="PART_ContentBorder" Property="Visibility" Value="Visible" />
-                <Setter TargetName="PART_Chevron" Property="Data" Value="M 0,0 L 4,4 L 8,0" />
-            </PropertyTrigger>
+            <!-- IsExpanded is handled by ExpandCollapseAnimator in code-behind (smooth animation) -->
             <PropertyTrigger Property="IsMouseOver" Value="True">
                 <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{StaticResource ControlBackgroundHover}" />
             </PropertyTrigger>
@@ -166,89 +162,20 @@
     </Style>
 
     <!-- ============================================== -->
-    <!-- InfoBar Style -->
+    <!-- GridSplitter Style -->
     <!-- ============================================== -->
-    <Style TargetType="InfoBar">
-        <Setter Property="Background" Value="{StaticResource InfoBarInformationalBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
-        <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="Padding" Value="12,8,12,8" />
-        <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="MinHeight" Value="48" />
+    <Style TargetType="GridSplitter">
+        <Setter Property="Background" Value="{StaticResource ControlBorder}" />
         <Setter Property="Template">
-            <ControlTemplate TargetType="InfoBar">
-                <Border Name="RootBorder"
-                        Background="{TemplateBinding Background}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="{TemplateBinding CornerRadius}"
-                        MinHeight="{TemplateBinding MinHeight}"
-                        Visibility="{TemplateBinding IsOpen, Converter={StaticResource BoolToVisibility}}">
-                    <Grid>
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="4" />
-                            <ColumnDefinition Width="Auto" />
-                            <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="Auto" />
-                        </Grid.ColumnDefinitions>
-
-                        <!-- Accent Bar -->
-                        <Border Name="PART_AccentBar"
-                                Grid.Column="0"
-                                Background="{StaticResource AccentBrush}"
-                                CornerRadius="4,0,0,4" />
-
-                        <!-- Icon -->
-                        <ContentPresenter Name="PART_Icon"
-                                          Grid.Column="1"
-                                          Margin="12,0,0,0"
-                                          VerticalAlignment="Center" />
-
-                        <!-- Content -->
-                        <StackPanel Grid.Column="2"
-                                    Margin="12,0,0,0"
-                                    VerticalAlignment="Center">
-                            <TextBlock Name="PART_Title"
-                                       Text="{TemplateBinding Title}"
-                                       FontWeight="SemiBold"
-                                       FontSize="14" />
-                            <TextBlock Name="PART_Message"
-                                       Text="{TemplateBinding Message}"
-                                       FontSize="14"
-                                       Margin="0,4,0,0" />
-                        </StackPanel>
-
-                        <!-- Close Button -->
-                        <Button Name="PART_CloseButton"
-                                Grid.Column="3"
-                                Content="X"
-                                Background="Transparent"
-                                BorderThickness="0"
-                                Width="32"
-                                Height="32"
-                                Margin="0,0,8,0"
-                                VerticalAlignment="Center" />
-                    </Grid>
-                </Border>
+            <ControlTemplate TargetType="GridSplitter">
+                <Border Name="PART_Root"
+                        Background="{TemplateBinding Background}" />
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
-            <PropertyTrigger Property="Severity" Value="Success">
-                <Setter Property="Background" Value="{StaticResource InfoBarSuccessBackground}" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="Severity" Value="Warning">
-                <Setter Property="Background" Value="{StaticResource InfoBarWarningBackground}" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="Severity" Value="Error">
-                <Setter Property="Background" Value="{StaticResource InfoBarErrorBackground}" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="IsClosable" Value="False">
-                <Setter TargetName="PART_CloseButton" Property="Visibility" Value="Collapsed" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="IsIconVisible" Value="False">
-                <Setter TargetName="PART_Icon" Property="Visibility" Value="Collapsed" />
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource AccentBrush}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

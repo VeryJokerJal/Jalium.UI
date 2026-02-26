@@ -1,11 +1,11 @@
-using Jalium.UI;
+﻿using Jalium.UI;
 
 namespace Jalium.UI.Media.Effects;
 
 /// <summary>
 /// A bitmap effect that paints a drop shadow around the target element.
 /// </summary>
-public class DropShadowEffect : Effect
+public sealed class DropShadowEffect : Effect
 {
     #region Dependency Properties
 
@@ -61,8 +61,8 @@ public class DropShadowEffect : Effect
     /// </summary>
     public double BlurRadius
     {
-        get => (double)(GetValue(BlurRadiusProperty) ?? 5.0);
-        set => SetValue(BlurRadiusProperty, Math.Max(0, Math.Min(100, value)));
+        get => (double)GetValue(BlurRadiusProperty)!;
+        set => SetValue(BlurRadiusProperty, Math.Clamp(value, 0, 100));
     }
 
     /// <summary>
@@ -71,7 +71,7 @@ public class DropShadowEffect : Effect
     /// </summary>
     public Color Color
     {
-        get => (Color)(GetValue(ColorProperty) ?? Color.Black);
+        get => (Color)GetValue(ColorProperty)!;
         set => SetValue(ColorProperty, value);
     }
 
@@ -82,7 +82,7 @@ public class DropShadowEffect : Effect
     /// </summary>
     public double Direction
     {
-        get => (double)(GetValue(DirectionProperty) ?? 315.0);
+        get => (double)GetValue(DirectionProperty)!;
         set => SetValue(DirectionProperty, value % 360);
     }
 
@@ -92,8 +92,8 @@ public class DropShadowEffect : Effect
     /// </summary>
     public double Opacity
     {
-        get => (double)(GetValue(OpacityProperty) ?? 1.0);
-        set => SetValue(OpacityProperty, Math.Max(0, Math.Min(1, value)));
+        get => (double)GetValue(OpacityProperty)!;
+        set => SetValue(OpacityProperty, Math.Clamp(value, 0, 1));
     }
 
     /// <summary>
@@ -102,7 +102,7 @@ public class DropShadowEffect : Effect
     /// </summary>
     public double ShadowDepth
     {
-        get => (double)(GetValue(ShadowDepthProperty) ?? 5.0);
+        get => (double)GetValue(ShadowDepthProperty)!;
         set => SetValue(ShadowDepthProperty, Math.Max(0, value));
     }
 

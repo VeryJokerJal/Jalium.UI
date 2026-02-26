@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a text box used in DatePicker controls with watermark support.
 /// </summary>
-public class DatePickerTextBox : TextBox
+public sealed class DatePickerTextBox : TextBox
 {
     #region Dependency Properties
 

@@ -90,6 +90,11 @@ public class MouseEventArgs : InputEventArgs
     public ModifierKeys KeyboardModifiers { get; }
 
     /// <summary>
+    /// Gets or sets a value indicating whether downstream pointer promotion should be canceled.
+    /// </summary>
+    public bool Cancel { get; set; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="MouseEventArgs"/> class.
     /// </summary>
     /// <param name="routedEvent">The routed event.</param>
@@ -228,7 +233,7 @@ public delegate void MouseEventHandler(object sender, MouseEventArgs e);
 /// <summary>
 /// Provides data for mouse button events.
 /// </summary>
-public class MouseButtonEventArgs : MouseEventArgs
+public sealed class MouseButtonEventArgs : MouseEventArgs
 {
     /// <summary>
     /// Gets the button that changed state.
@@ -292,7 +297,7 @@ public delegate void MouseButtonEventHandler(object sender, MouseButtonEventArgs
 /// <summary>
 /// Provides data for mouse wheel events.
 /// </summary>
-public class MouseWheelEventArgs : MouseEventArgs
+public sealed class MouseWheelEventArgs : MouseEventArgs
 {
     /// <summary>
     /// Gets the wheel delta. Positive values indicate forward rotation, negative values indicate backward rotation.

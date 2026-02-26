@@ -1,12 +1,15 @@
+using System.Diagnostics.CodeAnalysis;
+
 namespace Jalium.UI;
 
 /// <summary>
 /// Contains property setters that can be shared between instances of a type.
 /// </summary>
 [ContentProperty("Setters")]
-public class Style
+public sealed class Style
 {
     private readonly List<Setter> _setters = new();
+    private readonly List<EventSetter> _eventSetters = new();
     private readonly List<Trigger> _triggers = new();
     private bool _isSealed;
 
@@ -24,6 +27,11 @@ public class Style
     /// Gets the collection of property setters.
     /// </summary>
     public IList<Setter> Setters => _setters;
+
+    /// <summary>
+    /// Gets the collection of event setters.
+    /// </summary>
+    public IList<EventSetter> EventSetters => _eventSetters;
 
     /// <summary>
     /// Gets the collection of triggers.
@@ -76,13 +84,30 @@ public class Style
     /// <param name="element">The element to apply the style to.</param>
     internal void Apply(FrameworkElement element)
     {
-        // Apply base style first
-        BasedOn?.Apply(element);
+        Apply(element, null);
+    }
+
+    private void Apply(FrameworkElement element, HashSet<Style>? visited)
+    {
+        // Apply base style first (with cycle detection)
+        if (BasedOn != null)
+        {
+            visited ??= new HashSet<Style>(ReferenceEqualityComparer.Instance);
+            if (!visited.Add(BasedOn))
+                return; // Cycle detected, stop recursion
+            BasedOn.Apply(element, visited);
+        }
 
         // Apply setters
         foreach (var setter in _setters)
         {
             setter.Apply(element);
+        }
+
+        // Apply event setters
+        foreach (var eventSetter in _eventSetters)
+        {
+            eventSetter.Apply(element);
         }
 
         // Apply triggers
@@ -99,10 +124,21 @@ public class Style
     /// <param name="element">The element to remove the style from.</param>
     internal void Remove(FrameworkElement element)
     {
+        Remove(element, null);
+    }
+
+    private void Remove(FrameworkElement element, HashSet<Style>? visited)
+    {
         // Remove triggers
         foreach (var trigger in _triggers)
         {
             trigger.Detach(element);
+        }
+
+        // Remove event setters
+        foreach (var eventSetter in _eventSetters)
+        {
+            eventSetter.Remove(element);
         }
 
         // Remove setters (in reverse order)
@@ -111,8 +147,14 @@ public class Style
             _setters[i].Remove(element);
         }
 
-        // Remove base style
-        BasedOn?.Remove(element);
+        // Remove base style (with cycle detection)
+        if (BasedOn != null)
+        {
+            visited ??= new HashSet<Style>(ReferenceEqualityComparer.Instance);
+            if (!visited.Add(BasedOn))
+                return; // Cycle detected, stop recursion
+            BasedOn.Remove(element, visited);
+        }
     }
 }
 
@@ -120,7 +162,7 @@ public class Style
 /// Represents a setter that sets a property value.
 /// </summary>
 [ContentProperty("Value")]
-public class Setter
+public sealed class Setter
 {
     /// <summary>
     /// Gets or sets the property to set.
@@ -136,6 +178,14 @@ public class Setter
     /// Gets or sets the name of the element to apply the setter to.
     /// </summary>
     public string? TargetName { get; set; }
+
+    /// <summary>
+    /// Gets or sets the unresolved property name for deferred resolution.
+    /// When a Setter has a TargetName pointing to a different element type than the Style's TargetType,
+    /// the DependencyProperty cannot be resolved at parse time. The property name is stored here
+    /// and resolved at runtime against the actual target element type.
+    /// </summary>
+    public string? PropertyName { get; set; }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Setter"/> class.
@@ -160,34 +210,46 @@ public class Setter
     /// </summary>
     internal void Apply(FrameworkElement element)
     {
-        if (Property == null)
+        var target = GetTarget(element);
+        if (target == null)
             return;
 
-        var target = GetTarget(element);
-        if (target != null)
+        // Resolve the property - may need deferred resolution for TargetName setters
+        var resolvedProperty = Property;
+        if (resolvedProperty == null && PropertyName != null)
         {
-            // Resolve the actual property on the target type
-            // This handles the case where the property was resolved against the Style's TargetType
-            // but the setter targets a different element type via TargetName
-            var actualProperty = ResolvePropertyForTarget(Property, target);
-            if (actualProperty == null)
-                return;
-
-            // Don't override local values - WPF style behavior
-            // Local values have higher precedence than style values
-            if (target.HasLocalValue(actualProperty))
-                return;
-
-            // Store original value for restoration
-            if (!target._styleOriginalValues.ContainsKey(actualProperty))
-            {
-                target._styleOriginalValues[actualProperty] = target.GetValue(actualProperty);
-            }
-
-            // Convert value to the correct type if needed
-            var valueToSet = ConvertValueIfNeeded(Value, actualProperty.PropertyType);
-            target.SetValue(actualProperty, valueToSet);
+            resolvedProperty = ResolveDependencyPropertyByName(PropertyName, target.GetType());
         }
+        if (resolvedProperty == null)
+            return;
+
+        // Resolve the actual property on the target type
+        // This handles the case where the property was resolved against the Style's TargetType
+        // but the setter targets a different element type via TargetName
+        var actualProperty = ResolvePropertyForTarget(resolvedProperty, target);
+        if (actualProperty == null)
+            return;
+
+        // Don't override local values - WPF style behavior
+        // Local values have higher precedence than style values
+        if (target.HasLocalValue(actualProperty))
+            return;
+
+        // Store original value for restoration
+        if (!target._styleOriginalValues.ContainsKey(actualProperty))
+        {
+            target._styleOriginalValues[actualProperty] = target.GetValue(actualProperty);
+        }
+
+        if (Value is IDynamicResourceReference dynamicReference)
+        {
+            DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey);
+            return;
+        }
+
+        // Convert value to the correct type if needed
+        var valueToSet = ConvertValueIfNeeded(Value, actualProperty.PropertyType);
+        target.SetValue(actualProperty, valueToSet);
     }
 
     /// <summary>
@@ -264,19 +326,31 @@ public class Setter
     /// </summary>
     internal void Remove(FrameworkElement element)
     {
-        if (Property == null) return;
-
         var target = GetTarget(element);
         if (target == null) return;
 
+        // Resolve the property - may need deferred resolution for TargetName setters
+        var resolvedProperty = Property;
+        if (resolvedProperty == null && PropertyName != null)
+        {
+            resolvedProperty = ResolveDependencyPropertyByName(PropertyName, target.GetType());
+        }
+        if (resolvedProperty == null) return;
+
         // Resolve the actual property on the target type
-        var actualProperty = ResolvePropertyForTarget(Property, target);
+        var actualProperty = ResolvePropertyForTarget(resolvedProperty, target);
         if (actualProperty == null) return;
 
-        if (target._styleOriginalValues.TryGetValue(actualProperty, out var originalValue))
+        DynamicResourceBindingOperations.ClearDynamicResource(target, actualProperty);
+
+        if (target._styleOriginalValues.Remove(actualProperty))
         {
-            target.SetValue(actualProperty, originalValue);
-            target._styleOriginalValues.Remove(actualProperty);
+            // Use ClearValue instead of SetValue to restore the property.
+            // The original value was always from a non-local source (default or inherited),
+            // because Setter.Apply skips properties that already have a local value.
+            // Using SetValue here would create a local value, which would then cause
+            // a subsequent Setter.Apply to skip the property (HasLocalValue check).
+            target.ClearValue(actualProperty);
         }
     }
 
@@ -285,6 +359,8 @@ public class Setter
     /// This handles the case where the property was resolved against the Style's TargetType
     /// but the setter targets a different element type via TargetName.
     /// </summary>
+    [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
+        Justification = "DependencyProperty static fields are public static readonly and preserved by static initialization")]
     private static DependencyProperty? ResolvePropertyForTarget(DependencyProperty originalProperty, FrameworkElement target)
     {
         var targetType = target.GetType();
@@ -315,6 +391,29 @@ public class Setter
         return originalProperty;
     }
 
+    /// <summary>
+    /// Resolves a DependencyProperty by name on the target type.
+    /// Used for deferred resolution when the property couldn't be resolved at parse time.
+    /// </summary>
+    [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
+        Justification = "DependencyProperty static fields are public static readonly and preserved by static initialization")]
+    internal static DependencyProperty? ResolveDependencyPropertyByName(string propertyName, Type targetType)
+    {
+        var fieldName = $"{propertyName}Property";
+        var currentType = targetType;
+        while (currentType != null && currentType != typeof(object))
+        {
+            var dpField = currentType.GetField(fieldName,
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.DeclaredOnly);
+            if (dpField != null && dpField.FieldType == typeof(DependencyProperty))
+            {
+                return dpField.GetValue(null) as DependencyProperty;
+            }
+            currentType = currentType.BaseType;
+        }
+        return null;
+    }
+
     private FrameworkElement? GetTarget(FrameworkElement element)
     {
         if (string.IsNullOrEmpty(TargetName))
@@ -322,8 +421,7 @@ public class Setter
 
         // Look up named element in the template scope
         // First, try using the element's FindName method
-        var found = element.FindName(TargetName) as FrameworkElement;
-        if (found != null)
+        if (element.FindName(TargetName) is FrameworkElement found)
         {
             return found;
         }
@@ -413,18 +511,24 @@ public abstract class Trigger
     {
         foreach (var setter in Setters)
         {
-            if (setter.Property == null)
-                continue;
-
             // Get the target element (may be different from element if TargetName is set)
             var target = GetSetterTarget(element, setter.TargetName);
             if (target == null)
                 continue;
 
+            // Resolve the property - may need deferred resolution for TargetName setters
+            var resolvedProperty = setter.Property;
+            if (resolvedProperty == null && setter.PropertyName != null)
+            {
+                resolvedProperty = Setter.ResolveDependencyPropertyByName(setter.PropertyName, target.GetType());
+            }
+            if (resolvedProperty == null)
+                continue;
+
             // Resolve the actual property on the target type
             // This is important when TargetName is set and the target is a different type
             // (e.g., Setter targets a Border but was parsed with Style TargetType=Button)
-            var actualProperty = ResolvePropertyForTarget(setter.Property, target);
+            var actualProperty = ResolvePropertyForTarget(resolvedProperty, target);
             if (actualProperty == null)
                 continue;
 
@@ -435,17 +539,30 @@ public abstract class Trigger
             if (element._triggerOriginalValues.TryGetValue(key, out var stored))
             {
                 // Another trigger already stored the original value, just increment count
-                element._triggerOriginalValues[key] = (stored.OriginalValue, stored.ActiveCount + 1);
+                element._triggerOriginalValues[key] = (stored.OriginalValue, stored.ActiveCount + 1, stored.SuspendedDynamicResourceKey);
             }
             else
             {
                 // This is the first trigger affecting this property, store the original value
                 var originalValue = target.GetValue(actualProperty);
-                element._triggerOriginalValues[key] = (originalValue, 1);
+                object? suspendedDynamicResourceKey = null;
+                if (DynamicResourceBindingOperations.TryGetDynamicResourceKey(target, actualProperty, out var existingKey))
+                {
+                    suspendedDynamicResourceKey = existingKey;
+                    DynamicResourceBindingOperations.ClearDynamicResource(target, actualProperty);
+                }
+
+                element._triggerOriginalValues[key] = (originalValue, 1, suspendedDynamicResourceKey);
             }
 
             // Track that this trigger has set this property
             _activeSetters.Add(key);
+
+            if (setter.Value is IDynamicResourceReference dynamicReference)
+            {
+                DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey);
+                continue;
+            }
 
             // Convert value to the correct type if needed and apply
             var valueToSet = ConvertValueIfNeeded(setter.Value, actualProperty.PropertyType);
@@ -461,6 +578,8 @@ public abstract class Trigger
     /// This handles the case where the property was resolved against the Style's TargetType
     /// but the setter targets a different element type via TargetName.
     /// </summary>
+    [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
+        Justification = "DependencyProperty static fields are public static readonly and preserved by static initialization")]
     private static DependencyProperty? ResolvePropertyForTarget(DependencyProperty originalProperty, FrameworkElement target)
     {
         var targetType = target.GetType();
@@ -576,16 +695,22 @@ public abstract class Trigger
 
         foreach (var setter in Setters)
         {
-            if (setter.Property == null)
-                continue;
-
             // Get the target element (may be different from element if TargetName is set)
             var target = GetSetterTarget(element, setter.TargetName);
             if (target == null)
                 continue;
 
+            // Resolve the property - may need deferred resolution for TargetName setters
+            var resolvedProperty = setter.Property;
+            if (resolvedProperty == null && setter.PropertyName != null)
+            {
+                resolvedProperty = Setter.ResolveDependencyPropertyByName(setter.PropertyName, target.GetType());
+            }
+            if (resolvedProperty == null)
+                continue;
+
             // Resolve the actual property on the target type
-            var actualProperty = ResolvePropertyForTarget(setter.Property, target);
+            var actualProperty = ResolvePropertyForTarget(resolvedProperty, target);
             if (actualProperty == null)
                 continue;
 
@@ -594,6 +719,11 @@ public abstract class Trigger
             // Check if this trigger actually set this property
             if (!_activeSetters.Contains(key))
                 continue;
+
+            if (setter.Value is IDynamicResourceReference)
+            {
+                DynamicResourceBindingOperations.ClearDynamicResource(target, actualProperty);
+            }
 
             _activeSetters.Remove(key);
 
@@ -605,15 +735,20 @@ public abstract class Trigger
                 {
                     // No more triggers affecting this property, restore original value
                     target.SetValue(actualProperty, stored.OriginalValue);
+                    if (stored.SuspendedDynamicResourceKey != null)
+                    {
+                        DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, stored.SuspendedDynamicResourceKey);
+                    }
                     element._triggerOriginalValues.Remove(key);
                 }
                 else
                 {
                     // Other triggers still affect this property
-                    element._triggerOriginalValues[key] = (stored.OriginalValue, newCount);
+                    element._triggerOriginalValues[key] = (stored.OriginalValue, newCount, stored.SuspendedDynamicResourceKey);
                     needsReapply.Add(key);
                 }
             }
+
         }
 
         // Re-apply any other still-active triggers that affect the same properties
@@ -633,21 +768,34 @@ public abstract class Trigger
 
                     foreach (var setter in otherTrigger.Setters)
                     {
-                        if (setter.Property == null) continue;
-
                         var target = GetSetterTarget(element, setter.TargetName);
                         if (target == null) continue;
 
+                        // Resolve the property - may need deferred resolution
+                        var resolvedProp = setter.Property;
+                        if (resolvedProp == null && setter.PropertyName != null)
+                        {
+                            resolvedProp = Setter.ResolveDependencyPropertyByName(setter.PropertyName, target.GetType());
+                        }
+                        if (resolvedProp == null) continue;
+
                         // Resolve the actual property on the target type
-                        var actualProperty = ResolvePropertyForTarget(setter.Property, target);
+                        var actualProperty = ResolvePropertyForTarget(resolvedProp, target);
                         if (actualProperty == null) continue;
 
                         var key = (target, actualProperty);
                         if (needsReapply.Contains(key))
                         {
-                            // This property needs another trigger's value re-applied
-                            var valueToSet = ConvertValueIfNeeded(setter.Value, actualProperty.PropertyType);
-                            target.SetValue(actualProperty, valueToSet);
+                            if (setter.Value is IDynamicResourceReference dynamicReference)
+                            {
+                                DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey);
+                            }
+                            else
+                            {
+                                // This property needs another trigger's value re-applied
+                                var valueToSet = ConvertValueIfNeeded(setter.Value, actualProperty.PropertyType);
+                                target.SetValue(actualProperty, valueToSet);
+                            }
                         }
                     }
                 }
@@ -667,8 +815,7 @@ public abstract class Trigger
             return element;
 
         // Look up named element in the template scope
-        var found = element.FindName(targetName) as FrameworkElement;
-        if (found != null)
+        if (element.FindName(targetName) is FrameworkElement found)
             return found;
 
         // If that fails, search the visual tree starting from the element
@@ -716,11 +863,16 @@ public abstract class Trigger
                 var newCount = stored.ActiveCount - 1;
                 if (newCount <= 0)
                 {
+                    var target = key.Item1;
+                    if (stored.SuspendedDynamicResourceKey != null)
+                    {
+                        DynamicResourceBindingOperations.SetDynamicResource(target, key.Item2, stored.SuspendedDynamicResourceKey);
+                    }
                     element._triggerOriginalValues.Remove(key);
                 }
                 else
                 {
-                    element._triggerOriginalValues[key] = (stored.OriginalValue, newCount);
+                    element._triggerOriginalValues[key] = (stored.OriginalValue, newCount, stored.SuspendedDynamicResourceKey);
                 }
             }
         }
@@ -730,7 +882,7 @@ public abstract class Trigger
 /// <summary>
 /// Represents a trigger that applies property values when a property value equals a specified value.
 /// </summary>
-public class PropertyTrigger : Trigger
+public sealed class PropertyTrigger : Trigger
 {
     /// <summary>
     /// Tracks per-element state since a single trigger can be attached to multiple elements (shared styles).
@@ -756,6 +908,9 @@ public class PropertyTrigger : Trigger
     /// <inheritdoc />
     internal override void Attach(FrameworkElement element)
     {
+        if (Property == null)
+            return;
+
         // Create per-element state
         var state = new ElementState();
         _elementStates[element] = state;
@@ -773,11 +928,8 @@ public class PropertyTrigger : Trigger
         element.PropertyChangedInternal += state.Handler;
 
         // Check initial state
-        if (Property != null)
-        {
-            var currentValue = element.GetValue(Property);
-            EvaluateTriggerForElement(element, currentValue);
-        }
+        var currentValue = element.GetValue(Property);
+        EvaluateTriggerForElement(element, currentValue);
     }
 
     /// <inheritdoc />
@@ -837,7 +989,7 @@ public class PropertyTrigger : Trigger
 /// <summary>
 /// Represents a condition for a MultiTrigger.
 /// </summary>
-public class Condition
+public sealed class Condition
 {
     /// <summary>
     /// Gets or sets the property to evaluate.
@@ -853,7 +1005,7 @@ public class Condition
 /// <summary>
 /// Represents a condition based on a data binding for a MultiDataTrigger.
 /// </summary>
-public class BindingCondition
+public sealed class BindingCondition
 {
     /// <summary>
     /// Gets or sets the binding to evaluate.
@@ -870,7 +1022,7 @@ public class BindingCondition
 /// Represents a trigger that applies property values when multiple conditions are all true.
 /// </summary>
 [ContentProperty("Setters")]
-public class MultiTrigger : Trigger
+public sealed class MultiTrigger : Trigger
 {
     /// <summary>
     /// Tracks per-element state since a single trigger can be attached to multiple elements (shared styles).
@@ -997,7 +1149,7 @@ public class MultiTrigger : Trigger
 /// <summary>
 /// Represents a trigger that applies property values when data equals a specified value.
 /// </summary>
-public class DataTrigger : Trigger
+public sealed class DataTrigger : Trigger
 {
     /// <summary>
     /// Tracks per-element state since a single trigger can be attached to multiple elements (shared styles).
@@ -1116,7 +1268,7 @@ public class DataTrigger : Trigger
 /// <summary>
 /// Represents a trigger that applies property values when an event occurs.
 /// </summary>
-public class EventTrigger : Trigger
+public sealed class EventTrigger : Trigger
 {
     private FrameworkElement? _attachedElement;
 
@@ -1172,7 +1324,7 @@ public class EventTrigger : Trigger
 /// Represents a trigger that applies property values when multiple data binding conditions are all true.
 /// </summary>
 [ContentProperty("Setters")]
-public class MultiDataTrigger : Trigger
+public sealed class MultiDataTrigger : Trigger
 {
     /// <summary>
     /// Tracks per-element state since a single trigger can be attached to multiple elements (shared styles).
@@ -1326,4 +1478,65 @@ public abstract class TriggerAction
     /// Invokes the action on the specified element.
     /// </summary>
     internal abstract void Invoke(FrameworkElement? element);
+}
+
+/// <summary>
+/// Represents a setter that applies an event handler in a Style.
+/// </summary>
+public sealed class EventSetter
+{
+    /// <summary>
+    /// Initializes a new instance of the <see cref="EventSetter"/> class.
+    /// </summary>
+    public EventSetter()
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="EventSetter"/> class with the specified event and handler.
+    /// </summary>
+    /// <param name="routedEvent">The routed event that this EventSetter responds to.</param>
+    /// <param name="handler">The handler to assign.</param>
+    public EventSetter(RoutedEvent routedEvent, Delegate handler)
+    {
+        Event = routedEvent;
+        Handler = handler;
+    }
+
+    /// <summary>
+    /// Gets or sets the particular routed event that this EventSetter responds to.
+    /// </summary>
+    public RoutedEvent? Event { get; set; }
+
+    /// <summary>
+    /// Gets or sets the handler to assign in this setter.
+    /// </summary>
+    public Delegate? Handler { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether the handler should be invoked even if the event is marked as handled.
+    /// </summary>
+    public bool HandledEventsToo { get; set; }
+
+    /// <summary>
+    /// Applies this event setter to the specified element.
+    /// </summary>
+    internal void Apply(FrameworkElement element)
+    {
+        if (Event == null || Handler == null)
+            return;
+
+        element.AddHandler(Event, Handler, HandledEventsToo);
+    }
+
+    /// <summary>
+    /// Removes this event setter from the specified element.
+    /// </summary>
+    internal void Remove(FrameworkElement element)
+    {
+        if (Event == null || Handler == null)
+            return;
+
+        element.RemoveHandler(Event, Handler);
+    }
 }

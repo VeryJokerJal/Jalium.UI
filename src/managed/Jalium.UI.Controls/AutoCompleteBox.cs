@@ -1,8 +1,10 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.ObjectModel;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
@@ -10,8 +12,25 @@ namespace Jalium.UI.Controls;
 /// Represents a text box control that provides auto-completion suggestions.
 /// Inherits from TextBoxBase for full text editing support.
 /// </summary>
-public class AutoCompleteBox : TextBoxBase, IImeSupport
+public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
 {
+    #region Static Brushes & Pens
+
+    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_watermarkBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
+    private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
+    private static readonly SolidColorBrush s_compositionUnderlineBrush = new(Color.FromRgb(200, 200, 100));
+    private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
+    private static readonly SolidColorBrush s_dropdownShadowBrush = new(Color.FromArgb(40, 0, 0, 0));
+    private static readonly SolidColorBrush s_dropdownBgBrush = new(Color.FromRgb(50, 50, 50));
+    private static readonly SolidColorBrush s_dropdownBorderFallbackBrush = new(Color.FromRgb(100, 100, 100));
+    private static readonly SolidColorBrush s_dropdownSelectionBrush = new(Color.FromRgb(0, 120, 215));
+    private static readonly SolidColorBrush s_dropdownHoverBrush = new(Color.FromRgb(70, 70, 70));
+
+    #endregion
+
     #region Fields
 
     // Internal text storage
@@ -34,7 +53,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     private int _selectedSuggestionIndex = -1;
     private bool _isUpdatingText;
     private DateTime _lastFilterTime;
-    private System.Timers.Timer? _filterDelayTimer;
+    private DispatcherTimer? _filterDelayTimer;
 
     // Constants
     private const double DefaultHeight = 32;
@@ -261,7 +280,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// </summary>
     public bool IsDropDownOpen
     {
-        get => (bool)(GetValue(IsDropDownOpenProperty) ?? false);
+        get => (bool)GetValue(IsDropDownOpenProperty)!;
         set => SetValue(IsDropDownOpenProperty, value);
     }
 
@@ -270,7 +289,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// </summary>
     public int MinimumPrefixLength
     {
-        get => (int)(GetValue(MinimumPrefixLengthProperty) ?? 1);
+        get => (int)GetValue(MinimumPrefixLengthProperty)!;
         set => SetValue(MinimumPrefixLengthProperty, value);
     }
 
@@ -288,7 +307,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// </summary>
     public double MaxDropDownHeight
     {
-        get => (double)(GetValue(MaxDropDownHeightProperty) ?? 224.0);
+        get => (double)GetValue(MaxDropDownHeightProperty)!;
         set => SetValue(MaxDropDownHeightProperty, value);
     }
 
@@ -297,7 +316,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// </summary>
     public TimeSpan MinimumPopulateDelay
     {
-        get => (TimeSpan)(GetValue(MinimumPopulateDelayProperty) ?? TimeSpan.Zero);
+        get => (TimeSpan)GetValue(MinimumPopulateDelayProperty)!;
         set => SetValue(MinimumPopulateDelayProperty, value);
     }
 
@@ -324,7 +343,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// </summary>
     public bool IsTextCompletionEnabled
     {
-        get => (bool)(GetValue(IsTextCompletionEnabledProperty) ?? false);
+        get => (bool)GetValue(IsTextCompletionEnabledProperty)!;
         set => SetValue(IsTextCompletionEnabledProperty, value);
     }
 
@@ -481,13 +500,13 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override (int lineIndex, int columnIndex) GetLineColumnFromCharIndex(int charIndex)
     {
-        return (0, Math.Max(0, Math.Min(charIndex, _text.Length)));
+        return (0, Math.Clamp(_text.Length, 0, charIndex));
     }
 
     /// <inheritdoc />
     protected override int GetCharIndexFromLineColumn(int lineIndex, int columnIndex)
     {
-        return Math.Max(0, Math.Min(columnIndex, _text.Length));
+        return Math.Clamp(_text.Length, 0, columnIndex);
     }
 
     /// <inheritdoc />
@@ -621,10 +640,11 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
             if (_filterDelayTimer == null)
             {
-                _filterDelayTimer = new System.Timers.Timer(delay.TotalMilliseconds);
-                _filterDelayTimer.AutoReset = false;
-                _filterDelayTimer.Elapsed += (s, e) =>
+                _filterDelayTimer = new DispatcherTimer();
+                _filterDelayTimer.Interval = delay;
+                _filterDelayTimer.Tick += (s, e) =>
                 {
+                    _filterDelayTimer.Stop();
                     // Check if enough time has passed since last update
                     if ((DateTime.Now - _lastFilterTime).TotalMilliseconds >= delay.TotalMilliseconds - 10)
                     {
@@ -856,7 +876,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
             directDc.DrawRoundedRectangle(Background, null, inputRect, cornerRadius);
         }
 
-        var borderBrush = IsFocused ? new SolidColorBrush(Color.FromRgb(0, 120, 212)) : BorderBrush;
+        var borderBrush = IsFocused ? s_focusBorderBrush : BorderBrush;
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
             var pen = new Pen(borderBrush, BorderThickness.Left);
@@ -911,7 +931,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         {
             var watermarkText = new FormattedText(Watermark, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
             {
-                Foreground = new SolidColorBrush(Color.FromRgb(128, 128, 128))
+                Foreground = s_watermarkBrush
             };
             TextMeasurement.MeasureText(watermarkText);
             var textY = (contentRect.Height - watermarkText.Height) / 2;
@@ -921,7 +941,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         {
             var formattedText = new FormattedText(_text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
             {
-                Foreground = Foreground ?? new SolidColorBrush(Color.White)
+                Foreground = Foreground ?? s_whiteBrush
             };
             TextMeasurement.MeasureText(formattedText);
             var textY = (contentRect.Height - formattedText.Height) / 2;
@@ -971,19 +991,17 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         var textY = contentRect.Y + (contentRect.Height - lineHeight) / 2;
 
         var compositionWidth = MeasureTextWidth(_imeCompositionString);
-        var compositionBgBrush = new SolidColorBrush(Color.FromRgb(60, 60, 80));
-        dc.DrawRectangle(compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
+        dc.DrawRectangle(s_compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
 
         var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? "Segoe UI", FontSize)
         {
-            Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 200)),
+            Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
             MaxTextHeight = lineHeight
         };
         dc.DrawText(compositionText, new Point(x, textY));
 
-        var underlinePen = new Pen(new SolidColorBrush(Color.FromRgb(200, 200, 100)), 1);
-        dc.DrawLine(underlinePen, new Point(x, textY + lineHeight - 2), new Point(x + compositionWidth, textY + lineHeight - 2));
+        dc.DrawLine(s_compositionUnderlinePen, new Point(x, textY + lineHeight - 2), new Point(x + compositionWidth, textY + lineHeight - 2));
     }
 
     private void DrawCaret(DrawingContext dc, Rect contentRect, double lineHeight)
@@ -1023,21 +1041,17 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         var dropDownRect = new Rect(0, dropDownTop, RenderSize.Width, dropDownHeight);
 
         // Draw drop-down background with shadow effect (simplified)
-        var shadowBrush = new SolidColorBrush(Color.FromArgb(40, 0, 0, 0));
         var shadowRect = new Rect(2, dropDownTop + 2, RenderSize.Width, dropDownHeight);
-        dc.DrawRectangle(shadowBrush, null, shadowRect);
+        dc.DrawRectangle(s_dropdownShadowBrush, null, shadowRect);
 
-        var dropDownBg = new SolidColorBrush(Color.FromRgb(50, 50, 50));
-        var dropDownBorder = new Pen(BorderBrush ?? new SolidColorBrush(Color.FromRgb(100, 100, 100)), 1);
-        dc.DrawRectangle(dropDownBg, dropDownBorder, dropDownRect);
+        var dropDownBorder = new Pen(BorderBrush ?? s_dropdownBorderFallbackBrush, 1);
+        dc.DrawRectangle(s_dropdownBgBrush, dropDownBorder, dropDownRect);
 
         // Clip to dropdown
         dc.PushClip(new RectangleGeometry(dropDownRect));
 
         // Draw items
         var y = dropDownTop;
-        var selectionBrush = new SolidColorBrush(Color.FromRgb(0, 120, 215));
-        var hoverBrush = new SolidColorBrush(Color.FromRgb(70, 70, 70));
 
         for (var i = 0; i < FilteredItems.Count && y < dropDownTop + dropDownHeight; i++)
         {
@@ -1046,14 +1060,14 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
             // Draw selection background
             if (i == _selectedSuggestionIndex)
             {
-                dc.DrawRectangle(selectionBrush, null, itemRect);
+                dc.DrawRectangle(s_dropdownSelectionBrush, null, itemRect);
             }
 
             // Draw item text
             var itemText = GetItemText(FilteredItems[i]);
             var formattedText = new FormattedText(itemText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 13)
             {
-                Foreground = Foreground ?? new SolidColorBrush(Color.White)
+                Foreground = Foreground ?? s_whiteBrush
             };
             TextMeasurement.MeasureText(formattedText);
             var itemTextY = y + (ItemHeight - formattedText.Height) / 2;
@@ -1125,7 +1139,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         if (d is AutoCompleteBox autoComplete && autoComplete._filterDelayTimer != null)
         {
             var delay = (TimeSpan)e.NewValue;
-            autoComplete._filterDelayTimer.Interval = delay.TotalMilliseconds > 0 ? delay.TotalMilliseconds : 1;
+            autoComplete._filterDelayTimer.Interval = delay > TimeSpan.Zero ? delay : TimeSpan.FromMilliseconds(1);
         }
     }
 

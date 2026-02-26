@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
@@ -9,7 +9,7 @@ namespace Jalium.UI.Data;
 /// <summary>
 /// The XAML proxy of a CollectionView class.
 /// </summary>
-public class CollectionViewSource : DependencyObject, ISupportInitialize
+public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
 {
     private static readonly Dictionary<object, WeakReference<ICollectionView>> _defaultViews = new();
 
@@ -121,7 +121,7 @@ public class CollectionViewSource : DependencyObject, ISupportInitialize
     /// </summary>
     public bool IsLiveFilteringRequested
     {
-        get => (bool)(GetValue(IsLiveFilteringRequestedProperty) ?? false);
+        get => (bool)GetValue(IsLiveFilteringRequestedProperty)!;
         set => SetValue(IsLiveFilteringRequestedProperty, value);
     }
 
@@ -130,7 +130,7 @@ public class CollectionViewSource : DependencyObject, ISupportInitialize
     /// </summary>
     public bool IsLiveSortingRequested
     {
-        get => (bool)(GetValue(IsLiveSortingRequestedProperty) ?? false);
+        get => (bool)GetValue(IsLiveSortingRequestedProperty)!;
         set => SetValue(IsLiveSortingRequestedProperty, value);
     }
 
@@ -139,7 +139,7 @@ public class CollectionViewSource : DependencyObject, ISupportInitialize
     /// </summary>
     public bool IsLiveGroupingRequested
     {
-        get => (bool)(GetValue(IsLiveGroupingRequestedProperty) ?? false);
+        get => (bool)GetValue(IsLiveGroupingRequestedProperty)!;
         set => SetValue(IsLiveGroupingRequestedProperty, value);
     }
 
@@ -331,7 +331,7 @@ public class CollectionViewSource : DependencyObject, ISupportInitialize
 /// <summary>
 /// Provides data for the Filter event.
 /// </summary>
-public class FilterEventArgs : EventArgs
+public sealed class FilterEventArgs : EventArgs
 {
     /// <summary>
     /// Initializes a new instance of the FilterEventArgs class.

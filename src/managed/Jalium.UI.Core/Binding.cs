@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
 
@@ -151,6 +152,33 @@ public abstract class BindingBase
 public class Binding : BindingBase
 {
     /// <summary>
+    /// Used as a returned value to indicate that the binding engine should not perform any action.
+    /// </summary>
+    public static readonly object DoNothing = new DoNothingMarker();
+
+    /// <summary>
+    /// Used as a returned value to indicate that the binding engine should use the FallbackValue or default value.
+    /// </summary>
+    public static readonly object UnsetValue = DependencyProperty.UnsetValue;
+
+    private sealed class DoNothingMarker
+    {
+        public override string ToString() => "{Binding.DoNothing}";
+    }
+
+    /// <summary>
+    /// Occurs when a value is transferred from the binding source to the binding target.
+    /// </summary>
+    public static readonly RoutedEvent TargetUpdatedEvent =
+        new RoutedEvent("TargetUpdated", RoutingStrategy.Bubble, typeof(EventHandler<DataTransferEventArgs>), typeof(Binding));
+
+    /// <summary>
+    /// Occurs when a value is transferred from the binding target to the binding source.
+    /// </summary>
+    public static readonly RoutedEvent SourceUpdatedEvent =
+        new RoutedEvent("SourceUpdated", RoutingStrategy.Bubble, typeof(EventHandler<DataTransferEventArgs>), typeof(Binding));
+
+    /// <summary>
     /// Gets or sets the path to the binding source property.
     /// </summary>
     public PropertyPath? Path { get; set; }
@@ -256,7 +284,7 @@ public class Binding : BindingBase
 /// <summary>
 /// Describes the location of a binding source relative to the position of the binding target.
 /// </summary>
-public class RelativeSource
+public sealed class RelativeSource
 {
     /// <summary>
     /// Gets the relative source mode.
@@ -381,14 +409,17 @@ public abstract class BindingExpressionBase
 /// <summary>
 /// Represents the runtime instance of a binding.
 /// </summary>
-public class BindingExpression : BindingExpressionBase
+public sealed class BindingExpression : BindingExpressionBase
 {
     private readonly Binding _binding;
     private INotifyPropertyChanged? _sourceNotify;
     private INotifyDataErrorInfo? _notifyDataErrorInfo;
     private DependencyObject? _sourceDependencyObject;
     private PropertyInfo? _sourceProperty;
+    private object? _effectiveSource;
     private bool _isUpdating;
+    private bool _isLostFocusUpdate;
+    private List<(INotifyPropertyChanged Notify, string PropertyName)>? _intermediateSubscriptions;
 
     /// <summary>
     /// Gets the parent binding.
@@ -418,9 +449,10 @@ public class BindingExpression : BindingExpressionBase
         // Resolve the data source
         ResolveDataSource();
 
-        // For FindAncestor bindings, if the source couldn't be resolved (visual tree not ready),
-        // don't mark as active so we can retry later when visual parent changes
-        if (ResolvedSource == null && _binding.RelativeSource?.Mode == RelativeSourceMode.FindAncestor)
+        // If the source couldn't be resolved (visual tree not ready for DataContext inheritance,
+        // or FindAncestor can't find ancestor), don't mark as active so we can retry later
+        // when visual parent changes and ReactivateBindings() is called
+        if (ResolvedSource == null && _binding.Source == null)
         {
             Status = BindingStatus.Unattached;
             return;
@@ -459,6 +491,18 @@ public class BindingExpression : BindingExpressionBase
         if (mode != BindingMode.TwoWay && mode != BindingMode.OneWayToSource)
             return;
 
+        // If UpdateSourceTrigger is LostFocus or Explicit, only update when explicitly requested
+        // (LostFocus updates via OnTargetLostFocus; Explicit requires manual call).
+        // When called from DependencyObject.SetValue (automatic path), we must skip if
+        // the trigger is not PropertyChanged/Default.
+        var trigger = _binding.UpdateSourceTrigger;
+        if (trigger == UpdateSourceTrigger.Explicit)
+            return;
+        // LostFocus: block automatic updates triggered by property changes; only allow
+        // updates initiated by the LostFocus handler (which sets _isLostFocusUpdate = true).
+        if (trigger == UpdateSourceTrigger.LostFocus && !_isLostFocusUpdate)
+            return;
+
         if (ResolvedSource == null || _sourceProperty == null)
             return;
 
@@ -494,7 +538,7 @@ public class BindingExpression : BindingExpressionBase
             // Step 4: Update source
             try
             {
-                _sourceProperty.SetValue(ResolvedSource, sourceValue);
+                _sourceProperty.SetValue(_effectiveSource ?? ResolvedSource, sourceValue);
             }
             catch (Exception ex)
             {
@@ -652,6 +696,17 @@ public class BindingExpression : BindingExpressionBase
             var targetValue = Convert(sourceValue);
 
             Target.SetValue(TargetProperty, targetValue);
+
+            // Validate data errors for the target update
+            if (_binding.ValidatesOnNotifyDataErrors && _notifyDataErrorInfo != null)
+            {
+                ValidateNotifyDataErrorInfo();
+            }
+
+            if (_binding.ValidatesOnDataErrors)
+            {
+                ValidateDataErrorInfo();
+            }
         }
         finally
         {
@@ -796,14 +851,19 @@ public class BindingExpression : BindingExpressionBase
 
     private object? GetDataContext()
     {
-        // Walk up the visual tree to find DataContext
-        if (Target is FrameworkElement fe)
+        // Walk up the visual tree to find the nearest DataContext
+        FrameworkElement? current = Target as FrameworkElement;
+        while (current != null)
         {
-            return fe.DataContext;
+            if (current.DataContext != null)
+                return current.DataContext;
+            current = current.VisualParent as FrameworkElement;
         }
         return null;
     }
 
+    [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
+        Justification = "Data binding source properties are user code and must be preserved by the application")]
     private void ResolveSourceProperty()
     {
         if (ResolvedSource == null || _binding.Path == null)
@@ -813,11 +873,25 @@ public class BindingExpression : BindingExpressionBase
         if (segments.Length == 0)
             return;
 
-        // For now, only support simple property paths (single segment)
-        var propertyName = segments[0];
-        _sourceProperty = ResolvedSource.GetType().GetProperty(propertyName);
+        // Navigate to the object containing the final property
+        object? current = ResolvedSource;
+        for (int i = 0; i < segments.Length - 1; i++)
+        {
+            if (current == null) return;
+            var prop = current.GetType().GetProperty(segments[i]);
+            if (prop == null) return;
+            current = prop.GetValue(current);
+        }
+
+        if (current == null) return;
+
+        _effectiveSource = current;
+        var lastSegment = segments[segments.Length - 1];
+        _sourceProperty = current.GetType().GetProperty(lastSegment);
     }
 
+    [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
+        Justification = "Data binding source properties are user code and must be preserved by the application")]
     private object? GetSourceValue()
     {
         if (ResolvedSource == null)
@@ -856,7 +930,14 @@ public class BindingExpression : BindingExpressionBase
 
         if (value != null && !string.IsNullOrEmpty(_binding.StringFormat))
         {
-            value = string.Format(_binding.StringFormat, value);
+            try
+            {
+                value = string.Format(_binding.StringFormat, value);
+            }
+            catch (FormatException)
+            {
+                // Invalid StringFormat — return unconverted value rather than crashing
+            }
         }
 
         return value;
@@ -897,6 +978,12 @@ public class BindingExpression : BindingExpressionBase
             fe.DataContextChanged += OnDataContextChanged;
         }
 
+        // Subscribe to LostFocus for UpdateSourceTrigger.LostFocus
+        if (_binding.UpdateSourceTrigger == UpdateSourceTrigger.LostFocus && Target is UIElement targetElement)
+        {
+            targetElement.LostFocus += OnTargetLostFocus;
+        }
+
         // Subscribe to INotifyDataErrorInfo if enabled
         if (_binding.ValidatesOnNotifyDataErrors && ResolvedSource is INotifyDataErrorInfo ndei)
         {
@@ -906,6 +993,9 @@ public class BindingExpression : BindingExpressionBase
             // Check for initial errors
             ValidateNotifyDataErrorInfo();
         }
+
+        // Subscribe to intermediate objects for nested property paths (e.g., Address.City)
+        SubscribeToIntermediates();
     }
 
     private void UnsubscribeFromSource()
@@ -927,10 +1017,91 @@ public class BindingExpression : BindingExpressionBase
             fe.DataContextChanged -= OnDataContextChanged;
         }
 
+        if (Target is UIElement targetElementUnsub)
+        {
+            targetElementUnsub.LostFocus -= OnTargetLostFocus;
+        }
+
         if (_notifyDataErrorInfo != null)
         {
             _notifyDataErrorInfo.ErrorsChanged -= OnErrorsChanged;
             _notifyDataErrorInfo = null;
+        }
+
+        UnsubscribeFromIntermediates();
+    }
+
+    private void UnsubscribeFromIntermediates()
+    {
+        if (_intermediateSubscriptions != null)
+        {
+            foreach (var (notify, _) in _intermediateSubscriptions)
+            {
+                notify.PropertyChanged -= OnIntermediatePropertyChanged;
+            }
+            _intermediateSubscriptions = null;
+        }
+    }
+
+    [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
+        Justification = "Data binding intermediate property navigation uses reflection on user types")]
+    private void SubscribeToIntermediates()
+    {
+        UnsubscribeFromIntermediates();
+
+        if (_binding.Path == null) return;
+        var segments = _binding.Path.PathSegments;
+        if (segments.Length <= 1) return; // No intermediates for simple paths
+
+        _intermediateSubscriptions = new();
+
+        object? current = ResolvedSource;
+        // Subscribe to intermediate objects (segments[0] through segments[Length-2]).
+        // Segment 0's property changing on ResolvedSource is already handled by _sourceNotify,
+        // but we still need to subscribe to the *value* of segment 0 (the intermediate object)
+        // for changes to segment 1, and so on.
+        for (int i = 0; i < segments.Length - 1; i++)
+        {
+            if (current == null) break;
+            var prop = current.GetType().GetProperty(segments[i]);
+            if (prop == null) break;
+
+            var intermediateObj = prop.GetValue(current);
+            if (intermediateObj is INotifyPropertyChanged inpc)
+            {
+                // Subscribe to this intermediate object for property changes
+                // (e.g., for path A.B.C, subscribe to A's value for "B" changes)
+                inpc.PropertyChanged += OnIntermediatePropertyChanged;
+                _intermediateSubscriptions.Add((inpc, segments[i + 1]));
+            }
+            current = intermediateObj;
+        }
+    }
+
+    private void OnIntermediatePropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (_isUpdating) return;
+        if (_binding.Path == null) return;
+
+        // Find which intermediate this sender corresponds to
+        if (_intermediateSubscriptions != null)
+        {
+            foreach (var (notify, propertyName) in _intermediateSubscriptions)
+            {
+                if (ReferenceEquals(notify, sender))
+                {
+                    // Only react if the changed property matches the segment we care about,
+                    // or if PropertyName is null/empty (meaning all properties changed)
+                    if (string.IsNullOrEmpty(e.PropertyName) || e.PropertyName == propertyName)
+                    {
+                        // Re-resolve the entire property chain since an intermediate changed
+                        ResolveSourceProperty();
+                        SubscribeToIntermediates();
+                        UpdateTarget();
+                    }
+                    return;
+                }
+            }
         }
     }
 
@@ -959,6 +1130,7 @@ public class BindingExpression : BindingExpressionBase
 
     private void OnSourcePropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
+        if (_isUpdating) return;
         if (_binding.Path == null)
             return;
 
@@ -966,19 +1138,47 @@ public class BindingExpression : BindingExpressionBase
         if (string.IsNullOrEmpty(e.PropertyName) ||
             _binding.Path.PathSegments.Length > 0 && _binding.Path.PathSegments[0] == e.PropertyName)
         {
+            // For nested paths (e.g., Address.City), when the top-level property changes
+            // (e.g., Address), we need to re-resolve the entire property chain and
+            // re-subscribe to the new intermediate objects
+            if (_binding.Path.PathSegments.Length > 1)
+            {
+                ResolveSourceProperty();
+                SubscribeToIntermediates();
+            }
             UpdateTarget();
         }
     }
 
     private void OnSourceDependencyPropertyChanged(DependencyProperty dp, object? oldValue, object? newValue)
     {
+        if (_isUpdating) return;
         if (_binding.Path == null)
             return;
 
         // Check if the changed property matches our path
         if (_binding.Path.PathSegments.Length > 0 && _binding.Path.PathSegments[0] == dp.Name)
         {
+            // For nested paths, re-resolve the property chain and re-subscribe intermediates
+            if (_binding.Path.PathSegments.Length > 1)
+            {
+                ResolveSourceProperty();
+                SubscribeToIntermediates();
+            }
             UpdateTarget();
+        }
+    }
+
+    private void OnTargetLostFocus(object sender, RoutedEventArgs e)
+    {
+        _isLostFocusUpdate = true;
+        try
+        {
+            UpdateSource();
+        }
+        finally
+        {
+            _isLostFocusUpdate = false;
         }
     }
 

@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls.Ink;
 /// <summary>
 /// Represents a single ink stroke consisting of stylus points and drawing attributes.
 /// </summary>
-public class Stroke : INotifyPropertyChanged
+public sealed class Stroke : INotifyPropertyChanged
 {
     private StylusPointCollection _stylusPoints;
     private DrawingAttributes _drawingAttributes;
@@ -120,7 +120,7 @@ public class Stroke : INotifyPropertyChanged
     /// Creates a copy of this stroke.
     /// </summary>
     /// <returns>A new <see cref="Stroke"/> with cloned points and attributes.</returns>
-    public virtual Stroke Clone()
+    public Stroke Clone()
     {
         var clone = new Stroke(_stylusPoints.Clone(), _drawingAttributes.Clone());
         clone.TaperMode = TaperMode;
@@ -205,7 +205,7 @@ public class Stroke : INotifyPropertyChanged
     /// Core drawing implementation using ellipse stamping for smooth strokes.
     /// </summary>
     /// <param name="dc">The drawing context.</param>
-    protected virtual void DrawCore(DrawingContext dc)
+    protected void DrawCore(DrawingContext dc)
     {
         if (_stylusPoints.Count == 0)
             return;
@@ -642,9 +642,9 @@ public class Stroke : INotifyPropertyChanged
 
                     // Vary color slightly for oil paint mixing effect
                     var colorVariation = (int)((random.NextDouble() - 0.5) * 20);
-                    var r = (byte)Math.Max(0, Math.Min(255, baseColor.R + colorVariation));
-                    var g = (byte)Math.Max(0, Math.Min(255, baseColor.G + colorVariation));
-                    var b = (byte)Math.Max(0, Math.Min(255, baseColor.B + colorVariation));
+                    var r = (byte)Math.Clamp(baseColor.R + colorVariation, 0, 255);
+                    var g = (byte)Math.Clamp(baseColor.G + colorVariation, 0, 255);
+                    var b = (byte)Math.Clamp(baseColor.B + colorVariation, 0, 255);
 
                     var alpha = (byte)(150 + random.Next(50)); // Thick, semi-opaque
                     var brush = new SolidColorBrush(Color.FromArgb(alpha, r, g, b));
@@ -789,7 +789,7 @@ public class Stroke : INotifyPropertyChanged
     /// <summary>
     /// Raises the <see cref="PropertyChanged"/> event.
     /// </summary>
-    protected virtual void OnPropertyChanged(string propertyName)
+    protected void OnPropertyChanged(string propertyName)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
@@ -797,7 +797,7 @@ public class Stroke : INotifyPropertyChanged
     /// <summary>
     /// Raises the <see cref="Invalidated"/> event.
     /// </summary>
-    protected virtual void OnInvalidated()
+    protected void OnInvalidated()
     {
         Invalidated?.Invoke(this, EventArgs.Empty);
     }

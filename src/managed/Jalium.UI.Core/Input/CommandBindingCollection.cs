@@ -5,7 +5,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Represents a collection of CommandBinding objects.
 /// </summary>
-public class CommandBindingCollection : IList<CommandBinding>, IList
+public sealed class CommandBindingCollection : IList<CommandBinding>, IList
 {
     private readonly List<CommandBinding> _bindings = new();
 

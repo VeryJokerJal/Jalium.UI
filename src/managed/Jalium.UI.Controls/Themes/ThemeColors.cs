@@ -294,6 +294,26 @@ public static class ThemeColors
 
     #endregion
 
+    #region DockLayout Colors
+
+    public static Color DockTabStripBackground => Color.FromRgb(37, 37, 37);
+
+    public static Color DockTabStripBorder => Color.FromRgb(60, 60, 60);
+
+    public static Color DockTabItemSelectedBackground => Color.FromRgb(30, 30, 30);
+
+    public static Color DockTabItemHoverBackground => Color.FromRgb(45, 45, 45);
+
+    public static Color DockContentBackground => Color.FromRgb(30, 30, 30);
+
+    public static Color DockSplitterBackground => Color.FromRgb(37, 37, 37);
+
+    public static Color DockSplitterHover => Color.FromRgb(60, 60, 60);
+
+    public static Color DockCloseButtonHover => Color.FromRgb(232, 17, 35);
+
+    #endregion
+
     #region Title Bar Colors
 
     /// <summary>

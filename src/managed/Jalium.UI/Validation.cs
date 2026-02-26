@@ -10,6 +10,12 @@ namespace Jalium.UI;
 /// </summary>
 public static class Validation
 {
+    /// <summary>
+    /// Delegate for handling validation adorner creation/removal.
+    /// The UI layer registers this to provide visual feedback for validation errors.
+    /// </summary>
+    public static Action<DependencyObject, bool>? AdornerHandler { get; set; }
+
     #region Attached Properties
 
     /// <summary>
@@ -149,6 +155,9 @@ public static class Validation
         errors.Add(error);
         element.SetValue(HasErrorProperty, true);
 
+        // Show validation adorner
+        AdornerHandler?.Invoke(element, true);
+
         if (element is UIElement uiElement)
         {
             var args = new ValidationErrorEventArgs(ErrorEvent, error, ValidationErrorEventAction.Added);
@@ -167,6 +176,9 @@ public static class Validation
             errors.Clear();
             element.SetValue(HasErrorProperty, false);
 
+            // Remove validation adorner
+            AdornerHandler?.Invoke(element, false);
+
             if (element is UIElement uiElement)
             {
                 foreach (var error in removedErrors)
@@ -184,7 +196,7 @@ public static class Validation
 /// <summary>
 /// Represents a validation error.
 /// </summary>
-public class ValidationError
+public sealed class ValidationError
 {
     /// <summary>
     /// Gets the validation rule that caused the error.
@@ -229,7 +241,7 @@ public class ValidationError
 /// <summary>
 /// Provides data for validation error events.
 /// </summary>
-public class ValidationErrorEventArgs : RoutedEventArgs
+public sealed class ValidationErrorEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the validation error.
@@ -321,7 +333,7 @@ public enum ValidationStep
 /// <summary>
 /// Represents the result of a validation operation.
 /// </summary>
-public class ValidationResult
+public sealed class ValidationResult
 {
     /// <summary>
     /// Gets whether the validation passed.
@@ -351,7 +363,7 @@ public class ValidationResult
 /// <summary>
 /// Validates that a value is not null or empty.
 /// </summary>
-public class RequiredValidationRule : ValidationRule
+public sealed class RequiredValidationRule : ValidationRule
 {
     /// <summary>
     /// Gets or sets the error message.
@@ -406,7 +418,7 @@ public class RegexValidationRule : ValidationRule
 /// <summary>
 /// Validates that a numeric value is within a range.
 /// </summary>
-public class RangeValidationRule : ValidationRule
+public sealed class RangeValidationRule : ValidationRule
 {
     /// <summary>
     /// Gets or sets the minimum value.
@@ -458,7 +470,7 @@ public class RangeValidationRule : ValidationRule
 /// <summary>
 /// Validates that a string has a specific length.
 /// </summary>
-public class StringLengthValidationRule : ValidationRule
+public sealed class StringLengthValidationRule : ValidationRule
 {
     /// <summary>
     /// Gets or sets the minimum length.
@@ -500,7 +512,7 @@ public class StringLengthValidationRule : ValidationRule
 /// <summary>
 /// Validates email addresses.
 /// </summary>
-public class EmailValidationRule : RegexValidationRule
+public sealed class EmailValidationRule : RegexValidationRule
 {
     /// <summary>
     /// Creates a new EmailValidationRule.
@@ -515,7 +527,7 @@ public class EmailValidationRule : RegexValidationRule
 /// <summary>
 /// Validates using a custom predicate.
 /// </summary>
-public class PredicateValidationRule : ValidationRule
+public sealed class PredicateValidationRule : ValidationRule
 {
     /// <summary>
     /// Gets or sets the validation predicate.
@@ -540,7 +552,7 @@ public class PredicateValidationRule : ValidationRule
 /// <summary>
 /// Validates using data annotations on the bound object.
 /// </summary>
-public class DataAnnotationsValidationRule : ValidationRule
+public sealed class DataAnnotationsValidationRule : ValidationRule
 {
     /// <inheritdoc />
     public override ValidationResult Validate(object? value, CultureInfo cultureInfo)
@@ -564,7 +576,7 @@ public class DataAnnotationsValidationRule : ValidationRule
 /// <summary>
 /// Validates a specific property using data annotations.
 /// </summary>
-public class PropertyValidationRule : ValidationRule
+public sealed class PropertyValidationRule : ValidationRule
 {
     /// <summary>
     /// Gets or sets the property name to validate.
@@ -598,7 +610,7 @@ public class PropertyValidationRule : ValidationRule
 /// <summary>
 /// Exception wrapper validation rule.
 /// </summary>
-public class ExceptionValidationRule : ValidationRule
+public sealed class ExceptionValidationRule : ValidationRule
 {
     /// <inheritdoc />
     public override ValidationResult Validate(object? value, CultureInfo cultureInfo)
@@ -611,7 +623,7 @@ public class ExceptionValidationRule : ValidationRule
 /// <summary>
 /// Notifies about data error information.
 /// </summary>
-public class DataErrorValidationRule : ValidationRule
+public sealed class DataErrorValidationRule : ValidationRule
 {
     /// <inheritdoc />
     public override ValidationResult Validate(object? value, CultureInfo cultureInfo)

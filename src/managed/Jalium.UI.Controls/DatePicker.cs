@@ -1,118 +1,83 @@
+﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a control that allows the user to select a date.
 /// </summary>
-public class DatePicker : Control
+public sealed class DatePicker : Control
 {
     #region Dependency Properties
 
-    /// <summary>
-    /// Identifies the SelectedDate dependency property.
-    /// </summary>
     public static readonly DependencyProperty SelectedDateProperty =
         DependencyProperty.Register(nameof(SelectedDate), typeof(DateTime?), typeof(DatePicker),
             new PropertyMetadata(null, OnSelectedDateChanged));
 
-    /// <summary>
-    /// Identifies the DisplayDate dependency property.
-    /// </summary>
     public static readonly DependencyProperty DisplayDateProperty =
         DependencyProperty.Register(nameof(DisplayDate), typeof(DateTime), typeof(DatePicker),
             new PropertyMetadata(DateTime.Today));
 
-    /// <summary>
-    /// Identifies the DisplayDateStart dependency property.
-    /// </summary>
     public static readonly DependencyProperty DisplayDateStartProperty =
         DependencyProperty.Register(nameof(DisplayDateStart), typeof(DateTime?), typeof(DatePicker),
             new PropertyMetadata(null));
 
-    /// <summary>
-    /// Identifies the DisplayDateEnd dependency property.
-    /// </summary>
     public static readonly DependencyProperty DisplayDateEndProperty =
         DependencyProperty.Register(nameof(DisplayDateEnd), typeof(DateTime?), typeof(DatePicker),
             new PropertyMetadata(null));
 
-    /// <summary>
-    /// Identifies the IsDropDownOpen dependency property.
-    /// </summary>
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(DatePicker),
             new PropertyMetadata(false, OnIsDropDownOpenChanged));
 
-    /// <summary>
-    /// Identifies the Header dependency property.
-    /// </summary>
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(DatePicker),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
 
-    /// <summary>
-    /// Identifies the PlaceholderText dependency property.
-    /// </summary>
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(DatePicker),
             new PropertyMetadata("Select a date", OnVisualPropertyChanged));
 
-    /// <summary>
-    /// Identifies the DateFormat dependency property.
-    /// </summary>
     public static readonly DependencyProperty DateFormatProperty =
         DependencyProperty.Register(nameof(DateFormat), typeof(string), typeof(DatePicker),
             new PropertyMetadata("d", OnVisualPropertyChanged));
+
+    public static readonly DependencyProperty SelectedDateFormatProperty =
+        DependencyProperty.Register(nameof(SelectedDateFormat), typeof(DatePickerFormat), typeof(DatePicker),
+            new PropertyMetadata(DatePickerFormat.Short, OnVisualPropertyChanged));
 
     #endregion
 
     #region Routed Events
 
-    /// <summary>
-    /// Identifies the SelectedDateChanged routed event.
-    /// </summary>
     public static readonly RoutedEvent SelectedDateChangedEvent =
         EventManager.RegisterRoutedEvent(nameof(SelectedDateChanged), RoutingStrategy.Bubble,
             typeof(EventHandler<SelectionChangedEventArgs>), typeof(DatePicker));
 
-    /// <summary>
-    /// Identifies the CalendarOpened routed event.
-    /// </summary>
     public static readonly RoutedEvent CalendarOpenedEvent =
         EventManager.RegisterRoutedEvent(nameof(CalendarOpened), RoutingStrategy.Bubble,
             typeof(RoutedEventHandler), typeof(DatePicker));
 
-    /// <summary>
-    /// Identifies the CalendarClosed routed event.
-    /// </summary>
     public static readonly RoutedEvent CalendarClosedEvent =
         EventManager.RegisterRoutedEvent(nameof(CalendarClosed), RoutingStrategy.Bubble,
             typeof(RoutedEventHandler), typeof(DatePicker));
 
-    /// <summary>
-    /// Occurs when the selected date changes.
-    /// </summary>
     public event EventHandler<SelectionChangedEventArgs> SelectedDateChanged
     {
         add => AddHandler(SelectedDateChangedEvent, value);
         remove => RemoveHandler(SelectedDateChangedEvent, value);
     }
 
-    /// <summary>
-    /// Occurs when the calendar is opened.
-    /// </summary>
     public event RoutedEventHandler CalendarOpened
     {
         add => AddHandler(CalendarOpenedEvent, value);
         remove => RemoveHandler(CalendarOpenedEvent, value);
     }
 
-    /// <summary>
-    /// Occurs when the calendar is closed.
-    /// </summary>
     public event RoutedEventHandler CalendarClosed
     {
         add => AddHandler(CalendarClosedEvent, value);
@@ -123,77 +88,69 @@ public class DatePicker : Control
 
     #region CLR Properties
 
-    /// <summary>
-    /// Gets or sets the currently selected date.
-    /// </summary>
     public DateTime? SelectedDate
     {
         get => (DateTime?)GetValue(SelectedDateProperty);
         set => SetValue(SelectedDateProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the date to display when the calendar is opened.
-    /// </summary>
     public DateTime DisplayDate
     {
-        get => (DateTime)(GetValue(DisplayDateProperty) ?? DateTime.Today);
+        get => (DateTime)GetValue(DisplayDateProperty)!;
         set => SetValue(DisplayDateProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the first date that can be selected.
-    /// </summary>
     public DateTime? DisplayDateStart
     {
         get => (DateTime?)GetValue(DisplayDateStartProperty);
         set => SetValue(DisplayDateStartProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the last date that can be selected.
-    /// </summary>
     public DateTime? DisplayDateEnd
     {
         get => (DateTime?)GetValue(DisplayDateEndProperty);
         set => SetValue(DisplayDateEndProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether the calendar dropdown is open.
-    /// </summary>
     public bool IsDropDownOpen
     {
-        get => (bool)(GetValue(IsDropDownOpenProperty) ?? false);
+        get => (bool)GetValue(IsDropDownOpenProperty)!;
         set => SetValue(IsDropDownOpenProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the header content.
-    /// </summary>
     public object? Header
     {
         get => GetValue(HeaderProperty);
         set => SetValue(HeaderProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the placeholder text displayed when no date is selected.
-    /// </summary>
     public string? PlaceholderText
     {
         get => (string?)GetValue(PlaceholderTextProperty);
         set => SetValue(PlaceholderTextProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the format string for displaying the date.
-    /// </summary>
     public string DateFormat
     {
         get => (string)(GetValue(DateFormatProperty) ?? "d");
         set => SetValue(DateFormatProperty, value);
     }
+
+    public DatePickerFormat SelectedDateFormat
+    {
+        get => (DatePickerFormat)GetValue(SelectedDateFormatProperty)!;
+        set => SetValue(SelectedDateFormatProperty, value);
+    }
+
+    #endregion
+
+    #region Static Brushes & Pens
+
+    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_iconBrush = new(Color.FromRgb(160, 160, 160));
+    private static readonly Pen s_iconPen = new(s_iconBrush, 1.5);
 
     #endregion
 
@@ -203,13 +160,23 @@ public class DatePicker : Control
     private const double DropdownButtonWidth = 32;
     private Rect _dropdownButtonRect;
 
+    // Popup & Calendar
+    private Popup? _popup;
+    private Calendar? _calendar;
+    private Border? _calendarBorder;
+    private DispatcherTimer? _animationTimer;
+    private bool _isCloseAnimating;
+    private bool _isOpen;
+
+    private const double OpenDurationMs = 250;
+    private const double CloseDurationMs = 180;
+    private static readonly CubicEase OpenEase = new() { EasingMode = EasingMode.EaseOut };
+    private static readonly CubicEase CloseEase = new() { EasingMode = EasingMode.EaseIn };
+
     #endregion
 
     #region Constructor
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="DatePicker"/> class.
-    /// </summary>
     public DatePicker()
     {
         Focusable = true;
@@ -226,6 +193,184 @@ public class DatePicker : Control
 
     #endregion
 
+    #region Popup Management
+
+    private void EnsurePopup()
+    {
+        if (_popup != null) return;
+
+        _calendar = new Calendar();
+        _calendar.SelectedDateChanged += OnCalendarSelectedDateChanged;
+        _calendar.DateClicked += OnCalendarDateClicked;
+
+        _calendarBorder = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(45, 45, 45)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(67, 67, 70)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(4),
+            Margin = new Thickness(0, 4, 0, 0),
+            Child = _calendar
+        };
+
+        _popup = new Popup
+        {
+            Child = _calendarBorder,
+            PlacementTarget = this,
+            Placement = PlacementMode.Bottom,
+            StaysOpen = false
+        };
+        _popup.Closed += OnPopupClosed;
+    }
+
+    private void OpenDropDown()
+    {
+        if (_isOpen) return;
+
+        if (_isCloseAnimating)
+        {
+            _animationTimer?.Stop();
+            _isCloseAnimating = false;
+        }
+
+        EnsurePopup();
+
+        // Sync calendar state
+        if (SelectedDate.HasValue)
+        {
+            _calendar!.SelectedDate = SelectedDate;
+            _calendar.DisplayDate = SelectedDate.Value;
+        }
+        else
+        {
+            _calendar!.DisplayDate = DisplayDate;
+        }
+        _calendar.DisplayDateStart = DisplayDateStart;
+        _calendar.DisplayDateEnd = DisplayDateEnd;
+
+        _popup!.IsOpen = true;
+        _isOpen = true;
+
+        AnimateOpen();
+        RaiseEvent(new RoutedEventArgs(CalendarOpenedEvent, this));
+    }
+
+    private void CloseDropDown()
+    {
+        if (!_isOpen) return;
+        _isOpen = false;
+
+        AnimateClose();
+        RaiseEvent(new RoutedEventArgs(CalendarClosedEvent, this));
+    }
+
+    private void OnCalendarSelectedDateChanged(object? sender, SelectionChangedEventArgs e)
+    {
+        // Sync but don't close — DateClicked will close
+    }
+
+    private void OnCalendarDateClicked(object? sender, DateTime date)
+    {
+        SelectedDate = date;
+        IsDropDownOpen = false;
+    }
+
+    private void OnPopupClosed(object? sender, EventArgs e)
+    {
+        if (_isCloseAnimating) return;
+
+        _animationTimer?.Stop();
+        _isOpen = false;
+        SetValue(IsDropDownOpenProperty, false);
+    }
+
+    #endregion
+
+    #region Animation
+
+    private void AnimateOpen()
+    {
+        _animationTimer?.Stop();
+
+        if (_calendarBorder != null)
+        {
+            _calendarBorder.Opacity = 0;
+            _calendarBorder.RenderOffset = new Point(0, -8);
+        }
+
+        var startTime = Environment.TickCount64;
+
+        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
+        _animationTimer.Tick += (s, e) =>
+        {
+            var elapsed = Environment.TickCount64 - startTime;
+            var progress = Math.Min(1.0, elapsed / OpenDurationMs);
+            var eased = OpenEase.Ease(progress);
+
+            if (_calendarBorder != null)
+            {
+                _calendarBorder.Opacity = eased;
+                _calendarBorder.RenderOffset = new Point(0, -8 * (1.0 - eased));
+            }
+
+            if (progress >= 1.0)
+            {
+                _animationTimer!.Stop();
+                if (_calendarBorder != null)
+                {
+                    _calendarBorder.Opacity = 1;
+                    _calendarBorder.RenderOffset = default;
+                }
+            }
+        };
+        _animationTimer.Start();
+    }
+
+    private void AnimateClose()
+    {
+        _animationTimer?.Stop();
+
+        var startOpacity = _calendarBorder?.Opacity ?? 1.0;
+        var startOffsetY = _calendarBorder?.RenderOffset.Y ?? 0;
+        var startTime = Environment.TickCount64;
+
+        _isCloseAnimating = true;
+
+        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
+        _animationTimer.Tick += (s, e) =>
+        {
+            var elapsed = Environment.TickCount64 - startTime;
+            var progress = Math.Min(1.0, elapsed / CloseDurationMs);
+            var eased = CloseEase.Ease(progress);
+
+            if (_calendarBorder != null)
+            {
+                _calendarBorder.Opacity = startOpacity * (1.0 - eased);
+                _calendarBorder.RenderOffset = new Point(0, startOffsetY + (-8 - startOffsetY) * eased);
+            }
+
+            if (progress >= 1.0)
+            {
+                _animationTimer!.Stop();
+
+                if (_popup != null)
+                    _popup.IsOpen = false;
+
+                _isCloseAnimating = false;
+
+                if (_calendarBorder != null)
+                {
+                    _calendarBorder.Opacity = 1;
+                    _calendarBorder.RenderOffset = default;
+                }
+            }
+        };
+        _animationTimer.Start();
+    }
+
+    #endregion
+
     #region Input Handling
 
     private void OnMouseDownHandler(object sender, RoutedEventArgs e)
@@ -235,9 +380,6 @@ public class DatePicker : Control
         if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
         {
             Focus();
-            var position = mouseArgs.GetPosition(this);
-
-            // Toggle dropdown when clicking anywhere
             IsDropDownOpen = !IsDropDownOpen;
             e.Handled = true;
         }
@@ -272,14 +414,10 @@ public class DatePicker : Control
 
     #region Layout
 
-    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var padding = Padding;
-        var border = BorderThickness;
         var headerHeight = 0.0;
 
-        // Measure header
         if (Header is string headerText)
         {
             var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14);
@@ -297,7 +435,6 @@ public class DatePicker : Control
 
     #region Rendering
 
-    /// <inheritdoc />
     protected override void OnRender(object drawingContext)
     {
         if (drawingContext is not DrawingContext dc)
@@ -306,7 +443,6 @@ public class DatePicker : Control
         var rect = new Rect(RenderSize);
         var padding = Padding;
         var cornerRadius = CornerRadius;
-        var hasCornerRadius = cornerRadius.TopLeft > 0;
         var headerHeight = 0.0;
 
         // Draw header
@@ -321,7 +457,6 @@ public class DatePicker : Control
             headerHeight = headerFormatted.Height + 4;
         }
 
-        // Adjust rect for header
         var inputRect = new Rect(0, headerHeight, rect.Width, rect.Height - headerHeight);
 
         // Draw background
@@ -331,7 +466,7 @@ public class DatePicker : Control
         }
 
         // Draw border
-        var borderBrush = IsFocused ? new SolidColorBrush(Color.FromRgb(0, 120, 212)) : BorderBrush;
+        var borderBrush = IsFocused ? s_focusBorderBrush : BorderBrush;
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
             var pen = new Pen(borderBrush, BorderThickness.Left);
@@ -339,22 +474,19 @@ public class DatePicker : Control
         }
 
         // Draw date text or placeholder
-        var textRect = new Rect(padding.Left, inputRect.Top + padding.Top,
-            inputRect.Width - DropdownButtonWidth - padding.TotalWidth,
-            inputRect.Height - padding.TotalHeight);
-
         string displayText;
         Brush textBrush;
 
         if (SelectedDate.HasValue)
         {
-            displayText = SelectedDate.Value.ToString(DateFormat);
-            textBrush = Foreground ?? new SolidColorBrush(Color.White);
+            var format = SelectedDateFormat == DatePickerFormat.Long ? "D" : "d";
+            displayText = SelectedDate.Value.ToString(format);
+            textBrush = Foreground ?? s_whiteBrush;
         }
         else
         {
             displayText = PlaceholderText ?? "Select a date";
-            textBrush = new SolidColorBrush(Color.FromRgb(128, 128, 128));
+            textBrush = s_placeholderBrush;
         }
 
         var textFormatted = new FormattedText(displayText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
@@ -373,9 +505,7 @@ public class DatePicker : Control
 
     private void DrawDropdownButton(DrawingContext dc, Rect rect)
     {
-        // Draw calendar icon (simplified)
-        var iconBrush = new SolidColorBrush(Color.FromRgb(160, 160, 160));
-        var iconPen = new Pen(iconBrush, 1.5);
+        var iconPen = s_iconPen;
 
         var centerX = rect.X + rect.Width / 2;
         var centerY = rect.Y + rect.Height / 2;
@@ -415,13 +545,9 @@ public class DatePicker : Control
         if (d is DatePicker datePicker)
         {
             if ((bool)e.NewValue)
-            {
-                datePicker.RaiseEvent(new RoutedEventArgs(CalendarOpenedEvent, datePicker));
-            }
+                datePicker.OpenDropDown();
             else
-            {
-                datePicker.RaiseEvent(new RoutedEventArgs(CalendarClosedEvent, datePicker));
-            }
+                datePicker.CloseDropDown();
         }
     }
 
@@ -442,4 +568,20 @@ public class DatePicker : Control
     }
 
     #endregion
+}
+
+/// <summary>
+/// Specifies the format used to display the selected date in a DatePicker.
+/// </summary>
+public enum DatePickerFormat
+{
+    /// <summary>
+    /// Short date format (e.g., "2/15/2026").
+    /// </summary>
+    Short,
+
+    /// <summary>
+    /// Long date format (e.g., "Sunday, February 15, 2026").
+    /// </summary>
+    Long
 }

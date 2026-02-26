@@ -1,5 +1,6 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
+using Jalium.UI.Controls.Primitives;
 
 namespace Jalium.UI.Controls;
 

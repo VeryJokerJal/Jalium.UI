@@ -494,7 +494,7 @@ public static class DataFormats
 /// <summary>
 /// Implements a basic data object that stores data in multiple formats.
 /// </summary>
-public class ClipboardDataObject : IDataObject
+public sealed class ClipboardDataObject : IDataObject
 {
     private readonly Dictionary<string, object?> _data = new();
 

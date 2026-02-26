@@ -19,6 +19,8 @@ public class CollectionView : ICollectionView, INotifyPropertyChanged
     private List<object>? _internalList;
     private object? _currentItem;
     private int _currentPosition = -1;
+    private ReadOnlyObservableCollection<object>? _groups;
+    private ObservableCollection<object>? _groupsInternal;
     private int _deferRefreshCount;
     private bool _needsRefresh;
 
@@ -125,7 +127,7 @@ public class CollectionView : ICollectionView, INotifyPropertyChanged
     /// <summary>
     /// Gets the top-level groups.
     /// </summary>
-    public ReadOnlyObservableCollection<object>? Groups => null; // Basic implementation, no grouping
+    public ReadOnlyObservableCollection<object>? Groups => _groups;
 
     /// <summary>
     /// Gets a value that indicates whether the CurrentItem of the view is beyond the end of the collection.
@@ -340,6 +342,19 @@ public class CollectionView : ICollectionView, INotifyPropertyChanged
             _internalList.Sort(new SortFieldComparer(_sortDescriptions, _culture));
         }
 
+        // Apply grouping
+        if (_groupDescriptions.Count > 0)
+        {
+            _groupsInternal = new ObservableCollection<object>();
+            BuildGroups(_internalList, _groupDescriptions, 0, _groupsInternal);
+            _groups = new ReadOnlyObservableCollection<object>(_groupsInternal);
+        }
+        else
+        {
+            _groupsInternal = null;
+            _groups = null;
+        }
+
         // Try to restore current item
         if (oldCurrentItem != null && _internalList.Contains(oldCurrentItem))
         {
@@ -376,6 +391,44 @@ public class CollectionView : ICollectionView, INotifyPropertyChanged
     private void OnGroupDescriptionsChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         Refresh();
+    }
+
+    private void BuildGroups(List<object> items, ObservableCollection<GroupDescription> groupDescriptions, int level, ObservableCollection<object> targetGroups)
+    {
+        if (level >= groupDescriptions.Count) return;
+
+        var description = groupDescriptions[level];
+        var groupMap = new Dictionary<object, InternalCollectionViewGroup>();
+        var groupOrder = new List<object>();
+
+        foreach (var item in items)
+        {
+            var groupName = description.GroupNameFromItem(item, level, _culture) ?? "(null)";
+
+            if (!groupMap.TryGetValue(groupName, out var group))
+            {
+                group = new InternalCollectionViewGroup(groupName);
+                groupMap[groupName] = group;
+                groupOrder.Add(groupName);
+            }
+            group.AddItem(item);
+        }
+
+        foreach (var key in groupOrder)
+        {
+            var group = groupMap[key];
+            // Recursively group sub-levels
+            if (level + 1 < groupDescriptions.Count)
+            {
+                var subItems = group.GetItemsSnapshot();
+                group.Clear();
+                var subGroups = new ObservableCollection<object>();
+                BuildGroups(subItems, groupDescriptions, level + 1, subGroups);
+                foreach (var subGroup in subGroups)
+                    group.AddItem(subGroup);
+            }
+            targetGroups.Add(group);
+        }
     }
 
     private void EndDeferRefresh()
@@ -461,5 +514,37 @@ public class CollectionView : ICollectionView, INotifyPropertyChanged
             var property = type.GetProperty(propertyName);
             return property?.GetValue(item);
         }
+    }
+
+    /// <summary>
+    /// Internal concrete CollectionViewGroup used by BuildGroups.
+    /// Can hold either data items (leaf level) or sub-groups (non-leaf level).
+    /// </summary>
+    private sealed class InternalCollectionViewGroup : CollectionViewGroup
+    {
+        private bool _isBottomLevel = true;
+
+        public InternalCollectionViewGroup(object name) : base(name)
+        {
+        }
+
+        public override bool IsBottomLevel => _isBottomLevel;
+
+        public void AddItem(object item)
+        {
+            if (item is CollectionViewGroup)
+                _isBottomLevel = false;
+            ProtectedItems.Add(item);
+            ProtectedItemCount = ProtectedItems.Count;
+        }
+
+        public void Clear()
+        {
+            ProtectedItems.Clear();
+            ProtectedItemCount = 0;
+            _isBottomLevel = true;
+        }
+
+        public List<object> GetItemsSnapshot() => ProtectedItems.ToList();
     }
 }

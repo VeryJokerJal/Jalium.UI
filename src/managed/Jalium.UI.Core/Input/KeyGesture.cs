@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using System.Text;
 
 namespace Jalium.UI.Input;
@@ -7,7 +7,7 @@ namespace Jalium.UI.Input;
 /// Defines a keyboard combination that can be used to invoke a command.
 /// </summary>
 [TypeConverter(typeof(KeyGestureConverter))]
-public class KeyGesture : InputGesture
+public sealed class KeyGesture : InputGesture
 {
     /// <summary>
     /// Initializes a new instance of the KeyGesture class with the specified key.
@@ -119,7 +119,7 @@ public class KeyGesture : InputGesture
 /// <summary>
 /// Converts a KeyGesture to and from a string.
 /// </summary>
-public class KeyGestureConverter : TypeConverter
+public sealed class KeyGestureConverter : TypeConverter
 {
     /// <summary>
     /// Determines whether this converter can convert from the specified source type.
@@ -187,7 +187,7 @@ public class KeyGestureConverter : TypeConverter
                         else if (c >= '0' && c <= '9')
                             key = c;
                     }
-                    else if (upperPart.StartsWith("F") && int.TryParse(upperPart[1..], out var fNum) && fNum >= 1 && fNum <= 12)
+                    else if (upperPart.StartsWith("F", StringComparison.Ordinal) && int.TryParse(upperPart[1..], out var fNum) && fNum >= 1 && fNum <= 12)
                     {
                         key = 111 + fNum;
                     }

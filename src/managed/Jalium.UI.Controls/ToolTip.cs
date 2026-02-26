@@ -1,17 +1,26 @@
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a tooltip that displays information about an element.
 /// </summary>
-public class ToolTip : ContentControl
+public sealed class ToolTip : ContentControl
 {
+    #region Static Brushes
+
+    private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(45, 45, 48));
+    private static readonly SolidColorBrush s_defaultBorderBrush = new(Color.FromRgb(70, 70, 70));
+    private static readonly SolidColorBrush s_defaultForegroundBrush = new(Color.FromRgb(240, 240, 240));
+
+    #endregion
+
     private Popup? _popup;
     private UIElement? _placementTarget;
-    private System.Threading.Timer? _showTimer;
-    private System.Threading.Timer? _hideTimer;
-    private bool _isTimerRunning;
+    private DispatcherTimer? _showTimer;
+    private DispatcherTimer? _hideTimer;
 
     #region Dependency Properties
 
@@ -55,77 +64,7 @@ public class ToolTip : ContentControl
     /// </summary>
     public static readonly DependencyProperty ShowDurationProperty =
         DependencyProperty.Register(nameof(ShowDuration), typeof(int), typeof(ToolTip),
-            new PropertyMetadata(5000));
-
-    #endregion
-
-    #region Attached Properties
-
-    /// <summary>
-    /// Identifies the ToolTip attached property.
-    /// </summary>
-    public static readonly DependencyProperty ToolTipProperty =
-        DependencyProperty.RegisterAttached("ToolTip", typeof(object), typeof(ToolTip),
-            new PropertyMetadata(null, OnToolTipChanged));
-
-    /// <summary>
-    /// Gets the tooltip for the specified element.
-    /// </summary>
-    public static object? GetToolTip(DependencyObject element)
-    {
-        return element.GetValue(ToolTipProperty);
-    }
-
-    /// <summary>
-    /// Sets the tooltip for the specified element.
-    /// </summary>
-    public static void SetToolTip(DependencyObject element, object? value)
-    {
-        element.SetValue(ToolTipProperty, value);
-    }
-
-    private static void OnToolTipChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is UIElement element)
-        {
-            // Unsubscribe from old events
-            element.MouseEnter -= OnElementMouseEnter;
-            element.MouseLeave -= OnElementMouseLeave;
-
-            if (e.NewValue != null)
-            {
-                // Subscribe to new events
-                element.MouseEnter += OnElementMouseEnter;
-                element.MouseLeave += OnElementMouseLeave;
-            }
-        }
-    }
-
-    private static void OnElementMouseEnter(object? sender, RoutedEventArgs e)
-    {
-        if (sender is UIElement element)
-        {
-            var toolTipValue = GetToolTip(element);
-            if (toolTipValue != null)
-            {
-                // Get mouse position from the event if available
-                var position = Point.Zero;
-                if (e is Input.MouseEventArgs mouseArgs)
-                {
-                    position = mouseArgs.Position;
-                }
-                ToolTipService.ShowToolTip(element, toolTipValue, position);
-            }
-        }
-    }
-
-    private static void OnElementMouseLeave(object? sender, RoutedEventArgs e)
-    {
-        if (sender is UIElement element)
-        {
-            ToolTipService.HideToolTip(element);
-        }
-    }
+            new PropertyMetadata(int.MaxValue));
 
     #endregion
 
@@ -210,28 +149,49 @@ public class ToolTip : ContentControl
 
     #endregion
 
+    static ToolTip()
+    {
+        // Register show/hide delegates with FrameworkElement.
+        // MouseEnter/MouseLeave subscriptions are already handled in Core (OnToolTipPropertyChanged),
+        // so there's no timing issue — even if this static constructor runs late,
+        // the delegates will be set before the user actually hovers.
+        FrameworkElement.ToolTipShowRequested = OnToolTipShowRequested;
+        FrameworkElement.ToolTipHideRequested = OnToolTipHideRequested;
+    }
+
+    private static void OnToolTipShowRequested(FrameworkElement element, RoutedEventArgs e)
+    {
+        var toolTipValue = element.ToolTip;
+        if (toolTipValue != null)
+        {
+            var position = Point.Zero;
+            if (e is Input.MouseEventArgs mouseArgs)
+            {
+                position = mouseArgs.Position;
+            }
+            ToolTipService.ShowToolTip(element, toolTipValue, position);
+        }
+    }
+
+    private static void OnToolTipHideRequested(UIElement element)
+    {
+        ToolTipService.HideToolTip(element);
+    }
+
     public ToolTip()
     {
-        // Default styling - modern dark theme
-        Background = new SolidColorBrush(Color.FromRgb(45, 45, 48));
-        BorderBrush = new SolidColorBrush(Color.FromRgb(70, 70, 70));
+        // ToolTip has a default ControlTemplate (from theme) with Border + ContentPresenter.
+        // Content must be managed by the template's ContentPresenter, NOT directly by ContentControl.
+        // Without this, ContentControl.AddVisualChild(Content) conflicts with ContentPresenter.AddVisualChild(Content).
+        UseTemplateContentManagement();
+
+        // Default styling — overridden by theme implicit style when available
+        Background = s_defaultBackgroundBrush;
+        BorderBrush = s_defaultBorderBrush;
         BorderThickness = new Thickness(1);
         Padding = new Thickness(8, 4, 8, 4);
-        Foreground = new SolidColorBrush(Color.FromRgb(240, 240, 240));
+        Foreground = s_defaultForegroundBrush;
     }
-
-    #region Template Parts
-
-    private Border? _toolTipBorder;
-
-    /// <inheritdoc />
-    protected override void OnApplyTemplate()
-    {
-        base.OnApplyTemplate();
-        _toolTipBorder = GetTemplateChild("ToolTipBorder") as Border;
-    }
-
-    #endregion
 
     private static void OnIsOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
@@ -250,20 +210,28 @@ public class ToolTip : ContentControl
 
     private void OpenToolTip()
     {
-        if (_popup == null)
+        System.Diagnostics.Debug.WriteLine($"[ToolTip] OpenToolTip: placementTarget={_placementTarget?.GetType().Name}");
+
+        // Always create a fresh Popup to avoid stale state from previous show
+        if (_popup != null)
         {
-            _popup = new Popup
-            {
-                Child = this,
-                PlacementTarget = _placementTarget,
-                Placement = Placement,
-                HorizontalOffset = HorizontalOffset,
-                VerticalOffset = VerticalOffset + 16, // Default offset below cursor
-                StaysOpen = false
-            };
+            _popup.IsOpen = false;
         }
 
+        _popup = new Popup
+        {
+            Child = this,
+            PlacementTarget = _placementTarget,
+            Placement = Placement,
+            HorizontalOffset = HorizontalOffset + 12, // Offset to the right of cursor
+            VerticalOffset = VerticalOffset + 20, // Offset below cursor image (~20 DIPs for standard arrow cursor)
+            StaysOpen = true, // ToolTip closing is managed by ToolTipService, not light-dismiss
+            ShouldConstrainToRootBounds = true, // Force overlay mode (simpler, avoids external window issues)
+            IsHitTestVisible = false // Prevent tooltip overlay from stealing mouse events
+        };
+
         _popup.IsOpen = true;
+        System.Diagnostics.Debug.WriteLine($"[ToolTip] Popup.IsOpen set to true");
         Opened?.Invoke(this, EventArgs.Empty);
 
         // Start auto-hide timer
@@ -285,112 +253,193 @@ public class ToolTip : ContentControl
     internal void StartShowTimer(Point mousePosition)
     {
         StopTimers();
-        _isTimerRunning = true;
 
-        _showTimer = new System.Threading.Timer(_ =>
+        System.Diagnostics.Debug.WriteLine($"[ToolTip] StartShowTimer: delay={InitialShowDelay}ms, content={Content?.GetType().Name}");
+
+        _showTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(InitialShowDelay) };
+        _showTimer.Tick += (_, _) =>
         {
-            if (_isTimerRunning)
-            {
-                // Use dispatcher to update on UI thread
-                IsOpen = true;
-            }
-        }, null, InitialShowDelay, System.Threading.Timeout.Infinite);
+            _showTimer?.Stop(); // One-shot
+            System.Diagnostics.Debug.WriteLine($"[ToolTip] ShowTimer fired, setting IsOpen=true");
+            IsOpen = true;
+        };
+        _showTimer.Start();
     }
 
     private void StartHideTimer()
     {
-        _hideTimer = new System.Threading.Timer(_ =>
+        // int.MaxValue means "don't auto-hide" (matches WPF 4.8.1+ default)
+        if (ShowDuration == int.MaxValue) return;
+
+        _hideTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(ShowDuration) };
+        _hideTimer.Tick += (_, _) =>
         {
+            _hideTimer?.Stop(); // One-shot
             IsOpen = false;
-        }, null, ShowDuration, System.Threading.Timeout.Infinite);
+        };
+        _hideTimer.Start();
     }
 
     internal void StopTimers()
     {
-        _isTimerRunning = false;
-        _showTimer?.Dispose();
-        _showTimer = null;
-        _hideTimer?.Dispose();
-        _hideTimer = null;
+        if (_showTimer != null)
+        {
+            _showTimer.Stop();
+            _showTimer = null;
+        }
+        if (_hideTimer != null)
+        {
+            _hideTimer.Stop();
+            _hideTimer = null;
+        }
     }
 
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        // Measure content
-        var child = Content;
-        if (child == null) return new Size(0, 0);
-
-        if (child is FrameworkElement fe)
-        {
-            // Account for padding
-            var contentSize = new Size(
-                Math.Max(0, availableSize.Width - Padding.Left - Padding.Right),
-                Math.Max(0, availableSize.Height - Padding.Top - Padding.Bottom));
-
-            fe.Measure(contentSize);
-            return new Size(
-                fe.DesiredSize.Width + Padding.Left + Padding.Right,
-                fe.DesiredSize.Height + Padding.Top + Padding.Bottom);
-        }
-
-        return new Size(0, 0);
-    }
-
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        var child = Content;
-        if (child is FrameworkElement fe)
-        {
-            var contentRect = new Rect(
-                Padding.Left,
-                Padding.Top,
-                Math.Max(0, finalSize.Width - Padding.Left - Padding.Right),
-                Math.Max(0, finalSize.Height - Padding.Top - Padding.Bottom));
-            fe.Arrange(contentRect);
-            // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
-        }
-
-        return finalSize;
-    }
-
-    protected override void OnRender(object drawingContextObj)
-    {
-        // If using template, let the template handle rendering
-        if (_toolTipBorder != null)
-        {
-            return;
-        }
-
-        if (drawingContextObj is not DrawingContext drawingContext)
-        {
-            base.OnRender(drawingContextObj);
-            return;
-        }
-
-        // Draw background
-        if (Background != null)
-        {
-            drawingContext.DrawRectangle(Background, null, new Rect(0, 0, ActualWidth, ActualHeight));
-        }
-
-        // Draw border
-        if (BorderBrush != null && BorderThickness.Left > 0)
-        {
-            var pen = new Pen(BorderBrush, BorderThickness.Left);
-            drawingContext.DrawRectangle(null, pen, new Rect(0, 0, ActualWidth, ActualHeight));
-        }
-
-        base.OnRender(drawingContextObj);
-    }
+    // Layout and rendering are handled by the ControlTemplate (Border + ContentPresenter).
+    // No custom MeasureOverride, ArrangeOverride, or OnRender needed.
 }
 
 /// <summary>
-/// Provides static methods for managing tooltips.
+/// Provides static methods and attached properties for managing tooltips.
 /// </summary>
 public static class ToolTipService
 {
     private static ToolTip? _currentToolTip;
     private static UIElement? _currentOwner;
+
+    #region Attached Properties
+
+    /// <summary>Identifies the ToolTip attached dependency property.</summary>
+    public static readonly DependencyProperty ToolTipProperty =
+        DependencyProperty.RegisterAttached("ToolTip", typeof(object), typeof(ToolTipService),
+            new PropertyMetadata(null));
+
+    /// <summary>Identifies the HorizontalOffset attached dependency property.</summary>
+    public static readonly DependencyProperty HorizontalOffsetProperty =
+        DependencyProperty.RegisterAttached("HorizontalOffset", typeof(double), typeof(ToolTipService),
+            new PropertyMetadata(0.0));
+
+    /// <summary>Identifies the VerticalOffset attached dependency property.</summary>
+    public static readonly DependencyProperty VerticalOffsetProperty =
+        DependencyProperty.RegisterAttached("VerticalOffset", typeof(double), typeof(ToolTipService),
+            new PropertyMetadata(0.0));
+
+    /// <summary>Identifies the HasDropShadow attached dependency property.</summary>
+    public static readonly DependencyProperty HasDropShadowProperty =
+        DependencyProperty.RegisterAttached("HasDropShadow", typeof(bool), typeof(ToolTipService),
+            new PropertyMetadata(false));
+
+    /// <summary>Identifies the PlacementTarget attached dependency property.</summary>
+    public static readonly DependencyProperty PlacementTargetProperty =
+        DependencyProperty.RegisterAttached("PlacementTarget", typeof(UIElement), typeof(ToolTipService),
+            new PropertyMetadata(null));
+
+    /// <summary>Identifies the PlacementRectangle attached dependency property.</summary>
+    public static readonly DependencyProperty PlacementRectangleProperty =
+        DependencyProperty.RegisterAttached("PlacementRectangle", typeof(Rect), typeof(ToolTipService),
+            new PropertyMetadata(Rect.Empty));
+
+    /// <summary>Identifies the Placement attached dependency property.</summary>
+    public static readonly DependencyProperty PlacementProperty =
+        DependencyProperty.RegisterAttached("Placement", typeof(PlacementMode), typeof(ToolTipService),
+            new PropertyMetadata(PlacementMode.Mouse));
+
+    /// <summary>Identifies the ShowOnDisabled attached dependency property.</summary>
+    public static readonly DependencyProperty ShowOnDisabledProperty =
+        DependencyProperty.RegisterAttached("ShowOnDisabled", typeof(bool), typeof(ToolTipService),
+            new PropertyMetadata(false));
+
+    /// <summary>Identifies the IsEnabled attached dependency property.</summary>
+    public static readonly DependencyProperty IsEnabledProperty =
+        DependencyProperty.RegisterAttached("IsEnabled", typeof(bool), typeof(ToolTipService),
+            new PropertyMetadata(true));
+
+    /// <summary>Identifies the IsOpen attached dependency property (read-only).</summary>
+    public static readonly DependencyProperty IsOpenProperty =
+        DependencyProperty.RegisterAttached("IsOpen", typeof(bool), typeof(ToolTipService),
+            new PropertyMetadata(false));
+
+    /// <summary>Identifies the ShowDuration attached dependency property.</summary>
+    public static readonly DependencyProperty ShowDurationProperty =
+        DependencyProperty.RegisterAttached("ShowDuration", typeof(int), typeof(ToolTipService),
+            new PropertyMetadata(int.MaxValue));
+
+    /// <summary>Identifies the InitialShowDelay attached dependency property.</summary>
+    public static readonly DependencyProperty InitialShowDelayProperty =
+        DependencyProperty.RegisterAttached("InitialShowDelay", typeof(int), typeof(ToolTipService),
+            new PropertyMetadata(1000));
+
+    /// <summary>Identifies the BetweenShowDelay attached dependency property.</summary>
+    public static readonly DependencyProperty BetweenShowDelayProperty =
+        DependencyProperty.RegisterAttached("BetweenShowDelay", typeof(int), typeof(ToolTipService),
+            new PropertyMetadata(100));
+
+    /// <summary>Identifies the ShowsToolTipOnKeyboardFocus attached dependency property.</summary>
+    public static readonly DependencyProperty ShowsToolTipOnKeyboardFocusProperty =
+        DependencyProperty.RegisterAttached("ShowsToolTipOnKeyboardFocus", typeof(bool?), typeof(ToolTipService),
+            new PropertyMetadata(null));
+
+    #endregion
+
+    #region Routed Events
+
+    /// <summary>Identifies the ToolTipOpening routed event.</summary>
+    public static readonly RoutedEvent ToolTipOpeningEvent =
+        new RoutedEvent("ToolTipOpening", RoutingStrategy.Direct, typeof(ToolTipEventHandler), typeof(ToolTipService));
+
+    /// <summary>Identifies the ToolTipClosing routed event.</summary>
+    public static readonly RoutedEvent ToolTipClosingEvent =
+        new RoutedEvent("ToolTipClosing", RoutingStrategy.Direct, typeof(ToolTipEventHandler), typeof(ToolTipService));
+
+    #endregion
+
+    #region Get/Set Methods
+
+    public static object? GetToolTip(DependencyObject element) => element.GetValue(ToolTipProperty);
+    public static void SetToolTip(DependencyObject element, object? value) => element.SetValue(ToolTipProperty, value);
+    public static double GetHorizontalOffset(DependencyObject element) => (double)element.GetValue(HorizontalOffsetProperty)!;
+    public static void SetHorizontalOffset(DependencyObject element, double value) => element.SetValue(HorizontalOffsetProperty, value);
+    public static double GetVerticalOffset(DependencyObject element) => (double)element.GetValue(VerticalOffsetProperty)!;
+    public static void SetVerticalOffset(DependencyObject element, double value) => element.SetValue(VerticalOffsetProperty, value);
+    public static bool GetHasDropShadow(DependencyObject element) => (bool)element.GetValue(HasDropShadowProperty)!;
+    public static void SetHasDropShadow(DependencyObject element, bool value) => element.SetValue(HasDropShadowProperty, value);
+    public static UIElement? GetPlacementTarget(DependencyObject element) => (UIElement?)element.GetValue(PlacementTargetProperty);
+    public static void SetPlacementTarget(DependencyObject element, UIElement? value) => element.SetValue(PlacementTargetProperty, value);
+    public static Rect GetPlacementRectangle(DependencyObject element) => (Rect)element.GetValue(PlacementRectangleProperty)!;
+    public static void SetPlacementRectangle(DependencyObject element, Rect value) => element.SetValue(PlacementRectangleProperty, value);
+    public static PlacementMode GetPlacement(DependencyObject element) => (PlacementMode)element.GetValue(PlacementProperty)!;
+    public static void SetPlacement(DependencyObject element, PlacementMode value) => element.SetValue(PlacementProperty, value);
+    public static bool GetShowOnDisabled(DependencyObject element) => (bool)element.GetValue(ShowOnDisabledProperty)!;
+    public static void SetShowOnDisabled(DependencyObject element, bool value) => element.SetValue(ShowOnDisabledProperty, value);
+    public static bool GetIsEnabled(DependencyObject element) => (bool)element.GetValue(IsEnabledProperty)!;
+    public static void SetIsEnabled(DependencyObject element, bool value) => element.SetValue(IsEnabledProperty, value);
+    public static bool GetIsOpen(DependencyObject element) => (bool)element.GetValue(IsOpenProperty)!;
+    public static int GetShowDuration(DependencyObject element) => (int)element.GetValue(ShowDurationProperty)!;
+    public static void SetShowDuration(DependencyObject element, int value) => element.SetValue(ShowDurationProperty, value);
+    public static int GetInitialShowDelay(DependencyObject element) => (int)element.GetValue(InitialShowDelayProperty)!;
+    public static void SetInitialShowDelay(DependencyObject element, int value) => element.SetValue(InitialShowDelayProperty, value);
+    public static int GetBetweenShowDelay(DependencyObject element) => (int)element.GetValue(BetweenShowDelayProperty)!;
+    public static void SetBetweenShowDelay(DependencyObject element, int value) => element.SetValue(BetweenShowDelayProperty, value);
+    public static bool? GetShowsToolTipOnKeyboardFocus(DependencyObject element) => (bool?)element.GetValue(ShowsToolTipOnKeyboardFocusProperty);
+    public static void SetShowsToolTipOnKeyboardFocus(DependencyObject element, bool? value) => element.SetValue(ShowsToolTipOnKeyboardFocusProperty, value);
+
+    public static void AddToolTipOpeningHandler(DependencyObject element, ToolTipEventHandler handler)
+    {
+        if (element is UIElement uie) uie.AddHandler(ToolTipOpeningEvent, handler);
+    }
+    public static void RemoveToolTipOpeningHandler(DependencyObject element, ToolTipEventHandler handler)
+    {
+        if (element is UIElement uie) uie.RemoveHandler(ToolTipOpeningEvent, handler);
+    }
+    public static void AddToolTipClosingHandler(DependencyObject element, ToolTipEventHandler handler)
+    {
+        if (element is UIElement uie) uie.AddHandler(ToolTipClosingEvent, handler);
+    }
+    public static void RemoveToolTipClosingHandler(DependencyObject element, ToolTipEventHandler handler)
+    {
+        if (element is UIElement uie) uie.RemoveHandler(ToolTipClosingEvent, handler);
+    }
+
+    #endregion
 
     /// <summary>
     /// Cleans up all active tooltip timers. Called during application shutdown.
@@ -452,4 +501,18 @@ public static class ToolTipService
             _currentOwner = null;
         }
     }
+}
+
+/// <summary>
+/// Represents the method that handles routed events related to tooltip operations.
+/// </summary>
+public delegate void ToolTipEventHandler(object sender, ToolTipEventArgs e);
+
+/// <summary>
+/// Provides data for tooltip events.
+/// </summary>
+public sealed class ToolTipEventArgs : RoutedEventArgs
+{
+    public ToolTipEventArgs() { }
+    public ToolTipEventArgs(RoutedEvent routedEvent) : base(routedEvent) { }
 }

@@ -1,5 +1,6 @@
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
+using Jalium.UI.Controls.Primitives;
 
 namespace Jalium.UI.Controls;
 
@@ -7,7 +8,7 @@ namespace Jalium.UI.Controls;
 /// Represents a button that can be selected, but not cleared, by a user.
 /// RadioButtons in the same group are mutually exclusive.
 /// </summary>
-public class RadioButton : ToggleButton
+public sealed class RadioButton : ToggleButton
 {
     #region Automation
 
@@ -58,10 +59,37 @@ public class RadioButton : ToggleButton
     /// <summary>
     /// Initializes a new instance of the <see cref="RadioButton"/> class.
     /// </summary>
+    private string? _registeredGroup;
+
     public RadioButton()
     {
-        // RadioButton uses ControlTemplate for visual appearance (inherited from ButtonBase)
-        RegisterInGroup(GroupName);
+        // Defer group registration until attached to visual tree,
+        // because VisualParent is null in constructor and GetDefaultGroupName()
+        // would return "__default__" which won't match later lookups.
+        if (!string.IsNullOrEmpty(GroupName))
+        {
+            RegisterInGroup(GroupName);
+        }
+    }
+
+    #endregion
+
+    #region Visual Tree
+
+    /// <inheritdoc />
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+
+        // Re-register with correct group key now that VisualParent is known
+        if (_registeredGroup != null)
+        {
+            UnregisterFromGroup(_registeredGroup);
+        }
+        if (VisualParent != null)
+        {
+            RegisterInGroup(GroupName);
+        }
     }
 
     #endregion
@@ -81,20 +109,20 @@ public class RadioButton : ToggleButton
         // Clean up dead references and add ourselves
         list.RemoveAll(wr => !wr.TryGetTarget(out _));
         list.Add(new WeakReference<RadioButton>(this));
+        _registeredGroup = effectiveGroup;
     }
 
     private void UnregisterFromGroup(string groupName)
     {
-        var effectiveGroup = string.IsNullOrEmpty(groupName) ? GetDefaultGroupName() : groupName;
-
-        if (_groupMap.TryGetValue(effectiveGroup, out var list))
+        if (_groupMap.TryGetValue(groupName, out var list))
         {
             list.RemoveAll(wr => !wr.TryGetTarget(out var target) || target == this);
             if (list.Count == 0)
             {
-                _groupMap.Remove(effectiveGroup);
+                _groupMap.Remove(groupName);
             }
         }
+        _registeredGroup = null;
     }
 
     private string GetDefaultGroupName()
@@ -153,7 +181,10 @@ public class RadioButton : ToggleButton
     {
         if (d is RadioButton radioButton)
         {
-            radioButton.UnregisterFromGroup((string?)e.OldValue ?? string.Empty);
+            if (radioButton._registeredGroup != null)
+            {
+                radioButton.UnregisterFromGroup(radioButton._registeredGroup);
+            }
             radioButton.RegisterInGroup((string?)e.NewValue ?? string.Empty);
         }
     }

@@ -1,4 +1,4 @@
-using Jalium.UI.Interop;
+﻿using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a button used in Calendar controls for month and year selection.
 /// </summary>
-public class CalendarButton : Button
+public sealed class CalendarButton : Button
 {
     #region Dependency Properties
 
@@ -36,14 +36,14 @@ public class CalendarButton : Button
     /// <summary>
     /// Gets a value indicating whether the month/year contains selected days.
     /// </summary>
-    public bool HasSelectedDays => (bool)(GetValue(HasSelectedDaysProperty) ?? false);
+    public bool HasSelectedDays => (bool)GetValue(HasSelectedDaysProperty)!;
 
     /// <summary>
     /// Gets or sets a value indicating whether this button is for display purposes only.
     /// </summary>
     public bool IsInactive
     {
-        get => (bool)(GetValue(IsInactiveProperty) ?? false);
+        get => (bool)GetValue(IsInactiveProperty)!;
         set => SetValue(IsInactiveProperty, value);
     }
 

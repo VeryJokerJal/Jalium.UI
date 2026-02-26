@@ -3,7 +3,7 @@ namespace Jalium.UI;
 /// <summary>
 /// A binding that binds to a property on the templated parent.
 /// </summary>
-public class TemplateBinding : BindingBase
+public sealed class TemplateBinding : BindingBase
 {
     /// <summary>
     /// Gets or sets the property on the templated parent to bind to.
@@ -36,7 +36,7 @@ public class TemplateBinding : BindingBase
 /// <summary>
 /// The binding expression for a TemplateBinding.
 /// </summary>
-internal class TemplateBindingExpression : BindingExpressionBase
+internal sealed class TemplateBindingExpression : BindingExpressionBase
 {
     private readonly TemplateBinding _binding;
     private FrameworkElement? _templatedParent;

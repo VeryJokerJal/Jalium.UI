@@ -20,7 +20,7 @@ public abstract class Drawing
 /// <summary>
 /// Represents a collection of Drawing objects.
 /// </summary>
-public class DrawingCollection : List<Drawing>
+public sealed class DrawingCollection : List<Drawing>
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="DrawingCollection"/> class.

@@ -1,71 +1,79 @@
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// Represents a switch that can be toggled between on and off states.
+/// Represents a switch that can be toggled between on and off states,
+/// with spring-physics-driven animations for hover, press, drag, and toggle.
 /// </summary>
-public class ToggleSwitch : Control
+public sealed class ToggleSwitch : Control
 {
+    #region Animation Constants
+
+    private const double TrackWidth = 44.0;
+    private const double TrackBorderThickness = 1.0;
+    private const double TrackInnerWidth = TrackWidth - 2 * TrackBorderThickness; // 42
+    private const double ThumbPadding = 3.0;
+
+    private const double ThumbDefaultSize = 14.0;
+    private const double ThumbHoverSize = 15.0;
+    private const double ThumbPressedWidth = 17.0;
+
+    private const double PositionStiffness = 800.0;
+    private const double PositionDamping = 0.85;
+    private const double SizeStiffness = 1200.0;
+    private const double SizeDamping = 0.75;
+
+    private const double DragThreshold = 3.0;
+
+    // Theme colors (matching Colors.jalxaml)
+    private static readonly Color OffColor = Color.FromArgb(0xFF, 0x2D, 0x2D, 0x2D);
+    private static readonly Color OnColor = Color.FromArgb(0xFF, 0x00, 0x78, 0xD4);
+    private static readonly Color OffBorderColor = Color.FromArgb(0xFF, 0x8C, 0x8C, 0x8C);
+    private static readonly Color OnBorderColor = Color.FromArgb(0xFF, 0x00, 0x78, 0xD4);
+    private static readonly Color DisabledBgColor = Color.FromArgb(0xFF, 0x28, 0x28, 0x28);
+    private static readonly Color DisabledBorderColor = Color.FromArgb(0xFF, 0x46, 0x46, 0x46);
+    private static readonly SolidColorBrush s_disabledBgBrush = new(DisabledBgColor);
+    private static readonly SolidColorBrush s_disabledBorderBrush = new(DisabledBorderColor);
+
+    #endregion
+
     #region Dependency Properties
 
-    /// <summary>
-    /// Identifies the IsOn dependency property.
-    /// </summary>
     public static readonly DependencyProperty IsOnProperty =
         DependencyProperty.Register(nameof(IsOn), typeof(bool), typeof(ToggleSwitch),
             new PropertyMetadata(false, OnIsOnChanged));
 
-    /// <summary>
-    /// Identifies the OnContent dependency property.
-    /// </summary>
     public static readonly DependencyProperty OnContentProperty =
         DependencyProperty.Register(nameof(OnContent), typeof(object), typeof(ToggleSwitch),
-            new PropertyMetadata("On", OnVisualPropertyChanged));
+            new PropertyMetadata("On", OnContentPropertyChanged));
 
-    /// <summary>
-    /// Identifies the OffContent dependency property.
-    /// </summary>
     public static readonly DependencyProperty OffContentProperty =
         DependencyProperty.Register(nameof(OffContent), typeof(object), typeof(ToggleSwitch),
-            new PropertyMetadata("Off", OnVisualPropertyChanged));
+            new PropertyMetadata("Off", OnContentPropertyChanged));
 
-    /// <summary>
-    /// Identifies the Header dependency property.
-    /// </summary>
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(ToggleSwitch),
-            new PropertyMetadata(null, OnLayoutPropertyChanged));
+            new PropertyMetadata(null, OnHeaderPropertyChanged));
 
-    /// <summary>
-    /// Identifies the OnBackground dependency property.
-    /// </summary>
     public static readonly DependencyProperty OnBackgroundProperty =
         DependencyProperty.Register(nameof(OnBackground), typeof(Brush), typeof(ToggleSwitch),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null));
 
-    /// <summary>
-    /// Identifies the OffBackground dependency property.
-    /// </summary>
     public static readonly DependencyProperty OffBackgroundProperty =
         DependencyProperty.Register(nameof(OffBackground), typeof(Brush), typeof(ToggleSwitch),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null));
 
     #endregion
 
     #region Routed Events
 
-    /// <summary>
-    /// Identifies the Toggled routed event.
-    /// </summary>
     public static readonly RoutedEvent ToggledEvent =
         EventManager.RegisterRoutedEvent(nameof(Toggled), RoutingStrategy.Bubble,
             typeof(RoutedEventHandler), typeof(ToggleSwitch));
 
-    /// <summary>
-    /// Occurs when the switch is toggled.
-    /// </summary>
     public event RoutedEventHandler Toggled
     {
         add => AddHandler(ToggledEvent, value);
@@ -76,68 +84,41 @@ public class ToggleSwitch : Control
 
     #region CLR Properties
 
-    /// <summary>
-    /// Gets or sets a value indicating whether the switch is on.
-    /// </summary>
     public bool IsOn
     {
-        get => (bool)(GetValue(IsOnProperty) ?? false);
+        get => (bool)GetValue(IsOnProperty)!;
         set => SetValue(IsOnProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the content to display when the switch is on.
-    /// </summary>
     public object? OnContent
     {
         get => GetValue(OnContentProperty);
         set => SetValue(OnContentProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the content to display when the switch is off.
-    /// </summary>
     public object? OffContent
     {
         get => GetValue(OffContentProperty);
         set => SetValue(OffContentProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the header content.
-    /// </summary>
     public object? Header
     {
         get => GetValue(HeaderProperty);
         set => SetValue(HeaderProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the background brush for the on state.
-    /// </summary>
     public Brush? OnBackground
     {
         get => (Brush?)GetValue(OnBackgroundProperty);
         set => SetValue(OnBackgroundProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the background brush for the off state.
-    /// </summary>
     public Brush? OffBackground
     {
         get => (Brush?)GetValue(OffBackgroundProperty);
         set => SetValue(OffBackgroundProperty, value);
     }
-
-    #endregion
-
-    #region Private Fields
-
-    private const double SwitchWidth = 44;
-    private const double SwitchHeight = 20;
-    private const double ThumbSize = 14;
-    private const double ThumbMargin = 3;
 
     #endregion
 
@@ -150,26 +131,55 @@ public class ToggleSwitch : Control
 
     #endregion
 
+    #region Interaction State
+
+    private enum InteractionState
+    {
+        Idle,
+        Hovered,
+        Pressed,
+        Dragging,
+    }
+
+    private InteractionState _state = InteractionState.Idle;
+    private Point _pressStartPoint;
+    private double _pressStartProgress;
+    private bool _hasDragged;
+
+    #endregion
+
+    #region Spring Animation State
+
+    private SpringAxis _positionSpring;
+    private SpringAxis _thumbWidthSpring;
+    private SpringAxis _thumbHeightSpring;
+    private long _lastTickTime;
+    private bool _springSubscribed;
+
+
+    #endregion
+
     #region Constructor
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ToggleSwitch"/> class.
-    /// </summary>
     public ToggleSwitch()
     {
         Focusable = true;
-        Height = 32;
 
-        // Register input handlers
+        _positionSpring = new SpringAxis { Position = 0.0, Target = 0.0 };
+        _thumbWidthSpring = new SpringAxis { Position = ThumbDefaultSize, Target = ThumbDefaultSize };
+        _thumbHeightSpring = new SpringAxis { Position = ThumbDefaultSize, Target = ThumbDefaultSize };
+
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(LostMouseCaptureEvent, new RoutedEventHandler(OnLostMouseCaptureHandler));
     }
 
     #endregion
 
-    #region Template
+    #region Template Initialization
 
-    /// <inheritdoc />
     protected override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
@@ -179,155 +189,291 @@ public class ToggleSwitch : Control
         _contentPresenter = GetTemplateChild("PART_ContentPresenter") as ContentPresenter;
         _headerPresenter = GetTemplateChild("PART_Header") as ContentPresenter;
 
-        UpdateSwitchContent();
-    }
 
-    private void UpdateSwitchContent()
-    {
-        if (_contentPresenter != null)
+        if (_switchThumb != null)
         {
-            _contentPresenter.Content = IsOn ? OnContent : OffContent;
+            _switchThumb.HorizontalAlignment = HorizontalAlignment.Left;
         }
-        if (_headerPresenter != null)
-        {
-            _headerPresenter.Visibility = Header != null ? Visibility.Visible : Visibility.Collapsed;
-        }
+
+        UpdateHeaderVisibility();
+        UpdateContentPresenter();
+
+        // Snap springs to current IsOn state (no animation on first load)
+        SyncSpringsToIsOn(animate: false);
+        ApplySpringValues();
     }
 
     #endregion
 
-    #region Input Handling
+    #region Spring Helpers
+
+    private void SyncSpringsToIsOn(bool animate)
+    {
+        double target = IsOn ? 1.0 : 0.0;
+        _positionSpring.Target = target;
+
+        if (!animate)
+        {
+            _positionSpring.Position = target;
+            _positionSpring.Velocity = 0;
+        }
+    }
+
+    private Color GetOffColor()
+    {
+        return (OffBackground as SolidColorBrush)?.Color ?? OffColor;
+    }
+
+    private Color GetOnColor()
+    {
+        return (OnBackground as SolidColorBrush)?.Color ?? OnColor;
+    }
+
+    private static Color LerpColor(Color a, Color b, double t)
+    {
+        t = Math.Clamp(t, 0.0, 1.0);
+        return Color.FromArgb(
+            (byte)(a.A + (b.A - a.A) * t),
+            (byte)(a.R + (b.R - a.R) * t),
+            (byte)(a.G + (b.G - a.G) * t),
+            (byte)(a.B + (b.B - a.B) * t));
+    }
+
+    private static double ComputeThumbMarginLeft(double progress, double thumbWidth)
+    {
+        double travel = TrackInnerWidth - thumbWidth - 2 * ThumbPadding;
+        return ThumbPadding + progress * Math.Max(0, travel);
+    }
+
+    #endregion
+
+    #region Frame Animation Loop
+
+    private void StartSpringAnimation()
+    {
+        if (_springSubscribed) return;
+        _lastTickTime = Environment.TickCount64;
+        _springSubscribed = true;
+        CompositionTarget.Rendering += OnSpringTick;
+        CompositionTarget.Subscribe();
+    }
+
+    private void StopSpringAnimation()
+    {
+        if (!_springSubscribed) return;
+        _springSubscribed = false;
+        CompositionTarget.Rendering -= OnSpringTick;
+        CompositionTarget.Unsubscribe();
+    }
+
+    private void OnSpringTick(object? sender, EventArgs e)
+    {
+        long now = Environment.TickCount64;
+        double dt = (now - _lastTickTime) / 1000.0;
+        _lastTickTime = now;
+
+        if (dt > 0.1) dt = 0.1;
+        if (dt <= 0) return;
+
+        bool posSettled = _positionSpring.Step(dt, PositionStiffness, PositionDamping);
+        bool wSettled = _thumbWidthSpring.Step(dt, SizeStiffness, SizeDamping);
+        bool hSettled = _thumbHeightSpring.Step(dt, SizeStiffness, SizeDamping);
+
+        ApplySpringValues();
+
+        if (posSettled && wSettled && hSettled &&
+            _state != InteractionState.Pressed && _state != InteractionState.Dragging)
+        {
+            StopSpringAnimation();
+        }
+    }
+
+    private void ApplySpringValues()
+    {
+        if (_switchThumb == null || _switchTrack == null) return;
+
+        double thumbW = _thumbWidthSpring.Position;
+        double thumbH = _thumbHeightSpring.Position;
+        double progress = Math.Clamp(_positionSpring.Position, 0.0, 1.0);
+
+        // Thumb size and shape
+        _switchThumb.Width = thumbW;
+        _switchThumb.Height = thumbH;
+        _switchThumb.CornerRadius = new CornerRadius(thumbH / 2.0);
+
+        // Thumb position
+        double marginLeft = ComputeThumbMarginLeft(progress, thumbW);
+        _switchThumb.Margin = new Thickness(marginLeft, 0, 0, 0);
+
+        // Track colors (interpolate based on position)
+        if (!IsEnabled) return; // disabled colors handled separately
+
+        var offBg = GetOffColor();
+        var onBg = GetOnColor();
+        _switchTrack.Background = new SolidColorBrush(LerpColor(offBg, onBg, progress));
+        _switchTrack.BorderBrush = new SolidColorBrush(LerpColor(OffBorderColor, OnBorderColor, progress));
+    }
+
+    #endregion
+
+    #region Mouse Interaction
+
+    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsMouseOverChanged(oldValue, newValue);
+
+        if (!IsEnabled) return;
+        if (_state == InteractionState.Pressed || _state == InteractionState.Dragging)
+            return;
+
+        if (newValue)
+        {
+            _state = InteractionState.Hovered;
+            _thumbWidthSpring.Target = ThumbHoverSize;
+            _thumbHeightSpring.Target = ThumbHoverSize;
+        }
+        else
+        {
+            _state = InteractionState.Idle;
+            _thumbWidthSpring.Target = ThumbDefaultSize;
+            _thumbHeightSpring.Target = ThumbDefaultSize;
+        }
+
+        StartSpringAnimation();
+    }
 
     private void OnMouseDownHandler(object sender, RoutedEventArgs e)
     {
         if (!IsEnabled) return;
+        if (e is not MouseButtonEventArgs { ChangedButton: MouseButton.Left } mouseArgs) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
-        {
-            Focus();
-            Toggle();
-            e.Handled = true;
-        }
+        Focus();
+
+        _state = InteractionState.Pressed;
+        _pressStartPoint = mouseArgs.GetPosition((UIElement?)_switchTrack ?? this);
+        _pressStartProgress = _positionSpring.Position;
+        _hasDragged = false;
+
+        // Stretch thumb horizontally
+        _thumbWidthSpring.Target = ThumbPressedWidth;
+        _thumbHeightSpring.Target = ThumbDefaultSize;
+
+        CaptureMouse();
+        StartSpringAnimation();
+        e.Handled = true;
     }
+
+    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    {
+        if (_state != InteractionState.Pressed && _state != InteractionState.Dragging)
+            return;
+        if (e is not MouseEventArgs mouseArgs) return;
+
+        var trackPos = mouseArgs.GetPosition((UIElement?)_switchTrack ?? this);
+
+        if (_state == InteractionState.Pressed)
+        {
+            double dx = Math.Abs(trackPos.X - _pressStartPoint.X);
+            if (dx >= DragThreshold)
+            {
+                _state = InteractionState.Dragging;
+                _hasDragged = true;
+            }
+            else
+            {
+                return;
+            }
+        }
+
+        // Dragging: relative offset from press start (not absolute jump to mouse)
+        double thumbW = _thumbWidthSpring.Position;
+        double travel = TrackInnerWidth - thumbW - 2 * ThumbPadding;
+        if (travel > 0)
+        {
+            double deltaX = trackPos.X - _pressStartPoint.X;
+            double deltaProgress = deltaX / travel;
+            double progress = Math.Clamp(_pressStartProgress + deltaProgress, 0.0, 1.0);
+
+            _positionSpring.Position = progress;
+            _positionSpring.Target = progress;
+            _positionSpring.Velocity = 0;
+        }
+
+        // Keep spring loop alive for size animation
+        StartSpringAnimation();
+        e.Handled = true;
+    }
+
+    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    {
+        if (_state != InteractionState.Pressed && _state != InteractionState.Dragging)
+            return;
+        if (e is not MouseButtonEventArgs { ChangedButton: MouseButton.Left }) return;
+
+        _state = IsMouseOver ? InteractionState.Hovered : InteractionState.Idle;
+        ReleaseMouseCapture();
+
+        if (!_hasDragged)
+        {
+            // Quick click: toggle
+            IsOn = !IsOn;
+        }
+        else
+        {
+            // Drag release: check position
+            double currentProgress = _positionSpring.Position;
+            bool shouldBeOn = currentProgress >= 0.5;
+
+            if (shouldBeOn != IsOn)
+            {
+                IsOn = shouldBeOn;
+            }
+            else
+            {
+                // Same state, spring back to current IsOn
+                SyncSpringsToIsOn(animate: true);
+            }
+        }
+
+        // Restore thumb size
+        double targetSize = IsMouseOver ? ThumbHoverSize : ThumbDefaultSize;
+        _thumbWidthSpring.Target = targetSize;
+        _thumbHeightSpring.Target = targetSize;
+
+        StartSpringAnimation();
+        e.Handled = true;
+    }
+
+    private void OnLostMouseCaptureHandler(object sender, RoutedEventArgs e)
+    {
+        if (_state != InteractionState.Pressed && _state != InteractionState.Dragging)
+            return;
+
+        _state = IsMouseOver ? InteractionState.Hovered : InteractionState.Idle;
+        _hasDragged = false;
+
+        SyncSpringsToIsOn(animate: true);
+
+        double targetSize = IsMouseOver ? ThumbHoverSize : ThumbDefaultSize;
+        _thumbWidthSpring.Target = targetSize;
+        _thumbHeightSpring.Target = targetSize;
+
+        StartSpringAnimation();
+    }
+
+    #endregion
+
+    #region Keyboard
 
     private void OnKeyDownHandler(object sender, RoutedEventArgs e)
     {
         if (!IsEnabled) return;
+        if (e is not KeyEventArgs keyArgs) return;
 
-        if (e is KeyEventArgs keyArgs)
+        if (keyArgs.Key == Key.Space || keyArgs.Key == Key.Enter)
         {
-            if (keyArgs.Key == Key.Space || keyArgs.Key == Key.Enter)
-            {
-                Toggle();
-                e.Handled = true;
-            }
-        }
-    }
-
-    private void Toggle()
-    {
-        IsOn = !IsOn;
-    }
-
-    #endregion
-
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        var padding = Padding;
-        var totalWidth = SwitchWidth + padding.TotalWidth;
-        var totalHeight = SwitchHeight + padding.TotalHeight;
-
-        // Add space for header if present
-        if (Header != null)
-        {
-            totalHeight += 20; // Additional space for header
-        }
-
-        // Add space for on/off content
-        var contentWidth = 0.0;
-        var content = IsOn ? OnContent : OffContent;
-        if (content is string text && !string.IsNullOrEmpty(text))
-        {
-            var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14);
-            Interop.TextMeasurement.MeasureText(formattedText);
-            contentWidth = formattedText.Width + 8; // Gap between switch and content
-        }
-
-        totalWidth += contentWidth;
-
-        return new Size(totalWidth, totalHeight);
-    }
-
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(object drawingContext)
-    {
-        // If using template, let the template handle rendering
-        if (_switchTrack != null)
-        {
-            UpdateSwitchContent();
-            return;
-        }
-
-        if (drawingContext is not DrawingContext dc)
-            return;
-
-        var padding = Padding;
-        var startY = padding.Top;
-
-        // Draw header if present
-        if (Header is string headerText && !string.IsNullOrEmpty(headerText))
-        {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
-            {
-                Foreground = Foreground ?? new SolidColorBrush(Color.White)
-            };
-            Interop.TextMeasurement.MeasureText(headerFormatted);
-            dc.DrawText(headerFormatted, new Point(padding.Left, startY));
-            startY += headerFormatted.Height + 4;
-        }
-
-        // Draw switch track
-        var trackRect = new Rect(padding.Left, startY, SwitchWidth, SwitchHeight);
-        var trackBrush = IsOn
-            ? (OnBackground ?? new SolidColorBrush(Color.FromRgb(0, 120, 212)))
-            : (OffBackground ?? new SolidColorBrush(Color.FromRgb(60, 60, 60)));
-
-        dc.DrawRoundedRectangle(trackBrush, null, trackRect, SwitchHeight / 2, SwitchHeight / 2);
-
-        // Draw track border
-        var borderBrush = new SolidColorBrush(IsOn ? Color.FromRgb(0, 100, 190) : Color.FromRgb(100, 100, 100));
-        var borderPen = new Pen(borderBrush, 1);
-        dc.DrawRoundedRectangle(null, borderPen, trackRect, SwitchHeight / 2, SwitchHeight / 2);
-
-        // Draw thumb
-        var thumbX = IsOn
-            ? trackRect.X + trackRect.Width - ThumbMargin - ThumbSize
-            : trackRect.X + ThumbMargin;
-        var thumbY = trackRect.Y + (trackRect.Height - ThumbSize) / 2;
-        var thumbBrush = new SolidColorBrush(Color.White);
-
-        dc.DrawEllipse(thumbBrush, null, new Point(thumbX + ThumbSize / 2, thumbY + ThumbSize / 2), ThumbSize / 2, ThumbSize / 2);
-
-        // Draw on/off content
-        var content = IsOn ? OnContent : OffContent;
-        if (content is string contentText && !string.IsNullOrEmpty(contentText))
-        {
-            var contentFormatted = new FormattedText(contentText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
-            {
-                Foreground = Foreground ?? new SolidColorBrush(Color.White)
-            };
-            Interop.TextMeasurement.MeasureText(contentFormatted);
-
-            var contentX = trackRect.Right + 8;
-            var contentY = startY + (SwitchHeight - contentFormatted.Height) / 2;
-            dc.DrawText(contentFormatted, new Point(contentX, contentY));
+            IsOn = !IsOn;
+            e.Handled = true;
         }
     }
 
@@ -337,35 +483,78 @@ public class ToggleSwitch : Control
 
     private static void OnIsOnChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is ToggleSwitch toggleSwitch)
+        if (d is ToggleSwitch ts)
         {
-            toggleSwitch.OnToggled();
-            toggleSwitch.InvalidateVisual();
+            ts.OnToggled();
+            ts.UpdateContentPresenter();
+            ts.SyncSpringsToIsOn(animate: true);
+            ts.StartSpringAnimation();
         }
     }
 
-    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private static void OnContentPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is ToggleSwitch toggleSwitch)
-        {
-            toggleSwitch.InvalidateVisual();
-        }
+        if (d is ToggleSwitch ts)
+            ts.UpdateContentPresenter();
     }
 
-    private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private static void OnHeaderPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is ToggleSwitch toggleSwitch)
-        {
-            toggleSwitch.InvalidateMeasure();
-        }
+        if (d is ToggleSwitch ts)
+            ts.UpdateHeaderVisibility();
     }
 
-    /// <summary>
-    /// Called when the switch is toggled.
-    /// </summary>
-    protected virtual void OnToggled()
+    protected void OnToggled()
     {
         RaiseEvent(new RoutedEventArgs(ToggledEvent, this));
+    }
+
+    #endregion
+
+    #region Visual State Helpers
+
+    private void UpdateContentPresenter()
+    {
+        if (_contentPresenter != null)
+            _contentPresenter.Content = IsOn ? OnContent : OffContent;
+    }
+
+    private void UpdateHeaderVisibility()
+    {
+        if (_headerPresenter != null)
+            _headerPresenter.Visibility = Header != null ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+
+        if (!newValue)
+        {
+            // Cancel any active interaction
+            if (_state == InteractionState.Pressed || _state == InteractionState.Dragging)
+            {
+                ReleaseMouseCapture();
+                _state = InteractionState.Idle;
+                _hasDragged = false;
+            }
+
+            // Apply disabled colors
+            if (_switchTrack != null)
+            {
+                _switchTrack.Background = s_disabledBgBrush;
+                _switchTrack.BorderBrush = s_disabledBorderBrush;
+            }
+
+            _thumbWidthSpring.Target = ThumbDefaultSize;
+            _thumbHeightSpring.Target = ThumbDefaultSize;
+            StartSpringAnimation();
+        }
+        else
+        {
+            // Re-enable: refresh colors via spring values
+            ApplySpringValues();
+        }
     }
 
     #endregion

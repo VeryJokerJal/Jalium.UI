@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a common dialog box that allows the user to choose a font.
 /// </summary>
-public class FontDialog
+public sealed class FontDialog
 {
     #region Properties
 
@@ -141,7 +141,7 @@ public class FontDialog
     /// <summary>
     /// Shows the dialog internally.
     /// </summary>
-    protected virtual bool ShowDialogInternal(Window? owner = null)
+    protected bool ShowDialogInternal(Window? owner = null)
     {
         // Platform-specific implementation
         // Would use Windows ChooseFont or custom dialog

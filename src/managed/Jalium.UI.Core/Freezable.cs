@@ -207,7 +207,7 @@ public abstract class Freezable : DependencyObject
 /// Represents a collection of Freezable objects.
 /// </summary>
 /// <typeparam name="T">The type of elements in the collection.</typeparam>
-public class FreezableCollection<T> : Freezable, IList<T>, System.Collections.IList where T : DependencyObject
+public sealed class FreezableCollection<T> : Freezable, IList<T>, System.Collections.IList where T : DependencyObject
 {
     private readonly List<T> _items = new();
 

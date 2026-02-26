@@ -5,7 +5,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Represents an ordered collection of InputBinding objects.
 /// </summary>
-public class InputBindingCollection : IList<InputBinding>, IList
+public sealed class InputBindingCollection : IList<InputBinding>, IList
 {
     private readonly List<InputBinding> _bindings = new();
 

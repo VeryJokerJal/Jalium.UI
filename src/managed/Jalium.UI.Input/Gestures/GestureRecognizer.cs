@@ -103,7 +103,7 @@ public enum GestureSettings
 /// <summary>
 /// Provides gesture and manipulation recognition.
 /// </summary>
-public class GestureRecognizer
+public sealed class GestureRecognizer
 {
     private GestureSettings _gestureSettings = GestureSettings.None;
     private readonly List<PointerPoint> _activePointers = new();
@@ -456,7 +456,7 @@ public struct ManipulationVelocities
 /// <summary>
 /// Event arguments for tap events.
 /// </summary>
-public class TappedEventArgs : EventArgs
+public sealed class TappedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the pointer device type.
@@ -487,7 +487,7 @@ public class TappedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for right tap events.
 /// </summary>
-public class RightTappedEventArgs : EventArgs
+public sealed class RightTappedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the pointer device type.
@@ -533,7 +533,7 @@ public enum HoldingState
 /// <summary>
 /// Event arguments for holding events.
 /// </summary>
-public class HoldingEventArgs : EventArgs
+public sealed class HoldingEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the pointer device type.
@@ -585,7 +585,7 @@ public enum DraggingState
 /// <summary>
 /// Event arguments for dragging events.
 /// </summary>
-public class DraggingEventArgs : EventArgs
+public sealed class DraggingEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the pointer device type.
@@ -616,7 +616,7 @@ public class DraggingEventArgs : EventArgs
 /// <summary>
 /// Event arguments for manipulation started events.
 /// </summary>
-public class ManipulationStartedEventArgs : EventArgs
+public sealed class ManipulationStartedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the origin point.
@@ -635,7 +635,7 @@ public class ManipulationStartedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for manipulation delta events.
 /// </summary>
-public class ManipulationDeltaEventArgs : EventArgs
+public sealed class ManipulationDeltaEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the origin point.
@@ -688,7 +688,7 @@ public class ManipulationDeltaEventArgs : EventArgs
 /// <summary>
 /// Event arguments for manipulation completed events.
 /// </summary>
-public class ManipulationCompletedEventArgs : EventArgs
+public sealed class ManipulationCompletedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the origin point.
@@ -729,7 +729,7 @@ public class ManipulationCompletedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for manipulation inertia starting events.
 /// </summary>
-public class ManipulationInertiaStartingEventArgs : EventArgs
+public sealed class ManipulationInertiaStartingEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the origin point.
@@ -778,7 +778,7 @@ public class ManipulationInertiaStartingEventArgs : EventArgs
 /// <summary>
 /// Specifies translation inertia behavior.
 /// </summary>
-public class InertiaTranslationBehavior
+public sealed class InertiaTranslationBehavior
 {
     /// <summary>
     /// Gets or sets the desired displacement.
@@ -794,7 +794,7 @@ public class InertiaTranslationBehavior
 /// <summary>
 /// Specifies rotation inertia behavior.
 /// </summary>
-public class InertiaRotationBehavior
+public sealed class InertiaRotationBehavior
 {
     /// <summary>
     /// Gets or sets the desired rotation.
@@ -810,7 +810,7 @@ public class InertiaRotationBehavior
 /// <summary>
 /// Specifies expansion inertia behavior.
 /// </summary>
-public class InertiaExpansionBehavior
+public sealed class InertiaExpansionBehavior
 {
     /// <summary>
     /// Gets or sets the desired expansion.

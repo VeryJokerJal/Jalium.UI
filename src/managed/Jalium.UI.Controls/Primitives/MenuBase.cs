@@ -1,4 +1,4 @@
-using Jalium.UI.Input;
+﻿using Jalium.UI.Input;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -61,7 +61,7 @@ public abstract class MenuBase : ItemsControl
     /// </summary>
     public bool UsesItemContainerTemplate
     {
-        get => (bool)(GetValue(UsesItemContainerTemplateProperty) ?? false);
+        get => (bool)GetValue(UsesItemContainerTemplateProperty)!;
         set => SetValue(UsesItemContainerTemplateProperty, value);
     }
 

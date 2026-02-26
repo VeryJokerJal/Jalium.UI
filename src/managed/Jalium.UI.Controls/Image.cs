@@ -1,12 +1,17 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a control that displays an image.
+/// Uses ControlTemplate for visual customization (border, corner radius, etc.)
+/// and an internal ImageHost element for actual bitmap rendering.
 /// </summary>
-public class Image : FrameworkElement
+public sealed class Image : Control
 {
+    private ImageHost? _imageHost;
+    private Border? _container;
+
     #region Dependency Properties
 
     /// <summary>
@@ -48,7 +53,7 @@ public class Image : FrameworkElement
     /// </summary>
     public Stretch Stretch
     {
-        get => (Stretch)(GetValue(StretchProperty) ?? Stretch.Uniform);
+        get => (Stretch)GetValue(StretchProperty)!;
         set => SetValue(StretchProperty, value);
     }
 
@@ -57,142 +62,29 @@ public class Image : FrameworkElement
     /// </summary>
     public StretchDirection StretchDirection
     {
-        get => (StretchDirection)(GetValue(StretchDirectionProperty) ?? StretchDirection.Both);
+        get => (StretchDirection)GetValue(StretchDirectionProperty)!;
         set => SetValue(StretchDirectionProperty, value);
     }
 
     #endregion
 
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
+    public Image()
     {
-        if (Source == null)
-            return Size.Empty;
-
-        var imageSize = new Size(Source.Width, Source.Height);
-
-        // Calculate the size based on stretch mode
-        var size = CalculateStretchSize(imageSize, availableSize);
-
-        return size;
     }
 
     /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
+    protected override void OnApplyTemplate()
     {
-        return finalSize;
-    }
+        base.OnApplyTemplate();
 
-    private Size CalculateStretchSize(Size imageSize, Size availableSize)
-    {
-        if (imageSize.Width <= 0 || imageSize.Height <= 0)
-            return Size.Empty;
+        _container = GetTemplateChild("PART_Container") as Border;
 
-        var width = imageSize.Width;
-        var height = imageSize.Height;
-        var maxWidth = availableSize.Width;
-        var maxHeight = availableSize.Height;
-
-        // Handle explicit width/height if set
-        if (!double.IsNaN(Width) && Width > 0)
-            width = Width;
-        if (!double.IsNaN(Height) && Height > 0)
-            height = Height;
-
-        switch (Stretch)
+        if (_container != null)
         {
-            case Stretch.None:
-                // Use natural size
-                break;
-
-            case Stretch.Fill:
-                // Fill the available space (may distort)
-                if (!double.IsInfinity(maxWidth) && !double.IsNaN(Width))
-                    width = maxWidth;
-                if (!double.IsInfinity(maxHeight) && !double.IsNaN(Height))
-                    height = maxHeight;
-                break;
-
-            case Stretch.Uniform:
-                // Scale uniformly to fit within available space
-                {
-                    var scaleX = double.IsInfinity(maxWidth) ? double.MaxValue : maxWidth / imageSize.Width;
-                    var scaleY = double.IsInfinity(maxHeight) ? double.MaxValue : maxHeight / imageSize.Height;
-                    var scale = Math.Min(scaleX, scaleY);
-
-                    scale = ApplyStretchDirection(scale);
-
-                    width = imageSize.Width * scale;
-                    height = imageSize.Height * scale;
-                }
-                break;
-
-            case Stretch.UniformToFill:
-                // Scale uniformly to fill available space (may clip)
-                {
-                    if (!double.IsInfinity(maxWidth) && !double.IsInfinity(maxHeight))
-                    {
-                        var scaleX = maxWidth / imageSize.Width;
-                        var scaleY = maxHeight / imageSize.Height;
-                        var scale = Math.Max(scaleX, scaleY);
-
-                        scale = ApplyStretchDirection(scale);
-
-                        width = imageSize.Width * scale;
-                        height = imageSize.Height * scale;
-                    }
-                }
-                break;
+            _imageHost = new ImageHost { Owner = this };
+            _container.Child = _imageHost;
         }
-
-        return new Size(width, height);
     }
-
-    private double ApplyStretchDirection(double scale)
-    {
-        return StretchDirection switch
-        {
-            StretchDirection.UpOnly => Math.Max(1.0, scale),
-            StretchDirection.DownOnly => Math.Min(1.0, scale),
-            _ => scale
-        };
-    }
-
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(object drawingContext)
-    {
-        if (drawingContext is not DrawingContext dc || Source == null)
-            return;
-
-        var imageSize = new Size(Source.Width, Source.Height);
-        if (imageSize.Width <= 0 || imageSize.Height <= 0)
-            return;
-
-        // Calculate destination rectangle
-        var destRect = CalculateDestinationRect(imageSize, RenderSize);
-
-        // Draw the image
-        dc.DrawImage(Source, destRect);
-    }
-
-    private Rect CalculateDestinationRect(Size imageSize, Size renderSize)
-    {
-        var stretchedSize = CalculateStretchSize(imageSize, renderSize);
-
-        // Center the image in the render area
-        var x = (renderSize.Width - stretchedSize.Width) / 2;
-        var y = (renderSize.Height - stretchedSize.Height) / 2;
-
-        return new Rect(x, y, stretchedSize.Width, stretchedSize.Height);
-    }
-
-    #endregion
 
     #region Property Changed Callbacks
 
@@ -200,8 +92,8 @@ public class Image : FrameworkElement
     {
         if (d is Image image)
         {
-            image.InvalidateMeasure();
-            image.InvalidateVisual();
+            image._imageHost?.InvalidateMeasure();
+            image._imageHost?.InvalidateVisual();
         }
     }
 
@@ -209,9 +101,124 @@ public class Image : FrameworkElement
     {
         if (d is Image image)
         {
-            image.InvalidateMeasure();
+            image._imageHost?.InvalidateMeasure();
         }
     }
 
     #endregion
+}
+
+/// <summary>
+/// Internal element that handles actual image bitmap rendering inside the Image control's template.
+/// </summary>
+internal sealed class ImageHost : FrameworkElement
+{
+    internal Image? Owner { get; set; }
+
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        var source = Owner?.Source;
+        if (source == null || source.Width <= 0 || source.Height <= 0)
+            return Size.Empty;
+
+        var imageSize = new Size(source.Width, source.Height);
+        return CalculateStretchSize(imageSize, availableSize);
+    }
+
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        return finalSize;
+    }
+
+    protected override void OnRender(object drawingContext)
+    {
+        if (drawingContext is not DrawingContext dc)
+            return;
+
+        var source = Owner?.Source;
+        if (source == null || source.Width <= 0 || source.Height <= 0)
+            return;
+
+        var imageSize = new Size(source.Width, source.Height);
+        var stretchedSize = CalculateStretchSize(imageSize, RenderSize);
+
+        // Center the image in the render area
+        var x = (RenderSize.Width - stretchedSize.Width) / 2;
+        var y = (RenderSize.Height - stretchedSize.Height) / 2;
+
+        dc.DrawImage(source, new Rect(x, y, stretchedSize.Width, stretchedSize.Height));
+    }
+
+    private Size CalculateStretchSize(Size imageSize, Size availableSize)
+    {
+        if (imageSize.Width <= 0 || imageSize.Height <= 0)
+            return Size.Empty;
+
+        var stretch = Owner?.Stretch ?? Stretch.Uniform;
+        var stretchDirection = Owner?.StretchDirection ?? StretchDirection.Both;
+
+        var width = imageSize.Width;
+        var height = imageSize.Height;
+        var maxWidth = availableSize.Width;
+        var maxHeight = availableSize.Height;
+
+        // Handle explicit width/height on owner
+        if (Owner != null)
+        {
+            if (!double.IsNaN(Owner.Width) && Owner.Width > 0)
+                width = Owner.Width;
+            if (!double.IsNaN(Owner.Height) && Owner.Height > 0)
+                height = Owner.Height;
+        }
+
+        switch (stretch)
+        {
+            case Stretch.None:
+                break;
+
+            case Stretch.Fill:
+                if (!double.IsInfinity(maxWidth))
+                    width = maxWidth;
+                if (!double.IsInfinity(maxHeight))
+                    height = maxHeight;
+                break;
+
+            case Stretch.Uniform:
+            {
+                var scaleX = double.IsInfinity(maxWidth) ? double.MaxValue : maxWidth / imageSize.Width;
+                var scaleY = double.IsInfinity(maxHeight) ? double.MaxValue : maxHeight / imageSize.Height;
+                var scale = Math.Min(scaleX, scaleY);
+                scale = ApplyStretchDirection(scale, stretchDirection);
+                width = imageSize.Width * scale;
+                height = imageSize.Height * scale;
+                break;
+            }
+
+            case Stretch.UniformToFill:
+            {
+                if (!double.IsInfinity(maxWidth) && !double.IsInfinity(maxHeight))
+                {
+                    var scaleX = maxWidth / imageSize.Width;
+                    var scaleY = maxHeight / imageSize.Height;
+                    var scale = Math.Max(scaleX, scaleY);
+                    scale = ApplyStretchDirection(scale, stretchDirection);
+                    width = imageSize.Width * scale;
+                    height = imageSize.Height * scale;
+                }
+                break;
+            }
+        }
+
+        return new Size(width, height);
+    }
+
+    private static double ApplyStretchDirection(double scale, StretchDirection direction)
+    {
+        return direction switch
+        {
+            StretchDirection.UpOnly => Math.Max(1.0, scale),
+            StretchDirection.DownOnly => Math.Min(1.0, scale),
+            _ => scale
+        };
+    }
 }

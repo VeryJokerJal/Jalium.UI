@@ -1,12 +1,18 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a control used to separate items in a list or menu.
 /// </summary>
-public class Separator : Control
+public sealed class Separator : Control
 {
+    #region Static Brushes
+
+    private static readonly SolidColorBrush s_defaultStrokeBrush = new(Color.FromRgb(60, 60, 60));
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -39,7 +45,7 @@ public class Separator : Control
     /// </summary>
     public Orientation Orientation
     {
-        get => (Orientation)(GetValue(OrientationProperty) ?? Orientation.Horizontal);
+        get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
@@ -57,7 +63,7 @@ public class Separator : Control
     /// </summary>
     public double StrokeThickness
     {
-        get => (double)(GetValue(StrokeThicknessProperty) ?? 1.0);
+        get => (double)GetValue(StrokeThicknessProperty)!;
         set => SetValue(StrokeThicknessProperty, value);
     }
 
@@ -103,15 +109,13 @@ public class Separator : Control
 
         if (Orientation == Orientation.Horizontal)
         {
-            // Horizontal separator: full width, minimal height
-            var width = double.IsPositiveInfinity(availableSize.Width) ? 1 : availableSize.Width;
-            return new Size(width, thickness);
+            // Horizontal separator: zero desired width (stretches to fill), minimal height
+            return new Size(0, thickness);
         }
         else
         {
-            // Vertical separator: minimal width, full height
-            var height = double.IsPositiveInfinity(availableSize.Height) ? 1 : availableSize.Height;
-            return new Size(thickness, height);
+            // Vertical separator: minimal width, zero desired height (stretches to fill)
+            return new Size(thickness, 0);
         }
     }
 
@@ -131,7 +135,7 @@ public class Separator : Control
         if (drawingContext is not DrawingContext dc)
             return;
 
-        var brush = StrokeBrush ?? BorderBrush ?? new SolidColorBrush(Color.FromRgb(60, 60, 60));
+        var brush = StrokeBrush ?? BorderBrush ?? s_defaultStrokeBrush;
         var thickness = StrokeThickness;
         var pen = new Pen(brush, thickness);
 

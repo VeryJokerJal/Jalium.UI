@@ -16,18 +16,42 @@
     <!-- Debug 配置下生成调试信息 -->
     <JalxamlDebugInfo Condition="'$(JalxamlDebugInfo)' == '' And '$(Configuration)' == 'Debug'">true</JalxamlDebugInfo>
     <JalxamlDebugInfo Condition="'$(JalxamlDebugInfo)' == ''">false</JalxamlDebugInfo>
+
+    <!-- HLSL 着色器预编译 -->
+    <EnableHlslShaderPrecompilation Condition="'$(EnableHlslShaderPrecompilation)' == ''">false</EnableHlslShaderPrecompilation>
+    <!-- 启用内置着色器预编译（从 Jalium.UI.Gpu 的 ShaderLibrary 提取并编译） -->
+    <EnableBuiltInShaderPrecompilation Condition="'$(EnableBuiltInShaderPrecompilation)' == ''">false</EnableBuiltInShaderPrecompilation>
+    <!-- 着色器编译器路径（fxc.exe 或 dxc.exe，留空自动检测） -->
+    <HlslShaderCompilerPath Condition="'$(HlslShaderCompilerPath)' == ''"></HlslShaderCompilerPath>
+    <!-- 着色器优化级别：0-3 -->
+    <HlslShaderOptimizationLevel Condition="'$(HlslShaderOptimizationLevel)' == ''">3</HlslShaderOptimizationLevel>
+    <!-- Debug 配置下着色器调试信息 -->
+    <HlslShaderDebugInfo Condition="'$(HlslShaderDebugInfo)' == '' And '$(Configuration)' == 'Debug'">true</HlslShaderDebugInfo>
+    <HlslShaderDebugInfo Condition="'$(HlslShaderDebugInfo)' == ''">false</HlslShaderDebugInfo>
+    <!-- 着色器警告视为错误 -->
+    <HlslShaderWarningsAsErrors Condition="'$(HlslShaderWarningsAsErrors)' == ''">true</HlslShaderWarningsAsErrors>
+    <!-- 着色器中间输出路径 -->
+    <HlslShaderIntermediateOutputPath Condition="'$(HlslShaderIntermediateOutputPath)' == ''">$(IntermediateOutputPath)Shaders\</HlslShaderIntermediateOutputPath>
   </PropertyGroup>
 
   <!-- 定义 JALXAML 文件类型的 Visual Studio 显示属性 -->
   <ItemDefinitionGroup>
     <JalxamlPage>
-      <Generator>MSBuild:CompileJalxaml</Generator>
       <SubType>Designer</SubType>
     </JalxamlPage>
     <JalxamlApplicationDefinition>
-      <Generator>MSBuild:CompileJalxaml</Generator>
       <SubType>Designer</SubType>
     </JalxamlApplicationDefinition>
+    <HlslShader>
+      <EntryPoint></EntryPoint>
+      <ShaderModel></ShaderModel>
+      <ShaderType></ShaderType>
+    </HlslShader>
   </ItemDefinitionGroup>
+
+  <!-- Visual Studio 属性页架构 - 定义 JalxamlPage 在属性窗口的显示 -->
+  <ItemGroup>
+    <PropertyPageSchema Include="$(MSBuildThisFileDirectory)Jalium.UI.Build.xml" />
+  </ItemGroup>
 
 </Project>

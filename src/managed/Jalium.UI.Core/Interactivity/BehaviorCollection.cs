@@ -5,7 +5,7 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// Represents a collection of behaviors with a shared AssociatedObject.
 /// </summary>
-public class BehaviorCollection : Collection<Behavior>
+public sealed class BehaviorCollection : Collection<Behavior>
 {
     private DependencyObject? _associatedObject;
 

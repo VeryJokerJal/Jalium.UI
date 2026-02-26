@@ -1,4 +1,4 @@
-using System.Numerics;
+﻿using System.Numerics;
 
 namespace Jalium.UI.Gpu;
 
@@ -293,7 +293,7 @@ public sealed class PathTessellator
 
     private static List<string> TokenizePath(string pathData)
     {
-        var tokens = new List<string>();
+        var tokens = new List<string>(pathData.Length);
         var current = new System.Text.StringBuilder();
 
         for (int i = 0; i < pathData.Length; i++)
@@ -490,7 +490,7 @@ public sealed class PathTessellator
         _vertices.AddRange(_currentContour);
 
         // 创建顶点索引列表
-        var indices = new List<int>();
+        var indices = new List<int>(_currentContour.Count);
         for (int i = 0; i < _currentContour.Count; i++)
             indices.Add(i);
 

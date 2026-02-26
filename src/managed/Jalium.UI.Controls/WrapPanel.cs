@@ -1,10 +1,10 @@
-namespace Jalium.UI.Controls;
+﻿namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Positions child elements in sequential position from left to right,
 /// breaking content to the next line at the edge of the containing box.
 /// </summary>
-public class WrapPanel : Panel
+public sealed class WrapPanel : Panel
 {
     #region Dependency Properties
 
@@ -38,7 +38,7 @@ public class WrapPanel : Panel
     /// </summary>
     public Orientation Orientation
     {
-        get => (Orientation)(GetValue(OrientationProperty) ?? Orientation.Horizontal);
+        get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
@@ -47,7 +47,7 @@ public class WrapPanel : Panel
     /// </summary>
     public double ItemWidth
     {
-        get => (double)(GetValue(ItemWidthProperty) ?? double.NaN);
+        get => (double)GetValue(ItemWidthProperty)!;
         set => SetValue(ItemWidthProperty, value);
     }
 
@@ -56,7 +56,7 @@ public class WrapPanel : Panel
     /// </summary>
     public double ItemHeight
     {
-        get => (double)(GetValue(ItemHeightProperty) ?? double.NaN);
+        get => (double)GetValue(ItemHeightProperty)!;
         set => SetValue(ItemHeightProperty, value);
     }
 

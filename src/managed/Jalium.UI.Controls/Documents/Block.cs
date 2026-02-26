@@ -1,4 +1,4 @@
-using Jalium.UI.Controls;
+﻿using Jalium.UI.Controls;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
@@ -61,7 +61,7 @@ public abstract class Block : TextElement
     /// </summary>
     public Thickness Margin
     {
-        get => (Thickness)(GetValue(MarginProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(MarginProperty)!;
         set => SetValue(MarginProperty, value);
     }
 
@@ -70,7 +70,7 @@ public abstract class Block : TextElement
     /// </summary>
     public Thickness Padding
     {
-        get => (Thickness)(GetValue(PaddingProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(PaddingProperty)!;
         set => SetValue(PaddingProperty, value);
     }
 
@@ -79,7 +79,7 @@ public abstract class Block : TextElement
     /// </summary>
     public Thickness BorderThickness
     {
-        get => (Thickness)(GetValue(BorderThicknessProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(BorderThicknessProperty)!;
         set => SetValue(BorderThicknessProperty, value);
     }
 
@@ -97,7 +97,7 @@ public abstract class Block : TextElement
     /// </summary>
     public TextAlignment TextAlignment
     {
-        get => (TextAlignment)(GetValue(TextAlignmentProperty) ?? TextAlignment.Left);
+        get => (TextAlignment)GetValue(TextAlignmentProperty)!;
         set => SetValue(TextAlignmentProperty, value);
     }
 
@@ -106,7 +106,7 @@ public abstract class Block : TextElement
     /// </summary>
     public double LineHeight
     {
-        get => (double)(GetValue(LineHeightProperty) ?? double.NaN);
+        get => (double)GetValue(LineHeightProperty)!;
         set => SetValue(LineHeightProperty, value);
     }
 
@@ -126,7 +126,7 @@ public abstract class Block : TextElement
 /// <summary>
 /// A collection of block elements.
 /// </summary>
-public class BlockCollection : List<Block>
+public sealed class BlockCollection : List<Block>
 {
     private readonly TextElement _parent;
 
@@ -190,7 +190,7 @@ public class BlockCollection : List<Block>
 /// <summary>
 /// A block element that contains inline content.
 /// </summary>
-public class Paragraph : Block
+public sealed class Paragraph : Block
 {
     /// <summary>
     /// Identifies the TextIndent dependency property.
@@ -209,7 +209,7 @@ public class Paragraph : Block
     /// </summary>
     public double TextIndent
     {
-        get => (double)(GetValue(TextIndentProperty) ?? 0.0);
+        get => (double)GetValue(TextIndentProperty)!;
         set => SetValue(TextIndentProperty, value);
     }
 
@@ -234,7 +234,7 @@ public class Paragraph : Block
 /// <summary>
 /// A block element that groups other blocks with a visual boundary.
 /// </summary>
-public class Section : Block
+public sealed class Section : Block
 {
     /// <summary>
     /// Gets the collection of block elements.
@@ -288,7 +288,7 @@ public class List : Block
     /// </summary>
     public int StartIndex
     {
-        get => (int)(GetValue(StartIndexProperty) ?? 1);
+        get => (int)GetValue(StartIndexProperty)!;
         set => SetValue(StartIndexProperty, value);
     }
 
@@ -305,7 +305,7 @@ public class List : Block
 /// <summary>
 /// A collection of list items.
 /// </summary>
-public class ListItemCollection : List<ListItem>
+public sealed class ListItemCollection : List<ListItem>
 {
     private readonly List _parent;
 
@@ -330,7 +330,7 @@ public class ListItemCollection : List<ListItem>
 /// <summary>
 /// A list item element.
 /// </summary>
-public class ListItem : TextElement
+public sealed class ListItem : TextElement
 {
     /// <summary>
     /// Gets the collection of block elements.
@@ -374,7 +374,7 @@ public enum TextMarkerStyle
 /// <summary>
 /// A block element that represents a block UI container.
 /// </summary>
-public class BlockUIContainer : Block
+public sealed class BlockUIContainer : Block
 {
     /// <summary>
     /// Gets or sets the child UI element.
@@ -425,7 +425,7 @@ public abstract class AnchoredBlock : Inline
     /// </summary>
     public Thickness Margin
     {
-        get => (Thickness)(GetValue(MarginProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(MarginProperty)!;
         set => SetValue(MarginProperty, value);
     }
 
@@ -434,7 +434,7 @@ public abstract class AnchoredBlock : Inline
     /// </summary>
     public Thickness Padding
     {
-        get => (Thickness)(GetValue(PaddingProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(PaddingProperty)!;
         set => SetValue(PaddingProperty, value);
     }
 
@@ -443,7 +443,7 @@ public abstract class AnchoredBlock : Inline
     /// </summary>
     public Thickness BorderThickness
     {
-        get => (Thickness)(GetValue(BorderThicknessProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(BorderThicknessProperty)!;
         set => SetValue(BorderThicknessProperty, value);
     }
 
@@ -476,7 +476,7 @@ public abstract class AnchoredBlock : Inline
 /// <summary>
 /// An anchored element that can be positioned within a flow document.
 /// </summary>
-public class Figure : AnchoredBlock
+public sealed class Figure : AnchoredBlock
 {
     /// <summary>
     /// Identifies the HorizontalAnchor dependency property.
@@ -568,7 +568,7 @@ public class Figure : AnchoredBlock
     /// </summary>
     public double HorizontalOffset
     {
-        get => (double)(GetValue(HorizontalOffsetProperty) ?? 0.0);
+        get => (double)GetValue(HorizontalOffsetProperty)!;
         set => SetValue(HorizontalOffsetProperty, value);
     }
 
@@ -577,7 +577,7 @@ public class Figure : AnchoredBlock
     /// </summary>
     public double VerticalOffset
     {
-        get => (double)(GetValue(VerticalOffsetProperty) ?? 0.0);
+        get => (double)GetValue(VerticalOffsetProperty)!;
         set => SetValue(VerticalOffsetProperty, value);
     }
 
@@ -608,7 +608,7 @@ public class Figure : AnchoredBlock
 /// <summary>
 /// A floating element within a paragraph.
 /// </summary>
-public class Floater : AnchoredBlock
+public sealed class Floater : AnchoredBlock
 {
     /// <summary>
     /// Identifies the HorizontalAlignment dependency property.
@@ -629,7 +629,7 @@ public class Floater : AnchoredBlock
     /// </summary>
     public HorizontalAlignment HorizontalAlignment
     {
-        get => (HorizontalAlignment)(GetValue(HorizontalAlignmentProperty) ?? HorizontalAlignment.Left);
+        get => (HorizontalAlignment)GetValue(HorizontalAlignmentProperty)!;
         set => SetValue(HorizontalAlignmentProperty, value);
     }
 
@@ -638,7 +638,7 @@ public class Floater : AnchoredBlock
     /// </summary>
     public double Width
     {
-        get => (double)(GetValue(WidthProperty) ?? double.NaN);
+        get => (double)GetValue(WidthProperty)!;
         set => SetValue(WidthProperty, value);
     }
 

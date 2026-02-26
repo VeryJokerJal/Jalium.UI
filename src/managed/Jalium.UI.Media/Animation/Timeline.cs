@@ -1,4 +1,4 @@
-namespace Jalium.UI.Media.Animation;
+﻿namespace Jalium.UI.Media.Animation;
 
 /// <summary>
 /// Specifies how a timeline behaves when it is outside its active period.
@@ -14,22 +14,6 @@ public enum FillBehavior
     /// The timeline stops when its active period ends.
     /// </summary>
     Stop
-}
-
-/// <summary>
-/// Specifies how a timeline behaves when it repeats.
-/// </summary>
-public enum RepeatBehavior
-{
-    /// <summary>
-    /// The timeline plays once and stops.
-    /// </summary>
-    Once,
-
-    /// <summary>
-    /// The timeline repeats indefinitely.
-    /// </summary>
-    Forever
 }
 
 /// <summary>
@@ -101,7 +85,7 @@ public abstract class Timeline : DependencyObject
     /// </summary>
     public bool AutoReverse
     {
-        get => (bool)(GetValue(AutoReverseProperty) ?? false);
+        get => (bool)GetValue(AutoReverseProperty)!;
         set => SetValue(AutoReverseProperty, value);
     }
 
@@ -119,14 +103,14 @@ public abstract class Timeline : DependencyObject
     /// </summary>
     public double SpeedRatio
     {
-        get => (double)(GetValue(SpeedRatioProperty) ?? 1.0);
+        get => (double)GetValue(SpeedRatioProperty)!;
         set => SetValue(SpeedRatioProperty, value);
     }
 
     /// <summary>
     /// Gets or sets how many times this timeline should repeat.
     /// </summary>
-    public RepeatBehavior RepeatBehavior { get; set; } = RepeatBehavior.Once;
+    public RepeatBehavior RepeatBehavior { get; set; } = new RepeatBehavior(1.0);
 
     #endregion
 

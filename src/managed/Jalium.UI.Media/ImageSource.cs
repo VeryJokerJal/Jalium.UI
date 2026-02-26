@@ -24,7 +24,7 @@ public abstract class ImageSource
 /// <summary>
 /// Represents a bitmap image source.
 /// </summary>
-public class BitmapImage : ImageSource
+public sealed class BitmapImage : ImageSource
 {
     private nint _nativeHandle;
     private double _width;
@@ -132,13 +132,22 @@ public class BitmapImage : ImageSource
     {
         try
         {
+            var dispatcher = Dispatcher.CurrentDispatcher;
             using var httpClient = new System.Net.Http.HttpClient();
-            var bytes = await httpClient.GetByteArrayAsync(uri);
-            LoadFromBytes(bytes);
+            var bytes = await httpClient.GetByteArrayAsync(uri).ConfigureAwait(false);
+
+            if (dispatcher != null)
+            {
+                dispatcher.BeginInvoke(() => LoadFromBytes(bytes));
+            }
+            else
+            {
+                LoadFromBytes(bytes);
+            }
         }
-        catch (Exception ex)
+        catch
         {
-            System.Diagnostics.Debug.WriteLine($"Failed to load image from {uri}: {ex.Message}");
+            // Image load failed
         }
     }
 
@@ -227,7 +236,6 @@ public class BitmapImage : ImageSource
     {
         if (!System.IO.File.Exists(filePath))
         {
-            System.Diagnostics.Debug.WriteLine($"Image file not found: {filePath}");
             return;
         }
 
@@ -239,9 +247,9 @@ public class BitmapImage : ImageSource
             var bytes = System.IO.File.ReadAllBytes(filePath);
             LoadFromBytes(bytes);
         }
-        catch (Exception ex)
+        catch
         {
-            System.Diagnostics.Debug.WriteLine($"Failed to load image from {filePath}: {ex.Message}");
+            // Image load failed silently
         }
     }
 

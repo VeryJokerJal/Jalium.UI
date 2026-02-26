@@ -28,7 +28,7 @@
                                         Background="{TemplateBinding Background}"
                                         BorderBrush="{TemplateBinding BorderBrush}"
                                         BorderThickness="{TemplateBinding BorderThickness}"
-										Padding="{Binding Padding, RelativeSource={RelativeSource AncestorType=ComboBox}}" 
+										Padding="{Binding Padding, RelativeSource={RelativeSource AncestorType=ComboBox}}"
                                         CornerRadius="8">
                                     <Grid Margin="4,0">
                                         <Grid.ColumnDefinitions>
@@ -43,6 +43,7 @@
                                         <Path Grid.Column="1"
                                               Data="F1 M 0,0 L 2.667,2.66665 L 5.3334,0 L 5.3334,-1.78168 L 2.6667,0.88501 L0,-1.78168 L0,0 Z"
                                               Fill="{StaticResource TextSecondary}"
+                                              Stretch="None"
                                               HorizontalAlignment="Center"
                                               VerticalAlignment="Center" />
                                     </Grid>
@@ -54,14 +55,16 @@
                            IsOpen="{TemplateBinding IsDropDownOpen}"
                            StaysOpen="False"
                            Placement="Bottom"
-                           MinWidth="{TemplateBinding ActualWidth}">
+                           PlacementTarget="{Binding RelativeSource={RelativeSource AncestorType=ComboBox}}">
                         <Border Background="{StaticResource SurfaceBackground}"
                                 BorderBrush="{StaticResource ControlBorder}"
                                 BorderThickness="1"
                                 CornerRadius="8"
                                 Margin="0,4,0,0">
                             <ScrollViewer Margin="4"
-                                          MaxHeight="{TemplateBinding MaxDropDownHeight}">
+                                          MaxHeight="{TemplateBinding MaxDropDownHeight}"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled">
                                 <ItemsPresenter />
                             </ScrollViewer>
                         </Border>
@@ -85,6 +88,32 @@
     </Style>
 
     <!-- ============================================== -->
+    <!-- ComboBoxItem Style -->
+    <!-- ============================================== -->
+    <Style TargetType="ComboBoxItem">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Padding" Value="8,4,8,4" />
+        <Setter Property="MinHeight" Value="28" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ComboBoxItem">
+                <Border Name="BackgroundBorder"
+                        Background="{TemplateBinding Background}"
+                        CornerRadius="4"
+                        Padding="{TemplateBinding Padding}">
+                    <ContentPresenter VerticalAlignment="Center" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource HighlightBackground}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
     <!-- ListBox Style -->
     <!-- ============================================== -->
     <Style TargetType="ListBox">
@@ -93,19 +122,29 @@
         <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Padding" Value="2" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ListBox">
-                <Border Name="OuterBorder"
+                <Border Name="PART_OuterBorder"
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="{TemplateBinding CornerRadius}">
-                    <ScrollViewer>
-                        <StackPanel Name="ItemsHost" />
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Padding="{TemplateBinding Padding}">
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled">
+                        <ItemsPresenter />
                     </ScrollViewer>
                 </Border>
             </ControlTemplate>
         </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{StaticResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -115,10 +154,12 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
         <Setter Property="Padding" Value="8,6,8,6" />
+        <Setter Property="MinHeight" Value="28" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ListBoxItem">
-                <Border Name="BackgroundBorder"
+                <Border Name="PART_BackgroundBorder"
                         Background="{TemplateBinding Background}"
+                        CornerRadius="4"
                         Padding="{TemplateBinding Padding}">
                     <ContentPresenter VerticalAlignment="Center" />
                 </Border>
@@ -131,6 +172,126 @@
             </PropertyTrigger>
             <PropertyTrigger Property="IsSelected" Value="True">
                 <Setter Property="Background" Value="{StaticResource SelectionBackground}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ListView Style -->
+    <!-- ============================================== -->
+    <Style TargetType="ListView">
+        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ListView">
+                <Border Name="PART_OuterBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <!-- Column headers (visible when using GridView) -->
+                        <Border Name="PART_ColumnHeadersBorder"
+                                Grid.Row="0"
+                                Background="{StaticResource SurfaceBackground}"
+                                BorderBrush="{StaticResource ControlBorder}"
+                                BorderThickness="0,0,0,1"
+                                Visibility="Collapsed">
+                            <StackPanel Name="PART_ColumnHeadersHost" Orientation="Horizontal" />
+                        </Border>
+                        <!-- Items area -->
+                        <ScrollViewer Grid.Row="1"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <ItemsPresenter />
+                        </ScrollViewer>
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Background" Value="{StaticResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ListViewItem Style -->
+    <!-- ============================================== -->
+    <Style TargetType="ListViewItem">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Padding" Value="8,4,8,4" />
+        <Setter Property="MinHeight" Value="28" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ListViewItem">
+                <Border Name="PART_BackgroundBorder"
+                        Background="{TemplateBinding Background}"
+                        Padding="{TemplateBinding Padding}">
+                    <StackPanel Name="PART_CellsPanel" Orientation="Horizontal">
+                        <ContentPresenter VerticalAlignment="Center" />
+                    </StackPanel>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource HighlightBackground}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{StaticResource SelectionBackground}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- GridViewColumnHeader Style -->
+    <!-- ============================================== -->
+    <Style TargetType="GridViewColumnHeader">
+        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Padding" Value="8,4,8,4" />
+        <Setter Property="MinHeight" Value="28" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="GridViewColumnHeader">
+                <Border Name="PART_HeaderBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{StaticResource ControlBorder}"
+                        BorderThickness="0,0,1,0"
+                        Padding="{TemplateBinding Padding}">
+                    <Grid>
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <ContentPresenter Grid.Column="0"
+                                          HorizontalAlignment="Left"
+                                          VerticalAlignment="Center" />
+                        <TextBlock Name="PART_SortIndicator"
+                                   Grid.Column="1"
+                                   Foreground="{StaticResource TextSecondary}"
+                                   VerticalAlignment="Center"
+                                   Margin="4,0,0,0"
+                                   Visibility="Collapsed" />
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{StaticResource HighlightBackground}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

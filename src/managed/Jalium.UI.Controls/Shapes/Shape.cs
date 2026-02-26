@@ -1,4 +1,4 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Shapes;
 
@@ -85,7 +85,7 @@ public abstract class Shape : FrameworkElement
     /// </summary>
     public double StrokeThickness
     {
-        get => (double)(GetValue(StrokeThicknessProperty) ?? 1.0);
+        get => (double)GetValue(StrokeThicknessProperty)!;
         set => SetValue(StrokeThicknessProperty, value);
     }
 
@@ -94,7 +94,7 @@ public abstract class Shape : FrameworkElement
     /// </summary>
     public Stretch Stretch
     {
-        get => (Stretch)(GetValue(StretchProperty) ?? Stretch.Fill);
+        get => (Stretch)GetValue(StretchProperty)!;
         set => SetValue(StretchProperty, value);
     }
 

@@ -97,7 +97,7 @@ public sealed class GlyphRunDrawing : Drawing
 /// <summary>
 /// Represents a set of glyphs from a single font face at a single size, and with a single rendering style.
 /// </summary>
-public class GlyphRun
+public sealed class GlyphRun
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="GlyphRun"/> class.

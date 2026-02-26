@@ -36,7 +36,7 @@ public enum MediaState
 /// <summary>
 /// Represents a control that contains audio and/or video.
 /// </summary>
-public class MediaElement : FrameworkElement
+public sealed class MediaElement : FrameworkElement
 {
     private Uri? _currentSource;
     private TimeSpan _position;
@@ -171,7 +171,7 @@ public class MediaElement : FrameworkElement
     /// </summary>
     public double Volume
     {
-        get => (double)(GetValue(VolumeProperty) ?? 0.5);
+        get => (double)GetValue(VolumeProperty)!;
         set => SetValue(VolumeProperty, value);
     }
 
@@ -180,7 +180,7 @@ public class MediaElement : FrameworkElement
     /// </summary>
     public double Balance
     {
-        get => (double)(GetValue(BalanceProperty) ?? 0.0);
+        get => (double)GetValue(BalanceProperty)!;
         set => SetValue(BalanceProperty, value);
     }
 
@@ -189,7 +189,7 @@ public class MediaElement : FrameworkElement
     /// </summary>
     public bool IsMuted
     {
-        get => (bool)(GetValue(IsMutedProperty) ?? false);
+        get => (bool)GetValue(IsMutedProperty)!;
         set => SetValue(IsMutedProperty, value);
     }
 
@@ -199,7 +199,7 @@ public class MediaElement : FrameworkElement
     /// </summary>
     public bool ScrubbingEnabled
     {
-        get => (bool)(GetValue(ScrubbingEnabledProperty) ?? false);
+        get => (bool)GetValue(ScrubbingEnabledProperty)!;
         set => SetValue(ScrubbingEnabledProperty, value);
     }
 
@@ -208,7 +208,7 @@ public class MediaElement : FrameworkElement
     /// </summary>
     public Stretch Stretch
     {
-        get => (Stretch)(GetValue(StretchProperty) ?? Stretch.Uniform);
+        get => (Stretch)GetValue(StretchProperty)!;
         set => SetValue(StretchProperty, value);
     }
 
@@ -217,7 +217,7 @@ public class MediaElement : FrameworkElement
     /// </summary>
     public StretchDirection StretchDirection
     {
-        get => (StretchDirection)(GetValue(StretchDirectionProperty) ?? StretchDirection.Both);
+        get => (StretchDirection)GetValue(StretchDirectionProperty)!;
         set => SetValue(StretchDirectionProperty, value);
     }
 
@@ -226,7 +226,7 @@ public class MediaElement : FrameworkElement
     /// </summary>
     public MediaState LoadedBehavior
     {
-        get => (MediaState)(GetValue(LoadedBehaviorProperty) ?? MediaState.Play);
+        get => (MediaState)GetValue(LoadedBehaviorProperty)!;
         set => SetValue(LoadedBehaviorProperty, value);
     }
 
@@ -235,7 +235,7 @@ public class MediaElement : FrameworkElement
     /// </summary>
     public MediaState UnloadedBehavior
     {
-        get => (MediaState)(GetValue(UnloadedBehaviorProperty) ?? MediaState.Close);
+        get => (MediaState)GetValue(UnloadedBehaviorProperty)!;
         set => SetValue(UnloadedBehaviorProperty, value);
     }
 
@@ -244,7 +244,7 @@ public class MediaElement : FrameworkElement
     /// </summary>
     public double SpeedRatio
     {
-        get => (double)(GetValue(SpeedRatioProperty) ?? 1.0);
+        get => (double)GetValue(SpeedRatioProperty)!;
         set => SetValue(SpeedRatioProperty, value);
     }
 
@@ -462,7 +462,7 @@ public class MediaElement : FrameworkElement
     private static object CoerceVolume(DependencyObject d, object? value)
     {
         var volume = (double)(value ?? 0.5);
-        return Math.Max(0.0, Math.Min(1.0, volume));
+        return Math.Clamp(volume, 0.0, 1.0);
     }
 
     private static void OnBalanceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -476,7 +476,7 @@ public class MediaElement : FrameworkElement
     private static object CoerceBalance(DependencyObject d, object? value)
     {
         var balance = (double)(value ?? 0.0);
-        return Math.Max(-1.0, Math.Min(1.0, balance));
+        return Math.Clamp(balance, -1.0, 1.0);
     }
 
     private static void OnIsMutedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -514,7 +514,7 @@ public class MediaElement : FrameworkElement
     private static object CoerceSpeedRatio(DependencyObject d, object? value)
     {
         var ratio = (double)(value ?? 1.0);
-        return Math.Max(0.1, Math.Min(10.0, ratio));
+        return Math.Clamp(ratio, 0.1, 10.0);
     }
 
     #endregion
@@ -524,7 +524,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Opens and prepares media for playback.
     /// </summary>
-    protected virtual void OpenMedia(Uri source)
+    protected void OpenMedia(Uri source)
     {
         // Platform-specific implementation
         // This would integrate with Media Foundation, FFmpeg, etc.
@@ -534,7 +534,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Plays the media internally.
     /// </summary>
-    protected virtual void PlayInternal()
+    protected void PlayInternal()
     {
         // Platform-specific implementation
     }
@@ -542,7 +542,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Pauses the media internally.
     /// </summary>
-    protected virtual void PauseInternal()
+    protected void PauseInternal()
     {
         // Platform-specific implementation
     }
@@ -550,7 +550,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Stops the media internally.
     /// </summary>
-    protected virtual void StopInternal()
+    protected void StopInternal()
     {
         _position = TimeSpan.Zero;
         // Platform-specific implementation
@@ -559,7 +559,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Closes the media internally.
     /// </summary>
-    protected virtual void CloseInternal()
+    protected void CloseInternal()
     {
         _position = TimeSpan.Zero;
         _duration = TimeSpan.Zero;
@@ -573,7 +573,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Seeks to the specified position.
     /// </summary>
-    protected virtual void SeekToPosition(TimeSpan position)
+    protected void SeekToPosition(TimeSpan position)
     {
         // Platform-specific implementation
     }
@@ -581,7 +581,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Sets the volume internally.
     /// </summary>
-    protected virtual void SetVolumeInternal(double volume)
+    protected void SetVolumeInternal(double volume)
     {
         // Platform-specific implementation
     }
@@ -589,7 +589,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Sets the balance internally.
     /// </summary>
-    protected virtual void SetBalanceInternal(double balance)
+    protected void SetBalanceInternal(double balance)
     {
         // Platform-specific implementation
     }
@@ -597,7 +597,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Sets the muted state internally.
     /// </summary>
-    protected virtual void SetMutedInternal(bool isMuted)
+    protected void SetMutedInternal(bool isMuted)
     {
         // Platform-specific implementation
     }
@@ -605,7 +605,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Sets the speed ratio internally.
     /// </summary>
-    protected virtual void SetSpeedRatioInternal(double speedRatio)
+    protected void SetSpeedRatioInternal(double speedRatio)
     {
         // Platform-specific implementation
     }
@@ -613,7 +613,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Applies the loaded behavior.
     /// </summary>
-    protected virtual void ApplyLoadedBehavior(MediaState state)
+    protected void ApplyLoadedBehavior(MediaState state)
     {
         switch (state)
         {
@@ -639,7 +639,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Raises the MediaOpened event.
     /// </summary>
-    protected virtual void OnMediaOpened()
+    protected void OnMediaOpened()
     {
         MediaOpened?.Invoke(this, new RoutedEventArgs());
     }
@@ -647,7 +647,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Raises the MediaEnded event.
     /// </summary>
-    protected virtual void OnMediaEnded()
+    protected void OnMediaEnded()
     {
         _isPlaying = false;
         MediaEnded?.Invoke(this, new RoutedEventArgs());
@@ -656,7 +656,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Raises the MediaFailed event.
     /// </summary>
-    protected virtual void OnMediaFailed(Exception exception)
+    protected void OnMediaFailed(Exception exception)
     {
         _isPlaying = false;
         MediaFailed?.Invoke(this, new MediaFailedEventArgs(exception));
@@ -665,7 +665,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Raises the BufferingStarted event.
     /// </summary>
-    protected virtual void OnBufferingStarted()
+    protected void OnBufferingStarted()
     {
         IsBuffering = true;
         BufferingStarted?.Invoke(this, new RoutedEventArgs());
@@ -674,7 +674,7 @@ public class MediaElement : FrameworkElement
     /// <summary>
     /// Raises the BufferingEnded event.
     /// </summary>
-    protected virtual void OnBufferingEnded()
+    protected void OnBufferingEnded()
     {
         IsBuffering = false;
         BufferingEnded?.Invoke(this, new RoutedEventArgs());
@@ -686,7 +686,7 @@ public class MediaElement : FrameworkElement
 /// <summary>
 /// Event arguments for media failure events.
 /// </summary>
-public class MediaFailedEventArgs : EventArgs
+public sealed class MediaFailedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the exception that caused the failure.
@@ -710,7 +710,7 @@ public class MediaFailedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for media script command events.
 /// </summary>
-public class MediaScriptCommandEventArgs : EventArgs
+public sealed class MediaScriptCommandEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the type of script command.

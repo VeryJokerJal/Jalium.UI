@@ -1,4 +1,6 @@
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -18,8 +20,12 @@ public enum Dock
 /// <summary>
 /// Represents a control that contains multiple items that share the same space on the screen.
 /// </summary>
-public class TabControl : Selector
+public sealed class TabControl : Selector
 {
+    // Cached brushes for OnRender fallback paths
+    private static readonly SolidColorBrush s_tabStripBackgroundBrush = new(ThemeColors.TabStripBackground);
+    private static readonly SolidColorBrush s_tabStripBorderBrush = new(ThemeColors.TabStripBorder);
+
     #region Dependency Properties
 
     /// <summary>
@@ -115,8 +121,61 @@ public class TabControl : Selector
         TabStripBackground = new SolidColorBrush(ThemeColors.TabStripBackground);
         TabStripBorderBrush = new SolidColorBrush(ThemeColors.TabStripBorder);
 
+        Focusable = true;
+
         // Subscribe to collection changes
         Items.CollectionChanged += OnTabItemsChanged;
+
+        // Register keyboard handler
+        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+    }
+
+    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not KeyEventArgs keyArgs || keyArgs.Handled) return;
+
+        var tabCount = Items.Count;
+        if (tabCount == 0) return;
+
+        switch (keyArgs.Key)
+        {
+            case Key.Tab when keyArgs.IsControlDown:
+            {
+                // Ctrl+Shift+Tab = previous, Ctrl+Tab = next
+                var direction = keyArgs.IsShiftDown ? -1 : 1;
+                SelectAdjacentTab(direction);
+                keyArgs.Handled = true;
+                break;
+            }
+            case Key.Left:
+            case Key.Up:
+                SelectAdjacentTab(-1);
+                keyArgs.Handled = true;
+                break;
+            case Key.Right:
+            case Key.Down:
+                SelectAdjacentTab(1);
+                keyArgs.Handled = true;
+                break;
+            case Key.Home:
+                if (tabCount > 0) SelectedIndex = 0;
+                keyArgs.Handled = true;
+                break;
+            case Key.End:
+                if (tabCount > 0) SelectedIndex = tabCount - 1;
+                keyArgs.Handled = true;
+                break;
+        }
+    }
+
+    private void SelectAdjacentTab(int direction)
+    {
+        var tabCount = Items.Count;
+        if (tabCount == 0) return;
+
+        var current = SelectedIndex;
+        var next = (current + direction + tabCount) % tabCount;
+        SelectedIndex = next;
     }
 
     /// <summary>
@@ -170,8 +229,16 @@ public class TabControl : Selector
             }
         }
 
-        // Auto-select first tab if none selected
-        if (SelectedIndex < 0 && Items.Count > 0)
+        // Adjust SelectedIndex after items changed
+        if (Items.Count == 0)
+        {
+            SelectedIndex = -1;
+        }
+        else if (SelectedIndex >= Items.Count)
+        {
+            SelectedIndex = Items.Count - 1;
+        }
+        else if (SelectedIndex < 0)
         {
             SelectedIndex = 0;
         }
@@ -434,7 +501,7 @@ public class TabControl : Selector
         }
 
         // Draw tab strip background
-        var tabStripBrush = TabStripBackground ?? new SolidColorBrush(ThemeColors.TabStripBackground);
+        var tabStripBrush = TabStripBackground ?? s_tabStripBackgroundBrush;
         Rect tabStripRect;
 
         switch (TabStripPlacement)
@@ -456,7 +523,7 @@ public class TabControl : Selector
         dc.DrawRectangle(tabStripBrush, null, tabStripRect);
 
         // Draw border line
-        var borderBrush = TabStripBorderBrush ?? new SolidColorBrush(ThemeColors.TabStripBorder);
+        var borderBrush = TabStripBorderBrush ?? s_tabStripBorderBrush;
         var borderPen = new Pen(borderBrush, 1);
         switch (TabStripPlacement)
         {
@@ -481,8 +548,16 @@ public class TabControl : Selector
 /// <summary>
 /// Represents an item in a TabControl.
 /// </summary>
-public class TabItem : HeaderedContentControl
+public sealed class TabItem : HeaderedContentControl
 {
+    // Cached brushes for OnRender fallback paths
+    private static readonly SolidColorBrush s_selectedBackgroundBrush = new(ThemeColors.TabItemSelectedBackground);
+    private static readonly SolidColorBrush s_hoverBackgroundBrush = new(ThemeColors.TabItemHoverBackground);
+    private static readonly SolidColorBrush s_transparentBrush = new(Color.Transparent);
+    private static readonly SolidColorBrush s_textPrimaryBrush = new(ThemeColors.TextPrimary);
+    private static readonly SolidColorBrush s_textSecondaryBrush = new(ThemeColors.TextSecondary);
+    private static readonly SolidColorBrush s_indicatorBrush = new(ThemeColors.TabItemIndicator);
+
     internal TabControl? TabControl { get; set; }
 
     #region Dependency Properties
@@ -673,15 +748,15 @@ public class TabItem : HeaderedContentControl
         Brush bgBrush;
         if (IsSelected)
         {
-            bgBrush = SelectedBackground ?? new SolidColorBrush(ThemeColors.TabItemSelectedBackground);
+            bgBrush = SelectedBackground ?? s_selectedBackgroundBrush;
         }
         else if (IsMouseOver)
         {
-            bgBrush = HoverBackground ?? new SolidColorBrush(ThemeColors.TabItemHoverBackground);
+            bgBrush = HoverBackground ?? s_hoverBackgroundBrush;
         }
         else
         {
-            bgBrush = Background ?? new SolidColorBrush(Color.Transparent);
+            bgBrush = Background ?? s_transparentBrush;
         }
 
         dc.DrawRectangle(bgBrush, null, bounds);
@@ -694,11 +769,11 @@ public class TabItem : HeaderedContentControl
             Brush textBrush;
             if (IsSelected || IsMouseOver)
             {
-                textBrush = new SolidColorBrush(ThemeColors.TextPrimary);
+                textBrush = s_textPrimaryBrush;
             }
             else
             {
-                textBrush = Foreground ?? new SolidColorBrush(ThemeColors.TextSecondary);
+                textBrush = Foreground ?? s_textSecondaryBrush;
             }
 
             var fontSize = FontSize > 0 ? FontSize : 13;
@@ -721,7 +796,7 @@ public class TabItem : HeaderedContentControl
         // Draw selection indicator
         if (IsSelected)
         {
-            var indicatorBrush = IndicatorBrush ?? new SolidColorBrush(ThemeColors.TabItemIndicator);
+            var indicatorBrush = IndicatorBrush ?? s_indicatorBrush;
             var indicatorHeight = IndicatorHeight;
             var indicatorRect = new Rect(0, ActualHeight - indicatorHeight, ActualWidth, indicatorHeight);
             dc.DrawRectangle(indicatorBrush, null, indicatorRect);

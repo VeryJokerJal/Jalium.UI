@@ -1,11 +1,11 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Shapes;
 
 /// <summary>
 /// Draws a straight line between two points.
 /// </summary>
-public class Line : Shape
+public sealed class Line : Shape
 {
     /// <summary>
     /// Identifies the X1 dependency property.
@@ -40,7 +40,7 @@ public class Line : Shape
     /// </summary>
     public double X1
     {
-        get => (double)(GetValue(X1Property) ?? 0.0);
+        get => (double)GetValue(X1Property)!;
         set => SetValue(X1Property, value);
     }
 
@@ -49,7 +49,7 @@ public class Line : Shape
     /// </summary>
     public double Y1
     {
-        get => (double)(GetValue(Y1Property) ?? 0.0);
+        get => (double)GetValue(Y1Property)!;
         set => SetValue(Y1Property, value);
     }
 
@@ -58,7 +58,7 @@ public class Line : Shape
     /// </summary>
     public double X2
     {
-        get => (double)(GetValue(X2Property) ?? 0.0);
+        get => (double)GetValue(X2Property)!;
         set => SetValue(X2Property, value);
     }
 
@@ -67,7 +67,7 @@ public class Line : Shape
     /// </summary>
     public double Y2
     {
-        get => (double)(GetValue(Y2Property) ?? 0.0);
+        get => (double)GetValue(Y2Property)!;
         set => SetValue(Y2Property, value);
     }
 

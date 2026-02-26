@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -22,6 +23,13 @@ public class ContentPresenter : FrameworkElement
     public static readonly DependencyProperty ContentTemplateProperty =
         DependencyProperty.Register(nameof(ContentTemplate), typeof(DataTemplate), typeof(ContentPresenter),
             new PropertyMetadata(null, OnContentTemplateChanged));
+
+    /// <summary>
+    /// Identifies the ContentTemplateSelector dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ContentTemplateSelectorProperty =
+        DependencyProperty.Register(nameof(ContentTemplateSelector), typeof(DataTemplateSelector), typeof(ContentPresenter),
+            new PropertyMetadata(null, OnContentTemplateSelectorChanged));
 
     /// <summary>
     /// Identifies the ContentSource dependency property.
@@ -50,6 +58,15 @@ public class ContentPresenter : FrameworkElement
     {
         get => (DataTemplate?)GetValue(ContentTemplateProperty);
         set => SetValue(ContentTemplateProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the DataTemplateSelector used to choose a template for the content.
+    /// </summary>
+    public DataTemplateSelector? ContentTemplateSelector
+    {
+        get => (DataTemplateSelector?)GetValue(ContentTemplateSelectorProperty);
+        set => SetValue(ContentTemplateSelectorProperty, value);
     }
 
     /// <summary>
@@ -91,8 +108,12 @@ public class ContentPresenter : FrameworkElement
         }
     }
 
-    private void OnContentChanged(object? oldContent, object? newContent)
+    private void OnContentChanged(object? oldContent, object? newContent, bool forceRecreate = false)
     {
+        // Guard: skip if content reference is the same and not forced (template change)
+        if (!forceRecreate && ReferenceEquals(oldContent, newContent) && _contentElement != null)
+            return;
+
         // Remove old content element
         if (_contentElement != null)
         {
@@ -117,8 +138,17 @@ public class ContentPresenter : FrameworkElement
     {
         if (d is ContentPresenter presenter)
         {
-            // Re-create content with new template
-            presenter.OnContentChanged(presenter.Content, presenter.Content);
+            // Force re-create content with new template
+            presenter.OnContentChanged(presenter.Content, presenter.Content, forceRecreate: true);
+        }
+    }
+
+    private static void OnContentTemplateSelectorChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is ContentPresenter presenter)
+        {
+            // Force re-create content with new selector
+            presenter.OnContentChanged(presenter.Content, presenter.Content, forceRecreate: true);
         }
     }
 
@@ -141,14 +171,75 @@ public class ContentPresenter : FrameworkElement
             }
         }
 
+        // If we have a template selector, use it
+        if (ContentTemplateSelector != null)
+        {
+            var selectedTemplate = ContentTemplateSelector.SelectTemplate(content, this);
+            if (selectedTemplate != null)
+            {
+                var templateContent = selectedTemplate.LoadContent();
+                if (templateContent != null)
+                {
+                    templateContent.DataContext = content;
+                    return templateContent;
+                }
+            }
+        }
+
+        // Try implicit DataTemplate lookup (matching by DataType in resources)
+        if (content is not string)
+        {
+            if (ResourceLookup.FindImplicitDataTemplate(this, content.GetType()) is DataTemplate implicitTemplate)
+            {
+                var templateContent = implicitTemplate.LoadContent();
+                if (templateContent != null)
+                {
+                    templateContent.DataContext = content;
+                    return templateContent;
+                }
+            }
+        }
+
+        // Find Foreground from TemplatedParent or visual parent chain.
+        // This is needed because TextBlock.ForegroundProperty is not inheritable
+        // in this framework (unlike WPF where TextElement.ForegroundProperty is shared).
+        var foreground = FindForegroundBrush();
+
         // Default: create a TextBlock for string content
         if (content is string text)
         {
-            return new TextBlock { Text = text };
+            var tb = new TextBlock { Text = text };
+            if (foreground != null)
+                tb.Foreground = foreground;
+            return tb;
         }
 
         // For other objects, use ToString()
-        return new TextBlock { Text = content.ToString() ?? string.Empty };
+        var otherTb = new TextBlock { Text = content.ToString() ?? string.Empty };
+        if (foreground != null)
+            otherTb.Foreground = foreground;
+        return otherTb;
+    }
+
+    /// <summary>
+    /// Finds the Foreground brush from the TemplatedParent or visual parent chain.
+    /// </summary>
+    private Brush? FindForegroundBrush()
+    {
+        // First check TemplatedParent (most common case when inside a ControlTemplate)
+        if (TemplatedParent is Control templatedControl)
+            return templatedControl.Foreground;
+
+        // Fall back to walking the visual parent chain
+        Visual? current = VisualParent;
+        while (current != null)
+        {
+            if (current is Control control)
+                return control.Foreground;
+            current = current.VisualParent;
+        }
+
+        return null;
     }
 
     #endregion
@@ -160,6 +251,18 @@ public class ContentPresenter : FrameworkElement
     {
         base.OnTemplatedParentChanged(oldParent, newParent);
 
+        // Unsubscribe from old parent's property changes
+        if (oldParent != null)
+        {
+            oldParent.PropertyChangedInternal -= OnTemplatedParentPropertyChanged;
+        }
+
+        // Subscribe to new parent's property changes (for Foreground propagation)
+        if (newParent != null)
+        {
+            newParent.PropertyChangedInternal += OnTemplatedParentPropertyChanged;
+        }
+
         // When TemplatedParent is set, apply template bindings
         if (!_templateBindingsApplied && newParent != null)
         {
@@ -167,6 +270,17 @@ public class ContentPresenter : FrameworkElement
         }
     }
 
+    private void OnTemplatedParentPropertyChanged(DependencyProperty dp, object? oldValue, object? newValue)
+    {
+        // Propagate Foreground changes to child TextBlock
+        if (dp == Control.ForegroundProperty && _contentElement is TextBlock tb)
+        {
+            tb.Foreground = newValue as Brush;
+        }
+    }
+
+    [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
+        Justification = "TemplatedParent types are UI controls registered in XamlTypeRegistry with preserved members")]
     private void ApplyTemplateBindings()
     {
         if (TemplatedParent == null)
@@ -211,6 +325,21 @@ public class ContentPresenter : FrameworkElement
                 if (dpField?.GetValue(null) is DependencyProperty templateDp)
                 {
                     this.SetTemplateBinding(ContentTemplateProperty, templateDp);
+                }
+            }
+        }
+
+        // Try to find ContentTemplateSelector property
+        if (!HasLocalValue(ContentTemplateSelectorProperty) && GetBindingExpression(ContentTemplateSelectorProperty) == null)
+        {
+            var selectorPropInfo = parentType.GetProperty($"{contentSource}TemplateSelector");
+            if (selectorPropInfo != null)
+            {
+                var dpField = parentType.GetField($"{contentSource}TemplateSelectorProperty",
+                    System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.FlattenHierarchy);
+                if (dpField?.GetValue(null) is DependencyProperty selectorDp)
+                {
+                    this.SetTemplateBinding(ContentTemplateSelectorProperty, selectorDp);
                 }
             }
         }

@@ -134,8 +134,7 @@ public class ControlTemplate
                 }
 
                 // Also check if the element has registered named elements (TemplateRoot)
-                var found = fe.FindName(name) as FrameworkElement;
-                if (found != null)
+                if (fe.FindName(name) is FrameworkElement found)
                 {
                     return found;
                 }
@@ -156,7 +155,7 @@ public class ControlTemplate
 /// <summary>
 /// Represents the visual template for an item in an ItemsControl.
 /// </summary>
-public class ItemContainerTemplate : ControlTemplate
+public sealed class ItemContainerTemplate : ControlTemplate
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="ItemContainerTemplate"/> class.
@@ -185,7 +184,7 @@ public interface ITemplatedControl
 /// <summary>
 /// Represents an element that has a template-defined visual subtree.
 /// </summary>
-public class TemplateRoot : FrameworkElement
+public sealed class TemplateRoot : FrameworkElement
 {
     private readonly Dictionary<string, FrameworkElement> _namedElements = new();
 
@@ -209,7 +208,7 @@ public class TemplateRoot : FrameworkElement
 /// <summary>
 /// Represents a placeholder for the content in a ControlTemplate.
 /// </summary>
-public class ContentPresenterPlaceholder : FrameworkElement
+public sealed class ContentPresenterPlaceholder : FrameworkElement
 {
     /// <summary>
     /// Gets or sets the name of the content property to present.

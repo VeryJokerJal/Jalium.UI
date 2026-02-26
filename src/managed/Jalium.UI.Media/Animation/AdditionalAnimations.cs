@@ -3,7 +3,7 @@ namespace Jalium.UI.Media.Animation;
 /// <summary>
 /// Animates the value of a Rect property between two target values.
 /// </summary>
-public class RectAnimation : AnimationTimeline<Rect>
+public sealed class RectAnimation : AnimationTimeline<Rect>
 {
     #region Dependency Properties
 
@@ -81,7 +81,7 @@ public class RectAnimation : AnimationTimeline<Rect>
 /// <summary>
 /// Animates the value of a Size property between two target values.
 /// </summary>
-public class SizeAnimation : AnimationTimeline<Size>
+public sealed class SizeAnimation : AnimationTimeline<Size>
 {
     #region Dependency Properties
 
@@ -157,7 +157,7 @@ public class SizeAnimation : AnimationTimeline<Size>
 /// <summary>
 /// Animates the value of a Vector property between two target values.
 /// </summary>
-public class VectorAnimation : AnimationTimeline<Vector>
+public sealed class VectorAnimation : AnimationTimeline<Vector>
 {
     #region Dependency Properties
 
@@ -233,7 +233,7 @@ public class VectorAnimation : AnimationTimeline<Vector>
 /// <summary>
 /// Animates the value of an Int32 property between two target values.
 /// </summary>
-public class Int32Animation : AnimationTimeline<int>
+public sealed class Int32Animation : AnimationTimeline<int>
 {
     #region Dependency Properties
 
@@ -317,7 +317,7 @@ public class Int32Animation : AnimationTimeline<int>
 /// <summary>
 /// Animates the value of a Byte property between two target values.
 /// </summary>
-public class ByteAnimation : AnimationTimeline<byte>
+public sealed class ByteAnimation : AnimationTimeline<byte>
 {
     #region Dependency Properties
 
@@ -391,7 +391,7 @@ public class ByteAnimation : AnimationTimeline<byte>
 /// <summary>
 /// Animates the value of a Decimal property between two target values.
 /// </summary>
-public class DecimalAnimation : AnimationTimeline<decimal>
+public sealed class DecimalAnimation : AnimationTimeline<decimal>
 {
     #region Dependency Properties
 
@@ -475,7 +475,7 @@ public class DecimalAnimation : AnimationTimeline<decimal>
 /// <summary>
 /// Animates the value of a Single (float) property between two target values.
 /// </summary>
-public class SingleAnimation : AnimationTimeline<float>
+public sealed class SingleAnimation : AnimationTimeline<float>
 {
     #region Dependency Properties
 
@@ -559,7 +559,7 @@ public class SingleAnimation : AnimationTimeline<float>
 /// <summary>
 /// Animates the value of an Int16 property between two target values.
 /// </summary>
-public class Int16Animation : AnimationTimeline<short>
+public sealed class Int16Animation : AnimationTimeline<short>
 {
     #region Dependency Properties
 
@@ -633,7 +633,7 @@ public class Int16Animation : AnimationTimeline<short>
 /// <summary>
 /// Animates the value of an Int64 property between two target values.
 /// </summary>
-public class Int64Animation : AnimationTimeline<long>
+public sealed class Int64Animation : AnimationTimeline<long>
 {
     #region Dependency Properties
 
@@ -717,7 +717,7 @@ public class Int64Animation : AnimationTimeline<long>
 /// <summary>
 /// Animates the value of a CornerRadius property between two target values.
 /// </summary>
-public class CornerRadiusAnimation : AnimationTimeline<CornerRadius>
+public sealed class CornerRadiusAnimation : AnimationTimeline<CornerRadius>
 {
     #region Dependency Properties
 

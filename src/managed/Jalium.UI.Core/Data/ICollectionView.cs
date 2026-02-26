@@ -154,7 +154,7 @@ public interface ICollectionView : IEnumerable, INotifyCollectionChanged
 /// <summary>
 /// Provides data for the CurrentChanging event.
 /// </summary>
-public class CurrentChangingEventArgs : EventArgs
+public sealed class CurrentChangingEventArgs : EventArgs
 {
     /// <summary>
     /// Initializes a new instance of the CurrentChangingEventArgs class.

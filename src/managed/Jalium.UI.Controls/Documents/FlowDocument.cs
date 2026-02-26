@@ -1,4 +1,4 @@
-using Jalium.UI.Controls;
+﻿using Jalium.UI.Controls;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
@@ -6,7 +6,7 @@ namespace Jalium.UI.Documents;
 /// <summary>
 /// Represents a flow document that hosts rich flow content.
 /// </summary>
-public class FlowDocument : DependencyObject
+public sealed class FlowDocument : DependencyObject
 {
     #region Dependency Properties
 
@@ -124,7 +124,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public double FontSize
     {
-        get => (double)(GetValue(FontSizeProperty) ?? 14.0);
+        get => (double)GetValue(FontSizeProperty)!;
         set => SetValue(FontSizeProperty, value);
     }
 
@@ -151,7 +151,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public double PageWidth
     {
-        get => (double)(GetValue(PageWidthProperty) ?? double.NaN);
+        get => (double)GetValue(PageWidthProperty)!;
         set => SetValue(PageWidthProperty, value);
     }
 
@@ -160,7 +160,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public double PageHeight
     {
-        get => (double)(GetValue(PageHeightProperty) ?? double.NaN);
+        get => (double)GetValue(PageHeightProperty)!;
         set => SetValue(PageHeightProperty, value);
     }
 
@@ -169,7 +169,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public Thickness PagePadding
     {
-        get => (Thickness)(GetValue(PagePaddingProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(PagePaddingProperty)!;
         set => SetValue(PagePaddingProperty, value);
     }
 
@@ -178,7 +178,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public double ColumnWidth
     {
-        get => (double)(GetValue(ColumnWidthProperty) ?? double.NaN);
+        get => (double)GetValue(ColumnWidthProperty)!;
         set => SetValue(ColumnWidthProperty, value);
     }
 
@@ -187,7 +187,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public double ColumnGap
     {
-        get => (double)(GetValue(ColumnGapProperty) ?? 10.0);
+        get => (double)GetValue(ColumnGapProperty)!;
         set => SetValue(ColumnGapProperty, value);
     }
 
@@ -196,7 +196,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public TextAlignment TextAlignment
     {
-        get => (TextAlignment)(GetValue(TextAlignmentProperty) ?? TextAlignment.Left);
+        get => (TextAlignment)GetValue(TextAlignmentProperty)!;
         set => SetValue(TextAlignmentProperty, value);
     }
 
@@ -205,7 +205,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public double LineHeight
     {
-        get => (double)(GetValue(LineHeightProperty) ?? double.NaN);
+        get => (double)GetValue(LineHeightProperty)!;
         set => SetValue(LineHeightProperty, value);
     }
 
@@ -214,7 +214,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public bool IsOptimalParagraphEnabled
     {
-        get => (bool)(GetValue(IsOptimalParagraphEnabledProperty) ?? false);
+        get => (bool)GetValue(IsOptimalParagraphEnabledProperty)!;
         set => SetValue(IsOptimalParagraphEnabledProperty, value);
     }
 
@@ -223,7 +223,7 @@ public class FlowDocument : DependencyObject
     /// </summary>
     public bool IsHyphenationEnabled
     {
-        get => (bool)(GetValue(IsHyphenationEnabledProperty) ?? false);
+        get => (bool)GetValue(IsHyphenationEnabledProperty)!;
         set => SetValue(IsHyphenationEnabledProperty, value);
     }
 

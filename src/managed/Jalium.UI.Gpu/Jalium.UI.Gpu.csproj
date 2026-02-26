@@ -1,12 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0-windows</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    <LangVersion>preview</LangVersion>
     <RootNamespace>Jalium.UI.Gpu</RootNamespace>
+    <AssemblyName>Jalium.UI.Gpu</AssemblyName>
+    <Description>GPU-related functionality for Jalium.UI framework.</Description>
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI.Gpu</PackageId>
   </PropertyGroup>
 
 </Project>

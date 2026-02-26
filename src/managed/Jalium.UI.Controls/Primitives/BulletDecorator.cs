@@ -1,11 +1,11 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents a layout control that aligns a bullet and content.
 /// </summary>
-public class BulletDecorator : FrameworkElement
+public sealed class BulletDecorator : FrameworkElement
 {
     #region Dependency Properties
 
@@ -57,7 +57,7 @@ public class BulletDecorator : FrameworkElement
     /// </summary>
     public VerticalAlignment BulletAlignment
     {
-        get => (VerticalAlignment)(GetValue(BulletAlignmentProperty) ?? VerticalAlignment.Top);
+        get => (VerticalAlignment)GetValue(BulletAlignmentProperty)!;
         set => SetValue(BulletAlignmentProperty, value);
     }
 

@@ -44,3 +44,26 @@ public interface IOpacityDrawingContext
     /// </summary>
     void PopOpacity();
 }
+
+/// <summary>
+/// Interface for drawing contexts that support element effect capture and rendering.
+/// </summary>
+public interface IEffectDrawingContext
+{
+    /// <summary>
+    /// Begins capturing element content into an offscreen bitmap for effect processing.
+    /// </summary>
+    void BeginEffectCapture(float x, float y, float w, float h);
+
+    /// <summary>
+    /// Ends capturing element content and restores the main render target.
+    /// </summary>
+    void EndEffectCapture();
+
+    /// <summary>
+    /// Applies the given element effect to the captured content and draws the result.
+    /// The implementation dispatches to the appropriate native rendering method
+    /// based on the concrete effect type.
+    /// </summary>
+    void ApplyElementEffect(IEffect effect, float x, float y, float w, float h);
+}

@@ -1,9 +1,9 @@
-using System.Timers;
-using Jalium.UI.Automation;
+﻿using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
@@ -11,7 +11,7 @@ namespace Jalium.UI.Controls;
 /// A control for entering passwords with masked display.
 /// Inherits from Control for security reasons - passwords should not be exposed via data binding.
 /// </summary>
-public class PasswordBox : Control, IImeSupport
+public sealed class PasswordBox : Control, IImeSupport
 {
     #region Automation
 
@@ -37,8 +37,8 @@ public class PasswordBox : Control, IImeSupport
     private DateTime _lastCaretBlink;
     private const int CaretBlinkInterval = 530;
     private const int CaretFadeDuration = 150;
-    private System.Timers.Timer? _caretTimer;
-    private const int CaretTimerInterval = 16;
+    private DispatcherTimer? _caretTimer;
+    private static int CaretTimerInterval => CompositionTarget.FrameIntervalMs;
 
     // Selection state
     private bool _isSelecting;
@@ -147,6 +147,21 @@ public class PasswordBox : Control, IImeSupport
 
     #endregion
 
+    #region Static Brushes & Pens
+
+    private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly Pen s_focusPen = new(s_focusBorderBrush, 1);
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
+    private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
+    private static readonly SolidColorBrush s_compositionUnderlineBrush = new(Color.FromRgb(200, 200, 100));
+    private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
+    private static readonly SolidColorBrush s_revealIconBrush = new(Color.FromRgb(150, 150, 150));
+    private static readonly Pen s_revealIconPen = new(s_revealIconBrush, 1.5);
+
+    #endregion
+
     #region Password Property (Non-dependency for security)
 
     /// <summary>
@@ -224,7 +239,7 @@ public class PasswordBox : Control, IImeSupport
     /// </summary>
     public int MaxLength
     {
-        get => (int)(GetValue(MaxLengthProperty) ?? 0);
+        get => (int)GetValue(MaxLengthProperty)!;
         set => SetValue(MaxLengthProperty, value);
     }
 
@@ -251,7 +266,7 @@ public class PasswordBox : Control, IImeSupport
     /// </summary>
     public bool IsPasswordRevealed
     {
-        get => (bool)(GetValue(IsPasswordRevealedProperty) ?? false);
+        get => (bool)GetValue(IsPasswordRevealedProperty)!;
         set => SetValue(IsPasswordRevealedProperty, value);
     }
 
@@ -260,7 +275,7 @@ public class PasswordBox : Control, IImeSupport
     /// </summary>
     public bool IsReadOnly
     {
-        get => (bool)(GetValue(IsReadOnlyProperty) ?? false);
+        get => (bool)GetValue(IsReadOnlyProperty)!;
         set => SetValue(IsReadOnlyProperty, value);
     }
 
@@ -287,7 +302,7 @@ public class PasswordBox : Control, IImeSupport
     /// </summary>
     public bool IsUndoEnabled
     {
-        get => (bool)(GetValue(IsUndoEnabledProperty) ?? true);
+        get => (bool)GetValue(IsUndoEnabledProperty)!;
         set => SetValue(IsUndoEnabledProperty, value);
     }
 
@@ -296,7 +311,7 @@ public class PasswordBox : Control, IImeSupport
     /// </summary>
     public int UndoLimit
     {
-        get => (int)(GetValue(UndoLimitProperty) ?? 100);
+        get => (int)GetValue(UndoLimitProperty)!;
         set => SetValue(UndoLimitProperty, value);
     }
 
@@ -318,7 +333,7 @@ public class PasswordBox : Control, IImeSupport
         get => _caretIndex;
         set
         {
-            var newValue = Math.Max(0, Math.Min(value, _password.Length));
+            var newValue = Math.Clamp(_password.Length, 0, value);
             if (_caretIndex != newValue)
             {
                 _caretIndex = newValue;
@@ -337,7 +352,7 @@ public class PasswordBox : Control, IImeSupport
         get => _selectionStart;
         set
         {
-            var newValue = Math.Max(0, Math.Min(value, _password.Length));
+            var newValue = Math.Clamp(_password.Length, 0, value);
             if (_selectionStart != newValue)
             {
                 _selectionStart = newValue;
@@ -355,7 +370,7 @@ public class PasswordBox : Control, IImeSupport
         set
         {
             var maxLength = _password.Length - _selectionStart;
-            var newValue = Math.Max(0, Math.Min(value, maxLength));
+            var newValue = Math.Clamp(maxLength, 0, value);
             if (_selectionLength != newValue)
             {
                 _selectionLength = newValue;
@@ -473,8 +488,8 @@ public class PasswordBox : Control, IImeSupport
     /// </summary>
     public void Select(int start, int length)
     {
-        _selectionStart = Math.Max(0, Math.Min(start, _password.Length));
-        _selectionLength = Math.Max(0, Math.Min(length, _password.Length - _selectionStart));
+        _selectionStart = Math.Clamp(_password.Length, 0, start);
+        _selectionLength = Math.Clamp(_password.Length - _selectionStart, 0, length);
         _caretIndex = _selectionStart + _selectionLength;
         InvalidateVisual();
     }
@@ -633,7 +648,7 @@ public class PasswordBox : Control, IImeSupport
         {
             if (!string.IsNullOrEmpty(Placeholder))
             {
-                var placeholderBrush = new SolidColorBrush(Color.FromRgb(128, 128, 128));
+                var placeholderBrush = s_placeholderBrush;
                 var formattedPlaceholder = new FormattedText(Placeholder, FontFamily ?? "Segoe UI", FontSize)
                 {
                     Foreground = placeholderBrush,
@@ -665,7 +680,7 @@ public class PasswordBox : Control, IImeSupport
         // Draw focus indicator
         if (IsKeyboardFocused)
         {
-            var focusPen = new Pen(new SolidColorBrush(Color.FromRgb(0, 120, 212)), 1);
+            var focusPen = s_focusPen;
             if (CornerRadius.TopLeft > 0)
             {
                 dc.DrawRoundedRectangle(null, focusPen, bounds, CornerRadius.TopLeft, CornerRadius.TopLeft);
@@ -685,7 +700,7 @@ public class PasswordBox : Control, IImeSupport
 
     private void DrawText(DrawingContext dc, Rect contentRect, double lineHeight)
     {
-        var textBrush = Foreground ?? new SolidColorBrush(Color.White);
+        var textBrush = Foreground ?? s_whiteBrush;
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
 
         var displayText = IsPasswordRevealed ? _password : new string(PasswordChar, _password.Length);
@@ -732,20 +747,20 @@ public class PasswordBox : Control, IImeSupport
 
         // Draw composition background
         var compositionWidth = MeasureDisplayTextWidth(_imeCompositionString);
-        var compositionBgBrush = new SolidColorBrush(Color.FromRgb(60, 60, 80));
+        var compositionBgBrush = s_compositionBgBrush;
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, y, compositionWidth, lineHeight));
 
         // Draw composition text
         var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? "Segoe UI", FontSize)
         {
-            Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 200)),
+            Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
             MaxTextHeight = lineHeight
         };
         dc.DrawText(compositionText, new Point(x, y));
 
         // Draw underline
-        var underlinePen = new Pen(new SolidColorBrush(Color.FromRgb(200, 200, 100)), 1);
+        var underlinePen = s_compositionUnderlinePen;
         dc.DrawLine(underlinePen, new Point(x, y + lineHeight - 2), new Point(x + compositionWidth, y + lineHeight - 2));
     }
 
@@ -786,8 +801,8 @@ public class PasswordBox : Control, IImeSupport
         var buttonRect = new Rect(bounds.Right - buttonSize - 4, (bounds.Height - buttonSize) / 2, buttonSize, buttonSize);
 
         // Draw eye icon placeholder
-        var iconBrush = new SolidColorBrush(Color.FromRgb(150, 150, 150));
-        var iconPen = new Pen(iconBrush, 1.5);
+        var iconBrush = s_revealIconBrush;
+        var iconPen = s_revealIconPen;
         var centerX = buttonRect.X + buttonRect.Width / 2;
         var centerY = buttonRect.Y + buttonRect.Height / 2;
 
@@ -1338,8 +1353,9 @@ public class PasswordBox : Control, IImeSupport
 
         if (_caretTimer == null)
         {
-            _caretTimer = new System.Timers.Timer(CaretTimerInterval);
-            _caretTimer.Elapsed += OnCaretTimerElapsed;
+            _caretTimer = new DispatcherTimer();
+            _caretTimer.Interval = TimeSpan.FromMilliseconds(CaretTimerInterval);
+            _caretTimer.Tick += OnCaretTimerTick;
         }
 
         _caretTimer.Start();
@@ -1350,7 +1366,7 @@ public class PasswordBox : Control, IImeSupport
         _caretTimer?.Stop();
     }
 
-    private void OnCaretTimerElapsed(object? sender, ElapsedEventArgs e)
+    private void OnCaretTimerTick(object? sender, EventArgs e)
     {
         if (IsKeyboardFocused && !IsReadOnly)
         {

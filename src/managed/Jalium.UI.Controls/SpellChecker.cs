@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Provides spell checking functionality using Windows Spell Checking API.
 /// </summary>
-public class SpellChecker : IDisposable
+public sealed class SpellChecker : IDisposable
 {
     private ISpellChecker? _spellChecker;
     private readonly string _language;
@@ -223,7 +223,7 @@ public class SpellChecker : IDisposable
 /// <summary>
 /// Represents a spelling error.
 /// </summary>
-public class SpellingError
+public sealed class SpellingError
 {
     /// <summary>
     /// Gets the start index of the error in the text.

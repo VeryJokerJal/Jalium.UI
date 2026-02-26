@@ -6,7 +6,7 @@
     <!-- TitleBar Style -->
     <!-- ============================================== -->
     <Style TargetType="TitleBar">
-        <!--<Setter Property="Background" Value="{StaticResource TitleBarBackground}" />-->
+        <Setter Property="Background" Value="{StaticResource TitleBarBackground}" />
         <Setter Property="Foreground" Value="{StaticResource TitleBarText}" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="FontFamily" Value="Segoe UI" />

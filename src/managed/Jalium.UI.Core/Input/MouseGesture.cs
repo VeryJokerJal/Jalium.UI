@@ -29,7 +29,7 @@ public enum MouseAction
 /// Defines a mouse input gesture that can be used to invoke a command.
 /// </summary>
 [TypeConverter(typeof(MouseGestureConverter))]
-public class MouseGesture : InputGesture
+public sealed class MouseGesture : InputGesture
 {
     /// <summary>
     /// Initializes a new instance of the MouseGesture class.
@@ -83,7 +83,7 @@ public class MouseGesture : InputGesture
 /// <summary>
 /// Converts a MouseGesture to and from a string.
 /// </summary>
-public class MouseGestureConverter : TypeConverter
+public sealed class MouseGestureConverter : TypeConverter
 {
     /// <summary>
     /// Determines whether this converter can convert from the specified source type.

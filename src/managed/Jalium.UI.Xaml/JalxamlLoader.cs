@@ -1,4 +1,5 @@
-using System.Reflection;
+﻿using System.Reflection;
+using Jalium.UI.Gpu;
 
 namespace Jalium.UI.Markup;
 
@@ -7,6 +8,52 @@ namespace Jalium.UI.Markup;
 /// </summary>
 public static class JalxamlLoader
 {
+    /// <summary>
+    /// Loads compiled JALXAML binary data into an existing component instance.
+    /// This is the optimized path for Source Generator embedded binary data.
+    /// </summary>
+    /// <param name="component">The component instance to load into.</param>
+    /// <param name="compiledData">The compiled .uic binary data.</param>
+    public static void LoadFromCompiledData(object component, ReadOnlySpan<byte> compiledData)
+    {
+        var bundle = BundleSerializer.Load(compiledData);
+        XamlTypeRegistry.ApplyBundle(component, bundle);
+    }
+
+    /// <summary>
+    /// Loads compiled JALXAML from an embedded .uic resource into an existing component instance.
+    /// This is used by Source Generator generated InitializeComponent() methods.
+    /// </summary>
+    /// <param name="component">The component instance to load into.</param>
+    /// <param name="resourceName">The name of the embedded .uic resource (e.g., "AssemblyName.ClassName.uic").</param>
+    public static void LoadFromCompiledResource(object component, string resourceName)
+    {
+        var assembly = component.GetType().Assembly;
+
+        // Try to find the embedded resource
+        var stream = assembly.GetManifestResourceStream(resourceName);
+
+        if (stream == null)
+        {
+            // List available resources for debugging
+            var availableResources = assembly.GetManifestResourceNames();
+            throw new JalxamlLoadException(
+                $"Cannot find embedded .uic resource '{resourceName}' in assembly '{assembly.GetName().Name}'. " +
+                $"Available resources: [{string.Join(", ", availableResources)}]");
+        }
+
+        using (stream)
+        {
+            // Read the binary data from the stream
+            var buffer = new byte[stream.Length];
+            stream.ReadExactly(buffer, 0, buffer.Length);
+
+            // Load using the compiled data path
+            var bundle = BundleSerializer.Load(buffer);
+            XamlTypeRegistry.ApplyBundle(component, bundle);
+        }
+    }
+
     /// <summary>
     /// Loads a JALXAML file from an embedded resource.
     /// </summary>
@@ -147,16 +194,28 @@ public static class JalxamlLoader
     {
         var (assemblyName, componentPath) = ParsePackUri(resourceUri);
 
-        // Find the assembly by name
+        // Find the assembly by name (AOT-safe: prefer component's own assembly)
         Assembly? assembly = null;
         if (!string.IsNullOrEmpty(assemblyName))
         {
-            // First try to get from already loaded assemblies
-            assembly = AppDomain.CurrentDomain.GetAssemblies()
-                .FirstOrDefault(a => a.GetName().Name == assemblyName);
-
-            // If not found, try the component's assembly
-            assembly ??= component.GetType().Assembly;
+            // First check if it matches the component's own assembly
+            var componentAssembly = component.GetType().Assembly;
+            if (componentAssembly.GetName().Name == assemblyName)
+            {
+                assembly = componentAssembly;
+            }
+            else
+            {
+                // Try to load by name (works in both AOT and non-AOT)
+                try
+                {
+                    assembly = Assembly.Load(new AssemblyName(assemblyName));
+                }
+                catch
+                {
+                    assembly = componentAssembly;
+                }
+            }
         }
         else
         {
@@ -183,7 +242,7 @@ public static class JalxamlLoader
         var uriString = packUri.OriginalString;
 
         // Remove leading slash
-        if (uriString.StartsWith("/"))
+        if (uriString.StartsWith("/", StringComparison.Ordinal))
         {
             uriString = uriString.Substring(1);
         }
@@ -221,7 +280,7 @@ public static class JalxamlLoader
 /// <summary>
 /// Exception thrown when JALXAML loading fails.
 /// </summary>
-public class JalxamlLoadException : Exception
+public sealed class JalxamlLoadException : Exception
 {
     public JalxamlLoadException(string message) : base(message) { }
     public JalxamlLoadException(string message, Exception innerException) : base(message, innerException) { }

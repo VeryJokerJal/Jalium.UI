@@ -4,6 +4,8 @@
     <RootNamespace>Jalium.UI.Input</RootNamespace>
     <AssemblyName>Jalium.UI.Input</AssemblyName>
     <Description>Input handling for Jalium.UI framework including Mouse, Keyboard, and Touch.</Description>
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI.Input</PackageId>
   </PropertyGroup>
 
   <ItemGroup>

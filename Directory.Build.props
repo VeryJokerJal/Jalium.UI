@@ -9,15 +9,37 @@
     <!-- Enable unsafe code for interop -->
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
-    <!-- Package metadata -->
+    <!-- Versioning -->
+    <Version>26.7.4</Version>
+    <AssemblyVersion>26.7.4.0</AssemblyVersion>
+    <FileVersion>26.7.4.0</FileVersion>
+
+    <!-- NuGet Package Metadata -->
     <Authors>Jalium Team</Authors>
     <Company>Jalium</Company>
     <Product>Jalium.UI</Product>
     <Copyright>Copyright (c) Jalium Team</Copyright>
+    <PackageProjectUrl>https://github.com/jalium/jalium-ui</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/jalium/jalium-ui</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>jalium;ui;xaml;wpf;windows;directx;gpu</PackageTags>
 
-    <!-- Versioning -->
-    <Version>0.1.0</Version>
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
-    <FileVersion>0.1.0.0</FileVersion>
+    <!-- Enable source link for better debugging -->
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
+
+  <!-- Default: disable packaging for all projects (opt-in per project) -->
+  <PropertyGroup>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- Include README.md in all packages -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 </Project>

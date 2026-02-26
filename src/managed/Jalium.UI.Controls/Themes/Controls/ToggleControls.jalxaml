@@ -189,14 +189,20 @@
         <Setter Property="OffBackground" Value="{StaticResource ToggleUncheckedBackground}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="MinHeight" Value="32" />
+        <Setter Property="ClipToBounds" Value="True" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ToggleSwitch">
-                <StackPanel Orientation="Vertical">
+                <StackPanel Orientation="Vertical" Background="Transparent" ClipToBounds="True">
                     <!-- Header -->
                     <ContentPresenter Name="PART_Header"
                                       Content="{TemplateBinding Header}"
                                       Margin="0,0,0,4"
-                                      Visibility="Collapsed" />
+                                      Visibility="Collapsed"
+                                      FontFamily="{TemplateBinding FontFamily}"
+                                      FontSize="{TemplateBinding FontSize}"
+                                      FontWeight="{TemplateBinding FontWeight}"
+                                      FontStyle="{TemplateBinding FontStyle}"
+                                      Foreground="{TemplateBinding Foreground}" />
 
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <!-- Switch Track -->
@@ -222,53 +228,18 @@
                         <!-- On/Off Content -->
                         <ContentPresenter Name="PART_ContentPresenter"
                                           Margin="8,0,0,0"
-                                          VerticalAlignment="Center" />
+                                          VerticalAlignment="Center"
+                                          FontFamily="{TemplateBinding FontFamily}"
+                                          FontSize="{TemplateBinding FontSize}"
+                                          FontWeight="{TemplateBinding FontWeight}"
+                                          FontStyle="{TemplateBinding FontStyle}"
+                                          Foreground="{TemplateBinding Foreground}" />
                     </StackPanel>
                 </StackPanel>
             </ControlTemplate>
         </Setter>
 
-        <Style.Triggers>
-            <!-- Header visibility -->
-            <PropertyTrigger Property="Header" Value="{x:Null}">
-                <Setter TargetName="PART_Header" Property="Visibility" Value="Collapsed" />
-            </PropertyTrigger>
-
-            <!-- IsOn = True -->
-            <PropertyTrigger Property="IsOn" Value="True">
-                <Setter TargetName="PART_SwitchTrack" Property="Background" Value="{StaticResource ToggleCheckedBackground}" />
-                <Setter TargetName="PART_SwitchTrack" Property="BorderBrush" Value="{StaticResource ToggleCheckedBorder}" />
-                <Setter TargetName="PART_SwitchThumb" Property="HorizontalAlignment" Value="Right" />
-                <Setter TargetName="PART_SwitchThumb" Property="Margin" Value="0,0,3,0" />
-            </PropertyTrigger>
-
-            <!-- Hover when Off -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsOn" Value="False" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter TargetName="PART_SwitchTrack" Property="Background" Value="{StaticResource ToggleUncheckedBackgroundHover}" />
-                <Setter TargetName="PART_SwitchTrack" Property="BorderBrush" Value="{StaticResource ToggleUncheckedBorderHover}" />
-            </MultiTrigger>
-
-            <!-- Hover when On -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsOn" Value="True" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter TargetName="PART_SwitchTrack" Property="Background" Value="{StaticResource ToggleCheckedBackgroundHover}" />
-                <Setter TargetName="PART_SwitchTrack" Property="BorderBrush" Value="{StaticResource ToggleCheckedBorderHover}" />
-            </MultiTrigger>
-
-            <!-- Disabled -->
-            <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
-                <Setter TargetName="PART_SwitchTrack" Property="Background" Value="{StaticResource ToggleDisabledBackground}" />
-                <Setter TargetName="PART_SwitchTrack" Property="BorderBrush" Value="{StaticResource ToggleDisabledBorder}" />
-            </PropertyTrigger>
-        </Style.Triggers>
+        <!-- All visual states (IsOn, hover, disabled) managed by code-behind spring animation -->
     </Style>
 
 </ResourceDictionary>

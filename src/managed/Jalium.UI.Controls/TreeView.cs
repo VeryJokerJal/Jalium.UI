@@ -1,6 +1,6 @@
+﻿using System.Collections;
+using System.Reflection;
 using Jalium.UI.Input;
-using Jalium.UI.Interop;
-using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -10,6 +10,7 @@ namespace Jalium.UI.Controls;
 public class TreeView : ItemsControl
 {
     private TreeViewItem? _selectedItem;
+    private StackPanel? _itemsHost;
 
     #region Dependency Properties
 
@@ -73,12 +74,47 @@ public class TreeView : ItemsControl
 
     public TreeView()
     {
-        Background = new SolidColorBrush(Color.White);
-        BorderBrush = new SolidColorBrush(Color.FromRgb(204, 204, 204));
-        BorderThickness = new Thickness(1);
-
         Items.CollectionChanged += OnTreeItemsChanged;
     }
+
+    /// <summary>
+    /// Override to prevent ItemsControl's fallback panel from interfering.
+    /// TreeView manages items via PART_ItemsHost in the template.
+    /// </summary>
+    protected override void RefreshItems()
+    {
+        // No-op: TreeView manages items via _itemsHost (template part)
+    }
+
+    #region Template
+
+    /// <inheritdoc />
+    protected override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+
+        _itemsHost = GetTemplateChild("PART_ItemsHost") as StackPanel;
+
+        // Add existing items to the items host panel
+        if (_itemsHost != null)
+        {
+            foreach (var item in Items)
+            {
+                var tvi = WrapItemAsTreeViewItem(item);
+                if (tvi != null)
+                {
+                    tvi.ParentTreeView = this;
+                    tvi.Level = 0;
+                    if (tvi.VisualParent == null)
+                    {
+                        _itemsHost.Children.Add(tvi);
+                    }
+                }
+            }
+        }
+    }
+
+    #endregion
 
     private void OnTreeItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
@@ -91,10 +127,7 @@ public class TreeView : ItemsControl
                 {
                     if (item is TreeViewItem tvi)
                     {
-                        if (tvi.VisualParent == this)
-                        {
-                            RemoveVisualChild(tvi);
-                        }
+                        _itemsHost?.Children.Remove(tvi);
                         tvi.ParentTreeView = null;
                     }
                 }
@@ -103,16 +136,23 @@ public class TreeView : ItemsControl
             // Handle added items
             if (e.NewItems != null)
             {
+                // If template hasn't been applied yet, try now
+                if (_itemsHost == null)
+                {
+                    ApplyTemplate();
+                    _itemsHost ??= GetTemplateChild("PART_ItemsHost") as StackPanel;
+                }
+
                 foreach (var item in e.NewItems)
                 {
-                    if (item is TreeViewItem tvi)
+                    var tvi = WrapItemAsTreeViewItem(item);
+                    if (tvi != null)
                     {
                         tvi.ParentTreeView = this;
                         tvi.Level = 0;
-                        // Only add if not already a child
-                        if (tvi.VisualParent == null)
+                        if (_itemsHost != null && tvi.VisualParent == null)
                         {
-                            AddVisualChild(tvi);
+                            _itemsHost.Children.Add(tvi);
                         }
                     }
                 }
@@ -121,43 +161,50 @@ public class TreeView : ItemsControl
             // Handle reset
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
             {
-                // Re-add all items
+                _itemsHost?.Children.Clear();
                 foreach (var item in Items)
                 {
-                    if (item is TreeViewItem tvi)
+                    var tvi = WrapItemAsTreeViewItem(item);
+                    if (tvi != null)
                     {
                         tvi.ParentTreeView = this;
                         tvi.Level = 0;
-                        // Only add if not already a child
-                        if (tvi.VisualParent == null)
-                        {
-                            AddVisualChild(tvi);
-                        }
+                        _itemsHost?.Children.Add(tvi);
                     }
                 }
             }
 
             InvalidateMeasure();
-            InvalidateVisual();
         }
         catch
         {
-            // Ignore errors during collection changes (can happen during window cleanup)
+            // Ignored
         }
     }
 
-    /// <inheritdoc />
-    public override int VisualChildrenCount => Items.Count;
-
-    /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
+    /// <summary>
+    /// Wraps a data item as a TreeViewItem if it isn't one already.
+    /// Applies HierarchicalDataTemplate to configure child items.
+    /// </summary>
+    private TreeViewItem? WrapItemAsTreeViewItem(object item)
     {
-        if (index < 0 || index >= Items.Count)
+        if (item is TreeViewItem tvi)
+            return tvi;
+
+        // Create a container for the data item
+        tvi = new TreeViewItem { Header = item, DataContext = item };
+
+        // Apply ItemTemplate
+        if (ItemTemplate is HierarchicalDataTemplate hdt)
         {
-            throw new ArgumentOutOfRangeException(nameof(index));
+            TreeViewItem.ApplyHierarchicalDataTemplate(tvi, item, hdt);
+        }
+        else if (ItemTemplate != null)
+        {
+            tvi.HeaderTemplate = ItemTemplate;
         }
 
-        return Items[index] as Visual;
+        return tvi;
     }
 
     private static void OnSelectedItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -197,70 +244,6 @@ public class TreeView : ItemsControl
             SelectedItem = item;
         }
     }
-
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        double totalHeight = 0;
-        double maxWidth = 0;
-
-        foreach (var item in Items)
-        {
-            if (item is TreeViewItem tvi)
-            {
-                tvi.Measure(new Size(availableSize.Width, double.PositiveInfinity));
-                totalHeight += tvi.DesiredSize.Height;
-                maxWidth = Math.Max(maxWidth, tvi.DesiredSize.Width);
-            }
-        }
-
-        return new Size(
-            Math.Min(maxWidth, availableSize.Width),
-            Math.Min(totalHeight, availableSize.Height));
-    }
-
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        double y = 0;
-
-        foreach (var item in Items)
-        {
-            if (item is TreeViewItem tvi)
-            {
-                var itemRect = new Rect(0, y, finalSize.Width, tvi.DesiredSize.Height);
-                tvi.Arrange(itemRect);
-                // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
-                y += tvi.DesiredSize.Height;
-            }
-        }
-
-        return finalSize;
-    }
-
-    protected override void OnRender(object drawingContextObj)
-    {
-        if (drawingContextObj is not DrawingContext dc)
-        {
-            base.OnRender(drawingContextObj);
-            return;
-        }
-
-        var bounds = new Rect(0, 0, ActualWidth, ActualHeight);
-
-        // Draw background
-        if (Background != null)
-        {
-            dc.DrawRectangle(Background, null, bounds);
-        }
-
-        // Draw border
-        if (BorderBrush != null && BorderThickness.Left > 0)
-        {
-            var pen = new Pen(BorderBrush, BorderThickness.Left);
-            dc.DrawRectangle(null, pen, bounds);
-        }
-
-        base.OnRender(drawingContextObj);
-    }
 }
 
 /// <summary>
@@ -269,11 +252,22 @@ public class TreeView : ItemsControl
 public class TreeViewItem : HeaderedItemsControl
 {
     private const double IndentSize = 16;
-    private const double ItemHeight = 24;
     private const double ExpanderSize = 16;
 
     internal TreeView? ParentTreeView { get; set; }
-    internal int Level { get; set; }
+
+    private int _level;
+
+    #region Template Parts
+
+    private Border? _headerBorder;
+    private Border? _indentSpacer;
+    private Border? _expanderBorder;
+    private Shapes.Path? _expanderArrow;
+    private StackPanel? _itemsHost;
+    private Threading.DispatcherTimer? _expandAnimTimer;
+
+    #endregion
 
     #region Dependency Properties
 
@@ -300,7 +294,7 @@ public class TreeViewItem : HeaderedItemsControl
     /// </summary>
     public bool IsExpanded
     {
-        get => (bool)(GetValue(IsExpandedProperty) ?? false);
+        get => (bool)GetValue(IsExpandedProperty)!;
         set => SetValue(IsExpandedProperty, value);
     }
 
@@ -309,7 +303,7 @@ public class TreeViewItem : HeaderedItemsControl
     /// </summary>
     public bool IsSelected
     {
-        get => (bool)(GetValue(IsSelectedProperty) ?? false);
+        get => (bool)GetValue(IsSelectedProperty)!;
         set => SetValue(IsSelectedProperty, value);
     }
 
@@ -317,6 +311,19 @@ public class TreeViewItem : HeaderedItemsControl
     /// Gets whether this item has child items.
     /// </summary>
     public bool HasItems => Items.Count > 0;
+
+    /// <summary>
+    /// Gets or sets the indentation level.
+    /// </summary>
+    internal int Level
+    {
+        get => _level;
+        set
+        {
+            _level = value;
+            UpdateIndent();
+        }
+    }
 
     #endregion
 
@@ -360,10 +367,64 @@ public class TreeViewItem : HeaderedItemsControl
     {
         Padding = new Thickness(4, 2, 4, 2);
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-
         Items.CollectionChanged += OnChildItemsChanged;
     }
+
+    /// <summary>
+    /// Override to prevent ItemsControl's fallback panel from interfering.
+    /// TreeViewItem manages children via PART_ItemsHost in the template.
+    /// </summary>
+    protected override void RefreshItems()
+    {
+        // No-op: TreeViewItem manages children via _itemsHost (template part)
+    }
+
+    #region Template
+
+    /// <inheritdoc />
+    protected override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+
+        _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
+        _indentSpacer = GetTemplateChild("PART_IndentSpacer") as Border;
+        _expanderBorder = GetTemplateChild("PART_ExpanderBorder") as Border;
+        _expanderArrow = GetTemplateChild("PART_ExpanderArrow") as Shapes.Path;
+        _itemsHost = GetTemplateChild("PART_ItemsHost") as StackPanel;
+
+        // Attach click handler to header border only (not the whole item)
+        // so child item clicks don't bubble up to parent items
+        if (_headerBorder != null)
+        {
+            _headerBorder.AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler), true);
+        }
+
+        // Sync initial state
+        UpdateIndent();
+        UpdateExpanderVisibility();
+
+        // Add existing items to the items host panel
+        if (_itemsHost != null)
+        {
+            foreach (var item in Items)
+            {
+                if (item is TreeViewItem childTvi)
+                {
+                    childTvi.ParentTreeView = ParentTreeView;
+                    childTvi.Level = Level + 1;
+                    _itemsHost.Children.Add(childTvi);
+                }
+            }
+
+            // Sync expanded state (IsExpanded may have been set before template was applied)
+            if (IsExpanded)
+            {
+                _itemsHost.Visibility = Visibility.Visible;
+            }
+        }
+    }
+
+    #endregion
 
     private void OnChildItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
@@ -376,10 +437,7 @@ public class TreeViewItem : HeaderedItemsControl
                 {
                     if (item is TreeViewItem childTvi)
                     {
-                        if (childTvi.VisualParent == this)
-                        {
-                            RemoveVisualChild(childTvi);
-                        }
+                        _itemsHost?.Children.Remove(childTvi);
                         childTvi.ParentTreeView = null;
                     }
                 }
@@ -394,11 +452,7 @@ public class TreeViewItem : HeaderedItemsControl
                     {
                         childTvi.ParentTreeView = ParentTreeView;
                         childTvi.Level = Level + 1;
-                        // Only add if not already a child
-                        if (childTvi.VisualParent == null)
-                        {
-                            AddVisualChild(childTvi);
-                        }
+                        _itemsHost?.Children.Add(childTvi);
                     }
                 }
             }
@@ -406,83 +460,94 @@ public class TreeViewItem : HeaderedItemsControl
             // Handle reset
             if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
             {
+                _itemsHost?.Children.Clear();
                 foreach (var item in Items)
                 {
                     if (item is TreeViewItem childTvi)
                     {
                         childTvi.ParentTreeView = ParentTreeView;
                         childTvi.Level = Level + 1;
-                        // Only add if not already a child
-                        if (childTvi.VisualParent == null)
-                        {
-                            AddVisualChild(childTvi);
-                        }
+                        _itemsHost?.Children.Add(childTvi);
                     }
                 }
             }
 
+            UpdateExpanderVisibility();
             InvalidateMeasure();
-            InvalidateVisual();
         }
         catch
         {
-            // Ignore errors during collection changes (can happen during window cleanup)
+            // Ignored
         }
-    }
-
-    /// <inheritdoc />
-    public override int VisualChildrenCount => IsExpanded ? Items.Count : 0;
-
-    /// <inheritdoc />
-    public override Visual? GetVisualChild(int index)
-    {
-        if (!IsExpanded || index < 0 || index >= Items.Count)
-        {
-            throw new ArgumentOutOfRangeException(nameof(index));
-        }
-
-        return Items[index] as Visual;
     }
 
     private void OnMouseDownHandler(object sender, RoutedEventArgs e)
     {
         if (e is MouseButtonEventArgs mouseArgs)
         {
-            var clickX = mouseArgs.GetPosition(this).X;
-            var expanderX = Level * IndentSize;
-
-            // Check if clicked on expander
-            if (HasItems && clickX >= expanderX && clickX <= expanderX + ExpanderSize)
+            // Check if clicked on expander area
+            if (HasItems && _expanderBorder is { Visibility: Visibility.Visible } expander)
             {
-                IsExpanded = !IsExpanded;
-            }
-            else
-            {
-                // Select this item
-                ParentTreeView?.SelectItem(this);
+                var pos = mouseArgs.GetPosition(expander);
+                if (pos.X >= 0 && pos.X <= expander.ActualWidth &&
+                    pos.Y >= 0 && pos.Y <= expander.ActualHeight)
+                {
+                    IsExpanded = !IsExpanded;
+                    e.Handled = true;
+                    return;
+                }
             }
 
+            // Select this item
+            ParentTreeView?.SelectItem(this);
             e.Handled = true;
         }
     }
+
+    #region State Updates
+
+    private void UpdateIndent()
+    {
+        if (_indentSpacer != null)
+        {
+            _indentSpacer.Width = _level * IndentSize;
+        }
+    }
+
+    private void UpdateExpanderVisibility()
+    {
+        if (_expanderBorder != null)
+        {
+            _expanderBorder.Visibility = HasItems ? Visibility.Visible : Visibility.Collapsed;
+        }
+    }
+
+    #endregion
+
+    #region Property Changed Callbacks
 
     private static void OnIsExpandedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is TreeViewItem tvi)
         {
-            if ((bool)e.NewValue)
-            {
+            var expanded = (bool)e.NewValue;
+
+            if (expanded)
                 tvi.RaiseEvent(new RoutedEventArgs(ExpandedEvent, tvi));
-            }
             else
-            {
                 tvi.RaiseEvent(new RoutedEventArgs(CollapsedEvent, tvi));
+
+            // Animate items host panel expand/collapse + arrow rotation
+            if (tvi._itemsHost != null)
+            {
+                if (expanded)
+                    tvi._expandAnimTimer = ExpandCollapseAnimator.AnimateExpand(tvi._itemsHost, tvi._expandAnimTimer, tvi._expanderArrow);
+                else
+                    tvi._expandAnimTimer = ExpandCollapseAnimator.AnimateCollapse(tvi._itemsHost, tvi._expandAnimTimer, tvi._expanderArrow);
             }
 
-            // Invalidate layout to show/hide children
             tvi.InvalidateMeasure();
             tvi.ParentTreeView?.InvalidateMeasure();
-            tvi.ParentTreeView?.InvalidateVisual();
         }
     }
 
@@ -494,148 +559,74 @@ public class TreeViewItem : HeaderedItemsControl
             {
                 tvi.ParentTreeView.SelectItem(tvi);
             }
-
-            tvi.InvalidateVisual();
         }
     }
 
-    protected override Size MeasureOverride(Size availableSize)
+    #endregion
+
+    #region HierarchicalDataTemplate Support
+
+    /// <summary>
+    /// Applies a HierarchicalDataTemplate to a TreeViewItem, setting up header template
+    /// and populating child items from the ItemsSource binding.
+    /// </summary>
+    internal static void ApplyHierarchicalDataTemplate(TreeViewItem tvi, object dataItem, HierarchicalDataTemplate hdt)
     {
-        // Header row height
-        double totalHeight = ItemHeight;
-        double maxWidth = Level * IndentSize + ExpanderSize;
+        // Set the header template
+        tvi.Header = dataItem;
+        tvi.HeaderTemplate = hdt;
 
-        // Measure header text width
-        var headerText = Header?.ToString() ?? "";
-        var charWidth = 14 * 0.6;
-        maxWidth += headerText.Length * charWidth + Padding.Left + Padding.Right;
+        // Apply ItemTemplate for child items
+        if (hdt.ItemTemplate != null)
+            tvi.ItemTemplate = hdt.ItemTemplate;
+        else
+            tvi.ItemTemplate = hdt; // Recursive: same template for children
 
-        // Measure children if expanded
-        if (IsExpanded)
+        // Resolve ItemsSource binding to populate children
+        if (hdt.ItemsSource is Jalium.UI.Binding binding && !string.IsNullOrEmpty(binding.Path?.Path))
         {
-            foreach (var item in Items)
+            var childItems = ResolvePropertyPath(dataItem, binding.Path.Path);
+            if (childItems is IEnumerable enumerable)
             {
-                if (item is TreeViewItem childTvi)
+                foreach (var childItem in enumerable)
                 {
-                    childTvi.Level = Level + 1;
-                    childTvi.ParentTreeView = ParentTreeView;
-                    childTvi.Measure(new Size(availableSize.Width, double.PositiveInfinity));
-                    totalHeight += childTvi.DesiredSize.Height;
-                    maxWidth = Math.Max(maxWidth, childTvi.DesiredSize.Width);
+                    if (childItem is TreeViewItem childTvi)
+                    {
+                        tvi.Items.Add(childTvi);
+                    }
+                    else
+                    {
+                        var childContainer = new TreeViewItem
+                        {
+                            Header = childItem,
+                            DataContext = childItem
+                        };
+
+                        // Recursively apply the template to children
+                        var childTemplate = hdt.ItemTemplate as HierarchicalDataTemplate ?? hdt;
+                        ApplyHierarchicalDataTemplate(childContainer, childItem, childTemplate);
+
+                        tvi.Items.Add(childContainer);
+                    }
                 }
             }
         }
-
-        return new Size(
-            Math.Min(maxWidth, availableSize.Width),
-            totalHeight);
     }
 
-    protected override Size ArrangeOverride(Size finalSize)
+    private static object? ResolvePropertyPath(object obj, string path)
     {
-        if (IsExpanded)
+        var current = obj;
+        foreach (var part in path.Split('.'))
         {
-            double y = ItemHeight;
-
-            foreach (var item in Items)
-            {
-                if (item is TreeViewItem childTvi)
-                {
-                    var itemRect = new Rect(0, y, finalSize.Width, childTvi.DesiredSize.Height);
-                    childTvi.Arrange(itemRect);
-                    // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
-                    y += childTvi.DesiredSize.Height;
-                }
-            }
+            if (current == null) return null;
+            var prop = current.GetType().GetProperty(part, BindingFlags.Public | BindingFlags.Instance);
+            if (prop == null) return null;
+            current = prop.GetValue(current);
         }
-
-        return finalSize;
+        return current;
     }
 
-    protected override void OnRender(object drawingContextObj)
-    {
-        if (drawingContextObj is not DrawingContext dc)
-        {
-            base.OnRender(drawingContextObj);
-            return;
-        }
-
-        var indent = Level * IndentSize;
-        var headerBounds = new Rect(0, 0, ActualWidth, ItemHeight);
-
-        // Draw selection background
-        if (IsSelected)
-        {
-            var selectionBrush = new SolidColorBrush(Color.FromRgb(204, 232, 255));
-            dc.DrawRectangle(selectionBrush, null, headerBounds);
-        }
-
-        // Get font metrics for consistent vertical centering
-        var fontMetrics = TextMeasurement.GetFontMetrics("Segoe UI", 14);
-        var textHeight = fontMetrics.LineHeight;
-        var expanderFontMetrics = TextMeasurement.GetFontMetrics("Segoe UI", 8);
-        var expanderHeight = expanderFontMetrics.LineHeight;
-
-        // Draw expander if has children
-        if (HasItems)
-        {
-            // Use Foreground color for expander if available, otherwise use default gray
-            var expanderBrush = Foreground ?? new SolidColorBrush(Color.FromRgb(100, 100, 100));
-            var expanderY = (ItemHeight - expanderHeight) / 2;
-
-            if (IsExpanded)
-            {
-                // Draw down arrow (▼)
-                var arrowText = new FormattedText("▼", "Segoe UI", 8)
-                {
-                    Foreground = expanderBrush
-                };
-                dc.DrawText(arrowText, new Point(indent + 2, expanderY));
-            }
-            else
-            {
-                // Draw right arrow (►)
-                var arrowText = new FormattedText("►", "Segoe UI", 8)
-                {
-                    Foreground = expanderBrush
-                };
-                dc.DrawText(arrowText, new Point(indent + 2, expanderY));
-            }
-        }
-
-        // Draw header text
-        var headerText = Header?.ToString() ?? "";
-        if (!string.IsNullOrEmpty(headerText))
-        {
-            // Use Foreground if set, otherwise fall back to default colors
-            Brush? textBrush;
-            if (IsSelected)
-            {
-                textBrush = new SolidColorBrush(Color.FromRgb(0, 90, 158));
-            }
-            else if (Foreground != null)
-            {
-                textBrush = Foreground;
-            }
-            else
-            {
-                textBrush = new SolidColorBrush(Color.FromRgb(51, 51, 51));
-            }
-
-            var text = new FormattedText(headerText, "Segoe UI", 14)
-            {
-                Foreground = textBrush
-            };
-
-            var textX = indent + ExpanderSize + Padding.Left;
-            var textY = (ItemHeight - textHeight) / 2;
-
-            dc.DrawText(text, new Point(textX, textY));
-        }
-
-        // Render children (handled by child TreeViewItems)
-        base.OnRender(drawingContextObj);
-    }
+    #endregion
 }
 
 // Note: HeaderedItemsControl is defined in Menu.cs

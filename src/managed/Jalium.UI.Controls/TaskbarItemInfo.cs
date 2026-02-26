@@ -37,7 +37,7 @@ public enum TaskbarItemProgressState
 /// <summary>
 /// Represents information about how the taskbar thumbnail is displayed.
 /// </summary>
-public class TaskbarItemInfo : DependencyObject
+public sealed class TaskbarItemInfo : DependencyObject
 {
     #region Dependency Properties
 
@@ -113,7 +113,7 @@ public class TaskbarItemInfo : DependencyObject
     /// </summary>
     public double ProgressValue
     {
-        get => (double)(GetValue(ProgressValueProperty) ?? 0.0);
+        get => (double)GetValue(ProgressValueProperty)!;
         set => SetValue(ProgressValueProperty, value);
     }
 
@@ -141,7 +141,7 @@ public class TaskbarItemInfo : DependencyObject
     /// </summary>
     public Thickness ThumbnailClipMargin
     {
-        get => (Thickness)(GetValue(ThumbnailClipMarginProperty) ?? Thickness.Zero);
+        get => (Thickness)GetValue(ThumbnailClipMarginProperty)!;
         set => SetValue(ThumbnailClipMarginProperty, value);
     }
 
@@ -178,7 +178,7 @@ public class TaskbarItemInfo : DependencyObject
     private static object CoerceProgressValue(DependencyObject d, object? value)
     {
         var progress = (double)(value ?? 0.0);
-        return Math.Max(0.0, Math.Min(1.0, progress));
+        return Math.Clamp(progress, 0.0, 1.0);
     }
 
     private static void OnOverlayChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -212,7 +212,7 @@ public class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the progress state on the taskbar.
     /// </summary>
-    protected virtual void UpdateProgressStateInternal(TaskbarItemProgressState state)
+    protected void UpdateProgressStateInternal(TaskbarItemProgressState state)
     {
         // Platform-specific implementation using ITaskbarList3
     }
@@ -220,7 +220,7 @@ public class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the progress value on the taskbar.
     /// </summary>
-    protected virtual void UpdateProgressValueInternal(double value)
+    protected void UpdateProgressValueInternal(double value)
     {
         // Platform-specific implementation
     }
@@ -228,7 +228,7 @@ public class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the overlay icon on the taskbar.
     /// </summary>
-    protected virtual void UpdateOverlayInternal(ImageSource? icon)
+    protected void UpdateOverlayInternal(ImageSource? icon)
     {
         // Platform-specific implementation
     }
@@ -236,7 +236,7 @@ public class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the description tooltip on the taskbar.
     /// </summary>
-    protected virtual void UpdateDescriptionInternal(string description)
+    protected void UpdateDescriptionInternal(string description)
     {
         // Platform-specific implementation
     }
@@ -244,7 +244,7 @@ public class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the thumbnail clip margin.
     /// </summary>
-    protected virtual void UpdateThumbnailClipMarginInternal(Thickness margin)
+    protected void UpdateThumbnailClipMarginInternal(Thickness margin)
     {
         // Platform-specific implementation
     }
@@ -255,7 +255,7 @@ public class TaskbarItemInfo : DependencyObject
 /// <summary>
 /// Represents information about a button in the taskbar thumbnail.
 /// </summary>
-public class ThumbButtonInfo : DependencyObject
+public sealed class ThumbButtonInfo : DependencyObject
 {
     #region Dependency Properties
 
@@ -358,7 +358,7 @@ public class ThumbButtonInfo : DependencyObject
     /// </summary>
     public bool IsEnabled
     {
-        get => (bool)(GetValue(IsEnabledProperty) ?? true);
+        get => (bool)GetValue(IsEnabledProperty)!;
         set => SetValue(IsEnabledProperty, value);
     }
 
@@ -367,7 +367,7 @@ public class ThumbButtonInfo : DependencyObject
     /// </summary>
     public new Visibility Visibility
     {
-        get => (Visibility)(GetValue(VisibilityProperty) ?? Visibility.Visible);
+        get => (Visibility)GetValue(VisibilityProperty)!;
         set => SetValue(VisibilityProperty, value);
     }
 
@@ -376,7 +376,7 @@ public class ThumbButtonInfo : DependencyObject
     /// </summary>
     public bool IsInteractive
     {
-        get => (bool)(GetValue(IsInteractiveProperty) ?? true);
+        get => (bool)GetValue(IsInteractiveProperty)!;
         set => SetValue(IsInteractiveProperty, value);
     }
 
@@ -385,7 +385,7 @@ public class ThumbButtonInfo : DependencyObject
     /// </summary>
     public bool DismissWhenClicked
     {
-        get => (bool)(GetValue(DismissWhenClickedProperty) ?? false);
+        get => (bool)GetValue(DismissWhenClickedProperty)!;
         set => SetValue(DismissWhenClickedProperty, value);
     }
 
@@ -394,7 +394,7 @@ public class ThumbButtonInfo : DependencyObject
     /// </summary>
     public bool IsBackgroundVisible
     {
-        get => (bool)(GetValue(IsBackgroundVisibleProperty) ?? true);
+        get => (bool)GetValue(IsBackgroundVisibleProperty)!;
         set => SetValue(IsBackgroundVisibleProperty, value);
     }
 
@@ -439,7 +439,7 @@ public class ThumbButtonInfo : DependencyObject
 /// <summary>
 /// A collection of ThumbButtonInfo objects.
 /// </summary>
-public class ThumbButtonInfoCollection : System.Collections.ObjectModel.ObservableCollection<ThumbButtonInfo>
+public sealed class ThumbButtonInfoCollection : System.Collections.ObjectModel.ObservableCollection<ThumbButtonInfo>
 {
     /// <summary>
     /// Maximum number of buttons allowed (Windows limitation).

@@ -25,6 +25,25 @@ JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_hwnd(
     return reinterpret_cast<JaliumRenderTarget*>(rt);
 }
 
+JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_composition(
+    JaliumContext* ctx,
+    void* hwnd,
+    int32_t width,
+    int32_t height)
+{
+    if (!ctx || !hwnd || width <= 0 || height <= 0) {
+        return nullptr;
+    }
+
+    auto backend = jalium::GetBackendFromContext(ctx);
+    if (!backend) {
+        return nullptr;
+    }
+
+    auto rt = backend->CreateRenderTargetForComposition(hwnd, width, height);
+    return reinterpret_cast<JaliumRenderTarget*>(rt);
+}
+
 JALIUM_API void jalium_render_target_destroy(JaliumRenderTarget* rt) {
     if (rt) {
         delete reinterpret_cast<jalium::RenderTarget*>(rt);
@@ -57,6 +76,24 @@ JALIUM_API void jalium_render_target_clear(JaliumRenderTarget* rt, float r, floa
 JALIUM_API void jalium_render_target_set_vsync(JaliumRenderTarget* rt, int32_t enabled) {
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->SetVSyncEnabled(enabled != 0);
+    }
+}
+
+JALIUM_API void jalium_render_target_set_dpi(JaliumRenderTarget* rt, float dpiX, float dpiY) {
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->SetDpi(dpiX, dpiY);
+    }
+}
+
+JALIUM_API void jalium_render_target_add_dirty_rect(JaliumRenderTarget* rt, float x, float y, float width, float height) {
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->AddDirtyRect(x, y, width, height);
+    }
+}
+
+JALIUM_API void jalium_render_target_set_full_invalidation(JaliumRenderTarget* rt) {
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->SetFullInvalidation();
     }
 }
 
@@ -186,6 +223,55 @@ JALIUM_API void jalium_draw_polygon(
     }
 }
 
+JALIUM_API void jalium_fill_path(
+    JaliumRenderTarget* rt,
+    float startX, float startY,
+    const float* commands,
+    uint32_t commandLength,
+    JaliumBrush* brush,
+    int32_t fillRule)
+{
+    if (rt && brush && commands && commandLength > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->FillPath(
+            startX, startY, commands, commandLength,
+            reinterpret_cast<jalium::Brush*>(brush),
+            fillRule);
+    }
+}
+
+JALIUM_API void jalium_stroke_path(
+    JaliumRenderTarget* rt,
+    float startX, float startY,
+    const float* commands,
+    uint32_t commandLength,
+    JaliumBrush* brush,
+    float strokeWidth,
+    int32_t closed)
+{
+    if (rt && brush && commands && commandLength > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->StrokePath(
+            startX, startY, commands, commandLength,
+            reinterpret_cast<jalium::Brush*>(brush),
+            strokeWidth, closed != 0);
+    }
+}
+
+JALIUM_API void jalium_draw_content_border(
+    JaliumRenderTarget* rt,
+    float x, float y, float width, float height,
+    float blRadius, float brRadius,
+    JaliumBrush* fillBrush, JaliumBrush* strokeBrush,
+    float strokeWidth)
+{
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawContentBorder(
+            x, y, width, height, blRadius, brRadius,
+            fillBrush ? reinterpret_cast<jalium::Brush*>(fillBrush) : nullptr,
+            strokeBrush ? reinterpret_cast<jalium::Brush*>(strokeBrush) : nullptr,
+            strokeWidth);
+    }
+}
+
 JALIUM_API void jalium_draw_text(
     JaliumRenderTarget* rt,
     const wchar_t* text,
@@ -218,6 +304,12 @@ JALIUM_API void jalium_pop_transform(JaliumRenderTarget* rt) {
 JALIUM_API void jalium_push_clip(JaliumRenderTarget* rt, float x, float y, float width, float height) {
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->PushClip(x, y, width, height);
+    }
+}
+
+JALIUM_API void jalium_push_rounded_rect_clip(JaliumRenderTarget* rt, float x, float y, float width, float height, float rx, float ry) {
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->PushRoundedRectClip(x, y, width, height, rx, ry);
     }
 }
 
@@ -341,6 +433,133 @@ JALIUM_API void jalium_draw_ripple_effect(
             strokeWidth,
             dimOpacity,
             screenWidth, screenHeight);
+    }
+}
+
+JALIUM_API void jalium_capture_desktop_area(
+    JaliumRenderTarget* rt,
+    int32_t screenX, int32_t screenY,
+    int32_t width, int32_t height)
+{
+    if (rt && width > 0 && height > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->CaptureDesktopArea(screenX, screenY, width, height);
+    }
+}
+
+JALIUM_API void jalium_draw_desktop_backdrop(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius,
+    float tintR, float tintG, float tintB, float tintOpacity,
+    float noiseIntensity, float saturation)
+{
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawDesktopBackdrop(
+            x, y, w, h, blurRadius, tintR, tintG, tintB, tintOpacity,
+            noiseIntensity, saturation);
+    }
+}
+
+JALIUM_API void jalium_transition_begin_capture(
+    JaliumRenderTarget* rt, int32_t slot,
+    float x, float y, float w, float h)
+{
+    if (rt && (slot == 0 || slot == 1) && w > 0 && h > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->BeginTransitionCapture(slot, x, y, w, h);
+    }
+}
+
+JALIUM_API void jalium_transition_end_capture(JaliumRenderTarget* rt, int32_t slot)
+{
+    if (rt && (slot == 0 || slot == 1)) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->EndTransitionCapture(slot);
+    }
+}
+
+JALIUM_API void jalium_draw_transition_shader(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float progress, int32_t mode)
+{
+    if (rt && w > 0 && h > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawTransitionShader(x, y, w, h, progress, mode);
+    }
+}
+
+JALIUM_API void jalium_draw_captured_transition(
+    JaliumRenderTarget* rt,
+    int32_t slot, float x, float y, float w, float h, float opacity)
+{
+    if (rt && (slot == 0 || slot == 1) && w > 0 && h > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawCapturedTransition(slot, x, y, w, h, opacity);
+    }
+}
+
+// ============================================================================
+// Element Effect Capture & Rendering
+// ============================================================================
+
+JALIUM_API void jalium_effect_begin_capture(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h)
+{
+    if (rt && w > 0 && h > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->BeginEffectCapture(x, y, w, h);
+    }
+}
+
+JALIUM_API void jalium_effect_end_capture(JaliumRenderTarget* rt)
+{
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->EndEffectCapture();
+    }
+}
+
+JALIUM_API void jalium_draw_blur_effect(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h, float radius)
+{
+    if (rt && w > 0 && h > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawBlurEffect(x, y, w, h, radius);
+    }
+}
+
+JALIUM_API void jalium_draw_drop_shadow_effect(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a)
+{
+    if (rt && w > 0 && h > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawDropShadowEffect(
+            x, y, w, h, blurRadius, offsetX, offsetY, r, g, b, a);
+    }
+}
+
+JALIUM_API void jalium_draw_liquid_glass(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float cornerRadius,
+    float blurRadius,
+    float refractionAmount,
+    float chromaticAberration,
+    float tintR, float tintG, float tintB, float tintOpacity,
+    float lightX, float lightY,
+    float highlightBoost,
+    int32_t shapeType,
+    float shapeExponent,
+    int32_t neighborCount,
+    float fusionRadius,
+    const float* neighborData)
+{
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawLiquidGlass(
+            x, y, w, h, cornerRadius, blurRadius,
+            refractionAmount, chromaticAberration,
+            tintR, tintG, tintB, tintOpacity,
+            lightX, lightY, highlightBoost,
+            shapeType, shapeExponent,
+            neighborCount, fusionRadius, neighborData);
     }
 }
 

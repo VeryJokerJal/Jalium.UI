@@ -85,10 +85,11 @@ public abstract class AnimationTimeline<T> : AnimationTimeline
 /// <summary>
 /// Represents a clock that controls an animation timeline.
 /// </summary>
-public class AnimationClock : IAnimationClock
+public sealed class AnimationClock : IAnimationClock
 {
     private readonly Timeline _timeline;
     private DateTime _startTime;
+    private DateTime _firstStartTime;
     private bool _isRunning;
     private double _currentProgress;
     private bool _isReversing;
@@ -147,6 +148,7 @@ public class AnimationClock : IAnimationClock
         {
             _startTime = _startTime.Add(_timeline.BeginTime.Value);
         }
+        _firstStartTime = _startTime;
         _isRunning = true;
         _currentProgress = 0;
         _isReversing = false;
@@ -206,24 +208,44 @@ public class AnimationClock : IAnimationClock
                 _startTime = DateTime.Now;
                 rawProgress = 1.0;
             }
-            else if (_timeline.RepeatBehavior == RepeatBehavior.Forever)
-            {
-                _repeatCount++;
-                _startTime = DateTime.Now;
-                _isReversing = false;
-                rawProgress = 0;
-            }
             else
             {
-                rawProgress = 1.0;
-                _isRunning = false;
+                var rb = _timeline.RepeatBehavior;
+                _repeatCount++;
 
-                if (_timeline.FillBehavior == FillBehavior.Stop)
+                bool shouldRepeat = false;
+                if (rb == RepeatBehavior.Forever)
                 {
-                    _currentProgress = 0;
+                    shouldRepeat = true;
+                }
+                else if (rb.HasCount)
+                {
+                    shouldRepeat = _repeatCount < rb.Count;
+                }
+                else if (rb.HasDuration)
+                {
+                    // Calculate total elapsed since first start
+                    shouldRepeat = (DateTime.Now - _firstStartTime) < rb.Duration;
                 }
 
-                Completed?.Invoke(this, EventArgs.Empty);
+                if (shouldRepeat)
+                {
+                    _startTime = DateTime.Now;
+                    _isReversing = false;
+                    rawProgress = 0;
+                }
+                else
+                {
+                    rawProgress = 1.0;
+                    _isRunning = false;
+
+                    if (_timeline.FillBehavior == FillBehavior.Stop)
+                    {
+                        _currentProgress = 0;
+                    }
+
+                    Completed?.Invoke(this, EventArgs.Empty);
+                }
             }
         }
 
@@ -239,62 +261,4 @@ public class AnimationClock : IAnimationClock
     }
 }
 
-/// <summary>
-/// Provides methods to control an animation clock.
-/// </summary>
-public class ClockController
-{
-    private readonly AnimationClock _clock;
-
-    /// <summary>
-    /// Creates a controller for the specified clock.
-    /// </summary>
-    public ClockController(AnimationClock clock)
-    {
-        _clock = clock;
-    }
-
-    /// <summary>
-    /// Begins the animation.
-    /// </summary>
-    public void Begin() => _clock.Begin();
-
-    /// <summary>
-    /// Pauses the animation.
-    /// </summary>
-    public void Pause() => _clock.Pause();
-
-    /// <summary>
-    /// Resumes the animation.
-    /// </summary>
-    public void Resume() => _clock.Resume();
-
-    /// <summary>
-    /// Stops the animation.
-    /// </summary>
-    public void Stop() => _clock.Stop();
-
-    /// <summary>
-    /// Seeks to the specified position.
-    /// </summary>
-    public void Seek(TimeSpan offset, TimeSeekOrigin origin)
-    {
-        // Simplified seek implementation
-    }
-}
-
-/// <summary>
-/// Specifies the origin of a seek operation.
-/// </summary>
-public enum TimeSeekOrigin
-{
-    /// <summary>
-    /// Seek from the beginning of the animation.
-    /// </summary>
-    BeginTime,
-
-    /// <summary>
-    /// Seek from the current time.
-    /// </summary>
-    Duration
-}
+// ClockController and TimeSeekOrigin are defined in Clock.cs

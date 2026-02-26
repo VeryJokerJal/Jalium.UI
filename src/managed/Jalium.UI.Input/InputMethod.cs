@@ -50,11 +50,13 @@ public static class InputMethod
     {
         if (_currentTarget != element)
         {
-            _currentTarget = element;
-            if (element == null)
+            // End any active composition before switching targets
+            // to prevent stale composition state leaking to the new target
+            if (_isComposing)
             {
                 EndComposition();
             }
+            _currentTarget = element;
         }
     }
 
@@ -170,7 +172,7 @@ public static class InputMethod
     /// </summary>
     public static InputScope GetInputScope(IInputElement element)
     {
-        return _inputScopeMap.TryGetValue(element, out var value) ? value : InputScope.Default;
+        return _inputScopeMap.TryGetValue(element, out var value) ? value : new InputScope();
     }
 
     /// <summary>
@@ -206,75 +208,9 @@ public enum InputMethodState
 }
 
 /// <summary>
-/// Specifies the type of input expected.
-/// </summary>
-public enum InputScope
-{
-    /// <summary>
-    /// Default input scope.
-    /// </summary>
-    Default,
-
-    /// <summary>
-    /// URL input.
-    /// </summary>
-    Url,
-
-    /// <summary>
-    /// Email address input.
-    /// </summary>
-    EmailSmtpAddress,
-
-    /// <summary>
-    /// Numeric input.
-    /// </summary>
-    Number,
-
-    /// <summary>
-    /// Currency input.
-    /// </summary>
-    Currency,
-
-    /// <summary>
-    /// Date input.
-    /// </summary>
-    Date,
-
-    /// <summary>
-    /// Time input.
-    /// </summary>
-    Time,
-
-    /// <summary>
-    /// Telephone number input.
-    /// </summary>
-    TelephoneNumber,
-
-    /// <summary>
-    /// Password input.
-    /// </summary>
-    Password,
-
-    /// <summary>
-    /// Person name input.
-    /// </summary>
-    PersonalFullName,
-
-    /// <summary>
-    /// File name input.
-    /// </summary>
-    FileName,
-
-    /// <summary>
-    /// Regular expression input.
-    /// </summary>
-    RegularExpression
-}
-
-/// <summary>
 /// Provides data for IME composition events.
 /// </summary>
-public class CompositionEventArgs : EventArgs
+public sealed class CompositionEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the composition string.
@@ -299,7 +235,7 @@ public class CompositionEventArgs : EventArgs
 /// <summary>
 /// Provides data for IME composition result events.
 /// </summary>
-public class CompositionResultEventArgs : EventArgs
+public sealed class CompositionResultEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the final result string, or null if composition was cancelled.

@@ -11,7 +11,7 @@ namespace Jalium.UI.Data;
 /// <summary>
 /// Wraps and creates an object that you can use as a binding source.
 /// </summary>
-public class ObjectDataProvider : DataSourceProvider
+public sealed class ObjectDataProvider : DataSourceProvider
 {
     private object? _objectInstance;
     private Type? _objectType;
@@ -129,10 +129,7 @@ public class ObjectDataProvider : DataSourceProvider
                 var paramTypes = methodParams.Select(p => p?.GetType() ?? typeof(object)).ToArray();
 
                 var method = type.GetMethod(_methodName, paramTypes);
-                if (method == null)
-                {
-                    method = type.GetMethod(_methodName);
-                }
+                method ??= type.GetMethod(_methodName);
 
                 if (method != null)
                 {
@@ -152,7 +149,7 @@ public class ObjectDataProvider : DataSourceProvider
 /// <summary>
 /// Enables access to XML data for data binding.
 /// </summary>
-public class XmlDataProvider : DataSourceProvider
+public sealed class XmlDataProvider : DataSourceProvider
 {
     private Uri? _source;
     private XDocument? _document;
@@ -427,7 +424,7 @@ public abstract class DataSourceProvider : INotifyPropertyChanged
 /// <summary>
 /// A collection of method or constructor parameters.
 /// </summary>
-public class ParameterCollection : Collection<object?>
+public sealed class ParameterCollection : Collection<object?>
 {
     /// <summary>
     /// Converts the collection to an array.
@@ -438,7 +435,7 @@ public class ParameterCollection : Collection<object?>
 /// <summary>
 /// Enables multiple collections to be treated as a single collection.
 /// </summary>
-public class CompositeCollection : IList, INotifyCollectionChanged
+public sealed class CompositeCollection : IList, INotifyCollectionChanged
 {
     private readonly List<object?> _collections = new();
     private readonly List<object?> _flattenedItems = new();
@@ -588,7 +585,7 @@ public class CompositeCollection : IList, INotifyCollectionChanged
 /// <summary>
 /// Holds an existing collection for use in CompositeCollection.
 /// </summary>
-public class CollectionContainer : INotifyCollectionChanged
+public sealed class CollectionContainer : INotifyCollectionChanged
 {
     private IEnumerable? _collection;
 
@@ -630,7 +627,7 @@ public class CollectionContainer : INotifyCollectionChanged
 /// <summary>
 /// Provides transactional binding group for validation across multiple bindings.
 /// </summary>
-public class BindingGroup : DependencyObject
+public sealed class BindingGroup : DependencyObject
 {
     private readonly List<BindingExpressionBase> _bindingExpressions = new();
     private readonly Dictionary<object, Dictionary<string, object?>> _proposedValues = new();

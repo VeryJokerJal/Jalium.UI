@@ -34,7 +34,7 @@ public interface IProvideCustomContentState
 /// <summary>
 /// Represents a simple custom content state that stores key-value pairs.
 /// </summary>
-public class DictionaryContentState : CustomContentState
+public sealed class DictionaryContentState : CustomContentState
 {
     private readonly Dictionary<string, object?> _values = new();
     private readonly string _journalEntryName;
@@ -120,7 +120,7 @@ public interface IDictionaryContentStateRestorer
 /// <summary>
 /// Represents custom content state for a scroll position.
 /// </summary>
-public class ScrollContentState : CustomContentState
+public sealed class ScrollContentState : CustomContentState
 {
     /// <summary>
     /// Gets the horizontal scroll offset.
@@ -195,7 +195,7 @@ public class ScrollContentState : CustomContentState
 /// <summary>
 /// Represents custom content state for a data context.
 /// </summary>
-public class DataContextContentState : CustomContentState
+public sealed class DataContextContentState : CustomContentState
 {
     /// <summary>
     /// Gets the data context object.
@@ -233,7 +233,7 @@ public class DataContextContentState : CustomContentState
 /// <summary>
 /// Composite custom content state that combines multiple states.
 /// </summary>
-public class CompositeContentState : CustomContentState
+public sealed class CompositeContentState : CustomContentState
 {
     private readonly List<CustomContentState> _states = new();
     private readonly string _journalEntryName;

@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <!-- 传递依赖支持 - 转发到 build 目录的 props 文件 -->
+  <Import Project="..\build\Jalium.UI.Build.props" />
+</Project>

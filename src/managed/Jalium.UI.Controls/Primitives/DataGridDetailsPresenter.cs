@@ -1,9 +1,9 @@
-namespace Jalium.UI.Controls.Primitives;
+﻿namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents a control that displays the details of a row in a DataGrid.
 /// </summary>
-public class DataGridDetailsPresenter : ContentPresenter
+public sealed class DataGridDetailsPresenter : ContentPresenter
 {
     #region Dependency Properties
 
@@ -23,7 +23,7 @@ public class DataGridDetailsPresenter : ContentPresenter
     /// </summary>
     public double ContentHeight
     {
-        get => (double)(GetValue(ContentHeightProperty) ?? double.NaN);
+        get => (double)GetValue(ContentHeightProperty)!;
         set => SetValue(ContentHeightProperty, value);
     }
 

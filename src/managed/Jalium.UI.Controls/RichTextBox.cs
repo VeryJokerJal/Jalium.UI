@@ -9,8 +9,14 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// A control that displays and allows editing of rich text content using a FlowDocument.
 /// </summary>
-public class RichTextBox : Control
+public sealed class RichTextBox : Control
 {
+    #region Static Brushes
+
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+
+    #endregion
+
     #region Fields
 
     private FlowDocument _document;
@@ -50,7 +56,7 @@ public class RichTextBox : Control
     /// <summary>
     /// Interval for caret animation timer in milliseconds.
     /// </summary>
-    private const int CaretTimerInterval = 16;
+    private static int CaretTimerInterval => CompositionTarget.FrameIntervalMs;
 
     /// <summary>
     /// Whether the user is currently selecting text.
@@ -174,7 +180,7 @@ public class RichTextBox : Control
     /// </summary>
     public bool IsReadOnly
     {
-        get => (bool)(GetValue(IsReadOnlyProperty) ?? false);
+        get => (bool)GetValue(IsReadOnlyProperty)!;
         set => SetValue(IsReadOnlyProperty, value);
     }
 
@@ -183,7 +189,7 @@ public class RichTextBox : Control
     /// </summary>
     public bool AcceptsTab
     {
-        get => (bool)(GetValue(AcceptsTabProperty) ?? false);
+        get => (bool)GetValue(AcceptsTabProperty)!;
         set => SetValue(AcceptsTabProperty, value);
     }
 
@@ -210,7 +216,7 @@ public class RichTextBox : Control
     /// </summary>
     public bool IsUndoEnabled
     {
-        get => (bool)(GetValue(IsUndoEnabledProperty) ?? true);
+        get => (bool)GetValue(IsUndoEnabledProperty)!;
         set => SetValue(IsUndoEnabledProperty, value);
     }
 
@@ -219,7 +225,7 @@ public class RichTextBox : Control
     /// </summary>
     public int UndoLimit
     {
-        get => (int)(GetValue(UndoLimitProperty) ?? 100);
+        get => (int)GetValue(UndoLimitProperty)!;
         set => SetValue(UndoLimitProperty, value);
     }
 
@@ -228,7 +234,7 @@ public class RichTextBox : Control
     /// </summary>
     public ScrollBarVisibility HorizontalScrollBarVisibility
     {
-        get => (ScrollBarVisibility)(GetValue(HorizontalScrollBarVisibilityProperty) ?? ScrollBarVisibility.Auto);
+        get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty)!;
         set => SetValue(HorizontalScrollBarVisibilityProperty, value);
     }
 
@@ -237,7 +243,7 @@ public class RichTextBox : Control
     /// </summary>
     public ScrollBarVisibility VerticalScrollBarVisibility
     {
-        get => (ScrollBarVisibility)(GetValue(VerticalScrollBarVisibilityProperty) ?? ScrollBarVisibility.Auto);
+        get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty)!;
         set => SetValue(VerticalScrollBarVisibilityProperty, value);
     }
 
@@ -246,7 +252,7 @@ public class RichTextBox : Control
     /// </summary>
     public bool IsSpellCheckEnabled
     {
-        get => (bool)(GetValue(IsSpellCheckEnabledProperty) ?? false);
+        get => (bool)GetValue(IsSpellCheckEnabledProperty)!;
         set => SetValue(IsSpellCheckEnabledProperty, value);
     }
 
@@ -664,7 +670,7 @@ public class RichTextBox : Control
     /// <summary>
     /// Inserts text at the current caret position.
     /// </summary>
-    protected virtual void InsertText(string textToInsert)
+    protected void InsertText(string textToInsert)
     {
         if (IsReadOnly || string.IsNullOrEmpty(textToInsert))
             return;
@@ -737,7 +743,7 @@ public class RichTextBox : Control
     /// <summary>
     /// Deletes the current selection.
     /// </summary>
-    protected virtual void DeleteSelection()
+    protected void DeleteSelection()
     {
         if (_selection == null || _selection.IsEmpty)
             return;
@@ -825,7 +831,7 @@ public class RichTextBox : Control
     /// <summary>
     /// Ensures the caret is visible by scrolling if necessary.
     /// </summary>
-    protected virtual void EnsureCaretVisible()
+    protected void EnsureCaretVisible()
     {
         // This will be implemented when layout is complete
     }
@@ -833,7 +839,7 @@ public class RichTextBox : Control
     /// <summary>
     /// Called when the selection changes.
     /// </summary>
-    protected virtual void OnSelectionChanged()
+    protected void OnSelectionChanged()
     {
         // Raise selection changed event if needed
     }
@@ -964,7 +970,7 @@ public class RichTextBox : Control
                 var text = runLayout.Run.Text;
                 var foreground = runLayout.Run.Foreground
                     ?? _document.Foreground
-                    ?? new SolidColorBrush(Color.White);
+                    ?? s_whiteBrush;
                 var fontFamily = runLayout.Run.FontFamily
                     ?? _document.FontFamily
                     ?? "Segoe UI";
@@ -1007,7 +1013,7 @@ public class RichTextBox : Control
             return;
 
         var lineHeight = GetDefaultLineHeight();
-        var caretBrush = CaretBrush ?? new SolidColorBrush(Color.White);
+        var caretBrush = CaretBrush ?? s_whiteBrush;
 
         // Apply opacity for animation
         if (_caretOpacity < 1.0 && caretBrush is SolidColorBrush solidBrush)
@@ -1344,7 +1350,7 @@ public class RichTextBox : Control
     /// <summary>
     /// Handles key down events.
     /// </summary>
-    protected virtual void OnKeyDown(KeyEventArgs e)
+    protected void OnKeyDown(KeyEventArgs e)
     {
         var shift = e.IsShiftDown;
         var ctrl = e.IsControlDown;
@@ -1775,8 +1781,7 @@ public class RichTextBox : Control
             ? FindPreviousWordBoundary(_caretPosition)
             : _caretPosition.GetNextInsertionPosition(LogicalDirection.Backward);
 
-        if (newPosition == null)
-            newPosition = _document.ContentStart;
+                    newPosition ??= _document.ContentStart;
 
         if (shift)
         {
@@ -1802,8 +1807,7 @@ public class RichTextBox : Control
             ? FindNextWordBoundary(_caretPosition)
             : _caretPosition.GetNextInsertionPosition(LogicalDirection.Forward);
 
-        if (newPosition == null)
-            newPosition = _document.ContentEnd;
+                    newPosition ??= _document.ContentEnd;
 
         if (shift)
         {
@@ -1862,9 +1866,21 @@ public class RichTextBox : Control
 
     private void HandleHomeKey(bool shift, bool ctrl)
     {
-        var newPosition = ctrl
-            ? _document.ContentStart
-            : _document.ContentStart; // TODO: Line start
+        TextPointer? newPosition;
+
+        if (ctrl)
+        {
+            // Ctrl+Home: go to document start
+            newPosition = _document.ContentStart;
+        }
+        else
+        {
+            // Home: go to current line start
+            newPosition = FindLineStart(_caretPosition);
+        }
+
+        if (newPosition == null)
+            return;
 
         if (shift)
         {
@@ -1883,9 +1899,21 @@ public class RichTextBox : Control
 
     private void HandleEndKey(bool shift, bool ctrl)
     {
-        var newPosition = ctrl
-            ? _document.ContentEnd
-            : _document.ContentEnd; // TODO: Line end
+        TextPointer? newPosition;
+
+        if (ctrl)
+        {
+            // Ctrl+End: go to document end
+            newPosition = _document.ContentEnd;
+        }
+        else
+        {
+            // End: go to current line end
+            newPosition = FindLineEnd(_caretPosition);
+        }
+
+        if (newPosition == null)
+            return;
 
         if (shift)
         {
@@ -1900,6 +1928,72 @@ public class RichTextBox : Control
         ResetCaretBlink();
         EnsureCaretVisible();
         InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Finds the start of the current line by searching backward from the given position
+    /// for a newline character or paragraph boundary.
+    /// </summary>
+    private TextPointer? FindLineStart(TextPointer? position)
+    {
+        if (position == null)
+            return _document.ContentStart;
+
+        var offset = position.DocumentOffset;
+        var text = _document.GetText();
+
+        if (offset <= 0)
+            return _document.ContentStart;
+
+        // Search backward from current position for a newline
+        int searchPos = offset - 1;
+        while (searchPos >= 0)
+        {
+            char c = text[searchPos];
+            if (c == '\n' || c == '\r')
+            {
+                // Found a newline; line starts at the character after it
+                return _document.GetPositionAtOffset(searchPos + 1, LogicalDirection.Forward)
+                    ?? _document.ContentStart;
+            }
+            searchPos--;
+        }
+
+        // No newline found; we're on the first line
+        return _document.ContentStart;
+    }
+
+    /// <summary>
+    /// Finds the end of the current line by searching forward from the given position
+    /// for a newline character or paragraph boundary.
+    /// </summary>
+    private TextPointer? FindLineEnd(TextPointer? position)
+    {
+        if (position == null)
+            return _document.ContentEnd;
+
+        var offset = position.DocumentOffset;
+        var text = _document.GetText();
+
+        if (offset >= text.Length)
+            return _document.ContentEnd;
+
+        // Search forward from current position for a newline
+        int searchPos = offset;
+        while (searchPos < text.Length)
+        {
+            char c = text[searchPos];
+            if (c == '\n' || c == '\r')
+            {
+                // Found a newline; line ends just before it
+                return _document.GetPositionAtOffset(searchPos, LogicalDirection.Backward)
+                    ?? _document.ContentEnd;
+            }
+            searchPos++;
+        }
+
+        // No newline found; we're on the last line
+        return _document.ContentEnd;
     }
 
     private void HandleBackspace(bool ctrl)
@@ -1963,10 +2057,7 @@ public class RichTextBox : Control
 
     private void ExtendSelection(TextPointer newPosition)
     {
-        if (_selectionAnchor == null)
-        {
-            _selectionAnchor = _caretPosition;
-        }
+        _selectionAnchor ??= _caretPosition;
 
         if (_selectionAnchor != null)
         {

@@ -3,7 +3,7 @@ namespace Jalium.UI.Documents;
 /// <summary>
 /// Provides an AdornerLayer for elements below it in the visual tree.
 /// </summary>
-public class AdornerDecorator : Decorator
+public sealed class AdornerDecorator : Decorator
 {
     private readonly AdornerLayer _adornerLayer;
 

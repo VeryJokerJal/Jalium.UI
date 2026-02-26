@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -26,7 +26,7 @@ public abstract class MultiSelector : Selector
     /// </summary>
     protected bool CanSelectMultipleItems
     {
-        get => (bool)(GetValue(CanSelectMultipleItemsProperty) ?? true);
+        get => (bool)GetValue(CanSelectMultipleItemsProperty)!;
         set => SetValue(CanSelectMultipleItemsProperty, value);
     }
 

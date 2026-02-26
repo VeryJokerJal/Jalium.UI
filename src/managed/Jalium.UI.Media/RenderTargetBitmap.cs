@@ -3,7 +3,7 @@ namespace Jalium.UI.Media;
 /// <summary>
 /// Converts a Visual object into a bitmap.
 /// </summary>
-public class RenderTargetBitmap : BitmapSource
+public sealed class RenderTargetBitmap : BitmapSource
 {
     private byte[] _pixelBuffer;
     private readonly int _pixelWidth;
@@ -24,27 +24,27 @@ public class RenderTargetBitmap : BitmapSource
     /// <summary>
     /// Gets the pixel width of the bitmap.
     /// </summary>
-    public int PixelWidth => _pixelWidth;
+    public override int PixelWidth => _pixelWidth;
 
     /// <summary>
     /// Gets the pixel height of the bitmap.
     /// </summary>
-    public int PixelHeight => _pixelHeight;
+    public override int PixelHeight => _pixelHeight;
 
     /// <summary>
     /// Gets the horizontal DPI of the bitmap.
     /// </summary>
-    public double DpiX => _dpiX;
+    public override double DpiX => _dpiX;
 
     /// <summary>
     /// Gets the vertical DPI of the bitmap.
     /// </summary>
-    public double DpiY => _dpiY;
+    public override double DpiY => _dpiY;
 
     /// <summary>
     /// Gets the pixel format (always BGRA32).
     /// </summary>
-    public PixelFormat Format => PixelFormat.Bgra32;
+    public override PixelFormat Format => PixelFormat.Bgra32;
 
     /// <summary>
     /// Gets the native handle.
@@ -182,6 +182,36 @@ public class RenderTargetBitmap : BitmapSource
 public abstract class BitmapSource : ImageSource
 {
     /// <summary>
+    /// Gets the width of the bitmap in pixels.
+    /// </summary>
+    public virtual int PixelWidth => (int)Width;
+
+    /// <summary>
+    /// Gets the height of the bitmap in pixels.
+    /// </summary>
+    public virtual int PixelHeight => (int)Height;
+
+    /// <summary>
+    /// Gets the horizontal DPI of the bitmap.
+    /// </summary>
+    public virtual double DpiX => 96.0;
+
+    /// <summary>
+    /// Gets the vertical DPI of the bitmap.
+    /// </summary>
+    public virtual double DpiY => 96.0;
+
+    /// <summary>
+    /// Gets the pixel format of the bitmap.
+    /// </summary>
+    public virtual PixelFormat Format => PixelFormat.Bgra32;
+
+    /// <summary>
+    /// Gets the bitmap palette, or null if no palette is defined.
+    /// </summary>
+    public virtual Imaging.BitmapPalette? Palette => null;
+
+    /// <summary>
     /// Copies pixels from the bitmap source to an array.
     /// </summary>
     public virtual void CopyPixels(byte[] pixels, int stride, int offset)
@@ -302,7 +332,7 @@ public enum PixelFormat
 /// <summary>
 /// Drawing context for RenderTargetBitmap.
 /// </summary>
-internal class RenderTargetDrawingContext : DrawingContext
+internal sealed class RenderTargetDrawingContext : DrawingContext
 {
     private readonly RenderTargetBitmap _target;
     private readonly Stack<Matrix> _transformStack = new();

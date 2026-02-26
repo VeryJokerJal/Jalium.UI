@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -8,8 +8,19 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a column header in a DataGrid.
 /// </summary>
-public class DataGridColumnHeader : ButtonBase
+public sealed class DataGridColumnHeader : ButtonBase
 {
+    #region Static Brushes & Pens
+
+    private static readonly SolidColorBrush s_pressedBgBrush = new(Color.FromRgb(60, 60, 60));
+    private static readonly SolidColorBrush s_defaultBgBrush = new(Color.FromRgb(45, 45, 45));
+    private static readonly SolidColorBrush s_defaultFgBrush = new(Color.White);
+    private static readonly SolidColorBrush s_defaultSeparatorBrush = new(Color.FromRgb(67, 67, 70));
+    private static readonly SolidColorBrush s_borderBrush = new(Color.FromRgb(67, 67, 70));
+    private static readonly Pen s_borderPen = new(s_borderBrush, 1);
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -86,7 +97,7 @@ public class DataGridColumnHeader : ButtonBase
     /// </summary>
     public bool CanUserSort
     {
-        get => (bool)(GetValue(CanUserSortProperty) ?? true);
+        get => (bool)GetValue(CanUserSortProperty)!;
         set => SetValue(CanUserSortProperty, value);
     }
 
@@ -95,7 +106,7 @@ public class DataGridColumnHeader : ButtonBase
     /// </summary>
     public bool CanUserResize
     {
-        get => (bool)(GetValue(CanUserResizeProperty) ?? true);
+        get => (bool)GetValue(CanUserResizeProperty)!;
         set => SetValue(CanUserResizeProperty, value);
     }
 
@@ -104,7 +115,7 @@ public class DataGridColumnHeader : ButtonBase
     /// </summary>
     public bool CanUserReorder
     {
-        get => (bool)(GetValue(CanUserReorderProperty) ?? true);
+        get => (bool)GetValue(CanUserReorderProperty)!;
         set => SetValue(CanUserReorderProperty, value);
     }
 
@@ -113,7 +124,7 @@ public class DataGridColumnHeader : ButtonBase
     /// </summary>
     public int DisplayIndex
     {
-        get => (int)(GetValue(DisplayIndexProperty) ?? -1);
+        get => (int)GetValue(DisplayIndexProperty)!;
         set => SetValue(DisplayIndexProperty, value);
     }
 
@@ -122,7 +133,7 @@ public class DataGridColumnHeader : ButtonBase
     /// </summary>
     public bool IsFrozen
     {
-        get => (bool)(GetValue(IsFrozenProperty) ?? false);
+        get => (bool)GetValue(IsFrozenProperty)!;
         set => SetValue(IsFrozenProperty, value);
     }
 
@@ -140,7 +151,7 @@ public class DataGridColumnHeader : ButtonBase
     /// </summary>
     public Visibility SeparatorVisibility
     {
-        get => (Visibility)(GetValue(SeparatorVisibilityProperty) ?? Visibility.Visible);
+        get => (Visibility)GetValue(SeparatorVisibilityProperty)!;
         set => SetValue(SeparatorVisibilityProperty, value);
     }
 
@@ -258,14 +269,14 @@ public class DataGridColumnHeader : ButtonBase
 
         // Draw background
         var bgBrush = IsPressed
-            ? new SolidColorBrush(Color.FromRgb(60, 60, 60))
-            : (Background ?? new SolidColorBrush(Color.FromRgb(45, 45, 45)));
+            ? s_pressedBgBrush
+            : (Background ?? s_defaultBgBrush);
         dc.DrawRectangle(bgBrush, null, rect);
 
         // Draw content
         if (Content is string text)
         {
-            var fgBrush = Foreground ?? new SolidColorBrush(Color.White);
+            var fgBrush = Foreground ?? s_defaultFgBrush;
             var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 12)
             {
                 Foreground = fgBrush
@@ -286,15 +297,13 @@ public class DataGridColumnHeader : ButtonBase
         // Draw separator
         if (SeparatorVisibility == Visibility.Visible)
         {
-            var separatorBrush = SeparatorBrush ?? new SolidColorBrush(Color.FromRgb(67, 67, 70));
+            var separatorBrush = SeparatorBrush ?? s_defaultSeparatorBrush;
             var separatorPen = new Pen(separatorBrush, 1);
             dc.DrawLine(separatorPen, new Point(rect.Width - 1, 0), new Point(rect.Width - 1, rect.Height));
         }
 
         // Draw bottom border
-        var borderBrush = new SolidColorBrush(Color.FromRgb(67, 67, 70));
-        var borderPen = new Pen(borderBrush, 1);
-        dc.DrawLine(borderPen, new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
+        dc.DrawLine(s_borderPen, new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
     }
 
     private void DrawSortIndicator(DrawingContext dc, Rect rect, double offsetX, Brush brush)

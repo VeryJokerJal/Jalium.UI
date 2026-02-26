@@ -1,12 +1,17 @@
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Indicates the progress of an operation.
 /// </summary>
-public class ProgressBar : Control
+public sealed class ProgressBar : Control
 {
+    // Cached brushes for OnRender
+    private static readonly SolidColorBrush s_trackBrush = new(Color.FromRgb(45, 45, 45));
+    private static readonly SolidColorBrush s_accentBrush = new(Color.FromRgb(0, 120, 212));
+
     #region Dependency Properties
 
     /// <summary>
@@ -80,7 +85,7 @@ public class ProgressBar : Control
     /// </summary>
     public double Minimum
     {
-        get => (double)(GetValue(MinimumProperty) ?? 0.0);
+        get => (double)GetValue(MinimumProperty)!;
         set => SetValue(MinimumProperty, value);
     }
 
@@ -89,7 +94,7 @@ public class ProgressBar : Control
     /// </summary>
     public double Maximum
     {
-        get => (double)(GetValue(MaximumProperty) ?? 100.0);
+        get => (double)GetValue(MaximumProperty)!;
         set => SetValue(MaximumProperty, value);
     }
 
@@ -98,7 +103,7 @@ public class ProgressBar : Control
     /// </summary>
     public double Value
     {
-        get => (double)(GetValue(ValueProperty) ?? 0.0);
+        get => (double)GetValue(ValueProperty)!;
         set => SetValue(ValueProperty, value);
     }
 
@@ -107,7 +112,7 @@ public class ProgressBar : Control
     /// </summary>
     public bool IsIndeterminate
     {
-        get => (bool)(GetValue(IsIndeterminateProperty) ?? false);
+        get => (bool)GetValue(IsIndeterminateProperty)!;
         set => SetValue(IsIndeterminateProperty, value);
     }
 
@@ -116,7 +121,7 @@ public class ProgressBar : Control
     /// </summary>
     public Orientation Orientation
     {
-        get => (Orientation)(GetValue(OrientationProperty) ?? Orientation.Horizontal);
+        get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
@@ -157,7 +162,7 @@ public class ProgressBar : Control
     private double _indeterminateDirection = 1.0;
     private const double IndeterminateBlockWidth = 0.3; // 30% of track width
     private const double IndeterminateSpeed = 0.02; // Animation speed per tick
-    private System.Threading.Timer? _animationTimer;
+    private DispatcherTimer? _animationTimer;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ProgressBar"/> class.
@@ -187,23 +192,46 @@ public class ProgressBar : Control
     {
         if (_indicatorBorder == null) return;
 
+        var isVertical = Orientation == Orientation.Vertical;
+
         if (IsIndeterminate)
         {
             // For indeterminate mode, animate the indicator
-            var totalWidth = RenderSize.Width;
-            var indicatorWidth = totalWidth * IndeterminateBlockWidth;
-            var offset = (totalWidth - indicatorWidth) * _indeterminateOffset;
+            var totalSize = isVertical ? RenderSize.Height : RenderSize.Width;
+            var indicatorSize = totalSize * IndeterminateBlockWidth;
+            var offset = (totalSize - indicatorSize) * _indeterminateOffset;
 
-            _indicatorBorder.Width = indicatorWidth;
-            _indicatorBorder.Margin = new Thickness(offset, 0, 0, 0);
+            if (isVertical)
+            {
+                _indicatorBorder.Height = indicatorSize;
+                _indicatorBorder.Width = double.NaN;
+                _indicatorBorder.Margin = new Thickness(0, 0, 0, offset);
+            }
+            else
+            {
+                _indicatorBorder.Width = indicatorSize;
+                _indicatorBorder.Height = double.NaN;
+                _indicatorBorder.Margin = new Thickness(offset, 0, 0, 0);
+            }
         }
         else
         {
-            // For determinate mode, set width based on percentage
-            var totalWidth = RenderSize.Width;
-            var indicatorWidth = totalWidth * Percentage;
+            // For determinate mode, set size based on percentage
+            var totalSize = isVertical ? RenderSize.Height : RenderSize.Width;
+            var indicatorSize = totalSize * Percentage;
 
-            _indicatorBorder.Width = indicatorWidth;
+            if (isVertical)
+            {
+                _indicatorBorder.Height = indicatorSize;
+                _indicatorBorder.Width = double.NaN;
+                // Vertical progress fills from bottom to top
+                _indicatorBorder.VerticalAlignment = VerticalAlignment.Bottom;
+            }
+            else
+            {
+                _indicatorBorder.Width = indicatorSize;
+                _indicatorBorder.Height = double.NaN;
+            }
             _indicatorBorder.Margin = new Thickness(0);
         }
     }
@@ -216,22 +244,27 @@ public class ProgressBar : Control
     {
         if (_animationTimer != null) return;
 
-        _animationTimer = new System.Threading.Timer(
-            OnAnimationTick,
-            null,
-            TimeSpan.Zero,
-            TimeSpan.FromMilliseconds(16)); // ~60 FPS
+        _animationTimer = new DispatcherTimer
+        {
+            Interval = CompositionTarget.FrameInterval
+        };
+        _animationTimer.Tick += OnAnimationTick;
+        _animationTimer.Start();
     }
 
     private void StopIndeterminateAnimation()
     {
-        _animationTimer?.Dispose();
-        _animationTimer = null;
+        if (_animationTimer != null)
+        {
+            _animationTimer.Stop();
+            _animationTimer.Tick -= OnAnimationTick;
+            _animationTimer = null;
+        }
         _indeterminateOffset = 0;
         _indeterminateDirection = 1.0;
     }
 
-    private void OnAnimationTick(object? state)
+    private void OnAnimationTick(object? sender, EventArgs e)
     {
         if (!IsIndeterminate) return;
 
@@ -249,7 +282,9 @@ public class ProgressBar : Control
             _indeterminateDirection = 1.0;
         }
 
-        // Schedule redraw on the main thread
+        // DispatcherTimer fires on the UI thread, so all property
+        // modifications (Width, Margin) are thread-safe.
+        UpdateIndicator();
         InvalidateVisual();
     }
 
@@ -258,9 +293,27 @@ public class ProgressBar : Control
     #region Layout
 
     /// <inheritdoc />
+    protected override void OnSizeChanged(SizeChangedInfo sizeInfo)
+    {
+        base.OnSizeChanged(sizeInfo);
+
+        // UpdateIndicator reads RenderSize.Width to compute indicator width.
+        // Property change callbacks fire BEFORE layout, so RenderSize is (0,0) at that point.
+        // OnSizeChanged fires INSIDE ArrangeCore AFTER _renderSize is set (WPF pattern),
+        // so RenderSize.Width is correct here. The LayoutManager's iterative loop
+        // will re-process the indicator's measure/arrange in the same layout pass.
+        UpdateIndicator();
+    }
+
+    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        // ProgressBar has a default height but stretches horizontally
+        // MUST measure template children (Grid with PART_Track + PART_Indicator)
+        // so they get the correct PreviousAvailableSize for subsequent re-layout.
+        // Without this, the indicator border never gets properly measured.
+        base.MeasureOverride(availableSize);
+
+        // ProgressBar returns its own desired size (not template root's)
         if (Orientation == Orientation.Horizontal)
         {
             var height = double.IsNaN(Height) || Height <= 0 ? 8 : Height;
@@ -280,12 +333,13 @@ public class ProgressBar : Control
     /// <inheritdoc />
     protected override void OnRender(object drawingContext)
     {
-        // If using template, let the template handle rendering
+        // Template-based rendering: indicator is updated from property change callbacks
+        // and animation ticks (NOT here). Modifying _indicatorBorder.Width during OnRender
+        // triggers InvalidateMeasure, but UpdateLayout() already ran for this frame,
+        // so the new width wouldn't take effect until the NEXT frame — causing a 1-frame
+        // delay where the indicator renders at its old size (often 0).
         if (_indicatorBorder != null)
-        {
-            UpdateIndicator();
             return;
-        }
 
         if (drawingContext is not DrawingContext dc)
             return;
@@ -293,11 +347,11 @@ public class ProgressBar : Control
         var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
 
         // Draw track background
-        var trackBrush = Background ?? new SolidColorBrush(Color.FromRgb(45, 45, 45));
+        var trackBrush = Background ?? s_trackBrush;
         dc.DrawRoundedRectangle(trackBrush, null, bounds, 4, 4);
 
         // Draw progress
-        var progressBrush = ProgressBrush ?? new SolidColorBrush(Color.FromRgb(0, 120, 212));
+        var progressBrush = ProgressBrush ?? s_accentBrush;
 
         if (IsIndeterminate)
         {
@@ -380,6 +434,7 @@ public class ProgressBar : Control
             {
                 progressBar.Value = coercedValue;
             }
+            progressBar.UpdateIndicator();
             progressBar.InvalidateVisual();
         }
     }
@@ -397,7 +452,7 @@ public class ProgressBar : Control
         if (d is ProgressBar progressBar)
         {
             var isIndeterminate = (bool)(e.NewValue ?? false);
-            if (isIndeterminate)
+            if (isIndeterminate && progressBar.Visibility == Visibility.Visible)
             {
                 progressBar.StartIndeterminateAnimation();
             }
@@ -405,6 +460,7 @@ public class ProgressBar : Control
             {
                 progressBar.StopIndeterminateAnimation();
             }
+            progressBar.UpdateIndicator();
             progressBar.InvalidateVisual();
         }
     }
@@ -413,6 +469,7 @@ public class ProgressBar : Control
     {
         if (d is ProgressBar progressBar)
         {
+            progressBar.UpdateIndicator();
             progressBar.InvalidateVisual();
         }
     }
@@ -429,8 +486,9 @@ public class ProgressBar : Control
     /// <summary>
     /// Called when the Value property changes.
     /// </summary>
-    protected virtual void OnValueChanged(double oldValue, double newValue)
+    protected void OnValueChanged(double oldValue, double newValue)
     {
+        UpdateIndicator();
         InvalidateVisual();
         RaiseEvent(new RoutedPropertyChangedEventArgs<double>(oldValue, newValue, ValueChangedEvent));
     }
@@ -441,7 +499,7 @@ public class ProgressBar : Control
 /// <summary>
 /// Provides data for the ValueChanged event.
 /// </summary>
-public class RoutedPropertyChangedEventArgs<T> : RoutedEventArgs
+public sealed class RoutedPropertyChangedEventArgs<T> : RoutedEventArgs
 {
     /// <summary>
     /// Gets the old value.

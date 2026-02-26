@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls.Ink;
 /// <summary>
 /// Represents a collection of <see cref="Stroke"/> objects with change notification.
 /// </summary>
-public class StrokeCollection : ObservableCollection<Stroke>
+public sealed class StrokeCollection : ObservableCollection<Stroke>
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="StrokeCollection"/> class.
@@ -190,7 +190,7 @@ public class StrokeCollection : ObservableCollection<Stroke>
     /// <summary>
     /// Raises the <see cref="StrokesChanged"/> event.
     /// </summary>
-    protected virtual void OnStrokesChanged(StrokeCollectionChangedEventArgs e)
+    protected void OnStrokesChanged(StrokeCollectionChangedEventArgs e)
     {
         StrokesChanged?.Invoke(this, e);
     }
@@ -199,7 +199,7 @@ public class StrokeCollection : ObservableCollection<Stroke>
 /// <summary>
 /// Provides data for the <see cref="StrokeCollection.StrokesChanged"/> event.
 /// </summary>
-public class StrokeCollectionChangedEventArgs : EventArgs
+public sealed class StrokeCollectionChangedEventArgs : EventArgs
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="StrokeCollectionChangedEventArgs"/> class.

@@ -1,4 +1,4 @@
-using Jalium.UI.Input;
+﻿using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -7,30 +7,26 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents an item in a NavigationView with WinUI-style appearance.
 /// </summary>
-public class NavigationViewItem : ContentControl
+public sealed class NavigationViewItem : ContentControl
 {
     #region Constants
 
-    // Layout constants matching WinUI Gallery style
-    private const double SelectionIndicatorWidth = 3;
-    private const double SelectionIndicatorHeight = 16;
-    private const double IconSize = 16;
-    private const double ItemHeight = 36;
-    private const double ItemPaddingLeft = 12;
-    private const double ItemPaddingRight = 12;
-    private const double IconToContentSpacing = 12;
-    private const double ChevronSize = 12;
     private const double IndentPerLevel = 28;
-    private const double ItemCornerRadius = 4;
 
     #endregion
 
     #region Fields
 
-    private bool _isPointerOver;
-    private bool _isPressed;
-    private readonly StackPanel _childrenPanel;
     private int _indentLevel;
+
+    #endregion
+
+    #region Template Parts
+
+    private Border? _indentSpacer;
+    private Shapes.Path? _chevron;
+    private StackPanel? _childrenPanel;
+    private Threading.DispatcherTimer? _expandAnimTimer;
 
     #endregion
 
@@ -41,7 +37,7 @@ public class NavigationViewItem : ContentControl
     /// </summary>
     public static readonly DependencyProperty IconProperty =
         DependencyProperty.Register(nameof(Icon), typeof(object), typeof(NavigationViewItem),
-            new PropertyMetadata(null, OnVisualPropertyChanged));
+            new PropertyMetadata(null));
 
     /// <summary>
     /// Identifies the IsSelected dependency property.
@@ -82,7 +78,7 @@ public class NavigationViewItem : ContentControl
     /// </summary>
     public bool IsSelected
     {
-        get => (bool)(GetValue(IsSelectedProperty) ?? false);
+        get => (bool)GetValue(IsSelectedProperty)!;
         set => SetValue(IsSelectedProperty, value);
     }
 
@@ -91,7 +87,7 @@ public class NavigationViewItem : ContentControl
     /// </summary>
     public bool IsExpanded
     {
-        get => (bool)(GetValue(IsExpandedProperty) ?? false);
+        get => (bool)GetValue(IsExpandedProperty)!;
         set => SetValue(IsExpandedProperty, value);
     }
 
@@ -100,7 +96,7 @@ public class NavigationViewItem : ContentControl
     /// </summary>
     public bool SelectsOnInvoked
     {
-        get => (bool)(GetValue(SelectsOnInvokedProperty) ?? true);
+        get => (bool)GetValue(SelectsOnInvokedProperty)!;
         set => SetValue(SelectsOnInvokedProperty, value);
     }
 
@@ -123,6 +119,7 @@ public class NavigationViewItem : ContentControl
         set
         {
             _indentLevel = value;
+            UpdateIndent();
             // Also update children's indent level
             foreach (var child in MenuItems)
             {
@@ -139,34 +136,37 @@ public class NavigationViewItem : ContentControl
     public NavigationViewItem()
     {
         Focusable = true;
-        Height = ItemHeight;
-        Margin = new Thickness(4, 2, 4, 2);
 
-        // Create panel for child items
-        _childrenPanel = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Visibility = Visibility.Collapsed
-        };
+        // Use template-based content management (ContentPresenter in template handles Content)
+        UseTemplateContentManagement();
 
-        // Hook up mouse events for hover/pressed states
-        MouseEnter += OnMouseEnterHandler;
-        MouseLeave += OnMouseLeaveHandler;
-        MouseDown += OnMouseDownHandler;
-        MouseUp += OnMouseUpHandler;
+        // Mouse down for click handling (expand/invoke)
+        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
     }
 
-    /// <summary>
-    /// Override to prevent Content from being added to visual tree.
-    /// NavigationViewItem renders its content manually in OnRender.
-    /// </summary>
-    protected override void OnContentChanged(object? oldContent, object? newContent)
+    #region Template
+
+    /// <inheritdoc />
+    protected override void OnApplyTemplate()
     {
-        // Don't call base - we don't want Content added to visual tree
-        // NavigationViewItem handles all rendering in OnRender
-        InvalidateMeasure();
-        InvalidateVisual();
+        base.OnApplyTemplate();
+
+        _indentSpacer = GetTemplateChild("PART_IndentSpacer") as Border;
+        _chevron = GetTemplateChild("PART_Chevron") as Shapes.Path;
+        _childrenPanel = GetTemplateChild("PART_ChildrenPanel") as StackPanel;
+
+        // Sync initial state
+        UpdateIndent();
+        UpdateChevronVisibility();
+
+        // Sync expanded state (IsExpanded may have been set before template was applied)
+        if (_childrenPanel != null && IsExpanded)
+        {
+            _childrenPanel.Visibility = Visibility.Visible;
+        }
     }
+
+    #endregion
 
     #region Events
 
@@ -189,48 +189,39 @@ public class NavigationViewItem : ContentControl
 
     #region Mouse Event Handlers
 
-    private void OnMouseEnterHandler(object? sender, RoutedEventArgs e)
-    {
-        _isPointerOver = true;
-        InvalidateVisual();
-    }
-
-    private void OnMouseLeaveHandler(object? sender, RoutedEventArgs e)
-    {
-        _isPointerOver = false;
-        _isPressed = false;
-        InvalidateVisual();
-    }
-
     private void OnMouseDownHandler(object? sender, RoutedEventArgs e)
     {
         if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
         {
-            _isPressed = true;
-            InvalidateVisual();
-
-            // Check if click is on the chevron area (expand/collapse)
-            if (HasUnrealizedChildren)
+            // Find parent NavigationView and delegate click handling
+            var navView = FindParentNavigationView();
+            if (navView != null)
             {
-                var pos = mouseArgs.GetPosition(this);
-                var chevronX = ActualWidth - ItemPaddingRight - ChevronSize;
-                if (pos.X >= chevronX)
+                navView.HandleItemClicked(this);
+            }
+            else
+            {
+                // Fallback: handle locally if no parent NavigationView found
+                if (HasUnrealizedChildren)
                 {
                     IsExpanded = !IsExpanded;
-                    mouseArgs.Handled = true;
-                    return;
                 }
             }
+
+            mouseArgs.Handled = true;
         }
     }
 
-    private void OnMouseUpHandler(object? sender, RoutedEventArgs e)
+    private NavigationView? FindParentNavigationView()
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        Visual? current = VisualParent;
+        while (current != null)
         {
-            _isPressed = false;
-            InvalidateVisual();
+            if (current is NavigationView nav)
+                return nav;
+            current = current.VisualParent;
         }
+        return null;
     }
 
     #endregion
@@ -248,195 +239,45 @@ public class NavigationViewItem : ContentControl
     /// <summary>
     /// Gets the children panel for adding child items.
     /// </summary>
-    internal StackPanel GetChildrenPanel() => _childrenPanel;
-
-    #endregion
-
-    #region Layout
-
-    protected override Size MeasureOverride(Size availableSize)
+    internal StackPanel? GetChildrenPanel()
     {
-        var width = !double.IsNaN(Width) && Width > 0 ? Width : availableSize.Width;
-        var height = ItemHeight;
-
-        // Measure children panel if expanded
-        if (HasUnrealizedChildren && IsExpanded)
+        // Ensure template is applied so PART_ChildrenPanel is available
+        if (_childrenPanel == null)
         {
-            _childrenPanel.Measure(new Size(width, double.PositiveInfinity));
-            height += _childrenPanel.DesiredSize.Height;
+            ApplyTemplate();
         }
-
-        return new Size(width, height);
-    }
-
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        // Arrange children panel below this item
-        if (HasUnrealizedChildren && IsExpanded)
-        {
-            var childrenRect = new Rect(0, ItemHeight, finalSize.Width, _childrenPanel.DesiredSize.Height);
-            _childrenPanel.Arrange(childrenRect);
-        }
-
-        return finalSize;
+        return _childrenPanel;
     }
 
     #endregion
 
-    #region Rendering
+    #region State Updates
 
-    protected override void OnRender(object drawingContextObj)
+    private void UpdateIndent()
     {
-        if (drawingContextObj is not DrawingContext dc)
+        if (_indentSpacer != null)
         {
-            base.OnRender(drawingContextObj);
-            return;
-        }
-
-        var width = ActualWidth;
-        var height = Math.Min(ActualHeight, ItemHeight);
-
-        // Calculate indent
-        var indent = IndentLevel * IndentPerLevel;
-
-        // Get colors based on state
-        var (bgColor, fgColor, indicatorColor) = GetStateColors();
-
-        // Draw background with rounded corners
-        if (bgColor.A > 0)
-        {
-            var bgBrush = new SolidColorBrush(bgColor);
-            dc.DrawRoundedRectangle(bgBrush, null,
-                new Rect(0, 0, width, height),
-                ItemCornerRadius, ItemCornerRadius);
-        }
-
-        // Draw selection indicator (left vertical bar)
-        if (IsSelected)
-        {
-            var indicatorBrush = new SolidColorBrush(indicatorColor);
-            var indicatorY = (height - SelectionIndicatorHeight) / 2;
-            dc.DrawRoundedRectangle(indicatorBrush, null,
-                new Rect(4, indicatorY, SelectionIndicatorWidth, SelectionIndicatorHeight),
-                1.5, 1.5);
-        }
-
-        // Calculate positions
-        var x = ItemPaddingLeft + indent;
-        var centerY = height / 2;
-
-        // Get font metrics for proper vertical centering
-        var textFontMetrics = TextMeasurement.GetFontMetrics("Segoe UI", 14);
-        var chevronFontMetrics = TextMeasurement.GetFontMetrics("Segoe UI", 10);
-
-        // Note: Icon rendering is disabled until proper font support is implemented
-        // The Segoe Fluent Icons font is not rendering correctly in the current text engine
-
-        // Draw content text
-        var contentText = GetContentText();
-        if (!string.IsNullOrEmpty(contentText))
-        {
-            var textBrush = new SolidColorBrush(fgColor);
-            var textY = centerY - textFontMetrics.LineHeight / 2;
-            var maxTextWidth = width - x - ItemPaddingRight;
-
-            if (HasUnrealizedChildren)
-            {
-                maxTextWidth -= ChevronSize + 8; // Leave room for chevron
-            }
-
-            var formattedText = new FormattedText(contentText, "Segoe UI", 14)
-            {
-                Foreground = textBrush,
-                MaxTextWidth = maxTextWidth
-            };
-            dc.DrawText(formattedText, new Point(x, textY));
-        }
-
-        // Draw expand/collapse chevron for items with children
-        if (HasUnrealizedChildren)
-        {
-            var chevronBrush = new SolidColorBrush(Color.FromRgb(150, 150, 150));
-            var chevronX = width - ItemPaddingRight - ChevronSize;
-            var chevronY = centerY - chevronFontMetrics.LineHeight / 2;
-
-            // Use simple ASCII characters instead of icon font
-            var chevronChar = IsExpanded ? "▼" : "▶";
-            var formattedChevron = new FormattedText(chevronChar, "Segoe UI", 10)
-            {
-                Foreground = chevronBrush
-            };
-            dc.DrawText(formattedChevron, new Point(chevronX, chevronY));
-        }
-
-        // Don't call base.OnRender - we handle all rendering ourselves
-        // Calling base would cause Content (e.g., TextBlock) to render again
-    }
-
-    private (Color bg, Color fg, Color indicator) GetStateColors()
-    {
-        // WinUI Gallery dark theme colors
-        var transparent = Color.FromArgb(0, 0, 0, 0);
-        var normalFg = Color.FromRgb(255, 255, 255);
-        var accentColor = Color.FromRgb(96, 205, 255); // Light blue accent (WinUI default)
-
-        if (IsSelected)
-        {
-            if (_isPressed)
-            {
-                return (Color.FromArgb(20, 255, 255, 255), normalFg, accentColor);
-            }
-            if (_isPointerOver)
-            {
-                return (Color.FromArgb(15, 255, 255, 255), normalFg, accentColor);
-            }
-            return (Color.FromArgb(10, 255, 255, 255), normalFg, accentColor);
-        }
-        else
-        {
-            if (_isPressed)
-            {
-                return (Color.FromArgb(10, 255, 255, 255), Color.FromRgb(200, 200, 200), transparent);
-            }
-            if (_isPointerOver)
-            {
-                return (Color.FromArgb(8, 255, 255, 255), normalFg, transparent);
-            }
-            return (transparent, Color.FromRgb(230, 230, 230), transparent);
+            _indentSpacer.Width = 12 + _indentLevel * IndentPerLevel;
         }
     }
 
-    private string? GetContentText()
+    private void UpdateChevronVisibility()
     {
-        if (Content == null) return null;
-
-        if (Content is string str)
-            return str;
-
-        if (Content is TextBlock textBlock)
-            return textBlock.Text;
-
-        return Content.ToString();
+        if (_chevron != null)
+        {
+            _chevron.Visibility = HasUnrealizedChildren ? Visibility.Visible : Visibility.Collapsed;
+        }
     }
 
     #endregion
 
     #region Property Changed Callbacks
 
-    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is NavigationViewItem item)
-        {
-            item.InvalidateVisual();
-        }
-    }
-
     private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is NavigationViewItem item)
         {
             item.SelectionChanged?.Invoke(item, (bool)(e.NewValue ?? false));
-            item.InvalidateVisual();
         }
     }
 
@@ -444,11 +285,19 @@ public class NavigationViewItem : ContentControl
     {
         if (d is NavigationViewItem item)
         {
-            var isExpanded = (bool)(e.NewValue ?? false);
-            item._childrenPanel.Visibility = isExpanded ? Visibility.Visible : Visibility.Collapsed;
-            item.ExpansionChanged?.Invoke(item, isExpanded);
+            var expanded = (bool)(e.NewValue ?? false);
+            item.ExpansionChanged?.Invoke(item, expanded);
+
+            // Animate children panel expand/collapse + chevron rotation
+            if (item._childrenPanel != null)
+            {
+                if (expanded)
+                    item._expandAnimTimer = ExpandCollapseAnimator.AnimateExpand(item._childrenPanel, item._expandAnimTimer, item._chevron);
+                else
+                    item._expandAnimTimer = ExpandCollapseAnimator.AnimateCollapse(item._childrenPanel, item._expandAnimTimer, item._chevron);
+            }
+
             item.InvalidateMeasure();
-            item.InvalidateVisual();
         }
     }
 
@@ -458,7 +307,7 @@ public class NavigationViewItem : ContentControl
 /// <summary>
 /// Provides data for the NavigationViewItem.Invoked event.
 /// </summary>
-public class NavigationViewItemInvokedEventArgs : EventArgs
+public sealed class NavigationViewItemInvokedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the invoked item.
@@ -483,8 +332,10 @@ public class NavigationViewItemInvokedEventArgs : EventArgs
 /// <summary>
 /// Represents a header item in a NavigationView.
 /// </summary>
-public class NavigationViewItemHeader : ContentControl
+public sealed class NavigationViewItemHeader : ContentControl
 {
+    private static readonly SolidColorBrush s_defaultFgBrush = new(Color.FromRgb(157, 157, 157));
+
     /// <summary>
     /// Initializes a new instance of the <see cref="NavigationViewItemHeader"/> class.
     /// </summary>
@@ -493,7 +344,7 @@ public class NavigationViewItemHeader : ContentControl
         Focusable = false;
         Height = 40;
         Margin = new Thickness(12, 8, 12, 4);
-        Foreground = new SolidColorBrush(Color.FromRgb(157, 157, 157));
+        Foreground = s_defaultFgBrush;
     }
 
     /// <summary>
@@ -515,7 +366,7 @@ public class NavigationViewItemHeader : ContentControl
         if (!string.IsNullOrEmpty(text))
         {
             var fontMetrics = TextMeasurement.GetFontMetrics("Segoe UI Semibold", 14);
-            var brush = Foreground ?? new SolidColorBrush(Color.FromRgb(157, 157, 157));
+            var brush = Foreground ?? s_defaultFgBrush;
             var formattedText = new FormattedText(text, "Segoe UI Semibold", 14)
             {
                 Foreground = brush
@@ -537,8 +388,10 @@ public class NavigationViewItemHeader : ContentControl
 /// <summary>
 /// Represents a separator in a NavigationView.
 /// </summary>
-public class NavigationViewItemSeparator : Control
+public sealed class NavigationViewItemSeparator : Control
 {
+    private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(60, 60, 60));
+
     /// <summary>
     /// Initializes a new instance of the <see cref="NavigationViewItemSeparator"/> class.
     /// </summary>
@@ -547,7 +400,7 @@ public class NavigationViewItemSeparator : Control
         Focusable = false;
         Height = 1;
         Margin = new Thickness(16, 8, 16, 8);
-        Background = new SolidColorBrush(Color.FromRgb(60, 60, 60));
+        Background = s_defaultBackgroundBrush;
     }
 
     protected override void OnRender(object drawingContextObj)
@@ -558,7 +411,7 @@ public class NavigationViewItemSeparator : Control
             return;
         }
 
-        var brush = Background ?? new SolidColorBrush(Color.FromRgb(60, 60, 60));
+        var brush = Background ?? s_defaultBackgroundBrush;
         dc.DrawRectangle(brush, null, new Rect(0, 0, ActualWidth, 1));
     }
 }

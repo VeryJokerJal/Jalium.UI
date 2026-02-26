@@ -557,3 +557,61 @@ public class FrameworkElementAutomationPeer : AutomationPeer
         return base.GetAutomationIdCore();
     }
 }
+
+/// <summary>
+/// Exposes UIElement types to UI Automation.
+/// </summary>
+public sealed class UIElementAutomationPeer : AutomationPeer
+{
+    public UIElementAutomationPeer(UIElement owner) : base(owner) { }
+
+    /// <summary>
+    /// Creates a peer for the specified UIElement.
+    /// </summary>
+    public static AutomationPeer? CreatePeerForElement(UIElement element)
+    {
+        return element.GetAutomationPeer();
+    }
+
+    /// <summary>
+    /// Gets the existing peer for the specified element, or creates a new one.
+    /// </summary>
+    public static AutomationPeer? FromElement(UIElement element)
+    {
+        return CreatePeerForElement(element);
+    }
+
+    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Custom;
+    protected override string GetClassNameCore() => Owner.GetType().Name;
+}
+
+/// <summary>
+/// Exposes ContentElement types to UI Automation.
+/// </summary>
+public sealed class ContentElementAutomationPeer : AutomationPeer
+{
+    private readonly DependencyObject _contentElement;
+
+    public ContentElementAutomationPeer(UIElement hostElement, DependencyObject contentElement) : base(hostElement)
+    {
+        _contentElement = contentElement;
+    }
+
+    /// <summary>Gets the content element associated with this peer.</summary>
+    public DependencyObject ContentElement => _contentElement;
+
+    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Custom;
+    protected override string GetClassNameCore() => _contentElement.GetType().Name;
+}
+
+/// <summary>
+/// Represents an automation peer used as the root for hit testing.
+/// </summary>
+public sealed class GenericRootAutomationPeer : AutomationPeer
+{
+    public GenericRootAutomationPeer(UIElement owner) : base(owner) { }
+
+    protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Window;
+    protected override string GetClassNameCore() => "Pane";
+    protected override string GetNameCore() => "Desktop";
+}

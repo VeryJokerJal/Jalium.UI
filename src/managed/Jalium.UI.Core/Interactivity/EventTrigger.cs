@@ -5,7 +5,7 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// A trigger that listens for a specified event on its source and fires when that event is fired.
 /// </summary>
-public class EventTrigger : TriggerBase<FrameworkElement>
+public sealed class EventTrigger : TriggerBase<FrameworkElement>
 {
     private string _eventName = "Loaded";
     private Delegate? _eventHandler;
@@ -100,7 +100,7 @@ public class EventTrigger : TriggerBase<FrameworkElement>
     /// Called when the event occurs.
     /// </summary>
     /// <param name="eventArgs">The event arguments.</param>
-    protected virtual void OnEvent(object? eventArgs)
+    protected void OnEvent(object? eventArgs)
     {
         InvokeActions(eventArgs);
     }

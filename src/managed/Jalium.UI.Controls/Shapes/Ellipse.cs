@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls.Shapes;
 /// <summary>
 /// Draws an ellipse.
 /// </summary>
-public class Ellipse : Shape
+public sealed class Ellipse : Shape
 {
     #region Layout
 

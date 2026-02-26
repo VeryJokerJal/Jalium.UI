@@ -136,7 +136,7 @@ public enum NavigationCacheMode
 /// <summary>
 /// Provides data for navigation events.
 /// </summary>
-public class NavigationEventArgs : EventArgs
+public sealed class NavigationEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the content of the target page.
@@ -173,7 +173,7 @@ public class NavigationEventArgs : EventArgs
 /// <summary>
 /// Provides data for the NavigatingFrom event.
 /// </summary>
-public class NavigatingCancelEventArgs : EventArgs
+public sealed class NavigatingCancelEventArgs : EventArgs
 {
     /// <summary>
     /// Gets or sets a value indicating whether the navigation should be canceled.

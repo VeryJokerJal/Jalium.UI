@@ -8,6 +8,12 @@ namespace Jalium.UI;
 /// </summary>
 public static class Validation
 {
+    /// <summary>
+    /// Gets or sets the adorner handler callback. Set by the Controls layer
+    /// to connect validation errors with visual adorner feedback.
+    /// </summary>
+    public static Action<DependencyObject, bool>? AdornerHandler { get; set; }
+
     #region Attached Properties
 
     /// <summary>
@@ -109,6 +115,8 @@ public static class Validation
         errors.Add(error);
         element.SetValue(HasErrorProperty, true);
 
+        AdornerHandler?.Invoke(element, true);
+
         if (element is UIElement uiElement)
         {
             var args = new ValidationErrorEventArgs(ErrorEvent, error, ValidationErrorEventAction.Added);
@@ -127,6 +135,8 @@ public static class Validation
             errors.Clear();
             element.SetValue(HasErrorProperty, false);
 
+            AdornerHandler?.Invoke(element, false);
+
             if (element is UIElement uiElement)
             {
                 foreach (var error in removedErrors)
@@ -144,7 +154,7 @@ public static class Validation
 /// <summary>
 /// Represents a validation error.
 /// </summary>
-public class ValidationError
+public sealed class ValidationError
 {
     /// <summary>
     /// Gets the validation rule that caused the error.
@@ -189,7 +199,7 @@ public class ValidationError
 /// <summary>
 /// Provides data for validation error events.
 /// </summary>
-public class ValidationErrorEventArgs : RoutedEventArgs
+public sealed class ValidationErrorEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the validation error.
@@ -281,7 +291,7 @@ public enum ValidationStep
 /// <summary>
 /// Represents the result of a validation operation.
 /// </summary>
-public class ValidationResult
+public sealed class ValidationResult
 {
     /// <summary>
     /// Gets whether the validation passed.
@@ -311,7 +321,7 @@ public class ValidationResult
 /// <summary>
 /// Validates that a value is not null or empty.
 /// </summary>
-public class RequiredValidationRule : ValidationRule
+public sealed class RequiredValidationRule : ValidationRule
 {
     /// <summary>
     /// Gets or sets the error message.
@@ -334,7 +344,7 @@ public class RequiredValidationRule : ValidationRule
 /// <summary>
 /// Validates that a numeric value is within a range.
 /// </summary>
-public class RangeValidationRule : ValidationRule
+public sealed class RangeValidationRule : ValidationRule
 {
     /// <summary>
     /// Gets or sets the minimum value.
@@ -386,7 +396,7 @@ public class RangeValidationRule : ValidationRule
 /// <summary>
 /// A validation rule that checks for exceptions thrown during the update of the source value.
 /// </summary>
-public class ExceptionValidationRule : ValidationRule
+public sealed class ExceptionValidationRule : ValidationRule
 {
     /// <summary>
     /// Validates the value.
@@ -415,7 +425,7 @@ public class ExceptionValidationRule : ValidationRule
 /// <summary>
 /// A validation rule that checks for errors raised by the IDataErrorInfo interface.
 /// </summary>
-public class DataErrorValidationRule : ValidationRule
+public sealed class DataErrorValidationRule : ValidationRule
 {
     /// <summary>
     /// Validates the value.
@@ -460,7 +470,7 @@ public class DataErrorValidationRule : ValidationRule
 /// <summary>
 /// A validation rule that checks for errors raised by the INotifyDataErrorInfo interface.
 /// </summary>
-public class NotifyDataErrorValidationRule : ValidationRule
+public sealed class NotifyDataErrorValidationRule : ValidationRule
 {
     /// <summary>
     /// Validates the value.
@@ -543,7 +553,7 @@ public class RegexValidationRule : ValidationRule
 /// <summary>
 /// Validates that a string has a minimum or maximum length.
 /// </summary>
-public class StringLengthValidationRule : ValidationRule
+public sealed class StringLengthValidationRule : ValidationRule
 {
     /// <summary>
     /// Gets or sets the minimum length.
@@ -585,7 +595,7 @@ public class StringLengthValidationRule : ValidationRule
 /// <summary>
 /// A validation rule that uses a custom function for validation.
 /// </summary>
-public class CustomValidationRule : ValidationRule
+public sealed class CustomValidationRule : ValidationRule
 {
     private readonly Func<object?, CultureInfo, ValidationResult>? _validateFunc;
 

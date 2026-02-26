@@ -5,7 +5,7 @@ namespace Jalium.UI.Interactivity;
 /// <summary>
 /// Calls a method on a specified object when invoked.
 /// </summary>
-public class CallMethodAction : TriggerAction<DependencyObject>
+public sealed class CallMethodAction : TriggerAction<DependencyObject>
 {
     /// <summary>
     /// Identifies the TargetObject dependency property.
@@ -91,7 +91,7 @@ public class CallMethodAction : TriggerAction<DependencyObject>
 /// <summary>
 /// Changes a property on a target object to a specified value.
 /// </summary>
-public class ChangePropertyAction : TriggerAction<DependencyObject>
+public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
 {
     /// <summary>
     /// Identifies the TargetObject dependency property.

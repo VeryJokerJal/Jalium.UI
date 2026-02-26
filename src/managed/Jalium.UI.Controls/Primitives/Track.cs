@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// Represents the Track element used in ScrollBar and Slider controls.
 /// Contains a Thumb and optionally two RepeatButtons for value manipulation.
 /// </summary>
-public class Track : FrameworkElement
+public sealed class Track : FrameworkElement
 {
     #region Dependency Properties
 
@@ -61,7 +61,7 @@ public class Track : FrameworkElement
     /// </summary>
     public Orientation Orientation
     {
-        get => (Orientation)(GetValue(OrientationProperty) ?? Orientation.Horizontal);
+        get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
@@ -70,7 +70,7 @@ public class Track : FrameworkElement
     /// </summary>
     public double Minimum
     {
-        get => (double)(GetValue(MinimumProperty) ?? 0.0);
+        get => (double)GetValue(MinimumProperty)!;
         set => SetValue(MinimumProperty, value);
     }
 
@@ -79,7 +79,7 @@ public class Track : FrameworkElement
     /// </summary>
     public double Maximum
     {
-        get => (double)(GetValue(MaximumProperty) ?? 1.0);
+        get => (double)GetValue(MaximumProperty)!;
         set => SetValue(MaximumProperty, value);
     }
 
@@ -88,7 +88,7 @@ public class Track : FrameworkElement
     /// </summary>
     public double Value
     {
-        get => (double)(GetValue(ValueProperty) ?? 0.0);
+        get => (double)GetValue(ValueProperty)!;
         set => SetValue(ValueProperty, value);
     }
 
@@ -97,7 +97,7 @@ public class Track : FrameworkElement
     /// </summary>
     public double ViewportSize
     {
-        get => (double)(GetValue(ViewportSizeProperty) ?? double.NaN);
+        get => (double)GetValue(ViewportSizeProperty)!;
         set => SetValue(ViewportSizeProperty, value);
     }
 
@@ -106,7 +106,7 @@ public class Track : FrameworkElement
     /// </summary>
     public bool IsDirectionReversed
     {
-        get => (bool)(GetValue(IsDirectionReversedProperty) ?? false);
+        get => (bool)GetValue(IsDirectionReversedProperty)!;
         set => SetValue(IsDirectionReversedProperty, value);
     }
 
@@ -368,7 +368,7 @@ public class Track : FrameworkElement
     /// </summary>
     /// <param name="pt">The point to convert.</param>
     /// <returns>The value at the specified point.</returns>
-    public virtual double ValueFromPoint(Point pt)
+    public double ValueFromPoint(Point pt)
     {
         double val;
 
@@ -378,10 +378,10 @@ public class Track : FrameworkElement
         }
         else
         {
-            val = Value - ValueFromDistance(0, pt.Y - (_thumb?.RenderSize.Height ?? 0) / 2);
+            val = Value + ValueFromDistance(0, pt.Y - (_thumb?.RenderSize.Height ?? 0) / 2);
         }
 
-        return Math.Max(Minimum, Math.Min(Maximum, val));
+        return Math.Clamp(val, Minimum, Maximum);
     }
 
     /// <summary>
@@ -390,7 +390,7 @@ public class Track : FrameworkElement
     /// <param name="horizontal">The horizontal distance.</param>
     /// <param name="vertical">The vertical distance.</param>
     /// <returns>The value change.</returns>
-    public virtual double ValueFromDistance(double horizontal, double vertical)
+    public double ValueFromDistance(double horizontal, double vertical)
     {
         if (_density == 0)
         {
@@ -404,7 +404,7 @@ public class Track : FrameworkElement
         }
         else
         {
-            change = -vertical / _density;
+            change = vertical / _density;
         }
 
         if (IsDirectionReversed)
@@ -422,7 +422,7 @@ public class Track : FrameworkElement
     private void OnThumbDragDelta(object sender, DragDeltaEventArgs e)
     {
         var newValue = Value + ValueFromDistance(e.HorizontalChange, e.VerticalChange);
-        newValue = Math.Max(Minimum, Math.Min(Maximum, newValue));
+        newValue = Math.Clamp(newValue, Minimum, Maximum);
 
         // This should be bound to the parent control's Value property
         // For now, we'll just update our local value

@@ -316,7 +316,7 @@ public static class DragDrop
 /// <summary>
 /// Event arguments for drag events.
 /// </summary>
-public class DragEventArgs : RoutedEventArgs
+public sealed class DragEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the data object being dragged.
@@ -370,7 +370,7 @@ public delegate void DragEventHandler(object sender, DragEventArgs e);
 /// <summary>
 /// Event arguments for give feedback events.
 /// </summary>
-public class GiveFeedbackEventArgs : RoutedEventArgs
+public sealed class GiveFeedbackEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the effects of the drag operation.
@@ -420,7 +420,7 @@ public enum DragAction
 /// <summary>
 /// Event arguments for query continue drag events.
 /// </summary>
-public class QueryContinueDragEventArgs : RoutedEventArgs
+public sealed class QueryContinueDragEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets a value indicating whether the escape key was pressed.
@@ -521,7 +521,7 @@ public interface IDataObject
 /// <summary>
 /// Implements a basic data object for drag-and-drop and clipboard.
 /// </summary>
-public class DataObject : IDataObject
+public sealed class DataObject : IDataObject
 {
     private readonly Dictionary<string, object> _data = new(StringComparer.OrdinalIgnoreCase);
 

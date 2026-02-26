@@ -1,3 +1,6 @@
+﻿using System.Diagnostics;
+using System.IO;
+
 namespace Jalium.UI;
 
 /// <summary>
@@ -92,6 +95,13 @@ public class FrameworkElement : UIElement
             new PropertyMetadata(null));
 
     /// <summary>
+    /// Identifies the ToolTip dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ToolTipProperty =
+        DependencyProperty.Register(nameof(ToolTip), typeof(object), typeof(FrameworkElement),
+            new PropertyMetadata(null, OnToolTipPropertyChanged));
+
+    /// <summary>
     /// Identifies the Style dependency property.
     /// </summary>
     public static readonly DependencyProperty StyleProperty =
@@ -120,6 +130,16 @@ public class FrameworkElement : UIElement
     public event SizeChangedEventHandler? SizeChanged;
 
     /// <summary>
+    /// Occurs when the element is laid out, rendered, and ready for interaction (added to visual tree).
+    /// </summary>
+    public event RoutedEventHandler? Loaded;
+
+    /// <summary>
+    /// Occurs when the element is removed from the visual tree.
+    /// </summary>
+    public event RoutedEventHandler? Unloaded;
+
+    /// <summary>
     /// Called when the render size changes.
     /// </summary>
     /// <param name="sizeInfo">Details of the size change.</param>
@@ -140,10 +160,11 @@ public class FrameworkElement : UIElement
 
     /// <summary>
     /// Stores original property values before ANY trigger modified them.
-    /// Key is (target element, property), value is (original value, active trigger count).
+    /// Key is (target element, property), value is
+    /// (original value, active trigger count, suspended dynamic resource key).
     /// Used internally by the trigger system to ensure correct restoration.
     /// </summary>
-    internal readonly Dictionary<(FrameworkElement, DependencyProperty), (object? OriginalValue, int ActiveCount)> _triggerOriginalValues = new();
+    internal readonly Dictionary<(FrameworkElement, DependencyProperty), (object? OriginalValue, int ActiveCount, object? SuspendedDynamicResourceKey)> _triggerOriginalValues = new();
 
     /// <summary>
     /// The implicit style applied to this element based on its type.
@@ -232,8 +253,14 @@ public class FrameworkElement : UIElement
             return element;
         }
 
-        // Try parent's scope
-        return (VisualParent as FrameworkElement)?.FindName(name);
+        // Stop at template boundary: if the parent is the TemplatedParent of this element,
+        // we've reached the template root and should not continue searching upward.
+        if (VisualParent is FrameworkElement parent && parent != _templatedParent)
+        {
+            return parent.FindName(name);
+        }
+
+        return null;
     }
 
     #endregion
@@ -269,7 +296,7 @@ public class FrameworkElement : UIElement
     /// </summary>
     public double Width
     {
-        get => (double)(GetValue(WidthProperty) ?? double.NaN);
+        get => (double)GetValue(WidthProperty)!;
         set => SetValue(WidthProperty, value);
     }
 
@@ -278,7 +305,7 @@ public class FrameworkElement : UIElement
     /// </summary>
     public double Height
     {
-        get => (double)(GetValue(HeightProperty) ?? double.NaN);
+        get => (double)GetValue(HeightProperty)!;
         set => SetValue(HeightProperty, value);
     }
 
@@ -287,7 +314,7 @@ public class FrameworkElement : UIElement
     /// </summary>
     public double MinWidth
     {
-        get => (double)(GetValue(MinWidthProperty) ?? 0.0);
+        get => (double)GetValue(MinWidthProperty)!;
         set => SetValue(MinWidthProperty, value);
     }
 
@@ -296,7 +323,7 @@ public class FrameworkElement : UIElement
     /// </summary>
     public double MinHeight
     {
-        get => (double)(GetValue(MinHeightProperty) ?? 0.0);
+        get => (double)GetValue(MinHeightProperty)!;
         set => SetValue(MinHeightProperty, value);
     }
 
@@ -305,7 +332,7 @@ public class FrameworkElement : UIElement
     /// </summary>
     public double MaxWidth
     {
-        get => (double)(GetValue(MaxWidthProperty) ?? double.PositiveInfinity);
+        get => (double)GetValue(MaxWidthProperty)!;
         set => SetValue(MaxWidthProperty, value);
     }
 
@@ -314,7 +341,7 @@ public class FrameworkElement : UIElement
     /// </summary>
     public double MaxHeight
     {
-        get => (double)(GetValue(MaxHeightProperty) ?? double.PositiveInfinity);
+        get => (double)GetValue(MaxHeightProperty)!;
         set => SetValue(MaxHeightProperty, value);
     }
 
@@ -323,7 +350,7 @@ public class FrameworkElement : UIElement
     /// </summary>
     public Thickness Margin
     {
-        get => (Thickness)(GetValue(MarginProperty) ?? new Thickness(0));
+        get => (Thickness)GetValue(MarginProperty)!;
         set => SetValue(MarginProperty, value);
     }
 
@@ -332,7 +359,7 @@ public class FrameworkElement : UIElement
     /// </summary>
     public HorizontalAlignment HorizontalAlignment
     {
-        get => (HorizontalAlignment)(GetValue(HorizontalAlignmentProperty) ?? HorizontalAlignment.Stretch);
+        get => (HorizontalAlignment)GetValue(HorizontalAlignmentProperty)!;
         set => SetValue(HorizontalAlignmentProperty, value);
     }
 
@@ -341,7 +368,7 @@ public class FrameworkElement : UIElement
     /// </summary>
     public VerticalAlignment VerticalAlignment
     {
-        get => (VerticalAlignment)(GetValue(VerticalAlignmentProperty) ?? VerticalAlignment.Stretch);
+        get => (VerticalAlignment)GetValue(VerticalAlignmentProperty)!;
         set => SetValue(VerticalAlignmentProperty, value);
     }
 
@@ -372,6 +399,57 @@ public class FrameworkElement : UIElement
         set => SetValue(TagProperty, value);
     }
 
+    /// <summary>
+    /// Gets or sets the tooltip for this element.
+    /// </summary>
+    public object? ToolTip
+    {
+        get => GetValue(ToolTipProperty);
+        set => SetValue(ToolTipProperty, value);
+    }
+
+    /// <summary>
+    /// Delegate invoked when mouse enters an element with a ToolTip.
+    /// Set by Controls assembly to show tooltip popup.
+    /// </summary>
+    internal static Action<FrameworkElement, RoutedEventArgs>? ToolTipShowRequested { get; set; }
+
+    /// <summary>
+    /// Delegate invoked when mouse leaves an element with a ToolTip.
+    /// Set by Controls assembly to hide tooltip popup.
+    /// </summary>
+    internal static Action<UIElement>? ToolTipHideRequested { get; set; }
+
+    private static void OnToolTipPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            // Subscribe/unsubscribe directly in Core — no delegate timing issues
+            element.MouseEnter -= OnToolTipMouseEnter;
+            element.MouseLeave -= OnToolTipMouseLeave;
+
+            if (e.NewValue != null)
+            {
+                element.MouseEnter += OnToolTipMouseEnter;
+                element.MouseLeave += OnToolTipMouseLeave;
+                Debug.WriteLine($"[ToolTip] Subscribed MouseEnter/Leave on {element.GetType().Name}, value={e.NewValue}");
+            }
+        }
+    }
+
+    private static void OnToolTipMouseEnter(object? sender, RoutedEventArgs e)
+    {
+        Debug.WriteLine($"[ToolTip] MouseEnter fired on {sender?.GetType().Name}, delegate={ToolTipShowRequested != null}");
+        if (sender is FrameworkElement fe && fe.ToolTip != null)
+            ToolTipShowRequested?.Invoke(fe, e);
+    }
+
+    private static void OnToolTipMouseLeave(object? sender, RoutedEventArgs e)
+    {
+        if (sender is UIElement element)
+            ToolTipHideRequested?.Invoke(element);
+    }
+
     private ResourceDictionary? _resources;
 
     /// <summary>
@@ -384,12 +462,27 @@ public class FrameworkElement : UIElement
     /// </summary>
     public ResourceDictionary Resources
     {
-        get => _resources ??= new ResourceDictionary();
+        get
+        {
+            if (_resources == null)
+            {
+                _resources = new ResourceDictionary();
+                _resources.Changed += OnLocalResourcesDictionaryChanged;
+            }
+
+            return _resources;
+        }
         set
         {
             if (_resources != value)
             {
-                _resources = value;
+                if (_resources != null)
+                {
+                    _resources.Changed -= OnLocalResourcesDictionaryChanged;
+                }
+
+                _resources = value ?? new ResourceDictionary();
+                _resources.Changed += OnLocalResourcesDictionaryChanged;
                 OnResourcesChanged();
             }
         }
@@ -400,7 +493,30 @@ public class FrameworkElement : UIElement
     /// </summary>
     protected virtual void OnResourcesChanged()
     {
+        RaiseResourcesChangedInSubtree();
+    }
+
+    private void OnLocalResourcesDictionaryChanged(object? sender, EventArgs e)
+    {
+        OnResourcesChanged();
+    }
+
+    internal void NotifyResourcesChangedFromRoot()
+    {
+        RaiseResourcesChangedInSubtree();
+    }
+
+    private void RaiseResourcesChangedInSubtree()
+    {
         ResourcesChanged?.Invoke(this, EventArgs.Empty);
+
+        for (int i = 0; i < VisualChildrenCount; i++)
+        {
+            if (GetVisualChild(i) is FrameworkElement child)
+            {
+                child.RaiseResourcesChangedInSubtree();
+            }
+        }
     }
 
     /// <summary>
@@ -506,50 +622,6 @@ public class FrameworkElement : UIElement
         return new Point(x, y);
     }
 
-    /// <summary>
-    /// Debug helper: Gets a string describing the visual bounds chain from this element to the root.
-    /// </summary>
-    public string GetVisualBoundsChainDebug()
-    {
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine($"Visual Bounds Chain for {GetType().Name} (Name={Name}):");
-
-        Visual? current = this;
-        int depth = 0;
-        double totalX = 0, totalY = 0;
-
-        while (current != null)
-        {
-            string indent = new string(' ', depth * 2);
-            string name = (current as FrameworkElement)?.Name ?? "";
-            if (!string.IsNullOrEmpty(name)) name = $" [{name}]";
-
-            if (current is FrameworkElement fe)
-            {
-                var bounds = fe._visualBounds;
-                sb.AppendLine($"{indent}{current.GetType().Name}{name}:");
-                sb.AppendLine($"{indent}  VisualBounds = ({bounds.X:F1}, {bounds.Y:F1}, {bounds.Width:F1}, {bounds.Height:F1})");
-                sb.AppendLine($"{indent}  VisualParent = {(current.VisualParent?.GetType().Name ?? "null")}");
-
-                if (current.VisualParent != null)
-                {
-                    totalX += bounds.X;
-                    totalY += bounds.Y;
-                }
-            }
-            else
-            {
-                sb.AppendLine($"{indent}{current.GetType().Name}{name}: (not FrameworkElement)");
-            }
-
-            current = current.VisualParent;
-            depth++;
-        }
-
-        sb.AppendLine($"Total offset from window: ({totalX:F1}, {totalY:F1})");
-        return sb.ToString();
-    }
-
     /// <inheritdoc />
     protected override Size MeasureCore(Size availableSize)
     {
@@ -587,7 +659,9 @@ public class FrameworkElement : UIElement
         resultWidth = Math.Clamp(resultWidth, MinWidth, MaxWidth);
         resultHeight = Math.Clamp(resultHeight, MinHeight, MaxHeight);
 
-        return new Size(resultWidth + marginWidth, resultHeight + marginHeight);
+        return new Size(
+            Math.Max(0, resultWidth + marginWidth),
+            Math.Max(0, resultHeight + marginHeight));
     }
 
     /// <inheritdoc />
@@ -671,6 +745,10 @@ public class FrameworkElement : UIElement
 
         // Set visual bounds for rendering
         _visualBounds = new Rect(x, y, renderSize.Width, renderSize.Height);
+
+        // Update _renderSize BEFORE firing SizeChanged so that handlers
+        // reading ActualWidth/ActualHeight/RenderSize see the new values.
+        _renderSize = renderSize;
 
         // Check for size change and raise SizeChanged event
         if (renderSize != _previousRenderSize)
@@ -858,6 +936,50 @@ public class FrameworkElement : UIElement
         {
             element.OnDataContextChanged(e.OldValue, e.NewValue);
             element.DataContextChanged?.Invoke(element, e);
+
+            // Propagate DataContext change to descendants that don't have their own DataContext.
+            // In WPF, DataContext is an inherited dependency property, so children automatically
+            // see the change. Since Jalium.UI uses a visual tree walk-up approach instead,
+            // we need to manually notify descendants so their bindings can re-resolve.
+            PropagateDataContextToDescendants(element, e);
+        }
+    }
+
+    /// <summary>
+    /// Propagates DataContext changes to descendant elements that rely on inherited DataContext.
+    /// Only descendants without their own explicit DataContext are notified.
+    /// </summary>
+    private static void PropagateDataContextToDescendants(Visual parent, DependencyPropertyChangedEventArgs e)
+    {
+        var childCount = parent.VisualChildrenCount;
+        for (int i = 0; i < childCount; i++)
+        {
+            var child = parent.GetVisualChild(i);
+            if (child is FrameworkElement childElement)
+            {
+                // Only propagate if the child doesn't have its own explicit (local) DataContext.
+                // Cannot use `childElement.DataContext == null` because DataContext is inherited
+                // via the visual tree — GetValue returns the parent's DataContext, which is non-null
+                // when the parent has one, causing this check to wrongly skip propagation.
+                if (!childElement.HasLocalValue(DataContextProperty))
+                {
+                    // Reactivate any Unattached bindings that couldn't resolve earlier
+                    // (they haven't subscribed to DataContextChanged yet)
+                    childElement.ReactivateBindings();
+
+                    // Fire DataContextChanged on the child so its active bindings re-resolve
+                    childElement.OnDataContextChanged(e.OldValue, e.NewValue);
+                    childElement.DataContextChanged?.Invoke(childElement, e);
+
+                    // Continue propagating to this child's descendants
+                    PropagateDataContextToDescendants(childElement, e);
+                }
+            }
+            else if (child != null)
+            {
+                // Non-FrameworkElement visuals: still propagate to their children
+                PropagateDataContextToDescendants(child, e);
+            }
         }
     }
 
@@ -913,39 +1035,120 @@ public class FrameworkElement : UIElement
     protected override void OnVisualParentChanged(Visual? oldParent)
     {
         base.OnVisualParentChanged(oldParent);
+
+        // Invalidate cached Window/LayoutManager references for this subtree
+        InvalidateHostCaches();
+
         ApplyImplicitStyleIfNeeded();
 
         // Reactivate bindings when visual parent changes
-        // This allows RelativeSource FindAncestor bindings to resolve after being added to the visual tree
+        // This allows DataContext and RelativeSource FindAncestor bindings to resolve
+        // after being added to the visual tree
         if (VisualParent != null)
         {
-            ReactivateBindings();
+            // Recursively reactivate bindings on this element and ALL descendants,
+            // because descendants may have bindings that depend on DataContext
+            // inherited from an ancestor that is now reachable via the visual tree
+            ReactivateBindingsRecursive(this);
+
+            // Defer Loaded event until after layout completes.
+            // WPF fires Loaded after the first Measure/Arrange pass, so
+            // ActualWidth/ActualHeight are available in handlers.
+            var dispatcher = Dispatcher.CurrentDispatcher;
+            if (dispatcher != null)
+            {
+                dispatcher.BeginInvoke(() => Loaded?.Invoke(this, new RoutedEventArgs()));
+            }
+            else
+            {
+                Loaded?.Invoke(this, new RoutedEventArgs());
+            }
+        }
+        else if (oldParent != null)
+        {
+            // Release mouse capture when removed from the visual tree
+            // to prevent orphan capture references and stuck interaction state
+            if (IsMouseCaptured)
+            {
+                ReleaseMouseCapture();
+            }
+
+            // Remove from LayoutManager queues when detached from tree
+            RemoveFromLayoutManager(oldParent);
+
+            Unloaded?.Invoke(this, new RoutedEventArgs());
         }
     }
 
     /// <summary>
-    /// Applies an implicit style to this element if no explicit style is set.
+    /// Removes this element from the LayoutManager's queues when detached from the visual tree.
     /// </summary>
-    private void ApplyImplicitStyleIfNeeded()
+    private void RemoveFromLayoutManager(Visual oldParent)
     {
-        // Explicit style takes priority
-        if (Style != null)
+        Visual? current = oldParent;
+        while (current != null)
+        {
+            if (current is ILayoutManagerHost host)
+            {
+                host.LayoutManager.Remove(this);
+                return;
+            }
+            current = current.VisualParent;
+        }
+    }
+
+    /// <summary>
+    /// Recursively reactivates bindings on the given element and all its visual descendants.
+    /// </summary>
+    private static void ReactivateBindingsRecursive(Visual visual)
+    {
+        if (visual is DependencyObject depObj)
+        {
+            depObj.ReactivateBindings();
+        }
+
+        var childCount = visual.VisualChildrenCount;
+        for (int i = 0; i < childCount; i++)
+        {
+            var child = visual.GetVisualChild(i);
+            if (child != null)
+            {
+                ReactivateBindingsRecursive(child);
+            }
+        }
+    }
+
+
+    /// <summary>
+    /// Applies an implicit style to this element if no explicit style is set.
+    /// Called from OnVisualParentChanged and also by Window.Show() to handle
+    /// elements created before the theme was loaded.
+    /// </summary>
+    internal void ApplyImplicitStyleIfNeeded()
+    {
+        // Explicit style or implicit style already applied — nothing to do.
+        // Matches WPF behavior: implicit styles are determined when the element
+        // first enters the visual tree and persist until an explicit Style is set.
+        // Re-applying would destroy and recreate ControlTemplate visual trees,
+        // losing any children that were programmatically added to template parts.
+        if (Style != null || _implicitStyle != null)
         {
             return;
         }
 
-        // Remove old implicit style
-        if (_implicitStyle != null)
+        // Look up implicit style by Type, walking up the hierarchy.
+        Style? implicitStyle = null;
+        var currentType = GetType();
+        while (currentType != null && currentType != typeof(FrameworkElement))
         {
-            _implicitStyle.Remove(this);
-            _implicitStyle = null;
+            implicitStyle = TryFindResource(currentType) as Style;
+            if (implicitStyle != null && IsStyleApplicable(implicitStyle))
+                break;
+            implicitStyle = null;
+            currentType = currentType.BaseType;
         }
 
-        // Look up implicit style by Type
-        var elementType = GetType();
-        var implicitStyle = TryFindResource(elementType) as Style;
-
-        if (implicitStyle != null && IsStyleApplicable(implicitStyle))
+        if (implicitStyle != null)
         {
             _implicitStyle = implicitStyle;
             implicitStyle.Apply(this);
@@ -962,6 +1165,58 @@ public class FrameworkElement : UIElement
             return true;
 
         return style.TargetType.IsAssignableFrom(GetType());
+    }
+
+    #endregion
+
+    #region Compiled Bundle Support
+
+    private object? _compiledBundle;
+
+    /// <summary>
+    /// Render callback for compiled bundle. Set by Jalium.UI.Xaml to inject rendering logic.
+    /// Uses object type to avoid circular dependencies with Jalium.UI.Gpu.
+    /// </summary>
+    private Action<object>? _bundleRenderCallback;
+
+    /// <summary>
+    /// Gets the compiled UI bundle associated with this element, if any.
+    /// The bundle is stored as object to avoid circular dependencies with Jalium.UI.Gpu.
+    /// </summary>
+    public object? CompiledBundle => _compiledBundle;
+
+    /// <summary>
+    /// Sets the compiled UI bundle for this element.
+    /// This is called by the generated InitializeComponent method when using Source Generator embedded binary data.
+    /// </summary>
+    /// <param name="bundle">The compiled UI bundle to associate with this element (typically Jalium.UI.Gpu.CompiledUIBundle).</param>
+    public void SetCompiledBundle(object bundle)
+    {
+        _compiledBundle = bundle;
+
+        // Mark the element as needing a visual update
+        InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Sets the render callback for bundle rendering.
+    /// Called by XamlReader.ApplyBundle to inject rendering logic from Jalium.UI.Xaml.
+    /// </summary>
+    /// <param name="callback">The callback that renders the bundle to a DrawingContext.</param>
+    public void SetBundleRenderCallback(Action<object>? callback)
+    {
+        _bundleRenderCallback = callback;
+    }
+
+    /// <summary>
+    /// Override to render the compiled bundle.
+    /// </summary>
+    protected override void OnRender(object drawingContext)
+    {
+        base.OnRender(drawingContext);
+
+        // Invoke the bundle render callback if set
+        _bundleRenderCallback?.Invoke(drawingContext);
     }
 
     #endregion
@@ -992,7 +1247,7 @@ public enum VerticalAlignment
 /// <summary>
 /// Provides data for the RequestBringIntoView event.
 /// </summary>
-public class RequestBringIntoViewEventArgs : RoutedEventArgs
+public sealed class RequestBringIntoViewEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the object that should be made visible.
@@ -1026,7 +1281,7 @@ public delegate void SizeChangedEventHandler(object sender, SizeChangedEventArgs
 /// <summary>
 /// Provides data for the SizeChanged event.
 /// </summary>
-public class SizeChangedEventArgs : EventArgs
+public sealed class SizeChangedEventArgs : EventArgs
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="SizeChangedEventArgs"/> class.
@@ -1064,7 +1319,7 @@ public class SizeChangedEventArgs : EventArgs
 /// <summary>
 /// Contains information about a size change.
 /// </summary>
-public class SizeChangedInfo
+public sealed class SizeChangedInfo
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="SizeChangedInfo"/> class.

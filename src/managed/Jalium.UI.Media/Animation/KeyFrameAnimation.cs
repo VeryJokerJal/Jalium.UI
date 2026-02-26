@@ -182,7 +182,7 @@ public abstract class KeyFrame<T> : DependencyObject, IKeyFrame
 /// <summary>
 /// A keyframe that defines a double value at a specific time with discrete interpolation.
 /// </summary>
-public class DiscreteDoubleKeyFrame : KeyFrame<double>
+public sealed class DiscreteDoubleKeyFrame : KeyFrame<double>
 {
     public DiscreteDoubleKeyFrame() { }
     public DiscreteDoubleKeyFrame(double value) => TypedValue = value;
@@ -198,7 +198,7 @@ public class DiscreteDoubleKeyFrame : KeyFrame<double>
 /// <summary>
 /// A keyframe that defines a double value at a specific time with linear interpolation.
 /// </summary>
-public class LinearDoubleKeyFrame : KeyFrame<double>
+public sealed class LinearDoubleKeyFrame : KeyFrame<double>
 {
     public LinearDoubleKeyFrame() { }
     public LinearDoubleKeyFrame(double value) => TypedValue = value;
@@ -213,7 +213,7 @@ public class LinearDoubleKeyFrame : KeyFrame<double>
 /// <summary>
 /// A keyframe that defines a double value at a specific time with spline interpolation.
 /// </summary>
-public class SplineDoubleKeyFrame : KeyFrame<double>
+public sealed class SplineDoubleKeyFrame : KeyFrame<double>
 {
     /// <summary>
     /// Gets or sets the spline that controls the animation.
@@ -240,7 +240,7 @@ public class SplineDoubleKeyFrame : KeyFrame<double>
 /// <summary>
 /// A keyframe that uses an easing function for double animation.
 /// </summary>
-public class EasingDoubleKeyFrame : KeyFrame<double>
+public sealed class EasingDoubleKeyFrame : KeyFrame<double>
 {
     /// <summary>
     /// Gets or sets the easing function applied to this keyframe.
@@ -271,7 +271,7 @@ public class EasingDoubleKeyFrame : KeyFrame<double>
 /// <summary>
 /// A keyframe that defines a Color value with discrete interpolation.
 /// </summary>
-public class DiscreteColorKeyFrame : KeyFrame<Color>
+public sealed class DiscreteColorKeyFrame : KeyFrame<Color>
 {
     public DiscreteColorKeyFrame() { }
     public DiscreteColorKeyFrame(Color value) => TypedValue = value;
@@ -286,7 +286,7 @@ public class DiscreteColorKeyFrame : KeyFrame<Color>
 /// <summary>
 /// A keyframe that defines a Color value with linear interpolation.
 /// </summary>
-public class LinearColorKeyFrame : KeyFrame<Color>
+public sealed class LinearColorKeyFrame : KeyFrame<Color>
 {
     public LinearColorKeyFrame() { }
     public LinearColorKeyFrame(Color value) => TypedValue = value;
@@ -305,7 +305,7 @@ public class LinearColorKeyFrame : KeyFrame<Color>
 /// <summary>
 /// A keyframe that defines a Color value with spline interpolation.
 /// </summary>
-public class SplineColorKeyFrame : KeyFrame<Color>
+public sealed class SplineColorKeyFrame : KeyFrame<Color>
 {
     public KeySpline? KeySpline { get; set; }
 
@@ -333,7 +333,7 @@ public class SplineColorKeyFrame : KeyFrame<Color>
 /// <summary>
 /// A keyframe that uses an easing function for Color animation.
 /// </summary>
-public class EasingColorKeyFrame : KeyFrame<Color>
+public sealed class EasingColorKeyFrame : KeyFrame<Color>
 {
     public IEasingFunction? EasingFunction { get; set; }
 
@@ -359,7 +359,7 @@ public class EasingColorKeyFrame : KeyFrame<Color>
 /// <summary>
 /// A keyframe that defines a Point value with discrete interpolation.
 /// </summary>
-public class DiscretePointKeyFrame : KeyFrame<Point>
+public sealed class DiscretePointKeyFrame : KeyFrame<Point>
 {
     public DiscretePointKeyFrame() { }
     public DiscretePointKeyFrame(Point value) => TypedValue = value;
@@ -374,7 +374,7 @@ public class DiscretePointKeyFrame : KeyFrame<Point>
 /// <summary>
 /// A keyframe that defines a Point value with linear interpolation.
 /// </summary>
-public class LinearPointKeyFrame : KeyFrame<Point>
+public sealed class LinearPointKeyFrame : KeyFrame<Point>
 {
     public LinearPointKeyFrame() { }
     public LinearPointKeyFrame(Point value) => TypedValue = value;
@@ -391,7 +391,7 @@ public class LinearPointKeyFrame : KeyFrame<Point>
 /// <summary>
 /// A keyframe that defines a Point value with spline interpolation.
 /// </summary>
-public class SplinePointKeyFrame : KeyFrame<Point>
+public sealed class SplinePointKeyFrame : KeyFrame<Point>
 {
     public KeySpline? KeySpline { get; set; }
 
@@ -411,7 +411,7 @@ public class SplinePointKeyFrame : KeyFrame<Point>
 /// <summary>
 /// A keyframe that uses an easing function for Point animation.
 /// </summary>
-public class EasingPointKeyFrame : KeyFrame<Point>
+public sealed class EasingPointKeyFrame : KeyFrame<Point>
 {
     public IEasingFunction? EasingFunction { get; set; }
 
@@ -435,7 +435,7 @@ public class EasingPointKeyFrame : KeyFrame<Point>
 /// <summary>
 /// A keyframe that defines a Thickness value with discrete interpolation.
 /// </summary>
-public class DiscreteThicknessKeyFrame : KeyFrame<Thickness>
+public sealed class DiscreteThicknessKeyFrame : KeyFrame<Thickness>
 {
     public DiscreteThicknessKeyFrame() { }
     public DiscreteThicknessKeyFrame(Thickness value) => TypedValue = value;
@@ -450,7 +450,7 @@ public class DiscreteThicknessKeyFrame : KeyFrame<Thickness>
 /// <summary>
 /// A keyframe that defines a Thickness value with linear interpolation.
 /// </summary>
-public class LinearThicknessKeyFrame : KeyFrame<Thickness>
+public sealed class LinearThicknessKeyFrame : KeyFrame<Thickness>
 {
     public LinearThicknessKeyFrame() { }
     public LinearThicknessKeyFrame(Thickness value) => TypedValue = value;
@@ -469,7 +469,7 @@ public class LinearThicknessKeyFrame : KeyFrame<Thickness>
 /// <summary>
 /// A keyframe that defines a Thickness value with spline interpolation.
 /// </summary>
-public class SplineThicknessKeyFrame : KeyFrame<Thickness>
+public sealed class SplineThicknessKeyFrame : KeyFrame<Thickness>
 {
     public KeySpline? KeySpline { get; set; }
 
@@ -495,7 +495,7 @@ public class SplineThicknessKeyFrame : KeyFrame<Thickness>
 /// <summary>
 /// A keyframe that defines an Object value with discrete interpolation.
 /// </summary>
-public class DiscreteObjectKeyFrame : KeyFrame<object>
+public sealed class DiscreteObjectKeyFrame : KeyFrame<object>
 {
     public DiscreteObjectKeyFrame() { }
     public DiscreteObjectKeyFrame(object value) => TypedValue = value;
@@ -512,7 +512,7 @@ public class DiscreteObjectKeyFrame : KeyFrame<object>
 /// <summary>
 /// Represents a cubic Bezier curve used for spline keyframes.
 /// </summary>
-public class KeySpline
+public sealed class KeySpline
 {
     /// <summary>
     /// Gets or sets the first control point of the spline.
@@ -612,27 +612,27 @@ public class KeyFrameCollection<T> : List<KeyFrame<T>> where T : notnull
 /// <summary>
 /// A collection of double keyframes.
 /// </summary>
-public class DoubleKeyFrameCollection : KeyFrameCollection<double> { }
+public sealed class DoubleKeyFrameCollection : KeyFrameCollection<double> { }
 
 /// <summary>
 /// A collection of Color keyframes.
 /// </summary>
-public class ColorKeyFrameCollection : KeyFrameCollection<Color> { }
+public sealed class ColorKeyFrameCollection : KeyFrameCollection<Color> { }
 
 /// <summary>
 /// A collection of Point keyframes.
 /// </summary>
-public class PointKeyFrameCollection : KeyFrameCollection<Point> { }
+public sealed class PointKeyFrameCollection : KeyFrameCollection<Point> { }
 
 /// <summary>
 /// A collection of Thickness keyframes.
 /// </summary>
-public class ThicknessKeyFrameCollection : KeyFrameCollection<Thickness> { }
+public sealed class ThicknessKeyFrameCollection : KeyFrameCollection<Thickness> { }
 
 /// <summary>
 /// A collection of Object keyframes.
 /// </summary>
-public class ObjectKeyFrameCollection : KeyFrameCollection<object> { }
+public sealed class ObjectKeyFrameCollection : KeyFrameCollection<object> { }
 
 #endregion
 
@@ -774,7 +774,7 @@ public abstract class KeyFrameAnimationTimeline<T> : AnimationTimeline<T> where 
 /// <summary>
 /// Animates the value of a double property using keyframes.
 /// </summary>
-public class DoubleAnimationUsingKeyFrames : KeyFrameAnimationTimeline<double>
+public sealed class DoubleAnimationUsingKeyFrames : KeyFrameAnimationTimeline<double>
 {
     private readonly DoubleKeyFrameCollection _keyFrames = new();
 
@@ -787,7 +787,7 @@ public class DoubleAnimationUsingKeyFrames : KeyFrameAnimationTimeline<double>
 /// <summary>
 /// Animates the value of a Color property using keyframes.
 /// </summary>
-public class ColorAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Color>
+public sealed class ColorAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Color>
 {
     private readonly ColorKeyFrameCollection _keyFrames = new();
 
@@ -800,7 +800,7 @@ public class ColorAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Color>
 /// <summary>
 /// Animates the value of a Point property using keyframes.
 /// </summary>
-public class PointAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Point>
+public sealed class PointAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Point>
 {
     private readonly PointKeyFrameCollection _keyFrames = new();
 
@@ -813,7 +813,7 @@ public class PointAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Point>
 /// <summary>
 /// Animates the value of a Thickness property using keyframes.
 /// </summary>
-public class ThicknessAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Thickness>
+public sealed class ThicknessAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Thickness>
 {
     private readonly ThicknessKeyFrameCollection _keyFrames = new();
 
@@ -826,7 +826,7 @@ public class ThicknessAnimationUsingKeyFrames : KeyFrameAnimationTimeline<Thickn
 /// <summary>
 /// Animates the value of an Object property using discrete keyframes.
 /// </summary>
-public class ObjectAnimationUsingKeyFrames : KeyFrameAnimationTimeline<object>
+public sealed class ObjectAnimationUsingKeyFrames : KeyFrameAnimationTimeline<object>
 {
     private readonly ObjectKeyFrameCollection _keyFrames = new();
 

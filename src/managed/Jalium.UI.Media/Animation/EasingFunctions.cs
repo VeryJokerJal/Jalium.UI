@@ -67,7 +67,7 @@ public abstract class EasingFunctionBase : IEasingFunction
 /// <summary>
 /// Represents an easing function that creates an animation that accelerates and/or decelerates using a polynomial formula.
 /// </summary>
-public class PowerEase : EasingFunctionBase
+public sealed class PowerEase : EasingFunctionBase
 {
     /// <summary>
     /// Gets or sets the exponential power of the animation interpolation.
@@ -83,7 +83,7 @@ public class PowerEase : EasingFunctionBase
 /// <summary>
 /// Represents an easing function that creates a quadratic animation curve.
 /// </summary>
-public class QuadraticEase : EasingFunctionBase
+public sealed class QuadraticEase : EasingFunctionBase
 {
     protected override double EaseInCore(double normalizedTime)
     {
@@ -105,7 +105,7 @@ public class CubicEase : EasingFunctionBase
 /// <summary>
 /// Represents an easing function that creates a quartic animation curve.
 /// </summary>
-public class QuarticEase : EasingFunctionBase
+public sealed class QuarticEase : EasingFunctionBase
 {
     protected override double EaseInCore(double normalizedTime)
     {
@@ -117,7 +117,7 @@ public class QuarticEase : EasingFunctionBase
 /// <summary>
 /// Represents an easing function that creates a quintic animation curve.
 /// </summary>
-public class QuinticEase : EasingFunctionBase
+public sealed class QuinticEase : EasingFunctionBase
 {
     protected override double EaseInCore(double normalizedTime)
     {
@@ -129,7 +129,7 @@ public class QuinticEase : EasingFunctionBase
 /// <summary>
 /// Represents an easing function that creates an animation that resembles a spring oscillating.
 /// </summary>
-public class ElasticEase : EasingFunctionBase
+public sealed class ElasticEase : EasingFunctionBase
 {
     /// <summary>
     /// Gets or sets the number of oscillations.
@@ -157,7 +157,7 @@ public class ElasticEase : EasingFunctionBase
 /// <summary>
 /// Represents an easing function that creates a bouncing effect.
 /// </summary>
-public class BounceEase : EasingFunctionBase
+public sealed class BounceEase : EasingFunctionBase
 {
     /// <summary>
     /// Gets or sets the number of bounces.
@@ -223,7 +223,7 @@ public class BackEase : EasingFunctionBase
 /// <summary>
 /// Represents an easing function that creates a circular animation curve.
 /// </summary>
-public class CircleEase : EasingFunctionBase
+public sealed class CircleEase : EasingFunctionBase
 {
     protected override double EaseInCore(double normalizedTime)
     {
@@ -234,7 +234,7 @@ public class CircleEase : EasingFunctionBase
 /// <summary>
 /// Represents an easing function that creates an exponential animation curve.
 /// </summary>
-public class ExponentialEase : EasingFunctionBase
+public sealed class ExponentialEase : EasingFunctionBase
 {
     /// <summary>
     /// Gets or sets the exponent.
@@ -253,7 +253,7 @@ public class ExponentialEase : EasingFunctionBase
 /// <summary>
 /// Represents an easing function that creates a sine animation curve.
 /// </summary>
-public class SineEase : EasingFunctionBase
+public sealed class SineEase : EasingFunctionBase
 {
     protected override double EaseInCore(double normalizedTime)
     {
@@ -264,7 +264,7 @@ public class SineEase : EasingFunctionBase
 /// <summary>
 /// A simple linear easing function (no easing).
 /// </summary>
-public class LinearEase : IEasingFunction
+public sealed class LinearEase : IEasingFunction
 {
     /// <summary>
     /// Returns the same value (linear progression).

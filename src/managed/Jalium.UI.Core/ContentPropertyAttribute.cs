@@ -5,7 +5,7 @@ namespace Jalium.UI;
 /// This attribute is used by XAML parsers to determine where to place content children.
 /// </summary>
 [AttributeUsage(AttributeTargets.Class, Inherited = true)]
-public class ContentPropertyAttribute : Attribute
+public sealed class ContentPropertyAttribute : Attribute
 {
     /// <summary>
     /// Gets the name of the content property.

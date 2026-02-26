@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls.Ink;
 /// <summary>
 /// Represents a collection of <see cref="StylusPoint"/> values that can be individually accessed by index.
 /// </summary>
-public class StylusPointCollection : IList<StylusPoint>, IList, INotifyCollectionChanged
+public sealed class StylusPointCollection : IList<StylusPoint>, IList, INotifyCollectionChanged
 {
     private readonly List<StylusPoint> _points;
 
@@ -264,7 +264,7 @@ public class StylusPointCollection : IList<StylusPoint>, IList, INotifyCollectio
     /// <summary>
     /// Raises the <see cref="CollectionChanged"/> event.
     /// </summary>
-    protected virtual void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
+    protected void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
     {
         CollectionChanged?.Invoke(this, e);
         Changed?.Invoke(this, EventArgs.Empty);

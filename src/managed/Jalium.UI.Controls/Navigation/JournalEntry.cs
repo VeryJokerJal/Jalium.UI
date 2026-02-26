@@ -1,9 +1,9 @@
-namespace Jalium.UI.Controls.Navigation;
+﻿namespace Jalium.UI.Controls.Navigation;
 
 /// <summary>
 /// Represents an entry in either back or forward navigation history.
 /// </summary>
-public class JournalEntry : DependencyObject
+public sealed class JournalEntry : DependencyObject
 {
     #region Dependency Properties
 
@@ -146,7 +146,7 @@ public abstract class PageFunction<T> : Page
 /// Provides data for the Return event of a PageFunction.
 /// </summary>
 /// <typeparam name="T">The type of the return value.</typeparam>
-public class ReturnEventArgs<T> : EventArgs
+public sealed class ReturnEventArgs<T> : EventArgs
 {
     /// <summary>
     /// Gets the return value.
@@ -174,7 +174,7 @@ public class ReturnEventArgs<T> : EventArgs
 /// JournalEntryUnifiedViewConverter is used to unify the view for both
 /// back and forward navigation history entries.
 /// </summary>
-public class JournalEntryUnifiedViewConverter
+public sealed class JournalEntryUnifiedViewConverter
 {
     /// <summary>
     /// Gets the unified view for the specified navigation history entries.
@@ -186,10 +186,9 @@ public class JournalEntryUnifiedViewConverter
         IEnumerable<JournalEntry> backEntries,
         IEnumerable<JournalEntry> forwardEntries)
     {
-        var result = new List<JournalEntryPosition>();
-
         // Add forward entries in reverse order (most recent first)
         var forwardList = forwardEntries.ToList();
+        var result = new List<JournalEntryPosition>(forwardList.Count);
         for (int i = forwardList.Count - 1; i >= 0; i--)
         {
             result.Add(new JournalEntryPosition(forwardList[i], i + 1, JournalEntryPositionType.Forward));
@@ -213,7 +212,7 @@ public class JournalEntryUnifiedViewConverter
 /// <summary>
 /// Represents a journal entry with its position in the navigation history.
 /// </summary>
-public class JournalEntryPosition
+public sealed class JournalEntryPosition
 {
     /// <summary>
     /// Gets the journal entry.

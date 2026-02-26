@@ -1,3 +1,4 @@
+﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
@@ -7,8 +8,19 @@ namespace Jalium.UI.Controls;
 /// Represents a control that displays a message to the user with an optional close button.
 /// Used for showing informational, success, warning, or error messages.
 /// </summary>
-public class InfoBar : ContentControl
+public sealed class InfoBar : ContentControl
 {
+    // Cached brushes for OnRender (per-severity)
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_infoBgBrush = new(Color.FromRgb(45, 45, 55));
+    private static readonly SolidColorBrush s_infoIconBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_successBgBrush = new(Color.FromRgb(35, 55, 40));
+    private static readonly SolidColorBrush s_successIconBrush = new(Color.FromRgb(16, 185, 129));
+    private static readonly SolidColorBrush s_warningBgBrush = new(Color.FromRgb(55, 50, 35));
+    private static readonly SolidColorBrush s_warningIconBrush = new(Color.FromRgb(245, 158, 11));
+    private static readonly SolidColorBrush s_errorBgBrush = new(Color.FromRgb(55, 35, 40));
+    private static readonly SolidColorBrush s_errorIconBrush = new(Color.FromRgb(239, 68, 68));
+
     #region Dependency Properties
 
     /// <summary>
@@ -123,7 +135,7 @@ public class InfoBar : ContentControl
     /// </summary>
     public InfoBarSeverity Severity
     {
-        get => (InfoBarSeverity)(GetValue(SeverityProperty) ?? InfoBarSeverity.Informational);
+        get => (InfoBarSeverity)GetValue(SeverityProperty)!;
         set => SetValue(SeverityProperty, value);
     }
 
@@ -132,7 +144,7 @@ public class InfoBar : ContentControl
     /// </summary>
     public bool IsOpen
     {
-        get => (bool)(GetValue(IsOpenProperty) ?? true);
+        get => (bool)GetValue(IsOpenProperty)!;
         set => SetValue(IsOpenProperty, value);
     }
 
@@ -141,7 +153,7 @@ public class InfoBar : ContentControl
     /// </summary>
     public bool IsClosable
     {
-        get => (bool)(GetValue(IsClosableProperty) ?? true);
+        get => (bool)GetValue(IsClosableProperty)!;
         set => SetValue(IsClosableProperty, value);
     }
 
@@ -150,7 +162,7 @@ public class InfoBar : ContentControl
     /// </summary>
     public bool IsIconVisible
     {
-        get => (bool)(GetValue(IsIconVisibleProperty) ?? true);
+        get => (bool)GetValue(IsIconVisibleProperty)!;
         set => SetValue(IsIconVisibleProperty, value);
     }
 
@@ -296,18 +308,18 @@ public class InfoBar : ContentControl
         var padding = Padding;
         var cornerRadius = CornerRadius;
 
-        // Get severity colors
-        var (bgColor, fgColor, iconColor) = GetSeverityColors();
+        // Get severity brushes (cached) and colors (for sub-methods that need Color)
+        var (severityBgBrush, severityIconBrush) = GetSeverityBrushes();
+        var (_, fgColor, iconColor) = GetSeverityColors();
 
         // Draw background
-        var bgBrush = Background ?? new SolidColorBrush(bgColor);
+        var bgBrush = Background ?? severityBgBrush;
         dc.DrawRoundedRectangle(bgBrush, null, rect, cornerRadius);
 
         // Draw left accent bar (only left corners have radius)
         var accentRect = new Rect(0, 0, 4, rect.Height);
-        var accentBrush = new SolidColorBrush(iconColor);
         var accentCornerRadius = new CornerRadius(cornerRadius.TopLeft, 0, 0, cornerRadius.BottomLeft);
-        dc.DrawRoundedRectangle(accentBrush, null, accentRect, accentCornerRadius);
+        dc.DrawRoundedRectangle(severityIconBrush, null, accentRect, accentCornerRadius);
 
         var currentX = padding.Left + 4; // After accent bar
 
@@ -319,7 +331,7 @@ public class InfoBar : ContentControl
         }
 
         // Draw title and message
-        var textBrush = Foreground ?? new SolidColorBrush(fgColor);
+        var textBrush = Foreground ?? s_whiteBrush;
         var currentY = padding.Top;
 
         if (!string.IsNullOrEmpty(Title))
@@ -412,6 +424,18 @@ public class InfoBar : ContentControl
 
         dc.DrawLine(closePen, new Point(centerX - size, centerY - size), new Point(centerX + size, centerY + size));
         dc.DrawLine(closePen, new Point(centerX + size, centerY - size), new Point(centerX - size, centerY + size));
+    }
+
+    private (SolidColorBrush Background, SolidColorBrush Icon) GetSeverityBrushes()
+    {
+        return Severity switch
+        {
+            InfoBarSeverity.Informational => (s_infoBgBrush, s_infoIconBrush),
+            InfoBarSeverity.Success => (s_successBgBrush, s_successIconBrush),
+            InfoBarSeverity.Warning => (s_warningBgBrush, s_warningIconBrush),
+            InfoBarSeverity.Error => (s_errorBgBrush, s_errorIconBrush),
+            _ => (s_infoBgBrush, s_infoIconBrush)
+        };
     }
 
     private (Color Background, Color Foreground, Color Icon) GetSeverityColors()

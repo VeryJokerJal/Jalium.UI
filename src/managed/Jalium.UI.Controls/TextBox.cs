@@ -1,6 +1,7 @@
-using System.Text;
+﻿using System.Text;
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -51,6 +52,19 @@ public class TextBox : TextBoxBase, IImeSupport
 
     // Auto-formatting
     private List<FormattedRegion> _formattedRegions = new();
+
+    // Static brushes & pens for rendering
+    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly Pen s_focusPen = new(s_focusBorderBrush, 1);
+    private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_spellErrorBrush = new(Color.FromRgb(255, 0, 0));
+    private static readonly Pen s_spellErrorPen = new(s_spellErrorBrush, 1);
+    private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
+    private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
+    private static readonly SolidColorBrush s_compositionUnderlineBrush = new(Color.FromRgb(200, 200, 100));
+    private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
+    private static readonly Pen s_compositionCursorPen = new(s_whiteBrush, 1);
 
     #endregion
 
@@ -144,7 +158,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// </summary>
     public int MaxLength
     {
-        get => (int)(GetValue(MaxLengthProperty) ?? 0);
+        get => (int)GetValue(MaxLengthProperty)!;
         set => SetValue(MaxLengthProperty, value);
     }
 
@@ -153,7 +167,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// </summary>
     public TextWrapping TextWrapping
     {
-        get => (TextWrapping)(GetValue(TextWrappingProperty) ?? TextWrapping.NoWrap);
+        get => (TextWrapping)GetValue(TextWrappingProperty)!;
         set => SetValue(TextWrappingProperty, value);
     }
 
@@ -162,7 +176,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// </summary>
     public TextAlignment TextAlignment
     {
-        get => (TextAlignment)(GetValue(TextAlignmentProperty) ?? TextAlignment.Left);
+        get => (TextAlignment)GetValue(TextAlignmentProperty)!;
         set => SetValue(TextAlignmentProperty, value);
     }
 
@@ -180,7 +194,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// </summary>
     public bool IsSpellCheckEnabled
     {
-        get => (bool)(GetValue(IsSpellCheckEnabledProperty) ?? false);
+        get => (bool)GetValue(IsSpellCheckEnabledProperty)!;
         set => SetValue(IsSpellCheckEnabledProperty, value);
     }
 
@@ -203,7 +217,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// </summary>
     public bool IsAutoCorrectEnabled
     {
-        get => (bool)(GetValue(IsAutoCorrectEnabledProperty) ?? false);
+        get => (bool)GetValue(IsAutoCorrectEnabledProperty)!;
         set => SetValue(IsAutoCorrectEnabledProperty, value);
     }
 
@@ -212,7 +226,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// </summary>
     public bool IsAutoCapitalizationEnabled
     {
-        get => (bool)(GetValue(IsAutoCapitalizationEnabledProperty) ?? false);
+        get => (bool)GetValue(IsAutoCapitalizationEnabledProperty)!;
         set => SetValue(IsAutoCapitalizationEnabledProperty, value);
     }
 
@@ -221,7 +235,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// </summary>
     public bool DetectUrls
     {
-        get => (bool)(GetValue(DetectUrlsProperty) ?? false);
+        get => (bool)GetValue(DetectUrlsProperty)!;
         set => SetValue(DetectUrlsProperty, value);
     }
 
@@ -287,14 +301,6 @@ public class TextBox : TextBoxBase, IImeSupport
     /// </summary>
     public TextBox()
     {
-        // Dark theme appearance
-        Background = new SolidColorBrush(Color.FromRgb(32, 32, 32));
-        BorderBrush = new SolidColorBrush(Color.FromRgb(70, 70, 70));
-        Foreground = new SolidColorBrush(Color.White);
-        BorderThickness = new Thickness(1);
-        Padding = new Thickness(6, 4, 6, 4);
-        FontSize = 14;
-
         // Set IBeam cursor for text input
         Cursor = Jalium.UI.Cursors.IBeam;
 
@@ -467,9 +473,19 @@ public class TextBox : TextBoxBase, IImeSupport
                 // Fullwidth forms
                 width += fontSize;
             }
+            else if (c == 'i' || c == 'l' || c == '|' || c == '!' || c == '.' || c == ',')
+            {
+                // Narrow characters (must check before general IsLower/IsUpper)
+                width += fontSize * 0.3;
+            }
+            else if (c == 'm' || c == 'w' || c == 'M' || c == 'W')
+            {
+                // Wide characters (must check before general IsLower/IsUpper)
+                width += fontSize * 0.85;
+            }
             else if (char.IsUpper(c))
             {
-                // Uppercase letters are wider
+                // Uppercase letters
                 width += fontSize * 0.65;
             }
             else if (char.IsLower(c))
@@ -481,16 +497,6 @@ public class TextBox : TextBoxBase, IImeSupport
             {
                 // Digits
                 width += fontSize * 0.6;
-            }
-            else if (c == 'i' || c == 'l' || c == '|' || c == '!' || c == '.' || c == ',')
-            {
-                // Narrow characters
-                width += fontSize * 0.3;
-            }
-            else if (c == 'm' || c == 'w' || c == 'M' || c == 'W')
-            {
-                // Wide characters
-                width += fontSize * 0.85;
             }
             else
             {
@@ -804,7 +810,7 @@ public class TextBox : TextBoxBase, IImeSupport
         // Draw focus indicator
         if (IsKeyboardFocused)
         {
-            var focusPen = new Pen(new SolidColorBrush(Color.FromRgb(0, 120, 212)), 1);
+            var focusPen = s_focusPen;
             dc.DrawRoundedRectangle(null, focusPen, bounds, cornerRadius);
         }
     }
@@ -844,7 +850,7 @@ public class TextBox : TextBoxBase, IImeSupport
         {
             if (!string.IsNullOrEmpty(Placeholder))
             {
-                var placeholderBrush = new SolidColorBrush(Color.FromRgb(128, 128, 128));
+                var placeholderBrush = s_placeholderBrush;
                 var roundedHorizontalOffset = Math.Round(_horizontalOffset);
                 var roundedVerticalOffset = Math.Round(_verticalOffset);
                 var formattedPlaceholder = new FormattedText(Placeholder, FontFamily ?? "Segoe UI", FontSize)
@@ -885,7 +891,7 @@ public class TextBox : TextBoxBase, IImeSupport
     private void DrawText(DrawingContext dc, Rect contentRect, double lineHeight)
     {
         var text = Text;
-        var textBrush = Foreground ?? new SolidColorBrush(Color.White);
+        var textBrush = Foreground ?? s_whiteBrush;
         // Round scroll offsets to prevent sub-pixel jittering
         var roundedVerticalOffset = Math.Round(_verticalOffset);
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
@@ -932,7 +938,7 @@ public class TextBox : TextBoxBase, IImeSupport
     private void DrawSpellingErrors(DrawingContext dc, Rect contentRect, double lineHeight)
     {
         // Red wavy underline pen for spelling errors
-        var errorPen = new Pen(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 1);
+        var errorPen = s_spellErrorPen;
         var text = Text;
         // Round scroll offsets to prevent sub-pixel jittering
         var roundedVerticalOffset = Math.Round(_verticalOffset);
@@ -1080,20 +1086,20 @@ public class TextBox : TextBoxBase, IImeSupport
 
         // Draw composition background
         var compositionWidth = MeasureTextWidth(_imeCompositionString);
-        var compositionBgBrush = new SolidColorBrush(Color.FromRgb(60, 60, 80));
+        var compositionBgBrush = s_compositionBgBrush;
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, y, compositionWidth, lineHeight));
 
         // Draw composition text
         var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? "Segoe UI", FontSize)
         {
-            Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 200)),
+            Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
             MaxTextHeight = lineHeight
         };
         dc.DrawText(compositionText, new Point(x, y));
 
         // Draw underline for composition string
-        var underlinePen = new Pen(new SolidColorBrush(Color.FromRgb(200, 200, 100)), 1);
+        var underlinePen = s_compositionUnderlinePen;
         dc.DrawLine(underlinePen, new Point(x, y + lineHeight - 2), new Point(x + compositionWidth, y + lineHeight - 2));
 
         // Draw cursor within composition string
@@ -1101,7 +1107,7 @@ public class TextBox : TextBoxBase, IImeSupport
         {
             var cursorTextWidth = MeasureTextWidth(_imeCompositionString.Substring(0, _imeCompositionCursor));
             var cursorX = x + cursorTextWidth;
-            var cursorPen = new Pen(new SolidColorBrush(Color.White), 1);
+            var cursorPen = s_compositionCursorPen;
             dc.DrawLine(cursorPen, new Point(cursorX, y + 2), new Point(cursorX, y + lineHeight - 2));
         }
     }
@@ -1552,9 +1558,45 @@ public class TextBox : TextBoxBase, IImeSupport
 }
 
 /// <summary>
+/// Specifies how the undo stack is affected by a text change.
+/// </summary>
+public enum UndoAction
+{
+    /// <summary>
+    /// No undo action.
+    /// </summary>
+    None = 0,
+
+    /// <summary>
+    /// The undo action should be merged with the previous action.
+    /// </summary>
+    Merge = 1,
+
+    /// <summary>
+    /// The change was caused by an undo operation.
+    /// </summary>
+    Undo = 2,
+
+    /// <summary>
+    /// The change was caused by a redo operation.
+    /// </summary>
+    Redo = 3,
+
+    /// <summary>
+    /// The undo stack should be cleared.
+    /// </summary>
+    Clear = 4,
+
+    /// <summary>
+    /// A new undo unit should be created.
+    /// </summary>
+    Create = 5,
+}
+
+/// <summary>
 /// Provides data for the TextChanged event.
 /// </summary>
-public class TextChangedEventArgs : RoutedEventArgs
+public sealed class TextChangedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="TextChangedEventArgs"/> class.
@@ -1563,6 +1605,20 @@ public class TextChangedEventArgs : RoutedEventArgs
         : base(routedEvent, source)
     {
     }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="TextChangedEventArgs"/> class with the specified undo action.
+    /// </summary>
+    public TextChangedEventArgs(RoutedEvent routedEvent, object source, UndoAction undoAction)
+        : base(routedEvent, source)
+    {
+        UndoAction = undoAction;
+    }
+
+    /// <summary>
+    /// Gets the undo action associated with this text change.
+    /// </summary>
+    public UndoAction UndoAction { get; }
 }
 
 /// <summary>

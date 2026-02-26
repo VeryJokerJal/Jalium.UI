@@ -1,5 +1,6 @@
-using Jalium.UI.Automation;
+﻿using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
+using Jalium.UI.Controls.Primitives;
 
 namespace Jalium.UI.Controls;
 
@@ -44,7 +45,7 @@ public class Button : ButtonBase
     /// </summary>
     public bool IsDefault
     {
-        get => (bool)(GetValue(IsDefaultProperty) ?? false);
+        get => (bool)GetValue(IsDefaultProperty)!;
         set => SetValue(IsDefaultProperty, value);
     }
 
@@ -53,7 +54,7 @@ public class Button : ButtonBase
     /// </summary>
     public bool IsCancel
     {
-        get => (bool)(GetValue(IsCancelProperty) ?? false);
+        get => (bool)GetValue(IsCancelProperty)!;
         set => SetValue(IsCancelProperty, value);
     }
 

@@ -1,11 +1,11 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents a row header in a DataGrid.
 /// </summary>
-public class DataGridRowHeader : ButtonBase
+public sealed class DataGridRowHeader : ButtonBase
 {
     #region Dependency Properties
 
@@ -46,7 +46,7 @@ public class DataGridRowHeader : ButtonBase
     /// </summary>
     public bool IsRowSelected
     {
-        get => (bool)(GetValue(IsRowSelectedProperty) ?? false);
+        get => (bool)GetValue(IsRowSelectedProperty)!;
         set => SetValue(IsRowSelectedProperty, value);
     }
 
@@ -55,7 +55,7 @@ public class DataGridRowHeader : ButtonBase
     /// </summary>
     public int RowIndex
     {
-        get => (int)(GetValue(RowIndexProperty) ?? -1);
+        get => (int)GetValue(RowIndexProperty)!;
         set => SetValue(RowIndexProperty, value);
     }
 
@@ -73,7 +73,7 @@ public class DataGridRowHeader : ButtonBase
     /// </summary>
     public Visibility SeparatorVisibility
     {
-        get => (Visibility)(GetValue(SeparatorVisibilityProperty) ?? Visibility.Visible);
+        get => (Visibility)GetValue(SeparatorVisibilityProperty)!;
         set => SetValue(SeparatorVisibilityProperty, value);
     }
 

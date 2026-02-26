@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Provides data for the ItemsChanged event.
 /// </summary>
-public class ItemsChangedEventArgs : EventArgs
+public sealed class ItemsChangedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the action that caused the event.

@@ -1,4 +1,4 @@
-<ResourceDictionary
+﻿<ResourceDictionary
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
@@ -6,12 +6,13 @@
     <!-- Button Style -->
     <!-- ============================================== -->
     <Style TargetType="Button">
-        <Setter Property="Background" Value="{StaticResource ControlBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,6,12,6" />
         <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="MinWidth" Value="60" />
         <Setter Property="MinHeight" Value="32" />
@@ -34,16 +35,16 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{StaticResource ControlBorderHover}" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundPressed}" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{StaticResource ControlBorderDisabled}" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -52,12 +53,13 @@
     <!-- RepeatButton Style -->
     <!-- ============================================== -->
     <Style TargetType="RepeatButton">
-        <Setter Property="Background" Value="{StaticResource ControlBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -78,16 +80,16 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{StaticResource ControlBorderHover}" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundPressed}" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{StaticResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{StaticResource ControlBorderDisabled}" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -97,10 +99,11 @@
     <!-- ============================================== -->
     <Style TargetType="HyperlinkButton">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{StaticResource HyperlinkForeground}" />
+        <Setter Property="Foreground" Value="{DynamicResource HyperlinkForeground}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding" Value="0" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="HorizontalContentAlignment" Value="Left" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -127,13 +130,13 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Foreground" Value="{StaticResource HyperlinkForegroundHover}" />
+                <Setter Property="Foreground" Value="{DynamicResource HyperlinkForegroundHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter Property="Foreground" Value="{StaticResource HyperlinkForegroundPressed}" />
+                <Setter Property="Foreground" Value="{DynamicResource HyperlinkForegroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsUnderlined" Value="False">
                 <Setter TargetName="UnderlineBorder" Property="Visibility" Value="Collapsed" />
@@ -142,3 +145,4 @@
     </Style>
 
 </ResourceDictionary>
+

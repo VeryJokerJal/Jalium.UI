@@ -10,14 +10,14 @@
     <Project Path="src/managed/Jalium.UI.Xaml.SourceGenerator/Jalium.UI.Xaml.SourceGenerator.csproj" />
     <Project Path="src/managed/Jalium.UI.Xaml/Jalium.UI.Xaml.csproj" />
   </Folder>
+  <Folder Name="/src/packaging/">
+    <Project Path="src/packaging/Jalium.UI.csproj" />
+  </Folder>
   <Folder Name="/src/tools/">
     <Project Path="src/managed/Jalium.UI.Build/Jalium.UI.Build.csproj" />
     <Project Path="src/managed/Jalium.UI.Compiler/Jalium.UI.Compiler.csproj" />
-    <Project Path="src/managed/Jalium.UI.VisualStudio/Jalium.UI.VisualStudio.csproj" Id="03187f2b-0654-4276-b94a-12ff5c7bae29" />
   </Folder>
-  <Folder Name="/samples/">
-    <Project Path="samples/Jalium.UI.Gallery/Jalium.UI.Gallery.csproj" />
-  </Folder>
+  <Folder Name="/samples/" />
   <Folder Name="/tests/">
     <Project Path="tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj" />
   </Folder>

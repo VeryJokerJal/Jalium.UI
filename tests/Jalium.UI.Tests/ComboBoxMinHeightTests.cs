@@ -166,15 +166,14 @@ public class ComboBoxMinHeightTests
     }
 
     [Fact]
-    public void ComboBox_DefaultStyle_ShouldHaveMinHeight()
+    public void ComboBox_DefaultInstance_ShouldNotForceLocalMinHeight()
     {
-        // This test verifies that the default ComboBox style includes MinHeight
+        // ComboBox should not force a constructor-level MinHeight local value.
+        // Theme/style may set MinHeight later when the element enters the visual tree.
         var comboBox = new ComboBox();
 
-        // ComboBox should have a default MinHeight from its style
-        // Based on the previous test, this appears to be 32
-        Assert.True(comboBox.MinHeight > 0,
-            $"ComboBox should have MinHeight from default style, but was {comboBox.MinHeight}");
+        Assert.False(comboBox.HasLocalValue(FrameworkElement.MinHeightProperty));
+        Assert.Equal(0.0, comboBox.MinHeight);
     }
 
     [Fact]

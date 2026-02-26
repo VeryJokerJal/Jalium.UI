@@ -3,45 +3,141 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- ============================================== -->
-    <!-- Thumb Style -->
+    <!-- ScrollBar Line Button Style -->
     <!-- ============================================== -->
-    <Style TargetType="Thumb">
+    <Style x:Key="ScrollBarLineButtonStyle" TargetType="RepeatButton">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Foreground" Value="{StaticResource ScrollBarArrow}" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="RepeatButton">
+                <Border Name="PART_ButtonRoot"
+                        Background="Transparent"
+                        BorderBrush="Transparent"
+                        BorderThickness="0">
+                    <Path Name="PART_Arrow"
+                          Data="M173.731 104.928 L173.731 919.072 c0 45.467 35.892 82.191 80.688 82.191 20.786 0 39.625-8.127 53.893-21.134 L841.126 574.011 c35.363-27.178 42.801-78.468 15.957-114.638 -4.581-6.334-9.956-11.867-15.957-16.209 L301.673 32.407 c-35.363-26.902-86.091-19.655-112.607 16.48 -11.171 14.836-16.279 31.857-16.279 48.953 Z"
+                          Fill="{TemplateBinding Foreground}"
+                          Width="8"
+                          Height="8"
+                          Stretch="Uniform"
+                          HorizontalAlignment="Center"
+                          VerticalAlignment="Center" />
+                </Border>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="Tag" Value="Up">
+                <Setter TargetName="PART_Arrow" Property="Data" Value="M104.928 850.269 L919.072 850.269 c45.467 0 82.191-35.892 82.191-80.688 0-20.786-8.127-39.625-21.134-53.893 L574.011 182.874 c-27.178-35.363-78.468-42.801-114.638-15.957 -6.334 4.581-11.867 9.956-16.209 15.957 L32.407 722.327 c-26.902 35.363-19.655 86.091 16.48 112.607 14.836 11.171 31.857 16.279 48.953 16.279 Z" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="Tag" Value="Down">
+                <Setter TargetName="PART_Arrow" Property="Data" Value="M919.072 173.731 l-821.243 0 c-45.467 0-82.191 35.892-82.191 80.688 0 20.786 8.127 39.625 21.134 53.893 l406.118 533.814 c27.178 35.363 78.468 42.801 114.638 15.957 6.334-4.581 11.867-9.956 16.209-15.957 l410.757-539.453 c26.902-35.363 19.655-86.091-16.48-112.607 -14.836-11.171-31.857-16.279-48.953-16.279 Z" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="Tag" Value="Left">
+                <Setter TargetName="PART_Arrow" Property="Data" Value="M850.269 104.928 L850.269 919.072 c0 45.467-35.892 82.191-80.688 82.191 -20.786 0-39.625-8.127-53.893-21.134 L182.874 574.011 c-35.363-27.178-42.801-78.468-15.957-114.638 4.581-6.334 9.956-11.867 15.957-16.209 L722.327 32.407 c35.363-26.902 86.091-19.655 112.607 16.48 11.171 14.836 16.279 31.857 16.279 48.953 Z" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="Tag" Value="Right">
+                <Setter TargetName="PART_Arrow" Property="Data" Value="M173.731 104.928 L173.731 919.072 c0 45.467 35.892 82.191 80.688 82.191 20.786 0 39.625-8.127 53.893-21.134 L841.126 574.011 c35.363-27.178 42.801-78.468 15.957-114.638 -4.581-6.334-9.956-11.867-15.957-16.209 L301.673 32.407 c-35.363-26.902-86.091-19.655-112.607 16.48 -11.171 14.836-16.279 31.857-16.279 48.953 Z" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter TargetName="PART_Arrow" Property="Opacity" Value="0.45" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ScrollBar Page Button Style -->
+    <!-- ============================================== -->
+    <Style x:Key="ScrollBarPageButtonStyle" TargetType="RepeatButton">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="Opacity" Value="0" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="CornerRadius" Value="0" />
+        <Setter Property="MinWidth" Value="0" />
+        <Setter Property="MinHeight" Value="0" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="RepeatButton">
+                <Border Background="Transparent" />
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ScrollBar Thumb Style -->
+    <!-- ============================================== -->
+    <Style x:Key="ScrollBarThumbStyle" TargetType="Thumb">
         <Setter Property="Background" Value="{StaticResource ScrollBarThumb}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="Thumb">
+                <Border Name="ThumbBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Margin="2" />
+            </ControlTemplate>
+        </Setter>
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
                 <Setter Property="Background" Value="{StaticResource ScrollBarThumbHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsDragging" Value="True">
-                <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+                <Setter Property="Background" Value="{StaticResource ScrollBarThumbActive}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
-    <!-- Track Style -->
+    <!-- ScrollBar Style (explicit key for visual-child fallback) -->
     <!-- ============================================== -->
-    <Style TargetType="Track">
+    <Style x:Key="ScrollBarStyle" TargetType="ScrollBar">
         <Setter Property="Background" Value="{StaticResource ScrollBarTrack}" />
-    </Style>
-
-    <!-- ============================================== -->
-    <!-- ScrollBar Style -->
-    <!-- ============================================== -->
-    <Style TargetType="ScrollBar">
-        <Setter Property="Background" Value="{StaticResource ScrollBarTrack}" />
-        <Setter Property="Foreground" Value="{StaticResource ScrollBarThumb}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="5" />
+        <Setter Property="Padding" Value="2" />
         <Setter Property="MinWidth" Value="12" />
         <Setter Property="MinHeight" Value="12" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{StaticResource ControlBackgroundDisabled}" />
+                <Setter Property="Opacity" Value="0.45" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ScrollBar Style (implicit) -->
+    <!-- ============================================== -->
+    <Style TargetType="ScrollBar">
+        <Setter Property="Background" Value="{StaticResource ScrollBarTrack}" />
+        <Setter Property="BorderBrush" Value="Transparent" />
+        <Setter Property="BorderThickness" Value="0" />
+        <Setter Property="CornerRadius" Value="5" />
+        <Setter Property="Padding" Value="2" />
+        <Setter Property="MinWidth" Value="12" />
+        <Setter Property="MinHeight" Value="12" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.45" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

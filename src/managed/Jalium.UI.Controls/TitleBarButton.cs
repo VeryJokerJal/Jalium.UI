@@ -1,3 +1,4 @@
+﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -31,7 +32,7 @@ public enum TitleBarButtonKind
 /// <summary>
 /// Represents a button control used in the window title bar.
 /// </summary>
-public class TitleBarButton : ButtonBase
+public sealed class TitleBarButton : ButtonBase
 {
     #region Dependency Properties
 
@@ -67,7 +68,7 @@ public class TitleBarButton : ButtonBase
     /// </summary>
     public double GlyphSize
     {
-        get => (double)(GetValue(GlyphSizeProperty) ?? 10.0);
+        get => (double)GetValue(GlyphSizeProperty)!;
         set => SetValue(GlyphSizeProperty, value);
     }
 

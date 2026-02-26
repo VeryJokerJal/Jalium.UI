@@ -68,7 +68,7 @@ public class InputBinding
 /// <summary>
 /// Represents a binding between a KeyGesture and a command.
 /// </summary>
-public class KeyBinding : InputBinding
+public sealed class KeyBinding : InputBinding
 {
     /// <summary>
     /// Initializes a new instance of the KeyBinding class.
@@ -136,7 +136,7 @@ public class KeyBinding : InputBinding
 /// <summary>
 /// Represents a binding between a MouseGesture and a command.
 /// </summary>
-public class MouseBinding : InputBinding
+public sealed class MouseBinding : InputBinding
 {
     /// <summary>
     /// Initializes a new instance of the MouseBinding class.

@@ -99,30 +99,15 @@ public class Canvas : Panel
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var size = new Size();
-
+        // Canvas measures children with infinite space but returns Size(0,0)
+        // like WPF — it relies on parent layout to determine its actual size.
         foreach (var child in Children)
         {
             if (child is not FrameworkElement fe) continue;
-
-            // Measure child with infinite space since Canvas doesn't constrain
             fe.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-
-            // Calculate extent based on position and size
-            var left = GetLeft(child);
-            var top = GetTop(child);
-
-            if (!double.IsNaN(left))
-            {
-                size = new Size(Math.Max(size.Width, left + fe.DesiredSize.Width), size.Height);
-            }
-            if (!double.IsNaN(top))
-            {
-                size = new Size(size.Width, Math.Max(size.Height, top + fe.DesiredSize.Height));
-            }
         }
 
-        return size;
+        return new Size();
     }
 
     /// <inheritdoc />

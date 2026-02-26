@@ -91,4 +91,39 @@ public class DataTemplate
 
         return null;
     }
+
+    /// <summary>
+    /// Finds a named element in the template content applied to the specified parent.
+    /// </summary>
+    /// <param name="name">The name of the element to find.</param>
+    /// <param name="templatedParent">The element to which this template was applied.</param>
+    /// <returns>The named element, or null if not found.</returns>
+    public object? FindName(string name, FrameworkElement templatedParent)
+    {
+        ArgumentNullException.ThrowIfNull(templatedParent);
+
+        if (string.IsNullOrEmpty(name))
+            return null;
+
+        // Search the visual tree of the templated parent for a named element
+        return FindNameInVisualTree(templatedParent, name);
+    }
+
+    private static object? FindNameInVisualTree(Visual root, string name)
+    {
+        if (root is FrameworkElement fe && fe.Name == name)
+            return fe;
+
+        for (int i = 0; i < root.VisualChildrenCount; i++)
+        {
+            var child = root.GetVisualChild(i);
+            if (child != null)
+            {
+                var result = FindNameInVisualTree(child, name);
+                if (result != null) return result;
+            }
+        }
+
+        return null;
+    }
 }

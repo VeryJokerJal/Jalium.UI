@@ -1,4 +1,4 @@
-using Jalium.UI;
+﻿using Jalium.UI;
 
 namespace Jalium.UI.Media.Effects;
 
@@ -6,7 +6,7 @@ namespace Jalium.UI.Media.Effects;
 /// A bitmap effect that blurs the element content itself.
 /// This is different from BackdropEffect's BlurEffect which blurs content behind the element.
 /// </summary>
-public class ElementBlurEffect : Effect
+public sealed class ElementBlurEffect : Effect
 {
     #region Dependency Properties
 
@@ -41,8 +41,8 @@ public class ElementBlurEffect : Effect
     /// </summary>
     public double Radius
     {
-        get => (double)(GetValue(RadiusProperty) ?? 5.0);
-        set => SetValue(RadiusProperty, Math.Max(0, Math.Min(100, value)));
+        get => (double)GetValue(RadiusProperty)!;
+        set => SetValue(RadiusProperty, Math.Clamp(value, 0, 100));
     }
 
     /// <summary>

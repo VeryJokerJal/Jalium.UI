@@ -7,7 +7,7 @@ namespace Jalium.UI.Interop;
 /// <summary>
 /// A DrawingContext implementation that renders to a RenderTarget.
 /// </summary>
-public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingContext, IOpacityDrawingContext
+public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingContext, IOpacityDrawingContext, IEffectDrawingContext
 {
     private const int MaxBrushCacheSize = 256;
     private const int MaxTextFormatCacheSize = 64;
@@ -65,7 +65,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        // Round to pixel boundaries to prevent sub-pixel jittering
+        // Round origin to pixel boundaries to prevent sub-pixel jittering
         var x = (float)Math.Round(rectangle.X + Offset.X);
         var y = (float)Math.Round(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
@@ -74,20 +74,25 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         // Fill
         if (brush != null)
         {
-            var nativeBrush = GetNativeBrush(brush);
+            var nativeBrush = GetNativeBrush(brush, x, y, width, height);
             if (nativeBrush != null)
             {
                 _renderTarget.FillRectangle(x, y, width, height, nativeBrush);
             }
         }
 
-        // Stroke
+        // Stroke — snap all four edges so the stroke is uniform on every side.
+        // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
-            var strokeBrush = GetNativeBrush(pen.Brush);
+            var strokeRight = (float)Math.Round(rectangle.X + rectangle.Width + Offset.X);
+            var strokeBottom = (float)Math.Round(rectangle.Y + rectangle.Height + Offset.Y);
+            var strokeW = strokeRight - x;
+            var strokeH = strokeBottom - y;
+            var strokeBrush = GetNativeBrush(pen.Brush, x, y, strokeW, strokeH);
             if (strokeBrush != null)
             {
-                _renderTarget.DrawRectangle(x, y, width, height, strokeBrush, (float)pen.Thickness);
+                _renderTarget.DrawRectangle(x, y, strokeW, strokeH, strokeBrush, (float)pen.Thickness);
             }
         }
     }
@@ -97,7 +102,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        // Round to pixel boundaries to prevent sub-pixel jittering
+        // Round origin to pixel boundaries to prevent sub-pixel jittering
         var x = (float)Math.Round(rectangle.X + Offset.X);
         var y = (float)Math.Round(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
@@ -108,22 +113,50 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         // Fill
         if (brush != null)
         {
-            var nativeBrush = GetNativeBrush(brush);
+            var nativeBrush = GetNativeBrush(brush, x, y, width, height);
             if (nativeBrush != null)
             {
                 _renderTarget.FillRoundedRectangle(x, y, width, height, rx, ry, nativeBrush);
             }
         }
 
-        // Stroke
+        // Stroke — snap all four edges so the stroke is uniform on every side.
+        // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
-            var strokeBrush = GetNativeBrush(pen.Brush);
+            var strokeRight = (float)Math.Round(rectangle.X + rectangle.Width + Offset.X);
+            var strokeBottom = (float)Math.Round(rectangle.Y + rectangle.Height + Offset.Y);
+            var strokeW = strokeRight - x;
+            var strokeH = strokeBottom - y;
+            var strokeBrush = GetNativeBrush(pen.Brush, x, y, strokeW, strokeH);
             if (strokeBrush != null)
             {
-                _renderTarget.DrawRoundedRectangle(x, y, width, height, rx, ry, strokeBrush, (float)pen.Thickness);
+                _renderTarget.DrawRoundedRectangle(x, y, strokeW, strokeH, rx, ry, strokeBrush, (float)pen.Thickness);
             }
         }
+    }
+
+    /// <inheritdoc />
+    public override void DrawContentBorder(Brush? fillBrush, Pen? strokePen, Rect rectangle,
+        double bottomLeftRadius, double bottomRightRadius)
+    {
+        if (_closed) return;
+
+        var x = (float)Math.Round(rectangle.X + Offset.X);
+        var y = (float)Math.Round(rectangle.Y + Offset.Y);
+        var right = (float)Math.Round(rectangle.X + rectangle.Width + Offset.X);
+        var bottom = (float)Math.Round(rectangle.Y + rectangle.Height + Offset.Y);
+        var w = right - x;
+        var h = bottom - y;
+        var bl = (float)bottomLeftRadius;
+        var br = (float)bottomRightRadius;
+
+        var nativeFill = fillBrush != null ? GetNativeBrush(fillBrush, x, y, w, h) : null;
+        var nativeStroke = strokePen?.Brush != null ? GetNativeBrush(strokePen.Brush, x, y, w, h) : null;
+        var strokeWidth = strokePen != null ? (float)strokePen.Thickness : 0f;
+
+        // Always use managed BezierSegment path (native D2D arc direction is inverted)
+        base.DrawContentBorder(fillBrush, strokePen, rectangle, bottomLeftRadius, bottomRightRadius);
     }
 
     /// <inheritdoc />
@@ -137,10 +170,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var rx = (float)radiusX;
         var ry = (float)radiusY;
 
+        // Bounding box for gradient brush coordinate conversion
+        float bx = cx - rx, by = cy - ry, bw = rx * 2, bh = ry * 2;
+
         // Fill
         if (brush != null)
         {
-            var nativeBrush = GetNativeBrush(brush);
+            var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
             if (nativeBrush != null)
             {
                 _renderTarget.FillEllipse(cx, cy, rx, ry, nativeBrush);
@@ -150,7 +186,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         // Stroke
         if (pen?.Brush != null)
         {
-            var strokeBrush = GetNativeBrush(pen.Brush);
+            var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
             if (strokeBrush != null)
             {
                 _renderTarget.DrawEllipse(cx, cy, rx, ry, strokeBrush, (float)pen.Thickness);
@@ -233,6 +269,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             if (combined.Geometry1 != null) DrawGeometry(brush, pen, combined.Geometry1);
             if (combined.Geometry2 != null) DrawGeometry(brush, pen, combined.Geometry2);
         }
+        else if (geometry is StreamGeometry streamGeom)
+        {
+            var inner = streamGeom.GetPathGeometry();
+            if (inner != null)
+                DrawPathGeometry(brush, pen, inner);
+        }
         else if (geometry is PathGeometry pathGeom)
         {
             DrawPathGeometry(brush, pen, pathGeom);
@@ -241,78 +283,192 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     private void DrawPathGeometry(Brush? brush, Pen? pen, PathGeometry pathGeom)
     {
-        // Draw path figures using native polygon rendering for filled paths
         foreach (var figure in pathGeom.Figures)
         {
-            // Collect all points from the figure
-            var points = new List<Point> { figure.StartPoint };
-            var currentPoint = figure.StartPoint;
-
+            // Check if figure has any bezier/quadratic segments → use native path API
+            bool hasCurves = false;
             foreach (var segment in figure.Segments)
             {
-                if (segment is LineSegment lineSeg)
+                if (segment is BezierSegment or QuadraticBezierSegment)
                 {
-                    points.Add(lineSeg.Point);
-                    currentPoint = lineSeg.Point;
-                }
-                else if (segment is PolyLineSegment polyLine)
-                {
-                    foreach (var point in polyLine.Points)
-                    {
-                        points.Add(point);
-                        currentPoint = point;
-                    }
-                }
-                else if (segment is BezierSegment bezier)
-                {
-                    // Approximate bezier with line segments
-                    var bezierPoints = GetBezierPoints(currentPoint, bezier.Point1, bezier.Point2, bezier.Point3);
-                    points.AddRange(bezierPoints);
-                    currentPoint = bezier.Point3;
-                }
-                else if (segment is QuadraticBezierSegment quadBezier)
-                {
-                    // Approximate quadratic bezier with line segments
-                    var quadPoints = GetQuadBezierPoints(currentPoint, quadBezier.Point1, quadBezier.Point2);
-                    points.AddRange(quadPoints);
-                    currentPoint = quadBezier.Point2;
-                }
-                else if (segment is ArcSegment arc)
-                {
-                    // Approximate arc with line segments
-                    var arcPoints = GetArcPoints(currentPoint, arc);
-                    points.AddRange(arcPoints);
-                    currentPoint = arc.Point;
+                    hasCurves = true;
+                    break;
                 }
             }
 
-            // Convert points to float array for native call, applying offset
-            var pointArray = new float[points.Count * 2];
-            for (int i = 0; i < points.Count; i++)
+            if (hasCurves)
             {
-                pointArray[i * 2] = (float)Math.Round(points[i].X + Offset.X);
-                pointArray[i * 2 + 1] = (float)Math.Round(points[i].Y + Offset.Y);
+                DrawPathFigureNative(brush, pen, figure, pathGeom.FillRule);
             }
-
-            // Fill the polygon if brush is provided
-            if (brush != null && figure.IsFilled && points.Count >= 3)
+            else
             {
-                var fillRule = pathGeom.FillRule == FillRule.Nonzero ? 1 : 0;
-                var nativeBrush = GetNativeBrush(brush);
-                if (nativeBrush != null)
+                DrawPathFigurePolygon(brush, pen, figure, pathGeom.FillRule);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Renders a path figure using the native FillPath/StrokePath API with real bezier curves.
+    /// </summary>
+    private void DrawPathFigureNative(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule)
+    {
+        // Build command buffer: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey]
+        var cmds = new List<float>();
+        var ox = Offset.X;
+        var oy = Offset.Y;
+        var currentPoint = figure.StartPoint;
+
+        foreach (var segment in figure.Segments)
+        {
+            if (segment is LineSegment lineSeg)
+            {
+                cmds.Add(0f);
+                cmds.Add((float)(lineSeg.Point.X + ox));
+                cmds.Add((float)(lineSeg.Point.Y + oy));
+                currentPoint = lineSeg.Point;
+            }
+            else if (segment is PolyLineSegment polyLine)
+            {
+                foreach (var pt in polyLine.Points)
                 {
-                    _renderTarget.FillPolygon(pointArray, nativeBrush, fillRule);
+                    cmds.Add(0f);
+                    cmds.Add((float)(pt.X + ox));
+                    cmds.Add((float)(pt.Y + oy));
+                    currentPoint = pt;
                 }
             }
-
-            // Draw the stroke if pen is provided
-            if (pen?.Brush != null && points.Count >= 2)
+            else if (segment is BezierSegment bezier)
             {
-                var strokeBrush = GetNativeBrush(pen.Brush);
-                if (strokeBrush != null)
+                cmds.Add(1f);
+                cmds.Add((float)(bezier.Point1.X + ox));
+                cmds.Add((float)(bezier.Point1.Y + oy));
+                cmds.Add((float)(bezier.Point2.X + ox));
+                cmds.Add((float)(bezier.Point2.Y + oy));
+                cmds.Add((float)(bezier.Point3.X + ox));
+                cmds.Add((float)(bezier.Point3.Y + oy));
+                currentPoint = bezier.Point3;
+            }
+            else if (segment is QuadraticBezierSegment quad)
+            {
+                // Promote quadratic to cubic: cp1 = start + 2/3*(ctrl-start), cp2 = end + 2/3*(ctrl-end)
+                // We need the current point for this; track it
+                // For simplicity, approximate as cubic with control points
+                cmds.Add(1f);
+                cmds.Add((float)(quad.Point1.X + ox));
+                cmds.Add((float)(quad.Point1.Y + oy));
+                cmds.Add((float)(quad.Point1.X + ox));
+                cmds.Add((float)(quad.Point1.Y + oy));
+                cmds.Add((float)(quad.Point2.X + ox));
+                cmds.Add((float)(quad.Point2.Y + oy));
+                currentPoint = quad.Point2;
+            }
+            else if (segment is ArcSegment arc)
+            {
+                // Fall back to line approximation for arcs
+                var arcPoints = GetArcPoints(currentPoint, arc);
+                foreach (var pt in arcPoints)
                 {
-                    _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed);
+                    cmds.Add(0f);
+                    cmds.Add((float)(pt.X + ox));
+                    cmds.Add((float)(pt.Y + oy));
                 }
+                currentPoint = arc.Point;
+            }
+        }
+
+        if (cmds.Count == 0) return;
+
+        float startX = (float)(figure.StartPoint.X + ox);
+        float startY = (float)(figure.StartPoint.Y + oy);
+        var cmdArray = cmds.ToArray();
+
+        if (brush != null && figure.IsFilled)
+        {
+            var nativeBrush = GetNativeBrush(brush);
+            if (nativeBrush != null)
+            {
+                int rule = fillRule == FillRule.Nonzero ? 1 : 0;
+                _renderTarget.FillPath(startX, startY, cmdArray, nativeBrush, rule);
+            }
+        }
+
+        if (pen?.Brush != null)
+        {
+            var strokeBrush = GetNativeBrush(pen.Brush);
+            if (strokeBrush != null)
+            {
+                _renderTarget.StrokePath(startX, startY, cmdArray, strokeBrush, (float)pen.Thickness, figure.IsClosed);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Renders a path figure as a polygon (line segments only, for figures without curves).
+    /// </summary>
+    private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule)
+    {
+        var points = new List<Point> { figure.StartPoint };
+        var currentPoint = figure.StartPoint;
+        bool hasArc = false;
+
+        foreach (var segment in figure.Segments)
+        {
+            if (segment is LineSegment lineSeg)
+            {
+                points.Add(lineSeg.Point);
+                currentPoint = lineSeg.Point;
+            }
+            else if (segment is PolyLineSegment polyLine)
+            {
+                foreach (var point in polyLine.Points)
+                {
+                    points.Add(point);
+                    currentPoint = point;
+                }
+            }
+            else if (segment is ArcSegment arc)
+            {
+                hasArc = true;
+                var arcPoints = GetArcPoints(currentPoint, arc);
+                points.AddRange(arcPoints);
+                currentPoint = arc.Point;
+            }
+        }
+
+        var pointArray = new float[points.Count * 2];
+        for (int i = 0; i < points.Count; i++)
+        {
+            var px = points[i].X + Offset.X;
+            var py = points[i].Y + Offset.Y;
+
+            // Integer snapping on arc-generated points turns small radii into beveled corners.
+            // Keep subpixel coordinates for arc paths; keep legacy snapping for straight polygons.
+            if (!hasArc)
+            {
+                px = Math.Round(px);
+                py = Math.Round(py);
+            }
+
+            pointArray[i * 2] = (float)px;
+            pointArray[i * 2 + 1] = (float)py;
+        }
+
+        if (brush != null && figure.IsFilled && points.Count >= 3)
+        {
+            int rule = fillRule == FillRule.Nonzero ? 1 : 0;
+            var nativeBrush = GetNativeBrush(brush);
+            if (nativeBrush != null)
+            {
+                _renderTarget.FillPolygon(pointArray, nativeBrush, rule);
+            }
+        }
+
+        if (pen?.Brush != null && points.Count >= 2)
+        {
+            var strokeBrush = GetNativeBrush(pen.Brush);
+            if (strokeBrush != null)
+            {
+                _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed);
             }
         }
     }
@@ -498,6 +654,94 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     }
 
     /// <summary>
+    /// Begins capturing content into an offscreen bitmap for transition shader effects.
+    /// Converts local bounds to screen coordinates using the current Offset.
+    /// </summary>
+    /// <param name="slot">0 = old content, 1 = new content.</param>
+    /// <param name="localBounds">The transition area in local coordinates.</param>
+    public void BeginTransitionCapture(int slot, Rect localBounds)
+    {
+        if (_closed) return;
+        var x = (float)(localBounds.X + Offset.X);
+        var y = (float)(localBounds.Y + Offset.Y);
+        _renderTarget.BeginTransitionCapture(slot, x, y,
+            (float)localBounds.Width, (float)localBounds.Height);
+    }
+
+    /// <summary>
+    /// Ends capturing content for a transition slot and restores the main render target.
+    /// </summary>
+    /// <param name="slot">0 = old content, 1 = new content.</param>
+    public void EndTransitionCapture(int slot)
+    {
+        if (_closed) return;
+        _renderTarget.EndTransitionCapture(slot);
+    }
+
+    /// <summary>
+    /// Draws the transition shader effect blending old and new content bitmaps.
+    /// </summary>
+    /// <param name="localBounds">The transition area in local coordinates.</param>
+    /// <param name="progress">Transition progress (0.0 - 1.0).</param>
+    /// <param name="mode">Shader mode index (0-9).</param>
+    public void DrawTransitionShader(Rect localBounds, float progress, int mode)
+    {
+        if (_closed) return;
+        var x = (float)(localBounds.X + Offset.X);
+        var y = (float)(localBounds.Y + Offset.Y);
+        _renderTarget.DrawTransitionShader(x, y,
+            (float)localBounds.Width, (float)localBounds.Height, progress, mode);
+    }
+
+    /// <summary>
+    /// Draws a previously captured transition bitmap.
+    /// </summary>
+    public void DrawCapturedTransition(int slot, Rect localBounds, float opacity)
+    {
+        if (_closed) return;
+        var x = (float)(localBounds.X + Offset.X);
+        var y = (float)(localBounds.Y + Offset.Y);
+        _renderTarget.DrawCapturedTransition(slot, x, y,
+            (float)localBounds.Width, (float)localBounds.Height, opacity);
+    }
+
+    /// <summary>
+    /// Draws a liquid glass effect at the specified rectangle.
+    /// </summary>
+    public void DrawLiquidGlass(
+        Rect rectangle,
+        float cornerRadius,
+        float blurRadius = 8f,
+        float refractionAmount = 60f,
+        float chromaticAberration = 0f,
+        float tintR = 0.08f, float tintG = 0.08f, float tintB = 0.08f,
+        float tintOpacity = 0.3f,
+        float lightX = -1f, float lightY = -1f,
+        float highlightBoost = 0f,
+        int shapeType = 0,
+        float shapeExponent = 4f,
+        int neighborCount = 0,
+        float fusionRadius = 30f,
+        ReadOnlySpan<float> neighborData = default)
+    {
+        if (_closed) return;
+
+        var x = (float)Math.Round(rectangle.X + Offset.X);
+        var y = (float)Math.Round(rectangle.Y + Offset.Y);
+        var width = (float)rectangle.Width;
+        var height = (float)rectangle.Height;
+
+        _renderTarget.DrawLiquidGlass(
+            x, y, width, height,
+            cornerRadius, blurRadius,
+            refractionAmount, chromaticAberration,
+            tintR, tintG, tintB, tintOpacity,
+            lightX, lightY, highlightBoost,
+            shapeType, shapeExponent,
+            neighborCount, fusionRadius, neighborData);
+    }
+
+    /// <summary>
     /// Builds a CSS-style backdrop filter string from the effect properties.
     /// </summary>
     private static string BuildBackdropFilterString(IBackdropEffect effect)
@@ -557,13 +801,42 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        // Store current offset
-        _stateStack.Push(new DrawingState(DrawingStateType.Transform, Offset));
-
-        // Apply transform offset (simplified - only translation for now)
         if (transform is TranslateTransform translate)
         {
+            // Translation: handled via managed Offset (existing fast path)
+            _stateStack.Push(new DrawingState(DrawingStateType.Transform, Offset));
             Offset = new Point(Offset.X + translate.X, Offset.Y + translate.Y);
+        }
+        else
+        {
+            // Non-translate transform: push native D2D1 matrix.
+            // Drawing operations add managed Offset to coordinates before native,
+            // so we compose: T(-offset) * transform * T(+offset) to apply
+            // the transform in local space while coordinates are in screen space.
+            var m = transform.Value;
+            var ox = Offset.X;
+            var oy = Offset.Y;
+
+            // step 1: T(-offset) * transform
+            // M' = T(-ox,-oy) * M
+            var m11 = m.M11;
+            var m12 = m.M12;
+            var m21 = m.M21;
+            var m22 = m.M22;
+            var dx = -ox * m11 + -oy * m21 + m.OffsetX;
+            var dy = -ox * m12 + -oy * m22 + m.OffsetY;
+
+            // step 2: result * T(+offset)
+            var finalDx = dx + ox;
+            var finalDy = dy + oy;
+
+            _renderTarget.PushTransform(new float[]
+            {
+                (float)m11, (float)m12,
+                (float)m21, (float)m22,
+                (float)finalDx, (float)finalDy
+            });
+            _stateStack.Push(new DrawingState(DrawingStateType.NativeTransform, Point.Zero));
         }
     }
 
@@ -573,12 +846,29 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         if (_closed || clipGeometry == null) return;
 
         var bounds = clipGeometry.Bounds;
-        // Round to pixel boundaries to prevent sub-pixel jittering
-        _renderTarget.PushClip(
-            (float)Math.Round(bounds.X + Offset.X),
-            (float)Math.Round(bounds.Y + Offset.Y),
-            (float)bounds.Width,
-            (float)bounds.Height);
+        // Snap clip edges to pixel grid by expanding outward (Floor start, Ceiling end).
+        // Drawing operations (DrawRoundedRectangle etc.) pixel-snap their origin via Math.Round,
+        // so the drawn stroke can land up to 0.5px outside the mathematical clip region.
+        // Expanding to full-pixel boundaries ensures the clip always contains the entire
+        // pixel-snapped content, preventing asymmetric border thickness artifacts.
+        var exactLeft = bounds.X + Offset.X;
+        var exactTop = bounds.Y + Offset.Y;
+        var exactRight = exactLeft + bounds.Width;
+        var exactBottom = exactTop + bounds.Height;
+
+        var x = (float)Math.Floor(exactLeft);
+        var y = (float)Math.Floor(exactTop);
+        var w = (float)Math.Ceiling(exactRight) - x;
+        var h = (float)Math.Ceiling(exactBottom) - y;
+
+        if (clipGeometry is RectangleGeometry rectGeom && (rectGeom.RadiusX > 0 || rectGeom.RadiusY > 0))
+        {
+            _renderTarget.PushRoundedRectClip(x, y, w, h, (float)rectGeom.RadiusX, (float)rectGeom.RadiusY);
+        }
+        else
+        {
+            _renderTarget.PushClip(x, y, w, h);
+        }
 
         _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
     }
@@ -618,12 +908,61 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             case DrawingStateType.Transform:
                 Offset = state.SavedOffset;
                 break;
+            case DrawingStateType.NativeTransform:
+                _renderTarget.PopTransform();
+                break;
             case DrawingStateType.Clip:
                 _renderTarget.PopClip();
                 break;
             case DrawingStateType.Opacity:
                 _renderTarget.PopOpacity();
                 break;
+        }
+    }
+
+    // ========================================================================
+    // Element Effect Capture & Rendering
+    // ========================================================================
+
+    /// <summary>
+    /// Begins capturing element content into an offscreen bitmap for effect processing.
+    /// </summary>
+    public void BeginEffectCapture(float x, float y, float w, float h)
+    {
+        if (_closed) return;
+        _renderTarget.BeginEffectCapture(x, y, w, h);
+    }
+
+    /// <summary>
+    /// Ends capturing element content and restores the main render target.
+    /// </summary>
+    public void EndEffectCapture()
+    {
+        if (_closed) return;
+        _renderTarget.EndEffectCapture();
+    }
+
+    /// <summary>
+    /// Applies the given element effect to the captured content and draws the result.
+    /// Dispatches to the appropriate native rendering method based on concrete effect type.
+    /// </summary>
+    public void ApplyElementEffect(IEffect effect, float x, float y, float w, float h)
+    {
+        if (_closed || effect == null) return;
+
+        if (effect is Media.Effects.BlurEffect blur)
+        {
+            _renderTarget.DrawBlurEffect(x, y, w, h, (float)blur.Radius);
+        }
+        else if (effect is Media.Effects.DropShadowEffect shadow)
+        {
+            var color = shadow.Color;
+            _renderTarget.DrawDropShadowEffect(x, y, w, h,
+                (float)shadow.BlurRadius,
+                (float)shadow.OffsetX,
+                (float)shadow.OffsetY,
+                color.R / 255f, color.G / 255f, color.B / 255f,
+                (float)shadow.Opacity);
         }
     }
 
@@ -697,28 +1036,121 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     }
 
     private NativeBrush? GetNativeBrush(Brush brush)
+        => GetNativeBrush(brush, 0, 0, 0, 0);
+
+    private NativeBrush? GetNativeBrush(Brush brush, float bx, float by, float bw, float bh)
     {
         if (brush == null) return null;
-
-        if (_brushCache.TryGetValue(brush, out var cached))
-        {
-            return cached;
-        }
-
-        NativeBrush? nativeBrush = null;
 
         if (brush is SolidColorBrush solidBrush)
         {
             var color = solidBrush.Color;
-            nativeBrush = _context.CreateSolidBrush(color.ScR, color.ScG, color.ScB, color.ScA);
+            // Cache based on (brush reference, current color) to invalidate
+            // when the same brush object has its Color property changed
+            if (_brushCache.TryGetValue(brush, out var cached))
+            {
+                if (cached.CachedColor == color)
+                    return cached;
+                // Color changed — dispose old native brush and recreate
+                cached.Dispose();
+                _brushCache.Remove(brush);
+            }
+
+            var nb = _context.CreateSolidBrush(color.ScR, color.ScG, color.ScB, color.ScA);
+            nb.CachedColor = color;
+            _brushCache[brush] = nb;
+            return nb;
         }
 
-        if (nativeBrush != null)
+        if (brush is LinearGradientBrush linear)
         {
-            _brushCache[brush] = nativeBrush;
+            return CreateNativeLinearGradient(linear, bx, by, bw, bh);
         }
 
-        return nativeBrush;
+        if (brush is RadialGradientBrush radial)
+        {
+            return CreateNativeRadialGradient(radial, bx, by, bw, bh);
+        }
+
+        return null;
+    }
+
+    private static float[] MarshalGradientStops(List<GradientStop> stops)
+    {
+        var arr = new float[stops.Count * 5];
+        for (int i = 0; i < stops.Count; i++)
+        {
+            var s = stops[i];
+            int off = i * 5;
+            arr[off] = (float)s.Offset;
+            arr[off + 1] = s.Color.ScR;
+            arr[off + 2] = s.Color.ScG;
+            arr[off + 3] = s.Color.ScB;
+            arr[off + 4] = s.Color.ScA;
+        }
+        return arr;
+    }
+
+    private NativeBrush CreateNativeLinearGradient(LinearGradientBrush brush,
+        float bx, float by, float bw, float bh)
+    {
+        float sx, sy, ex, ey;
+        if (brush.MappingMode == BrushMappingMode.RelativeToBoundingBox)
+        {
+            sx = bx + (float)brush.StartPoint.X * bw;
+            sy = by + (float)brush.StartPoint.Y * bh;
+            ex = bx + (float)brush.EndPoint.X * bw;
+            ey = by + (float)brush.EndPoint.Y * bh;
+        }
+        else
+        {
+            sx = (float)brush.StartPoint.X;
+            sy = (float)brush.StartPoint.Y;
+            ex = (float)brush.EndPoint.X;
+            ey = (float)brush.EndPoint.Y;
+        }
+
+        var stops = MarshalGradientStops(brush.GradientStops);
+        var nb = _context.CreateLinearGradientBrush(sx, sy, ex, ey, stops, (uint)brush.GradientStops.Count);
+
+        // Replace previous cached entry if any
+        if (_brushCache.TryGetValue(brush, out var old))
+            old.Dispose();
+        _brushCache[brush] = nb;
+        return nb;
+    }
+
+    private NativeBrush CreateNativeRadialGradient(RadialGradientBrush brush,
+        float bx, float by, float bw, float bh)
+    {
+        float cx, cy, rx, ry, ox, oy;
+        if (brush.MappingMode == BrushMappingMode.RelativeToBoundingBox)
+        {
+            cx = bx + (float)brush.Center.X * bw;
+            cy = by + (float)brush.Center.Y * bh;
+            rx = (float)brush.RadiusX * bw;
+            ry = (float)brush.RadiusY * bh;
+            ox = bx + (float)brush.GradientOrigin.X * bw;
+            oy = by + (float)brush.GradientOrigin.Y * bh;
+        }
+        else
+        {
+            cx = (float)brush.Center.X;
+            cy = (float)brush.Center.Y;
+            rx = (float)brush.RadiusX;
+            ry = (float)brush.RadiusY;
+            ox = (float)brush.GradientOrigin.X;
+            oy = (float)brush.GradientOrigin.Y;
+        }
+
+        var stops = MarshalGradientStops(brush.GradientStops);
+        var nb = _context.CreateRadialGradientBrush(cx, cy, rx, ry, ox, oy, stops, (uint)brush.GradientStops.Count);
+
+        // Replace previous cached entry if any
+        if (_brushCache.TryGetValue(brush, out var old))
+            old.Dispose();
+        _brushCache[brush] = nb;
+        return nb;
     }
 
     private NativeTextFormat? GetTextFormat(string fontFamily, double fontSize)
@@ -773,6 +1205,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     private enum DrawingStateType
     {
         Transform,
+        NativeTransform,
         Clip,
         Opacity
     }

@@ -1,4 +1,4 @@
-using Jalium.UI;
+﻿using Jalium.UI;
 
 namespace Jalium.UI.Media.Effects;
 
@@ -6,7 +6,7 @@ namespace Jalium.UI.Media.Effects;
 /// A bitmap effect that blurs the target texture.
 /// This is the WPF-compatible BlurEffect class.
 /// </summary>
-public class BlurEffect : Effect
+public sealed class BlurEffect : Effect
 {
     #region Dependency Properties
 
@@ -62,7 +62,7 @@ public class BlurEffect : Effect
     /// </summary>
     public double Radius
     {
-        get => (double)(GetValue(RadiusProperty) ?? 5.0);
+        get => (double)GetValue(RadiusProperty)!;
         set => SetValue(RadiusProperty, Math.Max(0, value));
     }
 

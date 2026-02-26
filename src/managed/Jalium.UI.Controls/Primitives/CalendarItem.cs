@@ -1,4 +1,4 @@
-using Jalium.UI.Input;
+﻿using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -7,8 +7,15 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents the visual container for the Calendar control's current display mode.
 /// </summary>
-public class CalendarItem : Control
+public sealed class CalendarItem : Control
 {
+    #region Static Brushes
+
+    private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(45, 45, 45));
+    private static readonly SolidColorBrush s_dayOfWeekHeaderBrush = new(Color.FromRgb(160, 160, 160));
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -27,7 +34,7 @@ public class CalendarItem : Control
     /// </summary>
     public CalendarMode DisplayMode
     {
-        get => (CalendarMode)(GetValue(DisplayModeProperty) ?? CalendarMode.Month);
+        get => (CalendarMode)GetValue(DisplayModeProperty)!;
         set => SetValue(DisplayModeProperty, value);
     }
 
@@ -200,7 +207,7 @@ public class CalendarItem : Control
         var rect = new Rect(RenderSize);
 
         // Draw background
-        var bgBrush = Background ?? new SolidColorBrush(Color.FromRgb(45, 45, 45));
+        var bgBrush = Background ?? s_defaultBackgroundBrush;
         dc.DrawRectangle(bgBrush, null, rect);
 
         // Draw day of week headers if in month mode
@@ -212,7 +219,7 @@ public class CalendarItem : Control
 
     private void DrawDayOfWeekHeaders(DrawingContext dc)
     {
-        var fgBrush = new SolidColorBrush(Color.FromRgb(160, 160, 160));
+        var fgBrush = s_dayOfWeekHeaderBrush;
         var dayNames = new[] { "Su", "Mo", "Tu", "We", "Th", "Fr", "Sa" };
 
         for (var i = 0; i < DaysPerWeek; i++)

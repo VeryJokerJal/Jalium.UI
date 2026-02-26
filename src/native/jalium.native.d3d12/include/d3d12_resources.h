@@ -46,6 +46,29 @@ private:
     ID2D1DeviceContext* lastContext_ = nullptr;
 };
 
+/// D2D radial gradient brush wrapper.
+class D3D12RadialGradientBrush : public Brush {
+public:
+    D3D12RadialGradientBrush(
+        float centerX, float centerY, float radiusX, float radiusY,
+        float originX, float originY,
+        const JaliumGradientStop* stops, uint32_t stopCount);
+    ~D3D12RadialGradientBrush() override = default;
+
+    JaliumBrushType GetType() const override { return JALIUM_BRUSH_RADIAL_GRADIENT; }
+
+    /// Creates the actual D2D brush for a device context.
+    ID2D1RadialGradientBrush* GetOrCreateBrush(ID2D1DeviceContext* context);
+
+    float centerX_, centerY_, radiusX_, radiusY_, originX_, originY_;
+    std::vector<D2D1_GRADIENT_STOP> stops_;
+
+private:
+    ComPtr<ID2D1GradientStopCollection> stopCollection_;
+    ComPtr<ID2D1RadialGradientBrush> brush_;
+    ID2D1DeviceContext* lastContext_ = nullptr;
+};
+
 /// D2D bitmap wrapper.
 class D3D12Bitmap : public Bitmap {
 public:

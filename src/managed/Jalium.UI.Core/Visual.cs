@@ -8,6 +8,8 @@ public abstract class Visual : DependencyObject
 {
     private Visual? _parent;
     private readonly List<Visual> _children = new();
+    private bool _isRenderDirty;
+    private bool _isSubtreeDirty;
 
     /// <summary>
     /// Gets the parent visual.
@@ -44,7 +46,8 @@ public abstract class Visual : DependencyObject
 
         if (child._parent != null)
         {
-            throw new InvalidOperationException("Visual already has a parent.");
+            System.Diagnostics.Debug.WriteLine($"[Visual] AddVisualChild FAILED: child={child.GetType().Name}, child._parent={child._parent.GetType().Name}, this={this.GetType().Name}");
+            throw new InvalidOperationException($"Visual already has a parent. child={child.GetType().Name}, parent={child._parent.GetType().Name}, attempted new parent={this.GetType().Name}");
         }
 
         var oldParent = child._parent;
@@ -53,6 +56,18 @@ public abstract class Visual : DependencyObject
 
         OnVisualChildrenChanged(child, null);
         child.OnVisualParentChanged(oldParent);
+    }
+
+    /// <summary>
+    /// Detaches this visual from its current parent, if any.
+    /// Used by Popup to move a child into the PopupRoot overlay tree.
+    /// </summary>
+    internal void DetachFromVisualParent()
+    {
+        if (_parent != null)
+        {
+            _parent.RemoveVisualChild(this);
+        }
     }
 
     /// <summary>
@@ -85,12 +100,67 @@ public abstract class Visual : DependencyObject
     }
 
     /// <summary>
+    /// Internal method for VisualCollection to add a child.
+    /// Calls AddVisualChild which is protected.
+    /// </summary>
+    internal void InternalAddVisualChild(Visual child) => AddVisualChild(child);
+
+    /// <summary>
+    /// Internal method for VisualCollection to remove a child.
+    /// Calls RemoveVisualChild which is protected.
+    /// </summary>
+    internal void InternalRemoveVisualChild(Visual child) => RemoveVisualChild(child);
+
+    /// <summary>
     /// Called when visual children change.
     /// </summary>
     /// <param name="visualAdded">The child that was added, if any.</param>
     /// <param name="visualRemoved">The child that was removed, if any.</param>
     protected virtual void OnVisualChildrenChanged(Visual? visualAdded, Visual? visualRemoved)
     {
+    }
+
+    /// <summary>
+    /// Gets whether this element needs re-rendering.
+    /// </summary>
+    internal bool IsRenderDirty => _isRenderDirty;
+
+    /// <summary>
+    /// Gets whether this element or any descendant needs re-rendering.
+    /// </summary>
+    internal bool IsSubtreeDirty => _isSubtreeDirty;
+
+    /// <summary>
+    /// Marks this element as needing re-rendering and propagates subtree dirty flag up.
+    /// </summary>
+    internal void SetRenderDirty()
+    {
+        _isRenderDirty = true;
+        MarkSubtreeDirtyUp();
+    }
+
+    /// <summary>
+    /// Propagates the subtree dirty flag to all ancestors.
+    /// </summary>
+    private void MarkSubtreeDirtyUp()
+    {
+        var current = this;
+        while (current != null)
+        {
+            if (current._isSubtreeDirty)
+                break; // Already marked, ancestors also marked
+            current._isSubtreeDirty = true;
+            current = current._parent;
+        }
+    }
+
+    /// <summary>
+    /// Clears dirty flags after rendering.
+    /// </summary>
+    internal void ClearRenderDirty()
+    {
+        _isRenderDirty = false;
+        _isSubtreeDirty = false;
     }
 
     /// <summary>
@@ -105,10 +175,36 @@ public abstract class Visual : DependencyObject
 
     /// <summary>
     /// Performs rendering using the specified drawing context.
+    /// Renders this element and all visible children.
     /// </summary>
     /// <param name="drawingContext">The drawing context (should be cast to DrawingContext from Media).</param>
     public void Render(object drawingContext)
     {
+        // Check for element effect (BlurEffect, DropShadowEffect, etc.)
+        // If present, capture all rendering to an offscreen bitmap so the effect can be applied.
+        IEffect? activeEffect = null;
+        IEffectDrawingContext? effectDc = null;
+        float captureX = 0, captureY = 0, captureW = 0, captureH = 0;
+
+        if (this is UIElement effectElement &&
+            effectElement.Effect is IEffect eff &&
+            eff.HasEffect &&
+            drawingContext is IEffectDrawingContext edc &&
+            drawingContext is IOffsetDrawingContext offsetDc)
+        {
+            activeEffect = eff;
+            effectDc = edc;
+
+            var padding = eff.EffectPadding;
+            var size = effectElement.RenderSize;
+            captureX = (float)(offsetDc.Offset.X - padding.Left);
+            captureY = (float)(offsetDc.Offset.Y - padding.Top);
+            captureW = (float)(size.Width + padding.Left + padding.Right);
+            captureH = (float)(size.Height + padding.Top + padding.Bottom);
+
+            effectDc.BeginEffectCapture(captureX, captureY, captureW, captureH);
+        }
+
         OnRender(drawingContext);
 
         // Check if clipping should be applied before rendering children
@@ -141,7 +237,12 @@ public abstract class Visual : DependencyObject
             {
                 var bounds = uiChild.VisualBounds;
                 var savedOffset = offsetContext.Offset;
-                offsetContext.Offset = new Point(savedOffset.X + bounds.X, savedOffset.Y + bounds.Y);
+
+                // Apply RenderOffset (visual-only translation, does not affect layout)
+                var ro = uiChild.RenderOffset;
+                offsetContext.Offset = new Point(
+                    savedOffset.X + bounds.X + ro.X,
+                    savedOffset.Y + bounds.Y + ro.Y);
 
                 // Handle opacity for child elements
                 var childOpacity = uiChild.Opacity;
@@ -176,6 +277,17 @@ public abstract class Visual : DependencyObject
 
         // Call post-render for overlays (like scrollbars)
         OnPostRender(drawingContext);
+
+        // End effect capture and apply the effect to the captured content
+        if (activeEffect != null && effectDc != null)
+        {
+            effectDc.EndEffectCapture();
+            effectDc.ApplyElementEffect(activeEffect, captureX, captureY, captureW, captureH);
+        }
+
+        // Clear dirty flags after this element has rendered
+        _isRenderDirty = false;
+        _isSubtreeDirty = false;
     }
 
     /// <summary>

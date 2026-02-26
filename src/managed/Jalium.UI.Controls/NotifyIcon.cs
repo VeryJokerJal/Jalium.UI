@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a Windows notification area (system tray) icon.
 /// </summary>
-public class NotifyIcon : FrameworkElement, IDisposable
+public sealed class NotifyIcon : FrameworkElement, IDisposable
 {
     private bool _disposed;
     private bool _isVisible;
@@ -128,7 +128,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// </summary>
     public bool Visible
     {
-        get => (bool)(GetValue(VisibleProperty) ?? false);
+        get => (bool)GetValue(VisibleProperty)!;
         set => SetValue(VisibleProperty, value);
     }
 
@@ -240,7 +240,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Shows the notify icon.
     /// </summary>
-    protected virtual void ShowInternal()
+    protected void ShowInternal()
     {
         // Platform-specific implementation using Shell_NotifyIcon
     }
@@ -248,7 +248,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Hides the notify icon.
     /// </summary>
-    protected virtual void HideInternal()
+    protected void HideInternal()
     {
         // Platform-specific implementation
     }
@@ -256,7 +256,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Updates the icon.
     /// </summary>
-    protected virtual void UpdateIconInternal(ImageSource? icon)
+    protected void UpdateIconInternal(ImageSource? icon)
     {
         // Platform-specific implementation
     }
@@ -264,7 +264,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Updates the tooltip text.
     /// </summary>
-    protected virtual void UpdateTooltipInternal(string text)
+    protected void UpdateTooltipInternal(string text)
     {
         // Platform-specific implementation
     }
@@ -272,7 +272,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Shows a balloon tip.
     /// </summary>
-    protected virtual void ShowBalloonTipInternal(int timeout, string title, string text, BalloonTipIcon icon)
+    protected void ShowBalloonTipInternal(int timeout, string title, string text, BalloonTipIcon icon)
     {
         // Platform-specific implementation
     }
@@ -284,7 +284,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Raises the Click event.
     /// </summary>
-    protected virtual void OnClick()
+    protected void OnClick()
     {
         Click?.Invoke(this, EventArgs.Empty);
     }
@@ -292,7 +292,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Raises the DoubleClick event.
     /// </summary>
-    protected virtual void OnDoubleClick()
+    protected void OnDoubleClick()
     {
         DoubleClick?.Invoke(this, EventArgs.Empty);
     }
@@ -300,7 +300,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Raises the BalloonTipClicked event.
     /// </summary>
-    protected virtual void OnBalloonTipClicked()
+    protected void OnBalloonTipClicked()
     {
         BalloonTipClicked?.Invoke(this, EventArgs.Empty);
     }
@@ -308,7 +308,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Raises the BalloonTipClosed event.
     /// </summary>
-    protected virtual void OnBalloonTipClosed()
+    protected void OnBalloonTipClosed()
     {
         BalloonTipClosed?.Invoke(this, EventArgs.Empty);
     }
@@ -316,7 +316,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Raises the BalloonTipShown event.
     /// </summary>
-    protected virtual void OnBalloonTipShown()
+    protected void OnBalloonTipShown()
     {
         BalloonTipShown?.Invoke(this, EventArgs.Empty);
     }
@@ -337,7 +337,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Releases the unmanaged resources used by the NotifyIcon.
     /// </summary>
-    protected virtual void Dispose(bool disposing)
+    protected void Dispose(bool disposing)
     {
         if (_disposed)
             return;

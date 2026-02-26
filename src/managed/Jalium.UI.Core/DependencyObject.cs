@@ -271,6 +271,15 @@ public class DependencyObject : DispatcherObject
         if (!Equals(oldValue, value))
         {
             OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, value));
+
+            // Ensure dirty rect tracking for animated properties.
+            // OnPropertyChanged fires the metadata callback which MAY call InvalidateVisual,
+            // but properties without explicit callbacks (e.g., Opacity) would be missed.
+            // AddDirtyElement deduplicates, so double-calls are harmless.
+            if (this is UIElement uiElement)
+            {
+                uiElement.InvalidateVisual();
+            }
         }
     }
 

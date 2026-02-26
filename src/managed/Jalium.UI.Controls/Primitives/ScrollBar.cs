@@ -6,8 +6,17 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a control that provides a scroll bar for scrolling content.
 /// </summary>
-public class ScrollBar : RangeBase
+public sealed class ScrollBar : RangeBase
 {
+    #region Static Brushes
+
+    private static readonly SolidColorBrush s_defaultTrackBrush = new(Color.FromRgb(40, 40, 40));
+    private static readonly SolidColorBrush s_defaultThumbBrush = new(Color.FromRgb(170, 170, 170));
+    private static readonly SolidColorBrush s_defaultArrowBrush = new(Color.FromRgb(210, 210, 210));
+    private static readonly SolidColorBrush s_transparentBrush = new(Color.FromArgb(0, 0, 0, 0));
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -53,7 +62,7 @@ public class ScrollBar : RangeBase
     /// </summary>
     public Orientation Orientation
     {
-        get => (Orientation)(GetValue(OrientationProperty) ?? Orientation.Vertical);
+        get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
@@ -62,7 +71,7 @@ public class ScrollBar : RangeBase
     /// </summary>
     public double ViewportSize
     {
-        get => (double)(GetValue(ViewportSizeProperty) ?? 0.0);
+        get => (double)GetValue(ViewportSizeProperty)!;
         set => SetValue(ViewportSizeProperty, value);
     }
 
@@ -76,6 +85,11 @@ public class ScrollBar : RangeBase
     private const double DefaultThickness = 16;
     private const double MinThumbLength = 20;
     private bool _isDragging;
+    private bool _hasCustomLineButtonStyle;
+    private const string ScrollBarStyleKey = "ScrollBarStyle";
+    private const string LineButtonStyleKey = "ScrollBarLineButtonStyle";
+    private const string PageButtonStyleKey = "ScrollBarPageButtonStyle";
+    private const string ThumbStyleKey = "ScrollBarThumbStyle";
 
     #endregion
 
@@ -90,6 +104,11 @@ public class ScrollBar : RangeBase
         Maximum = 100;
         SmallChange = 1;
         LargeChange = 10;
+        Background = s_defaultTrackBrush;
+        BorderBrush = s_transparentBrush;
+        BorderThickness = new Thickness(0);
+        Padding = new Thickness(2);
+        CornerRadius = new CornerRadius(5);
 
         // Create visual children
         CreateVisualChildren();
@@ -104,22 +123,63 @@ public class ScrollBar : RangeBase
         // Create line up/left button
         _lineUpButton = new RepeatButton
         {
-            Focusable = false
+            Focusable = false,
+            Background = s_transparentBrush,
+            BorderBrush = s_transparentBrush,
+            BorderThickness = new Thickness(0),
+            Foreground = s_defaultArrowBrush,
+            UseScrollBarArrowAnimation = true,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(0),
+            MinWidth = 0,
+            MinHeight = 0
         };
+        _lineUpButton.Cursor = Jalium.UI.Cursors.Arrow;
         _lineUpButton.Click += OnLineUpClick;
         AddVisualChild(_lineUpButton);
 
         // Create track
         _track = new Track();
-        _track.Thumb = new Thumb();
+        _track.Thumb = new Thumb
+        {
+            Background = s_defaultThumbBrush,
+            BorderBrush = s_transparentBrush,
+            BorderThickness = new Thickness(0),
+            CornerRadius = new CornerRadius(4)
+        };
+        _track.Thumb.Cursor = Jalium.UI.Cursors.Arrow;
         _track.Thumb.DragStarted += OnThumbDragStarted;
         _track.Thumb.DragDelta += OnThumbDragDelta;
         _track.Thumb.DragCompleted += OnThumbDragCompleted;
 
-        _track.DecreaseRepeatButton = new RepeatButton { Focusable = false, Opacity = 0 };
+        _track.DecreaseRepeatButton = new RepeatButton
+        {
+            Focusable = false,
+            Opacity = 0,
+            Background = s_transparentBrush,
+            BorderBrush = s_transparentBrush,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(0),
+            MinWidth = 0,
+            MinHeight = 0
+        };
+        _track.DecreaseRepeatButton.Cursor = Jalium.UI.Cursors.Arrow;
         _track.DecreaseRepeatButton.Click += OnPageUpClick;
 
-        _track.IncreaseRepeatButton = new RepeatButton { Focusable = false, Opacity = 0 };
+        _track.IncreaseRepeatButton = new RepeatButton
+        {
+            Focusable = false,
+            Opacity = 0,
+            Background = s_transparentBrush,
+            BorderBrush = s_transparentBrush,
+            BorderThickness = new Thickness(0),
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(0),
+            MinWidth = 0,
+            MinHeight = 0
+        };
+        _track.IncreaseRepeatButton.Cursor = Jalium.UI.Cursors.Arrow;
         _track.IncreaseRepeatButton.Click += OnPageDownClick;
 
         AddVisualChild(_track);
@@ -127,12 +187,33 @@ public class ScrollBar : RangeBase
         // Create line down/right button
         _lineDownButton = new RepeatButton
         {
-            Focusable = false
+            Focusable = false,
+            Background = s_transparentBrush,
+            BorderBrush = s_transparentBrush,
+            BorderThickness = new Thickness(0),
+            Foreground = s_defaultArrowBrush,
+            UseScrollBarArrowAnimation = true,
+            Padding = new Thickness(0),
+            CornerRadius = new CornerRadius(0),
+            MinWidth = 0,
+            MinHeight = 0
         };
+        _lineDownButton.Cursor = Jalium.UI.Cursors.Arrow;
         _lineDownButton.Click += OnLineDownClick;
         AddVisualChild(_lineDownButton);
 
+        ApplySelfStyle();
+        ApplyPartStyles();
+        UpdateLineButtonDirectionTags();
         UpdateTrackBindings();
+    }
+
+    /// <inheritdoc />
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+        ApplySelfStyle();
+        ApplyPartStyles();
     }
 
     private void UpdateTrackBindings()
@@ -144,6 +225,75 @@ public class ScrollBar : RangeBase
             _track.Value = Value;
             _track.ViewportSize = ViewportSize;
             _track.Orientation = Orientation;
+        }
+
+        UpdateLineButtonDirectionTags();
+    }
+
+    private void ApplyPartStyles()
+    {
+        var lineButtonStyle = TryFindResource(LineButtonStyleKey) as Style;
+        _hasCustomLineButtonStyle = lineButtonStyle != null;
+
+        if (_lineUpButton != null)
+        {
+            _lineUpButton.Style = lineButtonStyle ?? _lineUpButton.Style;
+        }
+
+        if (_lineDownButton != null)
+        {
+            _lineDownButton.Style = lineButtonStyle ?? _lineDownButton.Style;
+        }
+
+        if (_track?.DecreaseRepeatButton != null)
+        {
+            _track.DecreaseRepeatButton.Style = TryFindResource(PageButtonStyleKey) as Style ?? _track.DecreaseRepeatButton.Style;
+        }
+
+        if (_track?.IncreaseRepeatButton != null)
+        {
+            _track.IncreaseRepeatButton.Style = TryFindResource(PageButtonStyleKey) as Style ?? _track.IncreaseRepeatButton.Style;
+        }
+
+        if (_track?.Thumb != null)
+        {
+            _track.Thumb.Style = TryFindResource(ThumbStyleKey) as Style ?? _track.Thumb.Style;
+        }
+    }
+
+    private void ApplySelfStyle()
+    {
+        if (Style != null)
+        {
+            return;
+        }
+
+        if (TryFindResource(ScrollBarStyleKey) is Style explicitStyle)
+        {
+            Style = explicitStyle;
+            return;
+        }
+
+        if (TryFindResource(typeof(ScrollBar)) is Style implicitStyle)
+        {
+            Style = implicitStyle;
+        }
+    }
+
+    private void UpdateLineButtonDirectionTags()
+    {
+        if (_lineUpButton == null || _lineDownButton == null)
+            return;
+
+        if (Orientation == Orientation.Vertical)
+        {
+            _lineUpButton.Tag = "Up";
+            _lineDownButton.Tag = "Down";
+        }
+        else
+        {
+            _lineUpButton.Tag = "Left";
+            _lineDownButton.Tag = "Right";
         }
     }
 
@@ -212,6 +362,8 @@ public class ScrollBar : RangeBase
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
+        ApplySelfStyle();
+        ApplyPartStyles();
         UpdateTrackBindings();
 
         if (Orientation == Orientation.Vertical)
@@ -290,7 +442,7 @@ public class ScrollBar : RangeBase
         if (_track != null)
         {
             var valueDelta = _track.ValueFromDistance(e.HorizontalChange, e.VerticalChange);
-            var newValue = Math.Max(Minimum, Math.Min(Maximum, Value + valueDelta));
+            var newValue = Math.Clamp(Value + valueDelta, Minimum, Maximum);
 
             if (Math.Abs(newValue - Value) > double.Epsilon)
             {
@@ -319,7 +471,7 @@ public class ScrollBar : RangeBase
         if (e is MouseWheelEventArgs wheelArgs)
         {
             var delta = wheelArgs.Delta > 0 ? -SmallChange * 3 : SmallChange * 3;
-            var newValue = Math.Max(Minimum, Math.Min(Maximum, Value + delta));
+            var newValue = Math.Clamp(Value + delta, Minimum, Maximum);
 
             if (Math.Abs(newValue - Value) > double.Epsilon)
             {
@@ -383,15 +535,83 @@ public class ScrollBar : RangeBase
         if (drawingContext is not DrawingContext dc)
             return;
 
-        // Draw background
-        var bgBrush = Background ?? new SolidColorBrush(Color.FromRgb(240, 240, 240));
-        dc.DrawRectangle(bgBrush, null, new Rect(RenderSize));
+        var innerRect = new Rect(
+            Padding.Left,
+            Padding.Top,
+            Math.Max(0, RenderSize.Width - Padding.Left - Padding.Right),
+            Math.Max(0, RenderSize.Height - Padding.Top - Padding.Bottom));
+        if (innerRect.Width <= 0 || innerRect.Height <= 0)
+        {
+            return;
+        }
 
-        // Draw border
+        var bgBrush = Background ?? s_defaultTrackBrush;
+        dc.DrawRoundedRectangle(bgBrush, null, innerRect, CornerRadius);
+
         if (BorderBrush != null && BorderThickness.TotalWidth > 0)
         {
             var borderPen = new Pen(BorderBrush, BorderThickness.Left);
-            dc.DrawRectangle(null, borderPen, new Rect(RenderSize));
+            dc.DrawRoundedRectangle(null, borderPen, innerRect, CornerRadius);
+        }
+
+        // Fallback: if line-button styles are missing, draw simple arrows directly.
+        if (!_hasCustomLineButtonStyle)
+        {
+            DrawFallbackArrows(dc);
+        }
+    }
+
+    private void DrawFallbackArrows(DrawingContext dc)
+    {
+        const double baseArrowSize = 8.0;
+        var upBrush = (_lineUpButton?.Foreground as Brush) ?? s_defaultArrowBrush;
+        var downBrush = (_lineDownButton?.Foreground as Brush) ?? s_defaultArrowBrush;
+        var upScale = Math.Clamp(_lineUpButton?.CurrentScrollBarArrowScale ?? 1.0, 0.7, 1.25);
+        var downScale = Math.Clamp(_lineDownButton?.CurrentScrollBarArrowScale ?? 1.0, 0.7, 1.25);
+        var upArrowSize = baseArrowSize * upScale;
+        var downArrowSize = baseArrowSize * downScale;
+
+        if (Orientation == Orientation.Vertical)
+        {
+            var buttonSize = RenderSize.Width;
+            if (buttonSize <= 0 || RenderSize.Height < buttonSize * 2)
+                return;
+
+            var topCenter = new Point(RenderSize.Width / 2, buttonSize / 2);
+            var bottomCenter = new Point(RenderSize.Width / 2, RenderSize.Height - buttonSize / 2);
+
+            Jalium.UI.Controls.ArrowIcons.DrawArrow(
+                dc,
+                upBrush,
+                new Rect(topCenter.X - upArrowSize / 2, topCenter.Y - upArrowSize / 2, upArrowSize, upArrowSize),
+                Jalium.UI.Controls.ArrowIcons.Direction.Up);
+
+            Jalium.UI.Controls.ArrowIcons.DrawArrow(
+                dc,
+                downBrush,
+                new Rect(bottomCenter.X - downArrowSize / 2, bottomCenter.Y - downArrowSize / 2, downArrowSize, downArrowSize),
+                Jalium.UI.Controls.ArrowIcons.Direction.Down);
+        }
+        else
+        {
+            var buttonSize = RenderSize.Height;
+            if (buttonSize <= 0 || RenderSize.Width < buttonSize * 2)
+                return;
+
+            var leftCenter = new Point(buttonSize / 2, RenderSize.Height / 2);
+            var rightCenter = new Point(RenderSize.Width - buttonSize / 2, RenderSize.Height / 2);
+
+            Jalium.UI.Controls.ArrowIcons.DrawArrow(
+                dc,
+                upBrush,
+                new Rect(leftCenter.X - upArrowSize / 2, leftCenter.Y - upArrowSize / 2, upArrowSize, upArrowSize),
+                Jalium.UI.Controls.ArrowIcons.Direction.Left);
+
+            Jalium.UI.Controls.ArrowIcons.DrawArrow(
+                dc,
+                downBrush,
+                new Rect(rightCenter.X - downArrowSize / 2, rightCenter.Y - downArrowSize / 2, downArrowSize, downArrowSize),
+                Jalium.UI.Controls.ArrowIcons.Direction.Right);
         }
     }
 

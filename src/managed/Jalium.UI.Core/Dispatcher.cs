@@ -15,7 +15,7 @@ public sealed partial class Dispatcher : IDisposable
 
     private readonly Thread _thread;
     private readonly uint _threadId;
-    private readonly ConcurrentQueue<Action> _queue = new();
+    private readonly ConcurrentQueue<DispatcherWorkItem> _queue = new();
     private readonly ManualResetEventSlim _workAvailable = new(false);
     private volatile bool _isShutdown;
     private bool _disposed;
@@ -25,6 +25,19 @@ public sealed partial class Dispatcher : IDisposable
     private WndProcDelegate? _wndProcDelegate;
     private const string MessageWindowClassName = "JaliumDispatcherMessageWindow";
     private const uint WM_DISPATCHER_INVOKE = 0x0400 + 1; // WM_USER + 1
+
+    private readonly struct DispatcherWorkItem
+    {
+        public DispatcherWorkItem(Action callback, bool isCritical)
+        {
+            Callback = callback;
+            IsCritical = isCritical;
+        }
+
+        public Action Callback { get; }
+
+        public bool IsCritical { get; }
+    }
 
     /// <summary>
     /// Gets the <see cref="Dispatcher"/> for the thread currently executing.
@@ -137,7 +150,7 @@ public sealed partial class Dispatcher : IDisposable
         using var completed = new ManualResetEventSlim(false);
         Exception? exception = null;
 
-        _queue.Enqueue(() =>
+        EnqueueWorkItem(() =>
         {
             try
             {
@@ -151,9 +164,7 @@ public sealed partial class Dispatcher : IDisposable
             {
                 completed.Set();
             }
-        });
-
-        NotifyDispatcherThread();
+        }, isCritical: false);
         completed.Wait();
 
         if (exception != null)
@@ -181,7 +192,7 @@ public sealed partial class Dispatcher : IDisposable
         using var completed = new ManualResetEventSlim(false);
         Exception? exception = null;
 
-        _queue.Enqueue(() =>
+        EnqueueWorkItem(() =>
         {
             try
             {
@@ -195,9 +206,7 @@ public sealed partial class Dispatcher : IDisposable
             {
                 completed.Set();
             }
-        });
-
-        NotifyDispatcherThread();
+        }, isCritical: false);
         completed.Wait();
 
         if (exception != null)
@@ -216,8 +225,19 @@ public sealed partial class Dispatcher : IDisposable
     {
         ArgumentNullException.ThrowIfNull(callback);
 
-        _queue.Enqueue(callback);
-        NotifyDispatcherThread();
+        EnqueueWorkItem(callback, isCritical: false);
+    }
+
+    /// <summary>
+    /// Executes the specified <see cref="Action"/> asynchronously on the thread the <see cref="Dispatcher"/> is associated with.
+    /// Exceptions from critical callbacks are rethrown by <see cref="ProcessQueue"/>.
+    /// </summary>
+    /// <param name="callback">The delegate to invoke.</param>
+    public void BeginInvokeCritical(Action callback)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+
+        EnqueueWorkItem(callback, isCritical: true);
     }
 
     /// <summary>
@@ -237,7 +257,7 @@ public sealed partial class Dispatcher : IDisposable
 
         var tcs = new TaskCompletionSource();
 
-        _queue.Enqueue(() =>
+        EnqueueWorkItem(() =>
         {
             try
             {
@@ -248,9 +268,7 @@ public sealed partial class Dispatcher : IDisposable
             {
                 tcs.SetException(ex);
             }
-        });
-
-        NotifyDispatcherThread();
+        }, isCritical: false);
         return tcs.Task;
     }
 
@@ -271,7 +289,7 @@ public sealed partial class Dispatcher : IDisposable
 
         var tcs = new TaskCompletionSource<TResult>();
 
-        _queue.Enqueue(() =>
+        EnqueueWorkItem(() =>
         {
             try
             {
@@ -281,9 +299,7 @@ public sealed partial class Dispatcher : IDisposable
             {
                 tcs.SetException(ex);
             }
-        });
-
-        NotifyDispatcherThread();
+        }, isCritical: false);
         return tcs.Task;
     }
 
@@ -295,16 +311,15 @@ public sealed partial class Dispatcher : IDisposable
     {
         VerifyAccess();
 
-        while (_queue.TryDequeue(out var action))
+        while (_queue.TryDequeue(out var workItem))
         {
             try
             {
-                action();
+                workItem.Callback();
             }
-            catch (Exception ex)
+            catch when (!workItem.IsCritical)
             {
-                // Log or handle the exception
-                System.Diagnostics.Debug.WriteLine($"Dispatcher exception: {ex}");
+                // Exception silently handled to prevent dispatcher crash
             }
         }
 
@@ -394,6 +409,12 @@ public sealed partial class Dispatcher : IDisposable
         {
             PostMessageW(_messageWindow, WM_DISPATCHER_INVOKE, nint.Zero, nint.Zero);
         }
+    }
+
+    private void EnqueueWorkItem(Action callback, bool isCritical)
+    {
+        _queue.Enqueue(new DispatcherWorkItem(callback, isCritical));
+        NotifyDispatcherThread();
     }
 
     #endregion

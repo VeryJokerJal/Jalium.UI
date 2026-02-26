@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
+using Jalium.UI.Interop;
 using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Controls;
@@ -8,7 +9,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Encapsulates a Jalium.UI application.
 /// </summary>
-public partial class Application
+public sealed partial class Application
 {
     private static Application? _current;
 
@@ -22,6 +23,11 @@ public partial class Application
     /// </summary>
     public Window? MainWindow { get; set; }
 
+    /// <summary>
+    /// Gets or sets the shutdown mode of the application.
+    /// </summary>
+    public ShutdownMode ShutdownMode { get; set; } = ShutdownMode.OnLastWindowClose;
+
     private ResourceDictionary? _resources;
 
     /// <summary>
@@ -29,9 +35,34 @@ public partial class Application
     /// </summary>
     public ResourceDictionary Resources
     {
-        get => _resources ??= new ResourceDictionary();
-        set => _resources = value;
+        get
+        {
+            if (_resources == null)
+            {
+                _resources = new ResourceDictionary();
+                _resources.Changed += OnApplicationResourcesDictionaryChanged;
+            }
+
+            return _resources;
+        }
+        set
+        {
+            if (_resources == value)
+                return;
+
+            if (_resources != null)
+                _resources.Changed -= OnApplicationResourcesDictionaryChanged;
+
+            _resources = value ?? new ResourceDictionary();
+            _resources.Changed += OnApplicationResourcesDictionaryChanged;
+            OnApplicationResourcesChanged();
+        }
     }
+
+    /// <summary>
+    /// Occurs when application-level resources change.
+    /// </summary>
+    public event EventHandler? ResourcesChanged;
 
     /// <summary>
     /// Occurs when the application is starting.
@@ -55,6 +86,14 @@ public partial class Application
 
         _current = this;
 
+        // Initialize the dispatcher for the main UI thread
+        Dispatcher.SetAsMainThread();
+        // Install a SynchronizationContext so async/await resumes on the UI dispatcher thread.
+        // WebView2 initialization relies on UI-thread affinity across awaits.
+        SynchronizationContext.SetSynchronizationContext(
+            new Jalium.UI.Threading.DispatcherSynchronizationContext(
+                Dispatcher.MainDispatcher ?? Dispatcher.GetForCurrentThread()));
+
         // Initialize keyboard/focus system
         Keyboard.Initialize();
 
@@ -63,6 +102,12 @@ public partial class Application
 
         // Initialize default theme (loads default styles for all controls)
         ThemeManager.Initialize(this);
+
+        // Initialize validation adorner integration
+        ValidationAdornerIntegration.Initialize();
+
+        // Force ToolTip static constructor to register show/hide delegates early
+        System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ToolTip).TypeHandle);
     }
 
     private static object? LookupApplicationResource(object resourceKey)
@@ -75,6 +120,21 @@ public partial class Application
             }
         }
         return null;
+    }
+
+    private void OnApplicationResourcesDictionaryChanged(object? sender, EventArgs e)
+    {
+        OnApplicationResourcesChanged();
+    }
+
+    private void OnApplicationResourcesChanged()
+    {
+        ResourcesChanged?.Invoke(this, EventArgs.Empty);
+
+        if (MainWindow is FrameworkElement root)
+        {
+            root.NotifyResourcesChangedFromRoot();
+        }
     }
 
     /// <summary>
@@ -95,9 +155,9 @@ public partial class Application
         }
         finally
         {
-            // Cleanup resources to ensure timely exit
-            Cleanup();
+            // Fire Exit event before cleanup so handlers can still access application state
             Exit?.Invoke(this, EventArgs.Empty);
+            Cleanup();
         }
     }
 
@@ -108,6 +168,14 @@ public partial class Application
 
         // Stop all tooltip timers
         ToolTipService.Cleanup();
+
+        // Clear static text format cache before RenderContext is destroyed,
+        // otherwise finalizers may try to destroy native resources after the
+        // DWrite factory is already gone, causing StackOverflowException.
+        TextMeasurement.ClearCache();
+
+        // Dispose the render context (destroys native DWrite factory, D3D12 device, etc.)
+        RenderContext.Current?.Dispose();
 
         // Clear application reference
         _current = null;
@@ -130,6 +198,26 @@ public partial class Application
     public void Shutdown()
     {
         PostQuitMessage(0);
+    }
+
+    /// <summary>
+    /// Called by Window when it is closed. Determines whether the application should shut down
+    /// based on the current <see cref="ShutdownMode"/>.
+    /// </summary>
+    internal void OnWindowClosed(Window window, int remainingWindowCount)
+    {
+        var shouldShutdown = ShutdownMode switch
+        {
+            ShutdownMode.OnLastWindowClose => remainingWindowCount == 0,
+            ShutdownMode.OnMainWindowClose => window == MainWindow,
+            ShutdownMode.OnExplicitShutdown => false,
+            _ => false
+        };
+
+        if (shouldShutdown)
+        {
+            Shutdown();
+        }
     }
 
     #region Win32 Interop

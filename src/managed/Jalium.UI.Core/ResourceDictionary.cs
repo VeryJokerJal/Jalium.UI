@@ -1,4 +1,5 @@
 using System.Collections;
+using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 
@@ -8,16 +9,46 @@ namespace Jalium.UI;
 /// Provides a hash table/dictionary implementation that contains resources
 /// used by components and other elements of a UI application.
 /// </summary>
-public class ResourceDictionary : IDictionary<object, object?>, IDictionary
+public sealed class ResourceDictionary : IDictionary<object, object?>, IDictionary
 {
     private readonly Dictionary<object, object?> _innerDictionary = new();
-    private readonly List<ResourceDictionary> _mergedDictionaries = new();
+    private readonly MergedDictionaryCollection _mergedDictionaries;
+    private Dictionary<object, ResourceDictionary>? _themeDictionaries;
     private Uri? _source;
+
+    // Cycle detection for recursive MergedDictionaries lookups
+    [ThreadStatic]
+    private static HashSet<ResourceDictionary>? t_lookupChain;
+
+    /// <summary>
+    /// Occurs when this dictionary or one of its merged dictionaries changes.
+    /// </summary>
+    public event EventHandler? Changed;
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ResourceDictionary"/> class.
+    /// </summary>
+    public ResourceDictionary()
+    {
+        _mergedDictionaries = new MergedDictionaryCollection(this);
+    }
 
     /// <summary>
     /// Gets a collection of merged dictionaries.
     /// </summary>
     public IList<ResourceDictionary> MergedDictionaries => _mergedDictionaries;
+
+    /// <summary>
+    /// Gets the collection of theme dictionaries, keyed by theme name (e.g., "Light", "Dark", "HighContrast").
+    /// Theme dictionaries allow different resource sets to be applied based on the current application theme.
+    /// </summary>
+    public IDictionary<object, ResourceDictionary> ThemeDictionaries => _themeDictionaries ??= new Dictionary<object, ResourceDictionary>();
+
+    /// <summary>
+    /// Gets or sets the current theme key used to select resources from ThemeDictionaries.
+    /// Common values include "Light", "Dark", and "HighContrast".
+    /// </summary>
+    public static object? CurrentThemeKey { get; set; }
 
     /// <summary>
     /// Gets or sets the uniform resource identifier (URI) to load resources from.
@@ -58,15 +89,24 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     /// <param name="source">The source dictionary to copy from.</param>
     internal void CopyFrom(ResourceDictionary source)
     {
+        var changed = false;
+
         foreach (var kvp in source._innerDictionary)
         {
             _innerDictionary[kvp.Key] = kvp.Value;
+            changed = true;
         }
 
         // Also copy merged dictionaries
         foreach (var merged in source._mergedDictionaries)
         {
             _mergedDictionaries.Add(merged);
+            changed = true;
+        }
+
+        if (changed)
+        {
+            OnChanged();
         }
     }
 
@@ -101,7 +141,11 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
                 return value;
             throw new KeyNotFoundException($"Resource key '{key}' not found.");
         }
-        set => _innerDictionary[key] = value;
+        set
+        {
+            _innerDictionary[key] = value;
+            OnChanged();
+        }
     }
 
     /// <summary>
@@ -110,6 +154,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     public void Add(object key, object? value)
     {
         _innerDictionary.Add(key, value);
+        OnChanged();
     }
 
     /// <summary>
@@ -120,14 +165,35 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
         if (_innerDictionary.ContainsKey(key))
             return true;
 
-        // Check merged dictionaries in reverse order (later overrides earlier)
-        for (int i = _mergedDictionaries.Count - 1; i >= 0; i--)
-        {
-            if (_mergedDictionaries[i].Contains(key))
-                return true;
-        }
+        var chain = t_lookupChain ??= new HashSet<ResourceDictionary>(ReferenceEqualityComparer.Instance);
+        if (!chain.Add(this))
+            return false; // Cycle detected
 
-        return false;
+        try
+        {
+            // Check theme dictionaries (higher priority than merged)
+            if (_themeDictionaries != null && CurrentThemeKey != null)
+            {
+                if (_themeDictionaries.TryGetValue(CurrentThemeKey, out var themeDict))
+                {
+                    if (themeDict.Contains(key))
+                        return true;
+                }
+            }
+
+            // Check merged dictionaries in reverse order (later overrides earlier)
+            for (int i = _mergedDictionaries.Count - 1; i >= 0; i--)
+            {
+                if (_mergedDictionaries[i].Contains(key))
+                    return true;
+            }
+
+            return false;
+        }
+        finally
+        {
+            chain.Remove(this);
+        }
     }
 
     /// <summary>
@@ -144,15 +210,39 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
         if (_innerDictionary.TryGetValue(key, out value))
             return true;
 
-        // Check merged dictionaries in reverse order (later overrides earlier)
-        for (int i = _mergedDictionaries.Count - 1; i >= 0; i--)
+        var chain = t_lookupChain ??= new HashSet<ResourceDictionary>(ReferenceEqualityComparer.Instance);
+        if (!chain.Add(this))
         {
-            if (_mergedDictionaries[i].TryGetValue(key, out value))
-                return true;
+            value = null;
+            return false; // Cycle detected
         }
 
-        value = null;
-        return false;
+        try
+        {
+            // Check theme dictionaries (higher priority than merged)
+            if (_themeDictionaries != null && CurrentThemeKey != null)
+            {
+                if (_themeDictionaries.TryGetValue(CurrentThemeKey, out var themeDict))
+                {
+                    if (themeDict.TryGetValue(key, out value))
+                        return true;
+                }
+            }
+
+            // Check merged dictionaries in reverse order (later overrides earlier)
+            for (int i = _mergedDictionaries.Count - 1; i >= 0; i--)
+            {
+                if (_mergedDictionaries[i].TryGetValue(key, out value))
+                    return true;
+            }
+
+            value = null;
+            return false;
+        }
+        finally
+        {
+            chain.Remove(this);
+        }
     }
 
     /// <summary>
@@ -160,7 +250,13 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     /// </summary>
     public bool Remove(object key)
     {
-        return _innerDictionary.Remove(key);
+        if (_innerDictionary.Remove(key))
+        {
+            OnChanged();
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -168,7 +264,11 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     /// </summary>
     public void Clear()
     {
+        if (_innerDictionary.Count == 0)
+            return;
+
         _innerDictionary.Clear();
+        OnChanged();
     }
 
     #region ICollection<KeyValuePair<object, object?>>
@@ -176,6 +276,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     public void Add(KeyValuePair<object, object?> item)
     {
         _innerDictionary.Add(item.Key, item.Value);
+        OnChanged();
     }
 
     public bool Contains(KeyValuePair<object, object?> item)
@@ -192,7 +293,13 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     public bool Remove(KeyValuePair<object, object?> item)
     {
         if (Contains(item))
-            return _innerDictionary.Remove(item.Key);
+        {
+            var removed = _innerDictionary.Remove(item.Key);
+            if (removed)
+                OnChanged();
+            return removed;
+        }
+
         return false;
     }
 
@@ -244,6 +351,74 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     void ICollection.CopyTo(Array array, int index)
     {
         ((ICollection)_innerDictionary).CopyTo(array, index);
+    }
+
+    private void OnChanged()
+    {
+        Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void OnMergedDictionaryAdded(ResourceDictionary dictionary)
+    {
+        dictionary.Changed += OnMergedDictionaryChanged;
+    }
+
+    private void OnMergedDictionaryRemoved(ResourceDictionary dictionary)
+    {
+        dictionary.Changed -= OnMergedDictionaryChanged;
+    }
+
+    private void OnMergedDictionaryChanged(object? sender, EventArgs e)
+    {
+        OnChanged();
+    }
+
+    private sealed class MergedDictionaryCollection : Collection<ResourceDictionary>
+    {
+        private readonly ResourceDictionary _owner;
+
+        public MergedDictionaryCollection(ResourceDictionary owner)
+        {
+            _owner = owner;
+        }
+
+        protected override void InsertItem(int index, ResourceDictionary item)
+        {
+            base.InsertItem(index, item);
+            _owner.OnMergedDictionaryAdded(item);
+            _owner.OnChanged();
+        }
+
+        protected override void SetItem(int index, ResourceDictionary item)
+        {
+            var oldItem = this[index];
+            _owner.OnMergedDictionaryRemoved(oldItem);
+
+            base.SetItem(index, item);
+
+            _owner.OnMergedDictionaryAdded(item);
+            _owner.OnChanged();
+        }
+
+        protected override void RemoveItem(int index)
+        {
+            var oldItem = this[index];
+            _owner.OnMergedDictionaryRemoved(oldItem);
+
+            base.RemoveItem(index);
+            _owner.OnChanged();
+        }
+
+        protected override void ClearItems()
+        {
+            foreach (var dictionary in this)
+            {
+                _owner.OnMergedDictionaryRemoved(dictionary);
+            }
+
+            base.ClearItems();
+            _owner.OnChanged();
+        }
     }
 
     #endregion
@@ -360,7 +535,7 @@ public static class ResourceLookup
 /// <summary>
 /// Represents a key for an implicit DataTemplate resource.
 /// </summary>
-public class DataTemplateKey : IEquatable<DataTemplateKey>
+public sealed class DataTemplateKey : IEquatable<DataTemplateKey>
 {
     /// <summary>
     /// Gets the data type for which this key is used.

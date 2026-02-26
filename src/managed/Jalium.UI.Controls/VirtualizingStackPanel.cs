@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.Specialized;
 
 namespace Jalium.UI.Controls;
@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls;
 /// Arranges and virtualizes content on a single line oriented horizontally or vertically.
 /// Only creates UI elements for items that are visible in the viewport.
 /// </summary>
-public class VirtualizingStackPanel : Panel, IScrollInfo
+public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 {
     #region Dependency Properties
 
@@ -18,26 +18,7 @@ public class VirtualizingStackPanel : Panel, IScrollInfo
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(VirtualizingStackPanel),
             new PropertyMetadata(Orientation.Vertical, OnLayoutPropertyChanged));
 
-    /// <summary>
-    /// Identifies the VirtualizationMode dependency property.
-    /// </summary>
-    public static readonly DependencyProperty VirtualizationModeProperty =
-        DependencyProperty.Register(nameof(VirtualizationMode), typeof(VirtualizationMode), typeof(VirtualizingStackPanel),
-            new PropertyMetadata(VirtualizationMode.Standard));
-
-    /// <summary>
-    /// Identifies the IsVirtualizing attached property.
-    /// </summary>
-    public static readonly DependencyProperty IsVirtualizingProperty =
-        DependencyProperty.RegisterAttached("IsVirtualizing", typeof(bool), typeof(VirtualizingStackPanel),
-            new PropertyMetadata(true));
-
-    /// <summary>
-    /// Identifies the ScrollUnit dependency property.
-    /// </summary>
-    public static readonly DependencyProperty ScrollUnitProperty =
-        DependencyProperty.Register(nameof(ScrollUnit), typeof(ScrollUnit), typeof(VirtualizingStackPanel),
-            new PropertyMetadata(ScrollUnit.Pixel));
+    // VirtualizationMode, IsVirtualizing, and ScrollUnit properties are inherited from VirtualizingPanel
 
     #endregion
 
@@ -48,7 +29,7 @@ public class VirtualizingStackPanel : Panel, IScrollInfo
     /// </summary>
     public Orientation Orientation
     {
-        get => (Orientation)(GetValue(OrientationProperty) ?? Orientation.Vertical);
+        get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
@@ -57,8 +38,8 @@ public class VirtualizingStackPanel : Panel, IScrollInfo
     /// </summary>
     public VirtualizationMode VirtualizationMode
     {
-        get => (VirtualizationMode)(GetValue(VirtualizationModeProperty) ?? VirtualizationMode.Standard);
-        set => SetValue(VirtualizationModeProperty, value);
+        get => GetVirtualizationMode(this);
+        set => SetVirtualizationMode(this, value);
     }
 
     /// <summary>
@@ -66,27 +47,13 @@ public class VirtualizingStackPanel : Panel, IScrollInfo
     /// </summary>
     public ScrollUnit ScrollUnit
     {
-        get => (ScrollUnit)(GetValue(ScrollUnitProperty) ?? ScrollUnit.Pixel);
-        set => SetValue(ScrollUnitProperty, value);
+        get => GetScrollUnit(this);
+        set => SetScrollUnit(this, value);
     }
 
     #endregion
 
-    #region Attached Property Accessors
-
-    /// <summary>
-    /// Gets the IsVirtualizing attached property.
-    /// </summary>
-    public static bool GetIsVirtualizing(DependencyObject obj) =>
-        (bool)(obj.GetValue(IsVirtualizingProperty) ?? true);
-
-    /// <summary>
-    /// Sets the IsVirtualizing attached property.
-    /// </summary>
-    public static void SetIsVirtualizing(DependencyObject obj, bool value) =>
-        obj.SetValue(IsVirtualizingProperty, value);
-
-    #endregion
+    // IsVirtualizing attached property accessors are inherited from VirtualizingPanel
 
     #region Private Fields
 
@@ -214,7 +181,7 @@ public class VirtualizingStackPanel : Panel, IScrollInfo
     public void SetHorizontalOffset(double offset)
     {
         if (Orientation != Orientation.Horizontal) return;
-        offset = Math.Max(0, Math.Min(offset, _extent.Width - _viewport.Width));
+        offset = Math.Clamp(offset, 0, Math.Max(0, _extent.Width - _viewport.Width));
         if (Math.Abs(_scrollOffset - offset) > 0.01)
         {
             _scrollOffset = offset;
@@ -228,7 +195,7 @@ public class VirtualizingStackPanel : Panel, IScrollInfo
     public void SetVerticalOffset(double offset)
     {
         if (Orientation != Orientation.Vertical) return;
-        offset = Math.Max(0, Math.Min(offset, _extent.Height - _viewport.Height));
+        offset = Math.Clamp(offset, 0, Math.Max(0, _extent.Height - _viewport.Height));
         if (Math.Abs(_scrollOffset - offset) > 0.01)
         {
             _scrollOffset = offset;
@@ -379,39 +346,9 @@ public class VirtualizingStackPanel : Panel, IScrollInfo
     #endregion
 }
 
+// VirtualizationMode and ScrollUnit enums are defined in VirtualizingPanel.cs
+
 #region Supporting Types
-
-/// <summary>
-/// Specifies the virtualization mode for a virtualizing panel.
-/// </summary>
-public enum VirtualizationMode
-{
-    /// <summary>
-    /// Standard virtualization - containers are created and discarded as needed.
-    /// </summary>
-    Standard,
-
-    /// <summary>
-    /// Recycling virtualization - containers are reused.
-    /// </summary>
-    Recycling
-}
-
-/// <summary>
-/// Specifies the scroll unit for virtualizing panels.
-/// </summary>
-public enum ScrollUnit
-{
-    /// <summary>
-    /// Scroll by pixel.
-    /// </summary>
-    Pixel,
-
-    /// <summary>
-    /// Scroll by item.
-    /// </summary>
-    Item
-}
 
 /// <summary>
 /// Provides scroll information for panels.

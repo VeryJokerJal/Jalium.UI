@@ -1,3 +1,4 @@
+﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -7,8 +8,16 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that allows the user to select a color.
 /// </summary>
-public class ColorPicker : Control
+public sealed class ColorPicker : Control
 {
+    // Cached brushes and pens for OnRender
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_grayBorderBrush = new(Color.FromRgb(100, 100, 100));
+    private static readonly Pen s_grayBorderPen = new(s_grayBorderBrush, 1);
+    private static readonly Pen s_whiteSelectorPen = new(s_whiteBrush, 2);
+    private static readonly SolidColorBrush s_checkerLightBrush = new(Color.FromRgb(200, 200, 200));
+    private static readonly SolidColorBrush s_checkerDarkBrush = new(Color.FromRgb(150, 150, 150));
+
     #region Dependency Properties
 
     /// <summary>
@@ -60,6 +69,13 @@ public class ColorPicker : Control
         DependencyProperty.Register(nameof(ColorSpectrumShape), typeof(ColorSpectrumShape), typeof(ColorPicker),
             new PropertyMetadata(ColorSpectrumShape.Box, OnLayoutPropertyChanged));
 
+    /// <summary>
+    /// Identifies the IsCompact dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsCompactProperty =
+        DependencyProperty.Register(nameof(IsCompact), typeof(bool), typeof(ColorPicker),
+            new PropertyMetadata(false, OnLayoutPropertyChanged));
+
     #endregion
 
     #region Routed Events
@@ -89,7 +105,7 @@ public class ColorPicker : Control
     /// </summary>
     public Color Color
     {
-        get => (Color)(GetValue(ColorProperty) ?? Color.White);
+        get => (Color)GetValue(ColorProperty)!;
         set => SetValue(ColorProperty, value);
     }
 
@@ -98,7 +114,7 @@ public class ColorPicker : Control
     /// </summary>
     public bool IsAlphaEnabled
     {
-        get => (bool)(GetValue(IsAlphaEnabledProperty) ?? true);
+        get => (bool)GetValue(IsAlphaEnabledProperty)!;
         set => SetValue(IsAlphaEnabledProperty, value);
     }
 
@@ -107,7 +123,7 @@ public class ColorPicker : Control
     /// </summary>
     public bool IsColorSpectrumVisible
     {
-        get => (bool)(GetValue(IsColorSpectrumVisibleProperty) ?? true);
+        get => (bool)GetValue(IsColorSpectrumVisibleProperty)!;
         set => SetValue(IsColorSpectrumVisibleProperty, value);
     }
 
@@ -116,7 +132,7 @@ public class ColorPicker : Control
     /// </summary>
     public bool IsColorSliderVisible
     {
-        get => (bool)(GetValue(IsColorSliderVisibleProperty) ?? true);
+        get => (bool)GetValue(IsColorSliderVisibleProperty)!;
         set => SetValue(IsColorSliderVisibleProperty, value);
     }
 
@@ -125,7 +141,7 @@ public class ColorPicker : Control
     /// </summary>
     public bool IsColorPreviewVisible
     {
-        get => (bool)(GetValue(IsColorPreviewVisibleProperty) ?? true);
+        get => (bool)GetValue(IsColorPreviewVisibleProperty)!;
         set => SetValue(IsColorPreviewVisibleProperty, value);
     }
 
@@ -134,7 +150,7 @@ public class ColorPicker : Control
     /// </summary>
     public bool IsHexInputVisible
     {
-        get => (bool)(GetValue(IsHexInputVisibleProperty) ?? true);
+        get => (bool)GetValue(IsHexInputVisibleProperty)!;
         set => SetValue(IsHexInputVisibleProperty, value);
     }
 
@@ -147,14 +163,27 @@ public class ColorPicker : Control
         set => SetValue(ColorSpectrumShapeProperty, value);
     }
 
+    /// <summary>
+    /// Gets or sets whether the color picker is displayed in compact mode.
+    /// In compact mode, the spectrum is smaller and the preview/hex input are hidden.
+    /// </summary>
+    public bool IsCompact
+    {
+        get => (bool)GetValue(IsCompactProperty)!;
+        set => SetValue(IsCompactProperty, value);
+    }
+
     #endregion
 
     #region Private Fields
 
     private const double SpectrumSize = 200;
+    private const double CompactSpectrumSize = 120;
     private const double SliderHeight = 20;
+    private const double CompactSliderHeight = 14;
     private const double PreviewSize = 40;
     private const double Spacing = 8;
+    private const double CompactSpacing = 4;
 
     private double _hue;
     private double _saturation = 1;
@@ -169,6 +198,7 @@ public class ColorPicker : Control
     private bool _isDraggingSpectrum;
     private bool _isDraggingHue;
     private bool _isDraggingAlpha;
+    private bool _isUpdatingColor;
 
     #endregion
 
@@ -237,6 +267,7 @@ public class ColorPicker : Control
         }
 
         if (h < 0) h += 360;
+        if (h >= 360) h -= 360;
     }
 
     private static void HsvToRgb(double h, double s, double v, out byte r, out byte g, out byte b)
@@ -342,14 +373,22 @@ public class ColorPicker : Control
     private void UpdateAlphaFromPosition(Point position)
     {
         var alpha = Math.Clamp((position.X - _alphaSliderRect.X) / _alphaSliderRect.Width, 0, 1);
-        _alpha = (byte)(alpha * 255);
+        _alpha = (byte)Math.Round(alpha * 255);
         UpdateColor();
     }
 
     private void UpdateColor()
     {
         var newColor = GetCurrentColor();
-        Color = newColor;
+        _isUpdatingColor = true;
+        try
+        {
+            Color = newColor;
+        }
+        finally
+        {
+            _isUpdatingColor = false;
+        }
         InvalidateVisual();
     }
 
@@ -361,25 +400,30 @@ public class ColorPicker : Control
     protected override Size MeasureOverride(Size availableSize)
     {
         var padding = Padding;
-        var width = SpectrumSize + padding.TotalWidth;
+        var compact = IsCompact;
+        var specSize = compact ? CompactSpectrumSize : SpectrumSize;
+        var sliderH = compact ? CompactSliderHeight : SliderHeight;
+        var spacing = compact ? CompactSpacing : Spacing;
+
+        var width = specSize + padding.TotalWidth;
         var height = padding.Top;
 
         if (IsColorSpectrumVisible)
         {
-            height += SpectrumSize + Spacing;
+            height += specSize + spacing;
         }
 
         if (IsColorSliderVisible)
         {
-            height += SliderHeight + Spacing;
+            height += sliderH + spacing;
         }
 
         if (IsAlphaEnabled && IsColorSliderVisible)
         {
-            height += SliderHeight + Spacing;
+            height += sliderH + spacing;
         }
 
-        if (IsColorPreviewVisible)
+        if (!compact && IsColorPreviewVisible)
         {
             height += PreviewSize;
         }
@@ -401,6 +445,10 @@ public class ColorPicker : Control
 
         var rect = new Rect(RenderSize);
         var padding = Padding;
+        var compact = IsCompact;
+        var specSize = compact ? CompactSpectrumSize : SpectrumSize;
+        var sliderH = compact ? CompactSliderHeight : SliderHeight;
+        var spacing = compact ? CompactSpacing : Spacing;
 
         // Draw background
         if (Background != null)
@@ -413,29 +461,29 @@ public class ColorPicker : Control
         // Draw color spectrum
         if (IsColorSpectrumVisible)
         {
-            _spectrumRect = new Rect(padding.Left, currentY, SpectrumSize, SpectrumSize);
+            _spectrumRect = new Rect(padding.Left, currentY, specSize, specSize);
             DrawColorSpectrum(dc, _spectrumRect);
-            currentY += SpectrumSize + Spacing;
+            currentY += specSize + spacing;
         }
 
         // Draw hue slider
         if (IsColorSliderVisible)
         {
-            _hueSliderRect = new Rect(padding.Left, currentY, SpectrumSize, SliderHeight);
+            _hueSliderRect = new Rect(padding.Left, currentY, specSize, sliderH);
             DrawHueSlider(dc, _hueSliderRect);
-            currentY += SliderHeight + Spacing;
+            currentY += sliderH + spacing;
         }
 
         // Draw alpha slider
         if (IsAlphaEnabled && IsColorSliderVisible)
         {
-            _alphaSliderRect = new Rect(padding.Left, currentY, SpectrumSize, SliderHeight);
+            _alphaSliderRect = new Rect(padding.Left, currentY, specSize, sliderH);
             DrawAlphaSlider(dc, _alphaSliderRect);
-            currentY += SliderHeight + Spacing;
+            currentY += sliderH + spacing;
         }
 
-        // Draw preview
-        if (IsColorPreviewVisible)
+        // Draw preview (hidden in compact mode)
+        if (!compact && IsColorPreviewVisible)
         {
             _previewRect = new Rect(padding.Left, currentY, PreviewSize, PreviewSize);
             DrawPreview(dc, _previewRect);
@@ -446,11 +494,11 @@ public class ColorPicker : Control
                 var hexText = $"#{_alpha:X2}{Color.R:X2}{Color.G:X2}{Color.B:X2}";
                 var formattedText = new FormattedText(hexText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
                 {
-                    Foreground = Foreground ?? new SolidColorBrush(Color.White)
+                    Foreground = Foreground ?? s_whiteBrush
                 };
                 TextMeasurement.MeasureText(formattedText);
 
-                dc.DrawText(formattedText, new Point(_previewRect.Right + Spacing, currentY + (PreviewSize - formattedText.Height) / 2));
+                dc.DrawText(formattedText, new Point(_previewRect.Right + spacing, currentY + (PreviewSize - formattedText.Height) / 2));
             }
         }
     }
@@ -474,14 +522,12 @@ public class ColorPicker : Control
         dc.DrawRectangle(valGradient, null, rect);
 
         // Draw border
-        var borderPen = new Pen(new SolidColorBrush(Color.FromRgb(100, 100, 100)), 1);
-        dc.DrawRectangle(null, borderPen, rect);
+        dc.DrawRectangle(null, s_grayBorderPen, rect);
 
         // Draw selector
         var selectorX = rect.X + _saturation * rect.Width;
         var selectorY = rect.Y + (1 - _value) * rect.Height;
-        var selectorPen = new Pen(new SolidColorBrush(Color.White), 2);
-        dc.DrawEllipse(null, selectorPen, new Point(selectorX, selectorY), 6, 6);
+        dc.DrawEllipse(null, s_whiteSelectorPen, new Point(selectorX, selectorY), 6, 6);
     }
 
     private void DrawHueSlider(DrawingContext dc, Rect rect)
@@ -507,14 +553,12 @@ public class ColorPicker : Control
         }
 
         // Draw border
-        var borderPen = new Pen(new SolidColorBrush(Color.FromRgb(100, 100, 100)), 1);
-        dc.DrawRoundedRectangle(null, borderPen, rect, 2, 2);
+        dc.DrawRoundedRectangle(null, s_grayBorderPen, rect, 2, 2);
 
         // Draw selector
         var selectorX = rect.X + (_hue / 360) * rect.Width;
         var selectorRect = new Rect(selectorX - 2, rect.Y - 2, 4, rect.Height + 4);
-        var selectorBrush = new SolidColorBrush(Color.White);
-        dc.DrawRoundedRectangle(selectorBrush, null, selectorRect, 2, 2);
+        dc.DrawRoundedRectangle(s_whiteBrush, null, selectorRect, 2, 2);
     }
 
     private void DrawAlphaSlider(DrawingContext dc, Rect rect)
@@ -530,20 +574,18 @@ public class ColorPicker : Control
         dc.DrawRectangle(gradient, null, rect);
 
         // Draw border
-        var borderPen = new Pen(new SolidColorBrush(Color.FromRgb(100, 100, 100)), 1);
-        dc.DrawRoundedRectangle(null, borderPen, rect, 2, 2);
+        dc.DrawRoundedRectangle(null, s_grayBorderPen, rect, 2, 2);
 
         // Draw selector
         var selectorX = rect.X + (_alpha / 255.0) * rect.Width;
         var selectorRect = new Rect(selectorX - 2, rect.Y - 2, 4, rect.Height + 4);
-        var selectorBrush = new SolidColorBrush(Color.White);
-        dc.DrawRoundedRectangle(selectorBrush, null, selectorRect, 2, 2);
+        dc.DrawRoundedRectangle(s_whiteBrush, null, selectorRect, 2, 2);
     }
 
     private void DrawCheckerboard(DrawingContext dc, Rect rect)
     {
-        var lightBrush = new SolidColorBrush(Color.FromRgb(200, 200, 200));
-        var darkBrush = new SolidColorBrush(Color.FromRgb(150, 150, 150));
+        var lightBrush = s_checkerLightBrush;
+        var darkBrush = s_checkerDarkBrush;
         var cellSize = 4;
 
         for (double x = rect.X; x < rect.Right; x += cellSize)
@@ -567,8 +609,7 @@ public class ColorPicker : Control
         dc.DrawRectangle(colorBrush, null, rect);
 
         // Draw border
-        var borderPen = new Pen(new SolidColorBrush(Color.FromRgb(100, 100, 100)), 1);
-        dc.DrawRectangle(null, borderPen, rect);
+        dc.DrawRectangle(null, s_grayBorderPen, rect);
     }
 
     #endregion
@@ -579,7 +620,13 @@ public class ColorPicker : Control
     {
         if (d is ColorPicker colorPicker)
         {
-            colorPicker.UpdateFromColor((Color)e.NewValue);
+            // Only update internal HSV state when the Color is set externally.
+            // When set internally (via spectrum/hue/alpha drag), the HSV state is already correct
+            // and RGB→HSV conversion would lose hue information at low saturation/value.
+            if (!colorPicker._isUpdatingColor)
+            {
+                colorPicker.UpdateFromColor((Color)e.NewValue);
+            }
             colorPicker.InvalidateVisual();
 
             var args = new ColorChangedEventArgs(ColorChangedEvent, (Color)e.OldValue, (Color)e.NewValue);
@@ -617,7 +664,7 @@ public enum ColorSpectrumShape
 /// <summary>
 /// Provides data for the ColorChanged event.
 /// </summary>
-public class ColorChangedEventArgs : RoutedEventArgs
+public sealed class ColorChangedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the old color.

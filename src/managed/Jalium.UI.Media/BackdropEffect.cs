@@ -109,7 +109,7 @@ public abstract class BackdropEffect : IBackdropEffect
 /// <summary>
 /// A simple blur effect.
 /// </summary>
-public class BlurEffect : BackdropEffect
+public sealed class BlurEffect : BackdropEffect
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="BlurEffect"/> class.
@@ -134,7 +134,7 @@ public class BlurEffect : BackdropEffect
 /// <summary>
 /// Windows Acrylic material effect.
 /// </summary>
-public class AcrylicEffect : BackdropEffect
+public sealed class AcrylicEffect : BackdropEffect
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="AcrylicEffect"/> class with default settings.
@@ -168,7 +168,7 @@ public class AcrylicEffect : BackdropEffect
 /// <summary>
 /// Windows 11 Mica material effect.
 /// </summary>
-public class MicaEffect : BackdropEffect
+public sealed class MicaEffect : BackdropEffect
 {
     /// <summary>
     /// Gets or sets whether to use the alternate Mica style.
@@ -208,7 +208,7 @@ public class MicaEffect : BackdropEffect
 /// <summary>
 /// Frosted glass effect.
 /// </summary>
-public class FrostedGlassEffect : BackdropEffect
+public sealed class FrostedGlassEffect : BackdropEffect
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="FrostedGlassEffect"/> class.
@@ -243,7 +243,7 @@ public class FrostedGlassEffect : BackdropEffect
 /// <summary>
 /// A color adjustment effect for backdrop.
 /// </summary>
-public class ColorAdjustmentEffect : BackdropEffect
+public sealed class ColorAdjustmentEffect : BackdropEffect
 {
     /// <summary>
     /// Initializes a new instance of the <see cref="ColorAdjustmentEffect"/> class.
@@ -298,7 +298,7 @@ public class ColorAdjustmentEffect : BackdropEffect
 /// <summary>
 /// A composite effect that combines multiple backdrop effects.
 /// </summary>
-public class CompositeBackdropEffect : BackdropEffect
+public sealed class CompositeBackdropEffect : BackdropEffect
 {
     private readonly List<IBackdropEffect> _effects = new();
 

@@ -1,3 +1,4 @@
+﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
@@ -5,9 +6,17 @@ namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a context menu that appears on right-click.
+/// Uses a <see cref="Popup"/> to display its content at the correct screen position.
 /// </summary>
-public class ContextMenu : ItemsControl
+public sealed class ContextMenu : ItemsControl
 {
+    #region Static Brushes
+
+    private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(45, 45, 48));
+    private static readonly SolidColorBrush s_defaultBorderBrush = new(Color.FromRgb(67, 67, 70));
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -97,7 +106,7 @@ public class ContextMenu : ItemsControl
     /// </summary>
     public bool IsOpen
     {
-        get => (bool)(GetValue(IsOpenProperty) ?? false);
+        get => (bool)GetValue(IsOpenProperty)!;
         set => SetValue(IsOpenProperty, value);
     }
 
@@ -115,7 +124,7 @@ public class ContextMenu : ItemsControl
     /// </summary>
     public PlacementMode Placement
     {
-        get => (PlacementMode)(GetValue(PlacementProperty) ?? PlacementMode.MousePoint);
+        get => (PlacementMode)GetValue(PlacementProperty)!;
         set => SetValue(PlacementProperty, value);
     }
 
@@ -124,7 +133,7 @@ public class ContextMenu : ItemsControl
     /// </summary>
     public double HorizontalOffset
     {
-        get => (double)(GetValue(HorizontalOffsetProperty) ?? 0.0);
+        get => (double)GetValue(HorizontalOffsetProperty)!;
         set => SetValue(HorizontalOffsetProperty, value);
     }
 
@@ -133,7 +142,7 @@ public class ContextMenu : ItemsControl
     /// </summary>
     public double VerticalOffset
     {
-        get => (double)(GetValue(VerticalOffsetProperty) ?? 0.0);
+        get => (double)GetValue(VerticalOffsetProperty)!;
         set => SetValue(VerticalOffsetProperty, value);
     }
 
@@ -142,7 +151,7 @@ public class ContextMenu : ItemsControl
     /// </summary>
     public bool StaysOpen
     {
-        get => (bool)(GetValue(StaysOpenProperty) ?? false);
+        get => (bool)GetValue(StaysOpenProperty)!;
         set => SetValue(StaysOpenProperty, value);
     }
 
@@ -151,6 +160,8 @@ public class ContextMenu : ItemsControl
     #region Private Fields
 
     private Point _openPosition;
+    private Popup? _popup;
+    private Border? _popupBorder;
 
     #endregion
 
@@ -161,14 +172,11 @@ public class ContextMenu : ItemsControl
     /// </summary>
     public ContextMenu()
     {
-        Background = new SolidColorBrush(Color.FromRgb(45, 45, 48));
-        BorderBrush = new SolidColorBrush(Color.FromRgb(67, 67, 70));
+        Background = s_defaultBackgroundBrush;
+        BorderBrush = s_defaultBorderBrush;
         BorderThickness = new Thickness(1);
         Padding = new Thickness(2);
         CornerRadius = new CornerRadius(4);
-
-        // Initially not visible
-        Visibility = Visibility.Collapsed;
     }
 
     #endregion
@@ -213,6 +221,11 @@ public class ContextMenu : ItemsControl
     public void Open(Point position)
     {
         _openPosition = position;
+        EnsurePopup();
+        // Use Absolute placement with explicit offsets for the given position
+        _popup!.Placement = PlacementMode.Absolute;
+        _popup.HorizontalOffset = position.X;
+        _popup.VerticalOffset = position.Y;
         IsOpen = true;
     }
 
@@ -226,59 +239,71 @@ public class ContextMenu : ItemsControl
 
     #endregion
 
+    #region Popup Management
+
+    /// <summary>
+    /// Ensures the internal <see cref="Popup"/> is created and configured.
+    /// </summary>
+    private void EnsurePopup()
+    {
+        if (_popup != null) return;
+
+        _popupBorder = new Border
+        {
+            Background = Background ?? s_defaultBackgroundBrush,
+            BorderBrush = BorderBrush ?? s_defaultBorderBrush,
+            BorderThickness = BorderThickness,
+            CornerRadius = CornerRadius,
+            Padding = Padding
+        };
+
+        _popup = new Popup
+        {
+            Placement = PlacementMode.MousePoint,
+            StaysOpen = false,
+            Child = _popupBorder
+        };
+    }
+
+    /// <summary>
+    /// Populates the popup border with the menu items from the Items collection.
+    /// </summary>
+    private void PopulatePopup()
+    {
+        if (_popupBorder == null) return;
+
+        var panel = new StackPanel { Orientation = Orientation.Vertical };
+
+        foreach (var item in Items)
+        {
+            if (item is UIElement element)
+            {
+                // Detach from any existing visual parent before re-parenting
+                if (element.VisualParent != null)
+                {
+                    element.DetachFromVisualParent();
+                }
+                panel.Children.Add(element);
+            }
+            else if (item is string text)
+            {
+                panel.Children.Add(new MenuItem { Header = text });
+            }
+        }
+
+        _popupBorder.Child = panel;
+    }
+
+    #endregion
+
     #region Layout
 
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        if (!IsOpen)
-        {
-            return Size.Empty;
-        }
-
-        var padding = Padding;
-        var border = BorderThickness;
-
-        // Measure items
-        base.MeasureOverride(availableSize);
-
-        var itemsSize = ItemsHost?.DesiredSize ?? Size.Empty;
-
-        return new Size(
-            itemsSize.Width + padding.TotalWidth + border.TotalWidth,
-            itemsSize.Height + padding.TotalHeight + border.TotalHeight);
-    }
-
-    #endregion
-
-    #region Rendering
-
-    /// <inheritdoc />
-    protected override void OnRender(object drawingContext)
-    {
-        if (drawingContext is not DrawingContext dc || !IsOpen)
-            return;
-
-        var rect = new Rect(RenderSize);
-        var cornerRadius = CornerRadius;
-
-        // Draw shadow (simplified)
-        var shadowRect = new Rect(rect.X + 2, rect.Y + 2, rect.Width, rect.Height);
-        var shadowBrush = new SolidColorBrush(Color.FromArgb(64, 0, 0, 0));
-        dc.DrawRoundedRectangle(shadowBrush, null, shadowRect, cornerRadius);
-
-        // Draw background
-        if (Background != null)
-        {
-            dc.DrawRoundedRectangle(Background, null, rect, cornerRadius);
-        }
-
-        // Draw border
-        if (BorderBrush != null && BorderThickness.TotalWidth > 0)
-        {
-            var pen = new Pen(BorderBrush, BorderThickness.Left);
-            dc.DrawRoundedRectangle(null, pen, rect, cornerRadius);
-        }
+        // The ContextMenu itself should not take any layout space.
+        // All visual content is displayed via the Popup.
+        return Size.Empty;
     }
 
     #endregion
@@ -290,19 +315,55 @@ public class ContextMenu : ItemsControl
         if (d is ContextMenu contextMenu)
         {
             var isOpen = (bool)e.NewValue;
-            contextMenu.Visibility = isOpen ? Visibility.Visible : Visibility.Collapsed;
 
             if (isOpen)
             {
+                contextMenu.EnsurePopup();
+                contextMenu.PopulatePopup();
+
+                var popup = contextMenu._popup!;
+                var wasExplicitPosition = popup.Placement == PlacementMode.Absolute;
+
+                // Transfer placement properties to the popup.
+                // When Open(Point) was called, it already set Absolute placement
+                // and the offsets to the requested position — keep those.
+                if (!wasExplicitPosition)
+                {
+                    popup.Placement = contextMenu.Placement;
+                    popup.HorizontalOffset = contextMenu.HorizontalOffset;
+                    popup.VerticalOffset = contextMenu.VerticalOffset;
+                }
+                else
+                {
+                    // Add the ContextMenu-level offsets on top of the explicit position
+                    popup.HorizontalOffset += contextMenu.HorizontalOffset;
+                    popup.VerticalOffset += contextMenu.VerticalOffset;
+                }
+
+                popup.PlacementTarget = contextMenu.PlacementTarget;
+                popup.StaysOpen = contextMenu.StaysOpen;
+                popup.IsOpen = true;
+
                 contextMenu.RaiseEvent(new RoutedEventArgs(OpenedEvent, contextMenu));
             }
             else
             {
-                contextMenu.RaiseEvent(new RoutedEventArgs(ClosedEvent, contextMenu));
-            }
+                if (contextMenu._popup != null)
+                {
+                    contextMenu._popup.IsOpen = false;
+                }
 
-            contextMenu.InvalidateMeasure();
-            contextMenu.InvalidateVisual();
+                contextMenu.RaiseEvent(new RoutedEventArgs(ClosedEvent, contextMenu));
+
+                // Reset popup state so the next open uses the ContextMenu's own
+                // Placement property instead of a stale Absolute from Open(Point).
+                if (contextMenu._popup != null)
+                {
+                    contextMenu._popup.Placement = PlacementMode.MousePoint;
+                    contextMenu._popup.HorizontalOffset = 0;
+                    contextMenu._popup.VerticalOffset = 0;
+                }
+            }
         }
     }
 

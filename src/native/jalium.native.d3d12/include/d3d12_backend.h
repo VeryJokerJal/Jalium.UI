@@ -29,9 +29,14 @@ public:
     const wchar_t* GetName() const override { return L"Direct3D 12"; }
 
     RenderTarget* CreateRenderTarget(void* hwnd, int32_t width, int32_t height) override;
+    RenderTarget* CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height) override;
     Brush* CreateSolidBrush(float r, float g, float b, float a) override;
     Brush* CreateLinearGradientBrush(
         float startX, float startY, float endX, float endY,
+        const JaliumGradientStop* stops, uint32_t stopCount) override;
+    Brush* CreateRadialGradientBrush(
+        float centerX, float centerY, float radiusX, float radiusY,
+        float originX, float originY,
         const JaliumGradientStop* stops, uint32_t stopCount) override;
     TextFormat* CreateTextFormat(
         const wchar_t* fontFamily, float fontSize,

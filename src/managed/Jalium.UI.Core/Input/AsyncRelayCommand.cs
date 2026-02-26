@@ -7,7 +7,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// An asynchronous command that wraps a <see cref="Task"/>-returning delegate.
 /// </summary>
-public class AsyncRelayCommand : ICommand
+public sealed class AsyncRelayCommand : ICommand
 {
     private readonly Func<CancellationToken, Task> _execute;
     private readonly Func<bool>? _canExecute;
@@ -128,7 +128,7 @@ public class AsyncRelayCommand : ICommand
 /// An asynchronous command that wraps a <see cref="Task"/>-returning delegate with a parameter.
 /// </summary>
 /// <typeparam name="T">The type of the command parameter.</typeparam>
-public class AsyncRelayCommand<T> : ICommand
+public sealed class AsyncRelayCommand<T> : ICommand
 {
     private readonly Func<T?, CancellationToken, Task> _execute;
     private readonly Func<T?, bool>? _canExecute;

@@ -27,7 +27,7 @@ public class DataTemplateSelector
 /// <summary>
 /// Represents a DataTemplate that supports HeaderedItemsControl, such as TreeViewItem.
 /// </summary>
-public class HierarchicalDataTemplate : DataTemplate
+public sealed class HierarchicalDataTemplate : DataTemplate
 {
     /// <summary>
     /// Gets or sets the binding to use to get the collection to use for the next level in the data hierarchy.
@@ -68,7 +68,7 @@ public class HierarchicalDataTemplate : DataTemplate
 /// <summary>
 /// Represents a template for items panels.
 /// </summary>
-public class ItemsPanelTemplate
+public sealed class ItemsPanelTemplate
 {
     private Func<FrameworkElement>? _visualTree;
     private bool _isSealed;
@@ -118,6 +118,29 @@ public class ItemsPanelTemplate
     public void Seal()
     {
         _isSealed = true;
+    }
+
+    /// <summary>
+    /// Gets or sets the type of panel to create.
+    /// When set, <see cref="CreatePanel"/> will instantiate this type directly
+    /// without going through the XAML parser.
+    /// </summary>
+    public Type? PanelType { get; set; }
+
+    /// <summary>
+    /// Creates an instance of the panel specified by <see cref="PanelType"/>.
+    /// Falls back to <see cref="LoadContent"/> when <see cref="PanelType"/> is not set.
+    /// </summary>
+    /// <returns>A new panel instance, or null if no panel type or visual tree is configured.</returns>
+    public FrameworkElement? CreatePanel()
+    {
+        if (PanelType != null)
+        {
+            return Activator.CreateInstance(PanelType) as FrameworkElement;
+        }
+
+        // Fall back to LoadContent if no explicit PanelType is set
+        return LoadContent();
     }
 
     /// <summary>

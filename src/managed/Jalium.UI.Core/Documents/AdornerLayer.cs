@@ -5,7 +5,7 @@ namespace Jalium.UI.Documents;
 /// <summary>
 /// Represents a surface for rendering adorners.
 /// </summary>
-public class AdornerLayer : FrameworkElement
+public sealed class AdornerLayer : FrameworkElement
 {
     private readonly List<AdornerInfo> _adorners = new();
 

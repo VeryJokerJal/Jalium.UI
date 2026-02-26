@@ -5,14 +5,20 @@ namespace Jalium.UI.Threading;
 /// <summary>
 /// A timer that is integrated into the <see cref="Dispatcher"/> queue which is
 /// processed at a specified interval of time and at a specified priority.
+///
+/// Optimization: when the interval matches the frame interval (8ms or 16ms),
+/// the timer piggybacks on <see cref="CompositionTarget.Rendering"/> instead
+/// of creating its own System.Threading.Timer. This eliminates timer
+/// proliferation — all frame-rate timers share a single backing timer.
 /// </summary>
-public class DispatcherTimer
+public sealed class DispatcherTimer
 {
     private readonly Dispatcher _dispatcher;
     private Timer? _timer;
     private TimeSpan _interval;
     private bool _isEnabled;
     private object? _tag;
+    private bool _useCompositionTarget; // True when piggybacking on frame timer
 
     /// <summary>
     /// Occurs when the timer interval has elapsed.
@@ -165,17 +171,37 @@ public class DispatcherTimer
         IsEnabled = false;
     }
 
+    /// <summary>
+    /// Determines if this timer's interval is close enough to the frame interval
+    /// to piggyback on CompositionTarget.Rendering.
+    /// Matches 8ms (120Hz) and 16ms (60Hz) within ±2ms tolerance.
+    /// </summary>
+    private bool ShouldUseCompositionTarget()
+    {
+        int intervalMs = (int)_interval.TotalMilliseconds;
+        int frameMs = CompositionTarget.FrameIntervalMs;
+        return Math.Abs(intervalMs - frameMs) <= 2;
+    }
+
     private void StartTimer()
     {
-        if (_timer != null)
+        if (_timer != null || _useCompositionTarget)
         {
             return;
         }
 
-        // Calculate the interval in milliseconds
-        // Use at least 1ms to avoid infinite spinning
-        int intervalMs = Math.Max(1, (int)_interval.TotalMilliseconds);
+        if (ShouldUseCompositionTarget())
+        {
+            // Piggyback on the centralized frame timer.
+            // All frame-rate DispatcherTimers share a single System.Threading.Timer.
+            _useCompositionTarget = true;
+            CompositionTarget.Rendering += OnCompositionTargetRendering;
+            CompositionTarget.Subscribe();
+            return;
+        }
 
+        // Non-frame-rate interval: use a dedicated timer (e.g., caret blink at 500ms)
+        int intervalMs = Math.Max(1, (int)_interval.TotalMilliseconds);
         _timer = new Timer(
             OnTimerCallback,
             null,
@@ -185,6 +211,14 @@ public class DispatcherTimer
 
     private void StopTimer()
     {
+        if (_useCompositionTarget)
+        {
+            _useCompositionTarget = false;
+            CompositionTarget.Rendering -= OnCompositionTargetRendering;
+            CompositionTarget.Unsubscribe();
+            return;
+        }
+
         if (_timer == null)
         {
             return;
@@ -192,6 +226,16 @@ public class DispatcherTimer
 
         _timer.Dispose();
         _timer = null;
+    }
+
+    /// <summary>
+    /// Called by CompositionTarget.Rendering on the UI thread.
+    /// Already on UI thread — raise tick directly.
+    /// </summary>
+    private void OnCompositionTargetRendering(object? sender, EventArgs e)
+    {
+        if (!_isEnabled) return;
+        RaiseTick();
     }
 
     private void OnTimerCallback(object? state)
@@ -232,10 +276,9 @@ public class DispatcherTimer
         {
             Tick?.Invoke(this, EventArgs.Empty);
         }
-        catch (Exception ex)
+        catch
         {
-            // Log the exception but don't stop the timer
-            System.Diagnostics.Debug.WriteLine($"DispatcherTimer.Tick exception: {ex}");
+            // Exception silently handled to keep timer running
         }
     }
 }

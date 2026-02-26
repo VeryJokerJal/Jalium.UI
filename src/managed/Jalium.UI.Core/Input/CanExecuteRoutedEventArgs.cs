@@ -3,7 +3,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Provides data for the CanExecute and PreviewCanExecute routed events.
 /// </summary>
-public class CanExecuteRoutedEventArgs : RoutedEventArgs
+public sealed class CanExecuteRoutedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Initializes a new instance of the CanExecuteRoutedEventArgs class.

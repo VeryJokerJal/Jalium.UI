@@ -1,72 +1,51 @@
+﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a control that allows the user to select a time.
 /// </summary>
-public class TimePicker : Control
+public sealed class TimePicker : Control
 {
     #region Dependency Properties
 
-    /// <summary>
-    /// Identifies the SelectedTime dependency property.
-    /// </summary>
     public static readonly DependencyProperty SelectedTimeProperty =
         DependencyProperty.Register(nameof(SelectedTime), typeof(TimeSpan?), typeof(TimePicker),
             new PropertyMetadata(null, OnSelectedTimeChanged));
 
-    /// <summary>
-    /// Identifies the ClockIdentifier dependency property.
-    /// </summary>
     public static readonly DependencyProperty ClockIdentifierProperty =
         DependencyProperty.Register(nameof(ClockIdentifier), typeof(string), typeof(TimePicker),
-            new PropertyMetadata("12HourClock", OnVisualPropertyChanged));
+            new PropertyMetadata("12HourClock", OnClockIdentifierChanged));
 
-    /// <summary>
-    /// Identifies the MinuteIncrement dependency property.
-    /// </summary>
     public static readonly DependencyProperty MinuteIncrementProperty =
         DependencyProperty.Register(nameof(MinuteIncrement), typeof(int), typeof(TimePicker),
             new PropertyMetadata(1));
 
-    /// <summary>
-    /// Identifies the Header dependency property.
-    /// </summary>
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(TimePicker),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
 
-    /// <summary>
-    /// Identifies the PlaceholderText dependency property.
-    /// </summary>
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(TimePicker),
             new PropertyMetadata("Select a time", OnVisualPropertyChanged));
 
-    /// <summary>
-    /// Identifies the IsDropDownOpen dependency property.
-    /// </summary>
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(TimePicker),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnIsDropDownOpenChanged));
 
     #endregion
 
     #region Routed Events
 
-    /// <summary>
-    /// Identifies the SelectedTimeChanged routed event.
-    /// </summary>
     public static readonly RoutedEvent SelectedTimeChangedEvent =
         EventManager.RegisterRoutedEvent(nameof(SelectedTimeChanged), RoutingStrategy.Bubble,
             typeof(EventHandler<TimePickerSelectedValueChangedEventArgs>), typeof(TimePicker));
 
-    /// <summary>
-    /// Occurs when the selected time changes.
-    /// </summary>
     public event EventHandler<TimePickerSelectedValueChangedEventArgs> SelectedTimeChanged
     {
         add => AddHandler(SelectedTimeChangedEvent, value);
@@ -77,57 +56,39 @@ public class TimePicker : Control
 
     #region CLR Properties
 
-    /// <summary>
-    /// Gets or sets the currently selected time.
-    /// </summary>
     public TimeSpan? SelectedTime
     {
         get => (TimeSpan?)GetValue(SelectedTimeProperty);
         set => SetValue(SelectedTimeProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the clock format (12HourClock or 24HourClock).
-    /// </summary>
     public string ClockIdentifier
     {
         get => (string)(GetValue(ClockIdentifierProperty) ?? "12HourClock");
         set => SetValue(ClockIdentifierProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the increment for the minute picker.
-    /// </summary>
     public int MinuteIncrement
     {
-        get => (int)(GetValue(MinuteIncrementProperty) ?? 1);
+        get => (int)GetValue(MinuteIncrementProperty)!;
         set => SetValue(MinuteIncrementProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the header content.
-    /// </summary>
     public object? Header
     {
         get => GetValue(HeaderProperty);
         set => SetValue(HeaderProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the placeholder text displayed when no time is selected.
-    /// </summary>
     public string? PlaceholderText
     {
         get => (string?)GetValue(PlaceholderTextProperty);
         set => SetValue(PlaceholderTextProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether the time picker dropdown is open.
-    /// </summary>
     public bool IsDropDownOpen
     {
-        get => (bool)(GetValue(IsDropDownOpenProperty) ?? false);
+        get => (bool)GetValue(IsDropDownOpenProperty)!;
         set => SetValue(IsDropDownOpenProperty, value);
     }
 
@@ -139,13 +100,44 @@ public class TimePicker : Control
     private const double DropdownButtonWidth = 32;
     private Rect _dropdownButtonRect;
 
+    // Popup
+    private Popup? _popup;
+    private Border? _flyoutBorder;
+    private StackPanel? _hourColumn;
+    private StackPanel? _minuteColumn;
+    private StackPanel? _periodColumn;
+    private DispatcherTimer? _animationTimer;
+    private bool _isCloseAnimating;
+    private bool _isOpen;
+
+    // Pending selection
+    private int _pendingHour;
+    private int _pendingMinute;
+    private int _pendingPeriodIndex; // 0=AM, 1=PM
+
+    private const double OpenDurationMs = 250;
+    private const double CloseDurationMs = 180;
+    private const double ColumnWidth = 70;
+    private const double ItemHeight = 40;
+    private const double FlyoutMaxHeight = 260;
+    private static readonly CubicEase OpenEase = new() { EasingMode = EasingMode.EaseOut };
+    private static readonly CubicEase CloseEase = new() { EasingMode = EasingMode.EaseIn };
+
+    // Highlight colors
+    private static readonly SolidColorBrush SelectedItemBg = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush TransparentBg = new(Color.Transparent);
+
+    // Static brushes & pens for rendering
+    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_iconBrush = new(Color.FromRgb(160, 160, 160));
+    private static readonly Pen s_iconPen = new(s_iconBrush, 1.5);
+
     #endregion
 
     #region Constructor
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="TimePicker"/> class.
-    /// </summary>
     public TimePicker()
     {
         Focusable = true;
@@ -158,6 +150,405 @@ public class TimePicker : Control
 
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+    }
+
+    #endregion
+
+    #region Popup Management
+
+    private bool Is24Hour => ClockIdentifier == "24HourClock";
+
+    private void EnsurePopup()
+    {
+        if (_popup != null) return;
+        BuildPopup();
+    }
+
+    private void BuildPopup()
+    {
+        var is24Hour = Is24Hour;
+
+        // Hour column
+        _hourColumn = new StackPanel { Orientation = Orientation.Vertical };
+        PopulateHourColumn(is24Hour);
+        var hourScroll = new ScrollViewer
+        {
+            Content = _hourColumn,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            Width = ColumnWidth,
+            MaxHeight = FlyoutMaxHeight - ItemHeight
+        };
+
+        // Minute column
+        _minuteColumn = new StackPanel { Orientation = Orientation.Vertical };
+        PopulateMinuteColumn();
+        var minuteScroll = new ScrollViewer
+        {
+            Content = _minuteColumn,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+            Width = ColumnWidth,
+            MaxHeight = FlyoutMaxHeight - ItemHeight
+        };
+
+        // Columns container
+        var columnsPanel = new StackPanel { Orientation = Orientation.Horizontal };
+        columnsPanel.Children.Add(hourScroll);
+        columnsPanel.Children.Add(CreateSeparator());
+        columnsPanel.Children.Add(minuteScroll);
+
+        // AM/PM column (only for 12-hour)
+        if (!is24Hour)
+        {
+            _periodColumn = new StackPanel { Orientation = Orientation.Vertical };
+            PopulatePeriodColumn();
+            var periodScroll = new ScrollViewer
+            {
+                Content = _periodColumn,
+                VerticalScrollBarVisibility = ScrollBarVisibility.Hidden,
+                Width = 60,
+                MaxHeight = FlyoutMaxHeight - ItemHeight
+            };
+            columnsPanel.Children.Add(CreateSeparator());
+            columnsPanel.Children.Add(periodScroll);
+        }
+
+        // Accept button
+        var acceptButton = new Button
+        {
+            Content = "\u2713",
+            Height = ItemHeight,
+            HorizontalAlignment = HorizontalAlignment.Stretch,
+            HorizontalContentAlignment = HorizontalAlignment.Center,
+            Background = new SolidColorBrush(Color.FromRgb(0, 120, 212)),
+            Foreground = new SolidColorBrush(Color.White),
+            FontSize = 18,
+            CornerRadius = new CornerRadius(0, 0, 6, 6),
+            BorderThickness = new Thickness(0)
+        };
+        acceptButton.Click += OnAcceptClicked;
+
+        // Main layout
+        var mainPanel = new StackPanel { Orientation = Orientation.Vertical };
+        mainPanel.Children.Add(columnsPanel);
+        mainPanel.Children.Add(acceptButton);
+
+        _flyoutBorder = new Border
+        {
+            Background = new SolidColorBrush(Color.FromRgb(45, 45, 45)),
+            BorderBrush = new SolidColorBrush(Color.FromRgb(67, 67, 70)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Margin = new Thickness(0, 4, 0, 0),
+            Child = mainPanel
+        };
+
+        _popup = new Popup
+        {
+            Child = _flyoutBorder,
+            PlacementTarget = this,
+            Placement = PlacementMode.Bottom,
+            StaysOpen = false
+        };
+        _popup.Closed += OnPopupClosed;
+    }
+
+    private Border CreateSeparator()
+    {
+        return new Border
+        {
+            Width = 1,
+            Background = new SolidColorBrush(Color.FromRgb(67, 67, 70))
+        };
+    }
+
+    private void PopulateHourColumn(bool is24Hour)
+    {
+        var maxHour = is24Hour ? 23 : 12;
+        var minHour = is24Hour ? 0 : 1;
+
+        for (int h = minHour; h <= maxHour; h++)
+        {
+            var hour = h;
+            var item = CreateTimeItem(is24Hour ? h.ToString("D2") : h.ToString(), () =>
+            {
+                _pendingHour = hour;
+                UpdateColumnHighlights();
+            });
+            _hourColumn!.Children.Add(item);
+        }
+    }
+
+    private void PopulateMinuteColumn()
+    {
+        var increment = Math.Max(1, MinuteIncrement);
+        for (int m = 0; m < 60; m += increment)
+        {
+            var minute = m;
+            var item = CreateTimeItem(m.ToString("D2"), () =>
+            {
+                _pendingMinute = minute;
+                UpdateColumnHighlights();
+            });
+            _minuteColumn!.Children.Add(item);
+        }
+    }
+
+    private void PopulatePeriodColumn()
+    {
+        _periodColumn!.Children.Add(CreateTimeItem("AM", () =>
+        {
+            _pendingPeriodIndex = 0;
+            UpdateColumnHighlights();
+        }));
+        _periodColumn.Children.Add(CreateTimeItem("PM", () =>
+        {
+            _pendingPeriodIndex = 1;
+            UpdateColumnHighlights();
+        }));
+    }
+
+    private Border CreateTimeItem(string text, Action onClick)
+    {
+        var textBlock = new TextBlock
+        {
+            Text = text,
+            FontSize = 16,
+            Foreground = new SolidColorBrush(Color.White),
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+
+        var border = new Border
+        {
+            Height = ItemHeight,
+            Child = textBlock,
+            Background = TransparentBg,
+            CornerRadius = new CornerRadius(4),
+            Padding = new Thickness(4)
+        };
+
+        border.AddHandler(MouseDownEvent, new RoutedEventHandler((s, e) =>
+        {
+            if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+            {
+                onClick();
+                e.Handled = true;
+            }
+        }));
+
+        return border;
+    }
+
+    private void UpdateColumnHighlights()
+    {
+        var is24Hour = Is24Hour;
+
+        // Update hour column
+        if (_hourColumn != null)
+        {
+            var minHour = is24Hour ? 0 : 1;
+            for (int i = 0; i < _hourColumn.Children.Count; i++)
+            {
+                if (_hourColumn.Children[i] is Border border)
+                {
+                    var hourValue = minHour + i;
+                    border.Background = hourValue == _pendingHour ? SelectedItemBg : TransparentBg;
+                }
+            }
+        }
+
+        // Update minute column
+        if (_minuteColumn != null)
+        {
+            var increment = Math.Max(1, MinuteIncrement);
+            for (int i = 0; i < _minuteColumn.Children.Count; i++)
+            {
+                if (_minuteColumn.Children[i] is Border border)
+                {
+                    var minuteValue = i * increment;
+                    border.Background = minuteValue == _pendingMinute ? SelectedItemBg : TransparentBg;
+                }
+            }
+        }
+
+        // Update period column
+        if (_periodColumn != null)
+        {
+            for (int i = 0; i < _periodColumn.Children.Count; i++)
+            {
+                if (_periodColumn.Children[i] is Border border)
+                {
+                    border.Background = i == _pendingPeriodIndex ? SelectedItemBg : TransparentBg;
+                }
+            }
+        }
+    }
+
+    private void OpenDropDown()
+    {
+        if (_isOpen) return;
+
+        if (_isCloseAnimating)
+        {
+            _animationTimer?.Stop();
+            _isCloseAnimating = false;
+        }
+
+        // Rebuild popup if clock format changed
+        if (_popup != null)
+        {
+            var hasperiod = _periodColumn != null;
+            var needsPeriod = !Is24Hour;
+            if (hasperiod != needsPeriod)
+            {
+                _popup = null;
+            }
+        }
+
+        EnsurePopup();
+
+        // Initialize pending values from current selection
+        var current = SelectedTime ?? TimeSpan.Zero;
+        if (Is24Hour)
+        {
+            _pendingHour = current.Hours;
+        }
+        else
+        {
+            _pendingHour = current.Hours % 12;
+            if (_pendingHour == 0) _pendingHour = 12;
+            _pendingPeriodIndex = current.Hours >= 12 ? 1 : 0;
+        }
+
+        // Snap minute to nearest increment
+        var increment = Math.Max(1, MinuteIncrement);
+        _pendingMinute = (current.Minutes / increment) * increment;
+
+        UpdateColumnHighlights();
+
+        _popup!.IsOpen = true;
+        _isOpen = true;
+
+        AnimateOpen();
+    }
+
+    private void CloseDropDown()
+    {
+        if (!_isOpen) return;
+        _isOpen = false;
+
+        AnimateClose();
+    }
+
+    private void OnAcceptClicked(object sender, RoutedEventArgs e)
+    {
+        int hour24;
+
+        if (Is24Hour)
+        {
+            hour24 = _pendingHour;
+        }
+        else
+        {
+            hour24 = _pendingHour % 12;
+            if (_pendingPeriodIndex == 1) hour24 += 12; // PM
+        }
+
+        SelectedTime = new TimeSpan(hour24, _pendingMinute, 0);
+        IsDropDownOpen = false;
+    }
+
+    private void OnPopupClosed(object? sender, EventArgs e)
+    {
+        if (_isCloseAnimating) return;
+
+        _animationTimer?.Stop();
+        _isOpen = false;
+        SetValue(IsDropDownOpenProperty, false);
+    }
+
+    #endregion
+
+    #region Animation
+
+    private void AnimateOpen()
+    {
+        _animationTimer?.Stop();
+
+        if (_flyoutBorder != null)
+        {
+            _flyoutBorder.Opacity = 0;
+            _flyoutBorder.RenderOffset = new Point(0, -8);
+        }
+
+        var startTime = Environment.TickCount64;
+
+        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
+        _animationTimer.Tick += (s, e) =>
+        {
+            var elapsed = Environment.TickCount64 - startTime;
+            var progress = Math.Min(1.0, elapsed / OpenDurationMs);
+            var eased = OpenEase.Ease(progress);
+
+            if (_flyoutBorder != null)
+            {
+                _flyoutBorder.Opacity = eased;
+                _flyoutBorder.RenderOffset = new Point(0, -8 * (1.0 - eased));
+            }
+
+            if (progress >= 1.0)
+            {
+                _animationTimer!.Stop();
+                if (_flyoutBorder != null)
+                {
+                    _flyoutBorder.Opacity = 1;
+                    _flyoutBorder.RenderOffset = default;
+                }
+            }
+        };
+        _animationTimer.Start();
+    }
+
+    private void AnimateClose()
+    {
+        _animationTimer?.Stop();
+
+        var startOpacity = _flyoutBorder?.Opacity ?? 1.0;
+        var startOffsetY = _flyoutBorder?.RenderOffset.Y ?? 0;
+        var startTime = Environment.TickCount64;
+
+        _isCloseAnimating = true;
+
+        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
+        _animationTimer.Tick += (s, e) =>
+        {
+            var elapsed = Environment.TickCount64 - startTime;
+            var progress = Math.Min(1.0, elapsed / CloseDurationMs);
+            var eased = CloseEase.Ease(progress);
+
+            if (_flyoutBorder != null)
+            {
+                _flyoutBorder.Opacity = startOpacity * (1.0 - eased);
+                _flyoutBorder.RenderOffset = new Point(0, startOffsetY + (-8 - startOffsetY) * eased);
+            }
+
+            if (progress >= 1.0)
+            {
+                _animationTimer!.Stop();
+
+                if (_popup != null)
+                    _popup.IsOpen = false;
+
+                _isCloseAnimating = false;
+
+                if (_flyoutBorder != null)
+                {
+                    _flyoutBorder.Opacity = 1;
+                    _flyoutBorder.RenderOffset = default;
+                }
+            }
+        };
+        _animationTimer.Start();
     }
 
     #endregion
@@ -210,7 +601,6 @@ public class TimePicker : Control
         var current = SelectedTime ?? TimeSpan.Zero;
         var newTime = current.Add(delta);
 
-        // Wrap around midnight
         if (newTime.TotalHours >= 24)
             newTime = newTime.Subtract(TimeSpan.FromHours(24));
         else if (newTime.TotalHours < 0)
@@ -225,9 +615,7 @@ public class TimePicker : Control
 
     private string FormatTime(TimeSpan time)
     {
-        var is24Hour = ClockIdentifier == "24HourClock";
-
-        if (is24Hour)
+        if (Is24Hour)
         {
             return $"{time.Hours:D2}:{time.Minutes:D2}";
         }
@@ -244,13 +632,10 @@ public class TimePicker : Control
 
     #region Layout
 
-    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var padding = Padding;
         var headerHeight = 0.0;
 
-        // Measure header
         if (Header is string headerText)
         {
             var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14);
@@ -268,7 +653,6 @@ public class TimePicker : Control
 
     #region Rendering
 
-    /// <inheritdoc />
     protected override void OnRender(object drawingContext)
     {
         if (drawingContext is not DrawingContext dc)
@@ -277,7 +661,6 @@ public class TimePicker : Control
         var rect = new Rect(RenderSize);
         var padding = Padding;
         var cornerRadius = CornerRadius;
-        var hasCornerRadius = cornerRadius.TopLeft > 0;
         var headerHeight = 0.0;
 
         // Draw header
@@ -292,7 +675,6 @@ public class TimePicker : Control
             headerHeight = headerFormatted.Height + 4;
         }
 
-        // Adjust rect for header
         var inputRect = new Rect(0, headerHeight, rect.Width, rect.Height - headerHeight);
 
         // Draw background
@@ -302,7 +684,7 @@ public class TimePicker : Control
         }
 
         // Draw border
-        var borderBrush = IsFocused ? new SolidColorBrush(Color.FromRgb(0, 120, 212)) : BorderBrush;
+        var borderBrush = IsFocused ? s_focusBorderBrush : BorderBrush;
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
             var pen = new Pen(borderBrush, BorderThickness.Left);
@@ -316,12 +698,12 @@ public class TimePicker : Control
         if (SelectedTime.HasValue)
         {
             displayText = FormatTime(SelectedTime.Value);
-            textBrush = Foreground ?? new SolidColorBrush(Color.White);
+            textBrush = Foreground ?? s_whiteBrush;
         }
         else
         {
             displayText = PlaceholderText ?? "Select a time";
-            textBrush = new SolidColorBrush(Color.FromRgb(128, 128, 128));
+            textBrush = s_placeholderBrush;
         }
 
         var textFormatted = new FormattedText(displayText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
@@ -340,9 +722,7 @@ public class TimePicker : Control
 
     private void DrawDropdownButton(DrawingContext dc, Rect rect)
     {
-        // Draw clock icon
-        var iconBrush = new SolidColorBrush(Color.FromRgb(160, 160, 160));
-        var iconPen = new Pen(iconBrush, 1.5);
+        var iconPen = s_iconPen;
 
         var centerX = rect.X + rect.Width / 2;
         var centerY = rect.Y + rect.Height / 2;
@@ -352,8 +732,8 @@ public class TimePicker : Control
         dc.DrawEllipse(null, iconPen, new Point(centerX, centerY), radius, radius);
 
         // Draw clock hands
-        dc.DrawLine(iconPen, new Point(centerX, centerY), new Point(centerX, centerY - 4)); // Hour hand
-        dc.DrawLine(iconPen, new Point(centerX, centerY), new Point(centerX + 3, centerY + 2)); // Minute hand
+        dc.DrawLine(iconPen, new Point(centerX, centerY), new Point(centerX, centerY - 4));
+        dc.DrawLine(iconPen, new Point(centerX, centerY), new Point(centerX + 3, centerY + 2));
     }
 
     #endregion
@@ -369,6 +749,30 @@ public class TimePicker : Control
             var args = new TimePickerSelectedValueChangedEventArgs(SelectedTimeChangedEvent,
                 e.OldValue as TimeSpan?, e.NewValue as TimeSpan?);
             timePicker.RaiseEvent(args);
+        }
+    }
+
+    private static void OnIsDropDownOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is TimePicker timePicker)
+        {
+            if ((bool)e.NewValue)
+                timePicker.OpenDropDown();
+            else
+                timePicker.CloseDropDown();
+        }
+    }
+
+    private static void OnClockIdentifierChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is TimePicker timePicker)
+        {
+            // Force popup rebuild on next open
+            timePicker._popup = null;
+            timePicker._hourColumn = null;
+            timePicker._minuteColumn = null;
+            timePicker._periodColumn = null;
+            timePicker.InvalidateVisual();
         }
     }
 
@@ -394,21 +798,11 @@ public class TimePicker : Control
 /// <summary>
 /// Provides data for the SelectedTimeChanged event.
 /// </summary>
-public class TimePickerSelectedValueChangedEventArgs : RoutedEventArgs
+public sealed class TimePickerSelectedValueChangedEventArgs : RoutedEventArgs
 {
-    /// <summary>
-    /// Gets the old selected time.
-    /// </summary>
     public TimeSpan? OldTime { get; }
-
-    /// <summary>
-    /// Gets the new selected time.
-    /// </summary>
     public TimeSpan? NewTime { get; }
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="TimePickerSelectedValueChangedEventArgs"/> class.
-    /// </summary>
     public TimePickerSelectedValueChangedEventArgs(RoutedEvent routedEvent, TimeSpan? oldTime, TimeSpan? newTime)
     {
         RoutedEvent = routedEvent;

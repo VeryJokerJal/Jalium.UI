@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls.Shell;
 /// <summary>
 /// Represents a list of items and tasks displayed as a menu on a Windows 7 taskbar button.
 /// </summary>
-public class JumpList
+public sealed class JumpList
 {
     private readonly List<JumpItem> _jumpItems = new();
     private static JumpList? _current;
@@ -105,7 +105,7 @@ public class JumpList
     /// <summary>
     /// Applies the Jump List to the Windows shell.
     /// </summary>
-    protected virtual void ApplyInternal()
+    protected void ApplyInternal()
     {
         // Platform-specific implementation using ICustomDestinationList
         var removedItems = new List<JumpItem>();
@@ -147,7 +147,7 @@ public abstract class JumpItem
 /// <summary>
 /// Represents a link to an application in the Jump List.
 /// </summary>
-public class JumpTask : JumpItem
+public sealed class JumpTask : JumpItem
 {
     /// <summary>
     /// Gets or sets the text displayed for the task in the Jump List.
@@ -188,7 +188,7 @@ public class JumpTask : JumpItem
 /// <summary>
 /// Represents a link to a file displayed in a Jump List.
 /// </summary>
-public class JumpPath : JumpItem
+public sealed class JumpPath : JumpItem
 {
     /// <summary>
     /// Gets or sets the path to the file.
@@ -199,7 +199,7 @@ public class JumpPath : JumpItem
 /// <summary>
 /// Event arguments for when jump items are removed by the user.
 /// </summary>
-public class JumpItemsRemovedEventArgs : EventArgs
+public sealed class JumpItemsRemovedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the items that were removed.
@@ -218,7 +218,7 @@ public class JumpItemsRemovedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for when jump items are rejected.
 /// </summary>
-public class JumpItemsRejectedEventArgs : EventArgs
+public sealed class JumpItemsRejectedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the items that were rejected.

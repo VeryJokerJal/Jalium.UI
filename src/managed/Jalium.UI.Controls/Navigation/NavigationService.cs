@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls.Navigation;
 /// <summary>
 /// Contains methods, properties, and events to support navigation within an application.
 /// </summary>
-public class NavigationService
+public sealed class NavigationService
 {
     private readonly Stack<JournalEntry> _backStack = new();
     private readonly Stack<JournalEntry> _forwardStack = new();
@@ -563,7 +563,7 @@ public class NavigationService
 /// <summary>
 /// Provides data for the NavigationProgress event.
 /// </summary>
-public class NavigationProgressEventArgs : EventArgs
+public sealed class NavigationProgressEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the URI of the target content.
@@ -594,7 +594,7 @@ public class NavigationProgressEventArgs : EventArgs
 /// <summary>
 /// Provides data for the FragmentNavigation event.
 /// </summary>
-public class FragmentNavigationEventArgs : EventArgs
+public sealed class FragmentNavigationEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the fragment identifier.
@@ -618,7 +618,7 @@ public class FragmentNavigationEventArgs : EventArgs
 /// <summary>
 /// Provides data for the NavigationFailed event.
 /// </summary>
-public class NavigationFailedEventArgs : EventArgs
+public sealed class NavigationFailedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the URI for the content that could not be navigated to.

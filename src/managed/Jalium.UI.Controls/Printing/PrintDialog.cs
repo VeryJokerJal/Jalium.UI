@@ -1,9 +1,34 @@
 namespace Jalium.UI.Controls.Printing;
 
 /// <summary>
+/// Exception thrown by PrintDialog operations.
+/// </summary>
+public sealed class PrintDialogException : Exception
+{
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PrintDialogException"/> class.
+    /// </summary>
+    public PrintDialogException() { }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PrintDialogException"/> class with a specified error message.
+    /// </summary>
+    /// <param name="message">The error message that explains the reason for the exception.</param>
+    public PrintDialogException(string message) : base(message) { }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PrintDialogException"/> class with a specified error message
+    /// and a reference to the inner exception that is the cause of this exception.
+    /// </summary>
+    /// <param name="message">The error message that explains the reason for the exception.</param>
+    /// <param name="innerException">The exception that is the cause of the current exception.</param>
+    public PrintDialogException(string message, Exception innerException) : base(message, innerException) { }
+}
+
+/// <summary>
 /// Invokes a standard print dialog box.
 /// </summary>
-public class PrintDialog
+public sealed class PrintDialog
 {
     private int _minPage = 1;
     private int _maxPage = 9999;
@@ -36,7 +61,7 @@ public class PrintDialog
     public int PageRangeFrom
     {
         get => _pageFrom;
-        set => _pageFrom = Math.Max(_minPage, Math.Min(_maxPage, value));
+        set => _pageFrom = Math.Clamp(value, _minPage, _maxPage);
     }
 
     /// <summary>
@@ -45,7 +70,7 @@ public class PrintDialog
     public int PageRangeTo
     {
         get => _pageTo;
-        set => _pageTo = Math.Max(_pageFrom, Math.Min(_maxPage, value));
+        set => _pageTo = Math.Clamp(value, _pageFrom, _maxPage);
     }
 
     /// <summary>
@@ -138,7 +163,7 @@ public class PrintDialog
     /// <summary>
     /// Shows the dialog internally.
     /// </summary>
-    protected virtual bool ShowDialogInternal(Window? owner = null)
+    protected bool ShowDialogInternal(Window? owner = null)
     {
         // Platform-specific implementation
         // Would use Windows PrintDlg or Common Print Dialog
@@ -148,7 +173,7 @@ public class PrintDialog
     /// <summary>
     /// Prints a visual internally.
     /// </summary>
-    protected virtual void PrintVisualInternal(Visual visual, string description)
+    protected void PrintVisualInternal(Visual visual, string description)
     {
         // Platform-specific implementation
     }
@@ -156,7 +181,7 @@ public class PrintDialog
     /// <summary>
     /// Prints a document internally.
     /// </summary>
-    protected virtual void PrintDocumentInternal(DocumentPaginator documentPaginator, string description)
+    protected void PrintDocumentInternal(DocumentPaginator documentPaginator, string description)
     {
         // Platform-specific implementation
     }
@@ -227,7 +252,7 @@ public struct PageRange
 /// <summary>
 /// Represents a print queue (printer).
 /// </summary>
-public class PrintQueue
+public sealed class PrintQueue
 {
     /// <summary>
     /// Gets the name of the printer.
@@ -399,7 +424,7 @@ public class PrintQueue
 /// <summary>
 /// Represents information about a print job.
 /// </summary>
-public class PrintSystemJobInfo
+public sealed class PrintSystemJobInfo
 {
     /// <summary>
     /// Gets the print queue associated with this job.
@@ -567,7 +592,7 @@ public enum PrintJobStatus
 /// <summary>
 /// Represents print settings and capabilities.
 /// </summary>
-public class PrintTicket
+public sealed class PrintTicket
 {
     /// <summary>
     /// Gets or sets the number of copies.
@@ -613,7 +638,7 @@ public class PrintTicket
 /// <summary>
 /// Represents a page media size.
 /// </summary>
-public class PageMediaSize
+public sealed class PageMediaSize
 {
     /// <summary>
     /// Gets the width in 1/96 inch units.
@@ -653,7 +678,7 @@ public class PageMediaSize
 /// <summary>
 /// Represents page resolution.
 /// </summary>
-public class PageResolution
+public sealed class PageResolution
 {
     /// <summary>
     /// Gets the X resolution in DPI.
@@ -864,7 +889,7 @@ public abstract class DocumentPaginator
     /// <summary>
     /// Forces pagination to complete.
     /// </summary>
-    public virtual void ComputePageCount()
+    public void ComputePageCount()
     {
         // Default implementation
     }
@@ -899,7 +924,7 @@ public abstract class DocumentPaginator
 /// <summary>
 /// Represents a single page of a document.
 /// </summary>
-public class DocumentPage
+public sealed class DocumentPage
 {
     /// <summary>
     /// Gets a blank document page.
@@ -952,7 +977,7 @@ public class DocumentPage
 /// <summary>
 /// Event arguments for pagination completed events.
 /// </summary>
-public class PaginationCompletedEventArgs : EventArgs
+public sealed class PaginationCompletedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the error if pagination failed.
@@ -977,7 +1002,7 @@ public class PaginationCompletedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for pagination progress events.
 /// </summary>
-public class PaginationProgressEventArgs : EventArgs
+public sealed class PaginationProgressEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the current page count.
@@ -1007,7 +1032,7 @@ public interface IDocumentPaginatorSource
 /// <summary>
 /// Defines the capabilities of a print queue.
 /// </summary>
-public class PrintCapabilities
+public sealed class PrintCapabilities
 {
     /// <summary>
     /// Gets the collection of supported collation options.
@@ -1073,7 +1098,7 @@ public class PrintCapabilities
 /// <summary>
 /// Represents a print server.
 /// </summary>
-public class PrintServer : IDisposable
+public sealed class PrintServer : IDisposable
 {
     private bool _disposed;
 
@@ -1128,7 +1153,7 @@ public class PrintServer : IDisposable
     /// <summary>
     /// Disposes resources.
     /// </summary>
-    protected virtual void Dispose(bool disposing)
+    protected void Dispose(bool disposing)
     {
         if (!_disposed)
         {
@@ -1140,7 +1165,7 @@ public class PrintServer : IDisposable
 /// <summary>
 /// Provides helper methods for XPS document printing.
 /// </summary>
-public class XpsDocumentWriter
+public sealed class XpsDocumentWriter
 {
     private readonly PrintQueue _printQueue;
 
@@ -1258,7 +1283,7 @@ public class XpsDocumentWriter
     /// <summary>
     /// Raises the WritingCompleted event.
     /// </summary>
-    protected virtual void OnWritingCompleted(Exception? error, bool cancelled)
+    protected void OnWritingCompleted(Exception? error, bool cancelled)
     {
         WritingCompleted?.Invoke(this, new WritingCompletedEventArgs(error, cancelled));
     }
@@ -1266,7 +1291,7 @@ public class XpsDocumentWriter
     /// <summary>
     /// Raises the WritingProgressChanged event.
     /// </summary>
-    protected virtual void OnWritingProgressChanged(int currentPage, int totalPages)
+    protected void OnWritingProgressChanged(int currentPage, int totalPages)
     {
         WritingProgressChanged?.Invoke(this, new WritingProgressChangedEventArgs(currentPage, totalPages));
     }
@@ -1275,7 +1300,7 @@ public class XpsDocumentWriter
 /// <summary>
 /// Event arguments for writing completed events.
 /// </summary>
-public class WritingCompletedEventArgs : EventArgs
+public sealed class WritingCompletedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the error if the operation failed.
@@ -1300,7 +1325,7 @@ public class WritingCompletedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for writing progress changed events.
 /// </summary>
-public class WritingProgressChangedEventArgs : EventArgs
+public sealed class WritingProgressChangedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the current page number.
@@ -1330,7 +1355,7 @@ public class WritingProgressChangedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for when a print ticket is required.
 /// </summary>
-public class WritingPrintTicketRequiredEventArgs : EventArgs
+public sealed class WritingPrintTicketRequiredEventArgs : EventArgs
 {
     /// <summary>
     /// Gets or sets the print ticket.

@@ -1,4 +1,4 @@
-using Jalium.UI.Input;
+﻿using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -6,11 +6,12 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a container that enables navigation of app content with WinUI-style appearance.
 /// </summary>
-public class NavigationView : ContentControl
+public sealed class NavigationView : ContentControl
 {
     #region Fields
 
     private NavigationViewItem? _selectedItem;
+    private bool _isUpdatingSelection;
     private readonly StackPanel _menuItemsPanel;
     private readonly StackPanel _footerItemsPanel;
     private readonly Border _paneContainer;
@@ -101,7 +102,7 @@ public class NavigationView : ContentControl
     /// </summary>
     public bool IsPaneOpen
     {
-        get => (bool)(GetValue(IsPaneOpenProperty) ?? true);
+        get => (bool)GetValue(IsPaneOpenProperty)!;
         set => SetValue(IsPaneOpenProperty, value);
     }
 
@@ -110,7 +111,7 @@ public class NavigationView : ContentControl
     /// </summary>
     public NavigationViewPaneDisplayMode PaneDisplayMode
     {
-        get => (NavigationViewPaneDisplayMode)(GetValue(PaneDisplayModeProperty) ?? NavigationViewPaneDisplayMode.Left);
+        get => (NavigationViewPaneDisplayMode)GetValue(PaneDisplayModeProperty)!;
         set => SetValue(PaneDisplayModeProperty, value);
     }
 
@@ -119,7 +120,7 @@ public class NavigationView : ContentControl
     /// </summary>
     public double OpenPaneLength
     {
-        get => (double)(GetValue(OpenPaneLengthProperty) ?? 280.0);
+        get => (double)GetValue(OpenPaneLengthProperty)!;
         set => SetValue(OpenPaneLengthProperty, value);
     }
 
@@ -128,7 +129,7 @@ public class NavigationView : ContentControl
     /// </summary>
     public double CompactPaneLength
     {
-        get => (double)(GetValue(CompactPaneLengthProperty) ?? 48.0);
+        get => (double)GetValue(CompactPaneLengthProperty)!;
         set => SetValue(CompactPaneLengthProperty, value);
     }
 
@@ -155,7 +156,7 @@ public class NavigationView : ContentControl
     /// </summary>
     public bool IsSettingsVisible
     {
-        get => (bool)(GetValue(IsSettingsVisibleProperty) ?? true);
+        get => (bool)GetValue(IsSettingsVisibleProperty)!;
         set => SetValue(IsSettingsVisibleProperty, value);
     }
 
@@ -173,7 +174,7 @@ public class NavigationView : ContentControl
     /// </summary>
     public bool IsBackEnabled
     {
-        get => (bool)(GetValue(IsBackEnabledProperty) ?? false);
+        get => (bool)GetValue(IsBackEnabledProperty)!;
         set => SetValue(IsBackEnabledProperty, value);
     }
 
@@ -347,7 +348,7 @@ public class NavigationView : ContentControl
             var item = FindNavigationItemAtPosition(pos);
             if (item != null)
             {
-                SelectItem(item);
+                HandleItemClicked(item);
                 e.Handled = true;
             }
         }
@@ -448,6 +449,20 @@ public class NavigationView : ContentControl
         return new Rect(offsetX, offsetY, itemBounds.Width, itemBounds.Height);
     }
 
+    /// <summary>
+    /// Handles a click on a NavigationViewItem (called from the item itself).
+    /// </summary>
+    internal void HandleItemClicked(NavigationViewItem item)
+    {
+        // Toggle expand for items with children
+        if (item.HasUnrealizedChildren)
+        {
+            item.IsExpanded = !item.IsExpanded;
+        }
+
+        SelectItem(item);
+    }
+
     private void SelectItem(NavigationViewItem item)
     {
         if (!item.SelectsOnInvoked)
@@ -457,23 +472,31 @@ public class NavigationView : ContentControl
             return;
         }
 
-        var previousItem = _selectedItem;
-
-        // Deselect previous item
-        if (_selectedItem != null)
+        _isUpdatingSelection = true;
+        try
         {
-            _selectedItem.IsSelected = false;
+            var previousItem = _selectedItem;
+
+            // Deselect previous item
+            if (_selectedItem != null)
+            {
+                _selectedItem.IsSelected = false;
+            }
+
+            // Select new item
+            _selectedItem = item;
+            _selectedItem.IsSelected = true;
+            SelectedItem = item;
+
+            // Fire events
+            item.Invoke();
+            ItemInvoked?.Invoke(this, new NavigationViewItemInvokedEventArgs(item));
+            SelectionChanged?.Invoke(this, new NavigationViewSelectionChangedEventArgs(item, previousItem));
         }
-
-        // Select new item
-        _selectedItem = item;
-        _selectedItem.IsSelected = true;
-        SelectedItem = item;
-
-        // Fire events
-        item.Invoke();
-        ItemInvoked?.Invoke(this, new NavigationViewItemInvokedEventArgs(item));
-        SelectionChanged?.Invoke(this, new NavigationViewSelectionChangedEventArgs(item, previousItem));
+        finally
+        {
+            _isUpdatingSelection = false;
+        }
     }
 
     private void RefreshMenuItems()
@@ -499,26 +522,25 @@ public class NavigationView : ContentControl
         {
             navItem.IndentLevel = indentLevel;
 
-            // Set explicit width for consistent rendering (pane width minus margins)
-            var itemWidth = OpenPaneLength - 8; // Account for container margins
-            navItem.Width = itemWidth;
+            // Let items stretch to fill available width (ScrollViewer viewport automatically accounts for scrollbar)
+            navItem.HorizontalAlignment = HorizontalAlignment.Stretch;
 
-            // If item has children, add them recursively
+            // If item has children, add them recursively into the item's template children panel
             if (navItem.HasUnrealizedChildren)
             {
                 var childrenPanel = navItem.GetChildrenPanel();
-                childrenPanel.Children.Clear();
-
-                // Set width on children panel to match item width
-                childrenPanel.Width = itemWidth;
-
-                foreach (var child in navItem.MenuItems)
+                if (childrenPanel != null)
                 {
-                    AddItemWithChildren(child, childrenPanel, indentLevel + 1);
-                }
+                    childrenPanel.Children.Clear();
 
-                // Add children panel after the item
-                container.Children.Add(childrenPanel);
+                    // Let children panel stretch as well
+                    childrenPanel.HorizontalAlignment = HorizontalAlignment.Stretch;
+
+                    foreach (var child in navItem.MenuItems)
+                    {
+                        AddItemWithChildren(child, childrenPanel, indentLevel + 1);
+                    }
+                }
             }
         }
     }
@@ -592,7 +614,7 @@ public class NavigationView : ContentControl
 
     private static void OnSelectedItemChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is NavigationView nav && e.NewValue is NavigationViewItem item)
+        if (d is NavigationView nav && !nav._isUpdatingSelection && e.NewValue is NavigationViewItem item)
         {
             if (nav._selectedItem != item)
             {
@@ -654,7 +676,7 @@ public enum NavigationViewBackButtonVisible
 /// <summary>
 /// Provides data for the NavigationView.BackRequested event.
 /// </summary>
-public class NavigationViewBackRequestedEventArgs : EventArgs
+public sealed class NavigationViewBackRequestedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets or sets a value indicating whether the back navigation was handled.
@@ -665,7 +687,7 @@ public class NavigationViewBackRequestedEventArgs : EventArgs
 /// <summary>
 /// Provides data for the NavigationView.SelectionChanged event.
 /// </summary>
-public class NavigationViewSelectionChangedEventArgs : EventArgs
+public sealed class NavigationViewSelectionChangedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the selected item.

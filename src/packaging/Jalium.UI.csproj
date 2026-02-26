@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <RootNamespace>Jalium.UI</RootNamespace>
+    <AssemblyName>Jalium.UI</AssemblyName>
+    <Description>Jalium.UI is a modern GPU-accelerated UI framework for .NET. This metapackage includes all Jalium.UI components.</Description>
+
+    <!-- NuGet Package Configuration -->
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI</PackageId>
+
+    <!-- This is a metapackage - no code, just references -->
+    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
+    <Authors>Supper Jal</Authors>
+    <PackageProjectUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</RepositoryUrl>
+    <PackageTags>jalium;ui;xaml;jalxaml;wpf;windows;directx;gpu</PackageTags>
+    <Version>26.7.4</Version>
+  </PropertyGroup>
+
+  <!-- Reference all Jalium.UI packages -->
+  <ItemGroup>
+    <ProjectReference Include="..\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <ProjectReference Include="..\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" />
+    <ProjectReference Include="..\managed\Jalium.UI.Input\Jalium.UI.Input.csproj" />
+    <ProjectReference Include="..\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+    <ProjectReference Include="..\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
+    <ProjectReference Include="..\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
+    <ProjectReference Include="..\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
+  </ItemGroup>
+
+  <!-- Include build tools as dependencies (PrivateAssets="none" forces DevelopmentDependency packages to be included) -->
+  <ItemGroup>
+    <ProjectReference Include="..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" PrivateAssets="none" />
+    <ProjectReference Include="..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj" PrivateAssets="none" />
+  </ItemGroup>
+
+</Project>

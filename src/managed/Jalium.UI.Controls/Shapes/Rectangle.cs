@@ -1,11 +1,11 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Shapes;
 
 /// <summary>
 /// Draws a rectangle.
 /// </summary>
-public class Rectangle : Shape
+public sealed class Rectangle : Shape
 {
     #region Dependency Properties
 
@@ -32,7 +32,7 @@ public class Rectangle : Shape
     /// </summary>
     public double RadiusX
     {
-        get => (double)(GetValue(RadiusXProperty) ?? 0.0);
+        get => (double)GetValue(RadiusXProperty)!;
         set => SetValue(RadiusXProperty, value);
     }
 
@@ -41,7 +41,7 @@ public class Rectangle : Shape
     /// </summary>
     public double RadiusY
     {
-        get => (double)(GetValue(RadiusYProperty) ?? 0.0);
+        get => (double)GetValue(RadiusYProperty)!;
         set => SetValue(RadiusYProperty, value);
     }
 

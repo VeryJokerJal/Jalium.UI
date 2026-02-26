@@ -1,11 +1,11 @@
-using Jalium.UI;
+﻿using Jalium.UI;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Defines row-specific properties that apply to Grid elements.
 /// </summary>
-public class RowDefinition : DependencyObject
+public sealed class RowDefinition : DependencyObject
 {
     /// <summary>
     /// Identifies the Height dependency property.
@@ -33,7 +33,7 @@ public class RowDefinition : DependencyObject
     /// </summary>
     public GridLength Height
     {
-        get => (GridLength)(GetValue(HeightProperty) ?? new GridLength(1.0, GridUnitType.Star));
+        get => (GridLength)GetValue(HeightProperty)!;
         set => SetValue(HeightProperty, value);
     }
 
@@ -42,7 +42,7 @@ public class RowDefinition : DependencyObject
     /// </summary>
     public double MinHeight
     {
-        get => (double)(GetValue(MinHeightProperty) ?? 0.0);
+        get => (double)GetValue(MinHeightProperty)!;
         set => SetValue(MinHeightProperty, value);
     }
 
@@ -51,7 +51,7 @@ public class RowDefinition : DependencyObject
     /// </summary>
     public double MaxHeight
     {
-        get => (double)(GetValue(MaxHeightProperty) ?? double.PositiveInfinity);
+        get => (double)GetValue(MaxHeightProperty)!;
         set => SetValue(MaxHeightProperty, value);
     }
 
@@ -69,7 +69,7 @@ public class RowDefinition : DependencyObject
 /// <summary>
 /// Defines column-specific properties that apply to Grid elements.
 /// </summary>
-public class ColumnDefinition : DependencyObject
+public sealed class ColumnDefinition : DependencyObject
 {
     /// <summary>
     /// Identifies the Width dependency property.
@@ -97,7 +97,7 @@ public class ColumnDefinition : DependencyObject
     /// </summary>
     public GridLength Width
     {
-        get => (GridLength)(GetValue(WidthProperty) ?? new GridLength(1.0, GridUnitType.Star));
+        get => (GridLength)GetValue(WidthProperty)!;
         set => SetValue(WidthProperty, value);
     }
 
@@ -106,7 +106,7 @@ public class ColumnDefinition : DependencyObject
     /// </summary>
     public double MinWidth
     {
-        get => (double)(GetValue(MinWidthProperty) ?? 0.0);
+        get => (double)GetValue(MinWidthProperty)!;
         set => SetValue(MinWidthProperty, value);
     }
 
@@ -115,7 +115,7 @@ public class ColumnDefinition : DependencyObject
     /// </summary>
     public double MaxWidth
     {
-        get => (double)(GetValue(MaxWidthProperty) ?? double.PositiveInfinity);
+        get => (double)GetValue(MaxWidthProperty)!;
         set => SetValue(MaxWidthProperty, value);
     }
 
@@ -133,13 +133,13 @@ public class ColumnDefinition : DependencyObject
 /// <summary>
 /// A collection of <see cref="RowDefinition"/> objects.
 /// </summary>
-public class RowDefinitionCollection : List<RowDefinition>
+public sealed class RowDefinitionCollection : List<RowDefinition>
 {
 }
 
 /// <summary>
 /// A collection of <see cref="ColumnDefinition"/> objects.
 /// </summary>
-public class ColumnDefinitionCollection : List<ColumnDefinition>
+public sealed class ColumnDefinitionCollection : List<ColumnDefinition>
 {
 }

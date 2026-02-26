@@ -109,16 +109,29 @@ public abstract partial class UIElement : Visual, IInputElement
         }
     }
 
-    // Reusable list for tunnel event path to avoid allocations on every mouse move
+    // Reusable list for tunnel event path to avoid allocations on every mouse move.
+    // Uses _tunnelDepth to detect reentrant tunnel events and allocate a fresh list.
     [ThreadStatic]
     private static List<UIElement>? _tunnelPath;
+    [ThreadStatic]
+    private static int _tunnelDepth;
 
     private void RaiseEventTunnel(RoutedEventArgs e)
     {
-        // Reuse static list to avoid allocations
-        _tunnelPath ??= new List<UIElement>(32);
-        var path = _tunnelPath;
-        path.Clear();
+        List<UIElement> path;
+        if (_tunnelDepth == 0)
+        {
+            // Top-level tunnel: reuse the static list
+            _tunnelPath ??= new List<UIElement>(32);
+            path = _tunnelPath;
+            path.Clear();
+        }
+        else
+        {
+            // Reentrant tunnel (handler triggered another tunnel event):
+            // allocate a fresh list to avoid corrupting the outer iteration
+            path = new List<UIElement>(32);
+        }
 
         // Build the path from root to source
         UIElement? current = this;
@@ -129,9 +142,17 @@ public abstract partial class UIElement : Visual, IInputElement
         }
 
         // Tunnel from root to source
-        for (int i = path.Count - 1; i >= 0; i--)
+        _tunnelDepth++;
+        try
         {
-            path[i].InvokeHandlers(path[i], e);
+            for (int i = path.Count - 1; i >= 0; i--)
+            {
+                path[i].InvokeHandlers(path[i], e);
+            }
+        }
+        finally
+        {
+            _tunnelDepth--;
         }
     }
 
@@ -148,14 +169,64 @@ public abstract partial class UIElement : Visual, IInputElement
             }
         }
 
-        // Invoke instance handlers
+        // Invoke instance handlers (snapshot to allow handler list modification during dispatch)
         if (_eventHandlers != null && _eventHandlers.TryGetValue(routedEvent, out var handlers))
         {
-            foreach (var handler in handlers)
+            var snapshot = handlers.ToArray();
+            foreach (var handler in snapshot)
             {
                 if (!e.Handled || handler.HandledEventsToo)
                 {
                     e.InvokeEventHandler(handler.Handler, sender);
+                }
+            }
+        }
+
+        // Check CommandBindings for RoutedCommand events
+        if (_commandBindings != null && _commandBindings.Count > 0)
+        {
+            if (routedEvent == Input.RoutedCommand.CanExecuteEvent && e is Input.CanExecuteRoutedEventArgs canExecArgs)
+            {
+                foreach (var binding in _commandBindings)
+                {
+                    if (binding.Command == canExecArgs.Command)
+                    {
+                        binding.OnCanExecute(sender, canExecArgs);
+                        if (canExecArgs.Handled) break;
+                    }
+                }
+            }
+            else if (routedEvent == Input.RoutedCommand.ExecutedEvent && e is Input.ExecutedRoutedEventArgs execArgs)
+            {
+                foreach (var binding in _commandBindings)
+                {
+                    if (binding.Command == execArgs.Command)
+                    {
+                        binding.OnExecuted(sender, execArgs);
+                        if (execArgs.Handled) break;
+                    }
+                }
+            }
+            else if (routedEvent == Input.RoutedCommand.PreviewCanExecuteEvent && e is Input.CanExecuteRoutedEventArgs previewCanExecArgs)
+            {
+                foreach (var binding in _commandBindings)
+                {
+                    if (binding.Command == previewCanExecArgs.Command)
+                    {
+                        binding.OnPreviewCanExecute(sender, previewCanExecArgs);
+                        if (previewCanExecArgs.Handled) break;
+                    }
+                }
+            }
+            else if (routedEvent == Input.RoutedCommand.PreviewExecutedEvent && e is Input.ExecutedRoutedEventArgs previewExecArgs)
+            {
+                foreach (var binding in _commandBindings)
+                {
+                    if (binding.Command == previewExecArgs.Command)
+                    {
+                        binding.OnPreviewExecuted(sender, previewExecArgs);
+                        if (previewExecArgs.Handled) break;
+                    }
                 }
             }
         }
@@ -184,7 +255,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public static readonly DependencyProperty OpacityProperty =
         DependencyProperty.Register(nameof(Opacity), typeof(double), typeof(UIElement),
-            new PropertyMetadata(1.0));
+            new PropertyMetadata(1.0, OnRenderPropertyChanged));
 
     /// <summary>
     /// Identifies the BackdropEffect dependency property.
@@ -213,13 +284,20 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public static readonly DependencyProperty RenderTransformProperty =
         DependencyProperty.Register(nameof(RenderTransform), typeof(object), typeof(UIElement),
-            new PropertyMetadata(null));
+            new PropertyMetadata(null, OnRenderPropertyChanged));
 
     /// <summary>
     /// Identifies the Focusable dependency property.
     /// </summary>
     public static readonly DependencyProperty FocusableProperty =
         DependencyProperty.Register(nameof(Focusable), typeof(bool), typeof(UIElement),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the IsManipulationEnabled dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsManipulationEnabledProperty =
+        DependencyProperty.Register(nameof(IsManipulationEnabled), typeof(bool), typeof(UIElement),
             new PropertyMetadata(false));
 
     /// <summary>
@@ -241,6 +319,13 @@ public abstract partial class UIElement : Visual, IInputElement
         DependencyProperty.Register(nameof(ClipToBounds), typeof(bool), typeof(UIElement),
             new PropertyMetadata(false, OnClipToBoundsChanged));
 
+    /// <summary>
+    /// Identifies the Clip dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ClipProperty =
+        DependencyProperty.Register(nameof(Clip), typeof(object), typeof(UIElement),
+            new PropertyMetadata(null, OnRenderPropertyChanged));
+
     #endregion
 
     #region CLR Properties
@@ -250,16 +335,24 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public Visibility Visibility
     {
-        get => (Visibility)(GetValue(VisibilityProperty) ?? Visibility.Visible);
+        get => (Visibility)GetValue(VisibilityProperty)!;
         set => SetValue(VisibilityProperty, value);
     }
 
     /// <summary>
     /// Gets or sets whether this element is enabled.
+    /// The effective value considers the parent chain ！ if any ancestor is disabled,
+    /// this element is also effectively disabled.
     /// </summary>
     public bool IsEnabled
     {
-        get => (bool)(GetValue(IsEnabledProperty) ?? true);
+        get
+        {
+            var localValue = (bool)GetValue(IsEnabledProperty)!;
+            if (!localValue) return false;
+            // Check parent chain
+            return VisualParent is not UIElement parent || parent.IsEnabled;
+        }
         set => SetValue(IsEnabledProperty, value);
     }
 
@@ -268,7 +361,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public double Opacity
     {
-        get => (double)(GetValue(OpacityProperty) ?? 1.0);
+        get => (double)GetValue(OpacityProperty)!;
         set => SetValue(OpacityProperty, value);
     }
 
@@ -317,14 +410,23 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public bool Focusable
     {
-        get => (bool)(GetValue(FocusableProperty) ?? false);
+        get => (bool)GetValue(FocusableProperty)!;
         set => SetValue(FocusableProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether manipulation events are enabled for this element.
+    /// </summary>
+    public bool IsManipulationEnabled
+    {
+        get => (bool)GetValue(IsManipulationEnabledProperty)!;
+        set => SetValue(IsManipulationEnabledProperty, value);
     }
 
     /// <summary>
     /// Gets a value indicating whether the mouse pointer is over this element.
     /// </summary>
-    public bool IsMouseOver => (bool)(GetValue(IsMouseOverProperty) ?? false);
+    public bool IsMouseOver => (bool)GetValue(IsMouseOverProperty)!;
 
     /// <summary>
     /// Sets the IsMouseOver property value. Called internally by mouse tracking.
@@ -339,8 +441,18 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public bool ClipToBounds
     {
-        get => (bool)(GetValue(ClipToBoundsProperty) ?? false);
+        get => (bool)GetValue(ClipToBoundsProperty)!;
         set => SetValue(ClipToBoundsProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the geometry used to define the outline of the contents of an element.
+    /// The Clip geometry is applied to the element's rendering.
+    /// </summary>
+    public object? Clip
+    {
+        get => GetValue(ClipProperty);
+        set => SetValue(ClipProperty, value);
     }
 
     #endregion
@@ -528,9 +640,18 @@ public abstract partial class UIElement : Visual, IInputElement
     #region Layout
 
     private Size _desiredSize;
-    private Size _renderSize;
+    /// <summary>
+    /// Protected so FrameworkElement.ArrangeCore can update before firing SizeChanged.
+    /// </summary>
+    protected Size _renderSize;
     private bool _isMeasureValid;
     private bool _isArrangeValid;
+    private Size _previousAvailableSize;
+    private Rect _previousFinalRect;
+    private IWindowHost? _cachedWindowHost;
+    private LayoutManager? _cachedLayoutManager;
+    private Point _cachedScreenOffset;
+    private bool _isScreenOffsetValid;
 
     /// <summary>
     /// Gets the desired size computed during the measure pass.
@@ -549,6 +670,12 @@ public abstract partial class UIElement : Visual, IInputElement
     public virtual Rect VisualBounds => new Rect(0, 0, _renderSize.Width, _renderSize.Height);
 
     /// <summary>
+    /// Gets or sets a visual-only translation offset applied during rendering.
+    /// Does not affect layout ！ used for animation effects (e.g., cloth draping).
+    /// </summary>
+    internal Point RenderOffset { get; set; }
+
+    /// <summary>
     /// Returns a geometry for clipping the contents of this element.
     /// Override in derived classes to provide custom clipping (e.g., ScrollViewer).
     /// When ClipToBounds is true, returns a Rect matching the element's RenderSize.
@@ -556,6 +683,11 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <returns>The clipping geometry (Media.Geometry or Rect), or null if no clipping should be applied.</returns>
     protected internal virtual object? GetLayoutClip()
     {
+        // Explicit Clip geometry takes precedence
+        var clip = Clip;
+        if (clip != null)
+            return clip;
+
         if (ClipToBounds)
         {
             return new Rect(0, 0, _renderSize.Width, _renderSize.Height);
@@ -574,13 +706,55 @@ public abstract partial class UIElement : Visual, IInputElement
     public bool IsArrangeValid => _isArrangeValid;
 
     /// <summary>
+    /// Gets the previous available size used for measurement (used by LayoutManager).
+    /// </summary>
+    internal Size PreviousAvailableSize => _previousAvailableSize;
+
+    /// <summary>
+    /// Gets the previous final rect used for arrangement (used by LayoutManager).
+    /// </summary>
+    internal Rect PreviousFinalRect => _previousFinalRect;
+
+    /// <summary>
+    /// Marks measure as invalid without triggering LayoutManager notification.
+    /// Used by LayoutManager's upward propagation.
+    /// </summary>
+    internal void MarkMeasureInvalid()
+    {
+        _isMeasureValid = false;
+        _isArrangeValid = false;
+    }
+
+    /// <summary>
+    /// Marks arrange as invalid without triggering LayoutManager notification.
+    /// Used by LayoutManager's upward propagation.
+    /// </summary>
+    internal void MarkArrangeInvalid()
+    {
+        _isArrangeValid = false;
+    }
+
+    /// <summary>
     /// Invalidates the measure pass for this element.
     /// </summary>
     public void InvalidateMeasure()
     {
+        var wasValid = _isMeasureValid;
         _isMeasureValid = false;
-        // Schedule layout and render update
-        ScheduleRender();
+        _isArrangeValid = false;
+
+        if (wasValid)
+        {
+            // First invalidation: notify LayoutManager and mark parent dirty
+            FindLayoutManager()?.InvalidateMeasure(this);
+            InvalidateLayoutVisual();
+        }
+        else
+        {
+            // Already invalid ！ element is already queued in LayoutManager.
+            // Just ensure a repaint is scheduled.
+            GetWindowHost()?.InvalidateWindow();
+        }
     }
 
     /// <summary>
@@ -588,36 +762,141 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public void InvalidateArrange()
     {
+        var wasValid = _isArrangeValid;
         _isArrangeValid = false;
-        // Schedule layout and render update
-        ScheduleRender();
+
+        if (wasValid)
+        {
+            // First invalidation: notify LayoutManager and mark parent dirty
+            FindLayoutManager()?.InvalidateArrange(this);
+            InvalidateLayoutVisual();
+        }
+        else
+        {
+            // Already invalid ！ just ensure repaint.
+            GetWindowHost()?.InvalidateWindow();
+        }
+    }
+
+    /// <summary>
+    /// Requests a full window repaint for layout changes.
+    /// Layout changes (measure/arrange) can move elements arbitrarily,
+    /// so dirty rects for individual elements are unreliable.
+    /// Full invalidation is acceptable because layout changes are infrequent
+    /// (expand/collapse, content switch) ！ not per-frame like hover effects.
+    /// </summary>
+    private void InvalidateLayoutVisual()
+    {
+        var windowHost = GetWindowHost();
+        if (windowHost == null) return;
+
+        windowHost.RequestFullInvalidation();
+        windowHost.InvalidateWindow();
     }
 
     /// <summary>
     /// Invalidates the visual rendering of this element.
+    /// Submits this element's screen bounds as a dirty rect for partial redraw.
     /// </summary>
     public void InvalidateVisual()
     {
-        // Schedule render update
-        ScheduleRender();
+        SetRenderDirty();
+
+        var windowHost = GetWindowHost();
+        if (windowHost != null)
+        {
+            windowHost.AddDirtyElement(this);
+            windowHost.InvalidateWindow();
+        }
     }
 
     /// <summary>
-    /// Schedules a render by finding the root window and invalidating it.
+    /// Gets the cached IWindowHost by walking up the tree (lazy, cached).
     /// </summary>
-    private void ScheduleRender()
+    private IWindowHost? GetWindowHost()
     {
-        // Find the root window by traversing up the visual tree
+        if (_cachedWindowHost != null)
+            return _cachedWindowHost;
+
         Visual? current = this;
         while (current != null)
         {
-            if (current is IWindowHost windowHost)
+            if (current is IWindowHost host)
             {
-                windowHost.InvalidateWindow();
-                return;
+                _cachedWindowHost = host;
+                return host;
             }
             current = current.VisualParent;
         }
+        return null;
+    }
+
+    /// <summary>
+    /// Gets the cached LayoutManager by walking up to the ILayoutManagerHost (lazy, cached).
+    /// </summary>
+    private LayoutManager? FindLayoutManager()
+    {
+        if (_cachedLayoutManager != null)
+            return _cachedLayoutManager;
+
+        Visual? current = this;
+        while (current != null)
+        {
+            if (current is ILayoutManagerHost host)
+            {
+                _cachedLayoutManager = host.LayoutManager;
+                return _cachedLayoutManager;
+            }
+            current = current.VisualParent;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Invalidates cached host references. Called when visual parent changes.
+    /// </summary>
+    internal void InvalidateHostCaches()
+    {
+        _cachedWindowHost = null;
+        _cachedLayoutManager = null;
+        _isScreenOffsetValid = false;
+
+        // Recursively invalidate children's caches too
+        var count = VisualChildrenCount;
+        for (int i = 0; i < count; i++)
+        {
+            if (GetVisualChild(i) is UIElement uiChild)
+                uiChild.InvalidateHostCaches();
+        }
+    }
+
+    /// <summary>
+    /// Gets the screen-space bounds of this element relative to its Window.
+    /// Uses cached screen offset when available (O(1) instead of O(depth)).
+    /// </summary>
+    internal Rect GetScreenBounds()
+    {
+        if (!_isScreenOffsetValid)
+        {
+            double x = 0, y = 0;
+            Visual? current = this;
+            while (current != null)
+            {
+                if (current is IWindowHost)
+                    break;
+                if (current is UIElement ui)
+                {
+                    var vb = ui.VisualBounds;
+                    x += vb.X;
+                    y += vb.Y;
+                }
+                current = current.VisualParent;
+            }
+            _cachedScreenOffset = new Point(x, y);
+            _isScreenOffsetValid = true;
+        }
+        return new Rect(_cachedScreenOffset.X, _cachedScreenOffset.Y,
+                        _renderSize.Width, _renderSize.Height);
     }
 
     /// <summary>
@@ -633,8 +912,23 @@ public abstract partial class UIElement : Visual, IInputElement
             return;
         }
 
+        // Short-circuit: if measure is already valid and constraints haven't changed, skip
+        if (_isMeasureValid && _previousAvailableSize == availableSize)
+            return;
+
+        var oldDesiredSize = _desiredSize;
+        _previousAvailableSize = availableSize;
         _desiredSize = MeasureCore(availableSize);
         _isMeasureValid = true;
+
+        // If desired size changed, parent needs to re-arrange (mark parent dirty)
+        if (_desiredSize != oldDesiredSize)
+        {
+            if (VisualParent is UIElement parent)
+            {
+                parent.SetRenderDirty();
+            }
+        }
     }
 
     /// <summary>
@@ -650,8 +944,21 @@ public abstract partial class UIElement : Visual, IInputElement
             return;
         }
 
+        // Short-circuit: if arrange is already valid and final rect hasn't changed, skip
+        if (_isArrangeValid && _previousFinalRect == finalRect)
+            return;
+
+        var oldRenderSize = _renderSize;
+        _previousFinalRect = finalRect;
+        _isScreenOffsetValid = false; // Position changed, invalidate screen offset cache
         _renderSize = ArrangeCore(finalRect);
         _isArrangeValid = true;
+
+        // If render size changed, mark this element as needing re-render
+        if (_renderSize != oldRenderSize)
+        {
+            SetRenderDirty();
+        }
     }
 
     /// <summary>
@@ -691,6 +998,8 @@ public abstract partial class UIElement : Visual, IInputElement
         if (d is UIElement element)
         {
             element.OnIsEnabledChanged((bool)(e.OldValue ?? true), (bool)(e.NewValue ?? true));
+            // Propagate effective IsEnabled change to descendants
+            element.PropagateIsEnabledToDescendants();
         }
     }
 
@@ -699,6 +1008,19 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     protected virtual void OnIsEnabledChanged(bool oldValue, bool newValue)
     {
+    }
+
+    private void PropagateIsEnabledToDescendants()
+    {
+        for (int i = 0; i < VisualChildrenCount; i++)
+        {
+            if (GetVisualChild(i) is UIElement child)
+            {
+                child.InvalidateVisual();
+                child.OnIsEnabledChanged(true, child.IsEnabled);
+                child.PropagateIsEnabledToDescendants();
+            }
+        }
     }
 
     private static void OnIsMouseOverChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -782,6 +1104,17 @@ public abstract partial class UIElement : Visual, IInputElement
         }
     }
 
+    /// <summary>
+    /// Generic callback for render-affecting properties (e.g., Opacity).
+    /// </summary>
+    private static void OnRenderPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            element.InvalidateVisual();
+        }
+    }
+
     #endregion
 
     #region Mouse Capture
@@ -834,6 +1167,9 @@ public abstract partial class UIElement : Visual, IInputElement
         var previousCaptured = _mouseCaptured;
         _mouseCaptured = this;
 
+        // Tell Win32 to keep sending mouse messages even when cursor is outside the window
+        GetWindowHost()?.SetNativeCapture();
+
         // Notify the previously captured element
         if (previousCaptured != null && previousCaptured != this)
         {
@@ -852,7 +1188,9 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         if (_mouseCaptured == this)
         {
+            var windowHost = GetWindowHost();
             _mouseCaptured = null;
+            windowHost?.ReleaseNativeCapture();
             RaiseMouseCaptureChanged(false);
         }
     }
@@ -861,6 +1199,22 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Forces release of mouse capture from any element.
     /// </summary>
     internal static void ForceReleaseMouseCapture()
+    {
+        var captured = _mouseCaptured;
+        if (captured != null)
+        {
+            var windowHost = captured.GetWindowHost();
+            _mouseCaptured = null;
+            windowHost?.ReleaseNativeCapture();
+            captured.RaiseMouseCaptureChanged(false);
+        }
+    }
+
+    /// <summary>
+    /// Clears managed mouse capture state without calling Win32 ReleaseCapture.
+    /// Used when WM_CAPTURECHANGED arrives (native capture already lost).
+    /// </summary>
+    internal static void OnNativeCaptureChanged()
     {
         var captured = _mouseCaptured;
         if (captured != null)
@@ -1035,6 +1389,216 @@ public abstract partial class UIElement : Visual, IInputElement
         EventManager.RegisterRoutedEvent(nameof(MouseWheel), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
 
     /// <summary>
+    /// Identifies the PreviewTouchDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewTouchDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewTouchDown), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the TouchDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent TouchDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(TouchDown), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewTouchMove routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewTouchMoveEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewTouchMove), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the TouchMove routed event.
+    /// </summary>
+    public static readonly RoutedEvent TouchMoveEvent =
+        EventManager.RegisterRoutedEvent(nameof(TouchMove), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewTouchUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewTouchUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewTouchUp), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the TouchUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent TouchUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(TouchUp), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewStylusDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewStylusDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewStylusDown), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the StylusDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent StylusDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(StylusDown), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewStylusMove routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewStylusMoveEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewStylusMove), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the StylusMove routed event.
+    /// </summary>
+    public static readonly RoutedEvent StylusMoveEvent =
+        EventManager.RegisterRoutedEvent(nameof(StylusMove), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewStylusUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewStylusUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewStylusUp), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the StylusUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent StylusUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(StylusUp), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewPointerDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewPointerDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewPointerDown), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(PointerDown), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewPointerMove routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewPointerMoveEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewPointerMove), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerMove routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerMoveEvent =
+        EventManager.RegisterRoutedEvent(nameof(PointerMove), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewPointerUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewPointerUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewPointerUp), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(PointerUp), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewPointerCancel routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewPointerCancelEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewPointerCancel), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerCancel routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerCancelEvent =
+        EventManager.RegisterRoutedEvent(nameof(PointerCancel), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerPressed routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerPressedEvent =
+        EventManager.RegisterRoutedEvent(nameof(PointerPressed), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerMoved routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerMovedEvent =
+        EventManager.RegisterRoutedEvent(nameof(PointerMoved), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PointerReleased routed event.
+    /// </summary>
+    public static readonly RoutedEvent PointerReleasedEvent =
+        EventManager.RegisterRoutedEvent(nameof(PointerReleased), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewManipulationStarting routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewManipulationStartingEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationStarting), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the ManipulationStarting routed event.
+    /// </summary>
+    public static readonly RoutedEvent ManipulationStartingEvent =
+        EventManager.RegisterRoutedEvent(nameof(ManipulationStarting), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewManipulationStarted routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewManipulationStartedEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationStarted), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the ManipulationStarted routed event.
+    /// </summary>
+    public static readonly RoutedEvent ManipulationStartedEvent =
+        EventManager.RegisterRoutedEvent(nameof(ManipulationStarted), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewManipulationDelta routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewManipulationDeltaEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationDelta), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the ManipulationDelta routed event.
+    /// </summary>
+    public static readonly RoutedEvent ManipulationDeltaEvent =
+        EventManager.RegisterRoutedEvent(nameof(ManipulationDelta), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewManipulationInertiaStarting routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewManipulationInertiaStartingEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationInertiaStarting), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the ManipulationInertiaStarting routed event.
+    /// </summary>
+    public static readonly RoutedEvent ManipulationInertiaStartingEvent =
+        EventManager.RegisterRoutedEvent(nameof(ManipulationInertiaStarting), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewManipulationBoundaryFeedback routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewManipulationBoundaryFeedbackEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationBoundaryFeedback), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the ManipulationBoundaryFeedback routed event.
+    /// </summary>
+    public static readonly RoutedEvent ManipulationBoundaryFeedbackEvent =
+        EventManager.RegisterRoutedEvent(nameof(ManipulationBoundaryFeedback), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewManipulationCompleted routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewManipulationCompletedEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewManipulationCompleted), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the ManipulationCompleted routed event.
+    /// </summary>
+    public static readonly RoutedEvent ManipulationCompletedEvent =
+        EventManager.RegisterRoutedEvent(nameof(ManipulationCompleted), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
     /// Occurs when a key is pressed (tunnel).
     /// </summary>
     public event RoutedEventHandler PreviewKeyDown
@@ -1178,6 +1742,321 @@ public abstract partial class UIElement : Visual, IInputElement
         remove => RemoveHandler(MouseWheelEvent, value);
     }
 
+    /// <summary>
+    /// Occurs when touch begins (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewTouchDown
+    {
+        add => AddHandler(PreviewTouchDownEvent, value);
+        remove => RemoveHandler(PreviewTouchDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when touch begins (bubble).
+    /// </summary>
+    public event RoutedEventHandler TouchDown
+    {
+        add => AddHandler(TouchDownEvent, value);
+        remove => RemoveHandler(TouchDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when touch moves (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewTouchMove
+    {
+        add => AddHandler(PreviewTouchMoveEvent, value);
+        remove => RemoveHandler(PreviewTouchMoveEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when touch moves (bubble).
+    /// </summary>
+    public event RoutedEventHandler TouchMove
+    {
+        add => AddHandler(TouchMoveEvent, value);
+        remove => RemoveHandler(TouchMoveEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when touch ends (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewTouchUp
+    {
+        add => AddHandler(PreviewTouchUpEvent, value);
+        remove => RemoveHandler(PreviewTouchUpEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when touch ends (bubble).
+    /// </summary>
+    public event RoutedEventHandler TouchUp
+    {
+        add => AddHandler(TouchUpEvent, value);
+        remove => RemoveHandler(TouchUpEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when stylus contact begins (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewStylusDown
+    {
+        add => AddHandler(PreviewStylusDownEvent, value);
+        remove => RemoveHandler(PreviewStylusDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when stylus contact begins (bubble).
+    /// </summary>
+    public event RoutedEventHandler StylusDown
+    {
+        add => AddHandler(StylusDownEvent, value);
+        remove => RemoveHandler(StylusDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when stylus moves (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewStylusMove
+    {
+        add => AddHandler(PreviewStylusMoveEvent, value);
+        remove => RemoveHandler(PreviewStylusMoveEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when stylus moves (bubble).
+    /// </summary>
+    public event RoutedEventHandler StylusMove
+    {
+        add => AddHandler(StylusMoveEvent, value);
+        remove => RemoveHandler(StylusMoveEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when stylus contact ends (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewStylusUp
+    {
+        add => AddHandler(PreviewStylusUpEvent, value);
+        remove => RemoveHandler(PreviewStylusUpEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when stylus contact ends (bubble).
+    /// </summary>
+    public event RoutedEventHandler StylusUp
+    {
+        add => AddHandler(StylusUpEvent, value);
+        remove => RemoveHandler(StylusUpEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer contact begins (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewPointerDown
+    {
+        add => AddHandler(PreviewPointerDownEvent, value);
+        remove => RemoveHandler(PreviewPointerDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer contact begins (bubble).
+    /// </summary>
+    public event RoutedEventHandler PointerDown
+    {
+        add => AddHandler(PointerDownEvent, value);
+        remove => RemoveHandler(PointerDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer moves (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewPointerMove
+    {
+        add => AddHandler(PreviewPointerMoveEvent, value);
+        remove => RemoveHandler(PreviewPointerMoveEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer moves (bubble).
+    /// </summary>
+    public event RoutedEventHandler PointerMove
+    {
+        add => AddHandler(PointerMoveEvent, value);
+        remove => RemoveHandler(PointerMoveEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer contact ends (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewPointerUp
+    {
+        add => AddHandler(PreviewPointerUpEvent, value);
+        remove => RemoveHandler(PreviewPointerUpEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer contact ends (bubble).
+    /// </summary>
+    public event RoutedEventHandler PointerUp
+    {
+        add => AddHandler(PointerUpEvent, value);
+        remove => RemoveHandler(PointerUpEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer is canceled (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewPointerCancel
+    {
+        add => AddHandler(PreviewPointerCancelEvent, value);
+        remove => RemoveHandler(PreviewPointerCancelEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer is canceled (bubble).
+    /// </summary>
+    public event RoutedEventHandler PointerCancel
+    {
+        add => AddHandler(PointerCancelEvent, value);
+        remove => RemoveHandler(PointerCancelEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer is pressed (legacy alias).
+    /// </summary>
+    public event RoutedEventHandler PointerPressed
+    {
+        add => AddHandler(PointerPressedEvent, value);
+        remove => RemoveHandler(PointerPressedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer moves (legacy alias).
+    /// </summary>
+    public event RoutedEventHandler PointerMoved
+    {
+        add => AddHandler(PointerMovedEvent, value);
+        remove => RemoveHandler(PointerMovedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when pointer is released (legacy alias).
+    /// </summary>
+    public event RoutedEventHandler PointerReleased
+    {
+        add => AddHandler(PointerReleasedEvent, value);
+        remove => RemoveHandler(PointerReleasedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation is starting (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewManipulationStarting
+    {
+        add => AddHandler(PreviewManipulationStartingEvent, value);
+        remove => RemoveHandler(PreviewManipulationStartingEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation is starting (bubble).
+    /// </summary>
+    public event RoutedEventHandler ManipulationStarting
+    {
+        add => AddHandler(ManipulationStartingEvent, value);
+        remove => RemoveHandler(ManipulationStartingEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation has started (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewManipulationStarted
+    {
+        add => AddHandler(PreviewManipulationStartedEvent, value);
+        remove => RemoveHandler(PreviewManipulationStartedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation has started (bubble).
+    /// </summary>
+    public event RoutedEventHandler ManipulationStarted
+    {
+        add => AddHandler(ManipulationStartedEvent, value);
+        remove => RemoveHandler(ManipulationStartedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation delta is produced (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewManipulationDelta
+    {
+        add => AddHandler(PreviewManipulationDeltaEvent, value);
+        remove => RemoveHandler(PreviewManipulationDeltaEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation delta is produced (bubble).
+    /// </summary>
+    public event RoutedEventHandler ManipulationDelta
+    {
+        add => AddHandler(ManipulationDeltaEvent, value);
+        remove => RemoveHandler(ManipulationDeltaEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation inertia starts (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewManipulationInertiaStarting
+    {
+        add => AddHandler(PreviewManipulationInertiaStartingEvent, value);
+        remove => RemoveHandler(PreviewManipulationInertiaStartingEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation inertia starts (bubble).
+    /// </summary>
+    public event RoutedEventHandler ManipulationInertiaStarting
+    {
+        add => AddHandler(ManipulationInertiaStartingEvent, value);
+        remove => RemoveHandler(ManipulationInertiaStartingEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when boundary feedback is raised (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewManipulationBoundaryFeedback
+    {
+        add => AddHandler(PreviewManipulationBoundaryFeedbackEvent, value);
+        remove => RemoveHandler(PreviewManipulationBoundaryFeedbackEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when boundary feedback is raised (bubble).
+    /// </summary>
+    public event RoutedEventHandler ManipulationBoundaryFeedback
+    {
+        add => AddHandler(ManipulationBoundaryFeedbackEvent, value);
+        remove => RemoveHandler(ManipulationBoundaryFeedbackEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation completes (tunnel).
+    /// </summary>
+    public event RoutedEventHandler PreviewManipulationCompleted
+    {
+        add => AddHandler(PreviewManipulationCompletedEvent, value);
+        remove => RemoveHandler(PreviewManipulationCompletedEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when manipulation completes (bubble).
+    /// </summary>
+    public event RoutedEventHandler ManipulationCompleted
+    {
+        add => AddHandler(ManipulationCompletedEvent, value);
+        remove => RemoveHandler(ManipulationCompletedEvent, value);
+    }
+
     #endregion
 
     #region Animation
@@ -1186,8 +2065,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Tracks active animations on this element.
     /// </summary>
     private Dictionary<DependencyProperty, ElementAnimation>? _activeAnimations;
-    private System.Threading.Timer? _animationTimer;
-    private static readonly object _animationTimerLock = new();
+    private bool _subscribedToRendering;
 
     private sealed class ElementAnimation
     {
@@ -1236,7 +2114,7 @@ public abstract partial class UIElement : Visual, IInputElement
 
         if (animation == null)
         {
-            StopAnimationTimerIfNeeded();
+            UnsubscribeFromRenderingIfNeeded();
             return;
         }
 
@@ -1253,7 +2131,7 @@ public abstract partial class UIElement : Visual, IInputElement
         clock.Begin();
 
         // Start the animation timer
-        StartAnimationTimerIfNeeded();
+        SubscribeToRenderingIfNeeded();
 
         // Set initial animated value
         UpdateAnimatedValue(dp);
@@ -1307,42 +2185,37 @@ public abstract partial class UIElement : Visual, IInputElement
         // For HoldEnd, keep the animation record but mark as completed
         // The final value remains via the animated value layer
 
-        StopAnimationTimerIfNeeded();
+        UnsubscribeFromRenderingIfNeeded();
         InvalidateVisual();
     }
 
-    private void StartAnimationTimerIfNeeded()
+    private void SubscribeToRenderingIfNeeded()
     {
-        lock (_animationTimerLock)
+        if (!_subscribedToRendering && _activeAnimations?.Count > 0)
         {
-            if (_animationTimer == null && _activeAnimations?.Count > 0)
-            {
-                // ~60 FPS
-                _animationTimer = new System.Threading.Timer(OnAnimationTick, null, 0, 16);
-            }
+            _subscribedToRendering = true;
+            CompositionTarget.Rendering += OnRenderingTick;
+            CompositionTarget.Subscribe();
         }
     }
 
-    private void StopAnimationTimerIfNeeded()
+    private void UnsubscribeFromRenderingIfNeeded()
     {
-        lock (_animationTimerLock)
+        if (_subscribedToRendering &&
+            (_activeAnimations == null || _activeAnimations.Count == 0 ||
+             !_activeAnimations.Values.Any(a => a.Clock.IsRunning)))
         {
-            if (_activeAnimations == null || _activeAnimations.Count == 0 ||
-                !_activeAnimations.Values.Any(a => a.Clock.IsRunning))
-            {
-                _animationTimer?.Dispose();
-                _animationTimer = null;
-            }
+            _subscribedToRendering = false;
+            CompositionTarget.Rendering -= OnRenderingTick;
+            CompositionTarget.Unsubscribe();
         }
     }
 
-    private void OnAnimationTick(object? state)
-    {
-        // Must marshal to UI thread
-        Dispatcher?.InvokeAsync(ProcessAnimationFrame);
-    }
-
-    private void ProcessAnimationFrame()
+    /// <summary>
+    /// Called by CompositionTarget.Rendering on the UI thread, once per frame.
+    /// Processes all active animations for this element.
+    /// </summary>
+    private void OnRenderingTick(object? sender, EventArgs e)
     {
         if (_activeAnimations == null || _activeAnimations.Count == 0)
             return;
@@ -1369,7 +2242,7 @@ public abstract partial class UIElement : Visual, IInputElement
         }
         else
         {
-            StopAnimationTimerIfNeeded();
+            UnsubscribeFromRenderingIfNeeded();
         }
     }
 
@@ -1501,4 +2374,37 @@ public interface IWindowHost
     /// Invalidates the window, causing it to repaint.
     /// </summary>
     void InvalidateWindow();
+
+    /// <summary>
+    /// Adds a dirty element for partial rendering.
+    /// </summary>
+    void AddDirtyElement(UIElement element);
+
+    /// <summary>
+    /// Requests a full invalidation (entire window redraw).
+    /// </summary>
+    void RequestFullInvalidation();
+
+    /// <summary>
+    /// Calls Win32 SetCapture to receive mouse messages even when the cursor is outside the window.
+    /// </summary>
+    void SetNativeCapture();
+
+    /// <summary>
+    /// Calls Win32 ReleaseCapture to stop receiving mouse messages outside the window.
+    /// </summary>
+    void ReleaseNativeCapture();
 }
+
+/// <summary>
+/// Interface for elements that host a LayoutManager (typically the Window).
+/// </summary>
+internal interface ILayoutManagerHost
+{
+    /// <summary>
+    /// Gets the layout manager for this host.
+    /// </summary>
+    LayoutManager LayoutManager { get; }
+}
+
+

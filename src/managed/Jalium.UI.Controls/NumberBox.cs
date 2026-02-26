@@ -1,4 +1,5 @@
-using System.Globalization;
+﻿using System.Globalization;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -9,7 +10,7 @@ namespace Jalium.UI.Controls;
 /// Represents a text box for entering numeric values with spin buttons for increment/decrement.
 /// Inherits from TextBoxBase for full text editing support.
 /// </summary>
-public class NumberBox : TextBoxBase, IImeSupport
+public sealed class NumberBox : TextBoxBase, IImeSupport
 {
     #region Fields
 
@@ -51,6 +52,19 @@ public class NumberBox : TextBoxBase, IImeSupport
     // Constants
     private const double SpinButtonWidth = 32;
     private const double DefaultHeight = 32;
+
+    // Static brushes & pens for rendering
+    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
+    private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
+    private static readonly SolidColorBrush s_compositionUnderlineBrush = new(Color.FromRgb(200, 200, 100));
+    private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
+    private static readonly SolidColorBrush s_spinPressedBrush = new(Color.FromRgb(50, 50, 50));
+    private static readonly SolidColorBrush s_spinHoveredBrush = new(Color.FromRgb(70, 70, 70));
+    private static readonly SolidColorBrush s_spinNormalBrush = new(Color.FromRgb(60, 60, 60));
+    private static readonly Pen s_arrowPen = new(s_whiteBrush, 1.5);
 
     #endregion
 
@@ -169,7 +183,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// </summary>
     public double Value
     {
-        get => (double)(GetValue(ValueProperty) ?? 0.0);
+        get => (double)GetValue(ValueProperty)!;
         set => SetValue(ValueProperty, value);
     }
 
@@ -178,7 +192,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// </summary>
     public double Minimum
     {
-        get => (double)(GetValue(MinimumProperty) ?? double.MinValue);
+        get => (double)GetValue(MinimumProperty)!;
         set => SetValue(MinimumProperty, value);
     }
 
@@ -187,7 +201,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// </summary>
     public double Maximum
     {
-        get => (double)(GetValue(MaximumProperty) ?? double.MaxValue);
+        get => (double)GetValue(MaximumProperty)!;
         set => SetValue(MaximumProperty, value);
     }
 
@@ -196,7 +210,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// </summary>
     public double SmallChange
     {
-        get => (double)(GetValue(SmallChangeProperty) ?? 1.0);
+        get => (double)GetValue(SmallChangeProperty)!;
         set => SetValue(SmallChangeProperty, value);
     }
 
@@ -205,7 +219,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// </summary>
     public double LargeChange
     {
-        get => (double)(GetValue(LargeChangeProperty) ?? 10.0);
+        get => (double)GetValue(LargeChangeProperty)!;
         set => SetValue(LargeChangeProperty, value);
     }
 
@@ -250,7 +264,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// </summary>
     public bool AcceptsExpression
     {
-        get => (bool)(GetValue(AcceptsExpressionProperty) ?? false);
+        get => (bool)GetValue(AcceptsExpressionProperty)!;
         set => SetValue(AcceptsExpressionProperty, value);
     }
 
@@ -259,7 +273,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// </summary>
     public bool IsWrapEnabled
     {
-        get => (bool)(GetValue(IsWrapEnabledProperty) ?? false);
+        get => (bool)GetValue(IsWrapEnabledProperty)!;
         set => SetValue(IsWrapEnabledProperty, value);
     }
 
@@ -268,7 +282,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// </summary>
     public int DecimalPlaces
     {
-        get => (int)(GetValue(DecimalPlacesProperty) ?? -1);
+        get => (int)GetValue(DecimalPlacesProperty)!;
         set => SetValue(DecimalPlacesProperty, value);
     }
 
@@ -628,13 +642,13 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override (int lineIndex, int columnIndex) GetLineColumnFromCharIndex(int charIndex)
     {
-        return (0, Math.Max(0, Math.Min(charIndex, _text.Length)));
+        return (0, Math.Clamp(_text.Length, 0, charIndex));
     }
 
     /// <inheritdoc />
     protected override int GetCharIndexFromLineColumn(int lineIndex, int columnIndex)
     {
-        return Math.Max(0, Math.Min(columnIndex, _text.Length));
+        return Math.Clamp(_text.Length, 0, columnIndex);
     }
 
     /// <inheritdoc />
@@ -792,7 +806,7 @@ public class NumberBox : TextBoxBase, IImeSupport
             else if (c == negativeSeparator || c == '-')
             {
                 // Only allow negative sign at the beginning
-                if (_caretIndex == 0 && !_text.StartsWith(negativeSeparator.ToString()) && !_text.StartsWith("-"))
+                if (_caretIndex == 0 && !_text.StartsWith(negativeSeparator.ToString()) && !_text.StartsWith("-", StringComparison.Ordinal))
                 {
                     result.Append(negativeSeparator);
                 }
@@ -879,7 +893,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
     private List<object>? TokenizeExpression(string expr)
     {
-        var tokens = new List<object>();
+        var tokens = new List<object>(expr.Length);
         var currentNumber = "";
 
         for (int i = 0; i < expr.Length; i++)
@@ -1071,7 +1085,7 @@ public class NumberBox : TextBoxBase, IImeSupport
                 dc.DrawRoundedRectangle(Background, null, inputRect, cornerRadius);
             }
 
-            var borderBrush = IsKeyboardFocused ? new SolidColorBrush(Color.FromRgb(0, 120, 212)) : BorderBrush;
+            var borderBrush = IsKeyboardFocused ? s_focusBorderBrush : BorderBrush;
             if (borderBrush != null && border.TotalWidth > 0)
             {
                 var pen = new Pen(borderBrush, border.Left);
@@ -1136,7 +1150,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         {
             var placeholderFormatted = new FormattedText(PlaceholderText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
             {
-                Foreground = new SolidColorBrush(Color.FromRgb(128, 128, 128))
+                Foreground = s_placeholderBrush
             };
             TextMeasurement.MeasureText(placeholderFormatted);
             var textY = contentRect.Top + (contentRect.Height - placeholderFormatted.Height) / 2;
@@ -1146,7 +1160,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         {
             var valueFormatted = new FormattedText(displayText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
             {
-                Foreground = Foreground ?? new SolidColorBrush(Color.White)
+                Foreground = Foreground ?? s_whiteBrush
             };
             TextMeasurement.MeasureText(valueFormatted);
             var textY = contentRect.Top + (contentRect.Height - valueFormatted.Height) / 2;
@@ -1196,18 +1210,18 @@ public class NumberBox : TextBoxBase, IImeSupport
         var textY = contentRect.Top + (contentRect.Height - lineHeight) / 2;
 
         var compositionWidth = MeasureTextWidth(_imeCompositionString);
-        var compositionBgBrush = new SolidColorBrush(Color.FromRgb(60, 60, 80));
+        var compositionBgBrush = s_compositionBgBrush;
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
 
         var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? "Segoe UI", FontSize)
         {
-            Foreground = new SolidColorBrush(Color.FromRgb(255, 255, 200)),
+            Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
             MaxTextHeight = lineHeight
         };
         dc.DrawText(compositionText, new Point(x, textY));
 
-        var underlinePen = new Pen(new SolidColorBrush(Color.FromRgb(200, 200, 100)), 1);
+        var underlinePen = s_compositionUnderlinePen;
         dc.DrawLine(underlinePen, new Point(x, textY + lineHeight - 2), new Point(x + compositionWidth, textY + lineHeight - 2));
     }
 
@@ -1247,14 +1261,13 @@ public class NumberBox : TextBoxBase, IImeSupport
         var isPressed = isUp ? _isUpButtonPressed : _isDownButtonPressed;
 
         // Button background
-        var buttonBg = isPressed ? new SolidColorBrush(Color.FromRgb(50, 50, 50))
-            : isHovered ? new SolidColorBrush(Color.FromRgb(70, 70, 70))
-            : new SolidColorBrush(Color.FromRgb(60, 60, 60));
+        var buttonBg = isPressed ? s_spinPressedBrush
+            : isHovered ? s_spinHoveredBrush
+            : s_spinNormalBrush;
         dc.DrawRectangle(buttonBg, null, rect);
 
         // Arrow
-        var arrowBrush = new SolidColorBrush(Color.White);
-        var arrowPen = new Pen(arrowBrush, 1.5);
+        var arrowPen = s_arrowPen;
         var centerX = rect.X + rect.Width / 2;
         var centerY = rect.Y + rect.Height / 2;
         var arrowSize = 4;
@@ -1301,6 +1314,10 @@ public class NumberBox : TextBoxBase, IImeSupport
             if (coerced != numberBox.Value)
             {
                 numberBox.Value = coerced;
+                // Sync displayed text with the coerced value
+                numberBox._text = numberBox.FormatValue(coerced);
+                numberBox._caretIndex = numberBox._text.Length;
+                numberBox.InvalidateVisual();
             }
         }
     }

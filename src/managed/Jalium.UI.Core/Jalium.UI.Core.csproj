@@ -4,6 +4,8 @@
     <RootNamespace>Jalium.UI</RootNamespace>
     <AssemblyName>Jalium.UI.Core</AssemblyName>
     <Description>Core types for Jalium.UI framework including DependencyObject, Visual, UIElement, and layout system.</Description>
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI.Core</PackageId>
   </PropertyGroup>
 
   <ItemGroup>
@@ -13,6 +15,7 @@
     <InternalsVisibleTo Include="Jalium.UI.Xaml" />
     <InternalsVisibleTo Include="Jalium.UI.Media" />
     <InternalsVisibleTo Include="Jalium.UI.Tests" />
+    <InternalsVisibleTo Include="ReactiveUI.Wpf" />
   </ItemGroup>
 
 </Project>

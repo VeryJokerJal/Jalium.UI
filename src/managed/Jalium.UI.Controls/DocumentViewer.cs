@@ -1,4 +1,4 @@
-using Jalium.UI.Controls.Printing;
+﻿using Jalium.UI.Controls.Printing;
 
 namespace Jalium.UI.Controls;
 
@@ -62,7 +62,7 @@ public enum DocumentViewerFitMode
 /// <summary>
 /// Provides viewing, navigation, and printing capabilities for paginated documents.
 /// </summary>
-public class DocumentViewer : Control
+public sealed class DocumentViewer : Control
 {
     private DocumentPaginator? _document;
     private int _pageCount;
@@ -173,7 +173,7 @@ public class DocumentViewer : Control
     /// </summary>
     public double Zoom
     {
-        get => (double)(GetValue(ZoomProperty) ?? 100.0);
+        get => (double)GetValue(ZoomProperty)!;
         set => SetValue(ZoomProperty, value);
     }
 
@@ -182,7 +182,7 @@ public class DocumentViewer : Control
     /// </summary>
     public double MinZoom
     {
-        get => (double)(GetValue(MinZoomProperty) ?? 25.0);
+        get => (double)GetValue(MinZoomProperty)!;
         set => SetValue(MinZoomProperty, value);
     }
 
@@ -191,7 +191,7 @@ public class DocumentViewer : Control
     /// </summary>
     public double MaxZoom
     {
-        get => (double)(GetValue(MaxZoomProperty) ?? 400.0);
+        get => (double)GetValue(MaxZoomProperty)!;
         set => SetValue(MaxZoomProperty, value);
     }
 
@@ -218,7 +218,7 @@ public class DocumentViewer : Control
     /// </summary>
     public bool ShowPageBorders
     {
-        get => (bool)(GetValue(ShowPageBordersProperty) ?? true);
+        get => (bool)GetValue(ShowPageBordersProperty)!;
         set => SetValue(ShowPageBordersProperty, value);
     }
 
@@ -227,7 +227,7 @@ public class DocumentViewer : Control
     /// </summary>
     public double HorizontalPageSpacing
     {
-        get => (double)(GetValue(HorizontalPageSpacingProperty) ?? 10.0);
+        get => (double)GetValue(HorizontalPageSpacingProperty)!;
         set => SetValue(HorizontalPageSpacingProperty, value);
     }
 
@@ -236,7 +236,7 @@ public class DocumentViewer : Control
     /// </summary>
     public double VerticalPageSpacing
     {
-        get => (double)(GetValue(VerticalPageSpacingProperty) ?? 10.0);
+        get => (double)GetValue(VerticalPageSpacingProperty)!;
         set => SetValue(VerticalPageSpacingProperty, value);
     }
 
@@ -521,7 +521,7 @@ public class DocumentViewer : Control
         if (d is DocumentViewer viewer)
         {
             var zoom = (double)(value ?? 100.0);
-            return Math.Max(viewer.MinZoom, Math.Min(viewer.MaxZoom, zoom));
+            return Math.Clamp(zoom, viewer.MinZoom, viewer.MaxZoom);
         }
         return value ?? 100.0;
     }
@@ -601,7 +601,7 @@ public class DocumentViewer : Control
 /// <summary>
 /// Event arguments for page changed events.
 /// </summary>
-public class PageChangedEventArgs : EventArgs
+public sealed class PageChangedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the previous page number.
@@ -626,7 +626,7 @@ public class PageChangedEventArgs : EventArgs
 /// <summary>
 /// Event arguments for search completed events.
 /// </summary>
-public class SearchCompletedEventArgs : EventArgs
+public sealed class SearchCompletedEventArgs : EventArgs
 {
     /// <summary>
     /// Gets the number of results found.
@@ -645,7 +645,7 @@ public class SearchCompletedEventArgs : EventArgs
 /// <summary>
 /// Represents a text search result.
 /// </summary>
-public class TextSearchResult
+public sealed class TextSearchResult
 {
     /// <summary>
     /// Gets the page number containing the result.

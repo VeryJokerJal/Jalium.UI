@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls.Shell;
 /// <summary>
 /// Represents an object that describes the customizations to the non-client area of a window.
 /// </summary>
-public class WindowChrome : DependencyObject
+public sealed class WindowChrome : DependencyObject
 {
     #region Dependency Properties
 
@@ -143,7 +143,7 @@ public class WindowChrome : DependencyObject
     /// </summary>
     public double CaptionHeight
     {
-        get => (double)(GetValue(CaptionHeightProperty) ?? 20.0);
+        get => (double)GetValue(CaptionHeightProperty)!;
         set => SetValue(CaptionHeightProperty, value);
     }
 
@@ -152,7 +152,7 @@ public class WindowChrome : DependencyObject
     /// </summary>
     public Thickness ResizeBorderThickness
     {
-        get => (Thickness)(GetValue(ResizeBorderThicknessProperty) ?? new Thickness(4));
+        get => (Thickness)GetValue(ResizeBorderThicknessProperty)!;
         set => SetValue(ResizeBorderThicknessProperty, value);
     }
 
@@ -161,7 +161,7 @@ public class WindowChrome : DependencyObject
     /// </summary>
     public Thickness GlassFrameThickness
     {
-        get => (Thickness)(GetValue(GlassFrameThicknessProperty) ?? Thickness.Zero);
+        get => (Thickness)GetValue(GlassFrameThicknessProperty)!;
         set => SetValue(GlassFrameThicknessProperty, value);
     }
 
@@ -170,7 +170,7 @@ public class WindowChrome : DependencyObject
     /// </summary>
     public CornerRadius CornerRadius
     {
-        get => (CornerRadius)(GetValue(CornerRadiusProperty) ?? default(CornerRadius));
+        get => (CornerRadius)GetValue(CornerRadiusProperty)!;
         set => SetValue(CornerRadiusProperty, value);
     }
 
@@ -179,7 +179,7 @@ public class WindowChrome : DependencyObject
     /// </summary>
     public bool UseAeroCaptionButtons
     {
-        get => (bool)(GetValue(UseAeroCaptionButtonsProperty) ?? true);
+        get => (bool)GetValue(UseAeroCaptionButtonsProperty)!;
         set => SetValue(UseAeroCaptionButtonsProperty, value);
     }
 
@@ -270,7 +270,7 @@ public class WindowChrome : DependencyObject
     /// <summary>
     /// Applies the chrome settings to the window.
     /// </summary>
-    protected virtual void ApplyChromeToWindow(Window window)
+    protected void ApplyChromeToWindow(Window window)
     {
         // Platform-specific implementation would use DWM APIs
         // to customize the window frame
@@ -280,7 +280,7 @@ public class WindowChrome : DependencyObject
     /// <summary>
     /// Removes the chrome settings from the window.
     /// </summary>
-    protected virtual void RemoveChromeFromWindow(Window window)
+    protected void RemoveChromeFromWindow(Window window)
     {
         // Platform-specific implementation would restore default window frame
         RestoreWindowStyleInternal(window);
@@ -289,7 +289,7 @@ public class WindowChrome : DependencyObject
     /// <summary>
     /// Updates the window style based on chrome settings.
     /// </summary>
-    protected virtual void UpdateWindowStyleInternal(Window window)
+    protected void UpdateWindowStyleInternal(Window window)
     {
         // Platform-specific implementation using DwmExtendFrameIntoClientArea
         // and WM_NCCALCSIZE handling
@@ -298,7 +298,7 @@ public class WindowChrome : DependencyObject
     /// <summary>
     /// Restores the original window style.
     /// </summary>
-    protected virtual void RestoreWindowStyleInternal(Window window)
+    protected void RestoreWindowStyleInternal(Window window)
     {
         // Platform-specific implementation
     }

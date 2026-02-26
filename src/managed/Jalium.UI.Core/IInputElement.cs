@@ -86,7 +86,7 @@ public delegate void KeyboardFocusChangedEventHandler(object sender, KeyboardFoc
 /// <summary>
 /// Provides data for keyboard focus changed events.
 /// </summary>
-public class KeyboardFocusChangedEventArgs : RoutedEventArgs
+public sealed class KeyboardFocusChangedEventArgs : RoutedEventArgs
 {
     /// <summary>
     /// Gets the element that previously had keyboard focus.

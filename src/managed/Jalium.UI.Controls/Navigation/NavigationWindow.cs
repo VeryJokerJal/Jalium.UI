@@ -1,11 +1,11 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Navigation;
 
 /// <summary>
 /// A Window that supports content navigation within a single window.
 /// </summary>
-public class NavigationWindow : Window
+public sealed class NavigationWindow : Window
 {
     private NavigationService? _navigationService;
     private Frame? _frame;
@@ -51,7 +51,7 @@ public class NavigationWindow : Window
     /// </summary>
     public bool ShowsNavigationUI
     {
-        get => (bool)(GetValue(ShowsNavigationUIProperty) ?? true);
+        get => (bool)GetValue(ShowsNavigationUIProperty)!;
         set => SetValue(ShowsNavigationUIProperty, value);
     }
 
@@ -60,7 +60,7 @@ public class NavigationWindow : Window
     /// </summary>
     public bool SandboxExternalContent
     {
-        get => (bool)(GetValue(SandboxExternalContentProperty) ?? false);
+        get => (bool)GetValue(SandboxExternalContentProperty)!;
         set => SetValue(SandboxExternalContentProperty, value);
     }
 

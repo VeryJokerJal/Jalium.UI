@@ -31,6 +31,22 @@ JALIUM_API JaliumBrush* jalium_brush_create_linear_gradient(
     return reinterpret_cast<JaliumBrush*>(brush);
 }
 
+JALIUM_API JaliumBrush* jalium_brush_create_radial_gradient(
+    JaliumContext* ctx,
+    float centerX, float centerY, float radiusX, float radiusY,
+    float originX, float originY,
+    const JaliumGradientStop* stops,
+    uint32_t stopCount)
+{
+    if (!ctx || !stops || stopCount == 0) return nullptr;
+
+    auto backend = jalium::GetBackendFromContext(ctx);
+    if (!backend) return nullptr;
+
+    auto brush = backend->CreateRadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount);
+    return reinterpret_cast<JaliumBrush*>(brush);
+}
+
 JALIUM_API void jalium_brush_destroy(JaliumBrush* brush) {
     if (brush) {
         delete reinterpret_cast<jalium::Brush*>(brush);

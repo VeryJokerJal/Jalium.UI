@@ -1,4 +1,4 @@
-using Jalium.UI.Interop;
+﻿using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -6,8 +6,47 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Displays text content.
 /// </summary>
-public class TextBlock : FrameworkElement
+public sealed class TextBlock : FrameworkElement
 {
+    #region Cached FormattedText
+
+    private FormattedText? _cachedFormattedText;
+    private Size _cachedRenderSize;
+
+    private FormattedText? GetOrCreateFormattedText()
+    {
+        if (string.IsNullOrEmpty(Text) || Foreground == null)
+            return null;
+
+        // Check if cache is still valid
+        if (_cachedFormattedText != null &&
+            _cachedRenderSize.Width == RenderSize.Width &&
+            _cachedRenderSize.Height == RenderSize.Height)
+        {
+            return _cachedFormattedText;
+        }
+
+        // Create new FormattedText
+        _cachedFormattedText = new FormattedText(Text, FontFamily, FontSize)
+        {
+            Foreground = Foreground,
+            MaxTextWidth = RenderSize.Width,
+            MaxTextHeight = RenderSize.Height,
+            FontWeight = FontWeight.ToOpenTypeWeight(),
+            Trimming = TextTrimming
+        };
+        _cachedRenderSize = RenderSize;
+
+        return _cachedFormattedText;
+    }
+
+    private void InvalidateFormattedTextCache()
+    {
+        _cachedFormattedText = null;
+    }
+
+    #endregion
+
     #region Dependency Properties
 
     /// <summary>
@@ -22,7 +61,7 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(TextBlock),
-            new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged));
+            new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontFamily dependency property.
@@ -37,6 +76,13 @@ public class TextBlock : FrameworkElement
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(TextBlock),
             new PropertyMetadata(14.0, OnTextChanged));
+
+    /// <summary>
+    /// Identifies the FontStyle dependency property.
+    /// </summary>
+    public static readonly DependencyProperty FontStyleProperty =
+        DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(TextBlock),
+            new PropertyMetadata(FontStyles.Normal, OnTextChanged));
 
     /// <summary>
     /// Identifies the FontWeight dependency property.
@@ -102,8 +148,17 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public double FontSize
     {
-        get => (double)(GetValue(FontSizeProperty) ?? 14.0);
+        get => (double)GetValue(FontSizeProperty)!;
         set => SetValue(FontSizeProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the font style.
+    /// </summary>
+    public FontStyle FontStyle
+    {
+        get => GetValue(FontStyleProperty) is FontStyle fs ? fs : FontStyles.Normal;
+        set => SetValue(FontStyleProperty, value);
     }
 
     /// <summary>
@@ -120,7 +175,7 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public TextWrapping TextWrapping
     {
-        get => (TextWrapping)(GetValue(TextWrappingProperty) ?? TextWrapping.NoWrap);
+        get => (TextWrapping)GetValue(TextWrappingProperty)!;
         set => SetValue(TextWrappingProperty, value);
     }
 
@@ -129,7 +184,7 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public TextAlignment TextAlignment
     {
-        get => (TextAlignment)(GetValue(TextAlignmentProperty) ?? TextAlignment.Left);
+        get => (TextAlignment)GetValue(TextAlignmentProperty)!;
         set => SetValue(TextAlignmentProperty, value);
     }
 
@@ -138,7 +193,7 @@ public class TextBlock : FrameworkElement
     /// </summary>
     public TextTrimming TextTrimming
     {
-        get => (TextTrimming)(GetValue(TextTrimmingProperty) ?? TextTrimming.None);
+        get => (TextTrimming)GetValue(TextTrimmingProperty)!;
         set => SetValue(TextTrimmingProperty, value);
     }
 
@@ -156,16 +211,29 @@ public class TextBlock : FrameworkElement
         }
 
         // Determine max width for measurement
-        var maxWidth = TextWrapping == TextWrapping.NoWrap
-            ? double.MaxValue
-            : (double.IsInfinity(availableSize.Width) ? 100000 : availableSize.Width);
+        double maxWidth;
+        if (TextWrapping != TextWrapping.NoWrap)
+        {
+            maxWidth = double.IsInfinity(availableSize.Width) ? 100000 : availableSize.Width;
+        }
+        else if (TextTrimming != TextTrimming.None && !double.IsInfinity(availableSize.Width))
+        {
+            // When trimming is enabled and we have a finite constraint,
+            // measure with that constraint so DesiredSize doesn't exceed available space.
+            maxWidth = availableSize.Width;
+        }
+        else
+        {
+            maxWidth = double.MaxValue;
+        }
 
         // Create FormattedText for measurement
         var formattedText = new FormattedText(text, FontFamily, FontSize)
         {
             MaxTextWidth = maxWidth,
             MaxTextHeight = double.MaxValue,
-            FontWeight = FontWeight.ToOpenTypeWeight()
+            FontWeight = FontWeight.ToOpenTypeWeight(),
+            Trimming = TextTrimming
         };
 
         // Use native text measurement if available
@@ -173,7 +241,16 @@ public class TextBlock : FrameworkElement
 
         // Get the measured size
         // Add small buffer to prevent edge-case overflow
-        return new Size(formattedText.Width + 2, formattedText.Height + 2);
+        var measuredWidth = formattedText.Width + 2;
+        var measuredHeight = formattedText.Height + 2;
+
+        // When trimming, clamp width to available space
+        if (TextTrimming != TextTrimming.None && !double.IsInfinity(availableSize.Width))
+        {
+            measuredWidth = Math.Min(measuredWidth, availableSize.Width);
+        }
+
+        return new Size(measuredWidth, measuredHeight);
     }
 
     #endregion
@@ -185,20 +262,13 @@ public class TextBlock : FrameworkElement
     {
         base.OnRender(drawingContext);
 
-        if (string.IsNullOrEmpty(Text) || Foreground == null)
-            return;
-
         if (drawingContext is DrawingContext dc)
         {
-            var formattedText = new FormattedText(Text, FontFamily, FontSize)
+            var formattedText = GetOrCreateFormattedText();
+            if (formattedText != null)
             {
-                Foreground = Foreground,
-                MaxTextWidth = RenderSize.Width,
-                MaxTextHeight = RenderSize.Height,
-                Trimming = TextTrimming
-            };
-
-            dc.DrawText(formattedText, Point.Zero);
+                dc.DrawText(formattedText, Point.Zero);
+            }
         }
     }
 
@@ -210,6 +280,14 @@ public class TextBlock : FrameworkElement
     {
         if (d is TextBlock textBlock)
         {
+            textBlock.InvalidateFormattedTextCache();
+
+            // Skip layout invalidation if text is empty and property isn't Text itself
+            // (font changes on empty text don't affect layout)
+            if (e.Property != TextProperty && string.IsNullOrEmpty(textBlock.Text))
+            {
+                return;
+            }
             textBlock.InvalidateMeasure();
         }
     }
@@ -218,6 +296,10 @@ public class TextBlock : FrameworkElement
     {
         if (d is TextBlock textBlock)
         {
+            // Skip if value didn't change or text is empty (nothing to render)
+            if (Equals(e.OldValue, e.NewValue)) return;
+
+            textBlock.InvalidateFormattedTextCache();
             textBlock.InvalidateVisual();
         }
     }
