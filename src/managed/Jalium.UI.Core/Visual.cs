@@ -10,6 +10,11 @@ public abstract class Visual : DependencyObject
     private readonly List<Visual> _children = new();
     private bool _isRenderDirty;
     private bool _isSubtreeDirty;
+    [ThreadStatic]
+    private static HashSet<Visual>? _renderPath;
+    [ThreadStatic]
+    private static int _renderDepth;
+    private const int MaxRenderDepth = 1024;
 
     /// <summary>
     /// Gets the parent visual.
@@ -44,9 +49,22 @@ public abstract class Visual : DependencyObject
     {
         ArgumentNullException.ThrowIfNull(child);
 
+        if (ReferenceEquals(child, this))
+        {
+            throw new InvalidOperationException($"Visual cannot be added as its own child. visual={GetType().Name}");
+        }
+
+        for (var ancestor = this; ancestor != null; ancestor = ancestor._parent)
+        {
+            if (ReferenceEquals(ancestor, child))
+            {
+                throw new InvalidOperationException(
+                    $"Adding child would create a visual cycle. child={child.GetType().Name}, parent={GetType().Name}");
+            }
+        }
+
         if (child._parent != null)
         {
-            System.Diagnostics.Debug.WriteLine($"[Visual] AddVisualChild FAILED: child={child.GetType().Name}, child._parent={child._parent.GetType().Name}, this={this.GetType().Name}");
             throw new InvalidOperationException($"Visual already has a parent. child={child.GetType().Name}, parent={child._parent.GetType().Name}, attempted new parent={this.GetType().Name}");
         }
 
@@ -180,6 +198,32 @@ public abstract class Visual : DependencyObject
     /// <param name="drawingContext">The drawing context (should be cast to DrawingContext from Media).</param>
     public void Render(object drawingContext)
     {
+        _renderPath ??= new HashSet<Visual>();
+
+        if (_renderDepth > MaxRenderDepth)
+        {
+            return;
+        }
+
+        if (!_renderPath.Add(this))
+        {
+            return;
+        }
+
+        _renderDepth++;
+
+        try
+        {
+        // Respect UIElement visibility at render entry.
+        // Hidden and Collapsed should not render.
+        if (this is UIElement thisElementVisibility &&
+            thisElementVisibility.Visibility != Visibility.Visible)
+        {
+            _isRenderDirty = false;
+            _isSubtreeDirty = false;
+            return;
+        }
+
         // Check for element effect (BlurEffect, DropShadowEffect, etc.)
         // If present, capture all rendering to an offscreen bitmap so the effect can be applied.
         IEffect? activeEffect = null;
@@ -228,8 +272,8 @@ public abstract class Visual : DependencyObject
             var child = GetVisualChild(i);
             if (child == null) continue;
 
-            // Skip collapsed children
-            if (child is UIElement uiElement && uiElement.Visibility == Visibility.Collapsed)
+            // Skip non-visible children
+            if (child is UIElement uiElement && uiElement.Visibility != Visibility.Visible)
                 continue;
 
             // Get child's visual bounds and update drawing context offset
@@ -288,6 +332,16 @@ public abstract class Visual : DependencyObject
         // Clear dirty flags after this element has rendered
         _isRenderDirty = false;
         _isSubtreeDirty = false;
+        }
+        finally
+        {
+            _renderDepth--;
+            _renderPath.Remove(this);
+            if (_renderDepth == 0 && _renderPath.Count > 0)
+            {
+                _renderPath.Clear();
+            }
+        }
     }
 
     /// <summary>

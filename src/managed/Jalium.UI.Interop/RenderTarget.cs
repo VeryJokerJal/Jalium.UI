@@ -7,6 +7,9 @@ namespace Jalium.UI.Interop;
 /// </summary>
 public sealed class RenderTarget : IDisposable
 {
+    [ThreadStatic]
+    private static int _drawTextDepth;
+
     private readonly IRenderTargetNative _native;
     private readonly RenderBackend _backend;
     private readonly nint _hwnd;
@@ -279,7 +282,29 @@ public sealed class RenderTarget : IDisposable
     {
         ThrowIfDisposed();
         if (string.IsNullOrEmpty(text) || format == null || !format.IsValid || brush == null || !brush.IsValid) return;
-        NativeMethods.DrawText(_handle, text, text.Length, format.Handle, x, y, width, height, brush.Handle);
+
+        // Hard guard against unexpected re-entrant draw recursion from native/interop paths.
+        // Normal rendering should never exceed a very small depth on a single thread.
+        if (_drawTextDepth > 8)
+        {
+            return;
+        }
+
+        _drawTextDepth++;
+        try
+        {
+            unsafe
+            {
+                fixed (char* textPtr = text)
+                {
+                    NativeMethods.DrawTextRaw(_handle, textPtr, text.Length, format.Handle, x, y, width, height, brush.Handle);
+                }
+            }
+        }
+        finally
+        {
+            _drawTextDepth--;
+        }
     }
 
     /// <summary>

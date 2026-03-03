@@ -331,6 +331,30 @@ public abstract partial class UIElement : Visual, IInputElement
     public static readonly DependencyProperty IsMouseOverProperty = IsMouseOverPropertyKey.DependencyProperty;
 
     /// <summary>
+    /// Identifies the IsPressed read-only dependency property key.
+    /// </summary>
+    private static readonly DependencyPropertyKey IsPressedPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsPressed), typeof(bool), typeof(UIElement),
+            new PropertyMetadata(false, OnIsPressedChanged));
+
+    /// <summary>
+    /// Identifies the IsPressed dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsPressedProperty = IsPressedPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the IsFocused read-only dependency property key.
+    /// </summary>
+    private static readonly DependencyPropertyKey IsFocusedPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsFocused), typeof(bool), typeof(UIElement),
+            new PropertyMetadata(false, OnIsFocusedChanged));
+
+    /// <summary>
+    /// Identifies the IsFocused dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsFocusedProperty = IsFocusedPropertyKey.DependencyProperty;
+
+    /// <summary>
     /// Identifies the ClipToBounds dependency property.
     /// </summary>
     public static readonly DependencyProperty ClipToBoundsProperty =
@@ -455,6 +479,19 @@ public abstract partial class UIElement : Visual, IInputElement
     }
 
     /// <summary>
+    /// Gets a value indicating whether this element is currently pressed.
+    /// </summary>
+    public bool IsPressed => (bool)GetValue(IsPressedProperty)!;
+
+    /// <summary>
+    /// Sets the IsPressed property value. Called internally by input state tracking.
+    /// </summary>
+    internal void SetIsPressed(bool value)
+    {
+        SetValue(IsPressedPropertyKey.DependencyProperty, value);
+    }
+
+    /// <summary>
     /// Gets or sets a value indicating whether to clip the content of this element to its bounds.
     /// </summary>
     public bool ClipToBounds
@@ -493,7 +530,15 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets a value indicating whether this element has logical focus.
     /// </summary>
-    public bool IsFocused => IsKeyboardFocused;
+    public bool IsFocused => (bool)GetValue(IsFocusedProperty)!;
+
+    /// <summary>
+    /// Sets the IsFocused property value. Called internally by focus tracking.
+    /// </summary>
+    internal void SetIsFocused(bool value)
+    {
+        SetValue(IsFocusedPropertyKey.DependencyProperty, value);
+    }
 
     /// <summary>
     /// Attempts to set focus to this element.
@@ -528,6 +573,7 @@ public abstract partial class UIElement : Visual, IInputElement
         if (_isKeyboardFocused != isFocused)
         {
             _isKeyboardFocused = isFocused;
+            SetIsFocused(isFocused);
             OnIsKeyboardFocusedChanged(isFocused);
             InvalidateVisual();
         }
@@ -1055,10 +1101,42 @@ public abstract partial class UIElement : Visual, IInputElement
         }
     }
 
+    private static void OnIsPressedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            element.OnIsPressedChanged((bool)(e.OldValue ?? false), (bool)(e.NewValue ?? false));
+        }
+    }
+
+    private static void OnIsFocusedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            element.OnIsFocusedChanged((bool)(e.OldValue ?? false), (bool)(e.NewValue ?? false));
+        }
+    }
+
     /// <summary>
     /// Called when the IsMouseOver property changes.
     /// </summary>
     protected virtual void OnIsMouseOverChanged(bool oldValue, bool newValue)
+    {
+        InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Called when the IsPressed property changes.
+    /// </summary>
+    protected virtual void OnIsPressedChanged(bool oldValue, bool newValue)
+    {
+        InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Called when the IsFocused property changes.
+    /// </summary>
+    protected virtual void OnIsFocusedChanged(bool oldValue, bool newValue)
     {
         InvalidateVisual();
     }

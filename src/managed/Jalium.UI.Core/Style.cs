@@ -235,21 +235,19 @@ public sealed class Setter
         if (target.HasLocalValue(actualProperty))
             return;
 
-        // Store original value for restoration
-        if (!target._styleOriginalValues.ContainsKey(actualProperty))
-        {
-            target._styleOriginalValues[actualProperty] = target.GetValue(actualProperty);
-        }
-
         if (Value is IDynamicResourceReference dynamicReference)
         {
-            DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey);
+            DynamicResourceBindingOperations.SetDynamicResource(
+                target,
+                actualProperty,
+                dynamicReference.ResourceKey,
+                DependencyObject.LayerValueSource.StyleSetter);
             return;
         }
 
         // Convert value to the correct type if needed
         var valueToSet = ConvertValueIfNeeded(Value, actualProperty.PropertyType);
-        target.SetValue(actualProperty, valueToSet);
+        target.SetLayerValue(actualProperty, valueToSet, DependencyObject.LayerValueSource.StyleSetter);
     }
 
     /// <summary>
@@ -342,16 +340,7 @@ public sealed class Setter
         if (actualProperty == null) return;
 
         DynamicResourceBindingOperations.ClearDynamicResource(target, actualProperty);
-
-        if (target._styleOriginalValues.Remove(actualProperty))
-        {
-            // Use ClearValue instead of SetValue to restore the property.
-            // The original value was always from a non-local source (default or inherited),
-            // because Setter.Apply skips properties that already have a local value.
-            // Using SetValue here would create a local value, which would then cause
-            // a subsequent Setter.Apply to skip the property (HasLocalValue check).
-            target.ClearValue(actualProperty);
-        }
+        target.ClearLayerValue(actualProperty, DependencyObject.LayerValueSource.StyleSetter);
     }
 
     /// <summary>
@@ -504,11 +493,14 @@ public abstract class Trigger
 
     /// <summary>
     /// Applies the trigger's setters, storing pre-trigger values for later restoration.
-    /// Uses element-level shared storage to ensure original values are preserved correctly
-    /// even when multiple triggers affect the same property.
+    /// Trigger values are written to style/template-trigger layers and do not become local values.
     /// </summary>
     protected void ApplyTriggerSetters(FrameworkElement element)
     {
+        var layerSource = ParentTemplateTriggers != null
+            ? DependencyObject.LayerValueSource.TemplateTrigger
+            : DependencyObject.LayerValueSource.StyleTrigger;
+
         foreach (var setter in Setters)
         {
             // Get the target element (may be different from element if TargetName is set)
@@ -534,39 +526,18 @@ public abstract class Trigger
 
             var key = (target, actualProperty);
 
-            // Use the styled element's shared storage for original values
-            // This ensures we store the value BEFORE any trigger modified it
-            if (element._triggerOriginalValues.TryGetValue(key, out var stored))
-            {
-                // Another trigger already stored the original value, just increment count
-                element._triggerOriginalValues[key] = (stored.OriginalValue, stored.ActiveCount + 1, stored.SuspendedDynamicResourceKey);
-            }
-            else
-            {
-                // This is the first trigger affecting this property, store the original value
-                var originalValue = target.GetValue(actualProperty);
-                object? suspendedDynamicResourceKey = null;
-                if (DynamicResourceBindingOperations.TryGetDynamicResourceKey(target, actualProperty, out var existingKey))
-                {
-                    suspendedDynamicResourceKey = existingKey;
-                    DynamicResourceBindingOperations.ClearDynamicResource(target, actualProperty);
-                }
-
-                element._triggerOriginalValues[key] = (originalValue, 1, suspendedDynamicResourceKey);
-            }
-
             // Track that this trigger has set this property
             _activeSetters.Add(key);
 
             if (setter.Value is IDynamicResourceReference dynamicReference)
             {
-                DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey);
+                DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey, layerSource);
                 continue;
             }
 
             // Convert value to the correct type if needed and apply
             var valueToSet = ConvertValueIfNeeded(setter.Value, actualProperty.PropertyType);
-            target.SetValue(actualProperty, valueToSet);
+            target.SetLayerValue(actualProperty, valueToSet, layerSource);
         }
 
         // Invalidate visual to ensure re-render
@@ -685,11 +656,14 @@ public abstract class Trigger
 
     /// <summary>
     /// Removes the trigger's setters, restoring pre-trigger values.
-    /// Uses element-level shared storage to ensure correct restoration
-    /// when multiple triggers affect the same property.
+    /// When multiple triggers affect the same property, remaining active triggers are re-applied.
     /// </summary>
     protected void RemoveTriggerSetters(FrameworkElement element)
     {
+        var layerSource = ParentTemplateTriggers != null
+            ? DependencyObject.LayerValueSource.TemplateTrigger
+            : DependencyObject.LayerValueSource.StyleTrigger;
+
         // Collect the properties that need other triggers re-applied
         var needsReapply = new HashSet<(FrameworkElement, DependencyProperty)>();
 
@@ -726,28 +700,8 @@ public abstract class Trigger
             }
 
             _activeSetters.Remove(key);
-
-            // Decrement the active count in shared storage
-            if (element._triggerOriginalValues.TryGetValue(key, out var stored))
-            {
-                var newCount = stored.ActiveCount - 1;
-                if (newCount <= 0)
-                {
-                    // No more triggers affecting this property, restore original value
-                    target.SetValue(actualProperty, stored.OriginalValue);
-                    if (stored.SuspendedDynamicResourceKey != null)
-                    {
-                        DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, stored.SuspendedDynamicResourceKey);
-                    }
-                    element._triggerOriginalValues.Remove(key);
-                }
-                else
-                {
-                    // Other triggers still affect this property
-                    element._triggerOriginalValues[key] = (stored.OriginalValue, newCount, stored.SuspendedDynamicResourceKey);
-                    needsReapply.Add(key);
-                }
-            }
+            target.ClearLayerValue(actualProperty, layerSource);
+            needsReapply.Add(key);
 
         }
 
@@ -788,13 +742,13 @@ public abstract class Trigger
                         {
                             if (setter.Value is IDynamicResourceReference dynamicReference)
                             {
-                                DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey);
+                                DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey, layerSource);
                             }
                             else
                             {
                                 // This property needs another trigger's value re-applied
                                 var valueToSet = ConvertValueIfNeeded(setter.Value, actualProperty.PropertyType);
-                                target.SetValue(actualProperty, valueToSet);
+                                target.SetLayerValue(actualProperty, valueToSet, layerSource);
                             }
                         }
                     }
@@ -856,25 +810,6 @@ public abstract class Trigger
         foreach (var key in keysToRemove)
         {
             _activeSetters.Remove(key);
-
-            // Decrement count in shared storage
-            if (element._triggerOriginalValues.TryGetValue(key, out var stored))
-            {
-                var newCount = stored.ActiveCount - 1;
-                if (newCount <= 0)
-                {
-                    var target = key.Item1;
-                    if (stored.SuspendedDynamicResourceKey != null)
-                    {
-                        DynamicResourceBindingOperations.SetDynamicResource(target, key.Item2, stored.SuspendedDynamicResourceKey);
-                    }
-                    element._triggerOriginalValues.Remove(key);
-                }
-                else
-                {
-                    element._triggerOriginalValues[key] = (stored.OriginalValue, newCount, stored.SuspendedDynamicResourceKey);
-                }
-            }
         }
     }
 }

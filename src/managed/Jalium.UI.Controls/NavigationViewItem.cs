@@ -54,6 +54,11 @@ public sealed class NavigationViewItem : ContentControl
             new PropertyMetadata(false, OnIsExpandedChanged));
 
     /// <summary>
+    /// Identifies the IsPressed dependency property.
+    /// </summary>
+    public new static readonly DependencyProperty IsPressedProperty = UIElement.IsPressedProperty;
+
+    /// <summary>
     /// Identifies the SelectsOnInvoked dependency property.
     /// </summary>
     public static readonly DependencyProperty SelectsOnInvokedProperty =
@@ -90,6 +95,11 @@ public sealed class NavigationViewItem : ContentControl
         get => (bool)GetValue(IsExpandedProperty)!;
         set => SetValue(IsExpandedProperty, value);
     }
+
+    /// <summary>
+    /// Gets a value indicating whether the item is currently pressed.
+    /// </summary>
+    public new bool IsPressed => base.IsPressed;
 
     /// <summary>
     /// Gets or sets a value indicating whether this item becomes selected when invoked.
@@ -201,8 +211,13 @@ public sealed class NavigationViewItem : ContentControl
 
     private void OnMouseDownHandler(object? sender, RoutedEventArgs e)
     {
+        if (!IsEnabled)
+            return;
+
         if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
         {
+            Focus();
+
             // Find parent NavigationView and delegate click handling
             var navView = FindParentNavigationView();
             if (navView != null)

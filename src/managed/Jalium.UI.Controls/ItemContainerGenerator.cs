@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Virtualization;
 
 namespace Jalium.UI.Controls;
 
@@ -12,14 +13,18 @@ namespace Jalium.UI.Controls;
 public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 {
     private readonly ItemsControl _host;
-    private readonly List<ItemContainerMap> _realizedItems = new();
-    private readonly Queue<DependencyObject> _recycleQueue = new();
-    private GeneratorStatus _status = GeneratorStatus.NotStarted;
+    private readonly LogicalItemAccessor _itemAccessor;
+    private readonly Dictionary<int, ItemContainerMap> _realizedItems = new();
+    private readonly Dictionary<DependencyObject, int> _containerToIndex = new(ReferenceEqualityComparer.Instance);
+    private readonly ContainerRecyclePool _recyclePool = new();
 
-    // Generator state during StartAt...GenerateNext session
+    private GeneratorStatus _status = GeneratorStatus.NotStarted;
     private int _generatorCurrentIndex;
     private GeneratorDirection _generatorDirection;
     private bool _isGenerating;
+    private bool _sortedIndexCacheDirty = true;
+    private readonly List<int> _sortedIndices = new();
+    private Type? _preferredContainerType;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ItemContainerGenerator"/> class.
@@ -27,6 +32,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     internal ItemContainerGenerator(ItemsControl host)
     {
         _host = host;
+        _itemAccessor = new LogicalItemAccessor(host);
     }
 
     #region Public Properties
@@ -50,20 +56,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// <summary>
     /// Gets the number of items in the host's items collection.
     /// </summary>
-    public int ItemCount
-    {
-        get
-        {
-            var source = _host.ItemsSource ?? (IEnumerable)_host.Items;
-            if (source is ICollection collection)
-                return collection.Count;
-
-            int count = 0;
-            foreach (var _ in source)
-                count++;
-            return count;
-        }
-    }
+    public int ItemCount => _itemAccessor.Count;
 
     #endregion
 
@@ -88,12 +81,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// </summary>
     public DependencyObject? ContainerFromIndex(int index)
     {
-        foreach (var map in _realizedItems)
-        {
-            if (map.ItemIndex == index)
-                return map.Container;
-        }
-        return null;
+        return _realizedItems.TryGetValue(index, out var map) ? map.Container : null;
     }
 
     /// <summary>
@@ -101,11 +89,14 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// </summary>
     public DependencyObject? ContainerFromItem(object item)
     {
-        foreach (var map in _realizedItems)
+        foreach (var map in _realizedItems.Values)
         {
             if (Equals(map.Item, item))
+            {
                 return map.Container;
+            }
         }
+
         return null;
     }
 
@@ -114,11 +105,11 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// </summary>
     public object? ItemFromContainer(DependencyObject container)
     {
-        foreach (var map in _realizedItems)
+        if (_containerToIndex.TryGetValue(container, out var index) && _realizedItems.TryGetValue(index, out var map))
         {
-            if (ReferenceEquals(map.Container, container))
-                return map.Item;
+            return map.Item;
         }
+
         return DependencyProperty.UnsetValue;
     }
 
@@ -127,12 +118,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// </summary>
     public int IndexFromContainer(DependencyObject container)
     {
-        foreach (var map in _realizedItems)
-        {
-            if (ReferenceEquals(map.Container, container))
-                return map.ItemIndex;
-        }
-        return -1;
+        return _containerToIndex.TryGetValue(container, out var index) ? index : -1;
     }
 
     #endregion
@@ -142,27 +128,24 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// <inheritdoc />
     public GeneratorPosition GeneratorPositionFromIndex(int itemIndex)
     {
-        // Find if this item is already realized
-        for (int i = 0; i < _realizedItems.Count; i++)
+        var sorted = GetSortedRealizedIndices();
+        if (sorted.Count == 0)
         {
-            if (_realizedItems[i].ItemIndex == itemIndex)
-                return new GeneratorPosition(i, 0);
-        }
-
-        // Not realized - find the nearest realized item
-        if (_realizedItems.Count == 0)
             return new GeneratorPosition(-1, itemIndex + 1);
-
-        // Find closest realized item before this index
-        int closestBefore = -1;
-        for (int i = 0; i < _realizedItems.Count; i++)
-        {
-            if (_realizedItems[i].ItemIndex < itemIndex)
-                closestBefore = i;
         }
 
-        if (closestBefore >= 0)
-            return new GeneratorPosition(closestBefore, itemIndex - _realizedItems[closestBefore].ItemIndex);
+        var idx = sorted.BinarySearch(itemIndex);
+        if (idx >= 0)
+        {
+            return new GeneratorPosition(idx, 0);
+        }
+
+        var insert = ~idx;
+        var before = insert - 1;
+        if (before >= 0)
+        {
+            return new GeneratorPosition(before, itemIndex - sorted[before]);
+        }
 
         return new GeneratorPosition(-1, itemIndex + 1);
     }
@@ -171,10 +154,15 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     public int IndexFromGeneratorPosition(GeneratorPosition position)
     {
         if (position.Index == -1)
+        {
             return position.Offset - 1;
+        }
 
-        if (position.Index >= 0 && position.Index < _realizedItems.Count)
-            return _realizedItems[position.Index].ItemIndex + position.Offset;
+        var sorted = GetSortedRealizedIndices();
+        if (position.Index >= 0 && position.Index < sorted.Count)
+        {
+            return sorted[position.Index] + position.Offset;
+        }
 
         return -1;
     }
@@ -191,9 +179,7 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         _generatorCurrentIndex = IndexFromGeneratorPosition(position);
         _generatorDirection = direction;
         _isGenerating = true;
-
         Status = GeneratorStatus.GeneratingContainers;
-
         return new GeneratorSession(this);
     }
 
@@ -203,46 +189,11 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         isNewlyRealized = false;
 
         if (!_isGenerating || _generatorCurrentIndex < 0 || _generatorCurrentIndex >= ItemCount)
+        {
             return null;
-
-        // Get the item at current index
-        var item = GetItemAt(_generatorCurrentIndex);
-        if (item == null)
-            return null;
-
-        // Check if already realized
-        var existing = ContainerFromIndex(_generatorCurrentIndex);
-        if (existing != null)
-        {
-            isNewlyRealized = false;
-            AdvanceIndex();
-            return existing;
         }
 
-        // Try to get a recycled container
-        DependencyObject container;
-        if (_recycleQueue.TryDequeue(out var recycled))
-        {
-            container = recycled;
-            isNewlyRealized = false;
-        }
-        else
-        {
-            // Create new container
-            if (_host.IsItemItsOwnContainerPublic(item))
-            {
-                container = (DependencyObject)item;
-            }
-            else
-            {
-                container = _host.GetContainerForItemPublic(item);
-            }
-            isNewlyRealized = true;
-        }
-
-        // Track the mapping
-        _realizedItems.Add(new ItemContainerMap(_generatorCurrentIndex, item, container));
-
+        var container = GetOrCreateContainerForIndex(_generatorCurrentIndex, out isNewlyRealized);
         AdvanceIndex();
         return container;
     }
@@ -250,33 +201,27 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// <inheritdoc />
     public void PrepareItemContainer(DependencyObject container)
     {
-        // Find the item for this container
-        var item = ItemFromContainer(container);
-        if (item != null && item != DependencyProperty.UnsetValue && container is FrameworkElement element)
+        if (container is not FrameworkElement element)
         {
-            _host.PrepareContainerForItemInternal(element, item);
+            return;
         }
+
+        var item = ItemFromContainer(container);
+        if (item == null || item == DependencyProperty.UnsetValue)
+        {
+            return;
+        }
+
+        _host.PrepareContainerForItemInternal(element, item);
     }
 
     /// <inheritdoc />
     public void Remove(GeneratorPosition position, int count)
     {
-        int startIndex = IndexFromGeneratorPosition(position);
-        for (int i = count - 1; i >= 0; i--)
+        var startIndex = IndexFromGeneratorPosition(position);
+        for (int i = 0; i < count; i++)
         {
-            int removeAt = -1;
-            for (int j = 0; j < _realizedItems.Count; j++)
-            {
-                if (_realizedItems[j].ItemIndex == startIndex + i)
-                {
-                    removeAt = j;
-                    break;
-                }
-            }
-            if (removeAt >= 0)
-            {
-                _realizedItems.RemoveAt(removeAt);
-            }
+            RemoveIndexInternal(startIndex + i, recycle: false);
         }
     }
 
@@ -284,31 +229,82 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     public void RemoveAll()
     {
         _realizedItems.Clear();
-        _recycleQueue.Clear();
+        _containerToIndex.Clear();
+        _recyclePool.Clear();
+        _sortedIndices.Clear();
+        _sortedIndexCacheDirty = false;
         Status = GeneratorStatus.NotStarted;
     }
 
     /// <inheritdoc />
     public void Recycle(GeneratorPosition position, int count)
     {
-        int startIndex = IndexFromGeneratorPosition(position);
-        for (int i = count - 1; i >= 0; i--)
+        var startIndex = IndexFromGeneratorPosition(position);
+        for (int i = 0; i < count; i++)
         {
-            int removeAt = -1;
-            for (int j = 0; j < _realizedItems.Count; j++)
-            {
-                if (_realizedItems[j].ItemIndex == startIndex + i)
-                {
-                    removeAt = j;
-                    break;
-                }
-            }
-            if (removeAt >= 0)
-            {
-                _recycleQueue.Enqueue(_realizedItems[removeAt].Container);
-                _realizedItems.RemoveAt(removeAt);
-            }
+            RemoveIndexInternal(startIndex + i, recycle: true);
         }
+    }
+
+    #endregion
+
+    #region Internal API
+
+    internal DependencyObject? GetOrCreateContainerForIndex(int index, out bool isNewlyRealized)
+    {
+        isNewlyRealized = false;
+        if (index < 0 || index >= ItemCount)
+        {
+            return null;
+        }
+
+        if (_realizedItems.TryGetValue(index, out var existing))
+        {
+            return existing.Container;
+        }
+
+        var item = _itemAccessor.GetItemAt(index);
+        if (item == null)
+        {
+            return null;
+        }
+
+        DependencyObject container;
+        bool isOwnContainer = _host.IsItemItsOwnContainerPublic(item);
+        if (isOwnContainer)
+        {
+            container = (DependencyObject)item;
+            isNewlyRealized = true;
+        }
+        else if (_preferredContainerType != null && _recyclePool.TryPop(_preferredContainerType, out var recycled) && recycled != null)
+        {
+            container = recycled;
+        }
+        else
+        {
+            var generatedContainer = _host.GetContainerForItemPublic(item);
+            _preferredContainerType ??= generatedContainer.GetType();
+            container = generatedContainer;
+            isNewlyRealized = true;
+        }
+
+        MapContainer(index, item, container, isOwnContainer);
+        return container;
+    }
+
+    internal bool RecycleIndex(int index)
+    {
+        return RemoveIndexInternal(index, recycle: true);
+    }
+
+    internal bool RemoveIndex(int index)
+    {
+        return RemoveIndexInternal(index, recycle: false);
+    }
+
+    internal IReadOnlyList<int> GetRealizedIndices()
+    {
+        return GetSortedRealizedIndices();
     }
 
     #endregion
@@ -332,11 +328,11 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
                 break;
 
             case NotifyCollectionChangedAction.Replace:
-                OnItemReplaced(e.NewStartingIndex);
+                OnItemReplaced(e.NewStartingIndex, e.NewItems?.Count ?? 1);
                 break;
 
             case NotifyCollectionChangedAction.Move:
-                OnItemMoved(e.OldStartingIndex, e.NewStartingIndex);
+                OnReset();
                 break;
 
             case NotifyCollectionChangedAction.Reset:
@@ -347,15 +343,23 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
     private void OnItemAdded(int index, int count)
     {
-        // Shift realized items after the insertion point
-        for (int i = 0; i < _realizedItems.Count; i++)
+        if (count <= 0)
         {
-            if (_realizedItems[i].ItemIndex >= index)
-            {
-                _realizedItems[i] = _realizedItems[i] with { ItemIndex = _realizedItems[i].ItemIndex + count };
-            }
+            return;
         }
 
+        var keys = _realizedItems.Keys.Where(k => k >= index).OrderByDescending(k => k).ToArray();
+        foreach (var key in keys)
+        {
+            var map = _realizedItems[key];
+            _realizedItems.Remove(key);
+            var newIndex = key + count;
+            map.ItemIndex = newIndex;
+            _realizedItems[newIndex] = map;
+            _containerToIndex[map.Container] = newIndex;
+        }
+
+        MarkSortedCacheDirty();
         var position = GeneratorPositionFromIndex(index);
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
             NotifyCollectionChangedAction.Add, position, count, 0));
@@ -363,83 +367,55 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
     private void OnItemRemoved(int index, int count)
     {
-        // Remove realized items at the removed indices
-        for (int i = _realizedItems.Count - 1; i >= 0; i--)
+        if (count <= 0)
         {
-            var itemIndex = _realizedItems[i].ItemIndex;
-            if (itemIndex >= index && itemIndex < index + count)
-            {
-                _realizedItems.RemoveAt(i);
-            }
+            return;
         }
 
-        // Shift remaining realized items
-        for (int i = 0; i < _realizedItems.Count; i++)
+        var toRemove = _realizedItems.Keys.Where(k => k >= index && k < index + count).ToArray();
+        foreach (var key in toRemove)
         {
-            if (_realizedItems[i].ItemIndex >= index + count)
-            {
-                _realizedItems[i] = _realizedItems[i] with { ItemIndex = _realizedItems[i].ItemIndex - count };
-            }
+            RemoveIndexInternal(key, recycle: true);
         }
 
+        var keysToShift = _realizedItems.Keys.Where(k => k >= index + count).OrderBy(k => k).ToArray();
+        foreach (var oldIndex in keysToShift)
+        {
+            var map = _realizedItems[oldIndex];
+            _realizedItems.Remove(oldIndex);
+            var newIndex = oldIndex - count;
+            map.ItemIndex = newIndex;
+            _realizedItems[newIndex] = map;
+            _containerToIndex[map.Container] = newIndex;
+        }
+
+        MarkSortedCacheDirty();
         var position = GeneratorPositionFromIndex(index);
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
             NotifyCollectionChangedAction.Remove, position, count, count));
     }
 
-    private void OnItemReplaced(int index)
+    private void OnItemReplaced(int index, int count)
     {
-        // Remove old mapping
-        for (int i = _realizedItems.Count - 1; i >= 0; i--)
+        if (count <= 0)
         {
-            if (_realizedItems[i].ItemIndex == index)
-            {
-                _realizedItems.RemoveAt(i);
-                break;
-            }
+            return;
         }
 
+        for (int i = 0; i < count; i++)
+        {
+            RemoveIndexInternal(index + i, recycle: true);
+        }
+
+        MarkSortedCacheDirty();
         var position = GeneratorPositionFromIndex(index);
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
-            NotifyCollectionChangedAction.Replace, position, 1, 1));
-    }
-
-    private void OnItemMoved(int oldIndex, int newIndex)
-    {
-        var oldPosition = GeneratorPositionFromIndex(oldIndex);
-        var newPosition = GeneratorPositionFromIndex(newIndex);
-
-        // Update mapping
-        for (int i = 0; i < _realizedItems.Count; i++)
-        {
-            if (_realizedItems[i].ItemIndex == oldIndex)
-            {
-                _realizedItems[i] = _realizedItems[i] with { ItemIndex = newIndex };
-            }
-            else if (oldIndex < newIndex)
-            {
-                // Item moved forward: shift items in between backward
-                if (_realizedItems[i].ItemIndex > oldIndex && _realizedItems[i].ItemIndex <= newIndex)
-                    _realizedItems[i] = _realizedItems[i] with { ItemIndex = _realizedItems[i].ItemIndex - 1 };
-            }
-            else
-            {
-                // Item moved backward: shift items in between forward
-                if (_realizedItems[i].ItemIndex >= newIndex && _realizedItems[i].ItemIndex < oldIndex)
-                    _realizedItems[i] = _realizedItems[i] with { ItemIndex = _realizedItems[i].ItemIndex + 1 };
-            }
-        }
-
-        ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
-            NotifyCollectionChangedAction.Move, newPosition, oldPosition, 1, 1));
+            NotifyCollectionChangedAction.Replace, position, count, count));
     }
 
     private void OnReset()
     {
-        _realizedItems.Clear();
-        _recycleQueue.Clear();
-        Status = GeneratorStatus.NotStarted;
-
+        RemoveAll();
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
             NotifyCollectionChangedAction.Reset, new GeneratorPosition(-1, 0), 0, 0));
     }
@@ -448,33 +424,66 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
 
     #region Private Helpers
 
-    private object? GetItemAt(int index)
-    {
-        var source = _host.ItemsSource ?? (IEnumerable)_host.Items;
-        if (source is IList list)
-            return list[index];
-
-        int i = 0;
-        foreach (var item in source)
-        {
-            if (i == index) return item;
-            i++;
-        }
-        return null;
-    }
-
     private void AdvanceIndex()
     {
         if (_generatorDirection == GeneratorDirection.Forward)
+        {
             _generatorCurrentIndex++;
+        }
         else
+        {
             _generatorCurrentIndex--;
+        }
     }
 
     private void EndGeneration()
     {
         _isGenerating = false;
         Status = GeneratorStatus.ContainersGenerated;
+    }
+
+    private void MapContainer(int index, object item, DependencyObject container, bool isOwnContainer)
+    {
+        _realizedItems[index] = new ItemContainerMap(index, item, container, isOwnContainer);
+        _containerToIndex[container] = index;
+        MarkSortedCacheDirty();
+    }
+
+    private bool RemoveIndexInternal(int index, bool recycle)
+    {
+        if (!_realizedItems.TryGetValue(index, out var map))
+        {
+            return false;
+        }
+
+        _realizedItems.Remove(index);
+        _containerToIndex.Remove(map.Container);
+        if (recycle && !map.IsOwnContainer)
+        {
+            _recyclePool.Push(map.Container);
+        }
+
+        MarkSortedCacheDirty();
+        return true;
+    }
+
+    private List<int> GetSortedRealizedIndices()
+    {
+        if (!_sortedIndexCacheDirty)
+        {
+            return _sortedIndices;
+        }
+
+        _sortedIndices.Clear();
+        _sortedIndices.AddRange(_realizedItems.Keys);
+        _sortedIndices.Sort();
+        _sortedIndexCacheDirty = false;
+        return _sortedIndices;
+    }
+
+    private void MarkSortedCacheDirty()
+    {
+        _sortedIndexCacheDirty = true;
     }
 
     #endregion
@@ -484,7 +493,24 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
     /// <summary>
     /// Maps an item index to its container and data item.
     /// </summary>
-    internal record struct ItemContainerMap(int ItemIndex, object Item, DependencyObject Container);
+    internal struct ItemContainerMap
+    {
+        public ItemContainerMap(int itemIndex, object item, DependencyObject container, bool isOwnContainer)
+        {
+            ItemIndex = itemIndex;
+            Item = item;
+            Container = container;
+            IsOwnContainer = isOwnContainer;
+        }
+
+        public int ItemIndex { get; set; }
+
+        public object Item { get; set; }
+
+        public DependencyObject Container { get; set; }
+
+        public bool IsOwnContainer { get; set; }
+    }
 
     /// <summary>
     /// Disposable that ends the generation session.

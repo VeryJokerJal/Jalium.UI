@@ -202,17 +202,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var brush = formattedText.Foreground != null ? GetNativeBrush(formattedText.Foreground) : null;
         if (brush == null) return;
 
-        var format = GetTextFormat(formattedText.FontFamily, formattedText.FontSize);
+        var format = GetTextFormat(
+            formattedText.FontFamily,
+            formattedText.FontSize,
+            formattedText.FontWeight,
+            formattedText.FontStyle);
         if (format == null) return;
-
-        // Apply trimming if set
-        var trimming = formattedText.Trimming switch
-        {
-            TextTrimming.CharacterEllipsis => TextTrimmingMode.CharacterEllipsis,
-            TextTrimming.WordEllipsis => TextTrimmingMode.WordEllipsis,
-            _ => TextTrimmingMode.None
-        };
-        format.SetTrimming(trimming);
 
         // Round text coordinates to pixel boundaries to prevent sub-pixel jittering
         // DirectWrite renders text using sub-pixel positioning which can cause visual instability
@@ -1153,16 +1148,26 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         return nb;
     }
 
-    private NativeTextFormat? GetTextFormat(string fontFamily, double fontSize)
+    private NativeTextFormat? GetTextFormat(string fontFamily, double fontSize, int fontWeight, int fontStyle)
     {
-        var key = $"{fontFamily}_{fontSize}";
+        if (string.IsNullOrWhiteSpace(fontFamily))
+        {
+            fontFamily = "Segoe UI";
+        }
 
-        if (_textFormatCache.TryGetValue(key, out var cached))
+        if (double.IsNaN(fontSize) || double.IsInfinity(fontSize) || fontSize <= 0)
+        {
+            fontSize = 12;
+        }
+
+        var key = $"{fontFamily}_{fontSize}_{fontWeight}_{fontStyle}";
+
+        if (_textFormatCache.TryGetValue(key, out var cached) && cached.IsValid)
         {
             return cached;
         }
 
-        var format = _context.CreateTextFormat(fontFamily, (float)fontSize);
+        var format = _context.CreateTextFormat(fontFamily, (float)fontSize, fontWeight, fontStyle);
         if (format != null)
         {
             _textFormatCache[key] = format;

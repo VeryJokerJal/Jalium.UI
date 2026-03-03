@@ -7,9 +7,9 @@ public static class DependencyPropertyHelper
 {
     public static ValueSource GetValueSource(DependencyObject dependencyObject, DependencyProperty dependencyProperty)
     {
-        var localValue = dependencyObject.ReadLocalValue(dependencyProperty);
-        var baseValueSource = localValue != DependencyProperty.UnsetValue ? BaseValueSource.Local : BaseValueSource.Default;
-        return new ValueSource(baseValueSource, false, false, false);
+        ArgumentNullException.ThrowIfNull(dependencyObject);
+        ArgumentNullException.ThrowIfNull(dependencyProperty);
+        return dependencyObject.GetValueSourceInternal(dependencyProperty);
     }
 }
 

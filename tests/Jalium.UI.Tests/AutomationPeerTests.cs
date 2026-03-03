@@ -419,7 +419,7 @@ public class AutomationPeerTests
     public void TextBoxAutomationPeer_GetName_ReturnsPlaceholder()
     {
         // Arrange
-        var textBox = new TextBox { Placeholder = "Enter your name" };
+        var textBox = new TextBox { PlaceholderText = "Enter your name" };
 
         // Act
         var peer = textBox.GetAutomationPeer();
@@ -450,7 +450,7 @@ public class AutomationPeerTests
     public void PasswordBoxAutomationPeer_GetName_ReturnsPlaceholder()
     {
         // Arrange
-        var passwordBox = new PasswordBox { Placeholder = "Enter your password" };
+        var passwordBox = new PasswordBox { PlaceholderText = "Enter your password" };
 
         // Act
         var peer = passwordBox.GetAutomationPeer();

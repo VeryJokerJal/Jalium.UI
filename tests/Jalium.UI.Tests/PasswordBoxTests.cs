@@ -22,7 +22,7 @@ public class PasswordBoxTests
         var passwordBox = new PasswordBox();
 
         // Assert
-        Assert.Equal(string.Empty, passwordBox.Placeholder);
+        Assert.Equal(string.Empty, passwordBox.PlaceholderText);
     }
 
     [Fact]
@@ -32,9 +32,9 @@ public class PasswordBoxTests
         var passwordBox = new PasswordBox();
 
         // Act
-        passwordBox.Placeholder = "Enter password";
+        passwordBox.PlaceholderText = "Enter password";
 
         // Assert
-        Assert.Equal("Enter password", passwordBox.Placeholder);
+        Assert.Equal("Enter password", passwordBox.PlaceholderText);
     }
 }

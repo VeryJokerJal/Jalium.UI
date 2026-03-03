@@ -11,7 +11,6 @@ namespace Jalium.UI.Controls;
 public class TreeView : ItemsControl
 {
     private TreeViewItem? _selectedItem;
-    private StackPanel? _itemsHost;
 
     #region Dependency Properties
 
@@ -75,16 +74,10 @@ public class TreeView : ItemsControl
 
     public TreeView()
     {
-        Items.CollectionChanged += OnTreeItemsChanged;
-    }
-
-    /// <summary>
-    /// Override to prevent ItemsControl's fallback panel from interfering.
-    /// TreeView manages items via PART_ItemsHost in the template.
-    /// </summary>
-    protected override void RefreshItems()
-    {
-        // No-op: TreeView manages items via _itemsHost (template part)
+        if (ItemsPanel == null)
+        {
+            ItemsPanel = CreateItemsPanelTemplate(typeof(VirtualizingStackPanel));
+        }
     }
 
     #region Template
@@ -93,93 +86,55 @@ public class TreeView : ItemsControl
     protected override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
-
-        _itemsHost = GetTemplateChild("PART_ItemsHost") as StackPanel;
-
-        // Add existing items to the items host panel
-        if (_itemsHost != null)
-        {
-            foreach (var item in Items)
-            {
-                var tvi = WrapItemAsTreeViewItem(item);
-                if (tvi != null)
-                {
-                    tvi.ParentTreeView = this;
-                    tvi.Level = 0;
-                    if (tvi.VisualParent == null)
-                    {
-                        _itemsHost.Children.Add(tvi);
-                    }
-                }
-            }
-        }
     }
 
     #endregion
 
-    private void OnTreeItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    /// <inheritdoc />
+    protected override Panel CreateItemsPanel()
     {
-        try
+        return new VirtualizingStackPanel { Orientation = Orientation.Vertical };
+    }
+
+    /// <inheritdoc />
+    protected override FrameworkElement GetContainerForItem(object item)
+    {
+        return WrapItemAsTreeViewItem(item) ?? new TreeViewItem();
+    }
+
+    /// <inheritdoc />
+    protected override bool IsItemItsOwnContainer(object item)
+    {
+        return item is TreeViewItem;
+    }
+
+    /// <inheritdoc />
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
+    {
+        base.PrepareContainerForItem(element, item);
+        if (element is not TreeViewItem tvi)
         {
-            // Handle removed items
-            if (e.OldItems != null)
-            {
-                foreach (var item in e.OldItems)
-                {
-                    if (item is TreeViewItem tvi)
-                    {
-                        _itemsHost?.Children.Remove(tvi);
-                        tvi.ParentTreeView = null;
-                    }
-                }
-            }
-
-            // Handle added items
-            if (e.NewItems != null)
-            {
-                // If template hasn't been applied yet, try now
-                if (_itemsHost == null)
-                {
-                    ApplyTemplate();
-                    _itemsHost ??= GetTemplateChild("PART_ItemsHost") as StackPanel;
-                }
-
-                foreach (var item in e.NewItems)
-                {
-                    var tvi = WrapItemAsTreeViewItem(item);
-                    if (tvi != null)
-                    {
-                        tvi.ParentTreeView = this;
-                        tvi.Level = 0;
-                        if (_itemsHost != null && tvi.VisualParent == null)
-                        {
-                            _itemsHost.Children.Add(tvi);
-                        }
-                    }
-                }
-            }
-
-            // Handle reset
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
-            {
-                _itemsHost?.Children.Clear();
-                foreach (var item in Items)
-                {
-                    var tvi = WrapItemAsTreeViewItem(item);
-                    if (tvi != null)
-                    {
-                        tvi.ParentTreeView = this;
-                        tvi.Level = 0;
-                        _itemsHost?.Children.Add(tvi);
-                    }
-                }
-            }
-
-            InvalidateMeasure();
+            return;
         }
-        catch
+
+        tvi.ParentTreeView = this;
+        tvi.Level = 0;
+
+        if (item is TreeViewItem)
         {
-            // Ignored
+            return;
+        }
+
+        tvi.Header = item;
+        tvi.DataContext = item;
+
+        if (ItemTemplate is HierarchicalDataTemplate hdt)
+        {
+            TreeViewItem.ApplyHierarchicalDataTemplate(tvi, item, hdt);
+        }
+        else if (ItemTemplate != null)
+        {
+            tvi.HeaderTemplate = ItemTemplate;
         }
     }
 
@@ -323,6 +278,7 @@ public class TreeViewItem : HeaderedItemsControl
         {
             _level = value;
             UpdateIndent();
+            UpdateDescendantLevels();
         }
     }
 
@@ -490,11 +446,26 @@ public class TreeViewItem : HeaderedItemsControl
             }
 
             UpdateExpanderVisibility();
+            UpdateDescendantLevels();
             InvalidateMeasure();
         }
         catch
         {
             // Ignored
+        }
+    }
+
+    private void UpdateDescendantLevels()
+    {
+        foreach (var item in Items)
+        {
+            if (item is not TreeViewItem childTvi)
+            {
+                continue;
+            }
+
+            childTvi.ParentTreeView = ParentTreeView;
+            childTvi.Level = _level + 1;
         }
     }
 

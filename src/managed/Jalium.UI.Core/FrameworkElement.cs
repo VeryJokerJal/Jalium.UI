@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.IO;
+﻿using System.IO;
 
 namespace Jalium.UI;
 
@@ -272,8 +271,8 @@ public class FrameworkElement : UIElement
     {
         ArgumentNullException.ThrowIfNull(dp);
 
-        // Check if we have a local value
-        if (HasLocalValue(dp))
+        var localSource = base.GetValueSourceInternal(dp);
+        if (localSource.BaseValueSource != BaseValueSource.Default || localSource.IsAnimated)
         {
             return base.GetValue(dp);
         }
@@ -285,6 +284,20 @@ public class FrameworkElement : UIElement
         }
 
         return base.GetValue(dp);
+    }
+
+    internal override ValueSource GetValueSourceInternal(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+
+        var localSource = base.GetValueSourceInternal(dp);
+        if (localSource.BaseValueSource != BaseValueSource.Default || localSource.IsAnimated)
+            return localSource;
+
+        if (dp.DefaultMetadata.Inherits && VisualParent is FrameworkElement parent)
+            return new ValueSource(BaseValueSource.Inherited, localSource.IsExpression, localSource.IsAnimated, localSource.IsCoerced);
+
+        return localSource;
     }
 
     #endregion
@@ -432,14 +445,12 @@ public class FrameworkElement : UIElement
             {
                 element.MouseEnter += OnToolTipMouseEnter;
                 element.MouseLeave += OnToolTipMouseLeave;
-                Debug.WriteLine($"[ToolTip] Subscribed MouseEnter/Leave on {element.GetType().Name}, value={e.NewValue}");
             }
         }
     }
 
     private static void OnToolTipMouseEnter(object? sender, RoutedEventArgs e)
     {
-        Debug.WriteLine($"[ToolTip] MouseEnter fired on {sender?.GetType().Name}, delegate={ToolTipShowRequested != null}");
         if (sender is FrameworkElement fe && fe.ToolTip != null)
             ToolTipShowRequested?.Invoke(fe, e);
     }
@@ -1420,3 +1431,4 @@ public sealed class SizeChangedInfo
     /// </summary>
     public bool HeightChanged { get; }
 }
+

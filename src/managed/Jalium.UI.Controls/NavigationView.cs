@@ -1,4 +1,7 @@
-﻿using Jalium.UI.Input;
+using System.Collections.Generic;
+using System.Collections.ObjectModel;
+using System.Collections.Specialized;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -12,16 +15,47 @@ public sealed class NavigationView : ContentControl
 
     private NavigationViewItem? _selectedItem;
     private bool _isUpdatingSelection;
-    private readonly StackPanel _menuItemsPanel;
-    private readonly StackPanel _footerItemsPanel;
-    private readonly Border _paneContainer;
-    private readonly Border _contentContainer;
-    private readonly Grid _rootGrid;
-    private readonly ScrollViewer _paneScrollViewer;
+    private StackPanel? _menuItemsPanel;
+    private StackPanel? _footerItemsPanel;
+    private Border? _paneContainer;
+    private Border? _contentContainer;
+    private Border? _paneHeaderHost;
+    private Border? _paneFooterHost;
+    private Border? _paneFooterRegion;
+    private Grid? _rootGrid;
+    private ScrollViewer? _paneScrollViewer;
 
     #endregion
 
     #region Dependency Properties
+
+    /// <summary>
+    /// Identifies the PaneBackground dependency property.
+    /// </summary>
+    public static readonly DependencyProperty PaneBackgroundProperty =
+        DependencyProperty.Register(nameof(PaneBackground), typeof(Brush), typeof(NavigationView),
+            new PropertyMetadata(new SolidColorBrush(Color.FromRgb(32, 32, 32)), OnPaneBackgroundChanged));
+
+    /// <summary>
+    /// Identifies the ContentBackground dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ContentBackgroundProperty =
+        DependencyProperty.Register(nameof(ContentBackground), typeof(Brush), typeof(NavigationView),
+            new PropertyMetadata(new SolidColorBrush(Color.FromRgb(40, 40, 40)), OnContentBackgroundChanged));
+
+    /// <summary>
+    /// Identifies the PaneHeader dependency property.
+    /// </summary>
+    public static readonly DependencyProperty PaneHeaderProperty =
+        DependencyProperty.Register(nameof(PaneHeader), typeof(UIElement), typeof(NavigationView),
+            new PropertyMetadata(null, OnPaneHeaderChanged));
+
+    /// <summary>
+    /// Identifies the PaneFooter dependency property.
+    /// </summary>
+    public static readonly DependencyProperty PaneFooterProperty =
+        DependencyProperty.Register(nameof(PaneFooter), typeof(UIElement), typeof(NavigationView),
+            new PropertyMetadata(null, OnPaneFooterChanged));
 
     /// <summary>
     /// Identifies the IsPaneOpen dependency property.
@@ -96,6 +130,24 @@ public sealed class NavigationView : ContentControl
     #endregion
 
     #region CLR Properties
+
+    /// <summary>
+    /// Gets or sets the pane background brush.
+    /// </summary>
+    public Brush? PaneBackground
+    {
+        get => (Brush?)GetValue(PaneBackgroundProperty);
+        set => SetValue(PaneBackgroundProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the content area background brush.
+    /// </summary>
+    public Brush? ContentBackground
+    {
+        get => (Brush?)GetValue(ContentBackgroundProperty);
+        set => SetValue(ContentBackgroundProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets a value indicating whether the navigation pane is open.
@@ -190,22 +242,30 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets the collection of menu items.
     /// </summary>
-    public List<object> MenuItems { get; } = new();
+    public ObservableCollection<object> MenuItems { get; } = new();
 
     /// <summary>
     /// Gets the collection of footer menu items.
     /// </summary>
-    public List<object> FooterMenuItems { get; } = new();
+    public ObservableCollection<object> FooterMenuItems { get; } = new();
 
     /// <summary>
     /// Gets or sets the custom pane header content.
     /// </summary>
-    public UIElement? PaneHeader { get; set; }
+    public UIElement? PaneHeader
+    {
+        get => (UIElement?)GetValue(PaneHeaderProperty);
+        set => SetValue(PaneHeaderProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the custom pane footer content.
     /// </summary>
-    public UIElement? PaneFooter { get; set; }
+    public UIElement? PaneFooter
+    {
+        get => (UIElement?)GetValue(PaneFooterProperty);
+        set => SetValue(PaneFooterProperty, value);
+    }
 
     #endregion
 
@@ -214,64 +274,17 @@ public sealed class NavigationView : ContentControl
     /// </summary>
     public NavigationView()
     {
-        // Create internal layout
-        _rootGrid = new Grid();
-        _rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(OpenPaneLength, GridUnitType.Pixel) });
-        _rootGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        // NavigationView visuals are template-driven (Navigation.jalxaml).
+        UseTemplateContentManagement();
 
-        // Create menu items panel
-        _menuItemsPanel = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Margin = new Thickness(0, 8, 0, 0)
-        };
-
-        // Create footer items panel
-        _footerItemsPanel = new StackPanel
-        {
-            Orientation = Orientation.Vertical,
-            Margin = new Thickness(0, 0, 0, 8)
-        };
-
-        // Create scroll viewer for pane content
-        var paneContent = new Grid();
-        paneContent.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        paneContent.RowDefinitions.Add(new RowDefinition { Height = new GridLength(0, GridUnitType.Auto) });
-
-        _paneScrollViewer = new ScrollViewer
-        {
-            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
-            Content = _menuItemsPanel,
-            ClipToBounds = false
-        };
-        Grid.SetRow(_paneScrollViewer, 0);
-        paneContent.Children.Add(_paneScrollViewer);
-
-        Grid.SetRow(_footerItemsPanel, 1);
-        paneContent.Children.Add(_footerItemsPanel);
-
-        // Create pane container with dark theme
-        _paneContainer = new Border
-        {
-            Background = new SolidColorBrush(Color.FromRgb(32, 32, 32)), // WinUI dark pane background
-            Child = paneContent
-        };
-        Grid.SetColumn(_paneContainer, 0);
-        _rootGrid.Children.Add(_paneContainer);
-
-        // Create content container
-        _contentContainer = new Border
-        {
-            Background = new SolidColorBrush(Color.FromRgb(40, 40, 40)) // Slightly lighter content background
-        };
-        Grid.SetColumn(_contentContainer, 1);
-        _rootGrid.Children.Add(_contentContainer);
-
-        Content = _rootGrid;
+        MenuItems.CollectionChanged += OnMenuItemsCollectionChanged;
+        FooterMenuItems.CollectionChanged += OnFooterMenuItemsCollectionChanged;
 
         // Handle mouse clicks
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnNavigationViewMouseDown));
+
+        // Ensure a template is available even before visual-tree attach (test/runtime parity).
+        EnsureDefaultTemplateIfMissing();
     }
 
     #region Events
@@ -321,15 +334,16 @@ public sealed class NavigationView : ContentControl
     /// <param name="content">The content to display.</param>
     public void SetContent(UIElement? content)
     {
-        _contentContainer.Child = content;
+        Content = content;
     }
 
     /// <summary>
     /// Updates the navigation view to reflect changes in the MenuItems or FooterMenuItems collections.
-    /// Call this method after adding, removing, or modifying items in the collections.
+    /// This method can be used for forced refreshes; collection changes refresh automatically.
     /// </summary>
     public void UpdateMenuItems()
     {
+        EnsureTemplatePartsReady();
         RefreshMenuItems();
         RefreshFooterItems();
     }
@@ -338,115 +352,87 @@ public sealed class NavigationView : ContentControl
 
     #region Private Methods
 
+    /// <inheritdoc />
+    protected override void OnApplyTemplate()
+    {
+        if (_paneHeaderHost != null)
+            _paneHeaderHost.SizeChanged -= OnPaneRegionSizeChanged;
+        if (_paneFooterRegion != null)
+            _paneFooterRegion.SizeChanged -= OnPaneRegionSizeChanged;
+
+        base.OnApplyTemplate();
+
+        _rootGrid = GetTemplateChild("PART_RootGrid") as Grid;
+        _paneContainer = GetTemplateChild("PART_PaneContainer") as Border;
+        _contentContainer = GetTemplateChild("PART_ContentContainer") as Border;
+        _paneHeaderHost = GetTemplateChild("PART_PaneHeaderHost") as Border;
+        _paneFooterHost = GetTemplateChild("PART_PaneFooterHost") as Border;
+        _paneFooterRegion = GetTemplateChild("PART_PaneFooterRegion") as Border;
+        _menuItemsPanel = GetTemplateChild("PART_MenuItemsHost") as StackPanel;
+        _footerItemsPanel = GetTemplateChild("PART_FooterItemsHost") as StackPanel;
+        _paneScrollViewer = GetTemplateChild("PART_PaneScrollViewer") as ScrollViewer;
+
+        if (_paneHeaderHost != null)
+            _paneHeaderHost.SizeChanged += OnPaneRegionSizeChanged;
+        if (_paneFooterRegion != null)
+            _paneFooterRegion.SizeChanged += OnPaneRegionSizeChanged;
+
+        UpdatePaneWidth();
+        UpdatePaneRegionBackdrop();
+        UpdatePaneHeader();
+        UpdatePaneFooter();
+        RefreshMenuItems();
+        RefreshFooterItems();
+    }
+
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+
+        if (VisualParent != null)
+        {
+            RefreshMenuItems();
+            RefreshFooterItems();
+            UpdatePaneHeader();
+            UpdatePaneFooter();
+        }
+    }
+
+    private void OnMenuItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        RefreshMenuItems();
+    }
+
+    private void OnFooterMenuItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        RefreshFooterItems();
+    }
+
     private void OnNavigationViewMouseDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton == MouseButton.Left)
-        {
-            var pos = e.GetPosition(this);
+        if (e.ChangedButton != MouseButton.Left || e.Handled)
+            return;
 
-            // Find if a menu item was clicked
-            var item = FindNavigationItemAtPosition(pos);
-            if (item != null)
-            {
-                HandleItemClicked(item);
-                e.Handled = true;
-            }
-        }
+        var clickedItem = FindNavigationItemFromOriginalSource(e.OriginalSource as DependencyObject);
+        if (clickedItem == null)
+            return;
+
+        HandleItemClicked(clickedItem);
+        e.Handled = true;
     }
 
-    private NavigationViewItem? FindNavigationItemAtPosition(Point position)
+    private static NavigationViewItem? FindNavigationItemFromOriginalSource(DependencyObject? source)
     {
-        // Check menu items (including nested children)
-        var item = FindItemInCollection(MenuItems, position);
-        if (item != null) return item;
-
-        // Check footer items
-        item = FindItemInCollection(FooterMenuItems, position);
-        return item;
-    }
-
-    private NavigationViewItem? FindItemInCollection(List<object> items, Point position)
-    {
-        foreach (var element in items)
+        var current = source;
+        while (current != null)
         {
-            if (element is NavigationViewItem item)
-            {
-                // Calculate item's absolute position in NavigationView coordinates
-                var absoluteBounds = GetElementAbsoluteBounds(item);
-                if (position.X >= absoluteBounds.X && position.X <= absoluteBounds.X + absoluteBounds.Width &&
-                    position.Y >= absoluteBounds.Y && position.Y <= absoluteBounds.Y + absoluteBounds.Height)
-                {
-                    // Check if we hit a child item first
-                    if (item.HasUnrealizedChildren && item.IsExpanded)
-                    {
-                        var childItem = FindItemInList(item.MenuItems, position);
-                        if (childItem != null) return childItem;
-                    }
-
-                    return item;
-                }
-
-                // Also check children even if not directly hitting parent
-                if (item.HasUnrealizedChildren && item.IsExpanded)
-                {
-                    var childItem = FindItemInList(item.MenuItems, position);
-                    if (childItem != null) return childItem;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    private NavigationViewItem? FindItemInList(List<NavigationViewItem> items, Point position)
-    {
-        foreach (var item in items)
-        {
-            var absoluteBounds = GetElementAbsoluteBounds(item);
-            if (position.X >= absoluteBounds.X && position.X <= absoluteBounds.X + absoluteBounds.Width &&
-                position.Y >= absoluteBounds.Y && position.Y <= absoluteBounds.Y + absoluteBounds.Height)
-            {
-                // Check nested children first
-                if (item.HasUnrealizedChildren && item.IsExpanded)
-                {
-                    var childItem = FindItemInList(item.MenuItems, position);
-                    if (childItem != null) return childItem;
-                }
+            if (current is NavigationViewItem item)
                 return item;
-            }
 
-            // Also check children even if not directly hitting parent
-            if (item.HasUnrealizedChildren && item.IsExpanded)
-            {
-                var childItem = FindItemInList(item.MenuItems, position);
-                if (childItem != null) return childItem;
-            }
+            current = current is Visual visual ? visual.VisualParent : null;
         }
+
         return null;
-    }
-
-    /// <summary>
-    /// Gets the absolute bounds of an element relative to this NavigationView.
-    /// </summary>
-    private Rect GetElementAbsoluteBounds(FrameworkElement element)
-    {
-        double offsetX = 0;
-        double offsetY = 0;
-
-        Visual? current = element;
-        while (current != null && current != this)
-        {
-            if (current is FrameworkElement fe)
-            {
-                var bounds = fe.VisualBounds;
-                offsetX += bounds.X;
-                offsetY += bounds.Y;
-            }
-            current = current.VisualParent;
-        }
-
-        var itemBounds = element.VisualBounds;
-        return new Rect(offsetX, offsetY, itemBounds.Width, itemBounds.Height);
     }
 
     /// <summary>
@@ -501,6 +487,10 @@ public sealed class NavigationView : ContentControl
 
     private void RefreshMenuItems()
     {
+        EnsureTemplatePartsReady();
+        if (_menuItemsPanel == null)
+            return;
+
         _menuItemsPanel.Children.Clear();
 
         foreach (var item in MenuItems)
@@ -511,6 +501,7 @@ public sealed class NavigationView : ContentControl
             }
         }
 
+        UpdatePaneScrollInsets();
         InvalidateMeasure();
     }
 
@@ -549,6 +540,10 @@ public sealed class NavigationView : ContentControl
 
     private void RefreshFooterItems()
     {
+        EnsureTemplatePartsReady();
+        if (_footerItemsPanel == null)
+            return;
+
         _footerItemsPanel.Children.Clear();
 
         foreach (var item in FooterMenuItems)
@@ -559,16 +554,162 @@ public sealed class NavigationView : ContentControl
             }
         }
 
+        UpdatePaneFooterRegionVisibility();
+        UpdatePaneScrollInsets();
         InvalidateMeasure();
     }
 
     private void UpdatePaneWidth()
     {
-        if (_rootGrid.ColumnDefinitions.Count > 0)
+        if (_rootGrid != null && _rootGrid.ColumnDefinitions.Count > 0)
         {
             var paneWidth = IsPaneOpen ? OpenPaneLength : CompactPaneLength;
             _rootGrid.ColumnDefinitions[0].Width = new GridLength(paneWidth, GridUnitType.Pixel);
         }
+    }
+
+    private void UpdatePaneHeader()
+    {
+        if (_paneHeaderHost == null)
+            return;
+
+        _paneHeaderHost.Child = PaneHeader;
+        _paneHeaderHost.Visibility = PaneHeader == null ? Visibility.Collapsed : Visibility.Visible;
+        UpdatePaneScrollInsets();
+    }
+
+    private void UpdatePaneFooter()
+    {
+        if (_paneFooterHost == null)
+            return;
+
+        _paneFooterHost.Child = PaneFooter;
+        _paneFooterHost.Visibility = PaneFooter == null ? Visibility.Collapsed : Visibility.Visible;
+        UpdatePaneFooterRegionVisibility();
+        UpdatePaneScrollInsets();
+    }
+
+    private void OnPaneRegionSizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        UpdatePaneScrollInsets();
+    }
+
+    private void UpdatePaneScrollInsets()
+    {
+        if (_menuItemsPanel == null)
+            return;
+    }
+
+    private void UpdatePaneFooterRegionVisibility()
+    {
+        if (_paneFooterRegion == null)
+            return;
+
+        var hasFooterItems = _footerItemsPanel != null && _footerItemsPanel.Children.Count > 0;
+        var hasPaneFooter = _paneFooterHost != null && _paneFooterHost.Visibility == Visibility.Visible;
+        _paneFooterRegion.Visibility = hasFooterItems || hasPaneFooter ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdatePaneRegionBackdrop()
+    {
+        if (_paneHeaderHost == null || _paneFooterRegion == null)
+            return;
+
+        _paneHeaderHost.Background = null;
+        _paneFooterRegion.Background = null;
+        _paneHeaderHost.BackdropEffect = CreatePaneRegionBlurEffect(PaneBackground);
+        _paneFooterRegion.BackdropEffect = CreatePaneRegionBlurEffect(PaneBackground);
+    }
+
+    private static IBackdropEffect CreatePaneRegionBlurEffect(Brush? paneBackground)
+    {
+        var tint = paneBackground is SolidColorBrush solid
+            ? solid.Color
+            : Color.FromRgb(30, 30, 36);
+        return new AcrylicEffect(tint, tintOpacity: 0.72f, blurRadius: 20f);
+    }
+
+    private void EnsureTemplatePartsReady()
+    {
+        if (_menuItemsPanel != null && _footerItemsPanel != null)
+            return;
+
+        EnsureDefaultTemplateIfMissing();
+        ApplyTemplate();
+    }
+
+    private void EnsureDefaultTemplateIfMissing()
+    {
+        if (Template != null)
+            return;
+
+        var activeStyle = GetEffectiveStyle();
+        if (TryGetTemplateFromStyle(activeStyle, out var activeStyleTemplate) && activeStyleTemplate != null)
+        {
+            Template = activeStyleTemplate;
+            return;
+        }
+
+        var appResources = Application.Current?.Resources;
+        if (appResources == null)
+            return;
+
+        var themeStyle = FindMergedStyle(appResources.MergedDictionaries, typeof(NavigationView));
+        if (themeStyle == null && appResources.TryGetValue(typeof(NavigationView), out var styleObj))
+            themeStyle = styleObj as Style;
+        if (themeStyle == null)
+            return;
+
+        if (!TryGetTemplateFromStyle(themeStyle, out var template) || template == null)
+            return;
+
+        // Keep style-driven brushes/typography while restoring core visual structure.
+        Template = template;
+    }
+
+    private Style? GetEffectiveStyle()
+    {
+        if (Style != null)
+            return Style;
+
+        return TryFindResource(typeof(NavigationView)) as Style;
+    }
+
+    private static Style? FindMergedStyle(IList<ResourceDictionary> dictionaries, object key)
+    {
+        for (int i = dictionaries.Count - 1; i >= 0; i--)
+        {
+            var dictionary = dictionaries[i];
+
+            if (dictionary.TryGetValue(key, out var styleValue) && styleValue is Style style)
+                return style;
+
+            var nested = FindMergedStyle(dictionary.MergedDictionaries, key);
+            if (nested != null)
+                return nested;
+        }
+
+        return null;
+    }
+
+    private static bool TryGetTemplateFromStyle(Style? style, out ControlTemplate? template)
+    {
+        while (style != null)
+        {
+            foreach (var setter in style.Setters)
+            {
+                if (setter.Property == TemplateProperty && setter.Value is ControlTemplate controlTemplate)
+                {
+                    template = controlTemplate;
+                    return true;
+                }
+            }
+
+            style = style.BasedOn;
+        }
+
+        template = null;
+        return false;
     }
 
     #endregion
@@ -622,6 +763,45 @@ public sealed class NavigationView : ContentControl
             {
                 nav.SelectItem(item);
             }
+        }
+    }
+
+    private static void OnPaneBackgroundChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is NavigationView nav)
+        {
+            if (nav._paneContainer != null)
+            {
+                nav._paneContainer.Background = (Brush?)e.NewValue;
+            }
+            nav.UpdatePaneRegionBackdrop();
+        }
+    }
+
+    private static void OnContentBackgroundChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is NavigationView nav)
+        {
+            if (nav._contentContainer != null)
+            {
+                nav._contentContainer.Background = (Brush?)e.NewValue;
+            }
+        }
+    }
+
+    private static void OnPaneHeaderChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is NavigationView nav)
+        {
+            nav.UpdatePaneHeader();
+        }
+    }
+
+    private static void OnPaneFooterChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is NavigationView nav)
+        {
+            nav.UpdatePaneFooter();
         }
     }
 

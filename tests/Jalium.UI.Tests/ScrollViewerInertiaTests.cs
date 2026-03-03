@@ -101,7 +101,7 @@ public class ScrollViewerInertiaTests
         SetPrivateField(viewer, "_smoothTargetX", 0.0);
         SetPrivateField(viewer, "_isSmoothScrolling", true);
 
-        var tickMethod = typeof(ScrollViewer).GetMethod("OnSmoothScrollTick", BindingFlags.Instance | BindingFlags.NonPublic);
+        var tickMethod = typeof(ScrollViewer).GetMethod("AdvanceSmoothScrollByMilliseconds", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(tickMethod);
 
         int steps = (int)Math.Ceiling(totalMs / (double)frameMs);
@@ -110,9 +110,7 @@ public class ScrollViewerInertiaTests
             if (!GetPrivateField<bool>(viewer, "_isSmoothScrolling"))
                 break;
 
-            long now = Environment.TickCount64;
-            SetPrivateField(viewer, "_lastSmoothTickTime", now - frameMs);
-            tickMethod!.Invoke(viewer, new object?[] { null, EventArgs.Empty });
+            tickMethod!.Invoke(viewer, new object?[] { (long)frameMs });
         }
 
         return viewer.VerticalOffset;

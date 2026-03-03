@@ -169,9 +169,14 @@ public class MenuFlyoutItem : Control
         // Background (hover state handled by IsMouseOver)
         if (IsMouseOver)
         {
+            const double hoverInset = 2.0;
             var hoverBrush = ResolveBrush("OneSurfaceHover", "MenuFlyoutItemBackgroundHover", s_fallbackHoverBrush);
             dc.DrawRoundedRectangle(hoverBrush, null,
-                new Rect(2, 0, RenderSize.Width - 4, RenderSize.Height),
+                new Rect(
+                    hoverInset,
+                    hoverInset,
+                    Math.Max(0, RenderSize.Width - hoverInset * 2),
+                    Math.Max(0, RenderSize.Height - hoverInset * 2)),
                 4, 4);
         }
 

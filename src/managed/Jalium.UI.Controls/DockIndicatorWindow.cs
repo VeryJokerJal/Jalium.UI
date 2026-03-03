@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -205,19 +204,8 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
     private void LogRenderFailure(Exception exception, string fallbackStage)
     {
-        string stage = fallbackStage;
-        int resultCode = (int)JaliumResult.Unknown;
-        if (exception is RenderPipelineException pipelineException)
-        {
-            stage = pipelineException.Stage;
-            resultCode = pipelineException.ResultCode;
-        }
-
-        double dpi = _dpiScale * 96.0;
-        string backend = _renderTarget?.Backend.ToString() ?? RenderContext.Current?.Backend.ToString() ?? "Unknown";
-
-        Debug.WriteLine(
-            $"RenderFailure windowType={GetType().Name} hwnd=0x{_hwnd.ToInt64():X} size={_width}x{_height} dpi={dpi:F2} backend={backend} stage={stage} resultCode={resultCode}");
+        _ = exception;
+        _ = fallbackStage;
     }
 
     #endregion

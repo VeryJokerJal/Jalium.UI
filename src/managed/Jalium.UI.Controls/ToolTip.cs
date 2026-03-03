@@ -210,8 +210,6 @@ public sealed class ToolTip : ContentControl
 
     private void OpenToolTip()
     {
-        System.Diagnostics.Debug.WriteLine($"[ToolTip] OpenToolTip: placementTarget={_placementTarget?.GetType().Name}");
-
         // Always create a fresh Popup to avoid stale state from previous show
         if (_popup != null)
         {
@@ -231,7 +229,6 @@ public sealed class ToolTip : ContentControl
         };
 
         _popup.IsOpen = true;
-        System.Diagnostics.Debug.WriteLine($"[ToolTip] Popup.IsOpen set to true");
         Opened?.Invoke(this, EventArgs.Empty);
 
         // Start auto-hide timer
@@ -254,13 +251,10 @@ public sealed class ToolTip : ContentControl
     {
         StopTimers();
 
-        System.Diagnostics.Debug.WriteLine($"[ToolTip] StartShowTimer: delay={InitialShowDelay}ms, content={Content?.GetType().Name}");
-
         _showTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(InitialShowDelay) };
         _showTimer.Tick += (_, _) =>
         {
             _showTimer?.Stop(); // One-shot
-            System.Diagnostics.Debug.WriteLine($"[ToolTip] ShowTimer fired, setting IsOpen=true");
             IsOpen = true;
         };
         _showTimer.Start();

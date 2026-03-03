@@ -167,9 +167,8 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
                 var shadowProperty = _shadowProperties[i];
                 var value = Target.GetValue(shadowProperty);
 
-                // A binding is considered valid if it has a non-null value
-                // and the binding expression is active
-                if (value != null && _bindingExpressions[i].IsActive &&
+                // WPF parity: null is a valid value; UnsetValue is not.
+                if (!ReferenceEquals(value, DependencyProperty.UnsetValue) && _bindingExpressions[i].IsActive &&
                     _bindingExpressions[i].Status == BindingStatus.Active)
                 {
                     newActiveIndex = i;
@@ -185,12 +184,20 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
             }
 
             // Handle TargetNullValue
-            activeValue ??= _priorityBinding.TargetNullValue;
+            if (activeValue == null && _priorityBinding.TargetNullValue != null)
+                activeValue = _priorityBinding.TargetNullValue;
 
             // Apply StringFormat if specified
             if (activeValue != null && !string.IsNullOrEmpty(_priorityBinding.StringFormat))
             {
-                activeValue = string.Format(_priorityBinding.StringFormat, activeValue);
+                try
+                {
+                    activeValue = string.Format(_priorityBinding.StringFormat, activeValue);
+                }
+                catch (FormatException)
+                {
+                    // Keep unformatted value for invalid format strings.
+                }
             }
 
             _activeBindingIndex = newActiveIndex;

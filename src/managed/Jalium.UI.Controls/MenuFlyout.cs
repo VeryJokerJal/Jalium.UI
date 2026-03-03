@@ -32,6 +32,9 @@ public sealed class MenuFlyout : FlyoutBase
 /// </summary>
 internal sealed class MenuFlyoutPresenter : Control
 {
+    private static readonly Thickness s_defaultBorderThickness = new(1);
+    private static readonly Thickness s_defaultPadding = new(4);
+    private static readonly CornerRadius s_defaultCornerRadius = new(8);
     private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(Color.FromRgb(45, 45, 48));
     private static readonly SolidColorBrush s_fallbackBorderBrush = new(Color.FromRgb(67, 67, 70));
 
@@ -41,6 +44,9 @@ internal sealed class MenuFlyoutPresenter : Control
     public MenuFlyoutPresenter(MenuFlyout flyout)
     {
         _flyout = flyout;
+        BorderThickness = s_defaultBorderThickness;
+        Padding = s_defaultPadding;
+        CornerRadius = s_defaultCornerRadius;
         _panel = new StackPanel { Orientation = Orientation.Vertical };
 
         foreach (var item in _flyout.Items)
@@ -53,20 +59,32 @@ internal sealed class MenuFlyoutPresenter : Control
 
     protected override Size MeasureOverride(Size availableSize)
     {
+        var borderThickness = GetEffectiveBorderThickness();
+        var padding = GetEffectivePadding();
+        var horizontalInset = borderThickness.Left + borderThickness.Right + padding.Left + padding.Right;
+        var verticalInset = borderThickness.Top + borderThickness.Bottom + padding.Top + padding.Bottom;
+
         var innerSize = new Size(
-            Math.Max(0, availableSize.Width - 2),
-            Math.Max(0, availableSize.Height - 2));
+            Math.Max(0, availableSize.Width - horizontalInset),
+            Math.Max(0, availableSize.Height - verticalInset));
         _panel.Measure(innerSize);
-        return new Size(_panel.DesiredSize.Width + 2, _panel.DesiredSize.Height + 2);
+        return new Size(_panel.DesiredSize.Width + horizontalInset, _panel.DesiredSize.Height + verticalInset);
     }
 
     protected override Size ArrangeOverride(Size finalSize)
     {
+        var borderThickness = GetEffectiveBorderThickness();
+        var padding = GetEffectivePadding();
+        var leftInset = borderThickness.Left + padding.Left;
+        var topInset = borderThickness.Top + padding.Top;
+        var horizontalInset = borderThickness.Left + borderThickness.Right + padding.Left + padding.Right;
+        var verticalInset = borderThickness.Top + borderThickness.Bottom + padding.Top + padding.Bottom;
+
         _panel.Arrange(new Rect(
-            1,
-            1,
-            Math.Max(0, finalSize.Width - 2),
-            Math.Max(0, finalSize.Height - 2)));
+            leftInset,
+            topInset,
+            Math.Max(0, finalSize.Width - horizontalInset),
+            Math.Max(0, finalSize.Height - verticalInset)));
         return finalSize;
     }
 
@@ -85,9 +103,12 @@ internal sealed class MenuFlyoutPresenter : Control
 
         var background = Background ?? ResolveBrush("OnePopupBackground", "MenuFlyoutPresenterBackground", s_fallbackBackgroundBrush);
         var border = BorderBrush ?? ResolveBrush("OnePopupBorder", "MenuFlyoutPresenterBorderBrush", s_fallbackBorderBrush);
-        var borderThickness = BorderThickness.Left > 0 ? BorderThickness.Left : 1.0;
+        var borderThickness = GetEffectiveBorderThickness();
+        var penThickness = Math.Max(Math.Max(borderThickness.Left, borderThickness.Top), Math.Max(borderThickness.Right, borderThickness.Bottom));
+        var cornerRadius = GetEffectiveCornerRadius();
 
-        dc.DrawRectangle(background, new Pen(border, borderThickness), new Rect(RenderSize));
+        var pen = penThickness > 0 ? new Pen(border, penThickness) : null;
+        dc.DrawRoundedRectangle(background, pen, new Rect(RenderSize), cornerRadius, cornerRadius);
     }
 
     private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)
@@ -97,5 +118,42 @@ internal sealed class MenuFlyoutPresenter : Control
         if (TryFindResource(secondaryKey) is Brush secondary)
             return secondary;
         return fallback;
+    }
+
+    private Thickness GetEffectiveBorderThickness()
+    {
+        return IsZero(BorderThickness) ? s_defaultBorderThickness : BorderThickness;
+    }
+
+    private Thickness GetEffectivePadding()
+    {
+        return IsZero(Padding) ? s_defaultPadding : Padding;
+    }
+
+    private double GetEffectiveCornerRadius()
+    {
+        var cornerRadius = CornerRadius;
+        if (IsZero(cornerRadius))
+            return s_defaultCornerRadius.TopLeft;
+
+        return Math.Max(
+            Math.Max(cornerRadius.TopLeft, cornerRadius.TopRight),
+            Math.Max(cornerRadius.BottomRight, cornerRadius.BottomLeft));
+    }
+
+    private static bool IsZero(Thickness thickness)
+    {
+        return thickness.Left <= 0
+            && thickness.Top <= 0
+            && thickness.Right <= 0
+            && thickness.Bottom <= 0;
+    }
+
+    private static bool IsZero(CornerRadius cornerRadius)
+    {
+        return cornerRadius.TopLeft <= 0
+            && cornerRadius.TopRight <= 0
+            && cornerRadius.BottomRight <= 0
+            && cornerRadius.BottomLeft <= 0;
     }
 }

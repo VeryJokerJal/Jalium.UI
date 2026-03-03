@@ -52,12 +52,15 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
         if (IsActive)
             return;
 
-        IsActive = true;
+        if (_binding.Property == null)
+            return;
 
         // Find the templated parent
         _templatedParent = FindTemplatedParent(Target);
-        if (_templatedParent == null || _binding.Property == null)
+        if (_templatedParent == null)
             return;
+
+        IsActive = true;
 
         // Subscribe to property changes on the templated parent
         _templatedParent.PropertyChangedInternal += OnTemplatedParentPropertyChanged;
@@ -78,6 +81,8 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
             _templatedParent.PropertyChangedInternal -= OnTemplatedParentPropertyChanged;
             _templatedParent = null;
         }
+
+        Target.ClearLayerValue(TargetProperty, DependencyObject.LayerValueSource.ParentTemplate);
     }
 
     public override void UpdateSource()
@@ -104,7 +109,7 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
             return;
 
         var value = _templatedParent.GetValue(_binding.Property);
-        Target.SetValue(TargetProperty, value);
+        Target.SetLayerValue(TargetProperty, value, DependencyObject.LayerValueSource.ParentTemplate);
     }
 
     private static FrameworkElement? FindTemplatedParent(DependencyObject target)

@@ -23,11 +23,26 @@ internal static class DynamicResourceBindingOperations
     {
         public required object ResourceKey { get; init; }
         public required EventHandler Handler { get; init; }
+        public DependencyObject.LayerValueSource? LayerSource { get; set; }
     }
 
     private static readonly ConditionalWeakTable<FrameworkElement, Dictionary<DependencyProperty, DynamicResourceSubscription>> Subscriptions = new();
 
-    internal static void SetDynamicResource(FrameworkElement target, DependencyProperty property, object resourceKey)
+    // Binary compatibility overload for callers compiled against the historical
+    // 3-parameter signature (e.g. older Jalium.UI.Xaml binaries).
+    internal static void SetDynamicResource(
+        FrameworkElement target,
+        DependencyProperty property,
+        object resourceKey)
+    {
+        SetDynamicResource(target, property, resourceKey, layerSource: null);
+    }
+
+    internal static void SetDynamicResource(
+        FrameworkElement target,
+        DependencyProperty property,
+        object resourceKey,
+        DependencyObject.LayerValueSource? layerSource = null)
     {
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(property);
@@ -40,7 +55,8 @@ internal static class DynamicResourceBindingOperations
         subscriptions[property] = new DynamicResourceSubscription
         {
             ResourceKey = resourceKey,
-            Handler = handler
+            Handler = handler,
+            LayerSource = layerSource
         };
 
         target.ResourcesChanged += handler;
@@ -79,6 +95,28 @@ internal static class DynamicResourceBindingOperations
         subscriptions.Remove(property);
     }
 
+    internal static void PromoteDynamicResourcesToLayer(
+        FrameworkElement target,
+        DependencyObject.LayerValueSource layerSource)
+    {
+        ArgumentNullException.ThrowIfNull(target);
+
+        if (!Subscriptions.TryGetValue(target, out var subscriptions) || subscriptions.Count == 0)
+            return;
+
+        foreach (var property in subscriptions.Keys.ToArray())
+        {
+            if (!subscriptions.TryGetValue(property, out var subscription))
+                continue;
+
+            if (subscription.LayerSource.HasValue)
+                continue;
+
+            subscription.LayerSource = layerSource;
+            RefreshDynamicResource(target, property);
+        }
+    }
+
     internal static void RefreshAll()
     {
         // Theme switches are infrequent; a full sweep is acceptable and avoids
@@ -106,9 +144,18 @@ internal static class DynamicResourceBindingOperations
             return;
 
         var resolved = ResourceLookup.FindResource(target, subscription.ResourceKey);
-        if (resolved != null)
+        if (subscription.LayerSource.HasValue)
         {
-            target.SetValue(property, resolved);
+            if (resolved != null)
+                target.SetLayerValue(property, resolved, subscription.LayerSource.Value);
+            else
+                target.ClearLayerValue(property, subscription.LayerSource.Value);
+            return;
         }
+
+        if (resolved != null)
+            target.SetValue(property, resolved);
+        else if (target.HasLocalValue(property))
+            target.ClearValue(property);
     }
 }

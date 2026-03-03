@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Xml;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
 
@@ -11,6 +12,10 @@ namespace Jalium.UI.Markup;
 /// </summary>
 public static class ThemeLoader
 {
+    private const string LegacyXamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
+    private const string JaliumMarkupNamespace = "https://schemas.jalium.dev/jalxaml/markup";
+    private const string ComponentSeparator = ";component/";
+
     /// <summary>
     /// Module initializer that registers the XAML loader callback with ThemeManager.
     /// This runs automatically when the Jalium.UI.Xaml assembly is loaded,
@@ -22,6 +27,7 @@ public static class ThemeLoader
     {
         // Register XamlReader.Load as the theme loader callback
         ThemeManager.XamlLoader = LoadResourceDictionaryFromStream;
+        Application.StartupObjectLoader = LoadStartupObjectFromUri;
 
         // Register AOT-safe type resolver for PropertyPath and other Core types
         TypeResolver.ResolveTypeByName = XamlTypeRegistry.GetType;
@@ -40,9 +46,8 @@ public static class ThemeLoader
         {
             return XamlReader.Load(stream, resourceName, sourceAssembly) as ResourceDictionary;
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            System.Diagnostics.Debug.WriteLine($"[ThemeLoader] Failed to load '{resourceName}' from {sourceAssembly.GetName().Name}: {ex.Message}");
             return null;
         }
     }
@@ -75,5 +80,336 @@ public static class ThemeLoader
             return null;
 
         return LoadResourceDictionary(stream);
+    }
+
+    private static object? LoadStartupObjectFromUri(Application app, string startupUri)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        if (string.IsNullOrWhiteSpace(startupUri))
+            return null;
+
+        var appAssembly = app.GetType().Assembly;
+        var assembly = appAssembly;
+        var pathCandidates = new List<string>();
+
+        if (TryParsePackComponentUri(startupUri, out var packAssemblyName, out var componentPath))
+        {
+            assembly = ResolveAssembly(packAssemblyName)
+                ?? throw new InvalidOperationException(
+                    $"StartupUri '{startupUri}' references assembly '{packAssemblyName}', but it could not be loaded.");
+
+            pathCandidates.AddRange(BuildPathCandidates(componentPath));
+        }
+        else if (Uri.TryCreate(startupUri, UriKind.Absolute, out var absoluteUri) &&
+                 absoluteUri.Scheme.Equals("resource", StringComparison.OrdinalIgnoreCase))
+        {
+            var (resourceAssembly, resourcePath) = ParseResourceUri(absoluteUri.ToString());
+            assembly = ResolveAssembly(resourceAssembly)
+                ?? throw new InvalidOperationException(
+                    $"StartupUri '{startupUri}' references assembly '{resourceAssembly}', but it could not be loaded.");
+
+            pathCandidates.AddRange(BuildPathCandidates(resourcePath));
+        }
+        else if (startupUri.StartsWith("/", StringComparison.Ordinal))
+        {
+            pathCandidates.AddRange(BuildPathCandidates(startupUri.TrimStart('/')));
+        }
+        else
+        {
+            pathCandidates.AddRange(BuildPathCandidates(startupUri));
+        }
+
+        if (pathCandidates.Count == 0)
+        {
+            throw new InvalidOperationException($"StartupUri '{startupUri}' is not a valid startup path.");
+        }
+
+        var attemptedResourceNames = new List<string>();
+        var stream = TryOpenEmbeddedResource(assembly, pathCandidates, attemptedResourceNames, out var resolvedResourceName);
+        if (stream == null || string.IsNullOrEmpty(resolvedResourceName))
+        {
+            throw new XamlParseException(
+                $"Cannot resolve StartupUri '{startupUri}' in assembly '{assembly.GetName().Name}'. " +
+                $"Candidates=[{string.Join(", ", attemptedResourceNames)}].");
+        }
+
+        using (stream)
+        {
+            using var payloadStream = new MemoryStream();
+            stream.CopyTo(payloadStream);
+            var payload = payloadStream.ToArray();
+
+            var className = TryReadRootClassName(payload);
+            if (!string.IsNullOrWhiteSpace(className))
+            {
+                var startupType = ResolveStartupType(className!, assembly, appAssembly);
+                if (startupType == null)
+                {
+                    throw new InvalidOperationException(
+                        $"StartupUri '{startupUri}' declares x:Class '{className}', but the type could not be resolved.");
+                }
+
+                object instance;
+                try
+                {
+                    instance = Activator.CreateInstance(startupType)
+                        ?? throw new InvalidOperationException($"Failed to create startup type '{startupType.FullName}'.");
+                }
+                catch (Exception ex)
+                {
+                    throw new InvalidOperationException(
+                        $"StartupUri '{startupUri}' failed to instantiate startup type '{startupType.FullName}'.", ex);
+                }
+
+                XamlReader.LoadComponent(instance, resolvedResourceName, assembly);
+                return instance;
+            }
+
+            using var parseStream = new MemoryStream(payload);
+            return XamlReader.Load(parseStream, resolvedResourceName, assembly);
+        }
+    }
+
+    private static IEnumerable<string> BuildPathCandidates(string path)
+    {
+        var trimmed = path.Replace('\\', '/').TrimStart('/');
+        if (string.IsNullOrWhiteSpace(trimmed))
+            yield break;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        if (seen.Add(trimmed))
+            yield return trimmed;
+
+        if (trimmed.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase))
+        {
+            var jalxaml = trimmed.Substring(0, trimmed.Length - ".xaml".Length) + ".jalxaml";
+            if (seen.Add(jalxaml))
+                yield return jalxaml;
+        }
+        else if (!trimmed.EndsWith(".jalxaml", StringComparison.OrdinalIgnoreCase))
+        {
+            var jalxaml = $"{trimmed}.jalxaml";
+            if (seen.Add(jalxaml))
+                yield return jalxaml;
+        }
+    }
+
+    private static Stream? TryOpenEmbeddedResource(
+        Assembly assembly,
+        IReadOnlyList<string> pathCandidates,
+        List<string> attemptedNames,
+        out string? resolvedResourceName)
+    {
+        var assemblyName = assembly.GetName().Name ?? string.Empty;
+        var manifestNames = assembly.GetManifestResourceNames();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var path in pathCandidates)
+        {
+            var normalized = path.Replace('\\', '/').TrimStart('/');
+            var dotted = normalized.Replace('/', '.');
+            var fileName = normalized.Split('/').LastOrDefault() ?? normalized;
+
+            foreach (var candidate in new[]
+            {
+                normalized,
+                dotted,
+                $"{assemblyName}.{normalized}",
+                $"{assemblyName}.{dotted}"
+            })
+            {
+                if (!seen.Add(candidate))
+                    continue;
+
+                attemptedNames.Add(candidate);
+                var stream = assembly.GetManifestResourceStream(candidate);
+                if (stream != null)
+                {
+                    resolvedResourceName = candidate;
+                    return stream;
+                }
+
+                var exactIgnoreCase = manifestNames.FirstOrDefault(n => string.Equals(n, candidate, StringComparison.OrdinalIgnoreCase));
+                if (!string.IsNullOrEmpty(exactIgnoreCase) && seen.Add(exactIgnoreCase))
+                {
+                    attemptedNames.Add(exactIgnoreCase);
+                    stream = assembly.GetManifestResourceStream(exactIgnoreCase);
+                    if (stream != null)
+                    {
+                        resolvedResourceName = exactIgnoreCase;
+                        return stream;
+                    }
+                }
+            }
+
+            var suffixes = new[]
+            {
+                $".{dotted}",
+                $".{normalized}",
+                $".{fileName}"
+            };
+
+            var suffixMatch = manifestNames.FirstOrDefault(n =>
+                suffixes.Any(s => n.EndsWith(s, StringComparison.OrdinalIgnoreCase)));
+
+            if (!string.IsNullOrEmpty(suffixMatch) && seen.Add(suffixMatch))
+            {
+                attemptedNames.Add(suffixMatch);
+                var stream = assembly.GetManifestResourceStream(suffixMatch);
+                if (stream != null)
+                {
+                    resolvedResourceName = suffixMatch;
+                    return stream;
+                }
+            }
+        }
+
+        resolvedResourceName = null;
+        return null;
+    }
+
+    private static string? TryReadRootClassName(byte[] payload)
+    {
+        using var memory = new MemoryStream(payload, writable: false);
+        var settings = new XmlReaderSettings
+        {
+            IgnoreComments = true,
+            IgnoreWhitespace = true,
+            IgnoreProcessingInstructions = true
+        };
+
+        using var reader = XmlReader.Create(memory, settings);
+        while (reader.Read())
+        {
+            if (reader.NodeType != XmlNodeType.Element)
+                continue;
+
+            var className = reader.GetAttribute("Class", LegacyXamlNamespace);
+            if (!string.IsNullOrWhiteSpace(className))
+                return className;
+
+            className = reader.GetAttribute("Class", JaliumMarkupNamespace);
+            if (!string.IsNullOrWhiteSpace(className))
+                return className;
+
+            if (reader.HasAttributes)
+            {
+                for (var i = 0; i < reader.AttributeCount; i++)
+                {
+                    reader.MoveToAttribute(i);
+                    if (!string.Equals(reader.LocalName, "Class", StringComparison.Ordinal))
+                        continue;
+
+                    if (string.Equals(reader.Prefix, "x", StringComparison.Ordinal) ||
+                        string.Equals(reader.NamespaceURI, LegacyXamlNamespace, StringComparison.Ordinal) ||
+                        string.Equals(reader.NamespaceURI, JaliumMarkupNamespace, StringComparison.Ordinal))
+                    {
+                        var value = reader.Value;
+                        reader.MoveToElement();
+                        return value;
+                    }
+                }
+
+                reader.MoveToElement();
+            }
+
+            break;
+        }
+
+        return null;
+    }
+
+    private static Type? ResolveStartupType(string className, Assembly preferredAssembly, Assembly appAssembly)
+    {
+        var startupType = preferredAssembly.GetType(className, throwOnError: false);
+        if (startupType != null)
+            return startupType;
+
+        startupType = appAssembly.GetType(className, throwOnError: false);
+        if (startupType != null)
+            return startupType;
+
+        startupType = Type.GetType(className, throwOnError: false);
+        if (startupType != null)
+            return startupType;
+
+        foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+        {
+            startupType = assembly.GetType(className, throwOnError: false);
+            if (startupType != null)
+                return startupType;
+        }
+
+        return null;
+    }
+
+    private static Assembly? ResolveAssembly(string assemblyName)
+    {
+        if (string.IsNullOrWhiteSpace(assemblyName))
+            return null;
+
+        var loaded = AppDomain.CurrentDomain.GetAssemblies()
+            .FirstOrDefault(a => string.Equals(a.GetName().Name, assemblyName, StringComparison.Ordinal));
+        if (loaded != null)
+            return loaded;
+
+        try
+        {
+            return Assembly.Load(new AssemblyName(assemblyName));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryParsePackComponentUri(string uri, out string assemblyName, out string componentPath)
+    {
+        assemblyName = string.Empty;
+        componentPath = string.Empty;
+
+        var separatorIndex = uri.IndexOf(ComponentSeparator, StringComparison.OrdinalIgnoreCase);
+        if (separatorIndex < 0)
+            return false;
+
+        var assemblyPart = uri.Substring(0, separatorIndex);
+        var slash = assemblyPart.LastIndexOf('/');
+        if (slash >= 0)
+        {
+            assemblyPart = assemblyPart[(slash + 1)..];
+        }
+
+        if (string.IsNullOrWhiteSpace(assemblyPart))
+            return false;
+
+        var path = uri.Substring(separatorIndex + ComponentSeparator.Length).TrimStart('/');
+        if (string.IsNullOrWhiteSpace(path))
+            return false;
+
+        assemblyName = assemblyPart;
+        componentPath = path;
+        return true;
+    }
+
+    private static (string assemblyName, string resourcePath) ParseResourceUri(string uriText)
+    {
+        const string prefix = "resource:///";
+        if (!uriText.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Unsupported resource URI format: '{uriText}'.");
+        }
+
+        var path = uriText.Substring(prefix.Length);
+        var slash = path.IndexOf('/');
+        if (slash < 0)
+        {
+            return (path, string.Empty);
+        }
+
+        return (
+            path.Substring(0, slash),
+            path.Substring(slash + 1).TrimStart('/'));
     }
 }

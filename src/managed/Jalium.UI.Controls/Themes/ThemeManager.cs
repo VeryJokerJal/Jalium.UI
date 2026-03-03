@@ -394,9 +394,8 @@ public static class ThemeManager
             var initializeMethod = themeLoaderType?.GetMethod("Initialize", BindingFlags.Public | BindingFlags.Static);
             initializeMethod?.Invoke(null, null);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
-            System.Diagnostics.Debug.WriteLine($"[ThemeManager] Failed to auto-register XAML loader: {ex.Message}");
         }
     }
 

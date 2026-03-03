@@ -27,14 +27,14 @@ public abstract class VirtualizingPanel : Panel
     /// </summary>
     public static readonly DependencyProperty VirtualizationModeProperty =
         DependencyProperty.RegisterAttached("VirtualizationMode", typeof(VirtualizationMode), typeof(VirtualizingPanel),
-            new PropertyMetadata(VirtualizationMode.Standard));
+            new PropertyMetadata(VirtualizationMode.Recycling));
 
     /// <summary>
     /// Identifies the CacheLength attached property.
     /// </summary>
     public static readonly DependencyProperty CacheLengthProperty =
-        DependencyProperty.RegisterAttached("CacheLength", typeof(double), typeof(VirtualizingPanel),
-            new PropertyMetadata(0.0));
+        DependencyProperty.RegisterAttached("CacheLength", typeof(VirtualizationCacheLength), typeof(VirtualizingPanel),
+            new PropertyMetadata(new VirtualizationCacheLength(1.0)));
 
     /// <summary>
     /// Identifies the CacheLengthUnit attached property.
@@ -64,18 +64,18 @@ public abstract class VirtualizingPanel : Panel
 
     /// <summary>Gets the virtualization mode for the given element.</summary>
     public static VirtualizationMode GetVirtualizationMode(DependencyObject element) =>
-        (VirtualizationMode)(element.GetValue(VirtualizationModeProperty) ?? VirtualizationMode.Standard);
+        (VirtualizationMode)(element.GetValue(VirtualizationModeProperty) ?? VirtualizationMode.Recycling);
 
     /// <summary>Sets the virtualization mode for the given element.</summary>
     public static void SetVirtualizationMode(DependencyObject element, VirtualizationMode value) =>
         element.SetValue(VirtualizationModeProperty, value);
 
     /// <summary>Gets the cache length for the given element.</summary>
-    public static double GetCacheLength(DependencyObject element) =>
-        (double)(element.GetValue(CacheLengthProperty) ?? 0.0);
+    public static VirtualizationCacheLength GetCacheLength(DependencyObject element) =>
+        (VirtualizationCacheLength)(element.GetValue(CacheLengthProperty) ?? new VirtualizationCacheLength(1.0));
 
     /// <summary>Sets the cache length for the given element.</summary>
-    public static void SetCacheLength(DependencyObject element, double value) =>
+    public static void SetCacheLength(DependencyObject element, VirtualizationCacheLength value) =>
         element.SetValue(CacheLengthProperty, value);
 
     /// <summary>Gets the cache length unit for the given element.</summary>
@@ -137,6 +137,11 @@ public abstract class VirtualizingPanel : Panel
     /// </summary>
     protected virtual void OnItemsChanged(object sender, ItemsChangedEventArgs args)
     {
+    }
+
+    internal void NotifyItemsChanged(object sender, ItemsChangedEventArgs args)
+    {
+        OnItemsChanged(sender, args);
     }
 
     /// <summary>

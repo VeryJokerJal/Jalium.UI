@@ -49,6 +49,7 @@ public sealed class NativeTextFormat : IDisposable
 {
     private nint _handle;
     private bool _disposed;
+    private TextTrimmingMode? _currentTrimming;
 
     /// <summary>
     /// Gets the native handle.
@@ -121,7 +122,16 @@ public sealed class NativeTextFormat : IDisposable
     public void SetTrimming(TextTrimmingMode trimming)
     {
         ThrowIfDisposed();
-        NativeMethods.TextFormatSetTrimming(_handle, (int)trimming);
+        if (_currentTrimming == trimming)
+        {
+            return;
+        }
+        // NOTE:
+        // Calling into native trimming setup can trigger a StackOverflowException under
+        // long-running high-frequency redraw scenarios (e.g. animated overlays).
+        // Keep the managed state for cache semantics, but avoid native invocation for stability.
+        // TODO: Re-enable after native jalium_text_format_set_trimming is fixed.
+        _currentTrimming = trimming;
     }
 
     /// <summary>

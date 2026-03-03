@@ -1,5 +1,3 @@
-using System.Diagnostics;
-
 namespace Jalium.UI;
 
 /// <summary>
@@ -134,11 +132,6 @@ internal sealed class LayoutManager
                 }
             }
 
-            if (_layoutIterations >= MaxLayoutIterations)
-            {
-                Debug.WriteLine($"[LayoutManager] WARNING: Layout iteration limit ({MaxLayoutIterations}) exceeded. " +
-                    $"Remaining: {_measureQueue.Count} measure, {_arrangeQueue.Count} arrange elements.");
-            }
         }
         finally
         {

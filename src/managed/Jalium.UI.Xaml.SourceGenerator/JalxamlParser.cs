@@ -16,6 +16,7 @@ public static class JalxamlParser
     private static readonly Dictionary<string, string> TypeMappings = new()
     {
         // Controls
+        { "Application", "Application" },
         { "Page", "Page" },
         { "Window", "Window" },
         { "Button", "Button" },

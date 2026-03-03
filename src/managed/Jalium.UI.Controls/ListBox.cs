@@ -64,6 +64,11 @@ public class ListBox : Selector
     /// </summary>
     public ListBox()
     {
+        if (ItemsPanel == null)
+        {
+            ItemsPanel = CreateItemsPanelTemplate(typeof(VirtualizingStackPanel));
+        }
+
         // Register input event handlers
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
@@ -72,6 +77,12 @@ public class ListBox : Selector
     #endregion
 
     #region Item Container
+
+    /// <inheritdoc />
+    protected override Panel CreateItemsPanel()
+    {
+        return new VirtualizingStackPanel { Orientation = Orientation.Vertical };
+    }
 
     /// <inheritdoc />
     protected override FrameworkElement GetContainerForItem(object item)
@@ -95,15 +106,16 @@ public class ListBox : Selector
             listBoxItem.Content = item;
             listBoxItem.ContentTemplate = ItemTemplate;
             listBoxItem.ParentListBox = this;
+            var logicalValue = GetSelectionValueFromLogicalItem(item);
 
             // Set selection state based on current selection mode
             if (SelectionMode == SelectionMode.Single)
             {
-                listBoxItem.IsSelected = item == SelectedItem;
+                listBoxItem.IsSelected = Equals(logicalValue, SelectedItem);
             }
             else
             {
-                listBoxItem.IsSelected = _selectedItems.Contains(item);
+                listBoxItem.IsSelected = logicalValue != null && _selectedItems.Contains(logicalValue);
             }
         }
     }
@@ -120,8 +132,13 @@ public class ListBox : Selector
     /// <param name="isShiftPressed">Whether the Shift key is pressed.</param>
     internal void SelectItem(ListBoxItem item, bool isCtrlPressed = false, bool isShiftPressed = false)
     {
-        var content = item.Content;
         var clickedIndex = GetItemIndex(item);
+        if (clickedIndex < 0)
+        {
+            return;
+        }
+
+        var content = GetSelectionValueAtIndex(clickedIndex) ?? item.Content;
 
         switch (SelectionMode)
         {
@@ -271,19 +288,21 @@ public class ListBox : Selector
         var start = Math.Min(from, to);
         var end = Math.Max(from, to);
 
-        if (ItemsHost == null) return addedItems;
-
         for (var i = start; i <= end; i++)
         {
-            var lbi = GetItemAtIndex(i);
-            if (lbi != null)
+            var item = GetSelectionValueAtIndex(i);
+            if (item != null)
             {
-                lbi.IsSelected = true;
-                var content = lbi.Content;
-                if (content != null && !_selectedItems.Contains(content))
+                if (!_selectedItems.Contains(item))
                 {
-                    _selectedItems.Add(content);
-                    addedItems.Add(content);
+                    _selectedItems.Add(item);
+                    addedItems.Add(item);
+                }
+
+                var lbi = GetItemAtIndex(i);
+                if (lbi != null)
+                {
+                    lbi.IsSelected = true;
                 }
             }
         }
@@ -297,6 +316,12 @@ public class ListBox : Selector
     /// <returns>The zero-based index, or -1 if not found.</returns>
     private int GetItemIndex(ListBoxItem item)
     {
+        var indexFromGenerator = ItemContainerGenerator.IndexFromContainer(item);
+        if (indexFromGenerator >= 0)
+        {
+            return indexFromGenerator;
+        }
+
         if (ItemsHost == null) return -1;
 
         for (var i = 0; i < ItemsHost.Children.Count; i++)
@@ -314,10 +339,44 @@ public class ListBox : Selector
     /// <returns>The ListBoxItem, or null if index is out of range.</returns>
     private ListBoxItem? GetItemAtIndex(int index)
     {
-        if (ItemsHost == null) return null;
-        if (index < 0 || index >= ItemsHost.Children.Count) return null;
+        if (index < 0)
+        {
+            return null;
+        }
 
-        return ItemsHost.Children[index] as ListBoxItem;
+        return ItemContainerGenerator.ContainerFromIndex(index) as ListBoxItem;
+    }
+
+    private IEnumerable<ListBoxItem> EnumerateRealizedContainers()
+    {
+        if (ItemsHost == null)
+        {
+            yield break;
+        }
+
+        foreach (var child in ItemsHost.Children)
+        {
+            if (child is ListBoxItem item)
+            {
+                yield return item;
+            }
+        }
+    }
+
+    private object? GetSelectionValueAtIndex(int index)
+    {
+        var item = GetItemAt(index);
+        return GetSelectionValueFromLogicalItem(item);
+    }
+
+    private static object? GetSelectionValueFromLogicalItem(object? item)
+    {
+        if (item is ListBoxItem listBoxItem)
+        {
+            return listBoxItem.Content ?? listBoxItem;
+        }
+
+        return item;
     }
 
     /// <summary>
@@ -343,13 +402,11 @@ public class ListBox : Selector
     /// </summary>
     private void UnselectAllContainers(ListBoxItem? except = null)
     {
-        if (ItemsHost == null) return;
-
-        foreach (var child in ItemsHost.Children)
+        foreach (var child in EnumerateRealizedContainers())
         {
-            if (child is ListBoxItem lbi && lbi != except)
+            if (child != except)
             {
-                lbi.IsSelected = false;
+                child.IsSelected = false;
             }
         }
     }
@@ -360,21 +417,21 @@ public class ListBox : Selector
     public void SelectAll()
     {
         if (SelectionMode == SelectionMode.Single) return;
-        if (ItemsHost == null) return;
-
-        var addedItems = new List<object>(ItemsHost.Children.Count);
-
-        for (var i = 0; i < ItemsHost.Children.Count; i++)
+        var addedItems = new List<object>();
+        var count = GetItemCount();
+        for (var i = 0; i < count; i++)
         {
-            if (ItemsHost.Children[i] is ListBoxItem lbi)
+            var item = GetSelectionValueAtIndex(i);
+            if (item != null && !_selectedItems.Contains(item))
             {
-                lbi.IsSelected = true;
-                var content = lbi.Content;
-                if (content != null && !_selectedItems.Contains(content))
-                {
-                    _selectedItems.Add(content);
-                    addedItems.Add(content);
-                }
+                _selectedItems.Add(item);
+                addedItems.Add(item);
+            }
+
+            var lbi = GetItemAtIndex(i);
+            if (lbi != null)
+            {
+                lbi.IsSelected = item != null;
             }
         }
 
@@ -391,30 +448,22 @@ public class ListBox : Selector
     /// <inheritdoc />
     protected override void UpdateContainerSelection()
     {
-        if (ItemsHost == null) return;
-
         if (SelectionMode == SelectionMode.Single)
         {
-            // Single mode: match against SelectedIndex/SelectedItem
-            var index = 0;
-            foreach (var child in ItemsHost.Children)
+            foreach (var child in EnumerateRealizedContainers())
             {
-                if (child is ListBoxItem lbi)
-                {
-                    lbi.IsSelected = (index == SelectedIndex) || (lbi.Content == SelectedItem);
-                }
-                index++;
+                var index = GetItemIndex(child);
+                var value = GetSelectionValueAtIndex(index);
+                child.IsSelected = (index == SelectedIndex) || Equals(value, SelectedItem);
             }
         }
         else
         {
-            // Multiple/Extended mode: match against _selectedItems
-            foreach (var child in ItemsHost.Children)
+            foreach (var child in EnumerateRealizedContainers())
             {
-                if (child is ListBoxItem lbi)
-                {
-                    lbi.IsSelected = lbi.Content != null && _selectedItems.Contains(lbi.Content);
-                }
+                var index = GetItemIndex(child);
+                var value = GetSelectionValueAtIndex(index);
+                child.IsSelected = value != null && _selectedItems.Contains(value);
             }
         }
     }
@@ -579,7 +628,7 @@ public class ListBox : Selector
                     foreach (var added in addedItems) removedItems.Remove(added);
 
                     SelectedIndex = newIndex;
-                    SelectedItem = GetItemAt(newIndex);
+                    SelectedItem = GetSelectionValueAtIndex(newIndex);
 
                     if (addedItems.Count > 0 || removedItems.Count > 0)
                     {
@@ -615,37 +664,51 @@ public class ListBox : Selector
         var currentIndex = SelectedIndex;
         if (currentIndex < 0) return false;
 
+        var value = GetSelectionValueAtIndex(currentIndex);
+        if (value == null) return false;
         var item = GetItemAtIndex(currentIndex);
-        if (item == null) return false;
 
         switch (SelectionMode)
         {
             case SelectionMode.Multiple:
-                // Toggle current item
-                SelectMultiple(item, item.Content, currentIndex);
+                if (_selectedItems.Contains(value))
+                {
+                    _selectedItems.Remove(value);
+                    if (item != null) item.IsSelected = false;
+                    SelectedItem = _selectedItems.Count > 0 ? _selectedItems[^1] : null;
+                    var removeArgs = new SelectionChangedEventArgs(SelectionChangedEvent, new object[] { value }, Array.Empty<object>());
+                    OnSelectionChanged(removeArgs);
+                }
+                else
+                {
+                    _selectedItems.Add(value);
+                    if (item != null) item.IsSelected = true;
+                    SelectedItem = value;
+                    var addArgs = new SelectionChangedEventArgs(SelectionChangedEvent, Array.Empty<object>(), new object[] { value });
+                    OnSelectionChanged(addArgs);
+                }
                 return true;
 
             case SelectionMode.Extended:
                 if (isCtrl)
                 {
                     // Ctrl+Space: toggle current item without affecting others
-                    var content = item.Content;
-                    if (item.IsSelected)
+                    if (_selectedItems.Contains(value))
                     {
-                        item.IsSelected = false;
-                        _selectedItems.Remove(content);
+                        if (item != null) item.IsSelected = false;
+                        _selectedItems.Remove(value);
                         SelectedItem = _selectedItems.Count > 0 ? _selectedItems[^1] : null;
 
-                        var args = new SelectionChangedEventArgs(SelectionChangedEvent, new object[] { content! }, Array.Empty<object>());
+                        var args = new SelectionChangedEventArgs(SelectionChangedEvent, new object[] { value }, Array.Empty<object>());
                         OnSelectionChanged(args);
                     }
                     else
                     {
-                        item.IsSelected = true;
-                        if (content != null) _selectedItems.Add(content);
-                        SelectedItem = content;
+                        if (item != null) item.IsSelected = true;
+                        _selectedItems.Add(value);
+                        SelectedItem = value;
 
-                        var args = new SelectionChangedEventArgs(SelectionChangedEvent, Array.Empty<object>(), new object[] { content! });
+                        var args = new SelectionChangedEventArgs(SelectionChangedEvent, Array.Empty<object>(), new object[] { value });
                         OnSelectionChanged(args);
                     }
                     _anchorIndex = currentIndex;
@@ -663,29 +726,26 @@ public class ListBox : Selector
     /// </summary>
     private void NavigateToIndex(int index)
     {
+        var value = GetSelectionValueAtIndex(index);
+        if (value == null) return;
         var item = GetItemAtIndex(index);
-        if (item == null) return;
 
         var removedItems = new List<object>(_selectedItems);
 
         UnselectAllContainers();
         _selectedItems.Clear();
 
-        item.IsSelected = true;
-        var content = item.Content;
-        if (content != null)
-        {
-            _selectedItems.Add(content);
-            removedItems.Remove(content);
-        }
+        if (item != null) item.IsSelected = true;
+        _selectedItems.Add(value);
+        removedItems.Remove(value);
 
         _anchorIndex = index;
         SelectedIndex = index;
-        SelectedItem = content;
+        SelectedItem = value;
 
-        if (removedItems.Count > 0 || content != null)
+        if (removedItems.Count > 0)
         {
-            var addedItems = content != null ? new object[] { content } : Array.Empty<object>();
+            var addedItems = new object[] { value };
             var args = new SelectionChangedEventArgs(SelectionChangedEvent, removedItems.ToArray(), addedItems);
             OnSelectionChanged(args);
         }
@@ -709,7 +769,8 @@ public class ListBox : Selector
                 // In Multiple mode, drag-entering selects the item (if not already selected)
                 if (!item.IsSelected)
                 {
-                    var content = item.Content;
+                    var index = GetItemIndex(item);
+                    var content = GetSelectionValueAtIndex(index) ?? item.Content;
                     item.IsSelected = true;
                     if (content != null) _selectedItems.Add(content);
                     SelectedItem = content;
@@ -724,6 +785,10 @@ public class ListBox : Selector
                 if (_anchorIndex >= 0)
                 {
                     var clickedIndex = GetItemIndex(item);
+                    if (clickedIndex < 0)
+                    {
+                        return;
+                    }
                     var removedItems = new List<object>(_selectedItems);
 
                     UnselectAllContainers();
@@ -732,7 +797,7 @@ public class ListBox : Selector
                     var addedItems = SelectRange(_anchorIndex, clickedIndex);
                     foreach (var added in addedItems) removedItems.Remove(added);
 
-                    SelectedItem = item.Content;
+                    SelectedItem = GetSelectionValueAtIndex(clickedIndex) ?? item.Content;
 
                     if (addedItems.Count > 0 || removedItems.Count > 0)
                     {

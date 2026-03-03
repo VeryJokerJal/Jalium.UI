@@ -387,6 +387,7 @@ public sealed class DevToolsWindow : Window
             var rootItem = CreateFilteredTreeViewItem(_targetWindow, filter);
             if (rootItem != null)
             {
+                AttachTreeItemToView(rootItem, 0);
                 _visualTreeView.Items.Add(rootItem);
                 rootItem.IsExpanded = true;
             }
@@ -575,6 +576,7 @@ public sealed class DevToolsWindow : Window
         _allTreeItems.Clear();
 
         var rootItem = CreateTreeViewItem(_targetWindow);
+        AttachTreeItemToView(rootItem, 0);
         _visualTreeView.Items.Add(rootItem);
         rootItem.IsExpanded = true;
     }
@@ -605,6 +607,23 @@ public sealed class DevToolsWindow : Window
             _selectedVisual = treeItem.Visual;
             UpdatePropertiesPanel(_selectedVisual);
             _overlay?.HighlightElement(_selectedVisual as UIElement);
+        }
+    }
+
+    /// <summary>
+    /// Ensures TreeViewItem ownership metadata is wired when items are added as direct containers.
+    /// </summary>
+    private void AttachTreeItemToView(TreeViewItem item, int level)
+    {
+        item.ParentTreeView = _visualTreeView;
+        item.Level = level;
+
+        foreach (var child in item.Items)
+        {
+            if (child is TreeViewItem childItem)
+            {
+                AttachTreeItemToView(childItem, level + 1);
+            }
         }
     }
 

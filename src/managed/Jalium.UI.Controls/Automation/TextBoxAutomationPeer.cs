@@ -103,7 +103,7 @@ public sealed class TextBoxAutomationPeer : TextBoxBaseAutomationPeer
     protected override string GetNameCore()
     {
         // For text boxes, the placeholder might serve as the accessible name
-        var placeholder = TextBoxOwner.Placeholder;
+        var placeholder = TextBoxOwner.PlaceholderText;
         if (!string.IsNullOrEmpty(placeholder))
             return placeholder;
 
@@ -168,7 +168,7 @@ public sealed class PasswordBoxAutomationPeer : FrameworkElementAutomationPeer, 
     protected override string GetNameCore()
     {
         // For password boxes, the placeholder might serve as the accessible name
-        var placeholder = PasswordBoxOwner.Placeholder;
+        var placeholder = PasswordBoxOwner.PlaceholderText;
         if (!string.IsNullOrEmpty(placeholder))
             return placeholder;
 

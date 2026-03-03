@@ -1,4 +1,5 @@
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 
 namespace Jalium.UI.Controls;
 
@@ -7,6 +8,24 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public static class ContextMenuService
 {
+    private sealed record ContextMenuOpenState(UIElement Owner, bool HasPosition, Point Position);
+    private static readonly Dictionary<ContextMenu, ContextMenuOpenState> s_openStates = [];
+
+    static ContextMenuService()
+    {
+        EventManager.RegisterClassHandler(
+            typeof(UIElement),
+            UIElement.MouseUpEvent,
+            new RoutedEventHandler(OnMouseUpClassHandler),
+            handledEventsToo: true);
+
+        EventManager.RegisterClassHandler(
+            typeof(UIElement),
+            UIElement.KeyDownEvent,
+            new RoutedEventHandler(OnKeyDownClassHandler),
+            handledEventsToo: true);
+    }
+
     #region Attached Properties
 
     /// <summary>
@@ -64,6 +83,30 @@ public static class ContextMenuService
     public static readonly DependencyProperty ShowOnDisabledProperty =
         DependencyProperty.RegisterAttached("ShowOnDisabled", typeof(bool), typeof(ContextMenuService),
             new PropertyMetadata(false));
+
+    #endregion
+
+    #region Routed Events
+
+    /// <summary>
+    /// Identifies the ContextMenuOpening routed event.
+    /// </summary>
+    public static readonly RoutedEvent ContextMenuOpeningEvent =
+        EventManager.RegisterRoutedEvent(
+            "ContextMenuOpening",
+            RoutingStrategy.Bubble,
+            typeof(ContextMenuEventHandler),
+            typeof(ContextMenuService));
+
+    /// <summary>
+    /// Identifies the ContextMenuClosing routed event.
+    /// </summary>
+    public static readonly RoutedEvent ContextMenuClosingEvent =
+        EventManager.RegisterRoutedEvent(
+            "ContextMenuClosing",
+            RoutingStrategy.Bubble,
+            typeof(ContextMenuEventHandler),
+            typeof(ContextMenuService));
 
     #endregion
 
@@ -211,6 +254,248 @@ public static class ContextMenuService
     {
         ArgumentNullException.ThrowIfNull(element);
         element.SetValue(ShowOnDisabledProperty, value);
+    }
+
+    #endregion
+
+    #region Routed Event Handlers
+
+    /// <summary>
+    /// Adds a handler for the <see cref="ContextMenuOpeningEvent"/> routed event.
+    /// </summary>
+    public static void AddContextMenuOpeningHandler(DependencyObject element, ContextMenuEventHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is UIElement uiElement)
+        {
+            uiElement.AddHandler(ContextMenuOpeningEvent, handler);
+        }
+    }
+
+    /// <summary>
+    /// Removes a handler for the <see cref="ContextMenuOpeningEvent"/> routed event.
+    /// </summary>
+    public static void RemoveContextMenuOpeningHandler(DependencyObject element, ContextMenuEventHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is UIElement uiElement)
+        {
+            uiElement.RemoveHandler(ContextMenuOpeningEvent, handler);
+        }
+    }
+
+    /// <summary>
+    /// Adds a handler for the <see cref="ContextMenuClosingEvent"/> routed event.
+    /// </summary>
+    public static void AddContextMenuClosingHandler(DependencyObject element, ContextMenuEventHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is UIElement uiElement)
+        {
+            uiElement.AddHandler(ContextMenuClosingEvent, handler);
+        }
+    }
+
+    /// <summary>
+    /// Removes a handler for the <see cref="ContextMenuClosingEvent"/> routed event.
+    /// </summary>
+    public static void RemoveContextMenuClosingHandler(DependencyObject element, ContextMenuEventHandler handler)
+    {
+        ArgumentNullException.ThrowIfNull(element);
+        ArgumentNullException.ThrowIfNull(handler);
+        if (element is UIElement uiElement)
+        {
+            uiElement.RemoveHandler(ContextMenuClosingEvent, handler);
+        }
+    }
+
+    #endregion
+
+    #region Open APIs
+
+    /// <summary>
+    /// Tries to open the attached context menu for <paramref name="owner"/> at the specified pointer position.
+    /// </summary>
+    /// <returns><c>true</c> if the menu was opened; otherwise <c>false</c>.</returns>
+    public static bool TryOpen(UIElement owner, Point position)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        var menu = GetContextMenu(owner);
+        if (menu == null)
+        {
+            return false;
+        }
+
+        return TryOpenCore(owner, menu, isKeyboardRequest: false, position);
+    }
+
+    /// <summary>
+    /// Opens <paramref name="menu"/> for <paramref name="owner"/> at the specified pointer position.
+    /// </summary>
+    public static void Open(UIElement owner, ContextMenu menu, Point position)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(menu);
+        TryOpenCore(owner, menu, isKeyboardRequest: false, position);
+    }
+
+    /// <summary>
+    /// Opens <paramref name="menu"/> for <paramref name="owner"/> using keyboard semantics.
+    /// </summary>
+    public static void Open(UIElement owner, ContextMenu menu)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(menu);
+        TryOpenCore(owner, menu, isKeyboardRequest: true, position: null);
+    }
+
+    #endregion
+
+    #region Internal Open Pipeline
+
+    private static void OnMouseUpClassHandler(object sender, RoutedEventArgs e)
+    {
+        if (e.Handled || sender is not UIElement owner || e is not MouseButtonEventArgs mouseArgs)
+        {
+            return;
+        }
+
+        if (mouseArgs.ChangedButton != MouseButton.Right)
+        {
+            return;
+        }
+
+        if (TryOpen(owner, mouseArgs.GetPosition(null)))
+        {
+            e.Handled = true;
+        }
+    }
+
+    private static void OnKeyDownClassHandler(object sender, RoutedEventArgs e)
+    {
+        if (e.Handled || sender is not UIElement owner || e is not KeyEventArgs keyArgs)
+        {
+            return;
+        }
+
+        if (keyArgs.Key != Key.F10 || keyArgs.KeyboardModifiers != ModifierKeys.Shift)
+        {
+            return;
+        }
+
+        if (TryOpenAttachedForKeyboard(owner))
+        {
+            e.Handled = true;
+        }
+    }
+
+    private static bool TryOpenAttachedForKeyboard(UIElement owner)
+    {
+        var menu = GetContextMenu(owner);
+        if (menu == null)
+        {
+            return false;
+        }
+
+        return TryOpenCore(owner, menu, isKeyboardRequest: true, position: null);
+    }
+
+    private static bool TryOpenCore(UIElement owner, ContextMenu menu, bool isKeyboardRequest, Point? position)
+    {
+        if (!CanOpen(owner))
+        {
+            return false;
+        }
+
+        var openingArgs = position is Point point
+            ? new ContextMenuEventArgs(owner, opening: true, point.X, point.Y)
+            : new ContextMenuEventArgs(owner, opening: true);
+        openingArgs.RoutedEvent = ContextMenuOpeningEvent;
+        owner.RaiseEvent(openingArgs);
+        if (openingArgs.Handled)
+        {
+            return false;
+        }
+
+        ApplyAttachedSettings(owner, menu, isKeyboardRequest);
+
+        // Popup light-dismiss can leave internal popup state stale when reopening quickly.
+        if (menu.IsOpen)
+        {
+            menu.Close();
+        }
+
+        TrackMenuState(menu, owner, position);
+
+        if (position is Point explicitPosition)
+        {
+            menu.Open(explicitPosition);
+        }
+        else
+        {
+            menu.IsOpen = true;
+        }
+
+        return true;
+    }
+
+    private static bool CanOpen(UIElement owner)
+    {
+        if (!GetIsEnabled(owner))
+        {
+            return false;
+        }
+
+        if (owner.IsEnabled)
+        {
+            return true;
+        }
+
+        return GetShowOnDisabled(owner);
+    }
+
+    private static void ApplyAttachedSettings(UIElement owner, ContextMenu menu, bool isKeyboardRequest)
+    {
+        menu.PlacementTarget = GetPlacementTarget(owner) ?? owner;
+
+        var placement = GetPlacement(owner);
+        if (isKeyboardRequest &&
+            (placement == PlacementMode.Mouse || placement == PlacementMode.MousePoint))
+        {
+            placement = PlacementMode.Bottom;
+        }
+
+        menu.Placement = placement;
+        menu.HorizontalOffset = GetHorizontalOffset(owner);
+        menu.VerticalOffset = GetVerticalOffset(owner);
+    }
+
+    private static void TrackMenuState(ContextMenu menu, UIElement owner, Point? position)
+    {
+        menu.Closed -= OnTrackedMenuClosed;
+        menu.Closed += OnTrackedMenuClosed;
+        s_openStates[menu] = position is Point p
+            ? new ContextMenuOpenState(owner, HasPosition: true, p)
+            : new ContextMenuOpenState(owner, HasPosition: false, Point.Zero);
+    }
+
+    private static void OnTrackedMenuClosed(object? sender, RoutedEventArgs e)
+    {
+        if (sender is not ContextMenu menu || !s_openStates.TryGetValue(menu, out var state))
+        {
+            return;
+        }
+
+        s_openStates.Remove(menu);
+
+        var args = state.HasPosition
+            ? new ContextMenuEventArgs(state.Owner, opening: false, state.Position.X, state.Position.Y)
+            : new ContextMenuEventArgs(state.Owner, opening: false);
+        args.RoutedEvent = ContextMenuClosingEvent;
+        state.Owner.RaiseEvent(args);
     }
 
     #endregion

@@ -6,10 +6,17 @@ namespace Jalium.UI.Controls.Primitives;
 /// Used within the template of an item control to specify the place in the control's
 /// visual tree where the ItemsPanel defined by the ItemsControl is to be added.
 /// </summary>
-public sealed class ItemsPresenter : FrameworkElement
+public sealed class ItemsPresenter : FrameworkElement, IScrollInfo
 {
     private Panel? _itemsPanel;
     private ItemsControl? _owner;
+    private bool _canHorizontallyScroll;
+    private bool _canVerticallyScroll;
+    private double _horizontalOffset;
+    private double _verticalOffset;
+    private ScrollViewer? _scrollOwner;
+
+    private IScrollInfo? CurrentScrollInfo => _itemsPanel as IScrollInfo;
 
     /// <summary>
     /// Gets the panel that hosts the items.
@@ -54,6 +61,13 @@ public sealed class ItemsPresenter : FrameworkElement
 
             // Default to StackPanel if no template
             _itemsPanel ??= new StackPanel { Orientation = Orientation.Vertical };
+
+            if (_itemsPanel is IScrollInfo scrollInfo)
+            {
+                scrollInfo.ScrollOwner = _scrollOwner;
+                scrollInfo.CanHorizontallyScroll = _canHorizontallyScroll;
+                scrollInfo.CanVerticallyScroll = _canVerticallyScroll;
+            }
 
             AddVisualChild(_itemsPanel);
         }
@@ -117,4 +131,187 @@ public sealed class ItemsPresenter : FrameworkElement
             return _itemsPanel;
         throw new ArgumentOutOfRangeException(nameof(index));
     }
+
+    #region IScrollInfo
+
+    public bool CanHorizontallyScroll
+    {
+        get => CurrentScrollInfo?.CanHorizontallyScroll ?? _canHorizontallyScroll;
+        set
+        {
+            _canHorizontallyScroll = value;
+            if (CurrentScrollInfo != null)
+            {
+                CurrentScrollInfo.CanHorizontallyScroll = value;
+            }
+        }
+    }
+
+    public bool CanVerticallyScroll
+    {
+        get => CurrentScrollInfo?.CanVerticallyScroll ?? _canVerticallyScroll;
+        set
+        {
+            _canVerticallyScroll = value;
+            if (CurrentScrollInfo != null)
+            {
+                CurrentScrollInfo.CanVerticallyScroll = value;
+            }
+        }
+    }
+
+    public double ExtentWidth => CurrentScrollInfo?.ExtentWidth ?? (_itemsPanel?.DesiredSize.Width ?? 0);
+
+    public double ExtentHeight => CurrentScrollInfo?.ExtentHeight ?? (_itemsPanel?.DesiredSize.Height ?? 0);
+
+    public double ViewportWidth => CurrentScrollInfo?.ViewportWidth ?? RenderSize.Width;
+
+    public double ViewportHeight => CurrentScrollInfo?.ViewportHeight ?? RenderSize.Height;
+
+    public double HorizontalOffset => CurrentScrollInfo?.HorizontalOffset ?? _horizontalOffset;
+
+    public double VerticalOffset => CurrentScrollInfo?.VerticalOffset ?? _verticalOffset;
+
+    public ScrollViewer? ScrollOwner
+    {
+        get => _scrollOwner;
+        set
+        {
+            _scrollOwner = value;
+            if (CurrentScrollInfo != null)
+            {
+                CurrentScrollInfo.ScrollOwner = value;
+            }
+        }
+    }
+
+    public void LineUp()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.LineUp();
+        }
+    }
+
+    public void LineDown()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.LineDown();
+        }
+    }
+
+    public void LineLeft()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.LineLeft();
+        }
+    }
+
+    public void LineRight()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.LineRight();
+        }
+    }
+
+    public void PageUp()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.PageUp();
+        }
+    }
+
+    public void PageDown()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.PageDown();
+        }
+    }
+
+    public void PageLeft()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.PageLeft();
+        }
+    }
+
+    public void PageRight()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.PageRight();
+        }
+    }
+
+    public void MouseWheelUp()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.MouseWheelUp();
+        }
+    }
+
+    public void MouseWheelDown()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.MouseWheelDown();
+        }
+    }
+
+    public void MouseWheelLeft()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.MouseWheelLeft();
+        }
+    }
+
+    public void MouseWheelRight()
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.MouseWheelRight();
+        }
+    }
+
+    public void SetHorizontalOffset(double offset)
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.SetHorizontalOffset(offset);
+            return;
+        }
+
+        _horizontalOffset = offset;
+    }
+
+    public void SetVerticalOffset(double offset)
+    {
+        if (CurrentScrollInfo != null)
+        {
+            CurrentScrollInfo.SetVerticalOffset(offset);
+            return;
+        }
+
+        _verticalOffset = offset;
+    }
+
+    public Rect MakeVisible(Visual visual, Rect rectangle)
+    {
+        if (CurrentScrollInfo != null)
+        {
+            return CurrentScrollInfo.MakeVisible(visual, rectangle);
+        }
+
+        return rectangle;
+    }
+
+    #endregion
 }

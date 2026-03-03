@@ -13,7 +13,20 @@ public sealed class DockLayout : ContentControl
 {
     private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(ThemeColors.WindowBackground);
 
+    public static readonly DependencyProperty CanFloatProperty =
+        DependencyProperty.Register(nameof(CanFloat), typeof(bool), typeof(DockLayout),
+            new PropertyMetadata(true));
+
     private bool _isDockHighlighted;
+
+    /// <summary>
+    /// Controls whether dock items in this layout can be torn off into standalone windows.
+    /// </summary>
+    public bool CanFloat
+    {
+        get => (bool)(GetValue(CanFloatProperty) ?? true);
+        set => SetValue(CanFloatProperty, value);
+    }
 
     /// <summary>
     /// When true, an accent border is drawn to indicate this layout is a dock target.

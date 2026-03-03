@@ -674,7 +674,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 DrawImeComposition(dc, fontFamily, fontSize);
                 if (applyGutterOverflowShield)
                     DrawGutterOverflowShield(dc, contentHeight, fontFamily, fontSize);
-                DrawFoldingMarkers(dc, contentHeight);
+                DrawFoldingMarkers(dc, contentWidth, contentHeight);
                 bool hasFoldedHintTooltip = DrawFoldedSectionHoverTooltip(dc, contentWidth, contentHeight, fontFamily, fontSize);
                 if (!hasFoldedHintTooltip)
                     DrawScopeGuideHoverTooltip(dc, contentWidth, contentHeight, fontFamily, fontSize);
@@ -1476,6 +1476,17 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         if (!ShowLineNumbers || _view.LineHeight <= 0 || _foldingManager.Foldings.Count == 0)
             return false;
 
+        double contentWidth = GetContentRenderWidth(RenderSize.Width);
+        double contentHeight = GetContentRenderHeight(RenderSize.Height);
+        if (contentWidth <= 0 || contentHeight <= 0)
+            return false;
+
+        double gutterRight = Math.Min(contentWidth, Math.Max(0, _view.TextAreaLeft));
+        if (gutterRight <= 0)
+            return false;
+        if (position.X < 0 || position.X > gutterRight || position.Y < 0 || position.Y > contentHeight)
+            return false;
+
         int lineNumber = _view.GetLineNumberFromY(position.Y);
         section = _foldingManager.GetFoldingAt(lineNumber);
         if (section == null)
@@ -1485,6 +1496,13 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             return false;
 
         markerRect = GetFoldingMarkerRect(lineTop);
+        if (markerRect.IsEmpty || markerRect.Left < 0 || markerRect.Right > gutterRight + 0.5)
+        {
+            markerRect = Rect.Empty;
+            section = null;
+            return false;
+        }
+
         return markerRect.Contains(position);
     }
 
@@ -1582,7 +1600,20 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         double viewportHeight = Math.Max(0, viewportRect.Height);
         if (viewportHeight > 0)
         {
-            double targetViewportTop = position.Y - viewportHeight * 0.5;
+            // Keep the visible viewport indicator minimum height for usability, but
+            // use the logical (unclamped) viewport height when mapping click-to-offset.
+            // This avoids a no-op quantization zone when the visible indicator is clamped
+            // to the minimum height on very large documents.
+            double logicalViewportHeight = viewportHeight;
+            double maxOffset = GetMaxVerticalOffset();
+            double extent = Math.Max(Math.Max(0, _view.TotalContentHeight), maxOffset + Math.Max(0, _view.ViewportHeight));
+            if (extent > 0 && _minimapRect.Height > 0 && _view.ViewportHeight > 0)
+            {
+                double scaledViewportHeight = (_view.ViewportHeight / extent) * _minimapRect.Height;
+                logicalViewportHeight = Math.Clamp(scaledViewportHeight, 0, _minimapRect.Height);
+            }
+
+            double targetViewportTop = position.Y - logicalViewportHeight * 0.5;
             double targetOffset = _minimapRenderer.GetVerticalOffsetFromViewportTop(targetViewportTop, _minimapRect, _view);
             SetVerticalOffset(targetOffset, allowAnimation: allowAnimation, userInitiated: true);
             return;
@@ -4300,75 +4331,96 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             fontSize);
     }
 
-    private void DrawFoldingMarkers(DrawingContext dc, double contentHeight)
+    private void DrawFoldingMarkers(DrawingContext dc, double contentWidth, double contentHeight)
     {
-        if (!ShowLineNumbers || _view.LineHeight <= 0 || _foldingManager.Foldings.Count == 0 || contentHeight <= 0)
+        if (!ShowLineNumbers ||
+            _view.LineHeight <= 0 ||
+            _foldingManager.Foldings.Count == 0 ||
+            contentWidth <= 0 ||
+            contentHeight <= 0)
             return;
 
-        int firstVisibleLine = _view.FirstVisibleLineNumber;
-        int lastVisibleLine = _view.LastVisibleLineNumber;
-        int previousStartLine = -1;
-        var foldings = _foldingManager.Foldings;
-        for (int i = 0; i < foldings.Count; i++)
+        // Folding glyphs belong to the fixed gutter lane only.
+        // Guard with an explicit gutter clip so they never leak into the editor content
+        // area or right-side scrollbar track when host clipping/layout is tight.
+        double gutterRight = Math.Min(contentWidth, Math.Max(0, _view.TextAreaLeft));
+        if (gutterRight <= 0)
+            return;
+
+        dc.PushClip(new RectangleGeometry(new Rect(0, 0, gutterRight, contentHeight)));
+        try
         {
-            var section = foldings[i];
-            if (section.StartLine < firstVisibleLine - 1)
-                continue;
-            if (section.StartLine > lastVisibleLine + 1)
-                break;
-            if (section.StartLine == previousStartLine)
-                continue;
-            previousStartLine = section.StartLine;
-
-            if (!_view.TryGetLineTop(section.StartLine, out double lineTop))
-                continue;
-
-            if (lineTop + _view.LineHeight < 0 || lineTop > contentHeight)
-                continue;
-
-            var markerRect = GetFoldingMarkerRect(lineTop);
-            if (markerRect.IsEmpty)
-                continue;
-
-            bool isSelected = IsFoldingSectionSelected(section);
-            if (isSelected)
-                dc.DrawRoundedRectangle(s_foldingMarkerSelectedBackgroundBrush, null, markerRect, 2, 2);
-
-            double centerX = markerRect.X + markerRect.Width * 0.5;
-            double centerY = markerRect.Y + markerRect.Height * 0.5;
-
-            if (!section.IsFolded)
+            int firstVisibleLine = _view.FirstVisibleLineNumber;
+            int lastVisibleLine = _view.LastVisibleLineNumber;
+            int previousStartLine = -1;
+            var foldings = _foldingManager.Foldings;
+            for (int i = 0; i < foldings.Count; i++)
             {
-                GetScopeGuideLineRange(section, out int scopeStartLine, out int scopeEndLine);
-                if (scopeEndLine > scopeStartLine &&
-                    _view.TryGetLineTop(scopeStartLine, out double scopeStartLineTop) &&
-                    _view.TryGetLineTop(scopeEndLine, out double endLineTop))
-                {
-                    double guideStartY = scopeStartLineTop + _view.LineHeight + ScopeGuideInnerStartInset;
-                    double guideEndY = endLineTop - ScopeGuideInnerEndInset;
-                    if (guideEndY > guideStartY + 0.5)
-                    {
-                        dc.DrawLine(
-                            s_foldingGuidePen,
-                            new Point(centerX, guideStartY),
-                            new Point(centerX, guideEndY));
+                var section = foldings[i];
+                if (section.StartLine < firstVisibleLine - 1)
+                    continue;
+                if (section.StartLine > lastVisibleLine + 1)
+                    break;
+                if (section.StartLine == previousStartLine)
+                    continue;
+                previousStartLine = section.StartLine;
 
-                        dc.DrawLine(
-                            s_foldingGuidePen,
-                            new Point(centerX, guideEndY),
-                            new Point(centerX + Math.Max(4, markerRect.Width * 0.45), guideEndY));
+                if (!_view.TryGetLineTop(section.StartLine, out double lineTop))
+                    continue;
+
+                if (lineTop + _view.LineHeight < 0 || lineTop > contentHeight)
+                    continue;
+
+                var markerRect = GetFoldingMarkerRect(lineTop);
+                if (markerRect.IsEmpty)
+                    continue;
+                if (markerRect.Left < 0 || markerRect.Right > gutterRight + 0.5)
+                    continue;
+
+                bool isSelected = IsFoldingSectionSelected(section);
+                if (isSelected)
+                    dc.DrawRoundedRectangle(s_foldingMarkerSelectedBackgroundBrush, null, markerRect, 2, 2);
+
+                double centerX = markerRect.X + markerRect.Width * 0.5;
+                double centerY = markerRect.Y + markerRect.Height * 0.5;
+
+                if (!section.IsFolded)
+                {
+                    GetScopeGuideLineRange(section, out int scopeStartLine, out int scopeEndLine);
+                    if (scopeEndLine > scopeStartLine &&
+                        _view.TryGetLineTop(scopeStartLine, out double scopeStartLineTop) &&
+                        _view.TryGetLineTop(scopeEndLine, out double endLineTop))
+                    {
+                        double guideStartY = scopeStartLineTop + _view.LineHeight + ScopeGuideInnerStartInset;
+                        double guideEndY = endLineTop - ScopeGuideInnerEndInset;
+                        if (guideEndY > guideStartY + 0.5)
+                        {
+                            dc.DrawLine(
+                                s_foldingGuidePen,
+                                new Point(centerX, guideStartY),
+                                new Point(centerX, guideEndY));
+
+                            dc.DrawLine(
+                                s_foldingGuidePen,
+                                new Point(centerX, guideEndY),
+                                new Point(centerX + Math.Max(4, markerRect.Width * 0.45), guideEndY));
+                        }
                     }
                 }
-            }
-            else if (section.IsFolded)
-            {
-                dc.DrawLine(
-                    s_foldingGuidePen,
-                    new Point(centerX, centerY),
-                    new Point(centerX + Math.Max(3, markerRect.Width * 0.4), centerY));
-            }
+                else if (section.IsFolded)
+                {
+                    dc.DrawLine(
+                        s_foldingGuidePen,
+                        new Point(centerX, centerY),
+                        new Point(centerX + Math.Max(3, markerRect.Width * 0.4), centerY));
+                }
 
-            DrawFoldingChevron(dc, markerRect, section.IsFolded, isSelected);
+                DrawFoldingChevron(dc, markerRect, section.IsFolded, isSelected);
+            }
+        }
+        finally
+        {
+            dc.Pop();
         }
     }
 

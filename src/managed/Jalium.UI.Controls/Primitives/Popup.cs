@@ -325,11 +325,9 @@ public sealed partial class Popup : FrameworkElement
         _parentWindow = GetParentWindow();
         if (_parentWindow == null) return;
 
-        // Ensure implicit style (including ControlTemplate) is applied before measuring.
-        // Normally applied when the element gets a visual parent (OnVisualParentChanged),
-        // but popup children are measured before being added to the visual tree.
-        if (child is FrameworkElement feForStyle)
-            feForStyle.ApplyImplicitStyleIfNeeded();
+        // Prepare full popup subtree before measuring.
+        // Popup children are measured before attachment, so style/template/bindings must be ready now.
+        PreparePopupSubtree(child);
 
         // Force fresh layout when re-opening: child may have been detached
         // from a previous PopupRoot and its IsMeasureValid is stale
@@ -810,6 +808,21 @@ public sealed partial class Popup : FrameworkElement
         {
             if (element.GetVisualChild(i) is UIElement child)
                 InvalidateSubtree(child);
+        }
+    }
+
+    private static void PreparePopupSubtree(UIElement element)
+    {
+        if (element is FrameworkElement fe)
+        {
+            fe.ApplyImplicitStyleIfNeeded();
+            fe.ReactivateBindings();
+        }
+
+        for (int i = 0; i < element.VisualChildrenCount; i++)
+        {
+            if (element.GetVisualChild(i) is UIElement child)
+                PreparePopupSubtree(child);
         }
     }
 

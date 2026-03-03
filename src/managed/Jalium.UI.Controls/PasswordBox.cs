@@ -92,8 +92,8 @@ public sealed class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the Placeholder dependency property.
     /// </summary>
-    public static readonly DependencyProperty PlaceholderProperty =
-        DependencyProperty.Register(nameof(Placeholder), typeof(string), typeof(PasswordBox),
+    public static readonly DependencyProperty PlaceholderTextProperty =
+        DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(PasswordBox),
             new PropertyMetadata(string.Empty, OnVisualPropertyChanged));
 
     /// <summary>
@@ -253,10 +253,10 @@ public sealed class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the placeholder text shown when the password is empty.
     /// </summary>
-    public string Placeholder
+    public string PlaceholderText
     {
-        get => (string)(GetValue(PlaceholderProperty) ?? string.Empty);
-        set => SetValue(PlaceholderProperty, value);
+        get => (string)(GetValue(PlaceholderTextProperty) ?? string.Empty);
+        set => SetValue(PlaceholderTextProperty, value);
     }
 
     /// <summary>
@@ -662,10 +662,10 @@ public sealed class PasswordBox : Control, IImeSupport
         // Draw text or placeholder
         if (string.IsNullOrEmpty(_password))
         {
-            if (!string.IsNullOrEmpty(Placeholder))
+            if (!string.IsNullOrEmpty(PlaceholderText))
             {
                 var placeholderBrush = s_placeholderBrush;
-                var formattedPlaceholder = new FormattedText(Placeholder, FontFamily ?? "Segoe UI", FontSize)
+                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily ?? "Segoe UI", FontSize)
                 {
                     Foreground = placeholderBrush,
                     MaxTextWidth = contentRect.Width,

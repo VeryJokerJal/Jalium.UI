@@ -178,17 +178,26 @@ public abstract class FlyoutBase : DependencyObject
             IsLightDismissEnabled = true
         };
 
-        var border = new Border
+        if (_presenter is global::Jalium.UI.Controls.MenuFlyoutPresenter)
         {
-            Child = _presenter,
-            Background = new Jalium.UI.Media.SolidColorBrush(Jalium.UI.Media.Color.FromRgb(45, 45, 48)),
-            BorderBrush = new Jalium.UI.Media.SolidColorBrush(Jalium.UI.Media.Color.FromRgb(67, 67, 70)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(4)
-        };
+            // MenuFlyoutPresenter already paints its own popup chrome.
+            // Avoid wrapping it with another Border, which creates double-border visuals.
+            _popup.Child = _presenter;
+        }
+        else
+        {
+            var border = new Border
+            {
+                Child = _presenter,
+                Background = new Jalium.UI.Media.SolidColorBrush(Jalium.UI.Media.Color.FromRgb(45, 45, 48)),
+                BorderBrush = new Jalium.UI.Media.SolidColorBrush(Jalium.UI.Media.Color.FromRgb(67, 67, 70)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(8),
+                Padding = new Thickness(4)
+            };
 
-        _popup.Child = border;
+            _popup.Child = border;
+        }
         _popup.Closed += (_, _) =>
         {
             Closed?.Invoke(this, EventArgs.Empty);

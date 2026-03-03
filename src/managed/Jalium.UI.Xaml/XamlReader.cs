@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Diagnostics.CodeAnalysis;
+﻿using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using System.Xml;
 using Jalium.UI;
@@ -283,6 +282,9 @@ public static class XamlReader
     {
         var elementName = reader.LocalName;
         var namespaceUri = reader.NamespaceURI;
+        var lineInfo = reader as IXmlLineInfo;
+        var lineNumber = lineInfo != null && lineInfo.HasLineInfo() ? lineInfo.LineNumber : 0;
+        var linePosition = lineInfo != null && lineInfo.HasLineInfo() ? lineInfo.LinePosition : 0;
 
         object instance;
 
@@ -334,12 +336,12 @@ public static class XamlReader
             // Post-process Setter to convert Value based on Property type
             if (instance is Setter setter)
             {
-                PostProcessSetter(setter, context);
+                PostProcessSetter(setter, context, lineNumber, linePosition);
             }
             // Post-process PropertyTrigger to convert Value based on Property type
             else if (instance is PropertyTrigger propertyTrigger)
             {
-                PostProcessPropertyTrigger(propertyTrigger, context);
+                PostProcessPropertyTrigger(propertyTrigger, context, lineNumber, linePosition);
             }
             // Post-process DataTrigger to convert Value based on the binding's result type
             else if (instance is DataTrigger dataTrigger)
@@ -349,7 +351,7 @@ public static class XamlReader
             // Post-process MultiTrigger to convert Condition values based on Property type
             else if (instance is MultiTrigger multiTrigger)
             {
-                PostProcessMultiTrigger(multiTrigger, context);
+                PostProcessMultiTrigger(multiTrigger, context, lineNumber, linePosition);
             }
 
             return instance;
@@ -393,7 +395,7 @@ public static class XamlReader
             else
             {
                 // Regular property
-                SetProperty(instance, attrName, attrValue, context);
+                SetProperty(instance, attrName, attrValue, context, reader);
             }
         }
 
@@ -579,7 +581,11 @@ public static class XamlReader
                 var childValue = ParseElement(reader, context);
                 var resourceKey = context.GetCurrentResourceKey() ?? explicitKey;
 
-                if (isCollection && propertyValue != null)
+                if (property.PropertyType == typeof(ResourceDictionary) && childValue is ResourceDictionary dictionaryValue)
+                {
+                    property.SetValue(instance, dictionaryValue);
+                }
+                else if (isCollection && propertyValue != null)
                 {
                     if (propertyValue is System.Collections.IDictionary dictionary)
                     {
@@ -846,35 +852,7 @@ public static class XamlReader
     /// </summary>
     private static void HandleResourceDictionarySource(ResourceDictionary resourceDict, string sourceValue, XamlParserContext context)
     {
-        // Create URI from source value
-        Uri sourceUri;
-        if (Uri.TryCreate(sourceValue, UriKind.Absolute, out var absoluteUri))
-        {
-            sourceUri = absoluteUri;
-        }
-        else
-        {
-            // Relative URI - resolve against BaseUri
-            if (context.BaseUri != null)
-            {
-                // For pack:// URIs, we need to handle the path resolution differently
-                var baseUriString = context.BaseUri.ToString();
-                var lastSlash = baseUriString.LastIndexOf('/');
-                if (lastSlash >= 0)
-                {
-                    var basePath = baseUriString.Substring(0, lastSlash + 1);
-                    sourceUri = new Uri(basePath + sourceValue, UriKind.Absolute);
-                }
-                else
-                {
-                    sourceUri = new Uri(context.BaseUri, sourceValue);
-                }
-            }
-            else
-            {
-                sourceUri = new Uri(sourceValue, UriKind.Relative);
-            }
-        }
+        var sourceUri = ResolveResourceDictionarySourceUri(sourceValue, context);
 
         // Store the Source URI on the ResourceDictionary
         resourceDict.Source = sourceUri;
@@ -905,11 +883,130 @@ public static class XamlReader
                 LoadResourceDictionaryFromUri(resourceDict, sourceUri, context, parentDict);
             }
         }
-        catch (XamlParseException ex)
+        catch (XamlParseException)
         {
-            // Log but don't throw - allow remaining MergedDictionaries to load
-            System.Diagnostics.Debug.WriteLine($"[XamlReader] Warning: Failed to load ResourceDictionary Source='{sourceValue}': {ex.Message}");
+            // Ignore and continue loading remaining merged dictionaries.
         }
+    }
+
+    private static Uri ResolveResourceDictionarySourceUri(string sourceValue, XamlParserContext context)
+    {
+        var normalizedSource = sourceValue.Replace('\\', '/');
+
+        if (TryParsePackComponentUri(normalizedSource, out var packAssembly, out var packPath))
+        {
+            return BuildResourceUri(packAssembly, packPath);
+        }
+
+        if (Uri.TryCreate(normalizedSource, UriKind.Absolute, out var absoluteUri))
+        {
+            if (TryParsePackComponentUri(absoluteUri.ToString(), out packAssembly, out packPath))
+            {
+                return BuildResourceUri(packAssembly, packPath);
+            }
+
+            return absoluteUri;
+        }
+
+        if (normalizedSource.StartsWith("/", StringComparison.Ordinal))
+        {
+            var absolutePath = normalizedSource.TrimStart('/');
+            if (context.SourceAssembly != null)
+            {
+                return BuildResourceUri(context.SourceAssembly.GetName().Name ?? string.Empty, absolutePath);
+            }
+
+            if (context.BaseUri != null &&
+                TryParseResourceUri(context.BaseUri.ToString(), out var baseAssembly, out _))
+            {
+                return BuildResourceUri(baseAssembly, absolutePath);
+            }
+
+            return new Uri(absolutePath, UriKind.Relative);
+        }
+
+        if (context.BaseUri != null &&
+            TryParseResourceUri(context.BaseUri.ToString(), out var relativeAssembly, out var basePath))
+        {
+            var slash = basePath.LastIndexOf('/');
+            var baseDirectory = slash >= 0 ? basePath.Substring(0, slash + 1) : string.Empty;
+            var combinedPath = CombineRelativeResourcePath(baseDirectory, normalizedSource);
+            return BuildResourceUri(relativeAssembly, combinedPath);
+        }
+
+        if (context.BaseUri != null)
+        {
+            return new Uri(context.BaseUri, normalizedSource);
+        }
+
+        return new Uri(normalizedSource, UriKind.Relative);
+    }
+
+    private static Uri BuildResourceUri(string assemblyName, string resourcePath)
+    {
+        var normalizedAssembly = assemblyName.Trim('/');
+        var normalizedPath = resourcePath.Replace('\\', '/').TrimStart('/');
+        return new Uri($"resource:///{normalizedAssembly}/{normalizedPath}", UriKind.Absolute);
+    }
+
+    private static string CombineRelativeResourcePath(string baseDirectory, string relativePath)
+    {
+        var normalizedBase = baseDirectory.Replace('\\', '/').TrimStart('/');
+        if (!string.IsNullOrEmpty(normalizedBase) && !normalizedBase.EndsWith("/", StringComparison.Ordinal))
+        {
+            normalizedBase += "/";
+        }
+
+        var dummyBase = new Uri($"http://relative-base/{normalizedBase}", UriKind.Absolute);
+        return new Uri(dummyBase, relativePath).AbsolutePath.TrimStart('/');
+    }
+
+    private static bool TryParsePackComponentUri(string uriValue, out string assemblyName, out string componentPath)
+    {
+        assemblyName = string.Empty;
+        componentPath = string.Empty;
+
+        const string separator = ";component/";
+        var separatorIndex = uriValue.IndexOf(separator, StringComparison.OrdinalIgnoreCase);
+        if (separatorIndex < 0)
+            return false;
+
+        var assemblyPart = uriValue.Substring(0, separatorIndex);
+        var slashIndex = assemblyPart.LastIndexOf('/');
+        if (slashIndex >= 0)
+        {
+            assemblyPart = assemblyPart[(slashIndex + 1)..];
+        }
+
+        var path = uriValue.Substring(separatorIndex + separator.Length).TrimStart('/');
+        if (string.IsNullOrWhiteSpace(assemblyPart) || string.IsNullOrWhiteSpace(path))
+            return false;
+
+        assemblyName = assemblyPart;
+        componentPath = path;
+        return true;
+    }
+
+    private static bool TryParseResourceUri(string uriText, out string assemblyName, out string resourcePath)
+    {
+        const string prefix = "resource:///";
+        assemblyName = string.Empty;
+        resourcePath = string.Empty;
+
+        if (!uriText.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var path = uriText.Substring(prefix.Length);
+        var slash = path.IndexOf('/');
+        if (slash < 0)
+        {
+            assemblyName = path;
+            return !string.IsNullOrWhiteSpace(assemblyName);
+        }
+
+        assemblyName = path.Substring(0, slash);
+        resourcePath = path.Substring(slash + 1).TrimStart('/');
+        return !string.IsNullOrWhiteSpace(assemblyName);
     }
 
     /// <summary>
@@ -918,41 +1015,34 @@ public static class XamlReader
     private static void LoadResourceDictionaryFromUri(ResourceDictionary resourceDict, Uri sourceUri, XamlParserContext context, ResourceDictionary? parentDict = null)
     {
         var assembly = context.SourceAssembly;
-
-        // Convert URI to resource name
-        string resourceName;
         var uriString = sourceUri.ToString();
+        string resourcePath;
 
-        // Handle resource:// URIs (our custom scheme)
-        if (uriString.StartsWith("resource:///", StringComparison.Ordinal))
+        if (TryParsePackComponentUri(uriString, out var packAssembly, out var packPath))
         {
-            var path = uriString.Substring("resource:///".Length);
-            // Extract assembly name and resource path (format: AssemblyName/path/to/resource)
-            var firstSlash = path.IndexOf('/');
-            if (firstSlash >= 0)
+            resourcePath = packPath;
+            var loadedAssembly = FindAssemblyByName(packAssembly);
+            if (loadedAssembly != null)
             {
-                var assemblyName = path.Substring(0, firstSlash);
-                resourceName = path.Substring(firstSlash + 1);
-
-                // AOT-safe: Use compile-time known assembly references
-                var loadedAssembly = FindAssemblyByName(assemblyName);
-                if (loadedAssembly != null)
-                {
-                    assembly = loadedAssembly;
-                }
+                assembly = loadedAssembly;
             }
-            else
+        }
+        else if (TryParseResourceUri(uriString, out var resourceAssembly, out var parsedPath))
+        {
+            resourcePath = parsedPath;
+            var loadedAssembly = FindAssemblyByName(resourceAssembly);
+            if (loadedAssembly != null)
             {
-                resourceName = path;
+                assembly = loadedAssembly;
             }
         }
         else if (sourceUri.IsAbsoluteUri)
         {
-            resourceName = sourceUri.LocalPath.TrimStart('/');
+            resourcePath = sourceUri.LocalPath.TrimStart('/');
         }
         else
         {
-            resourceName = uriString;
+            resourcePath = uriString.TrimStart('/');
         }
 
         // If assembly is still null, try to get it from the ResourceDictionary or find by convention
@@ -973,20 +1063,40 @@ public static class XamlReader
             throw new XamlParseException($"Cannot load ResourceDictionary from '{sourceUri}': no source assembly available.");
         }
 
-        // Normalize the resource name (replace slashes with dots for embedded resources)
-        var normalizedResourceName = resourceName.Replace('/', '.').Replace('\\', '.');
-
-        // Try to load the embedded resource
-        var stream = GetResourceStream(normalizedResourceName, assembly);
-        if (stream == null)
+        var pathCandidates = BuildResourcePathCandidates(resourcePath).ToList();
+        if (pathCandidates.Count == 0)
         {
-            // Try with the original path format
-            stream = GetResourceStream(resourceName, assembly);
+            throw new XamlParseException($"Cannot load ResourceDictionary from '{sourceUri}': resolved resource path is empty.");
+        }
+
+        var attemptedCandidates = new List<string>();
+        Stream? stream = null;
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var pathCandidate in pathCandidates)
+        {
+            foreach (var manifestCandidate in BuildManifestLookupCandidates(pathCandidate, assembly.GetName().Name ?? string.Empty))
+            {
+                if (!seen.Add(manifestCandidate))
+                    continue;
+
+                attemptedCandidates.Add(manifestCandidate);
+                stream = GetResourceStream(manifestCandidate, assembly);
+                if (stream != null)
+                {
+                    break;
+                }
+            }
+
+            if (stream != null)
+                break;
         }
 
         if (stream == null)
         {
-            throw new XamlParseException($"Cannot find embedded resource '{resourceName}' in assembly '{assembly.GetName().Name}'.");
+            throw new XamlParseException(
+                $"Cannot find embedded ResourceDictionary for '{sourceUri}' in assembly '{assembly.GetName().Name}'. " +
+                $"Candidates=[{string.Join(", ", attemptedCandidates)}].");
         }
 
         using (stream)
@@ -1009,17 +1119,50 @@ public static class XamlReader
         }
     }
 
+    private static IEnumerable<string> BuildResourcePathCandidates(string resourcePath)
+    {
+        var normalized = Uri.UnescapeDataString(resourcePath)
+            .Replace('\\', '/')
+            .TrimStart('/');
+
+        if (string.IsNullOrWhiteSpace(normalized))
+            yield break;
+
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (seen.Add(normalized))
+            yield return normalized;
+
+        if (normalized.EndsWith(".xaml", StringComparison.OrdinalIgnoreCase))
+        {
+            var jalxaml = normalized.Substring(0, normalized.Length - ".xaml".Length) + ".jalxaml";
+            if (seen.Add(jalxaml))
+                yield return jalxaml;
+        }
+        else if (!normalized.EndsWith(".jalxaml", StringComparison.OrdinalIgnoreCase))
+        {
+            var jalxaml = $"{normalized}.jalxaml";
+            if (seen.Add(jalxaml))
+                yield return jalxaml;
+        }
+    }
+
+    private static IEnumerable<string> BuildManifestLookupCandidates(string resourcePath, string assemblyName)
+    {
+        var normalizedPath = resourcePath.Replace('\\', '/').TrimStart('/');
+        var dottedPath = normalizedPath.Replace('/', '.');
+
+        yield return normalizedPath;
+        yield return dottedPath;
+        yield return $"{assemblyName}.{normalizedPath}";
+        yield return $"{assemblyName}.{dottedPath}";
+    }
+
     [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
         Justification = "Types are registered in XamlTypeRegistry with DynamicallyAccessedMembers")]
-    private static void SetProperty(object instance, string propertyName, object? value, XamlParserContext context)
+    private static void SetProperty(object instance, string propertyName, object? value, XamlParserContext context, XmlReader? reader = null)
     {
         var type = instance.GetType();
         var property = type.GetProperty(propertyName);
-
-        if (propertyName == "ToolTip")
-        {
-            System.Diagnostics.Debug.WriteLine($"[XamlReader] SetProperty ToolTip on {type.Name}: property={property?.Name}, canWrite={property?.CanWrite}, value={value}");
-        }
 
         if (property == null || !property.CanWrite)
         {
@@ -1060,15 +1203,23 @@ public static class XamlReader
                         return;
                     }
                 }
-                // Property couldn't be resolved against the Style's TargetType.
-                // This happens when a Setter has TargetName pointing to a different element type
-                // (e.g., Setter TargetName="PART_Chevron" Property="Data" where Data is on Path, not NavigationViewItem).
-                // Store the property name for deferred resolution at runtime.
+
                 if (instance is Setter setter)
                 {
+                    // Defer Setter resolution to post-processing so we can handle
+                    // attribute-order cases where TargetName may appear after Property.
                     setter.PropertyName = stringValue;
+                    return;
                 }
-                return;
+
+                if (instance is PropertyTrigger || instance is Condition)
+                {
+                    throw CreateUnresolvedDependencyPropertyException(
+                        instance, propertyName, stringValue, context, reader);
+                }
+
+                throw CreateUnresolvedDependencyPropertyException(
+                    instance, propertyName, stringValue, context, reader);
             }
 
             // Check for markup extension (e.g., {Binding ...})
@@ -1091,6 +1242,67 @@ public static class XamlReader
         {
             property.SetValue(instance, value);
         }
+    }
+
+    private static XamlParseException CreateUnresolvedDependencyPropertyException(
+        object instance,
+        string targetPropertyName,
+        string rawPropertyName,
+        XamlParserContext context,
+        XmlReader? reader)
+    {
+        var styleTargetType = context.FindParent<Style>()?.TargetType?.FullName ?? "<null>";
+        var baseUri = context.BaseUri?.ToString() ?? "<null>";
+        var lineInfoSuffix = TryGetLineInfoSuffix(reader);
+
+        var message =
+            $"Cannot resolve DependencyProperty '{rawPropertyName}' for {instance.GetType().Name}.{targetPropertyName}. " +
+            $"StyleTargetType='{styleTargetType}', BaseUri='{baseUri}'{lineInfoSuffix}.";
+        return new XamlParseException(message);
+    }
+
+    private static XamlParseException CreateTriggerValidationException(
+        string detail,
+        XamlParserContext context,
+        int lineNumber,
+        int linePosition)
+    {
+        var styleTargetType = context.FindParent<Style>()?.TargetType?.FullName ?? "<null>";
+        var baseUri = context.BaseUri?.ToString() ?? "<null>";
+
+        var location = lineNumber > 0
+            ? $"Line={lineNumber}, Position={linePosition}"
+            : "Line=<unknown>, Position=<unknown>";
+
+        return new XamlParseException(
+            $"{detail} StyleTargetType='{styleTargetType}', BaseUri='{baseUri}', {location}.");
+    }
+
+    private static XamlParseException CreateSetterValidationException(
+        string detail,
+        XamlParserContext context,
+        int lineNumber,
+        int linePosition)
+    {
+        var styleTargetType = context.FindParent<Style>()?.TargetType?.FullName ?? "<null>";
+        var baseUri = context.BaseUri?.ToString() ?? "<null>";
+
+        var location = lineNumber > 0
+            ? $"Line={lineNumber}, Position={linePosition}"
+            : "Line=<unknown>, Position=<unknown>";
+
+        return new XamlParseException(
+            $"{detail} StyleTargetType='{styleTargetType}', BaseUri='{baseUri}', {location}.");
+    }
+
+    private static string TryGetLineInfoSuffix(XmlReader? reader)
+    {
+        if (reader is IXmlLineInfo lineInfo && lineInfo.HasLineInfo())
+        {
+            return $", Line={lineInfo.LineNumber}, Position={lineInfo.LinePosition}";
+        }
+
+        return string.Empty;
     }
 
     private static bool TryWireEvent(object instance, string eventName, string handlerName, XamlParserContext context)
@@ -1160,8 +1372,21 @@ public static class XamlReader
         }
     }
 
-    private static void PostProcessSetter(Setter setter, XamlParserContext context)
+    private static void PostProcessSetter(Setter setter, XamlParserContext context, int lineNumber, int linePosition)
     {
+        var styleTargetType = context.FindParent<Style>()?.TargetType;
+        if (setter.Property == null &&
+            !string.IsNullOrWhiteSpace(setter.PropertyName) &&
+            string.IsNullOrWhiteSpace(setter.TargetName) &&
+            styleTargetType != null)
+        {
+            throw CreateSetterValidationException(
+                $"Setter.Property '{setter.PropertyName}' cannot be resolved for the style target type when TargetName is not set.",
+                context,
+                lineNumber,
+                linePosition);
+        }
+
         // If Value is a string and Property is set, convert Value to the correct type
         if (setter.Property != null && setter.Value is string stringValue)
         {
@@ -1196,8 +1421,17 @@ public static class XamlReader
         }
     }
 
-    private static void PostProcessPropertyTrigger(PropertyTrigger trigger, XamlParserContext context)
+    private static void PostProcessPropertyTrigger(PropertyTrigger trigger, XamlParserContext context, int lineNumber, int linePosition)
     {
+        if (trigger.Property == null)
+        {
+            throw CreateTriggerValidationException(
+                "PropertyTrigger.Property is required and must resolve to a DependencyProperty.",
+                context,
+                lineNumber,
+                linePosition);
+        }
+
         // If Value is a string and Property is set, convert Value to the correct type
         if (trigger.Property != null && trigger.Value is string stringValue)
         {
@@ -1262,12 +1496,23 @@ public static class XamlReader
         }
     }
 
-    private static void PostProcessMultiTrigger(MultiTrigger trigger, XamlParserContext context)
+    private static void PostProcessMultiTrigger(MultiTrigger trigger, XamlParserContext context, int lineNumber, int linePosition)
     {
         // Post-process each condition's Value based on its Property type
-        foreach (var condition in trigger.Conditions)
+        for (int i = 0; i < trigger.Conditions.Count; i++)
         {
-            if (condition.Property == null || condition.Value is not string stringValue)
+            var condition = trigger.Conditions[i];
+
+            if (condition.Property == null)
+            {
+                throw CreateTriggerValidationException(
+                    $"MultiTrigger condition at index {i} is missing Property or references an unresolved DependencyProperty.",
+                    context,
+                    lineNumber,
+                    linePosition);
+            }
+
+            if (condition.Value is not string stringValue)
                 continue;
 
             var targetType = condition.Property.PropertyType;
@@ -1719,6 +1964,7 @@ public static class XamlTypeRegistry
     private static void RegisterControlTypes(Dictionary<string, Type> types)
     {
         // Jalium.UI.Controls namespace
+        Register<Application>(types);
         Register<Window>(types);
         Register<Page>(types);
         Register<Frame>(types);
@@ -1772,6 +2018,7 @@ public static class XamlTypeRegistry
         Register<TitleBarButton>(types);
         Register<RowDefinition>(types);
         Register<ColumnDefinition>(types);
+        Register<ScrollBar>(types);
         Register<RepeatButton>(types);
         Register<ToggleSwitch>(types);
         Register<AutoCompleteBox>(types);
@@ -1780,7 +2027,11 @@ public static class XamlTypeRegistry
         Register<InkCanvas>(types);
         Register<EditControl>(types);
         Register<Calendar>(types);
+        Register<CalendarButton>(types);
+        Register<CalendarDayButton>(types);
+        Register<CalendarItem>(types);
         Register<DatePicker>(types);
+        Register<DatePickerTextBox>(types);
         Register<TimePicker>(types);
         Register<ColorPicker>(types);
         Register<StatusBar>(types);
@@ -2306,3 +2557,4 @@ public sealed class XamlParseException : Exception
     public XamlParseException(string message) : base(message) { }
     public XamlParseException(string message, Exception innerException) : base(message, innerException) { }
 }
+

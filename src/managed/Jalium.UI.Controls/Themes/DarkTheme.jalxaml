@@ -65,7 +65,7 @@
     <SolidColorBrush x:Key="TitleBarGlyph" Color="#FFF8FF" />
 
     <!-- ScrollBar Colors -->
-    <SolidColorBrush x:Key="ScrollBarTrack" Color="#231E2D" />
+    <SolidColorBrush x:Key="ScrollBarTrack" Color="#80231E2D" />
     <SolidColorBrush x:Key="ScrollBarThumb" Color="#7B6C96" />
     <SolidColorBrush x:Key="ScrollBarThumbHover" Color="#9081AB" />
     <SolidColorBrush x:Key="ScrollBarThumbActive" Color="#A092BE" />

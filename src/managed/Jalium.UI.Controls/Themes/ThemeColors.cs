@@ -142,7 +142,7 @@ public static class ThemeColors
     /// <summary>
     /// ScrollBar track background.
     /// </summary>
-    public static Color ScrollBarTrack => Color.FromRgb(40, 40, 40);
+    public static Color ScrollBarTrack => Color.FromArgb(128, 40, 40, 40);
 
     /// <summary>
     /// ScrollBar thumb background.

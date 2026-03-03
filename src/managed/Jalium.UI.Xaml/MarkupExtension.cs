@@ -160,6 +160,21 @@ public sealed class BindingExtension : MarkupExtension
     public RelativeSource? RelativeSource { get; set; }
 
     /// <summary>
+    /// Gets or sets a value that indicates whether to use IDataErrorInfo for validation.
+    /// </summary>
+    public bool ValidatesOnDataErrors { get; set; }
+
+    /// <summary>
+    /// Gets or sets a value that indicates whether to use INotifyDataErrorInfo for validation.
+    /// </summary>
+    public bool ValidatesOnNotifyDataErrors { get; set; } = true;
+
+    /// <summary>
+    /// Gets or sets a value that indicates whether to raise validation error events.
+    /// </summary>
+    public bool NotifyOnValidationError { get; set; }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="BindingExtension"/> class.
     /// </summary>
     public BindingExtension()
@@ -190,7 +205,10 @@ public sealed class BindingExtension : MarkupExtension
             FallbackValue = FallbackValue,
             TargetNullValue = TargetNullValue,
             StringFormat = StringFormat,
-            RelativeSource = RelativeSource
+            RelativeSource = RelativeSource,
+            ValidatesOnDataErrors = ValidatesOnDataErrors,
+            ValidatesOnNotifyDataErrors = ValidatesOnNotifyDataErrors,
+            NotifyOnValidationError = NotifyOnValidationError
         };
 
         // If we have target information, set up the binding now
@@ -676,6 +694,8 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
             _templatedParent.PropertyChangedInternal -= OnTemplatedParentPropertyChanged;
             _templatedParent = null;
         }
+
+        Target.ClearLayerValue(TargetProperty, DependencyObject.LayerValueSource.ParentTemplate);
     }
 
     public override void UpdateSource()
@@ -702,7 +722,7 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
             return;
 
         var value = _templatedParent.GetValue(_sourceProperty);
-        Target.SetValue(TargetProperty, value);
+        Target.SetLayerValue(TargetProperty, value, DependencyObject.LayerValueSource.ParentTemplate);
     }
 
     private static FrameworkElement? FindTemplatedParent(DependencyObject target)
@@ -886,6 +906,18 @@ internal static class MarkupExtensionParser
                 break;
             case "relativesource":
                 extension.RelativeSource = ParseRelativeSource(value);
+                break;
+            case "validatesondataerrors":
+                if (bool.TryParse(value, out var validatesOnDataErrors))
+                    extension.ValidatesOnDataErrors = validatesOnDataErrors;
+                break;
+            case "validatesonnotifydataerrors":
+                if (bool.TryParse(value, out var validatesOnNotifyDataErrors))
+                    extension.ValidatesOnNotifyDataErrors = validatesOnNotifyDataErrors;
+                break;
+            case "notifyonvalidationerror":
+                if (bool.TryParse(value, out var notifyOnValidationError))
+                    extension.NotifyOnValidationError = notifyOnValidationError;
                 break;
         }
     }

@@ -436,6 +436,13 @@ public static class ResourceLookup
     public static Func<object, object?>? ApplicationResourceLookup { get; set; }
 
     /// <summary>
+    /// Gets or sets an optional callback that can redirect resource lookup
+    /// to a non-visual ancestor when the visual tree is split across hosts
+    /// (for example, Popup content rendered in a separate native window).
+    /// </summary>
+    public static Func<FrameworkElement, FrameworkElement?>? AncestorRedirectLookup { get; set; }
+
+    /// <summary>
     /// Finds a resource with the specified key, searching up the visual tree.
     /// </summary>
     /// <param name="element">The starting element for the search.</param>
@@ -448,14 +455,26 @@ public static class ResourceLookup
 
         // Walk up the visual tree looking for resources
         var current = element;
-        while (current != null)
+        int depthGuard = 0;
+        while (current != null && depthGuard++ < 2048)
         {
             if (current.Resources != null && current.Resources.TryGetValue(resourceKey, out var value))
             {
                 return value;
             }
 
-            current = current.VisualParent as FrameworkElement;
+            FrameworkElement? next = null;
+
+            // Allow controls layer to bridge non-visual ancestry (e.g., PopupRoot -> Popup owner)
+            if (AncestorRedirectLookup != null)
+            {
+                next = AncestorRedirectLookup(current);
+                if (ReferenceEquals(next, current))
+                    next = null;
+            }
+
+            next ??= current.VisualParent as FrameworkElement;
+            current = next;
         }
 
         // Check application resources via callback

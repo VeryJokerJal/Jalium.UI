@@ -6,8 +6,12 @@ namespace Jalium.UI;
 /// </summary>
 public class DependencyObject : DispatcherObject
 {
-    private readonly Dictionary<DependencyProperty, object?> _values = new();
     private readonly Dictionary<DependencyProperty, object?> _localValues = new();
+    private readonly Dictionary<DependencyProperty, object?> _parentTemplateValues = new();
+    private readonly Dictionary<DependencyProperty, object?> _styleTriggerValues = new();
+    private readonly Dictionary<DependencyProperty, object?> _templateTriggerValues = new();
+    private readonly Dictionary<DependencyProperty, object?> _styleSetterValues = new();
+    private readonly Dictionary<DependencyProperty, (object? value, BaseValueSource source)> _currentValues = new();
     private readonly Dictionary<DependencyProperty, BindingExpressionBase> _bindings = new();
     private readonly Dictionary<DependencyProperty, AnimatedPropertyValue> _animatedValues = new();
 
@@ -16,6 +20,7 @@ public class DependencyObject : DispatcherObject
     /// </summary>
     internal record AnimatedPropertyValue(
         object? BaseValue,       // Value before animation started
+        BaseValueSource BaseSource, // Source before animation started
         object? CurrentValue,    // Current animated value
         bool HoldEndValue);      // Whether to hold the final value after animation ends
 
@@ -23,6 +28,32 @@ public class DependencyObject : DispatcherObject
     /// Internal event for property change notification used by triggers.
     /// </summary>
     internal event Action<DependencyProperty, object?, object?>? PropertyChangedInternal;
+
+    private readonly struct ValueState
+    {
+        public ValueState(object? value, BaseValueSource baseValueSource, bool isAnimated, bool isExpression, bool isCoerced)
+        {
+            Value = value;
+            BaseValueSource = baseValueSource;
+            IsAnimated = isAnimated;
+            IsExpression = isExpression;
+            IsCoerced = isCoerced;
+        }
+
+        public object? Value { get; }
+        public BaseValueSource BaseValueSource { get; }
+        public bool IsAnimated { get; }
+        public bool IsExpression { get; }
+        public bool IsCoerced { get; }
+    }
+
+    internal enum LayerValueSource
+    {
+        ParentTemplate,
+        StyleTrigger,
+        TemplateTrigger,
+        StyleSetter
+    }
 
     /// <summary>
     /// Gets the current effective value of a dependency property.
@@ -33,21 +64,7 @@ public class DependencyObject : DispatcherObject
     public virtual object? GetValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-
-        // 1. Animated values have highest precedence
-        if (_animatedValues.TryGetValue(dp, out var animated))
-        {
-            return animated.CurrentValue;
-        }
-
-        // 2. Local values and binding values (stored in _values)
-        if (_values.TryGetValue(dp, out var value))
-        {
-            return value;
-        }
-
-        // 3. Default value
-        return dp.DefaultMetadata.DefaultValue;
+        return GetValueState(dp).Value;
     }
 
     /// <summary>
@@ -84,22 +101,15 @@ public class DependencyObject : DispatcherObject
     public void SetValue(DependencyProperty dp, object? value)
     {
         ArgumentNullException.ThrowIfNull(dp);
-
-        // Apply coercion if a CoerceValueCallback is defined
-        var coercedValue = value;
-        if (dp.DefaultMetadata.CoerceValueCallback != null)
-        {
-            coercedValue = dp.DefaultMetadata.CoerceValueCallback(this, value);
-        }
-
         var oldValue = GetValue(dp);
+        if (_currentValues.TryGetValue(dp, out var current) && current.source == BaseValueSource.Local)
+            _currentValues.Remove(dp);
+        _localValues[dp] = value;
+        var newValue = GetValue(dp);
 
-        _localValues[dp] = coercedValue;
-        _values[dp] = coercedValue;
-
-        if (!Equals(oldValue, coercedValue))
+        if (!Equals(oldValue, newValue))
         {
-            OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, coercedValue));
+            OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
 
             // Notify binding for TwoWay/OneWayToSource
             if (_bindings.TryGetValue(dp, out var binding))
@@ -110,20 +120,92 @@ public class DependencyObject : DispatcherObject
     }
 
     /// <summary>
+    /// Sets the current value of a dependency property without forcing local-value precedence.
+    /// </summary>
+    /// <param name="dp">The dependency property to set.</param>
+    /// <param name="value">The new value.</param>
+    public void SetCurrentValue(DependencyProperty dp, object? value)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+
+        var source = GetValueSourceInternal(dp);
+        if (source.IsAnimated && _animatedValues.TryGetValue(dp, out var animated))
+        {
+            var oldValue = GetValue(dp);
+            _animatedValues[dp] = animated with { CurrentValue = value };
+            var newValue = GetValue(dp);
+            if (!Equals(oldValue, newValue))
+                OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+            return;
+        }
+
+        SetCurrentValueForSource(dp, value, source.BaseValueSource);
+    }
+
+    private void SetCurrentValueForSource(DependencyProperty dp, object? value, BaseValueSource baseSource)
+    {
+        switch (baseSource)
+        {
+            case BaseValueSource.Local:
+                {
+                    var oldValue = GetValue(dp);
+                    _localValues[dp] = value;
+                    var newValue = GetValue(dp);
+                    if (!Equals(oldValue, newValue))
+                        OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+                    return;
+                }
+            case BaseValueSource.ParentTemplate:
+                SetLayerValue(dp, value, LayerValueSource.ParentTemplate);
+                return;
+            case BaseValueSource.StyleTrigger:
+                SetLayerValue(dp, value, LayerValueSource.StyleTrigger);
+                return;
+            case BaseValueSource.TemplateTrigger:
+            case BaseValueSource.ParentTemplateTrigger:
+                SetLayerValue(dp, value, LayerValueSource.TemplateTrigger);
+                return;
+            case BaseValueSource.Style:
+            case BaseValueSource.DefaultStyle:
+                SetLayerValue(dp, value, LayerValueSource.StyleSetter);
+                return;
+            case BaseValueSource.Default:
+            case BaseValueSource.Inherited:
+                // Preserve no-local semantics: keep this as a lightweight current-value layer.
+                {
+                    var oldValue = GetValue(dp);
+                    var keepSource = baseSource == BaseValueSource.Inherited
+                        ? BaseValueSource.Inherited
+                        : BaseValueSource.Default;
+                    _currentValues[dp] = (value, keepSource);
+                    var newValue = GetValue(dp);
+                    if (!Equals(oldValue, newValue))
+                        OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+                    return;
+                }
+            default:
+                {
+                    var oldValue = GetValue(dp);
+                    _localValues[dp] = value;
+                    var newValue = GetValue(dp);
+                    if (!Equals(oldValue, newValue))
+                        OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+                }
+                return;
+        }
+    }
+
+    /// <summary>
     /// Forces re-evaluation of a dependency property's value, including coercion.
     /// </summary>
     /// <param name="dp">The dependency property to coerce.</param>
     public void CoerceValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
-
-        // Get the current local value (or default if not set)
-        var baseValue = _localValues.TryGetValue(dp, out var localValue)
-            ? localValue
-            : dp.DefaultMetadata.DefaultValue;
-
-        // Re-apply SetValue which will trigger coercion
-        SetValue(dp, baseValue);
+        var oldValue = GetValue(dp);
+        var newValue = GetValueState(dp, forceCoerce: true).Value;
+        if (!Equals(oldValue, newValue))
+            OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
     }
 
     /// <summary>
@@ -214,17 +296,56 @@ public class DependencyObject : DispatcherObject
     public void ClearValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
+        var oldValue = GetValue(dp);
+        if (!_localValues.Remove(dp))
+            return;
 
-        if (_localValues.Remove(dp))
+        var newValue = GetValue(dp);
+        if (!Equals(oldValue, newValue))
+            OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+    }
+
+    /// <summary>
+    /// Moves local values to the specified non-local layer.
+    /// Used when applying template-generated trees so template defaults do not block template triggers.
+    /// </summary>
+    internal void PromoteLocalValuesToLayer(LayerValueSource source)
+    {
+        if (_localValues.Count == 0)
+            return;
+
+        var mappedSource = MapLayerValueSource(source);
+        var entries = _localValues.ToArray();
+
+        foreach (var (dp, localValue) in entries)
         {
-            var oldValue = _values.GetValueOrDefault(dp);
-            _values.Remove(dp);
+            var oldValue = GetValue(dp);
 
-            var newValue = dp.DefaultMetadata.DefaultValue;
-            if (!Equals(oldValue, newValue))
+            _localValues.Remove(dp);
+            if (_currentValues.TryGetValue(dp, out var current) && current.source == mappedSource)
+                _currentValues.Remove(dp);
+
+            switch (source)
             {
-                OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+                case LayerValueSource.ParentTemplate:
+                    _parentTemplateValues[dp] = localValue;
+                    break;
+                case LayerValueSource.StyleTrigger:
+                    _styleTriggerValues[dp] = localValue;
+                    break;
+                case LayerValueSource.TemplateTrigger:
+                    _templateTriggerValues[dp] = localValue;
+                    break;
+                case LayerValueSource.StyleSetter:
+                    _styleSetterValues[dp] = localValue;
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(source), source, null);
             }
+
+            var newValue = GetValue(dp);
+            if (!Equals(oldValue, newValue))
+                OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
         }
     }
 
@@ -257,10 +378,8 @@ public class DependencyObject : DispatcherObject
         if (!_animatedValues.ContainsKey(dp))
         {
             // Store base value for restoration when animation ends
-            var baseValue = _localValues.TryGetValue(dp, out var local)
-                ? local
-                : dp.DefaultMetadata.DefaultValue;
-            _animatedValues[dp] = new AnimatedPropertyValue(baseValue, value, holdEndValue);
+            var (baseValue, baseSource) = GetUncoercedBaseValue(dp);
+            _animatedValues[dp] = new AnimatedPropertyValue(baseValue, baseSource, value, holdEndValue);
         }
         else
         {
@@ -298,9 +417,8 @@ public class DependencyObject : DispatcherObject
 
             if (animated.HoldEndValue)
             {
-                // HoldEnd: The animated value becomes the new effective value
-                // We store it in _values so GetValue() returns it
-                _values[dp] = oldValue;
+                SetCurrentValueForSource(dp, oldValue, animated.BaseSource);
+                return;
             }
 
             // Get the new effective value after removing animation
@@ -340,6 +458,139 @@ public class DependencyObject : DispatcherObject
 
         return GetValue(dp);
     }
+
+    internal virtual ValueSource GetValueSourceInternal(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        var state = GetValueState(dp);
+        return new ValueSource(state.BaseValueSource, state.IsExpression, state.IsAnimated, state.IsCoerced);
+    }
+
+    internal bool HasValueAboveInherited(DependencyProperty dp)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+        if (_animatedValues.ContainsKey(dp) || _localValues.ContainsKey(dp))
+            return true;
+
+        return _parentTemplateValues.ContainsKey(dp)
+               || _styleTriggerValues.ContainsKey(dp)
+               || _templateTriggerValues.ContainsKey(dp)
+               || _styleSetterValues.ContainsKey(dp)
+               || _currentValues.ContainsKey(dp);
+    }
+
+    internal void SetLayerValue(DependencyProperty dp, object? value, LayerValueSource source)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+
+        var oldValue = GetValue(dp);
+        var mappedSource = MapLayerValueSource(source);
+        if (_currentValues.TryGetValue(dp, out var current) && current.source == mappedSource)
+            _currentValues.Remove(dp);
+        switch (source)
+        {
+            case LayerValueSource.ParentTemplate:
+                _parentTemplateValues[dp] = value;
+                break;
+            case LayerValueSource.StyleTrigger:
+                _styleTriggerValues[dp] = value;
+                break;
+            case LayerValueSource.TemplateTrigger:
+                _templateTriggerValues[dp] = value;
+                break;
+            case LayerValueSource.StyleSetter:
+                _styleSetterValues[dp] = value;
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(source), source, null);
+        }
+
+        var newValue = GetValue(dp);
+        if (!Equals(oldValue, newValue))
+            OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+    }
+
+    internal void ClearLayerValue(DependencyProperty dp, LayerValueSource source)
+    {
+        ArgumentNullException.ThrowIfNull(dp);
+
+        var oldValue = GetValue(dp);
+        bool removed = source switch
+        {
+            LayerValueSource.ParentTemplate => _parentTemplateValues.Remove(dp),
+            LayerValueSource.StyleTrigger => _styleTriggerValues.Remove(dp),
+            LayerValueSource.TemplateTrigger => _templateTriggerValues.Remove(dp),
+            LayerValueSource.StyleSetter => _styleSetterValues.Remove(dp),
+            _ => throw new ArgumentOutOfRangeException(nameof(source), source, null)
+        };
+
+        if (!removed)
+            return;
+
+        var newValue = GetValue(dp);
+        if (!Equals(oldValue, newValue))
+            OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, newValue));
+    }
+
+    private ValueState GetValueState(DependencyProperty dp, bool forceCoerce = false)
+    {
+        var (baseValue, source) = GetUncoercedBaseValue(dp);
+        bool isAnimated = false;
+        bool isExpression = _bindings.ContainsKey(dp);
+
+        object? effectiveValue = baseValue;
+        if (_animatedValues.TryGetValue(dp, out var animated))
+        {
+            effectiveValue = animated.CurrentValue;
+            isAnimated = true;
+        }
+
+        bool isCoerced = false;
+        if (dp.DefaultMetadata.CoerceValueCallback != null)
+        {
+            var coerced = dp.DefaultMetadata.CoerceValueCallback(this, effectiveValue);
+            if (forceCoerce || !Equals(coerced, effectiveValue))
+            {
+                effectiveValue = coerced;
+                isCoerced = !Equals(coerced, baseValue) || isAnimated;
+            }
+        }
+
+        return new ValueState(effectiveValue, source, isAnimated, isExpression, isCoerced);
+    }
+
+    private (object? value, BaseValueSource source) GetUncoercedBaseValue(DependencyProperty dp)
+    {
+        if (_localValues.TryGetValue(dp, out var local))
+            return (local, BaseValueSource.Local);
+
+        if (_templateTriggerValues.TryGetValue(dp, out var templateTrigger))
+            return (templateTrigger, BaseValueSource.TemplateTrigger);
+
+        if (_styleTriggerValues.TryGetValue(dp, out var styleTrigger))
+            return (styleTrigger, BaseValueSource.StyleTrigger);
+
+        if (_parentTemplateValues.TryGetValue(dp, out var parentTemplate))
+            return (parentTemplate, BaseValueSource.ParentTemplate);
+
+        if (_styleSetterValues.TryGetValue(dp, out var styleSetter))
+            return (styleSetter, BaseValueSource.Style);
+
+        if (_currentValues.TryGetValue(dp, out var current))
+            return current;
+
+        return (dp.DefaultMetadata.DefaultValue, BaseValueSource.Default);
+    }
+
+    private static BaseValueSource MapLayerValueSource(LayerValueSource source) =>
+        source switch
+        {
+            LayerValueSource.ParentTemplate => BaseValueSource.ParentTemplate,
+            LayerValueSource.StyleTrigger => BaseValueSource.StyleTrigger,
+            LayerValueSource.TemplateTrigger => BaseValueSource.TemplateTrigger,
+            LayerValueSource.StyleSetter => BaseValueSource.Style,
+            _ => BaseValueSource.Unknown
+        };
 
     #endregion
 }

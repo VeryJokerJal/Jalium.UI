@@ -32,6 +32,13 @@ public sealed class Thumb : Control
     /// </summary>
     public static readonly DependencyProperty IsDraggingProperty = IsDraggingPropertyKey.DependencyProperty;
 
+    /// <summary>
+    /// Identifies the ShowGrip dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ShowGripProperty =
+        DependencyProperty.Register(nameof(ShowGrip), typeof(bool), typeof(Thumb),
+            new PropertyMetadata(true, OnVisualPropertyChanged));
+
     #endregion
 
     #region Routed Events
@@ -93,6 +100,15 @@ public sealed class Thumb : Control
     /// </summary>
     public bool IsDragging => (bool)GetValue(IsDraggingProperty)!;
 
+    /// <summary>
+    /// Gets or sets whether grip lines are rendered by the default thumb renderer.
+    /// </summary>
+    public bool ShowGrip
+    {
+        get => (bool)GetValue(ShowGripProperty)!;
+        set => SetValue(ShowGripProperty, value);
+    }
+
     #endregion
 
     #region Private Fields
@@ -116,6 +132,14 @@ public sealed class Thumb : Control
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
         AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
+    }
+
+    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Thumb thumb)
+        {
+            thumb.InvalidateVisual();
+        }
     }
 
     #endregion
@@ -324,8 +348,8 @@ public sealed class Thumb : Control
             dc.DrawRoundedRectangle(null, pen, rect, cornerRadius);
         }
 
-        // Draw grip lines for visual feedback (3 horizontal lines)
-        if (RenderSize.Width >= 8 && RenderSize.Height >= 8)
+        // Draw grip lines for visual feedback when requested.
+        if (ShowGrip && RenderSize.Width >= 8 && RenderSize.Height >= 8)
         {
             var centerX = rect.Width / 2;
             var centerY = rect.Height / 2;

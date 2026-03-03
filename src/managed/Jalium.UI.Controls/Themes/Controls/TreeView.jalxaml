@@ -17,7 +17,7 @@
                         BorderThickness="{TemplateBinding BorderThickness}">
                     <ScrollViewer HorizontalScrollBarVisibility="Auto"
                                   VerticalScrollBarVisibility="Auto">
-                        <StackPanel Name="PART_ItemsHost" />
+                        <ItemsPresenter />
                     </ScrollViewer>
                 </Border>
             </ControlTemplate>
@@ -69,7 +69,8 @@
                             <!-- Header Content -->
                             <ContentPresenter Name="PART_Header"
                                               Grid.Column="2"
-                                              ContentSource="Header"
+                                              Content="{TemplateBinding Header}"
+                                              ContentTemplate="{TemplateBinding HeaderTemplate}"
                                               HorizontalAlignment="Left"
                                               VerticalAlignment="Center"
                                               Margin="{TemplateBinding Padding}" />

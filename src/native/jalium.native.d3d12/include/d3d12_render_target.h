@@ -235,15 +235,32 @@ private:
     ComPtr<ID2D1Effect> cachedTransitionEffect_;
     bool CreateTransitionBitmaps(uint32_t pixelW, uint32_t pixelH);
 
-    // Element effect resources
-    ComPtr<ID2D1Bitmap1> effectBitmap_;          // offscreen bitmap for element content
-    uint32_t effectBmpW_ = 0, effectBmpH_ = 0;
-    ComPtr<ID2D1Image> savedEffectTarget_;       // saved target during capture
-    float effectCaptureX_ = 0, effectCaptureY_ = 0;  // capture area origin (DIPs)
-    float effectCaptureW_ = 0, effectCaptureH_ = 0;  // capture area size (DIPs)
+    // Element effect resources (support nested parent/child captures).
+    struct EffectBitmapSlot {
+        ComPtr<ID2D1Bitmap1> bitmap;
+        uint32_t pixelW = 0;
+        uint32_t pixelH = 0;
+    };
+
+    struct ActiveEffectCapture {
+        size_t slotIndex = 0;
+        ComPtr<ID2D1Image> savedTarget;
+        float captureX = 0;
+        float captureY = 0;
+        float captureW = 0;
+        float captureH = 0;
+    };
+
+    std::vector<EffectBitmapSlot> effectBitmapSlots_;
+    std::vector<ActiveEffectCapture> effectCaptureStack_;
+    ComPtr<ID2D1Bitmap1> lastCapturedEffectBitmap_;
+    float lastEffectCaptureX_ = 0;
+    float lastEffectCaptureY_ = 0;
+    float lastEffectCaptureW_ = 0;
+    float lastEffectCaptureH_ = 0;
     ComPtr<ID2D1Effect> cachedBlurEffect_;       // reusable Gaussian blur effect
     ComPtr<ID2D1Effect> cachedShadowEffect_;     // reusable D2D1 shadow effect
-    bool CreateEffectBitmap(uint32_t pixelW, uint32_t pixelH);
+    bool CreateEffectBitmap(EffectBitmapSlot& slot, uint32_t pixelW, uint32_t pixelH);
 };
 
 } // namespace jalium

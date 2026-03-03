@@ -53,7 +53,7 @@ public sealed partial class ScrollViewer : Control
     /// </summary>
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ScrollViewer),
-            new PropertyMetadata(ScrollBarVisibility.Visible, OnScrollBarVisibilityChanged));
+            new PropertyMetadata(ScrollBarVisibility.Auto, OnScrollBarVisibilityChanged));
 
     /// <summary>
     /// Identifies the CanContentScroll dependency property.
@@ -103,6 +103,13 @@ public sealed partial class ScrollViewer : Control
     public static readonly DependencyProperty IsDeferredScrollingEnabledProperty =
         DependencyProperty.Register(nameof(IsDeferredScrollingEnabled), typeof(bool), typeof(ScrollViewer),
             new PropertyMetadata(false));
+
+    /// <summary>
+    /// Identifies the IsScrollBarAutoHideEnabled dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsScrollBarAutoHideEnabledProperty =
+        DependencyProperty.Register(nameof(IsScrollBarAutoHideEnabled), typeof(bool), typeof(ScrollViewer),
+            new PropertyMetadata(true, OnScrollBarAutoHideEnabledChanged));
 
     #endregion
 
@@ -192,6 +199,16 @@ public sealed partial class ScrollViewer : Control
     {
         get => (bool)GetValue(IsDeferredScrollingEnabledProperty)!;
         set => SetValue(IsDeferredScrollingEnabledProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether scroll bars auto-hide when not being interacted with.
+    /// Matches WinUI-style behavior and is enabled by default.
+    /// </summary>
+    public bool IsScrollBarAutoHideEnabled
+    {
+        get => (bool)GetValue(IsScrollBarAutoHideEnabledProperty)!;
+        set => SetValue(IsScrollBarAutoHideEnabledProperty, value);
     }
 
     /// <summary>
@@ -330,12 +347,16 @@ public sealed partial class ScrollViewer : Control
 
     // Smooth scroll animation fields
     private DispatcherTimer? _smoothScrollTimer;
+    private DispatcherTimer? _scrollBarAutoHideTimer;
+    private long _scrollBarAutoHideDeadlineTick;
     private double _smoothTargetX;
     private double _smoothTargetY;
     private bool _isSmoothScrolling;
     private bool _isApplyingSmoothScrollStep;
+    private bool _areAutoHideScrollBarsRevealed;
     private long _lastSmoothTickTime;
     private const double DefaultScrollInertiaDurationMs = 300.0;
+    private const double DefaultScrollBarAutoHideDelayMs = 3000.0;
     private const double SmoothScrollDurationTailRatio = 0.05;
     private const double SmoothScrollSnapThreshold = 0.5;
     private const double SmoothScrollMinSpeedPixelsPerSecond = 60.0;
@@ -411,6 +432,8 @@ public sealed partial class ScrollViewer : Control
             SmallChange = LineScrollAmount
         };
         scrollBar.Scroll += OnScrollBarScroll;
+        scrollBar.AddHandler(MouseEnterEvent, new RoutedEventHandler(OnScrollBarMouseEnter));
+        scrollBar.AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnScrollBarMouseLeave));
         return scrollBar;
     }
 
@@ -537,6 +560,24 @@ public sealed partial class ScrollViewer : Control
         {
             OnPointerCancel(pointerArgs);
         }
+    }
+
+    private void OnScrollBarMouseEnter(object sender, RoutedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, _verticalScrollBar) && !ReferenceEquals(sender, _horizontalScrollBar))
+            return;
+
+        RevealAutoHideScrollBarsTemporarily();
+    }
+
+    private void OnScrollBarMouseLeave(object sender, RoutedEventArgs e)
+    {
+        if (!ReferenceEquals(sender, _verticalScrollBar) && !ReferenceEquals(sender, _horizontalScrollBar))
+            return;
+
+        // Keep WinUI-like timing: leaving the bar starts the idle countdown,
+        // then slim mode is applied when the auto-hide timer elapses.
+        RestartScrollBarAutoHideTimer();
     }
 
     private void OnPointerDown(PointerDownEventArgs e)
@@ -844,6 +885,163 @@ public sealed partial class ScrollViewer : Control
     {
         base.OnLostMouseCapture();
         _isDraggingVerticalThumb = false;
+        if (IsScrollBarAutoHideEnabled)
+        {
+            RestartScrollBarAutoHideTimer();
+        }
+    }
+
+    private void RevealAutoHideScrollBarsTemporarily()
+    {
+        if (!IsScrollBarAutoHideEnabled || !HasAutoHideScrollBarCandidates())
+            return;
+
+        _areAutoHideScrollBarsRevealed = true;
+        ApplyScrollBarAutoHideVisualState();
+        RestartScrollBarAutoHideTimer();
+    }
+
+    private void HideAutoHideScrollBarsIfEligible()
+    {
+        if (!IsScrollBarAutoHideEnabled)
+            return;
+
+        if (ShouldKeepAnyAutoHideScrollBarVisible())
+        {
+            RestartScrollBarAutoHideTimer();
+            return;
+        }
+
+        _areAutoHideScrollBarsRevealed = false;
+        StopScrollBarAutoHideTimer();
+        ApplyScrollBarAutoHideVisualState();
+    }
+
+    private bool HasAutoHideScrollBarCandidates()
+    {
+        bool verticalCandidate = SupportsAutoHide(VerticalScrollBarVisibility) &&
+                                 _verticalScrollBar.Visibility != Visibility.Collapsed;
+        bool horizontalCandidate = SupportsAutoHide(HorizontalScrollBarVisibility) &&
+                                   _horizontalScrollBar.Visibility != Visibility.Collapsed;
+        return verticalCandidate || horizontalCandidate;
+    }
+
+    private bool ShouldKeepAnyAutoHideScrollBarVisible()
+    {
+        if (!HasAutoHideScrollBarCandidates())
+            return false;
+
+        return ShouldKeepAutoHideScrollBarVisible(_verticalScrollBar) ||
+               ShouldKeepAutoHideScrollBarVisible(_horizontalScrollBar);
+    }
+
+    private bool ShouldKeepAutoHideScrollBarVisible(ScrollBar scrollBar)
+    {
+        if (scrollBar.Visibility == Visibility.Collapsed)
+            return false;
+
+        // Keep expanded only for direct interaction with this scrollbar.
+        // Avoid using ScrollViewer.IsMouseCaptureWithin here because unrelated
+        // captures inside the viewer can keep bars expanded indefinitely.
+        if (scrollBar.IsMouseCaptured)
+            return true;
+
+        if (ReferenceEquals(scrollBar, _verticalScrollBar) && _isDraggingVerticalThumb)
+            return true;
+
+        return scrollBar.IsMouseOver;
+    }
+
+    private void RestartScrollBarAutoHideTimer()
+    {
+        if (!IsScrollBarAutoHideEnabled || !HasAutoHideScrollBarCandidates())
+            return;
+
+        _scrollBarAutoHideDeadlineTick = Environment.TickCount64 + (long)DefaultScrollBarAutoHideDelayMs;
+
+        _scrollBarAutoHideTimer ??= new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
+        };
+        _scrollBarAutoHideTimer.Tick -= OnScrollBarAutoHideTimerTick;
+        _scrollBarAutoHideTimer.Tick += OnScrollBarAutoHideTimerTick;
+
+        if (!_scrollBarAutoHideTimer.IsEnabled)
+        {
+            _scrollBarAutoHideTimer.Start();
+        }
+    }
+
+    private void StopScrollBarAutoHideTimer()
+    {
+        _scrollBarAutoHideTimer?.Stop();
+    }
+
+    private void OnScrollBarAutoHideTimerTick(object? sender, EventArgs e)
+    {
+        if (Environment.TickCount64 < _scrollBarAutoHideDeadlineTick)
+            return;
+
+        if (ShouldKeepAnyAutoHideScrollBarVisible())
+        {
+            _scrollBarAutoHideDeadlineTick = Environment.TickCount64 + (long)DefaultScrollBarAutoHideDelayMs;
+            return;
+        }
+
+        _areAutoHideScrollBarsRevealed = false;
+        StopScrollBarAutoHideTimer();
+        ApplyScrollBarAutoHideVisualState();
+    }
+
+    private void ApplyScrollBarAutoHideVisualState()
+    {
+        ApplyScrollBarAutoHideVisualState(_verticalScrollBar, VerticalScrollBarVisibility);
+        ApplyScrollBarAutoHideVisualState(_horizontalScrollBar, HorizontalScrollBarVisibility);
+    }
+
+    private void ApplyScrollBarAutoHideVisualState(ScrollBar scrollBar, ScrollBarVisibility visibilityMode)
+    {
+        if (scrollBar.Visibility == Visibility.Collapsed)
+        {
+            if (scrollBar.IsThumbSlim)
+            {
+                scrollBar.IsThumbSlim = false;
+            }
+
+            return;
+        }
+
+        if (!IsScrollBarAutoHideEnabled || !SupportsAutoHide(visibilityMode))
+        {
+            if (scrollBar.Visibility != Visibility.Visible)
+            {
+                scrollBar.Visibility = Visibility.Visible;
+            }
+
+            if (scrollBar.IsThumbSlim)
+            {
+                scrollBar.IsThumbSlim = false;
+            }
+
+            return;
+        }
+
+        if (scrollBar.Visibility != Visibility.Visible)
+        {
+            scrollBar.Visibility = Visibility.Visible;
+        }
+
+        bool keepExpanded = _areAutoHideScrollBarsRevealed || ShouldKeepAutoHideScrollBarVisible(scrollBar);
+        bool shouldUseSlimThumb = !keepExpanded;
+        if (scrollBar.IsThumbSlim != shouldUseSlimThumb)
+        {
+            scrollBar.IsThumbSlim = shouldUseSlimThumb;
+        }
+    }
+
+    private static bool SupportsAutoHide(ScrollBarVisibility visibilityMode)
+    {
+        return visibilityMode == ScrollBarVisibility.Auto;
     }
 
     /// <summary>
@@ -1420,6 +1618,8 @@ public sealed partial class ScrollViewer : Control
             _horizontalScrollBar.Arrange(Rect.Empty);
         }
 
+        ApplyScrollBarAutoHideVisualState();
+
         return finalSize;
     }
 
@@ -1659,15 +1859,16 @@ public sealed partial class ScrollViewer : Control
     {
         _smoothScrollTimer?.Stop();
         _isSmoothScrolling = false;
+        if (IsScrollBarAutoHideEnabled)
+        {
+            RestartScrollBarAutoHideTimer();
+        }
     }
 
     private void OnSmoothScrollTick(object? sender, EventArgs e)
     {
         if (!_isSmoothScrolling)
             return;
-
-        _smoothTargetY = Math.Clamp(_smoothTargetY, 0, ScrollableHeight);
-        _smoothTargetX = Math.Clamp(_smoothTargetX, 0, ScrollableWidth);
 
         long now = Environment.TickCount64;
         long elapsedMs = now - _lastSmoothTickTime;
@@ -1676,6 +1877,18 @@ public sealed partial class ScrollViewer : Control
             elapsedMs = Math.Max(1, SmoothScrollIntervalMs);
         }
         _lastSmoothTickTime = now;
+        AdvanceSmoothScrollByMilliseconds(elapsedMs);
+    }
+
+    private void AdvanceSmoothScrollByMilliseconds(long elapsedMs)
+    {
+        if (!_isSmoothScrolling)
+            return;
+
+        _smoothTargetY = Math.Clamp(_smoothTargetY, 0, ScrollableHeight);
+        _smoothTargetX = Math.Clamp(_smoothTargetX, 0, ScrollableWidth);
+        if (elapsedMs <= 0)
+            elapsedMs = Math.Max(1, SmoothScrollIntervalMs);
 
         double dtSeconds = Math.Min(elapsedMs / 1000.0, SmoothScrollMaxDeltaTimeSeconds);
         double alpha = ComputeSmoothAlpha(dtSeconds);
@@ -1760,8 +1973,53 @@ public sealed partial class ScrollViewer : Control
         if (!isVertical && !ReferenceEquals(sender, _horizontalScrollBar))
             return;
 
-        // ScrollBar thumb/track interaction should always be immediate.
-        // Cancel any wheel inertia so drag and page scroll don't compete.
+        var sourceScrollBar = sender as ScrollBar;
+        var fromScrollBarWheel = sourceScrollBar?.IsWheelScrollingInput == true;
+        var useSmoothWheelInertia = fromScrollBarWheel &&
+                                    IsScrollInertiaEnabled &&
+                                    GetEffectiveScrollInertiaDurationMs() > 0;
+
+        if (useSmoothWheelInertia)
+        {
+            // Keep thumb/content visually aligned with current offset, then animate toward new target.
+            _isUpdatingScrollBars = true;
+            try
+            {
+                if (isVertical)
+                {
+                    _verticalScrollBar.Value = _verticalOffset;
+                }
+                else
+                {
+                    _horizontalScrollBar.Value = _horizontalOffset;
+                }
+            }
+            finally
+            {
+                _isUpdatingScrollBars = false;
+            }
+
+            if (!_isSmoothScrolling)
+            {
+                _smoothTargetX = _horizontalOffset;
+                _smoothTargetY = _verticalOffset;
+            }
+
+            if (isVertical)
+            {
+                _smoothTargetY = Math.Clamp(e.NewValue, 0, Math.Max(0, ScrollableHeight));
+            }
+            else
+            {
+                _smoothTargetX = Math.Clamp(e.NewValue, 0, Math.Max(0, ScrollableWidth));
+            }
+
+            StartSmoothScroll();
+            return;
+        }
+
+        // ScrollBar thumb drag/page click/line click should remain immediate.
+        // Cancel wheel inertia so direct interactions do not compete with animation.
         CancelSmoothScroll();
 
         if (isVertical)
@@ -1836,6 +2094,8 @@ public sealed partial class ScrollViewer : Control
         {
             _isUpdatingScrollBars = false;
         }
+
+        ApplyScrollBarAutoHideVisualState();
     }
 
     private static void ConfigureScrollBar(
@@ -1846,17 +2106,31 @@ public sealed partial class ScrollViewer : Control
         ScrollBarVisibility visibilityMode,
         bool canScroll)
     {
+        static double CoerceFiniteNonNegative(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value < 0)
+            {
+                return 0;
+            }
+
+            return value;
+        }
+
+        var safeMaxOffset = CoerceFiniteNonNegative(maxOffset);
+        var safeViewportSize = CoerceFiniteNonNegative(viewportSize);
+        var safeOffset = CoerceFiniteNonNegative(offset);
+
         scrollBar.Minimum = 0;
-        scrollBar.Maximum = Math.Max(0, maxOffset);
-        scrollBar.ViewportSize = Math.Max(0, viewportSize);
-        scrollBar.LargeChange = Math.Max(1.0, viewportSize);
+        scrollBar.Maximum = safeMaxOffset;
+        scrollBar.ViewportSize = safeViewportSize;
+        scrollBar.LargeChange = Math.Max(1.0, safeViewportSize);
 
         var visibility = visibilityMode switch
         {
             ScrollBarVisibility.Disabled => Visibility.Collapsed,
             ScrollBarVisibility.Hidden => Visibility.Collapsed,
             ScrollBarVisibility.Visible => Visibility.Visible,
-            ScrollBarVisibility.Auto => canScroll ? Visibility.Visible : Visibility.Collapsed,
+            ScrollBarVisibility.Auto => (canScroll && safeMaxOffset > 0) ? Visibility.Visible : Visibility.Collapsed,
             _ => Visibility.Collapsed
         };
 
@@ -1865,7 +2139,7 @@ public sealed partial class ScrollViewer : Control
             scrollBar.Visibility = visibility;
         }
 
-        var clampedValue = Math.Clamp(offset, 0, Math.Max(0, maxOffset));
+        var clampedValue = Math.Clamp(safeOffset, 0, safeMaxOffset);
         if (Math.Abs(scrollBar.Value - clampedValue) > double.Epsilon)
         {
             scrollBar.Value = clampedValue;
@@ -2001,7 +2275,27 @@ public sealed partial class ScrollViewer : Control
             }
 
             scrollViewer.InvalidateMeasure();
+            scrollViewer.ApplyScrollBarAutoHideVisualState();
         }
+    }
+
+    private static void OnScrollBarAutoHideEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not ScrollViewer scrollViewer)
+            return;
+
+        if (!scrollViewer.IsScrollBarAutoHideEnabled)
+        {
+            scrollViewer._areAutoHideScrollBarsRevealed = true;
+            scrollViewer.StopScrollBarAutoHideTimer();
+        }
+        else
+        {
+            scrollViewer._areAutoHideScrollBarsRevealed = false;
+            scrollViewer.RestartScrollBarAutoHideTimer();
+        }
+
+        scrollViewer.ApplyScrollBarAutoHideVisualState();
     }
 
     private static uint GetSystemWheelScrollLines()

@@ -12,16 +12,9 @@ public abstract class ButtonBase : ContentControl
     #region Dependency Properties
 
     /// <summary>
-    /// Identifies the IsPressed dependency property key.
-    /// </summary>
-    private static readonly DependencyPropertyKey IsPressedPropertyKey =
-        DependencyProperty.RegisterReadOnly(nameof(IsPressed), typeof(bool), typeof(ButtonBase),
-            new PropertyMetadata(false, OnIsPressedChanged));
-
-    /// <summary>
     /// Identifies the IsPressed dependency property.
     /// </summary>
-    public static readonly DependencyProperty IsPressedProperty = IsPressedPropertyKey.DependencyProperty;
+    public new static readonly DependencyProperty IsPressedProperty = UIElement.IsPressedProperty;
 
     /// <summary>
     /// Identifies the ClickMode dependency property.
@@ -57,7 +50,7 @@ public abstract class ButtonBase : ContentControl
     /// <summary>
     /// Gets a value indicating whether the button is currently pressed.
     /// </summary>
-    public bool IsPressed => (bool)GetValue(IsPressedProperty)!;
+    public new bool IsPressed => base.IsPressed;
 
     /// <summary>
     /// Gets or sets when the Click event should be raised.
@@ -250,27 +243,19 @@ public abstract class ButtonBase : ContentControl
     /// </summary>
     internal void SetIsPressed(bool value)
     {
-        SetValue(IsPressedPropertyKey.DependencyProperty, value);
+        base.SetIsPressed(value);
     }
 
     #endregion
 
     #region Property Changed Callbacks
 
-    private static void OnIsPressedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is ButtonBase button)
-        {
-            button.OnIsPressedChanged((bool)e.OldValue, (bool)e.NewValue);
-        }
-    }
-
     /// <summary>
     /// Called when the IsPressed property changes.
     /// </summary>
-    protected virtual void OnIsPressedChanged(bool oldValue, bool newValue)
+    protected override void OnIsPressedChanged(bool oldValue, bool newValue)
     {
-        InvalidateVisual();
+        base.OnIsPressedChanged(oldValue, newValue);
     }
 
     #endregion

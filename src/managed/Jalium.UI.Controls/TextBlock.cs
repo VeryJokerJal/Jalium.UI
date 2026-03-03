@@ -12,6 +12,7 @@ public sealed class TextBlock : FrameworkElement
 
     private FormattedText? _cachedFormattedText;
     private Size _cachedRenderSize;
+    private bool _isRenderingText;
 
     private FormattedText? GetOrCreateFormattedText()
     {
@@ -260,15 +261,28 @@ public sealed class TextBlock : FrameworkElement
     /// <inheritdoc />
     protected override void OnRender(object drawingContext)
     {
-        base.OnRender(drawingContext);
-
-        if (drawingContext is DrawingContext dc)
+        if (_isRenderingText)
         {
-            var formattedText = GetOrCreateFormattedText();
-            if (formattedText != null)
+            return;
+        }
+
+        _isRenderingText = true;
+        try
+        {
+            base.OnRender(drawingContext);
+
+            if (drawingContext is DrawingContext dc)
             {
-                dc.DrawText(formattedText, Point.Zero);
+                var formattedText = GetOrCreateFormattedText();
+                if (formattedText != null)
+                {
+                    dc.DrawText(formattedText, Point.Zero);
+                }
             }
+        }
+        finally
+        {
+            _isRenderingText = false;
         }
     }
 

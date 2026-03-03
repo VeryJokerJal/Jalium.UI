@@ -30,6 +30,20 @@
     <NoWarn>$(NoWarn);NU1903</NoWarn>
   </PropertyGroup>
 
+  <PropertyGroup>
+    <BuildJaliumNativeProjects Condition="'$(BuildJaliumNativeProjects)' == ''">true</BuildJaliumNativeProjects>
+    <JaliumNativeRootPath Condition="'$(JaliumNativeRootPath)' == ''">$(MSBuildProjectDirectory)\..\..\native</JaliumNativeRootPath>
+    <JaliumNativeConfiguration Condition="'$(JaliumNativeConfiguration)' == ''">$(Configuration)</JaliumNativeConfiguration>
+    <JaliumNativePlatform Condition="'$(JaliumNativePlatform)' == ''">x64</JaliumNativePlatform>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <JaliumNativeProject Include="$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.vcxproj"
+                         Condition="Exists('$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.vcxproj')" />
+    <JaliumNativeProject Include="$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.vcxproj"
+                         Condition="Exists('$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.vcxproj')" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.Build.Framework" Version="18.3.3" ExcludeAssets="runtime" />
     <PackageReference Include="Microsoft.Build.Utilities.Core" Version="18.3.3" ExcludeAssets="runtime" />
@@ -39,6 +53,17 @@
     <MSBuild Projects="..\Jalium.UI.Compiler\Jalium.UI.Compiler.csproj"
              Targets="Build"
              Properties="Configuration=$(Configuration)" />
+  </Target>
+
+  <Target Name="BuildNativeProjectsBeforeBuild"
+          BeforeTargets="PrepareForBuild"
+          Condition="'$(BuildJaliumNativeProjects)' == 'true' and '$(DesignTimeBuild)' != 'true' and '@(JaliumNativeProject)' != '' and '$(OS)' == 'Windows_NT'">
+    <Message Text="Building native projects @(JaliumNativeProject) (Configuration=$(JaliumNativeConfiguration), Platform=$(JaliumNativePlatform))"
+             Importance="high" />
+    <MSBuild Projects="@(JaliumNativeProject)"
+             Targets="Build"
+             BuildInParallel="true"
+             Properties="Configuration=$(JaliumNativeConfiguration);Platform=$(JaliumNativePlatform);SolutionDir=$(JaliumNativeRootPath)\" />
   </Target>
 
   <!-- 包含 targets 文件到 NuGet 包 -->

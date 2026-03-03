@@ -52,6 +52,15 @@ public sealed class Track : FrameworkElement
         DependencyProperty.Register(nameof(IsDirectionReversed), typeof(bool), typeof(Track),
             new PropertyMetadata(false, OnLayoutPropertyChanged));
 
+    /// <summary>
+    /// Identifies the ThumbCrossAxisThickness dependency property.
+    /// When set to a positive value, the thumb is centered and constrained to this
+    /// thickness on the axis perpendicular to scrolling.
+    /// </summary>
+    public static readonly DependencyProperty ThumbCrossAxisThicknessProperty =
+        DependencyProperty.Register(nameof(ThumbCrossAxisThickness), typeof(double), typeof(Track),
+            new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
+
     #endregion
 
     #region CLR Properties
@@ -108,6 +117,16 @@ public sealed class Track : FrameworkElement
     {
         get => (bool)GetValue(IsDirectionReversedProperty)!;
         set => SetValue(IsDirectionReversedProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the thumb thickness on the cross axis.
+    /// Set to NaN (default) to use the track's normal inset behavior.
+    /// </summary>
+    public double ThumbCrossAxisThickness
+    {
+        get => (double)GetValue(ThumbCrossAxisThicknessProperty)!;
+        set => SetValue(ThumbCrossAxisThicknessProperty, value);
     }
 
     /// <summary>
@@ -283,39 +302,115 @@ public sealed class Track : FrameworkElement
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
+        static double CoerceFiniteNonNegative(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value) || value < 0)
+            {
+                return 0;
+            }
+
+            return value;
+        }
+
+        static double Clamp01(double value)
+        {
+            if (double.IsNaN(value) || double.IsInfinity(value))
+            {
+                return 0;
+            }
+
+            return Math.Clamp(value, 0, 1);
+        }
+
         var isHorizontal = Orientation == Orientation.Horizontal;
-        var range = Math.Max(0, Maximum - Minimum);
-        var viewportSize = double.IsNaN(ViewportSize) ? 0 : ViewportSize;
+        var minimum = double.IsNaN(Minimum) || double.IsInfinity(Minimum) ? 0 : Minimum;
+        var maximum = double.IsNaN(Maximum) || double.IsInfinity(Maximum) ? minimum : Maximum;
+        var range = CoerceFiniteNonNegative(maximum - minimum);
+        var viewportSize = CoerceFiniteNonNegative(ViewportSize);
+        var crossAxisThicknessOverride = ThumbCrossAxisThickness;
+        var hasCrossAxisThicknessOverride = !double.IsNaN(crossAxisThicknessOverride) &&
+                                            !double.IsInfinity(crossAxisThicknessOverride) &&
+                                            crossAxisThicknessOverride > 0;
+
+        var trackLength = isHorizontal ? finalSize.Width : finalSize.Height;
+        if (double.IsNaN(trackLength) || double.IsInfinity(trackLength))
+        {
+            trackLength = 0;
+        }
+
+        if (trackLength <= 0)
+        {
+            _density = 0;
+
+            if (isHorizontal)
+            {
+                _decreaseButton?.Arrange(new Rect(0, 0, 0, finalSize.Height));
+                _thumb?.Arrange(new Rect(0, 0, 0, finalSize.Height));
+                _increaseButton?.Arrange(new Rect(0, 0, 0, finalSize.Height));
+            }
+            else
+            {
+                _decreaseButton?.Arrange(new Rect(0, 0, finalSize.Width, 0));
+                _thumb?.Arrange(new Rect(0, 0, finalSize.Width, 0));
+                _increaseButton?.Arrange(new Rect(0, 0, finalSize.Width, 0));
+            }
+
+            return finalSize;
+        }
+
+        double minThumbSize = 10;
+        if (_thumb != null)
+        {
+            double axisMin = isHorizontal ? _thumb.MinWidth : _thumb.MinHeight;
+            if (!double.IsNaN(axisMin) && !double.IsInfinity(axisMin) && axisMin > 0)
+            {
+                minThumbSize = Math.Max(minThumbSize, axisMin);
+            }
+        }
+        minThumbSize = Math.Min(minThumbSize, trackLength);
 
         // Calculate thumb size
         double thumbSize;
-        if (viewportSize > 0 && range > 0)
+        if (viewportSize > 0)
         {
-            // ScrollBar mode: thumb size is proportional to viewport
-            var extent = range + viewportSize;
-            var ratio = viewportSize / extent;
-            var trackLength = isHorizontal ? finalSize.Width : finalSize.Height;
-            thumbSize = Math.Max(trackLength * ratio, 10); // Minimum thumb size
+            if (range > 0)
+            {
+                // ScrollBar mode: thumb size is proportional to viewport
+                var extent = range + viewportSize;
+                var ratio = extent > 0 && !double.IsInfinity(extent)
+                    ? viewportSize / extent
+                    : 0;
+                ratio = Clamp01(ratio);
+                thumbSize = Math.Clamp(Math.Max(trackLength * ratio, minThumbSize), minThumbSize, trackLength);
+            }
+            else
+            {
+                // ScrollBar mode with no scrollable range: fill the track so thumb remains clearly visible.
+                thumbSize = trackLength;
+            }
         }
         else
         {
             // Slider mode: fixed thumb size
-            thumbSize = _thumb?.DesiredSize.Width ?? 16;
-            if (!isHorizontal)
-            {
-                thumbSize = _thumb?.DesiredSize.Height ?? 16;
-            }
+            var rawThumbSize = isHorizontal
+                ? (_thumb?.DesiredSize.Width ?? 16)
+                : (_thumb?.DesiredSize.Height ?? 16);
+            if (double.IsNaN(rawThumbSize) || double.IsInfinity(rawThumbSize) || rawThumbSize <= 0)
+                rawThumbSize = minThumbSize;
+
+            thumbSize = Math.Clamp(rawThumbSize, minThumbSize, trackLength);
         }
 
         // Calculate track length and thumb position
-        var trackLength2 = isHorizontal ? finalSize.Width : finalSize.Height;
-        var availableLength = trackLength2 - thumbSize;
+        var availableLength = Math.Max(0, trackLength - thumbSize);
 
         double ratio2 = 0;
         if (range > 0)
         {
-            ratio2 = (Value - Minimum) / range;
+            var value = double.IsNaN(Value) || double.IsInfinity(Value) ? minimum : Value;
+            ratio2 = (value - minimum) / range;
         }
+        ratio2 = Clamp01(ratio2);
 
         if (IsDirectionReversed)
         {
@@ -326,32 +421,72 @@ public sealed class Track : FrameworkElement
 
         // Calculate density for value conversion
         _density = range > 0 ? availableLength / range : 0;
+        if (double.IsNaN(_density) || double.IsInfinity(_density) || _density < 0)
+        {
+            _density = 0;
+        }
 
         // Arrange children
+        var isScrollBarMode = viewportSize > 0;
+
         if (isHorizontal)
         {
             var decreaseWidth = thumbOffset;
             var increaseWidth = availableLength - thumbOffset;
+            var thumbTop = 0.0;
+            var thumbHeight = finalSize.Height;
+
+            if (isScrollBarMode)
+            {
+                if (hasCrossAxisThicknessOverride)
+                {
+                    thumbHeight = Math.Min(finalSize.Height, crossAxisThicknessOverride);
+                    thumbTop = Math.Max(0, (finalSize.Height - thumbHeight) / 2);
+                }
+                else
+                {
+                    var inset = Math.Min(2.0, Math.Max(0, finalSize.Height / 2));
+                    thumbTop = inset;
+                    thumbHeight = Math.Max(0, finalSize.Height - inset * 2);
+                }
+            }
 
             _decreaseButton?.Arrange(new Rect(0, 0, decreaseWidth, finalSize.Height));
-            _thumb?.Arrange(new Rect(decreaseWidth, 0, thumbSize, finalSize.Height));
+            _thumb?.Arrange(new Rect(decreaseWidth, thumbTop, thumbSize, thumbHeight));
             _increaseButton?.Arrange(new Rect(decreaseWidth + thumbSize, 0, increaseWidth, finalSize.Height));
         }
         else
         {
             var decreaseHeight = IsDirectionReversed ? availableLength - thumbOffset : thumbOffset;
             var increaseHeight = IsDirectionReversed ? thumbOffset : availableLength - thumbOffset;
+            var thumbLeft = 0.0;
+            var thumbWidth = finalSize.Width;
+
+            if (isScrollBarMode)
+            {
+                if (hasCrossAxisThicknessOverride)
+                {
+                    thumbWidth = Math.Min(finalSize.Width, crossAxisThicknessOverride);
+                    thumbLeft = Math.Max(0, (finalSize.Width - thumbWidth) / 2);
+                }
+                else
+                {
+                    var inset = Math.Min(2.0, Math.Max(0, finalSize.Width / 2));
+                    thumbLeft = inset;
+                    thumbWidth = Math.Max(0, finalSize.Width - inset * 2);
+                }
+            }
 
             if (IsDirectionReversed)
             {
                 _increaseButton?.Arrange(new Rect(0, 0, finalSize.Width, increaseHeight));
-                _thumb?.Arrange(new Rect(0, increaseHeight, finalSize.Width, thumbSize));
+                _thumb?.Arrange(new Rect(thumbLeft, increaseHeight, thumbWidth, thumbSize));
                 _decreaseButton?.Arrange(new Rect(0, increaseHeight + thumbSize, finalSize.Width, decreaseHeight));
             }
             else
             {
                 _decreaseButton?.Arrange(new Rect(0, 0, finalSize.Width, decreaseHeight));
-                _thumb?.Arrange(new Rect(0, decreaseHeight, finalSize.Width, thumbSize));
+                _thumb?.Arrange(new Rect(thumbLeft, decreaseHeight, thumbWidth, thumbSize));
                 _increaseButton?.Arrange(new Rect(0, decreaseHeight + thumbSize, finalSize.Width, increaseHeight));
             }
         }

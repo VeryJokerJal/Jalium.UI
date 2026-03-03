@@ -11,6 +11,7 @@ public sealed class ContextMenuEventArgs : RoutedEventArgs
     public ContextMenuEventArgs(object source, bool opening) : base()
     {
         Source = source;
+        IsOpening = opening;
         CursorLeft = -1;
         CursorTop = -1;
     }
@@ -22,9 +23,13 @@ public sealed class ContextMenuEventArgs : RoutedEventArgs
     public ContextMenuEventArgs(object source, bool opening, double left, double top) : base()
     {
         Source = source;
+        IsOpening = opening;
         CursorLeft = left;
         CursorTop = top;
     }
+
+    /// <summary>Gets whether the event is raised for opening (<c>true</c>) or closing (<c>false</c>).</summary>
+    public bool IsOpening { get; }
 
     /// <summary>Gets the horizontal position of the cursor when the context menu was requested.</summary>
     public double CursorLeft { get; }

@@ -21,7 +21,7 @@ public class TextBoxTests
         Assert.Equal(TextWrapping.NoWrap, textBox.TextWrapping);
         Assert.Equal(TextTrimming.CharacterEllipsis, textBox.TextTrimming);
         Assert.Equal(TextAlignment.Left, textBox.TextAlignment);
-        Assert.Equal(string.Empty, textBox.Placeholder);
+        Assert.Equal(string.Empty, textBox.PlaceholderText);
         Assert.False(textBox.IsSpellCheckEnabled);
         Assert.True(textBox.Focusable);
     }
@@ -99,10 +99,10 @@ public class TextBoxTests
         var textBox = new TextBox();
 
         // Act
-        textBox.Placeholder = "Enter your name";
+        textBox.PlaceholderText = "Enter your name";
 
         // Assert
-        Assert.Equal("Enter your name", textBox.Placeholder);
+        Assert.Equal("Enter your name", textBox.PlaceholderText);
     }
 
     [Fact]

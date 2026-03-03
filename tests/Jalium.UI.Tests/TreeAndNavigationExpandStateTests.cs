@@ -147,6 +147,83 @@ public class TreeAndNavigationExpandStateTests
         }
     }
 
+    [Fact]
+    public void NavigationView_MenuItemsAdd_ShouldRefreshWithoutManualUpdate()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var nav = new NavigationView();
+            var item = new NavigationViewItem { Content = "AutoRefresh" };
+            item.Style = Assert.IsType<Style>(app.Resources[typeof(NavigationViewItem)]);
+
+            nav.MenuItems.Add(item);
+
+            var menuPanel = GetPrivateField<StackPanel>(nav, "_menuItemsPanel");
+            Assert.NotNull(menuPanel);
+            Assert.Single(menuPanel!.Children);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void NavigationView_FooterItemsAdd_ShouldRefreshWithoutManualUpdate()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var nav = new NavigationView();
+            var item = new NavigationViewItem { Content = "FooterItem" };
+            item.Style = Assert.IsType<Style>(app.Resources[typeof(NavigationViewItem)]);
+
+            nav.FooterMenuItems.Add(item);
+
+            var footerPanel = GetPrivateField<StackPanel>(nav, "_footerItemsPanel");
+            Assert.NotNull(footerPanel);
+            Assert.Single(footerPanel!.Children);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void NavigationView_PreloadedItems_ShouldRemainVisibleAfterAttach()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var nav = new NavigationView();
+            var item = new NavigationViewItem { Content = "Preloaded" };
+            item.Style = Assert.IsType<Style>(app.Resources[typeof(NavigationViewItem)]);
+            nav.MenuItems.Add(item);
+
+            var host = new Grid();
+            host.Children.Add(nav);
+
+            var menuPanel = GetPrivateField<StackPanel>(nav, "_menuItemsPanel");
+            Assert.NotNull(menuPanel);
+            Assert.Single(menuPanel!.Children);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
     private static T? GetPrivateField<T>(object instance, string fieldName) where T : class
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);

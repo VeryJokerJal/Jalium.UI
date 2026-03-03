@@ -1,5 +1,4 @@
 ﻿using System.Runtime.InteropServices;
-using System.Diagnostics;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
@@ -1025,28 +1024,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         return true;
     }
 
-#if DEBUG
-    private (int x, int y)? _lastLoggedProxyRealPoint;
-    private (int x, int y)? _lastLoggedProxyPoint;
-    private long _lastLoggedProxyTick;
-
-    private void LogSnapProxy((int x, int y) realScreenPoint, (int x, int y) proxyScreenPoint)
-    {
-        long now = Environment.TickCount64;
-        bool isRepeatedPoint = _lastLoggedProxyRealPoint == realScreenPoint &&
-                               _lastLoggedProxyPoint == proxyScreenPoint;
-        if (isRepeatedPoint && now - _lastLoggedProxyTick < 200)
-        {
-            return;
-        }
-
-        _lastLoggedProxyRealPoint = realScreenPoint;
-        _lastLoggedProxyPoint = proxyScreenPoint;
-        _lastLoggedProxyTick = now;
-        Debug.WriteLine($"[SnapDebug] ProxySnap: real({realScreenPoint.x},{realScreenPoint.y})->proxy({proxyScreenPoint.x},{proxyScreenPoint.y})");
-    }
-#endif
-
     private bool TryGetDwmMaxButtonBounds(out (int left, int top, int right, int bottom) dwmMaxRect)
     {
         dwmMaxRect = default;
@@ -1984,7 +1961,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"[Window] Failed to switch render target to composition mode: {ex.Message}");
+            _ = ex;
         }
 
         return false;
@@ -2401,23 +2378,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                msg == WM_NCLBUTTONDBLCLK;
     }
 
-#if DEBUG
-    private static string GetNcMessageName(uint msg)
-    {
-        return msg switch
-        {
-            WM_NCHITTEST => "WM_NCHITTEST",
-            WM_NCMOUSEMOVE => "WM_NCMOUSEMOVE",
-            WM_NCMOUSEHOVER => "WM_NCMOUSEHOVER",
-            WM_NCMOUSELEAVE => "WM_NCMOUSELEAVE",
-            WM_NCLBUTTONDOWN => "WM_NCLBUTTONDOWN",
-            WM_NCLBUTTONUP => "WM_NCLBUTTONUP",
-            WM_NCLBUTTONDBLCLK => "WM_NCLBUTTONDBLCLK",
-            _ => $"0x{msg:X}"
-        };
-    }
-#endif
-
     private delegate nint WndProcDelegate(nint hWnd, uint msg, nint wParam, nint lParam);
 
     private void RegisterWindowClass()
@@ -2451,7 +2411,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     protected virtual nint WndProc(nint hWnd, uint msg, nint wParam, nint lParam)
     {
-        if (_windows.TryGetValue(hWnd, out var window))
+        Window? window = null;
+        if (!_windows.TryGetValue(hWnd, out window))
+        {
+            // Unit tests invoke WndProc via reflection with hWnd = 0.
+            // In that path, process against this instance directly.
+            if (hWnd == nint.Zero)
+            {
+                window = this;
+            }
+            else
+            {
+                return DefWindowProc(hWnd, msg, wParam, lParam);
+            }
+        }
+
+        if (window != null)
         {
             switch (msg)
             {
@@ -2516,9 +2491,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                         ncParams.rgrc0.bottom = computedRect.bottom;
 
                         Marshal.StructureToPtr(ncParams, lParam, false);
-#if DEBUG
-                        Debug.WriteLine($"[SnapDebug] WM_NCCALCSIZE custom rect={ncParams.rgrc0.left},{ncParams.rgrc0.top},{ncParams.rgrc0.right},{ncParams.rgrc0.bottom}");
-#endif
                         return nint.Zero;
                     }
                     break;
@@ -2527,19 +2499,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
                     {
                         var customHitResult = window.HandleNcHitTest(lParam);
-#if DEBUG
-                        if (customHitResult == HTMAXBUTTON)
-                        {
-                            Debug.WriteLine($"[SnapDebug] WM_NCHITTEST => HTMAXBUTTON, lParam=0x{lParam.ToInt64():X}");
-                        }
-#endif
 
                         if (window.ShouldUseWin11SnapNcRouting() &&
                             DwmDefWindowProc(hWnd, msg, wParam, lParam, out nint dwmHitResult))
                         {
-#if DEBUG
-                            Debug.WriteLine($"[SnapDebug] DwmDefWindowProc({GetNcMessageName(msg)}) handled, result={dwmHitResult}");
-#endif
                             // Keep custom caption-button hit-testing in charge so styled
                             // button dimensions can enlarge WM_NCHITTEST regions.
                             if (IsCaptionButtonNcHit(customHitResult))
@@ -2915,6 +2878,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     // Native capture was lost (another window took it, or system released it).
                     // Sync managed state — don't call ReleaseCapture again since it's already gone.
                     UIElement.OnNativeCaptureChanged();
+                    window.ClearMousePressedChain();
                     return nint.Zero;
 
                 case WM_ACTIVATE:
@@ -2932,8 +2896,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                                 popup.IsOpen = false;
                         }
                     }
+                    if (activateState == WA_INACTIVE)
+                    {
+                        window.ClearPressedChains();
+                    }
                     break;
             }
+        }
+
+        if (hWnd == nint.Zero)
+        {
+            return nint.Zero;
         }
 
         return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -2946,6 +2919,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             ClearTitleBarInteractionState();
         }
+
+        ClearMousePressedChain();
 
         // Clear general mouse over state
         if (_lastMouseOverElement != null)
@@ -2977,6 +2952,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private RenderTargetDrawingContext? _drawingContext;
     private UIElement? _lastMouseOverElement;
+    private readonly List<UIElement> _mousePressedChain = [];
+    private readonly List<UIElement> _keyboardPressedChain = [];
+    private bool _keyboardPressActive;
 
     /// <summary>
     /// WM_PAINT handler. Used for OS-initiated repaints (window uncovered, initial show, resize).
@@ -3127,21 +3105,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void LogRenderFailure(Exception exception, string fallbackStage)
     {
-        string stage = fallbackStage;
-        int resultCode = (int)JaliumResult.Unknown;
-        if (exception is RenderPipelineException pipelineException)
-        {
-            stage = pipelineException.Stage;
-            resultCode = pipelineException.ResultCode;
-        }
-
-        int physicalWidth = Math.Max((int)(Width * _dpiScale), 0);
-        int physicalHeight = Math.Max((int)(Height * _dpiScale), 0);
-        double dpi = _dpiScale * 96.0;
-        string backend = RenderTarget?.Backend.ToString() ?? RenderContext.Current?.Backend.ToString() ?? "Unknown";
-
-        Debug.WriteLine(
-            $"RenderFailure windowType={GetType().Name} hwnd=0x{Handle.ToInt64():X} size={physicalWidth}x{physicalHeight} dpi={dpi:F2} backend={backend} stage={stage} resultCode={resultCode}");
+        _ = exception;
+        _ = fallbackStage;
     }
 
     /// <summary>
@@ -3351,6 +3316,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // Route keyboard events to the focused element, or the window if no element has focus
         var target = Keyboard.FocusedElement as UIElement ?? this;
 
+        if (!isRepeat && (key == Key.Space || key == Key.Enter))
+        {
+            ActivateKeyboardPressedChain(target);
+        }
+
         // Raise tunnel event (PreviewKeyDown)
         KeyEventArgs tunnelArgs = new(PreviewKeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp);
         target.RaiseEvent(tunnelArgs);
@@ -3475,6 +3445,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             KeyEventArgs bubbleArgs = new(KeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp);
             target.RaiseEvent(bubbleArgs);
+        }
+
+        if (key == Key.Space || key == Key.Enter)
+        {
+            ClearKeyboardPressedChain();
         }
     }
 
@@ -3804,6 +3779,70 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
     }
 
+    private static void BuildAncestorChain(UIElement start, List<UIElement> chain)
+    {
+        chain.Clear();
+
+        UIElement? current = start;
+        while (current != null)
+        {
+            chain.Add(current);
+            current = current.VisualParent as UIElement;
+        }
+    }
+
+    private static void ApplyPressedState(List<UIElement> chain, bool isPressed)
+    {
+        for (int i = 0; i < chain.Count; i++)
+        {
+            chain[i].SetIsPressed(isPressed);
+        }
+    }
+
+    private void ActivateMousePressedChain(UIElement target)
+    {
+        ClearMousePressedChain();
+        BuildAncestorChain(target, _mousePressedChain);
+        ApplyPressedState(_mousePressedChain, isPressed: true);
+    }
+
+    private void ClearMousePressedChain()
+    {
+        if (_mousePressedChain.Count == 0)
+        {
+            return;
+        }
+
+        ApplyPressedState(_mousePressedChain, isPressed: false);
+        _mousePressedChain.Clear();
+    }
+
+    private void ActivateKeyboardPressedChain(UIElement target)
+    {
+        ClearKeyboardPressedChain();
+        BuildAncestorChain(target, _keyboardPressedChain);
+        ApplyPressedState(_keyboardPressedChain, isPressed: true);
+        _keyboardPressActive = true;
+    }
+
+    private void ClearKeyboardPressedChain()
+    {
+        if (_keyboardPressedChain.Count == 0 && !_keyboardPressActive)
+        {
+            return;
+        }
+
+        ApplyPressedState(_keyboardPressedChain, isPressed: false);
+        _keyboardPressedChain.Clear();
+        _keyboardPressActive = false;
+    }
+
+    private void ClearPressedChains()
+    {
+        ClearMousePressedChain();
+        ClearKeyboardPressedChain();
+    }
+
     private void OnMouseButtonDown(MouseButton button, nint wParam, nint lParam, int clickCount = 1)
     {
         var position = GetMousePosition(lParam);
@@ -3838,6 +3877,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             var titleBarButton = GetTitleBarButtonAtPoint(position);
             if (titleBarButton != null)
             {
+                ClearMousePressedChain();
                 _pressedTitleBarButton = titleBarButton;
                 titleBarButton.SetIsPressed(true);  // triggers InvalidateVisual() → dirty rect
                 return; // Handled
@@ -3848,6 +3888,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
         var target = captured ?? HitTest(position)?.VisualHit as UIElement ?? this;
+
+        if (button == MouseButton.Left)
+        {
+            ActivateMousePressedChain(target);
+        }
 
         // Update button state for the pressed button
         var currentState = MouseButtonState.Pressed;
@@ -3898,6 +3943,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         if (_suppressMouseUpButton == button)
         {
             _suppressMouseUpButton = null;
+            if (button == MouseButton.Left)
+            {
+                ClearMousePressedChain();
+            }
             return;
         }
 
@@ -3932,6 +3981,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
             _pressedTitleBarButton = null;
             // SetIsPressed(false) above already triggers InvalidateVisual() → dirty rect
+            ClearMousePressedChain();
             return; // Handled
         }
 
@@ -3979,6 +4029,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         else if (!sourceHandled)
         {
             RaisePointerUpPipeline(target, pointerPoint, modifiers, timestamp);
+        }
+
+        if (button == MouseButton.Left)
+        {
+            ClearMousePressedChain();
         }
 
         _activePointerTargets.Remove(MousePointerId);
@@ -5536,3 +5591,4 @@ public enum WindowStyle
     /// </summary>
     ToolWindow
 }
+

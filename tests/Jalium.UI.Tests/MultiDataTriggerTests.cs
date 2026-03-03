@@ -237,7 +237,8 @@ public class MultiDataTriggerTests
         trigger.Setters.Add(new Setter(TestElement.TestOpacityProperty, 0.5));
 
         trigger.AttachForTest(element);
-        Assert.Equal(0.5, element.GetValue(TestElement.TestOpacityProperty));
+        // WPF precedence: local value outranks trigger layers.
+        Assert.Equal(0.8, element.GetValue(TestElement.TestOpacityProperty));
 
         // Act
         trigger.DetachForTest(element);

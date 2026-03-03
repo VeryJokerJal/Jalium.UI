@@ -8,6 +8,9 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Control : FrameworkElement
 {
+    private static readonly Dictionary<string, SolidColorBrush> s_brushStringCache =
+        new(StringComparer.OrdinalIgnoreCase);
+
     #region Dependency Properties
 
     /// <summary>
@@ -125,7 +128,7 @@ public class Control : FrameworkElement
     /// </summary>
     public Brush? Background
     {
-        get => (Brush?)GetValue(BackgroundProperty);
+        get => CoerceBrush(GetValue(BackgroundProperty));
         set => SetValue(BackgroundProperty, value);
     }
 
@@ -134,7 +137,7 @@ public class Control : FrameworkElement
     /// </summary>
     public Brush? Foreground
     {
-        get => (Brush?)GetValue(ForegroundProperty);
+        get => CoerceBrush(GetValue(ForegroundProperty));
         set => SetValue(ForegroundProperty, value);
     }
 
@@ -143,7 +146,7 @@ public class Control : FrameworkElement
     /// </summary>
     public Brush? BorderBrush
     {
-        get => (Brush?)GetValue(BorderBrushProperty);
+        get => CoerceBrush(GetValue(BorderBrushProperty));
         set => SetValue(BorderBrushProperty, value);
     }
 
@@ -246,6 +249,53 @@ public class Control : FrameworkElement
         set => SetValue(TemplateProperty, value);
     }
 
+    private static Brush? CoerceBrush(object? value)
+    {
+        if (value is null)
+        {
+            return null;
+        }
+
+        if (value is Brush brush)
+        {
+            return brush;
+        }
+
+        if (value is Color color)
+        {
+            return new SolidColorBrush(color);
+        }
+
+        if (value is string brushText)
+        {
+            var normalized = brushText.Trim();
+            if (normalized.Length == 0)
+            {
+                return null;
+            }
+
+            lock (s_brushStringCache)
+            {
+                if (s_brushStringCache.TryGetValue(normalized, out var cached))
+                {
+                    return cached;
+                }
+            }
+
+            if (ColorConverter.ConvertFromString(normalized) is Color parsedColor)
+            {
+                var parsedBrush = new SolidColorBrush(parsedColor);
+                lock (s_brushStringCache)
+                {
+                    s_brushStringCache[normalized] = parsedBrush;
+                }
+                return parsedBrush;
+            }
+        }
+
+        return null;
+    }
+
     #endregion
 
     #region Template Methods
@@ -278,6 +328,10 @@ public class Control : FrameworkElement
 
                 // Add to visual tree
                 AddVisualChild(_templateRoot);
+
+                // Template-authored literal values must participate as template values instead
+                // of local values so template triggers can override them.
+                PromoteTemplateLocalValuesRecursive(_templateRoot);
 
                 // Reactivate bindings now that the template tree is fully connected
                 // This allows RelativeSource FindAncestor bindings to resolve
@@ -429,6 +483,60 @@ public class Control : FrameworkElement
                 if (panelChild is FrameworkElement panelChildElement)
                 {
                     SetTemplatedParentRecursive(panelChildElement, parent);
+                }
+            }
+        }
+    }
+
+    private static void PromoteTemplateLocalValuesRecursive(FrameworkElement element)
+    {
+        element.PromoteLocalValuesToLayer(DependencyObject.LayerValueSource.ParentTemplate);
+        DynamicResourceBindingOperations.PromoteDynamicResourcesToLayer(
+            element,
+            DependencyObject.LayerValueSource.ParentTemplate);
+
+        // Process visual children
+        var childCount = element.VisualChildrenCount;
+        for (int i = 0; i < childCount; i++)
+        {
+            if (element.GetVisualChild(i) is FrameworkElement child)
+            {
+                PromoteTemplateLocalValuesRecursive(child);
+            }
+        }
+
+        // Special handling for Popup - its Child is not a visual child but needs template layering
+        if (element is Popup popup && popup.Child is FrameworkElement popupChild)
+        {
+            PromoteTemplateLocalValuesRecursive(popupChild);
+        }
+
+        // Special handling for Border - its Child might not be in visual tree yet
+        if (element is Border border && border.Child is FrameworkElement borderChild)
+        {
+            PromoteTemplateLocalValuesRecursive(borderChild);
+        }
+
+        // Special handling for ContentControl - its content might not be in visual tree yet
+        if (element is ContentControl contentControl && contentControl.Content is FrameworkElement contentChild)
+        {
+            PromoteTemplateLocalValuesRecursive(contentChild);
+        }
+
+        // Special handling for ScrollViewer - its Content might not be in visual tree yet
+        if (element is ScrollViewer scrollViewer && scrollViewer.Content is FrameworkElement scrollContent)
+        {
+            PromoteTemplateLocalValuesRecursive(scrollContent);
+        }
+
+        // Special handling for Panel - ensure all children are processed
+        if (element is Panel panel)
+        {
+            foreach (var panelChild in panel.Children)
+            {
+                if (panelChild is FrameworkElement panelChildElement)
+                {
+                    PromoteTemplateLocalValuesRecursive(panelChildElement);
                 }
             }
         }

@@ -174,11 +174,20 @@ public sealed class MultiBindingExpression : BindingExpressionBase
             }
 
             // Convert back to source values
-            var sourceValues = _multiBinding.Converter.ConvertBack(
-                targetValue,
-                targetTypes,
-                _multiBinding.ConverterParameter,
-                _multiBinding.ConverterCulture ?? CultureInfo.CurrentCulture);
+            object?[]? sourceValues;
+            try
+            {
+                sourceValues = _multiBinding.Converter.ConvertBack(
+                    targetValue,
+                    targetTypes,
+                    _multiBinding.ConverterParameter,
+                    _multiBinding.ConverterCulture ?? CultureInfo.CurrentCulture);
+            }
+            catch
+            {
+                Status = BindingStatus.UpdateSourceError;
+                return;
+            }
 
             if (sourceValues == null) return;
 
@@ -187,6 +196,9 @@ public sealed class MultiBindingExpression : BindingExpressionBase
             {
                 if (_bindingExpressions[i] is BindingExpression be)
                 {
+                    if (ReferenceEquals(sourceValues[i], DependencyProperty.UnsetValue))
+                        continue;
+
                     // Set value on shadow property, which will trigger source update
                     var shadowProperty = CreateShadowProperty(i);
                     Target.SetValue(shadowProperty, sourceValues[i]);
@@ -212,27 +224,40 @@ public sealed class MultiBindingExpression : BindingExpressionBase
 
             // Collect values from all child bindings
             var values = new object?[_bindingExpressions.Count];
+            var hasUnset = false;
             for (int i = 0; i < _bindingExpressions.Count; i++)
             {
                 var shadowProperty = CreateShadowProperty(i);
                 values[i] = Target.GetValue(shadowProperty);
+                if (ReferenceEquals(values[i], DependencyProperty.UnsetValue))
+                    hasUnset = true;
             }
 
             // Convert values
             object? targetValue;
             if (_multiBinding.Converter != null)
             {
-                targetValue = _multiBinding.Converter.Convert(
-                    values,
-                    TargetProperty.PropertyType,
-                    _multiBinding.ConverterParameter,
-                    _multiBinding.ConverterCulture ?? CultureInfo.CurrentCulture);
+                try
+                {
+                    targetValue = _multiBinding.Converter.Convert(
+                        values,
+                        TargetProperty.PropertyType,
+                        _multiBinding.ConverterParameter,
+                        _multiBinding.ConverterCulture ?? CultureInfo.CurrentCulture);
+                }
+                catch
+                {
+                    targetValue = DependencyProperty.UnsetValue;
+                }
             }
             else
             {
                 // Without a converter, just use the first value
                 targetValue = values.Length > 0 ? values[0] : null;
             }
+
+            if (ReferenceEquals(targetValue, DependencyProperty.UnsetValue))
+                targetValue = _multiBinding.FallbackValue;
 
             // Apply StringFormat if specified
             if (targetValue != null && !string.IsNullOrEmpty(_multiBinding.StringFormat))
@@ -247,8 +272,11 @@ public sealed class MultiBindingExpression : BindingExpressionBase
                 }
             }
 
-            // Handle FallbackValue and TargetNullValue
-            targetValue ??= _multiBinding.TargetNullValue ?? _multiBinding.FallbackValue;
+            if (targetValue == null && _multiBinding.TargetNullValue != null)
+                targetValue = _multiBinding.TargetNullValue;
+
+            if (targetValue == null && (hasUnset || _multiBinding.FallbackValue != null))
+                targetValue = _multiBinding.FallbackValue;
 
             Target.SetValue(TargetProperty, targetValue);
         }

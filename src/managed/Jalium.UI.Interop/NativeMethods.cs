@@ -282,8 +282,8 @@ internal static partial class NativeMethods
     /// <summary>
     /// Draws text.
     /// </summary>
-    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_text", StringMarshalling = StringMarshalling.Utf16)]
-    internal static partial void DrawText(nint renderTarget, string text, int textLength, nint textFormat, float x, float y, float width, float height, nint brush);
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_text")]
+    internal static unsafe partial void DrawTextRaw(nint renderTarget, char* text, int textLength, nint textFormat, float x, float y, float width, float height, nint brush);
 
     /// <summary>
     /// Draws a backdrop filter effect.

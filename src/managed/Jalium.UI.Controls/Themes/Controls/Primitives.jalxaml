@@ -18,13 +18,6 @@
     </Style>
 
     <!-- ============================================== -->
-    <!-- BulletDecorator Style -->
-    <!-- ============================================== -->
-    <Style TargetType="BulletDecorator">
-        <Setter Property="Background" Value="Transparent" />
-    </Style>
-
-    <!-- ============================================== -->
     <!-- UniformGrid Style -->
     <!-- ============================================== -->
     <Style TargetType="UniformGrid">

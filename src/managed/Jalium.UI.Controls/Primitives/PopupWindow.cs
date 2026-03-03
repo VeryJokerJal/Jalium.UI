@@ -1,5 +1,4 @@
-﻿using System.Diagnostics;
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Documents;
 using Jalium.UI.Input;
@@ -85,6 +84,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         _width = width;
         _height = height;
+        UpdateRootBoundsForHitTest();
 
         RegisterPopupWindowClass();
 
@@ -141,6 +141,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         bool sizeChanged = width != _width || height != _height;
         _width = width;
         _height = height;
+        UpdateRootBoundsForHitTest();
 
         _ = SetWindowPos(_hwnd, HWND_TOPMOST, screenX, screenY, width, height,
             SWP_NOACTIVATE | SWP_NOOWNERZORDER);
@@ -226,6 +227,10 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             var dipWidth = _width / dpiScale;
             var dipHeight = _height / dpiScale;
 
+            // PopupWindow itself is the hit-test root. Keep non-empty bounds in sync with the HWND size,
+            // otherwise FrameworkElement.HitTestCore short-circuits and mouse input never reaches children.
+            SetVisualBounds(new Rect(0, 0, dipWidth, dipHeight));
+
             if (Child != null)
                 _layoutManager.UpdateLayout(Child, new Size(dipWidth, dipHeight));
 
@@ -273,19 +278,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void LogRenderFailure(Exception exception, string fallbackStage)
     {
-        string stage = fallbackStage;
-        int resultCode = (int)JaliumResult.Unknown;
-        if (exception is RenderPipelineException pipelineException)
-        {
-            stage = pipelineException.Stage;
-            resultCode = pipelineException.ResultCode;
-        }
-
-        double dpi = _parentWindow.DpiScale * 96.0;
-        string backend = _renderTarget?.Backend.ToString() ?? RenderContext.Current?.Backend.ToString() ?? "Unknown";
-
-        Debug.WriteLine(
-            $"RenderFailure windowType={GetType().Name} hwnd=0x{_hwnd.ToInt64():X} size={_width}x{_height} dpi={dpi:F2} backend={backend} stage={stage} resultCode={resultCode}");
+        _ = exception;
+        _ = fallbackStage;
     }
 
     #endregion
@@ -1637,6 +1631,12 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     #region Helpers
 
+    private void UpdateRootBoundsForHitTest()
+    {
+        var dpiScale = _parentWindow.DpiScale <= 0 ? 1.0 : _parentWindow.DpiScale;
+        SetVisualBounds(new Rect(0, 0, _width / dpiScale, _height / dpiScale));
+    }
+
     private Point GetMousePosition(nint lParam)
     {
         int x = (short)(lParam.ToInt64() & 0xFFFF);
@@ -1895,4 +1895,5 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     #endregion
 }
+
 

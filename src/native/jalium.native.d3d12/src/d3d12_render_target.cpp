@@ -408,6 +408,17 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     transitionBmpW_ = 0;
     transitionBmpH_ = 0;
 
+    // Release cached element effect resources
+    cachedBlurEffect_.Reset();
+    cachedShadowEffect_.Reset();
+    effectBitmapSlots_.clear();
+    effectCaptureStack_.clear();
+    lastCapturedEffectBitmap_.Reset();
+    lastEffectCaptureX_ = 0;
+    lastEffectCaptureY_ = 0;
+    lastEffectCaptureW_ = 0;
+    lastEffectCaptureH_ = 0;
+
     // Release snapshot resources
     for (uint32_t i = 0; i < FrameCount; ++i) {
         snapshotBitmaps_[i].Reset();
@@ -638,6 +649,10 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
 
     // Reset pre-glass snapshot flag for the new frame
     preGlassSnapshotCaptured_ = false;
+
+    // Defensive reset for per-frame nested effect capture state.
+    effectCaptureStack_.clear();
+    lastCapturedEffectBitmap_.Reset();
 
     // WPF-style dirty rendering: NO D2D clip for dirty regions.
     // D2D PushAxisAlignedClip causes artifacts (anti-aliased edges, Clear ignoring clip).
@@ -2553,10 +2568,10 @@ void D3D12RenderTarget::DrawCapturedTransition(
 // Element Effect Capture & Rendering
 // ============================================================================
 
-bool D3D12RenderTarget::CreateEffectBitmap(uint32_t pixelW, uint32_t pixelH) {
+bool D3D12RenderTarget::CreateEffectBitmap(EffectBitmapSlot& slot, uint32_t pixelW, uint32_t pixelH) {
     if (!d2dContext_) return false;
 
-    effectBitmap_.Reset();
+    slot.bitmap.Reset();
 
     D2D1_BITMAP_PROPERTIES1 bitmapProps = D2D1::BitmapProperties1(
         D2D1_BITMAP_OPTIONS_TARGET,
@@ -2564,17 +2579,18 @@ bool D3D12RenderTarget::CreateEffectBitmap(uint32_t pixelW, uint32_t pixelH) {
         dpiX_, dpiY_);
 
     D2D1_SIZE_U bmpSize = D2D1::SizeU(pixelW, pixelH);
-    HRESULT hr = d2dContext_->CreateBitmap(bmpSize, nullptr, 0, &bitmapProps, &effectBitmap_);
-    if (FAILED(hr) || !effectBitmap_) return false;
+    HRESULT hr = d2dContext_->CreateBitmap(bmpSize, nullptr, 0, &bitmapProps, &slot.bitmap);
+    if (FAILED(hr) || !slot.bitmap) return false;
 
-    effectBmpW_ = pixelW;
-    effectBmpH_ = pixelH;
+    slot.pixelW = pixelW;
+    slot.pixelH = pixelH;
     return true;
 }
 
 void D3D12RenderTarget::BeginEffectCapture(float x, float y, float w, float h) {
     if (!isDrawing_) return;
     if (w <= 0 || h <= 0) return;
+    lastCapturedEffectBitmap_.Reset();
 
     // Compute physical pixel dimensions
     float dpiScaleX = dpiX_ / 96.0f;
@@ -2582,25 +2598,34 @@ void D3D12RenderTarget::BeginEffectCapture(float x, float y, float w, float h) {
     uint32_t pixelW = static_cast<uint32_t>(std::ceil(w * dpiScaleX));
     uint32_t pixelH = static_cast<uint32_t>(std::ceil(h * dpiScaleY));
 
-    // Recreate bitmap if size changed
-    if (pixelW != effectBmpW_ || pixelH != effectBmpH_ || !effectBitmap_) {
-        if (!CreateEffectBitmap(pixelW, pixelH)) return;
+    // Use one reusable bitmap slot per nesting depth.
+    size_t slotIndex = effectCaptureStack_.size();
+    if (slotIndex >= effectBitmapSlots_.size()) {
+        effectBitmapSlots_.emplace_back();
+    }
+    auto& slot = effectBitmapSlots_[slotIndex];
+
+    // Recreate bitmap if size changed for this depth slot.
+    if (pixelW != slot.pixelW || pixelH != slot.pixelH || !slot.bitmap) {
+        if (!CreateEffectBitmap(slot, pixelW, pixelH)) return;
     }
 
-    // Store capture area for later use in draw methods
-    effectCaptureX_ = x;
-    effectCaptureY_ = y;
-    effectCaptureW_ = w;
-    effectCaptureH_ = h;
+    ActiveEffectCapture capture;
+    capture.slotIndex = slotIndex;
+    capture.captureX = x;
+    capture.captureY = y;
+    capture.captureW = w;
+    capture.captureH = h;
 
     // Flush pending draws to current target
     d2dContext_->Flush();
 
     // Save current render target
-    d2dContext_->GetTarget(&savedEffectTarget_);
+    d2dContext_->GetTarget(&capture.savedTarget);
+    effectCaptureStack_.push_back(std::move(capture));
 
     // Switch to offscreen bitmap
-    d2dContext_->SetTarget(effectBitmap_.Get());
+    d2dContext_->SetTarget(slot.bitmap.Get());
 
     // Clear with transparent
     d2dContext_->Clear(D2D1::ColorF(0, 0, 0, 0));
@@ -2614,6 +2639,10 @@ void D3D12RenderTarget::BeginEffectCapture(float x, float y, float w, float h) {
 
 void D3D12RenderTarget::EndEffectCapture() {
     if (!isDrawing_) return;
+    if (effectCaptureStack_.empty()) {
+        lastCapturedEffectBitmap_.Reset();
+        return;
+    }
 
     // Pop the translate transform
     if (!transformStack_.empty()) {
@@ -2624,17 +2653,33 @@ void D3D12RenderTarget::EndEffectCapture() {
     // Flush draws to offscreen bitmap
     d2dContext_->Flush();
 
+    // Pop capture state first so we can restore the previous target.
+    auto capture = std::move(effectCaptureStack_.back());
+    effectCaptureStack_.pop_back();
+
     // Restore original render target
-    if (savedEffectTarget_) {
-        d2dContext_->SetTarget(savedEffectTarget_.Get());
-        savedEffectTarget_.Reset();
+    if (capture.savedTarget) {
+        d2dContext_->SetTarget(capture.savedTarget.Get());
     }
+
+    // Expose the completed capture to DrawBlurEffect / DrawDropShadowEffect.
+    if (capture.slotIndex < effectBitmapSlots_.size()) {
+        lastCapturedEffectBitmap_ = effectBitmapSlots_[capture.slotIndex].bitmap;
+    }
+    else {
+        lastCapturedEffectBitmap_.Reset();
+    }
+    lastEffectCaptureX_ = capture.captureX;
+    lastEffectCaptureY_ = capture.captureY;
+    lastEffectCaptureW_ = capture.captureW;
+    lastEffectCaptureH_ = capture.captureH;
 }
 
 void D3D12RenderTarget::DrawBlurEffect(float x, float y, float w, float h, float radius) {
     if (!isDrawing_) return;
     if (w <= 0 || h <= 0 || radius <= 0) return;
-    if (!effectBitmap_) return;
+    auto capturedBitmap = lastCapturedEffectBitmap_.Get();
+    if (!capturedBitmap) return;
 
     // Create/reuse cached blur effect
     if (!cachedBlurEffect_) {
@@ -2642,7 +2687,7 @@ void D3D12RenderTarget::DrawBlurEffect(float x, float y, float w, float h, float
         if (FAILED(hr) || !cachedBlurEffect_) {
             // Fallback: draw unblurred content
             d2dContext_->DrawImage(
-                effectBitmap_.Get(),
+                capturedBitmap,
                 D2D1::Point2F(x, y),
                 D2D1::RectF(0, 0, w, h),
                 D2D1_INTERPOLATION_MODE_LINEAR,
@@ -2651,7 +2696,7 @@ void D3D12RenderTarget::DrawBlurEffect(float x, float y, float w, float h, float
         }
     }
 
-    cachedBlurEffect_->SetInput(0, effectBitmap_.Get());
+    cachedBlurEffect_->SetInput(0, capturedBitmap);
     cachedBlurEffect_->SetValue(D2D1_GAUSSIANBLUR_PROP_STANDARD_DEVIATION, radius / 3.0f);
     cachedBlurEffect_->SetValue(D2D1_GAUSSIANBLUR_PROP_BORDER_MODE, D2D1_BORDER_MODE_SOFT);
 
@@ -2669,7 +2714,8 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
     float r, float g, float b, float a) {
     if (!isDrawing_) return;
     if (w <= 0 || h <= 0) return;
-    if (!effectBitmap_) return;
+    auto capturedBitmap = lastCapturedEffectBitmap_.Get();
+    if (!capturedBitmap) return;
 
     // Draw shadow first (behind the element)
     if (a > 0.001f && (blurRadius > 0 || (offsetX != 0 || offsetY != 0))) {
@@ -2679,7 +2725,7 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
             if (FAILED(hr) || !cachedShadowEffect_) {
                 // Fallback: just draw original content without shadow
                 d2dContext_->DrawImage(
-                    effectBitmap_.Get(),
+                    capturedBitmap,
                     D2D1::Point2F(x, y),
                     D2D1::RectF(0, 0, w, h),
                     D2D1_INTERPOLATION_MODE_LINEAR,
@@ -2688,7 +2734,7 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
             }
         }
 
-        cachedShadowEffect_->SetInput(0, effectBitmap_.Get());
+        cachedShadowEffect_->SetInput(0, capturedBitmap);
         cachedShadowEffect_->SetValue(D2D1_SHADOW_PROP_BLUR_STANDARD_DEVIATION, blurRadius / 3.0f);
         cachedShadowEffect_->SetValue(D2D1_SHADOW_PROP_COLOR,
             D2D1_VECTOR_4F{ r, g, b, a });
@@ -2701,7 +2747,7 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
 
     // Draw original element content on top of the shadow
     d2dContext_->DrawImage(
-        effectBitmap_.Get(),
+        capturedBitmap,
         D2D1::Point2F(x, y),
         D2D1::RectF(0, 0, w, h),
         D2D1_INTERPOLATION_MODE_LINEAR,

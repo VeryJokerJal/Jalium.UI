@@ -44,6 +44,14 @@ public sealed class DataGrid : Control
         DependencyProperty.Register(nameof(CanUserReorderColumns), typeof(bool), typeof(DataGrid),
             new PropertyMetadata(false));
 
+    public static readonly DependencyProperty EnableRowVirtualizationProperty =
+        DependencyProperty.Register(nameof(EnableRowVirtualization), typeof(bool), typeof(DataGrid),
+            new PropertyMetadata(true, OnVirtualizationSettingsChanged));
+
+    public static readonly DependencyProperty EnableColumnVirtualizationProperty =
+        DependencyProperty.Register(nameof(EnableColumnVirtualization), typeof(bool), typeof(DataGrid),
+            new PropertyMetadata(true, OnVirtualizationSettingsChanged));
+
     public static readonly DependencyProperty SelectionModeProperty =
         DependencyProperty.Register(nameof(SelectionMode), typeof(DataGridSelectionMode), typeof(DataGrid),
             new PropertyMetadata(DataGridSelectionMode.Single));
@@ -200,6 +208,18 @@ public sealed class DataGrid : Control
         set => SetValue(CanUserReorderColumnsProperty, value);
     }
 
+    public bool EnableRowVirtualization
+    {
+        get => (bool)GetValue(EnableRowVirtualizationProperty)!;
+        set => SetValue(EnableRowVirtualizationProperty, value);
+    }
+
+    public bool EnableColumnVirtualization
+    {
+        get => (bool)GetValue(EnableColumnVirtualizationProperty)!;
+        set => SetValue(EnableColumnVirtualizationProperty, value);
+    }
+
     public DataGridSelectionMode SelectionMode
     {
         get => (DataGridSelectionMode)GetValue(SelectionModeProperty)!;
@@ -304,7 +324,13 @@ public sealed class DataGrid : Control
     private StackPanel? _rowsHost;
     private Border? _columnHeadersBorder;
     private ScrollViewer? _dataScrollViewer;
-    private readonly List<DataGridRow> _rows = new();
+    private readonly Dictionary<int, DataGridRow> _realizedRows = new();
+    private Border? _topSpacer;
+    private Border? _bottomSpacer;
+    private int _realizedStartIndex = -1;
+    private int _realizedEndIndex = -1;
+    private int _realizedColumnStartIndex = -1;
+    private int _realizedColumnEndIndex = -1;
 
     // Editing state
     private DataGridCell? _currentEditingCell;
@@ -369,6 +395,11 @@ public sealed class DataGrid : Control
         {
             _columnHeadersHost.Margin = new Thickness(-_dataScrollViewer.HorizontalOffset, 0, 0, 0);
         }
+
+        if (EnableRowVirtualization || EnableColumnVirtualization)
+        {
+            UpdateRealizedRows();
+        }
     }
 
     #endregion
@@ -415,21 +446,189 @@ public sealed class DataGrid : Control
 
     private void RefreshRows()
     {
-        if (_rowsHost == null) return;
+        if (_rowsHost == null)
+        {
+            return;
+        }
 
         _rowsHost.Children.Clear();
-        _rows.Clear();
-
-        for (var i = 0; i < _items.Count; i++)
-        {
-            var item = _items[i];
-            var row = CreateRow(item, i);
-            _rows.Add(row);
-            _rowsHost.Children.Add(row);
-        }
+        _realizedRows.Clear();
+        _topSpacer = new Border();
+        _bottomSpacer = new Border();
+        _realizedStartIndex = -1;
+        _realizedEndIndex = -1;
+        _realizedColumnStartIndex = -1;
+        _realizedColumnEndIndex = -1;
+        UpdateRealizedRows(forceRefresh: true);
     }
 
-    private DataGridRow CreateRow(object item, int rowIndex)
+    private void UpdateRealizedRows(bool forceRefresh = false)
+    {
+        if (_rowsHost == null)
+        {
+            return;
+        }
+
+        if (_items.Count == 0)
+        {
+            _rowsHost.Children.Clear();
+            _realizedRows.Clear();
+            _realizedStartIndex = -1;
+            _realizedEndIndex = -1;
+            _realizedColumnStartIndex = -1;
+            _realizedColumnEndIndex = -1;
+            return;
+        }
+
+        var rowHeight = Math.Max(1.0, RowHeight);
+        int startIndex;
+        int endIndex;
+
+        if (EnableRowVirtualization && _dataScrollViewer != null)
+        {
+            var viewportHeight = _dataScrollViewer.ViewportHeight > 0
+                ? _dataScrollViewer.ViewportHeight
+                : _dataScrollViewer.ActualHeight;
+            if (viewportHeight <= 0)
+            {
+                viewportHeight = 400;
+            }
+
+            var firstVisible = (int)Math.Floor(_dataScrollViewer.VerticalOffset / rowHeight);
+            var visibleCount = Math.Max(1, (int)Math.Ceiling(viewportHeight / rowHeight));
+            var cacheCount = Math.Max(2, visibleCount / 2);
+            startIndex = Math.Max(0, firstVisible - cacheCount);
+            endIndex = Math.Min(_items.Count - 1, firstVisible + visibleCount + cacheCount);
+        }
+        else
+        {
+            startIndex = 0;
+            endIndex = _items.Count - 1;
+        }
+
+        var (columnStart, columnEnd) = GetVisibleColumnRange();
+        var rowRangeUnchanged = startIndex == _realizedStartIndex && endIndex == _realizedEndIndex;
+        var columnRangeUnchanged = columnStart == _realizedColumnStartIndex && columnEnd == _realizedColumnEndIndex;
+        if (!forceRefresh && rowRangeUnchanged && columnRangeUnchanged)
+        {
+            UpdateRowSelectionVisuals();
+            return;
+        }
+
+        var staleIndices = _realizedRows.Keys.Where(i => i < startIndex || i > endIndex).ToArray();
+        foreach (var staleIndex in staleIndices)
+        {
+            _realizedRows.Remove(staleIndex);
+        }
+
+        for (var rowIndex = startIndex; rowIndex <= endIndex; rowIndex++)
+        {
+            if (!_realizedRows.TryGetValue(rowIndex, out var row) ||
+                row.VisibleColumnStart != columnStart ||
+                row.VisibleColumnEnd != columnEnd)
+            {
+                row = CreateRow(_items[rowIndex], rowIndex, columnStart, columnEnd);
+                _realizedRows[rowIndex] = row;
+            }
+        }
+
+        RebuildRowsHost(startIndex, endIndex, rowHeight);
+        _realizedStartIndex = startIndex;
+        _realizedEndIndex = endIndex;
+        _realizedColumnStartIndex = columnStart;
+        _realizedColumnEndIndex = columnEnd;
+        UpdateRowSelectionVisuals();
+    }
+
+    private void RebuildRowsHost(int startIndex, int endIndex, double rowHeight)
+    {
+        if (_rowsHost == null)
+        {
+            return;
+        }
+
+        _topSpacer ??= new Border();
+        _bottomSpacer ??= new Border();
+
+        _rowsHost.Children.Clear();
+
+        var topHeight = Math.Max(0, startIndex * rowHeight);
+        _topSpacer.Height = topHeight;
+        _topSpacer.Visibility = topHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _rowsHost.Children.Add(_topSpacer);
+
+        for (var i = startIndex; i <= endIndex; i++)
+        {
+            if (_realizedRows.TryGetValue(i, out var row))
+            {
+                _rowsHost.Children.Add(row);
+            }
+        }
+
+        var bottomHeight = Math.Max(0, (_items.Count - endIndex - 1) * rowHeight);
+        _bottomSpacer.Height = bottomHeight;
+        _bottomSpacer.Visibility = bottomHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
+        _rowsHost.Children.Add(_bottomSpacer);
+    }
+
+    private (int start, int end) GetVisibleColumnRange()
+    {
+        if (Columns.Count == 0)
+        {
+            return (-1, -1);
+        }
+
+        if (!EnableColumnVirtualization || _dataScrollViewer == null)
+        {
+            return (0, Columns.Count - 1);
+        }
+
+        var viewportWidth = _dataScrollViewer.ViewportWidth > 0
+            ? _dataScrollViewer.ViewportWidth
+            : _dataScrollViewer.ActualWidth;
+        if (viewportWidth <= 0)
+        {
+            return (0, Columns.Count - 1);
+        }
+
+        var offset = _dataScrollViewer.HorizontalOffset;
+        var viewportEnd = offset + viewportWidth;
+        var cumulative = 0.0;
+        var start = 0;
+        var end = Columns.Count - 1;
+        var foundStart = false;
+
+        for (var i = 0; i < Columns.Count; i++)
+        {
+            var columnWidth = Math.Max(1.0, Columns[i].ActualWidth);
+            var columnStart = cumulative;
+            var columnEnd = cumulative + columnWidth;
+
+            if (!foundStart && columnEnd >= offset)
+            {
+                start = Math.Max(0, i - 1);
+                foundStart = true;
+            }
+
+            if (foundStart && columnStart > viewportEnd)
+            {
+                end = Math.Min(Columns.Count - 1, i + 1);
+                break;
+            }
+
+            cumulative = columnEnd;
+        }
+
+        if (!foundStart)
+        {
+            start = Math.Max(0, Columns.Count - 1);
+            end = Columns.Count - 1;
+        }
+
+        return (start, end);
+    }
+
+    private DataGridRow CreateRow(object item, int rowIndex, int columnStart, int columnEnd)
     {
         var row = new DataGridRow
         {
@@ -437,7 +636,9 @@ public sealed class DataGrid : Control
             RowIndex = rowIndex,
             Height = RowHeight,
             IsSelected = _selectedItems.Contains(item),
-            ParentDataGrid = this
+            ParentDataGrid = this,
+            VisibleColumnStart = columnStart,
+            VisibleColumnEnd = columnEnd
         };
 
         // Set alternating background
@@ -446,9 +647,16 @@ public sealed class DataGrid : Control
             row.AlternatingBackground = AlternatingRowBackground;
         }
 
-        // Create cells for each column
-        foreach (var column in Columns)
+        if (columnStart < 0 || columnEnd < 0 || Columns.Count == 0)
         {
+            row.AddHandler(MouseDownEvent, new RoutedEventHandler(OnRowMouseDown));
+            return row;
+        }
+
+        // Create cells for visible columns
+        for (var colIndex = columnStart; colIndex <= columnEnd && colIndex < Columns.Count; colIndex++)
+        {
+            var column = Columns[colIndex];
             var cell = new DataGridCell
             {
                 Width = column.ActualWidth,
@@ -460,6 +668,7 @@ public sealed class DataGrid : Control
             cell.Content = displayElement;
 
             row.Cells.Add(cell);
+            row.CellsByColumn[colIndex] = cell;
         }
 
         row.AddHandler(MouseDownEvent, new RoutedEventHandler(OnRowMouseDown));
@@ -531,7 +740,7 @@ public sealed class DataGrid : Control
 
     private void UpdateRowSelectionVisuals()
     {
-        foreach (var row in _rows)
+        foreach (var row in _realizedRows.Values)
         {
             row.IsSelected = _selectedItems.Contains(row.DataItem);
         }
@@ -842,6 +1051,14 @@ public sealed class DataGrid : Control
         }
     }
 
+    private static void OnVirtualizationSettingsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DataGrid dataGrid)
+        {
+            dataGrid.RefreshRows();
+        }
+    }
+
     private void OnColumnsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         RefreshColumnHeaders();
@@ -872,13 +1089,18 @@ public sealed class DataGrid : Control
             }
         }
 
-        // Update cell widths in all rows
-        foreach (var row in _rows)
+        // Update cell widths in all realized rows
+        foreach (var row in _realizedRows.Values)
         {
-            if (colIndex < row.Cells.Count)
+            if (row.CellsByColumn.TryGetValue(colIndex, out var cell))
             {
-                row.Cells[colIndex].Width = newWidth;
+                cell.Width = newWidth;
             }
+        }
+
+        if (EnableColumnVirtualization)
+        {
+            UpdateRealizedRows(forceRefresh: true);
         }
 
         InvalidateMeasure();
@@ -895,17 +1117,25 @@ public sealed class DataGrid : Control
     {
         if (IsReadOnly || _currentEditingCell != null) return false;
 
-        if (SelectedIndex < 0 || SelectedIndex >= _rows.Count) return false;
-
-        var row = _rows[SelectedIndex];
-        if (row.Cells.Count == 0) return false;
+        var row = GetOrRealizeRow(SelectedIndex);
+        if (row == null) return false;
 
         // Find the first editable column
-        for (int i = 0; i < Columns.Count && i < row.Cells.Count; i++)
+        for (int i = 0; i < Columns.Count; i++)
         {
             if (!Columns[i].IsReadOnly)
             {
-                return BeginEditCell(row, row.Cells[i], Columns[i]);
+                if (!row.CellsByColumn.TryGetValue(i, out var cell))
+                {
+                    EnsureColumnVisible(i);
+                    row = GetOrRealizeRow(SelectedIndex);
+                    if (row == null || !row.CellsByColumn.TryGetValue(i, out cell))
+                    {
+                        continue;
+                    }
+                }
+
+                return BeginEditCell(row, cell, Columns[i]);
             }
         }
 
@@ -1027,14 +1257,86 @@ public sealed class DataGrid : Control
 
     public void ScrollIntoView(object item)
     {
-        // Find the row and bring it into view
         var index = _items.IndexOf(item);
-        if (index < 0) return;
-
-        if (index < _rows.Count)
+        if (index < 0)
         {
-            _rows[index].BringIntoView();
+            return;
         }
+
+        if (_dataScrollViewer != null)
+        {
+            _dataScrollViewer.ScrollToVerticalOffset(index * Math.Max(1.0, RowHeight));
+        }
+
+        UpdateRealizedRows(forceRefresh: true);
+        if (_realizedRows.TryGetValue(index, out var row))
+        {
+            row.BringIntoView();
+        }
+    }
+
+    private DataGridRow? GetOrRealizeRow(int rowIndex)
+    {
+        if (rowIndex < 0 || rowIndex >= _items.Count)
+        {
+            return null;
+        }
+
+        if (_realizedRows.TryGetValue(rowIndex, out var existing))
+        {
+            return existing;
+        }
+
+        if (_dataScrollViewer != null && EnableRowVirtualization)
+        {
+            _dataScrollViewer.ScrollToVerticalOffset(rowIndex * Math.Max(1.0, RowHeight));
+        }
+
+        UpdateRealizedRows(forceRefresh: true);
+        return _realizedRows.TryGetValue(rowIndex, out var realized) ? realized : null;
+    }
+
+    private void EnsureColumnVisible(int columnIndex)
+    {
+        if (_dataScrollViewer == null || columnIndex < 0 || columnIndex >= Columns.Count)
+        {
+            return;
+        }
+
+        var viewportWidth = _dataScrollViewer.ViewportWidth > 0
+            ? _dataScrollViewer.ViewportWidth
+            : _dataScrollViewer.ActualWidth;
+        if (viewportWidth <= 0)
+        {
+            return;
+        }
+
+        var columnStart = GetColumnStartOffset(columnIndex);
+        var columnWidth = Math.Max(1.0, Columns[columnIndex].ActualWidth);
+        var columnEnd = columnStart + columnWidth;
+        var currentOffset = _dataScrollViewer.HorizontalOffset;
+
+        if (columnStart < currentOffset)
+        {
+            _dataScrollViewer.ScrollToHorizontalOffset(columnStart);
+        }
+        else if (columnEnd > currentOffset + viewportWidth)
+        {
+            _dataScrollViewer.ScrollToHorizontalOffset(Math.Max(0, columnEnd - viewportWidth));
+        }
+
+        UpdateRealizedRows(forceRefresh: true);
+    }
+
+    private double GetColumnStartOffset(int columnIndex)
+    {
+        var offset = 0.0;
+        for (var i = 0; i < columnIndex && i < Columns.Count; i++)
+        {
+            offset += Math.Max(1.0, Columns[i].ActualWidth);
+        }
+
+        return offset;
     }
 
     #endregion
@@ -1061,7 +1363,10 @@ public sealed class DataGridRow : Control
     internal int RowIndex { get; set; }
     internal DataGrid? ParentDataGrid { get; set; }
     internal Brush? AlternatingBackground { get; set; }
+    internal int VisibleColumnStart { get; set; } = -1;
+    internal int VisibleColumnEnd { get; set; } = -1;
     internal List<DataGridCell> Cells { get; } = new();
+    internal Dictionary<int, DataGridCell> CellsByColumn { get; } = new();
 
     private StackPanel? _cellsPanel;
 

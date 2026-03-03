@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that displays a list of data items with optional column view.
 /// </summary>
-public sealed class ListView : ListBox
+public class ListView : ListBox
 {
     private StackPanel? _columnHeadersHost;
     private Border? _columnHeadersBorder;
@@ -134,7 +134,7 @@ public sealed class ListView : ListBox
 /// <summary>
 /// Represents an item in a ListView control.
 /// </summary>
-public sealed class ListViewItem : ListBoxItem
+public class ListViewItem : ListBoxItem
 {
     private StackPanel? _cellsPanel;
 
@@ -154,12 +154,21 @@ public sealed class ListViewItem : ListBoxItem
     {
         base.OnApplyTemplate();
         _cellsPanel = GetTemplateChild("PART_CellsPanel") as StackPanel;
+        OnCellsPanelAttached(_cellsPanel);
+    }
+
+    /// <summary>
+    /// Called when the cells panel template part is attached.
+    /// </summary>
+    /// <param name="cellsPanel">The cells panel, if present in template.</param>
+    protected virtual void OnCellsPanelAttached(StackPanel? cellsPanel)
+    {
     }
 
     /// <summary>
     /// Sets up cells for GridView column display.
     /// </summary>
-    internal void SetupGridViewCells(GridView gridView, object item)
+    protected internal virtual void SetupGridViewCells(GridView gridView, object item)
     {
         if (_cellsPanel == null) return;
 

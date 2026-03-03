@@ -30,4 +30,8 @@
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <EmbeddedResource Include="TestAssets\**\*.jalxaml" />
+  </ItemGroup>
+
 </Project>

@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
@@ -9,9 +10,15 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Encapsulates a Jalium.UI application.
 /// </summary>
-public sealed partial class Application
+[ContentProperty("Resources")]
+public partial class Application
 {
     private static Application? _current;
+
+    /// <summary>
+    /// Framework-internal startup object loader registered by Jalium.UI.Xaml.
+    /// </summary>
+    internal static Func<Application, string, object?>? StartupObjectLoader { get; set; }
 
     /// <summary>
     /// Gets the current application instance.
@@ -22,6 +29,12 @@ public sealed partial class Application
     /// Gets or sets the main window.
     /// </summary>
     public Window? MainWindow { get; set; }
+
+    /// <summary>
+    /// Gets or sets the startup URI used to load the initial window or visual root.
+    /// Supports relative paths and pack-style paths (e.g. /Assembly;component/Path/File.xaml).
+    /// </summary>
+    public string? StartupUri { get; set; }
 
     /// <summary>
     /// Gets or sets the shutdown mode of the application.
@@ -99,6 +112,7 @@ public sealed partial class Application
 
         // Register application resource lookup callback
         ResourceLookup.ApplicationResourceLookup = LookupApplicationResource;
+        ResourceLookup.AncestorRedirectLookup = ResolveResourceAncestorRedirect;
 
         // Initialize default theme (loads default styles for all controls)
         ThemeManager.Initialize(this);
@@ -119,6 +133,31 @@ public sealed partial class Application
                 return value;
             }
         }
+        return null;
+    }
+
+    private static FrameworkElement? ResolveResourceAncestorRedirect(FrameworkElement element)
+    {
+        // External Popup windows are detached from the owning window's visual tree.
+        // Bridge lookup to PlacementTarget first so window/page-level custom resources
+        // (for example OnePopup*) still resolve in popup content.
+        if (element is PopupRoot popupRoot && popupRoot.VisualParent is PopupWindow)
+        {
+            if (popupRoot.OwnerPopup.PlacementTarget is FrameworkElement placementTarget)
+            {
+                return placementTarget;
+            }
+
+            return popupRoot.OwnerPopup;
+        }
+
+        // Popup itself is often not in the visual tree (e.g., ContextMenu/Flyout internals).
+        // Continue lookup from PlacementTarget so implicit styles/resources follow host context.
+        if (element is Popup popup && popup.VisualParent == null && popup.PlacementTarget is FrameworkElement target)
+        {
+            return target;
+        }
+
         return null;
     }
 
@@ -143,6 +182,12 @@ public sealed partial class Application
     public void Run()
     {
         Startup?.Invoke(this, EventArgs.Empty);
+
+        var startupWindow = ResolveStartupWindow();
+        if (startupWindow != null && startupWindow.Handle == nint.Zero)
+        {
+            startupWindow.Show();
+        }
 
         try
         {
@@ -188,8 +233,53 @@ public sealed partial class Application
     public void Run(Window mainWindow)
     {
         MainWindow = mainWindow;
-        mainWindow.Show();
         Run();
+    }
+
+    /// <summary>
+    /// Resolves <see cref="MainWindow"/> from <see cref="StartupUri"/> when needed.
+    /// </summary>
+    /// <remarks>
+    /// Internal for tests so startup behavior can be validated without entering the message loop.
+    /// </remarks>
+    internal Window? ResolveStartupWindow()
+    {
+        if (MainWindow != null)
+            return MainWindow;
+
+        if (string.IsNullOrWhiteSpace(StartupUri))
+            return null;
+
+        if (StartupObjectLoader == null)
+        {
+            throw new InvalidOperationException(
+                $"StartupUri '{StartupUri}' cannot be resolved because no startup loader is registered.");
+        }
+
+        var startupObject = StartupObjectLoader(this, StartupUri);
+        if (startupObject == null)
+        {
+            throw new InvalidOperationException(
+                $"StartupUri '{StartupUri}' resolved to null.");
+        }
+
+        if (startupObject is Window startupWindow)
+        {
+            MainWindow = startupWindow;
+            return MainWindow;
+        }
+
+        if (startupObject is FrameworkElement startupRoot)
+        {
+            MainWindow = new Window
+            {
+                Content = startupRoot
+            };
+            return MainWindow;
+        }
+
+        throw new InvalidOperationException(
+            $"StartupUri '{StartupUri}' resolved to unsupported startup object type '{startupObject.GetType().FullName}'.");
     }
 
     /// <summary>

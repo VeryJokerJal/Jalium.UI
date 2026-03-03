@@ -13,6 +13,11 @@ public class ItemsControl : Control
     private ItemsPresenter? _itemsPresenter;
     private Panel? _fallbackItemsHost;
     private ItemContainerGenerator? _itemContainerGenerator;
+    private bool _generatorItemsChangedSubscribed;
+    private static readonly bool s_useLegacyItemsPipeline = string.Equals(
+        Environment.GetEnvironmentVariable("JALIUM_USE_LEGACY_ITEMS_PIPELINE"),
+        "1",
+        StringComparison.OrdinalIgnoreCase);
 
     #region Dependency Properties
 
@@ -101,8 +106,8 @@ public class ItemsControl : Control
     {
         get
         {
-            _itemContainerGenerator ??= new ItemContainerGenerator(this);
-            return _itemContainerGenerator;
+            EnsureItemContainerGenerator();
+            return _itemContainerGenerator!;
         }
     }
 
@@ -117,6 +122,18 @@ public class ItemsControl : Control
     {
         Items = new ItemCollection(this);
         Items.CollectionChanged += OnItemsCollectionChanged;
+    }
+
+    private ItemContainerGenerator EnsureItemContainerGenerator()
+    {
+        _itemContainerGenerator ??= new ItemContainerGenerator(this);
+        if (!_generatorItemsChangedSubscribed)
+        {
+            _itemContainerGenerator.ItemsChanged += OnGeneratorItemsChanged;
+            _generatorItemsChangedSubscribed = true;
+        }
+
+        return _itemContainerGenerator;
     }
 
     #endregion
@@ -139,6 +156,10 @@ public class ItemsControl : Control
     internal void SetItemsPresenter(ItemsPresenter presenter)
     {
         _itemsPresenter = presenter;
+        if (presenter.ItemsPanel != null && _itemContainerGenerator != null)
+        {
+            AttachGeneratorToPanel(presenter.ItemsPanel, _itemContainerGenerator);
+        }
         RefreshItems();
     }
 
@@ -152,6 +173,16 @@ public class ItemsControl : Control
     protected virtual Panel CreateItemsPanel()
     {
         return new StackPanel { Orientation = Orientation.Vertical };
+    }
+
+    /// <summary>
+    /// Creates an <see cref="ItemsPanelTemplate"/> that instantiates the specified panel type.
+    /// </summary>
+    protected static ItemsPanelTemplate CreateItemsPanelTemplate(Type panelType)
+    {
+        var template = new ItemsPanelTemplate { PanelType = panelType };
+        template.Seal();
+        return template;
     }
 
     /// <summary>
@@ -210,10 +241,10 @@ public class ItemsControl : Control
             panel = _fallbackItemsHost;
         }
 
-        if (panel == null) return;
-
-        // Clear existing items from current panel
-        panel.Children.Clear();
+        if (panel == null)
+        {
+            return;
+        }
 
         // Also clear the old fallback panel if we switched to a template panel
         // This ensures items previously parented to the fallback are properly disconnected
@@ -223,6 +254,20 @@ public class ItemsControl : Control
             RemoveVisualChild(_fallbackItemsHost);
             _fallbackItemsHost = null;
         }
+
+        if (ShouldUseVirtualizingPipeline(panel))
+        {
+            panel.Children.Clear();
+            var generator = EnsureItemContainerGenerator();
+            generator.RemoveAll();
+            AttachGeneratorToPanel(panel, generator);
+            panel.InvalidateMeasure();
+            InvalidateMeasure();
+            return;
+        }
+
+        // Non-virtualizing path: materialize all containers.
+        panel.Children.Clear();
 
         // Add items from ItemsSource or Items collection
         var source = ItemsSource ?? Items;
@@ -235,6 +280,21 @@ public class ItemsControl : Control
         }
 
         InvalidateMeasure();
+    }
+
+    private bool ShouldUseVirtualizingPipeline(Panel panel)
+    {
+        return !s_useLegacyItemsPipeline &&
+               panel is VirtualizingPanel virtualizingPanel &&
+               VirtualizingPanel.GetIsVirtualizing(virtualizingPanel);
+    }
+
+    private void AttachGeneratorToPanel(Panel panel, ItemContainerGenerator generator)
+    {
+        if (panel is VirtualizingPanel virtualizingPanel)
+        {
+            virtualizingPanel.ItemContainerGenerator = generator;
+        }
     }
 
     private void AddItemToPanel(object item)
@@ -367,6 +427,12 @@ public class ItemsControl : Control
                 newCollection.CollectionChanged += itemsControl.OnSourceCollectionChanged;
             }
 
+            if (itemsControl._itemContainerGenerator != null)
+            {
+                itemsControl._itemContainerGenerator.OnCollectionChanged(
+                    new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+            }
+
             itemsControl.RefreshItems();
         }
     }
@@ -397,6 +463,16 @@ public class ItemsControl : Control
         }
     }
 
+    private void OnGeneratorItemsChanged(object sender, ItemsChangedEventArgs e)
+    {
+        if (ItemsHost is VirtualizingPanel virtualizingPanel && ShouldUseVirtualizingPipeline(virtualizingPanel))
+        {
+            virtualizingPanel.NotifyItemsChanged(sender, e);
+            virtualizingPanel.InvalidateMeasure();
+            InvalidateMeasure();
+        }
+    }
+
     private void OnSourceCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
     {
         // Notify the generator of the change
@@ -407,6 +483,13 @@ public class ItemsControl : Control
         if (panel == null)
         {
             RefreshItems();
+            return;
+        }
+
+        if (ShouldUseVirtualizingPipeline(panel))
+        {
+            panel.InvalidateMeasure();
+            InvalidateMeasure();
             return;
         }
 
@@ -466,6 +549,13 @@ public class ItemsControl : Control
             if (panel == null)
             {
                 RefreshItems();
+                return;
+            }
+
+            if (ShouldUseVirtualizingPipeline(panel))
+            {
+                panel.InvalidateMeasure();
+                InvalidateMeasure();
                 return;
             }
 

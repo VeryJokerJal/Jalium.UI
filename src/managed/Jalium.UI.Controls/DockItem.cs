@@ -162,6 +162,39 @@ public sealed partial class DockItem : HeaderedContentControl
             item.InvalidateVisual();
     }
 
+    private bool CanDragFloatingWindow()
+    {
+        return CanFloat
+            && OwnerPanel != null
+            && OwnerPanel.IsFloating
+            && OwnerPanel.Items.Count <= 1;
+    }
+
+    private bool CanTearOffToFloatingWindow()
+    {
+        if (!CanFloat)
+            return false;
+
+        var panel = OwnerPanel;
+        if (panel == null || panel.IsFloating)
+            return true;
+
+        var layout = FindParentDockLayout(panel);
+        return layout?.CanFloat ?? true;
+    }
+
+    private static DockLayout? FindParentDockLayout(Visual visual)
+    {
+        Visual? current = visual;
+        while (current != null)
+        {
+            if (current is DockLayout layout)
+                return layout;
+            current = current.VisualParent;
+        }
+        return null;
+    }
+
     private void OnMouseDownHandler(object sender, RoutedEventArgs e)
     {
         if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
@@ -271,13 +304,11 @@ public sealed partial class DockItem : HeaderedContentControl
             if (posInPanel.Y < -20 || posInPanel.Y > tabStripHeight + 20)
             {
                 CancelReorderDrag();
-                if (CanFloat)
-                {
-                    if (OwnerPanel.IsFloating && OwnerPanel.Items.Count <= 1)
-                        StartFloatingWindowDrag();
-                    else
-                        TearOffToFloatingWindow();
-                }
+                if (CanDragFloatingWindow())
+                    StartFloatingWindowDrag();
+                else if (CanTearOffToFloatingWindow())
+                    TearOffToFloatingWindow();
+
                 e.Handled = true;
                 return;
             }
@@ -334,11 +365,11 @@ public sealed partial class DockItem : HeaderedContentControl
                     StartReorderDrag();
                 }
                 // Vertical drag → tear off / move floating window
-                else if (CanFloat && OwnerPanel.IsFloating && OwnerPanel.Items.Count <= 1)
+                else if (CanDragFloatingWindow())
                 {
                     StartFloatingWindowDrag();
                 }
-                else if (CanFloat)
+                else if (CanTearOffToFloatingWindow())
                 {
                     TearOffToFloatingWindow();
                 }
@@ -695,6 +726,9 @@ public sealed partial class DockItem : HeaderedContentControl
     /// </summary>
     private void TearOffToFloatingWindow()
     {
+        if (!CanTearOffToFloatingWindow())
+            return;
+
         var panel = OwnerPanel;
         if (panel == null) return;
 

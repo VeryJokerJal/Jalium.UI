@@ -115,8 +115,8 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Placeholder dependency property.
     /// </summary>
-    public static readonly DependencyProperty PlaceholderProperty =
-        DependencyProperty.Register(nameof(Placeholder), typeof(string), typeof(NumberBox),
+    public static readonly DependencyProperty PlaceholderTextProperty =
+        DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(NumberBox),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
     /// <summary>
@@ -235,10 +235,10 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the placeholder text.
     /// </summary>
-    public string? Placeholder
+    public string? PlaceholderText
     {
-        get => (string?)GetValue(PlaceholderProperty);
-        set => SetValue(PlaceholderProperty, value);
+        get => (string?)GetValue(PlaceholderTextProperty);
+        set => SetValue(PlaceholderTextProperty, value);
     }
 
     /// <summary>
@@ -1146,9 +1146,9 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
 
         // Draw text or placeholder
         var displayText = _text;
-        if (string.IsNullOrEmpty(displayText) && !string.IsNullOrEmpty(Placeholder))
+        if (string.IsNullOrEmpty(displayText) && !string.IsNullOrEmpty(PlaceholderText))
         {
-            var placeholderFormatted = new FormattedText(Placeholder, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var placeholderFormatted = new FormattedText(PlaceholderText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
             {
                 Foreground = s_placeholderBrush,
                 MaxTextWidth = Math.Max(0, contentRect.Width),

@@ -9,6 +9,71 @@
         <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="HorizontalContentAlignment" Value="Stretch" />
+        <Setter Property="VerticalContentAlignment" Value="Stretch" />
+        <Setter Property="PaneBackground" Value="{DynamicResource ControlBackground}" />
+        <Setter Property="ContentBackground" Value="{DynamicResource WindowBackground}" />
+        <Setter Property="PaneHeader" Value="{x:Null}" />
+        <Setter Property="PaneFooter" Value="{x:Null}" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="NavigationView">
+                <Grid Name="PART_RootGrid">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="280" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Name="PART_PaneContainer"
+                            Grid.Column="0"
+                            Background="{TemplateBinding PaneBackground}"
+                            Padding="0,0,6,0">
+                        <Grid ClipToBounds="True">
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <Border Name="PART_PaneHeaderHost"
+                                    Grid.Row="0"
+                                    HorizontalAlignment="Stretch"
+                                    Visibility="Collapsed" />
+
+                            <ScrollViewer Name="PART_PaneScrollViewer"
+                                          Grid.Row="1"
+                                          Margin="0"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Disabled"
+                                          ClipToBounds="True">
+                                <StackPanel Name="PART_MenuItemsHost"
+                                            Orientation="Vertical" />
+                            </ScrollViewer>
+
+                            <Border Name="PART_PaneFooterRegion"
+                                    Grid.Row="2"
+                                    HorizontalAlignment="Stretch"
+                                    Visibility="Collapsed">
+                                <StackPanel Orientation="Vertical">
+                                    <StackPanel Name="PART_FooterItemsHost"
+                                                Orientation="Vertical" />
+                                    <Border Name="PART_PaneFooterHost"
+                                            Visibility="Collapsed" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </Border>
+
+                    <Border Name="PART_ContentContainer"
+                            Grid.Column="1"
+                            Background="{TemplateBinding ContentBackground}">
+                        <ContentPresenter Name="PART_ContentPresenter"
+                                          Content="{TemplateBinding Content}"
+                                          HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                    </Border>
+                </Grid>
+            </ControlTemplate>
+        </Setter>
     </Style>
 
     <!-- ============================================== -->
@@ -84,9 +149,26 @@
                 <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource ControlBackground}" />
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource SelectionBackground}" />
                 <Setter TargetName="PART_SelectionIndicator" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
+            <PropertyTrigger Property="IsPressed" Value="True">
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
+            </PropertyTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsSelected" Value="True" />
+                    <Condition Property="IsMouseOver" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource AccentBrushHover}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsSelected" Value="True" />
+                    <Condition Property="IsPressed" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource AccentBrushPressed}" />
+            </MultiTrigger>
             <!-- Chevron rotation is animated by code-behind via ExpandCollapseAnimator -->
         </Style.Triggers>
     </Style>

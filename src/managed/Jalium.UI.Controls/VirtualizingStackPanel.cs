@@ -1,11 +1,11 @@
-﻿using System.Collections;
-using System.Collections.Specialized;
+using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Virtualization;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Arranges and virtualizes content on a single line oriented horizontally or vertically.
-/// Only creates UI elements for items that are visible in the viewport.
+/// Generates and recycles item containers based on the current viewport plus cache.
 /// </summary>
 public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 {
@@ -17,8 +17,6 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(VirtualizingStackPanel),
             new PropertyMetadata(Orientation.Vertical, OnLayoutPropertyChanged));
-
-    // VirtualizationMode, IsVirtualizing, and ScrollUnit properties are inherited from VirtualizingPanel
 
     #endregion
 
@@ -53,18 +51,16 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 
     #endregion
 
-    // IsVirtualizing attached property accessors are inherited from VirtualizingPanel
-
     #region Private Fields
 
-    private double _itemSize = 24; // Default item height/width
-    private int _firstVisibleIndex;
-    private int _lastVisibleIndex;
+    private readonly Dictionary<int, UIElement> _realizedContainers = new();
+    private ItemHeightIndex _heightIndex = new(28);
+    private RealizationWindow _currentWindow = RealizationWindow.Empty;
     private double _scrollOffset;
     private Size _extent;
     private Size _viewport;
-    private readonly Dictionary<int, UIElement> _realizedItems = new();
-    private readonly Queue<UIElement> _recycledContainers = new();
+    private double _maxCrossAxis;
+    private int _lastKnownItemCount = -1;
 
     #endregion
 
@@ -118,42 +114,82 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     /// <summary>
     /// Scrolls up by one line.
     /// </summary>
-    public void LineUp() => SetVerticalOffset(_scrollOffset - _itemSize);
+    public void LineUp()
+    {
+        if (Orientation == Orientation.Vertical)
+        {
+            ScrollByLine(-1);
+        }
+        else
+        {
+            SetHorizontalOffset(_scrollOffset - GetAverageItemSize());
+        }
+    }
 
     /// <summary>
     /// Scrolls down by one line.
     /// </summary>
-    public void LineDown() => SetVerticalOffset(_scrollOffset + _itemSize);
+    public void LineDown()
+    {
+        if (Orientation == Orientation.Vertical)
+        {
+            ScrollByLine(1);
+        }
+        else
+        {
+            SetHorizontalOffset(_scrollOffset + GetAverageItemSize());
+        }
+    }
 
     /// <summary>
     /// Scrolls left by one line.
     /// </summary>
-    public void LineLeft() => SetHorizontalOffset(_scrollOffset - _itemSize);
+    public void LineLeft()
+    {
+        if (Orientation == Orientation.Horizontal)
+        {
+            ScrollByLine(-1);
+        }
+        else
+        {
+            SetVerticalOffset(_scrollOffset - GetAverageItemSize());
+        }
+    }
 
     /// <summary>
     /// Scrolls right by one line.
     /// </summary>
-    public void LineRight() => SetHorizontalOffset(_scrollOffset + _itemSize);
+    public void LineRight()
+    {
+        if (Orientation == Orientation.Horizontal)
+        {
+            ScrollByLine(1);
+        }
+        else
+        {
+            SetVerticalOffset(_scrollOffset + GetAverageItemSize());
+        }
+    }
 
     /// <summary>
     /// Scrolls up by one page.
     /// </summary>
-    public void PageUp() => SetVerticalOffset(_scrollOffset - _viewport.Height);
+    public void PageUp() => SetOffset(_scrollOffset - GetViewportAxisSize());
 
     /// <summary>
     /// Scrolls down by one page.
     /// </summary>
-    public void PageDown() => SetVerticalOffset(_scrollOffset + _viewport.Height);
+    public void PageDown() => SetOffset(_scrollOffset + GetViewportAxisSize());
 
     /// <summary>
     /// Scrolls left by one page.
     /// </summary>
-    public void PageLeft() => SetHorizontalOffset(_scrollOffset - _viewport.Width);
+    public void PageLeft() => SetOffset(_scrollOffset - GetViewportAxisSize());
 
     /// <summary>
     /// Scrolls right by one page.
     /// </summary>
-    public void PageRight() => SetHorizontalOffset(_scrollOffset + _viewport.Width);
+    public void PageRight() => SetOffset(_scrollOffset + GetViewportAxisSize());
 
     /// <summary>
     /// Handles mouse wheel scrolling.
@@ -180,13 +216,12 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     /// </summary>
     public void SetHorizontalOffset(double offset)
     {
-        if (Orientation != Orientation.Horizontal) return;
-        offset = Math.Clamp(offset, 0, Math.Max(0, _extent.Width - _viewport.Width));
-        if (Math.Abs(_scrollOffset - offset) > 0.01)
+        if (Orientation != Orientation.Horizontal)
         {
-            _scrollOffset = offset;
-            InvalidateMeasure();
+            return;
         }
+
+        SetOffset(offset);
     }
 
     /// <summary>
@@ -194,13 +229,12 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     /// </summary>
     public void SetVerticalOffset(double offset)
     {
-        if (Orientation != Orientation.Vertical) return;
-        offset = Math.Clamp(offset, 0, Math.Max(0, _extent.Height - _viewport.Height));
-        if (Math.Abs(_scrollOffset - offset) > 0.01)
+        if (Orientation != Orientation.Vertical)
         {
-            _scrollOffset = offset;
-            InvalidateMeasure();
+            return;
         }
+
+        SetOffset(offset);
     }
 
     /// <summary>
@@ -208,7 +242,15 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     /// </summary>
     public Rect MakeVisible(Visual visual, Rect rectangle)
     {
-        // Simplified implementation
+        if (ItemContainerGenerator != null && visual is DependencyObject container)
+        {
+            var index = ItemContainerGenerator.IndexFromContainer(container);
+            if (index >= 0)
+            {
+                BringIndexIntoView(index);
+            }
+        }
+
         return rectangle;
     }
 
@@ -219,116 +261,483 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        _viewport = availableSize;
-        var itemCount = GetItemCount();
-
-        // Calculate extent
-        var totalSize = itemCount * _itemSize;
-        _extent = Orientation == Orientation.Vertical
-            ? new Size(availableSize.Width, totalSize)
-            : new Size(totalSize, availableSize.Height);
-
-        // Calculate visible range
-        var viewportSize = Orientation == Orientation.Vertical ? availableSize.Height : availableSize.Width;
-        _firstVisibleIndex = Math.Max(0, (int)(_scrollOffset / _itemSize));
-        _lastVisibleIndex = Math.Min(itemCount - 1, _firstVisibleIndex + (int)Math.Ceiling(viewportSize / _itemSize) + 1);
-
-        // Virtualize: only measure visible children
-        double maxCrossSize = 0;
-        for (var i = _firstVisibleIndex; i <= _lastVisibleIndex && i < Children.Count; i++)
+        var shouldVirtualize = ShouldVirtualize();
+        if (!shouldVirtualize)
         {
-            var child = Children[i];
-            child.Measure(availableSize);
-
-            if (Orientation == Orientation.Vertical)
-                maxCrossSize = Math.Max(maxCrossSize, child.DesiredSize.Width);
-            else
-                maxCrossSize = Math.Max(maxCrossSize, child.DesiredSize.Height);
+            return MeasureNonVirtualized(availableSize);
         }
 
-        // Return desired size
-        return Orientation == Orientation.Vertical
-            ? new Size(maxCrossSize, Math.Min(totalSize, availableSize.Height))
-            : new Size(Math.Min(totalSize, availableSize.Width), maxCrossSize);
+        var itemCount = GetItemCount();
+        EnsureHeightIndex(itemCount);
+
+        _viewport = CoerceViewport(availableSize);
+        var viewportAxisSize = GetAxisSize(_viewport);
+
+        if (itemCount == 0)
+        {
+            ClearRealizedContainers(recycle: true);
+            _currentWindow = RealizationWindow.Empty;
+            UpdateExtent(itemCount, availableSize);
+            return CoerceDesiredSize(availableSize);
+        }
+
+        var cache = GetCacheLength(this);
+        var cacheUnit = GetCacheLengthUnit(this);
+        var cacheBefore = ToCachePixels(cache.CacheBeforeViewport, cacheUnit, viewportAxisSize);
+        var cacheAfter = ToCachePixels(cache.CacheAfterViewport, cacheUnit, viewportAxisSize);
+
+        _scrollOffset = CoerceOffset(_scrollOffset);
+        var windowStartOffset = Math.Max(0, _scrollOffset - cacheBefore);
+        var windowEndOffset = _scrollOffset + viewportAxisSize + cacheAfter;
+
+        var startIndex = Math.Max(0, _heightIndex.GetIndexAtOffset(windowStartOffset));
+        var endIndex = RealizeWindow(startIndex, windowEndOffset, availableSize);
+        _currentWindow = endIndex >= startIndex
+            ? new RealizationWindow(startIndex, endIndex)
+            : RealizationWindow.Empty;
+
+        RecycleOutsideWindow(_currentWindow);
+        UpdateExtent(itemCount, availableSize);
+
+        return CoerceDesiredSize(availableSize);
     }
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var offset = -_scrollOffset + _firstVisibleIndex * _itemSize;
-
-        for (var i = 0; i < Children.Count; i++)
+        if (!ShouldVirtualize())
         {
-            var child = Children[i];
+            return ArrangeNonVirtualized(finalSize);
+        }
 
-            if (i >= _firstVisibleIndex && i <= _lastVisibleIndex)
+        _viewport = CoerceViewport(finalSize);
+        _scrollOffset = CoerceOffset(_scrollOffset);
+
+        foreach (var index in _realizedContainers.Keys.OrderBy(i => i))
+        {
+            var child = _realizedContainers[index];
+            var itemOffset = _heightIndex.GetOffsetForIndex(index) - _scrollOffset;
+            var itemExtent = _heightIndex.GetHeightAt(index);
+
+            if (Orientation == Orientation.Vertical)
             {
-                // Visible - arrange normally
-                if (Orientation == Orientation.Vertical)
-                {
-                    var rect = new Rect(0, offset, finalSize.Width, _itemSize);
-                    child.Arrange(rect);
-                    offset += _itemSize;
-                }
-                else
-                {
-                    var rect = new Rect(offset, 0, _itemSize, finalSize.Height);
-                    child.Arrange(rect);
-                    offset += _itemSize;
-                }
-                child.Visibility = Visibility.Visible;
+                child.Arrange(new Rect(0, itemOffset, finalSize.Width, itemExtent));
             }
             else
             {
-                // Not visible - collapse
-                child.Arrange(new Rect(0, 0, 0, 0));
-                child.Visibility = Visibility.Collapsed;
+                child.Arrange(new Rect(itemOffset, 0, itemExtent, finalSize.Height));
             }
+
+            child.Visibility = Visibility.Visible;
         }
 
+        UpdateExtent(GetItemCount(), finalSize);
         return finalSize;
-    }
-
-    private int GetItemCount()
-    {
-        return Children.Count;
     }
 
     #endregion
 
     #region Virtualization Support
 
-    /// <summary>
-    /// Brings an item into view.
-    /// </summary>
-    public void BringIndexIntoView(int index)
+    /// <inheritdoc />
+    protected override void BringIndexIntoViewOverride(int index)
     {
         var itemCount = GetItemCount();
-        if (index < 0 || index >= itemCount) return;
-
-        var itemOffset = index * _itemSize;
-        var viewportSize = Orientation == Orientation.Vertical ? _viewport.Height : _viewport.Width;
-
-        if (itemOffset < _scrollOffset)
+        if (index < 0 || index >= itemCount)
         {
-            // Item is before viewport
-            _scrollOffset = itemOffset;
-            InvalidateMeasure();
+            return;
         }
-        else if (itemOffset + _itemSize > _scrollOffset + viewportSize)
+
+        var itemStart = _heightIndex.GetOffsetForIndex(index);
+        var itemEnd = itemStart + _heightIndex.GetHeightAt(index);
+        var viewportAxis = GetViewportAxisSize();
+        if (viewportAxis <= 0)
         {
-            // Item is after viewport
-            _scrollOffset = itemOffset + _itemSize - viewportSize;
-            InvalidateMeasure();
+            SetOffset(itemStart);
+            return;
+        }
+
+        if (itemStart < _scrollOffset)
+        {
+            SetOffset(itemStart);
+        }
+        else if (itemEnd > _scrollOffset + viewportAxis)
+        {
+            SetOffset(itemEnd - viewportAxis);
         }
     }
 
-    /// <summary>
-    /// Called when items change.
-    /// </summary>
-    protected virtual void OnItemsChanged(object sender, NotifyCollectionChangedEventArgs args)
+    /// <inheritdoc />
+    protected override void OnItemsChanged(object sender, ItemsChangedEventArgs args)
     {
+        var itemCount = GetItemCount();
+        _heightIndex.Reset(itemCount, _heightIndex.EstimatedHeight);
+        ClearRealizedContainers(recycle: true);
+        _currentWindow = RealizationWindow.Empty;
         InvalidateMeasure();
+    }
+
+    /// <inheritdoc />
+    internal override void OnClearChildren()
+    {
+        base.OnClearChildren();
+        _realizedContainers.Clear();
+        _currentWindow = RealizationWindow.Empty;
+    }
+
+    #endregion
+
+    #region Internal Helpers
+
+    private bool ShouldVirtualize()
+    {
+        return GetIsVirtualizing(this) && ItemContainerGenerator != null;
+    }
+
+    private int GetItemCount()
+    {
+        return ItemContainerGenerator?.ItemCount ?? Children.Count;
+    }
+
+    private void EnsureHeightIndex(int itemCount)
+    {
+        if (_lastKnownItemCount == itemCount)
+        {
+            return;
+        }
+
+        if (_lastKnownItemCount < 0)
+        {
+            _heightIndex.Reset(itemCount, _heightIndex.EstimatedHeight);
+        }
+        else
+        {
+            _heightIndex.EnsureCount(itemCount);
+        }
+
+        _lastKnownItemCount = itemCount;
+    }
+
+    private int RealizeWindow(int startIndex, double windowEndOffset, Size availableSize)
+    {
+        _maxCrossAxis = 0;
+        var endIndex = startIndex - 1;
+        var index = startIndex;
+        var currentOffset = _heightIndex.GetOffsetForIndex(startIndex);
+
+        while (index < _heightIndex.Count && currentOffset <= windowEndOffset)
+        {
+            var child = RealizeContainer(index);
+            if (child == null)
+            {
+                break;
+            }
+
+            var childAvailable = Orientation == Orientation.Vertical
+                ? new Size(availableSize.Width, double.PositiveInfinity)
+                : new Size(double.PositiveInfinity, availableSize.Height);
+
+            child.Measure(childAvailable);
+            var axis = GetAxisSize(child.DesiredSize);
+            var cross = GetCrossAxisSize(child.DesiredSize);
+            _heightIndex.SetMeasuredHeight(index, axis);
+            _maxCrossAxis = Math.Max(_maxCrossAxis, cross);
+
+            currentOffset = _heightIndex.GetOffsetForIndex(index + 1);
+            endIndex = index;
+            index++;
+        }
+
+        return endIndex;
+    }
+
+    private UIElement? RealizeContainer(int index)
+    {
+        if (_realizedContainers.TryGetValue(index, out var existing))
+        {
+            return existing;
+        }
+
+        if (ItemContainerGenerator == null)
+        {
+            return null;
+        }
+
+        var container = ItemContainerGenerator.GetOrCreateContainerForIndex(index, out var isNewlyRealized);
+        if (container is not UIElement child)
+        {
+            return null;
+        }
+
+        if (isNewlyRealized)
+        {
+            ItemContainerGenerator.PrepareItemContainer(container);
+        }
+
+        var insertPosition = 0;
+        foreach (var realizedIndex in _realizedContainers.Keys)
+        {
+            if (realizedIndex < index)
+            {
+                insertPosition++;
+            }
+        }
+
+        _realizedContainers[index] = child;
+
+        if (Children.IndexOf(child) < 0)
+        {
+            if (insertPosition >= Children.Count)
+            {
+                AddInternalChild(child);
+            }
+            else
+            {
+                InsertInternalChild(insertPosition, child);
+            }
+        }
+
+        return child;
+    }
+
+    private void RecycleOutsideWindow(RealizationWindow window)
+    {
+        if (_realizedContainers.Count == 0)
+        {
+            return;
+        }
+
+        var toRecycle = _realizedContainers.Keys.Where(index => !window.Contains(index)).ToArray();
+        foreach (var index in toRecycle)
+        {
+            var child = _realizedContainers[index];
+            var visualIndex = Children.IndexOf(child);
+            if (visualIndex >= 0)
+            {
+                RemoveInternalChildRange(visualIndex, 1);
+            }
+
+            _realizedContainers.Remove(index);
+
+            if (ItemContainerGenerator != null)
+            {
+                if (VirtualizationMode == VirtualizationMode.Recycling)
+                {
+                    ItemContainerGenerator.RecycleIndex(index);
+                }
+                else
+                {
+                    ItemContainerGenerator.RemoveIndex(index);
+                }
+            }
+        }
+    }
+
+    private void ClearRealizedContainers(bool recycle)
+    {
+        if (_realizedContainers.Count == 0)
+        {
+            Children.Clear();
+            return;
+        }
+
+        var realized = _realizedContainers.Keys.ToArray();
+        foreach (var index in realized)
+        {
+            if (_realizedContainers.TryGetValue(index, out var child))
+            {
+                var visualIndex = Children.IndexOf(child);
+                if (visualIndex >= 0)
+                {
+                    RemoveInternalChildRange(visualIndex, 1);
+                }
+            }
+
+            if (ItemContainerGenerator != null)
+            {
+                if (recycle && VirtualizationMode == VirtualizationMode.Recycling)
+                {
+                    ItemContainerGenerator.RecycleIndex(index);
+                }
+                else
+                {
+                    ItemContainerGenerator.RemoveIndex(index);
+                }
+            }
+        }
+
+        _realizedContainers.Clear();
+        if (Children.Count > 0)
+        {
+            Children.Clear();
+        }
+    }
+
+    private void ScrollByLine(int direction)
+    {
+        if (ScrollUnit != ScrollUnit.Item)
+        {
+            SetOffset(_scrollOffset + direction * GetAverageItemSize());
+            return;
+        }
+
+        var current = _heightIndex.GetIndexAtOffset(_scrollOffset);
+        var target = Math.Clamp(current + direction, 0, Math.Max(0, _heightIndex.Count - 1));
+        SetOffset(_heightIndex.GetOffsetForIndex(target));
+    }
+
+    private void SetOffset(double offset)
+    {
+        var coerced = CoerceOffset(offset);
+        if (Math.Abs(coerced - _scrollOffset) <= 0.01)
+        {
+            return;
+        }
+
+        _scrollOffset = coerced;
+        InvalidateMeasure();
+    }
+
+    private double CoerceOffset(double offset)
+    {
+        var maxOffset = Math.Max(0, GetAxisSize(_extent) - GetViewportAxisSize());
+        if (double.IsNaN(offset) || double.IsInfinity(offset))
+        {
+            return 0;
+        }
+
+        return Math.Clamp(offset, 0, maxOffset);
+    }
+
+    private void UpdateExtent(int itemCount, Size availableSize)
+    {
+        var axisExtent = itemCount <= 0 ? 0 : _heightIndex.TotalHeight;
+        var crossExtent = _maxCrossAxis;
+        if (Orientation == Orientation.Vertical)
+        {
+            var width = double.IsInfinity(availableSize.Width) ? crossExtent : Math.Max(crossExtent, availableSize.Width);
+            _extent = new Size(width, axisExtent);
+        }
+        else
+        {
+            var height = double.IsInfinity(availableSize.Height) ? crossExtent : Math.Max(crossExtent, availableSize.Height);
+            _extent = new Size(axisExtent, height);
+        }
+    }
+
+    private Size CoerceViewport(Size availableSize)
+    {
+        if (Orientation == Orientation.Vertical)
+        {
+            var width = CoerceFinite(availableSize.Width, _viewport.Width);
+            var height = CoerceFinite(availableSize.Height, _viewport.Height);
+            return new Size(width, height);
+        }
+
+        return new Size(
+            CoerceFinite(availableSize.Width, _viewport.Width),
+            CoerceFinite(availableSize.Height, _viewport.Height));
+    }
+
+    private static double CoerceFinite(double value, double fallback)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return fallback > 0 ? fallback : 0;
+        }
+
+        return Math.Max(0, value);
+    }
+
+    private Size CoerceDesiredSize(Size availableSize)
+    {
+        var axis = Math.Min(GetAxisSize(_extent), GetAxisSize(_viewport));
+        var cross = _maxCrossAxis;
+        if (Orientation == Orientation.Vertical)
+        {
+            var width = double.IsInfinity(availableSize.Width) ? cross : Math.Min(cross, availableSize.Width);
+            return new Size(width, axis);
+        }
+
+        var height = double.IsInfinity(availableSize.Height) ? cross : Math.Min(cross, availableSize.Height);
+        return new Size(axis, height);
+    }
+
+    private double GetAverageItemSize()
+    {
+        var average = _heightIndex.EstimatedHeight;
+        return average > 0 ? average : 24;
+    }
+
+    private double GetViewportAxisSize()
+    {
+        var viewportAxis = GetAxisSize(_viewport);
+        return viewportAxis > 0 ? viewportAxis : 0;
+    }
+
+    private double ToCachePixels(double cacheValue, VirtualizationCacheLengthUnit unit, double viewportAxisSize)
+    {
+        if (cacheValue <= 0)
+        {
+            return 0;
+        }
+
+        return unit switch
+        {
+            VirtualizationCacheLengthUnit.Pixel => cacheValue,
+            VirtualizationCacheLengthUnit.Item => cacheValue * GetAverageItemSize(),
+            VirtualizationCacheLengthUnit.Page => cacheValue * viewportAxisSize,
+            _ => cacheValue
+        };
+    }
+
+    private double GetAxisSize(Size size) => Orientation == Orientation.Vertical ? size.Height : size.Width;
+
+    private double GetCrossAxisSize(Size size) => Orientation == Orientation.Vertical ? size.Width : size.Height;
+
+    private Size MeasureNonVirtualized(Size availableSize)
+    {
+        double axis = 0;
+        double cross = 0;
+        foreach (UIElement child in Children)
+        {
+            child.Visibility = Visibility.Visible;
+            child.Measure(availableSize);
+            axis += GetAxisSize(child.DesiredSize);
+            cross = Math.Max(cross, GetCrossAxisSize(child.DesiredSize));
+        }
+
+        if (Orientation == Orientation.Vertical)
+        {
+            _extent = new Size(cross, axis);
+            _viewport = CoerceViewport(availableSize);
+            return new Size(cross, Math.Min(axis, availableSize.Height));
+        }
+
+        _extent = new Size(axis, cross);
+        _viewport = CoerceViewport(availableSize);
+        return new Size(Math.Min(axis, availableSize.Width), cross);
+    }
+
+    private Size ArrangeNonVirtualized(Size finalSize)
+    {
+        var offset = -_scrollOffset;
+        foreach (UIElement child in Children)
+        {
+            var axisExtent = GetAxisSize(child.DesiredSize);
+            if (Orientation == Orientation.Vertical)
+            {
+                child.Arrange(new Rect(0, offset, finalSize.Width, axisExtent));
+            }
+            else
+            {
+                child.Arrange(new Rect(offset, 0, axisExtent, finalSize.Height));
+            }
+
+            offset += axisExtent;
+        }
+
+        return finalSize;
     }
 
     #endregion
@@ -477,3 +886,4 @@ public interface IScrollInfo
 }
 
 #endregion
+
