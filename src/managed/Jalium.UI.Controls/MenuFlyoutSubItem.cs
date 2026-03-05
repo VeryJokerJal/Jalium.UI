@@ -1,3 +1,4 @@
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -7,8 +8,14 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public sealed class MenuFlyoutSubItem : MenuFlyoutItem
 {
+    private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(Color.FromRgb(45, 45, 48));
+    private static readonly SolidColorBrush s_fallbackBorderBrush = new(Color.FromRgb(67, 67, 70));
+    private static readonly SolidColorBrush s_fallbackArrowBrush = new(Color.FromRgb(180, 180, 180));
+
     private readonly List<MenuFlyoutItem> _items = new();
-    private Primitives.Popup? _subPopup;
+    private Popup? _subPopup;
+    private Border? _subPopupBorder;
+    private MenuPopupScrollHost? _subPopupScrollHost;
 
     /// <summary>
     /// Gets the collection of menu elements in the sub-menu.
@@ -27,15 +34,21 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
     /// <inheritdoc />
     protected override void OnRender(object drawingContext)
     {
-        if (drawingContext is not DrawingContext dc) return;
-        base.OnRender(drawingContext);
+        if (drawingContext is not DrawingContext dc)
+            return;
 
-        // Draw submenu arrow
-        var arrowBrush = new Jalium.UI.Media.SolidColorBrush(
-            Jalium.UI.Media.Color.FromRgb(180, 180, 180));
-        var arrowFormatted = new Jalium.UI.Media.FormattedText(
-            "\u25B6", FontFamily, 8) { Foreground = arrowBrush }; // ▶
-        dc.DrawText(arrowFormatted, new Point(RenderSize.Width - 16, (RenderSize.Height - 8) / 2));
+        base.OnRender(drawingContext);
+        if (RenderSize.Width <= 0 || RenderSize.Height <= 0)
+            return;
+
+        var arrowBrush = ResolveBrush("OneTextSecondary", "TextSecondary", s_fallbackArrowBrush);
+        const double arrowSize = 8.0;
+        var arrowBounds = new Rect(
+            Math.Max(0, RenderSize.Width - 16),
+            Math.Max(0, (RenderSize.Height - arrowSize) / 2),
+            arrowSize,
+            arrowSize);
+        ArrowIcons.DrawArrow(dc, arrowBrush, arrowBounds, ArrowIcons.Direction.Right);
     }
 
     /// <summary>
@@ -43,39 +56,13 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
     /// </summary>
     public void ShowSubMenu()
     {
-        if (_subPopup != null)
-        {
-            _subPopup.IsOpen = true;
+        if (_items.Count == 0)
             return;
-        }
 
-        var panel = new StackPanel { Orientation = Orientation.Vertical };
-        foreach (var item in _items)
-        {
-            panel.Children.Add(item);
-        }
-
-        var border = new Border
-        {
-            Background = new Jalium.UI.Media.SolidColorBrush(Jalium.UI.Media.Color.FromRgb(45, 45, 48)),
-            BorderBrush = new Jalium.UI.Media.SolidColorBrush(Jalium.UI.Media.Color.FromRgb(67, 67, 70)),
-            BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(4),
-            Child = panel,
-            MinWidth = 160
-        };
-
-        _subPopup = new Primitives.Popup
-        {
-            PlacementTarget = this,
-            Placement = Primitives.PlacementMode.Right,
-            StaysOpen = false,
-            Child = border
-        };
-
-        AddVisualChild(_subPopup);
-        _subPopup.IsOpen = true;
+        CloseSiblingSubMenus();
+        EnsureSubPopup();
+        PopulateSubPopup();
+        _subPopup!.IsOpen = true;
     }
 
     /// <summary>
@@ -83,8 +70,69 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
     /// </summary>
     public void HideSubMenu()
     {
+        _subPopup?.IsOpen = false;
+    }
+
+    /// <inheritdoc />
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+        if (VisualParent == null)
+        {
+            HideSubMenu();
+        }
+    }
+
+    private void EnsureSubPopup()
+    {
         if (_subPopup != null)
-            _subPopup.IsOpen = false;
+            return;
+
+        _subPopupScrollHost = new MenuPopupScrollHost();
+        _subPopupBorder = new Border
+        {
+            Background = ResolveBrush("OnePopupBackground", "MenuFlyoutPresenterBackground", s_fallbackBackgroundBrush),
+            BorderBrush = ResolveBrush("OnePopupBorder", "MenuFlyoutPresenterBorderBrush", s_fallbackBorderBrush),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            Padding = new Thickness(4),
+            Child = _subPopupScrollHost,
+            MinWidth = 160
+        };
+
+        _subPopup = new Popup
+        {
+            PlacementTarget = this,
+            Placement = PlacementMode.Right,
+            StaysOpen = false,
+            IsLightDismissEnabled = true,
+            // Allow nested submenu to use external popup window when it overflows.
+            ShouldConstrainToRootBounds = false,
+            Child = _subPopupBorder
+        };
+        _subPopup.Closed += OnSubPopupClosed;
+    }
+
+    private void PopulateSubPopup()
+    {
+        var panel = _subPopupScrollHost?.ItemsPanel;
+        if (panel == null)
+            return;
+
+        panel.Children.Clear();
+        foreach (var item in _items)
+        {
+            if (item.VisualParent != null)
+            {
+                item.DetachFromVisualParent();
+            }
+            panel.Children.Add(item);
+        }
+    }
+
+    private void OnSubPopupClosed(object? sender, EventArgs e)
+    {
+        _subPopupScrollHost?.ItemsPanel.Children.Clear();
     }
 
     private void OnSubItemMouseEnter(object sender, RoutedEventArgs e)
@@ -94,6 +142,29 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
 
     private void OnSubItemMouseLeave(object sender, RoutedEventArgs e)
     {
-        // Delay hiding to allow mouse to move to sub-menu
+        // Keep submenu open while pointer moves from item into submenu popup.
+    }
+
+    private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)
+    {
+        if (TryFindResource(primaryKey) is Brush primary)
+            return primary;
+        if (TryFindResource(secondaryKey) is Brush secondary)
+            return secondary;
+        return fallback;
+    }
+
+    private void CloseSiblingSubMenus()
+    {
+        if (VisualParent is not Panel panel)
+            return;
+
+        foreach (var child in panel.Children)
+        {
+            if (child is MenuFlyoutSubItem sibling && !ReferenceEquals(sibling, this))
+            {
+                sibling.HideSubMenu();
+            }
+        }
     }
 }

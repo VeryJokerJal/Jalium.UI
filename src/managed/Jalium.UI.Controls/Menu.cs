@@ -86,6 +86,8 @@ public sealed class Menu : ItemsControl
     {
         if (drawingContext is not DrawingContext dc)
             return;
+        if (RenderSize.Width <= 0 || RenderSize.Height <= 0)
+            return;
 
         var rect = new Rect(RenderSize);
 
@@ -316,7 +318,7 @@ public sealed class MenuItem : HeaderedItemsControl
     private bool _isUpdatingSubmenuOpen;
     private Popup? _submenuPopup;
     private Border? _submenuBorder;
-    private StackPanel? _submenuPanel;
+    private MenuPopupScrollHost? _submenuScrollHost;
     private const double IconColumnWidth = 24;
     private const double GestureColumnWidth = 80;
     private const double ArrowColumnWidth = 16;
@@ -354,7 +356,27 @@ public sealed class MenuItem : HeaderedItemsControl
         {
             if (HasItems)
             {
-                IsSubmenuOpen = !IsSubmenuOpen;
+                if (IsTopLevelMenuItem)
+                {
+                    if (IsSubmenuOpen)
+                    {
+                        IsSubmenuOpen = false;
+                    }
+                    else
+                    {
+                        CloseSiblingSubmenus();
+                        IsSubmenuOpen = true;
+                    }
+                }
+                else
+                {
+                    var willOpen = !IsSubmenuOpen;
+                    IsSubmenuOpen = willOpen;
+                    if (willOpen)
+                    {
+                        CloseSiblingSubmenus();
+                    }
+                }
             }
             else
             {
@@ -369,13 +391,26 @@ public sealed class MenuItem : HeaderedItemsControl
         _isHighlighted = true;
         InvalidateVisual();
 
-        // Close sibling submenus when hovering over a different item
-        CloseSiblingSubmenus();
-
-        // Open submenu on hover if has child items
-        if (HasItems)
+        if (!IsTopLevelMenuItem)
         {
-            IsSubmenuOpen = true;
+            // In submenus, hover-switching is expected behavior.
+            CloseSiblingSubmenus();
+            if (HasItems)
+            {
+                IsSubmenuOpen = true;
+            }
+            return;
+        }
+
+        // Top-level: only switch/open on hover once menu mode is active
+        // (i.e., one top-level submenu is already open by click/keyboard).
+        if (IsTopLevelMenuModeActive())
+        {
+            CloseSiblingSubmenus();
+            if (HasItems)
+            {
+                IsSubmenuOpen = true;
+            }
         }
     }
 
@@ -471,8 +506,10 @@ public sealed class MenuItem : HeaderedItemsControl
 
     private void FocusFirstSubmenuItem()
     {
-        if (_submenuPanel == null) return;
-        foreach (var child in _submenuPanel.Children)
+        var panel = _submenuScrollHost?.ItemsPanel;
+        if (panel == null) return;
+
+        foreach (var child in panel.Children)
         {
             if (child is MenuItem item && item.IsEnabled)
             {
@@ -535,7 +572,7 @@ public sealed class MenuItem : HeaderedItemsControl
     {
         // Close all parent menus.
         // When items are hosted in a Popup, the visual parent chain is:
-        //   MenuItem -> StackPanel (_submenuPanel) -> Border (_submenuBorder) -> PopupRoot -> ...
+        //   MenuItem -> StackPanel (_submenuScrollHost.ItemsPanel) -> MenuPopupScrollHost -> Border (_submenuBorder) -> PopupRoot -> ...
         // We need to find parent MenuItems through the popup's PlacementTarget chain.
         var current = FindParentMenuItem();
         while (current != null)
@@ -658,6 +695,8 @@ public sealed class MenuItem : HeaderedItemsControl
     {
         if (drawingContext is not DrawingContext dc)
             return;
+        if (RenderSize.Width <= 0 || RenderSize.Height <= 0)
+            return;
 
         var rect = new Rect(RenderSize);
         var padding = Padding;
@@ -729,12 +768,18 @@ public sealed class MenuItem : HeaderedItemsControl
             // Draw input gesture text
             if (!string.IsNullOrEmpty(InputGestureText))
             {
-                var gestureX = rect.Width - ArrowColumnWidth - GestureColumnWidth;
                 var gestureFormatted = new FormattedText(InputGestureText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 12)
                 {
                     Foreground = s_gestureBrush
                 };
                 TextMeasurement.MeasureText(gestureFormatted);
+                var arrowReserve = HasItems ? ArrowColumnWidth : 0;
+                var gestureColumnLeft = rect.Width - arrowReserve - GestureColumnWidth;
+                var gestureX = gestureColumnLeft + GestureColumnWidth - gestureFormatted.Width - MenuItemPadding;
+                if (gestureX < gestureColumnLeft)
+                {
+                    gestureX = gestureColumnLeft;
+                }
                 dc.DrawText(gestureFormatted, new Point(gestureX, (rect.Height - gestureFormatted.Height) / 2));
             }
 
@@ -758,12 +803,13 @@ public sealed class MenuItem : HeaderedItemsControl
 
     private void DrawSubmenuArrow(DrawingContext dc, double x, double height, Brush brush)
     {
-        var arrowPen = new Pen(brush, 1.5);
-        var centerX = x + ArrowColumnWidth / 2;
-        var centerY = height / 2;
-
-        dc.DrawLine(arrowPen, new Point(centerX - 2, centerY - 4), new Point(centerX + 2, centerY));
-        dc.DrawLine(arrowPen, new Point(centerX + 2, centerY), new Point(centerX - 2, centerY + 4));
+        const double arrowSize = 8.0;
+        var arrowBounds = new Rect(
+            x + (ArrowColumnWidth - arrowSize) / 2,
+            (height - arrowSize) / 2,
+            arrowSize,
+            arrowSize);
+        ArrowIcons.DrawArrow(dc, brush, arrowBounds, ArrowIcons.Direction.Right);
     }
 
     #endregion
@@ -782,7 +828,7 @@ public sealed class MenuItem : HeaderedItemsControl
     {
         if (_submenuPopup != null) return;
 
-        _submenuPanel = new StackPanel { Orientation = Orientation.Vertical };
+        _submenuScrollHost = new MenuPopupScrollHost();
         _submenuBorder = new Border
         {
             Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
@@ -790,14 +836,19 @@ public sealed class MenuItem : HeaderedItemsControl
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(4),
             Padding = new Thickness(2),
-            Child = _submenuPanel
+            Child = _submenuScrollHost
         };
 
         _submenuPopup = new Popup
         {
             PlacementTarget = this,
             Placement = IsTopLevelMenuItem ? PlacementMode.Bottom : PlacementMode.Right,
-            StaysOpen = true, // We manage closing via sibling enter and CloseParentMenus
+            // Menu popups must light-dismiss on outside click; otherwise
+            // clicks leak to underlying controls and menus stay open.
+            StaysOpen = false,
+            IsLightDismissEnabled = true,
+            // Let Popup decide overlay vs external window based on overflow.
+            ShouldConstrainToRootBounds = false,
             Child = _submenuBorder
         };
 
@@ -811,9 +862,10 @@ public sealed class MenuItem : HeaderedItemsControl
     /// </summary>
     private void PopulateSubmenuPopup()
     {
-        if (_submenuPanel == null) return;
+        var panel = _submenuScrollHost?.ItemsPanel;
+        if (panel == null) return;
 
-        _submenuPanel.Children.Clear();
+        panel.Children.Clear();
 
         // Detach items from the ItemsHost panel first (if they're in the visual tree)
         var itemsHost = ItemsHost;
@@ -831,11 +883,11 @@ public sealed class MenuItem : HeaderedItemsControl
                 {
                     element.DetachFromVisualParent();
                 }
-                _submenuPanel.Children.Add(element);
+                panel.Children.Add(element);
             }
             else if (item is string text)
             {
-                _submenuPanel.Children.Add(new MenuItem { Header = text });
+                panel.Children.Add(new MenuItem { Header = text });
             }
         }
     }
@@ -845,15 +897,16 @@ public sealed class MenuItem : HeaderedItemsControl
     /// </summary>
     private void ReturnItemsFromPopup()
     {
-        if (_submenuPanel == null) return;
+        var panel = _submenuScrollHost?.ItemsPanel;
+        if (panel == null) return;
 
         // Collect items before clearing
         var items = new List<UIElement>();
-        foreach (var child in _submenuPanel.Children)
+        foreach (var child in panel.Children)
         {
             items.Add(child);
         }
-        _submenuPanel.Children.Clear();
+        panel.Children.Clear();
 
         // Return them to ItemsHost if available
         var itemsHost = ItemsHost;
@@ -886,6 +939,34 @@ public sealed class MenuItem : HeaderedItemsControl
                 }
             }
         }
+    }
+
+    private bool IsTopLevelMenuModeActive()
+    {
+        if (!IsTopLevelMenuItem)
+        {
+            return true;
+        }
+
+        if (IsSubmenuOpen)
+        {
+            return true;
+        }
+
+        if (VisualParent is not Panel panel)
+        {
+            return false;
+        }
+
+        foreach (var child in panel.Children)
+        {
+            if (child is MenuItem sibling && sibling != this && sibling.IsSubmenuOpen)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /// <summary>

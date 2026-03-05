@@ -175,7 +175,9 @@ public abstract class FlyoutBase : DependencyObject
         _popup = new Popup
         {
             StaysOpen = false,
-            IsLightDismissEnabled = true
+            IsLightDismissEnabled = true,
+            // Allow menu flyouts to escape window bounds by switching to external PopupWindow when needed.
+            ShouldConstrainToRootBounds = false
         };
 
         if (_presenter is global::Jalium.UI.Controls.MenuFlyoutPresenter)

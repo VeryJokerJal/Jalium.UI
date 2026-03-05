@@ -39,7 +39,7 @@ internal sealed class MenuFlyoutPresenter : Control
     private static readonly SolidColorBrush s_fallbackBorderBrush = new(Color.FromRgb(67, 67, 70));
 
     private readonly MenuFlyout _flyout;
-    private readonly StackPanel _panel;
+    private readonly MenuPopupScrollHost _scrollHost;
 
     public MenuFlyoutPresenter(MenuFlyout flyout)
     {
@@ -47,14 +47,14 @@ internal sealed class MenuFlyoutPresenter : Control
         BorderThickness = s_defaultBorderThickness;
         Padding = s_defaultPadding;
         CornerRadius = s_defaultCornerRadius;
-        _panel = new StackPanel { Orientation = Orientation.Vertical };
+        _scrollHost = new MenuPopupScrollHost();
 
         foreach (var item in _flyout.Items)
         {
-            _panel.Children.Add(item);
+            _scrollHost.ItemsPanel.Children.Add(item);
         }
 
-        AddVisualChild(_panel);
+        AddVisualChild(_scrollHost);
     }
 
     protected override Size MeasureOverride(Size availableSize)
@@ -67,8 +67,8 @@ internal sealed class MenuFlyoutPresenter : Control
         var innerSize = new Size(
             Math.Max(0, availableSize.Width - horizontalInset),
             Math.Max(0, availableSize.Height - verticalInset));
-        _panel.Measure(innerSize);
-        return new Size(_panel.DesiredSize.Width + horizontalInset, _panel.DesiredSize.Height + verticalInset);
+        _scrollHost.Measure(innerSize);
+        return new Size(_scrollHost.DesiredSize.Width + horizontalInset, _scrollHost.DesiredSize.Height + verticalInset);
     }
 
     protected override Size ArrangeOverride(Size finalSize)
@@ -80,7 +80,7 @@ internal sealed class MenuFlyoutPresenter : Control
         var horizontalInset = borderThickness.Left + borderThickness.Right + padding.Left + padding.Right;
         var verticalInset = borderThickness.Top + borderThickness.Bottom + padding.Top + padding.Bottom;
 
-        _panel.Arrange(new Rect(
+        _scrollHost.Arrange(new Rect(
             leftInset,
             topInset,
             Math.Max(0, finalSize.Width - horizontalInset),
@@ -92,7 +92,7 @@ internal sealed class MenuFlyoutPresenter : Control
 
     public override Visual? GetVisualChild(int index)
     {
-        if (index == 0) return _panel;
+        if (index == 0) return _scrollHost;
         throw new ArgumentOutOfRangeException(nameof(index));
     }
 

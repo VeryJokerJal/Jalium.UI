@@ -135,6 +135,7 @@ public:
 
 private:
     static constexpr uint32_t FrameCount = 2;
+    static constexpr uint32_t OffscreenResourceIdleFrames = 180;
 
     bool CreateSwapChain();
     bool CreateRenderTargetViews();
@@ -183,6 +184,8 @@ private:
     bool isDrawing_ = false;
     bool tearingSupported_ = false;
     bool isComposition_ = false;
+    bool offscreenResourcesUsedThisFrame_ = false;
+    uint32_t idleFramesWithoutOffscreenUse_ = 0;
 
     // DirectComposition resources (used when isComposition_ == true)
     ComPtr<IDCompositionDevice> dcompDevice_;
@@ -209,6 +212,10 @@ private:
     // Helper to capture current render target for backdrop blur
     bool CaptureSnapshot();
     bool CreateSnapshotResources();
+    void ReleaseSnapshotResources();
+    void ReleaseOffscreenResources();
+    void MarkOffscreenResourceUsed();
+    void TrimOffscreenResourcesIfIdle();
 
     // Desktop capture resources for window backdrop
     ComPtr<ID2D1Bitmap1> desktopCaptureBitmap_;

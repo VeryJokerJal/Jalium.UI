@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
@@ -20,10 +21,13 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     private volatile bool _renderScheduled;
     private bool _isRendering;
     private volatile bool _renderRequested;
+    private bool _renderRecoveryInProgress;
+    private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _disposed;
     private int _width;
     private int _height;
     private double _dpiScale = 1.0;
+    private const int RenderRecoveryRetryDelayMs = 120;
 
     // Static window class registration
     private static WndProcDelegate? _wndProcDelegate;
@@ -71,13 +75,14 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
         _windows[_hwnd] = this;
 
-        var context = RenderContext.Current;
-        if (context == null || !context.IsValid)
-            context = new RenderContext(RenderBackend.D3D12);
-
-        _renderTarget = context.CreateRenderTargetForComposition(_hwnd, width, height);
-        var dpi = (float)(dpiScale * 96.0);
-        _renderTarget.SetDpi(dpi, dpi);
+        try
+        {
+            EnsureRenderTarget();
+        }
+        catch (RenderPipelineException ex) when (IsRecoverableRenderPipelineException(ex))
+        {
+            ScheduleRenderRecoveryRetry();
+        }
 
         _ = ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
         ScheduleRender();
@@ -108,7 +113,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
             SWP_NOACTIVATE | SWP_NOOWNERZORDER);
 
         if (sizeChanged && _renderTarget != null)
-            _renderTarget.Resize(width, height);
+            TryResizeRenderTarget(width, height, "MoveToResize");
 
         ScheduleRender();
     }
@@ -125,6 +130,28 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     internal bool IsVisible => _hwnd != nint.Zero;
 
     #region Rendering
+
+    private void EnsureRenderTarget(bool forceReplaceContext = false)
+    {
+        if (_hwnd == nint.Zero)
+        {
+            return;
+        }
+
+        if (!forceReplaceContext && _renderTarget != null && _renderTarget.IsValid)
+        {
+            return;
+        }
+
+        _renderTarget?.Dispose();
+        _renderTarget = null;
+
+        var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: forceReplaceContext);
+        _renderTarget = context.CreateRenderTargetForComposition(_hwnd, Math.Max(1, _width), Math.Max(1, _height));
+
+        var dpi = (float)(_dpiScale * 96.0);
+        _renderTarget.SetDpi(dpi, dpi);
+    }
 
     private void ScheduleRender()
     {
@@ -158,7 +185,15 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
         try
         {
-            if (_renderTarget == null || !_renderTarget.IsValid) return;
+            if (_renderTarget == null || !_renderTarget.IsValid)
+            {
+                EnsureRenderTarget();
+            }
+
+            if (_renderTarget == null || !_renderTarget.IsValid)
+            {
+                return;
+            }
 
             // Layout in DIPs
             var dipWidth = _width / _dpiScale;
@@ -174,16 +209,35 @@ internal sealed partial class DockIndicatorWindow : IDisposable
             // Clear with fully transparent background
             _renderTarget.Clear(0f, 0f, 0f, 0f);
 
-            var context = RenderContext.Current;
-            if (context != null)
-            {
-                _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
-                _drawingContext.Offset = Point.Zero;
-                _visual.Render(_drawingContext);
-            }
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
+            _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
+            _drawingContext.Offset = Point.Zero;
+            _visual.Render(_drawingContext);
 
             _renderTarget.EndDraw();
             _drawingContext?.TrimCacheIfNeeded();
+        }
+        catch (RenderPipelineException ex)
+        {
+            if (string.Equals(ex.Stage, "Begin", StringComparison.OrdinalIgnoreCase))
+            {
+                LogRenderFailure(ex, "RenderFrame");
+                throw;
+            }
+
+            if (TryRecoverFromRenderPipelineFailure(ex, "RenderFrame"))
+            {
+                return;
+            }
+
+            if (IsRecoverableRenderPipelineException(ex))
+            {
+                ScheduleRenderRecoveryRetry();
+                return;
+            }
+
+            LogRenderFailure(ex, "RenderFrame");
+            throw;
         }
         catch (Exception ex)
         {
@@ -200,6 +254,147 @@ internal sealed partial class DockIndicatorWindow : IDisposable
             _renderRequested = false;
             ScheduleRender();
         }
+    }
+
+    private void TryResizeRenderTarget(int width, int height, string stage)
+    {
+        var renderTarget = _renderTarget;
+        if (renderTarget == null || !renderTarget.IsValid)
+        {
+            return;
+        }
+
+        try
+        {
+            renderTarget.Resize(width, height);
+        }
+        catch (RenderPipelineException ex)
+        {
+            if (TryRecoverFromRenderPipelineFailure(ex, stage))
+            {
+                return;
+            }
+
+            if (IsRecoverableRenderPipelineException(ex))
+            {
+                ScheduleRenderRecoveryRetry();
+                return;
+            }
+
+            LogRenderFailure(ex, stage);
+        }
+    }
+
+    private static bool IsRecoverableRenderPipelineException(RenderPipelineException exception)
+        => exception.Result is JaliumResult.DeviceLost
+            or JaliumResult.InvalidState
+            or JaliumResult.ResourceCreationFailed
+            || (exception.Result == JaliumResult.Unknown &&
+                string.Equals(exception.Stage, "Create", StringComparison.OrdinalIgnoreCase));
+
+    private bool TryRecoverFromRenderPipelineFailure(RenderPipelineException exception, string stage)
+    {
+        if (!IsRecoverableRenderPipelineException(exception) ||
+            _hwnd == nint.Zero ||
+            _disposed ||
+            _renderRecoveryInProgress)
+        {
+            return false;
+        }
+
+        _renderRecoveryInProgress = true;
+        try
+        {
+            _drawingContext?.ClearCache();
+            _drawingContext = null;
+
+            bool forceReplaceContext = exception.Result == JaliumResult.DeviceLost ||
+                string.Equals(exception.Stage, "Create", StringComparison.OrdinalIgnoreCase);
+            EnsureRenderTarget(forceReplaceContext);
+
+            ScheduleRenderAfterRecovery();
+            return true;
+        }
+        catch (RenderPipelineException recoveryException) when (IsRecoverableRenderPipelineException(recoveryException))
+        {
+            LogRenderFailure(recoveryException, $"{stage}:Recover");
+            return false;
+        }
+        catch (Exception recoveryException)
+        {
+            LogRenderFailure(recoveryException, $"{stage}:Recover");
+            return false;
+        }
+        finally
+        {
+            _renderRecoveryInProgress = false;
+        }
+    }
+
+    private void ScheduleRenderAfterRecovery()
+    {
+        if (_hwnd == nint.Zero || _disposed)
+        {
+            return;
+        }
+
+        if (!_renderScheduled)
+        {
+            _renderScheduled = true;
+            _dispatcher.BeginInvokeCritical(ProcessRender);
+        }
+    }
+
+    private void ScheduleRenderRecoveryRetry()
+    {
+        if (_hwnd == nint.Zero || _disposed)
+        {
+            return;
+        }
+
+        _renderRecoveryRetryTimer ??= CreateRenderRecoveryRetryTimer();
+        if (!_renderRecoveryRetryTimer.IsEnabled)
+        {
+            _renderRecoveryRetryTimer.Start();
+        }
+    }
+
+    private DispatcherTimer CreateRenderRecoveryRetryTimer()
+    {
+        var timer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(RenderRecoveryRetryDelayMs)
+        };
+        timer.Tick += OnRenderRecoveryRetryTimerTick;
+        return timer;
+    }
+
+    private void OnRenderRecoveryRetryTimerTick(object? sender, EventArgs e)
+    {
+        _renderRecoveryRetryTimer?.Stop();
+
+        if (_hwnd == nint.Zero || _disposed)
+        {
+            return;
+        }
+
+        if (!_renderScheduled)
+        {
+            _renderScheduled = true;
+            _dispatcher.BeginInvokeCritical(ProcessRender);
+        }
+    }
+
+    private void StopRenderRecoveryRetry()
+    {
+        if (_renderRecoveryRetryTimer == null)
+        {
+            return;
+        }
+
+        _renderRecoveryRetryTimer.Stop();
+        _renderRecoveryRetryTimer.Tick -= OnRenderRecoveryRetryTimerTick;
+        _renderRecoveryRetryTimer = null;
     }
 
     private void LogRenderFailure(Exception exception, string fallbackStage)
@@ -278,6 +473,9 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         if (_disposed) return;
         _disposed = true;
 
+        StopRenderRecoveryRetry();
+
+        _drawingContext?.ClearBitmapCache();
         _drawingContext = null;
 
         if (_renderTarget != null)

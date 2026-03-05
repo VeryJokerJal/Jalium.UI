@@ -8,9 +8,9 @@ namespace Jalium.UI;
 /// its own System.Threading.Timer, everyone subscribes to the static
 /// <see cref="Rendering"/> event which fires once per frame on the UI thread.
 ///
-/// This eliminates timer proliferation (N timers → 1) and ensures all
+/// This eliminates timer proliferation (N timers �?1) and ensures all
 /// animation ticks happen in the same Dispatcher batch, so only ONE
-/// render pass occurs per frame — critical for integrated GPU performance.
+/// render pass occurs per frame �?critical for integrated GPU performance.
 /// </summary>
 public static partial class CompositionTarget
 {
@@ -40,7 +40,7 @@ public static partial class CompositionTarget
 
     /// <summary>
     /// Gets whether the frame timer is active (at least one subscriber).
-    /// When active, rendering is driven by the frame timer — external callers
+    /// When active, rendering is driven by the frame timer �?external callers
     /// (mouse drag, property changes) should not schedule extra renders.
     /// </summary>
     public static bool IsActive => Volatile.Read(ref _subscriberCount) > 0;
@@ -59,7 +59,7 @@ public static partial class CompositionTarget
 
     /// <summary>
     /// Gets the detected monitor refresh rate as the nominal target frame rate.
-    /// The animation loop is uncapped — actual FPS is determined by rendering speed.
+    /// The animation loop is uncapped �?actual FPS is determined by rendering speed.
     /// </summary>
     public static int TargetFrameRate => _refreshRate;
 
@@ -142,29 +142,104 @@ public static partial class CompositionTarget
     private static void OnFrameTick(object? state)
     {
         // One-shot: this callback fires exactly once. No guard needed.
-        // Marshal to UI thread — one PostMessage per frame.
-        Dispatcher.MainDispatcher?.BeginInvoke(RaiseRendering);
+        // Marshal to UI thread with one posted message per frame.
+        var dispatcher = Dispatcher.MainDispatcher;
+        if (dispatcher != null)
+        {
+            try
+            {
+                dispatcher.BeginInvoke(RaiseRendering);
+                return;
+            }
+            catch
+            {
+                // Fall through to direct re-arm. We'll retry on the next tick.
+            }
+        }
+
+        RearmTimer();
     }
 
     private static void RaiseRendering()
     {
-        // Fire FrameStarting BEFORE Rendering — Window uses this to schedule
+        // Fire FrameStarting BEFORE Rendering. Window uses this to schedule
         // a render for dirty elements that accumulated between frames.
-        FrameStarting?.Invoke();
+        InvokeFrameStartingHandlers();
 
         // Mark that we're inside Rendering event invocation.
         // During this phase, InvalidateWindow() is allowed to schedule a render.
         // Outside this phase (between frames), it's blocked when IsActive=true,
         // preventing mouse/interaction from triggering extra renders on iGPU.
         _inRaiseRendering = true;
-        Rendering?.Invoke(null, EventArgs.Empty);
-        _inRaiseRendering = false;
+        try
+        {
+            InvokeRenderingHandlers();
+        }
+        finally
+        {
+            _inRaiseRendering = false;
+        }
 
         // Defer re-arm via BeginInvoke so it runs AFTER ProcessRender completes.
-        // ProcessQueue order: [RaiseRendering] → [ProcessRender → RenderFrame] → [RearmTimer]
-        // This guarantees the next timer fires FrameIntervalMs after rendering finishes,
-        // creating a gap for the message pump to process mouse/input messages.
-        Dispatcher.MainDispatcher?.BeginInvoke(RearmTimer);
+        // ProcessQueue order: [RaiseRendering] -> [ProcessRender -> RenderFrame] -> [RearmTimer]
+        // This guarantees the next timer fires after rendering finishes.
+        var dispatcher = Dispatcher.MainDispatcher;
+        if (dispatcher != null)
+        {
+            try
+            {
+                dispatcher.BeginInvoke(RearmTimer);
+                return;
+            }
+            catch
+            {
+                // Fall through to direct re-arm.
+            }
+        }
+
+        RearmTimer();
+    }
+
+    private static void InvokeFrameStartingHandlers()
+    {
+        var handlers = FrameStarting;
+        if (handlers == null)
+        {
+            return;
+        }
+
+        foreach (Action handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler();
+            }
+            catch
+            {
+                // Keep the frame loop alive even if one subscriber fails.
+            }
+        }
+    }
+
+    private static void InvokeRenderingHandlers()
+    {
+        var handlers = Rendering;
+        if (handlers == null)
+        {
+            return;
+        }
+
+        foreach (EventHandler handler in handlers.GetInvocationList())
+        {
+            try
+            {
+                handler(null, EventArgs.Empty);
+            }
+            catch
+            {
+                // Keep the frame loop alive even if one subscriber fails.
+            }
+        }
     }
 
     private static void RearmTimer()

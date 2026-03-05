@@ -222,6 +222,24 @@ public sealed class MultiBindingExpression : BindingExpressionBase
         {
             _isUpdating = true;
 
+            // Child bindings can remain Unattached if they were created before the
+            // target entered the visual tree. Retry activation on each target update
+            // so DataContext-based sources can attach once ancestors are available.
+            foreach (var expression in _bindingExpressions)
+            {
+                if (!expression.IsActive)
+                {
+                    expression.Activate();
+                }
+                else
+                {
+                    // Keep child expressions synchronized before reading their
+                    // shadow values. This also gives composite bindings (e.g.
+                    // PriorityBinding) a chance to retry unresolved children.
+                    expression.UpdateTarget();
+                }
+            }
+
             // Collect values from all child bindings
             var values = new object?[_bindingExpressions.Count];
             var hasUnset = false;

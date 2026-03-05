@@ -116,6 +116,10 @@ public sealed partial class DockItem : HeaderedContentControl
     private Window? _floatingDragWindow;
     private POINT _floatingDragStartCursor;
     private RECT _floatingDragStartWindowRect;
+    private FloatingRestoreContext? _floatingRestoreContext;
+    private Window? _floatingWindowOwner;
+    private EventHandler<System.ComponentModel.CancelEventArgs>? _floatingWindowClosingHandler;
+    private bool _suppressRestoreOnFloatingWindowClose;
 
     #endregion
 
@@ -522,11 +526,7 @@ public sealed partial class DockItem : HeaderedContentControl
             _floatingDragWindow = null;
 
             // Create the new DockItem for the target location
-            var newItem = new DockItem
-            {
-                Header = headerText,
-                Content = content
-            };
+            var newItem = CreateTransferredDockItem(content, headerText);
 
             bool dockSucceeded = false;
 
@@ -570,6 +570,7 @@ public sealed partial class DockItem : HeaderedContentControl
                 // Clean up floating panel before closing window
                 if (floatingPanel != null)
                     DockManager.Unregister(floatingPanel);
+                SuppressFloatingWindowRestore();
                 windowToClose.Close();
             }
             else
@@ -598,16 +599,13 @@ public sealed partial class DockItem : HeaderedContentControl
             var windowToClose = _floatingDragWindow;
             _floatingDragWindow = null;
 
-            var newItem = new DockItem
-            {
-                Header = headerText,
-                Content = content
-            };
+            var newItem = CreateTransferredDockItem(content, headerText);
             targetPanel.Items.Add(newItem);
             targetPanel.SelectTab(newItem);
 
             if (floatingPanel2 != null)
                 DockManager.Unregister(floatingPanel2);
+            SuppressFloatingWindowRestore();
             windowToClose.Close();
         }
         else
@@ -731,6 +729,7 @@ public sealed partial class DockItem : HeaderedContentControl
 
         var panel = OwnerPanel;
         if (panel == null) return;
+        var restoreContext = CaptureFloatingRestoreContext(panel, this);
 
         // Capture the content and header before removing from panel
         var content = Content;
@@ -757,14 +756,11 @@ public sealed partial class DockItem : HeaderedContentControl
 
         // Wrap content in a DockTabPanel for consistent look
         var tabPanel = new DockTabPanel { IsFloating = true };
-        var newItem = new DockItem
-        {
-            Header = headerText,
-            Content = content,
-            CanClose = false
-        };
+        var newItem = CreateTransferredDockItem(content, headerText);
         tabPanel.Items.Add(newItem);
         floatingWindow.Content = tabPanel;
+        if (!newItem.CanClose)
+            newItem.AttachFloatingWindowRestoreHandler(floatingWindow, restoreContext);
 
         floatingWindow.Show();
 
@@ -788,6 +784,168 @@ public sealed partial class DockItem : HeaderedContentControl
         // Immediately start floating drag on the new DockItem so user can
         // seamlessly continue dragging the floating window without releasing the mouse
         newItem.BeginFloatingDrag(floatingWindow);
+    }
+
+    private DockItem CreateTransferredDockItem(object? content, string headerText)
+    {
+        return new DockItem
+        {
+            Header = headerText,
+            Content = content,
+            CanClose = CanClose,
+            CanFloat = CanFloat,
+            SelectedBackground = SelectedBackground,
+            HoverBackground = HoverBackground,
+            IndicatorBrush = IndicatorBrush,
+            Foreground = Foreground,
+            FontSize = FontSize,
+            FontFamily = FontFamily,
+            Padding = Padding
+        };
+    }
+
+    private static FloatingRestoreContext CaptureFloatingRestoreContext(DockTabPanel sourcePanel, DockItem sourceItem)
+    {
+        var sourceTabIndex = sourcePanel.Items.IndexOf(sourceItem);
+        if (sourceTabIndex < 0)
+            sourceTabIndex = sourcePanel.Items.Count;
+
+        if (sourcePanel.VisualParent is DockSplitPanel splitParent)
+        {
+            return new FloatingRestoreContext(
+                sourcePanel,
+                sourceTabIndex,
+                splitParent,
+                splitParent.Children.IndexOf(sourcePanel),
+                DockSplitPanel.GetSize(sourcePanel),
+                null);
+        }
+
+        return new FloatingRestoreContext(
+            sourcePanel,
+            sourceTabIndex,
+            null,
+            -1,
+            GridLength.Star,
+            sourcePanel.VisualParent as ContentControl);
+    }
+
+    private void AttachFloatingWindowRestoreHandler(Window floatingWindow, FloatingRestoreContext restoreContext)
+    {
+        DetachFloatingWindowRestoreHandler();
+        _floatingRestoreContext = restoreContext;
+        _floatingWindowOwner = floatingWindow;
+        _suppressRestoreOnFloatingWindowClose = false;
+        _floatingWindowClosingHandler = OnFloatingWindowOwnerClosing;
+        floatingWindow.Closing += _floatingWindowClosingHandler;
+    }
+
+    private void DetachFloatingWindowRestoreHandler()
+    {
+        if (_floatingWindowOwner != null && _floatingWindowClosingHandler != null)
+            _floatingWindowOwner.Closing -= _floatingWindowClosingHandler;
+
+        _floatingWindowOwner = null;
+        _floatingWindowClosingHandler = null;
+    }
+
+    private void SuppressFloatingWindowRestore()
+    {
+        _suppressRestoreOnFloatingWindowClose = true;
+        _floatingRestoreContext = null;
+    }
+
+    private void OnFloatingWindowOwnerClosing(object? sender, System.ComponentModel.CancelEventArgs e)
+    {
+        if (_suppressRestoreOnFloatingWindowClose || _floatingRestoreContext == null || CanClose)
+        {
+            DetachFloatingWindowRestoreHandler();
+            return;
+        }
+
+        if (!TryRestoreFloatingItemToOriginalDock())
+        {
+            e.Cancel = true;
+            return;
+        }
+
+        DetachFloatingWindowRestoreHandler();
+    }
+
+    private bool TryRestoreFloatingItemToOriginalDock()
+    {
+        var restoreContext = _floatingRestoreContext;
+        if (restoreContext == null)
+            return true;
+
+        if (!EnsureSourcePanelAttached(restoreContext))
+            return false;
+
+        var targetPanel = restoreContext.SourcePanel;
+        if (targetPanel.VisualParent == null)
+            return false;
+
+        var content = Content;
+        var headerText = Header?.ToString() ?? "Panel";
+        Content = null;
+
+        if (content is UIElement contentElement && contentElement.VisualParent is DockTabPanel oldPanel)
+            oldPanel.ReleaseContentElement(contentElement);
+
+        var restoredItem = CreateTransferredDockItem(content, headerText);
+        var insertIndex = Math.Clamp(restoreContext.SourceTabIndex, 0, targetPanel.Items.Count);
+
+        try
+        {
+            targetPanel.Items.Insert(insertIndex, restoredItem);
+            targetPanel.SelectTab(restoredItem);
+            _floatingRestoreContext = null;
+            return true;
+        }
+        catch
+        {
+            restoredItem.Content = null;
+            Content = content;
+            return false;
+        }
+    }
+
+    private static bool EnsureSourcePanelAttached(FloatingRestoreContext restoreContext)
+    {
+        var sourcePanel = restoreContext.SourcePanel;
+        if (sourcePanel.VisualParent != null)
+            return true;
+
+        if (restoreContext.SourceSplitParent != null)
+        {
+            var splitParent = restoreContext.SourceSplitParent;
+            if (splitParent.Children.IndexOf(sourcePanel) < 0)
+            {
+                var insertIndex = Math.Clamp(restoreContext.SourcePaneIndex, 0, splitParent.Children.Count);
+                splitParent.Children.Insert(insertIndex, sourcePanel);
+                DockSplitPanel.SetSize(sourcePanel, restoreContext.SourcePaneSize);
+            }
+
+            splitParent.InvalidateMeasure();
+            splitParent.InvalidateArrange();
+            splitParent.InvalidateVisual();
+            return sourcePanel.VisualParent != null;
+        }
+
+        if (restoreContext.SourceContentHost != null)
+        {
+            var host = restoreContext.SourceContentHost;
+            if (ReferenceEquals(host.Content, sourcePanel))
+                return true;
+
+            if (host.Content == null)
+            {
+                host.Content = sourcePanel;
+                return true;
+            }
+        }
+
+        return false;
     }
 
     protected override Size MeasureOverride(Size availableSize)
@@ -951,6 +1109,32 @@ public sealed partial class DockItem : HeaderedContentControl
         if (TryFindResource(secondaryKey) is Brush secondary)
             return secondary;
         return fallback;
+    }
+
+    private sealed class FloatingRestoreContext
+    {
+        public DockTabPanel SourcePanel { get; }
+        public int SourceTabIndex { get; }
+        public DockSplitPanel? SourceSplitParent { get; }
+        public int SourcePaneIndex { get; }
+        public GridLength SourcePaneSize { get; }
+        public ContentControl? SourceContentHost { get; }
+
+        public FloatingRestoreContext(
+            DockTabPanel sourcePanel,
+            int sourceTabIndex,
+            DockSplitPanel? sourceSplitParent,
+            int sourcePaneIndex,
+            GridLength sourcePaneSize,
+            ContentControl? sourceContentHost)
+        {
+            SourcePanel = sourcePanel;
+            SourceTabIndex = sourceTabIndex;
+            SourceSplitParent = sourceSplitParent;
+            SourcePaneIndex = sourcePaneIndex;
+            SourcePaneSize = sourcePaneSize;
+            SourceContentHost = sourceContentHost;
+        }
     }
 
     #region P/Invoke

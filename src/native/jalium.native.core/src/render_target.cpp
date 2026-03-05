@@ -12,16 +12,30 @@ JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_hwnd(
     int32_t width,
     int32_t height)
 {
-    if (!ctx || !hwnd || width <= 0 || height <= 0) {
+    if (!ctx) {
+        return nullptr;
+    }
+
+    auto* context = reinterpret_cast<jalium::Context*>(ctx);
+
+    if (!hwnd || width <= 0 || height <= 0) {
+        context->SetLastError(JALIUM_ERROR_INVALID_ARGUMENT, L"Invalid render target creation arguments.");
         return nullptr;
     }
 
     auto backend = jalium::GetBackendFromContext(ctx);
     if (!backend) {
+        context->SetLastError(JALIUM_ERROR_INVALID_STATE, L"Render backend is unavailable for this context.");
         return nullptr;
     }
 
     auto rt = backend->CreateRenderTarget(hwnd, width, height);
+    if (!rt) {
+        context->SetLastError(JALIUM_ERROR_RESOURCE_CREATION_FAILED, L"Backend failed to create HWND render target.");
+        return nullptr;
+    }
+
+    context->SetLastError(JALIUM_OK);
     return reinterpret_cast<JaliumRenderTarget*>(rt);
 }
 
@@ -31,16 +45,30 @@ JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_composition(
     int32_t width,
     int32_t height)
 {
-    if (!ctx || !hwnd || width <= 0 || height <= 0) {
+    if (!ctx) {
+        return nullptr;
+    }
+
+    auto* context = reinterpret_cast<jalium::Context*>(ctx);
+
+    if (!hwnd || width <= 0 || height <= 0) {
+        context->SetLastError(JALIUM_ERROR_INVALID_ARGUMENT, L"Invalid composition render target creation arguments.");
         return nullptr;
     }
 
     auto backend = jalium::GetBackendFromContext(ctx);
     if (!backend) {
+        context->SetLastError(JALIUM_ERROR_INVALID_STATE, L"Render backend is unavailable for this context.");
         return nullptr;
     }
 
     auto rt = backend->CreateRenderTargetForComposition(hwnd, width, height);
+    if (!rt) {
+        context->SetLastError(JALIUM_ERROR_RESOURCE_CREATION_FAILED, L"Backend failed to create composition render target.");
+        return nullptr;
+    }
+
+    context->SetLastError(JALIUM_OK);
     return reinterpret_cast<JaliumRenderTarget*>(rt);
 }
 

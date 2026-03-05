@@ -1,3 +1,5 @@
+using System.Runtime.CompilerServices;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>
@@ -75,16 +77,10 @@ public sealed class TextSearch : DependencyObject
     /// </summary>
     internal static TextSearch EnsureInstance(ItemsControl itemsControl)
     {
-        // Use a simple approach: store in a static dictionary keyed by control
-        if (!_instances.TryGetValue(itemsControl, out var instance))
-        {
-            instance = new TextSearch(itemsControl);
-            _instances[itemsControl] = instance;
-        }
-        return instance;
+        return _instances.GetValue(itemsControl, static control => new TextSearch(control));
     }
 
-    private static readonly Dictionary<ItemsControl, TextSearch> _instances = new();
+    private static readonly ConditionalWeakTable<ItemsControl, TextSearch> _instances = new();
 
     /// <summary>
     /// Performs a text search with the given character.

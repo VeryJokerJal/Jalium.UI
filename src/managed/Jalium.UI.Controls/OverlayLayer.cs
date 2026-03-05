@@ -104,9 +104,19 @@ internal sealed class OverlayLayer : Canvas
         // Delegate to base Canvas hit testing (checks children in reverse order)
         var result = base.HitTestCore(point);
 
-        // If base returns this OverlayLayer itself (no child hit), return null
-        // so clicks pass through to underlying content
-        if (result?.VisualHit == this) return null;
+        // If base returns this OverlayLayer itself (no child hit):
+        // - when light-dismiss popups are open, block input passthrough so
+        //   underlying controls cannot be interacted with behind the popup;
+        // - otherwise keep passthrough behavior.
+        if (result?.VisualHit == this)
+        {
+            if (HasLightDismissPopups)
+            {
+                return HitTestResult.GetReusable(this);
+            }
+
+            return null;
+        }
 
         return result;
     }

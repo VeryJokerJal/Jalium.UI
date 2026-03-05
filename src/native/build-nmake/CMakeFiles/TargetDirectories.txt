@@ -1,0 +1,11 @@
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/CMakeFiles/edit_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/CMakeFiles/rebuild_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.core/CMakeFiles/jalium.native.core.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.core/CMakeFiles/edit_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.core/CMakeFiles/rebuild_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.d3d12/CMakeFiles/jalium.native.d3d12.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.d3d12/CMakeFiles/edit_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.d3d12/CMakeFiles/rebuild_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.browser/CMakeFiles/jalium.native.browser.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.browser/CMakeFiles/edit_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.browser/CMakeFiles/rebuild_cache.dir

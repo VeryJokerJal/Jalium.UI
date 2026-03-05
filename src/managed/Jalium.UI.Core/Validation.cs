@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace Jalium.UI;
 
@@ -98,7 +99,7 @@ public static class Validation
 
     #region Validation Methods
 
-    private static readonly Dictionary<DependencyObject, ObservableCollection<ValidationError>> _errors = new();
+    private static readonly ConditionalWeakTable<DependencyObject, ObservableCollection<ValidationError>> _errors = new();
 
     /// <summary>
     /// Marks the element as having a validation error.
@@ -108,7 +109,7 @@ public static class Validation
         if (!_errors.TryGetValue(element, out var errors))
         {
             errors = new ObservableCollection<ValidationError>();
-            _errors[element] = errors;
+            _errors.Add(element, errors);
             element.SetValue(ErrorsProperty, new ReadOnlyObservableCollection<ValidationError>(errors));
         }
 

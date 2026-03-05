@@ -13,6 +13,13 @@ public class MenuFlyoutItem : Control
     private static readonly SolidColorBrush s_fallbackTextBrush = new(Color.FromRgb(255, 255, 255));
     private static readonly SolidColorBrush s_fallbackDisabledTextBrush = new(Color.FromRgb(90, 90, 90));
     private static readonly SolidColorBrush s_fallbackAcceleratorBrush = new(Color.FromRgb(136, 136, 136));
+    private const double LeftPadding = 12;
+    private const double RightPadding = 12;
+    private const double IconColumnWidth = 28;
+    private const double TextTrailingPadding = 16;
+    private const double AcceleratorColumnWidth = 80;
+    private const double TextToAcceleratorGap = 16;
+    private const double ItemHeight = 32;
 
     #region Dependency Properties
 
@@ -142,22 +149,18 @@ public class MenuFlyoutItem : Control
         {
             var formattedText = new FormattedText(Text, FontFamily ?? "Segoe UI", fontSize);
             TextMeasurement.MeasureText(formattedText);
-            textWidth = formattedText.Width + 16; // padding around text
+            textWidth = formattedText.Width;
         }
 
-        // Always reserve icon column space for alignment (matches OnRender which reserves 28px even when Icon is null)
-        var iconWidth = 28;
+        var contentWidth = LeftPadding + IconColumnWidth + textWidth + TextTrailingPadding + RightPadding;
 
-        double accelWidth = 0;
         if (!string.IsNullOrEmpty(KeyboardAcceleratorTextOverride))
         {
-            var accelText = new FormattedText(KeyboardAcceleratorTextOverride, FontFamily ?? "Segoe UI", 12);
-            TextMeasurement.MeasureText(accelText);
-            accelWidth = accelText.Width + 24; // gap + padding
+            // Reserve a fixed right-side gesture column so shortcuts align to the far edge.
+            contentWidth += TextToAcceleratorGap + AcceleratorColumnWidth;
         }
 
-        var contentWidth = iconWidth + textWidth + accelWidth + 16; // 16 = left/right padding
-        return new Size(contentWidth, Math.Min(32, availableSize.Height));
+        return new Size(contentWidth, Math.Min(ItemHeight, availableSize.Height));
     }
 
     /// <inheritdoc />
@@ -165,6 +168,7 @@ public class MenuFlyoutItem : Control
     {
         if (drawingContext is not DrawingContext dc) return;
         base.OnRender(drawingContext);
+        if (RenderSize.Width <= 0 || RenderSize.Height <= 0) return;
 
         // Background (hover state handled by IsMouseOver)
         if (IsMouseOver)
@@ -184,7 +188,7 @@ public class MenuFlyoutItem : Control
             ? Foreground ?? ResolveBrush("OnePopupText", "TextPrimary", s_fallbackTextBrush)
             : ResolveBrush("OneTextDisabled", "TextDisabled", s_fallbackDisabledTextBrush);
 
-        double x = 12;
+        double x = LeftPadding;
 
         var fontSize = FontSize > 0 ? FontSize : 14;
 
@@ -195,12 +199,9 @@ public class MenuFlyoutItem : Control
                 iconText, "Segoe MDL2 Assets", 14) { Foreground = textBrush };
             TextMeasurement.MeasureText(iconFormatted);
             dc.DrawText(iconFormatted, new Point(x, (RenderSize.Height - iconFormatted.Height) / 2));
-            x += 28;
         }
-        else if (Icon == null)
-        {
-            x += 28; // Reserve space even without icon for alignment
-        }
+        // Reserve icon/check column even when there is no icon so labels line up.
+        x += IconColumnWidth;
 
         // Text
         if (!string.IsNullOrEmpty(Text))
@@ -218,7 +219,7 @@ public class MenuFlyoutItem : Control
             var accelFormatted = new FormattedText(
                 KeyboardAcceleratorTextOverride, FontFamily ?? "Segoe UI", 12) { Foreground = accelBrush };
             TextMeasurement.MeasureText(accelFormatted);
-            var accelX = RenderSize.Width - accelFormatted.Width - 12;
+            var accelX = RenderSize.Width - accelFormatted.Width - RightPadding;
             dc.DrawText(accelFormatted, new Point(accelX, (RenderSize.Height - accelFormatted.Height) / 2));
         }
     }

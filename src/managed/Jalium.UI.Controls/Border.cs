@@ -1000,9 +1000,6 @@ public sealed class Border : FrameworkElement
         double dt = (now - _lgLastTickTime) / 1000.0;
         _lgLastTickTime = now;
 
-        // Clamp dt to avoid instability from long pauses or slow rendering.
-        // Sub-stepping inside SpringAxis.Step handles the rest.
-        if (dt > 0.1) dt = 0.1;
         if (dt <= 0) return;
 
         double stiffness = _lgPressed ? LgPressStiffness : LgReleaseStiffness;

@@ -114,7 +114,8 @@ public sealed class MessageBox
     /// </summary>
     public static MessageBoxResult Show(string messageBoxText, string caption, MessageBoxButton button, MessageBoxImage icon, MessageBoxResult defaultResult, MessageBoxOptions options)
     {
-        return ShowCore(IntPtr.Zero, messageBoxText, caption, button, icon, defaultResult, options);
+        var hwnd = ShouldForceOwnerless(options) ? IntPtr.Zero : DialogOwnerResolver.Resolve();
+        return ShowCore(hwnd, messageBoxText, caption, button, icon, defaultResult, options);
     }
 
     /// <summary>
@@ -162,8 +163,15 @@ public sealed class MessageBox
     /// </summary>
     public static MessageBoxResult Show(Window owner, string messageBoxText, string caption, MessageBoxButton button, MessageBoxImage icon, MessageBoxResult defaultResult, MessageBoxOptions options)
     {
-        var hwnd = owner?.Handle ?? IntPtr.Zero;
+        var hwnd = ShouldForceOwnerless(options)
+            ? IntPtr.Zero
+            : DialogOwnerResolver.Resolve(owner?.Handle ?? IntPtr.Zero);
         return ShowCore(hwnd, messageBoxText, caption, button, icon, defaultResult, options);
+    }
+
+    private static bool ShouldForceOwnerless(MessageBoxOptions options)
+    {
+        return (options & (MessageBoxOptions.ServiceNotification | MessageBoxOptions.DefaultDesktopOnly)) != 0;
     }
 
     private static MessageBoxResult ShowCore(IntPtr owner, string messageBoxText, string caption,

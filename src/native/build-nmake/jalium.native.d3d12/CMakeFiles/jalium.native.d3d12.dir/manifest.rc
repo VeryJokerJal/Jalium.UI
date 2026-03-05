@@ -1,0 +1,2 @@
+#pragma code_page(65001)
+2 /* CREATEPROCESS_MANIFEST_RESOURCE_ID */ 24 /* RT_MANIFEST */ "D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.d3d12/CMakeFiles/jalium.native.d3d12.dir/embed.manifest"

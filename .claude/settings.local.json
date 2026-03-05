@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(dotnet test:*)",
+      "Bash(dir:*)",
+      "Bash(gh pr create:*)",
+      "Bash(where:*)",
+      "Bash(dotnet pack:*)",
+      "Bash(dotnet restore:*)",
+      "Bash(dotnet list:*)",
+      "Bash(\"D:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Insiders\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" Jalium.UI.VisualStudio.csproj -t:Restore -p:Configuration=Debug -v:minimal)",
+      "Bash(\"D:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Insiders\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" Jalium.UI.VisualStudio.csproj -t:Clean -p:Configuration=Debug -v:minimal)",
+      "Bash(\"D:\\\\Program Files\\\\Microsoft Visual Studio\\\\18\\\\Insiders\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" Jalium.UI.VisualStudio.csproj -t:Build -p:Configuration=Debug -v:normal)",
+      "Bash(python:*)",
+      "Read(//c/Users/suppe/AppData/Roaming/Microsoft/VisualStudio/18.0_dc6d66ae/**)",
+      "Read(//c/Users/suppe/AppData/Roaming/Microsoft/VisualStudio/**)",
+      "Read(//c/Users/suppe/AppData/Local/Microsoft/VisualStudio/**)",
+      "Bash(\"D:/Program Files/Microsoft Visual Studio/18/Insiders/MSBuild/Current/Bin/MSBuild.exe\" Jalium.UI.VisualStudio.csproj -t:Build -p:Configuration=Debug -v:minimal)",
+      "Read(//c/Users/suppe/.nuget/packages/**)",
+      "Bash(dotnet tool list:*)",
+      "Bash(\"d:/Users/suppe/source/repos/Jalium.UI/tools/Jalium.One/src/Jalium.One.Designer/Themes/Generic.jalxaml\":*)",
+      "Bash(\"d:/Users/suppe/source/repos/Jalium.UI/tools/Jalium.One/src/Jalium.One.Git/Themes/Generic.jalxaml\":*)",
+      "Bash(\"d:/Users/suppe/source/repos/Jalium.UI/tools/Jalium.One/src/Jalium.One.AI/Themes/Generic.jalxaml\":*)",
+      "Bash(\"d:/Users/suppe/source/repos/Jalium.UI/tools/Jalium.One/src/Jalium.One.Extensions/Themes/Generic.jalxaml\":*)",
+      "Bash(\"d:/Users/suppe/source/repos/Jalium.UI/tools/Jalium.One/src/Jalium.One.Terminal/Themes/Generic.jalxaml\":*)",
+      "Bash(\"d:/Users/suppe/source/repos/Jalium.UI/tools/Jalium.One/src/Jalium.One.Debugger/Themes/Generic.jalxaml\":*)",
+      "Bash(\"d:/Users/suppe/source/repos/Jalium.UI/tools/Jalium.One/src/Jalium.One.LowCode/Themes/Generic.jalxaml\":*)",
+      "Bash(git mv:*)",
+      "Bash(find:*)"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\suppe\\AppData\\Local\\Microsoft\\VisualStudio\\18.0_dc6d66aeExp\\ComponentModelCache"
+    ]
+  }
+}

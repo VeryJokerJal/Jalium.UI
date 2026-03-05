@@ -272,7 +272,6 @@ public sealed class ToggleSwitch : Control
         double dt = (now - _lastTickTime) / 1000.0;
         _lastTickTime = now;
 
-        if (dt > 0.1) dt = 0.1;
         if (dt <= 0) return;
 
         bool posSettled = _positionSpring.Step(dt, PositionStiffness, PositionDamping);

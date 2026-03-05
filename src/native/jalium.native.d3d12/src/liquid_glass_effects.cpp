@@ -225,7 +225,7 @@ float4 main(
             if (d < minNSd) { minNSd = d; closestNC = neighborRect3.xy + neighborRect3.zw * 0.5; }
         }
 
-        // Primary: neighbor is clearly closer → yield
+        // Primary: neighbor is clearly closer -> yield
         if (minNSd < selfSd) {
             return float4(0, 0, 0, 0);
         }
@@ -397,7 +397,7 @@ float4 main(
         shIntensity = smoothstep(-shadowRadius, 0.0, sdOffset);
     }
     // Use selfSd (not combined sd) so inner shadow stays within this panel's body.
-    // In the fusion bridge area selfSd > 0 → edgeMask = 0 → no shadow overflow.
+    // In the fusion bridge area selfSd > 0 -> edgeMask = 0 -> no shadow overflow.
     float edgeShadow = smoothstep(shadowRadius, 0.0, -selfSd);
     float edgeMask = smoothstep(0.0, 4.0, -selfSd);
     float totalShadow = max(shIntensity, edgeShadow * 0.2) * shadowOpacity * edgeMask;

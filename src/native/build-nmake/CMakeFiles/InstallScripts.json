@@ -1,0 +1,10 @@
+{
+	"InstallScripts" : 
+	[
+		"D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/cmake_install.cmake",
+		"D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.core/cmake_install.cmake",
+		"D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.d3d12/cmake_install.cmake",
+		"D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.browser/cmake_install.cmake"
+	],
+	"Parallel" : false
+}

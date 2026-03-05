@@ -4,6 +4,7 @@ using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 #if DEBUG
 using Jalium.UI.Controls.DevTools;
 #endif
@@ -23,6 +24,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private volatile bool _renderRequested;   // True if InvalidateWindow was called during rendering
     private volatile bool _dirtyBetweenFrames; // True if InvalidateWindow was blocked between frames
     private bool _isFirstLayout = true;
+    private bool _renderRecoveryInProgress;
+    private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _fullInvalidation = true;  // First frame is always full
     // Maps dirty element → pre-layout bounds (captured when AddDirtyElement is called).
     // After UpdateLayout, we also compute post-layout bounds.
@@ -32,6 +35,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private int _appliedDwmTopMarginPhysical = -1;
     private bool _attemptedAutoWindowIcon;
     private const double DefaultTitleBarHeightDip = 32.0;
+    private const int RenderRecoveryRetryDelayMs = 120;
 
     /// <summary>
     /// Gets the layout manager for this window.
@@ -1440,7 +1444,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         DialogResult = null;
 
         // Disable owner window to make this dialog truly modal
-        nint ownerHandle = Owner?.Handle ?? nint.Zero;
+        nint ownerHandle = DialogOwnerResolver.Resolve(Owner?.Handle ?? nint.Zero);
+        if (ownerHandle == Handle)
+        {
+            ownerHandle = nint.Zero;
+        }
+
         if (ownerHandle != nint.Zero)
         {
             EnableWindow(ownerHandle, false);
@@ -1514,15 +1523,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
+        StopRenderRecoveryRetry();
+
         // Close all external popup windows
         foreach (var popup in ActiveExternalPopups.ToList())
             popup.IsOpen = false;
         ActiveExternalPopups.Clear();
 
-        // Release the drawing context reference. Do NOT call ClearCache() here —
-        // native text format/brush destruction during shutdown can cause StackOverflowException
-        // when the DWrite factory or D3D12 device is being torn down concurrently.
-        // The finalizer for cached objects already skips native destruction (safe no-op).
+        // Release large image resources before dropping the drawing context reference.
+        // Avoid full ClearCache() here because text/brush teardown order can still be sensitive
+        // during process shutdown.
+        _drawingContext?.ClearBitmapCache();
         _drawingContext = null;
 
         // Dispose render target
@@ -1628,8 +1639,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
         }
 
-        // Create render target for this window
-        EnsureRenderTarget();
+        // Create render target for this window.
+        // During GPU switching this can fail transiently; defer to render-loop recovery.
+        try
+        {
+            EnsureRenderTarget();
+        }
+        catch (RenderPipelineException ex) when (IsRecoverableRenderPipelineException(ex))
+        {
+            ScheduleRenderRecoveryRetry();
+        }
 
         // Apply system backdrop after render target is ready
         if (SystemBackdrop != WindowBackdropType.None)
@@ -1859,7 +1878,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         return WS_OVERLAPPEDWINDOW;
     }
 
-    private void EnsureRenderTarget()
+    private void EnsureRenderTarget(bool forceNewContext = false)
     {
         if (RenderTarget != null)
         {
@@ -1868,11 +1887,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         try
         {
-            var context = RenderContext.Current;
-            if (context == null || !context.IsValid)
-            {
-                context = new RenderContext(RenderBackend.D3D12);
-            }
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: forceNewContext);
 
             // Swap chain uses physical pixel dimensions
             int physicalWidth = (int)(Width * _dpiScale);
@@ -1920,11 +1935,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         try
         {
-            var context = RenderContext.Current;
-            if (context == null || !context.IsValid)
-            {
-                context = new RenderContext(RenderBackend.D3D12);
-            }
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
 
             // Ensure composition-compatible window style for composition swap chain hosting.
             long exStyle = GetWindowLong(Handle, GWL_EXSTYLE);
@@ -2729,7 +2740,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     // Do final resize to ensure correct buffer size (physical pixels)
                     int finalPhysW = (int)(window.Width * window._dpiScale);
                     int finalPhysH = (int)(window.Height * window._dpiScale);
-                    window.RenderTarget?.Resize(finalPhysW, finalPhysH);
+                    window.TryResizeRenderTarget(finalPhysW, finalPhysH, "ExitSizeMoveResize");
                     // Force a final repaint with correct buffer size
                     _ = RedrawWindow(hWnd, nint.Zero, nint.Zero, RDW_INVALIDATE | RDW_UPDATENOW);
                     return nint.Zero;
@@ -2946,8 +2957,164 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         // Always use WM_SIZE client dimensions as the single source of truth.
         // This keeps layout and swapchain size stable during drag resize.
-        RenderTarget?.Resize(physicalWidth, physicalHeight);
+        TryResizeRenderTarget(physicalWidth, physicalHeight, "OnSizeChanged");
         InvalidateMeasure();
+    }
+
+    private void TryResizeRenderTarget(int physicalWidth, int physicalHeight, string stage)
+    {
+        var renderTarget = RenderTarget;
+        if (renderTarget == null || !renderTarget.IsValid)
+        {
+            return;
+        }
+
+        try
+        {
+            renderTarget.Resize(physicalWidth, physicalHeight);
+        }
+        catch (RenderPipelineException ex)
+        {
+            if (TryRecoverFromRenderPipelineFailure(ex, stage))
+            {
+                return;
+            }
+
+            if (IsRecoverableRenderPipelineException(ex))
+            {
+                ScheduleRenderRecoveryRetry();
+                return;
+            }
+
+            LogRenderFailure(ex, stage);
+        }
+    }
+
+    private static bool IsRecoverableRenderPipelineException(RenderPipelineException exception)
+        => exception.Result is JaliumResult.DeviceLost
+            or JaliumResult.InvalidState
+            or JaliumResult.ResourceCreationFailed
+            || (exception.Result == JaliumResult.Unknown &&
+                string.Equals(exception.Stage, "Create", StringComparison.OrdinalIgnoreCase));
+
+    private bool TryRecoverFromRenderPipelineFailure(RenderPipelineException exception, string stage)
+    {
+        if (!IsRecoverableRenderPipelineException(exception) ||
+            Handle == nint.Zero ||
+            _isClosing ||
+            _renderRecoveryInProgress)
+        {
+            return false;
+        }
+
+        _renderRecoveryInProgress = true;
+
+        try
+        {
+            _drawingContext?.ClearCache();
+            _drawingContext = null;
+
+            RenderTarget?.Dispose();
+            RenderTarget = null;
+
+            bool forceNewContext = exception.Result == JaliumResult.DeviceLost ||
+                string.Equals(exception.Stage, "Create", StringComparison.OrdinalIgnoreCase);
+            EnsureRenderTarget(forceNewContext: forceNewContext);
+            if (RenderTarget == null || !RenderTarget.IsValid)
+            {
+                return false;
+            }
+
+            lock (_dirtyLock)
+            {
+                _dirtyElements.Clear();
+                _fullInvalidation = true;
+            }
+
+            InvalidateMeasure();
+            ScheduleRenderAfterRecovery();
+            return true;
+        }
+        catch (RenderPipelineException recoveryException) when (IsRecoverableRenderPipelineException(recoveryException))
+        {
+            LogRenderFailure(recoveryException, $"{stage}:Recover");
+            return false;
+        }
+        catch (Exception recoveryException)
+        {
+            LogRenderFailure(recoveryException, $"{stage}:Recover");
+            return false;
+        }
+        finally
+        {
+            _renderRecoveryInProgress = false;
+        }
+    }
+
+    private void ScheduleRenderAfterRecovery()
+    {
+        if (Handle == nint.Zero || _dispatcher == null)
+        {
+            return;
+        }
+
+        if (!_renderScheduled)
+        {
+            _renderScheduled = true;
+            _dispatcher.BeginInvokeCritical(ProcessRender);
+        }
+    }
+
+    private void ScheduleRenderRecoveryRetry()
+    {
+        if (Handle == nint.Zero || _dispatcher == null || _isClosing)
+        {
+            return;
+        }
+
+        _renderRecoveryRetryTimer ??= CreateRenderRecoveryRetryTimer();
+        if (!_renderRecoveryRetryTimer.IsEnabled)
+        {
+            _renderRecoveryRetryTimer.Start();
+        }
+    }
+
+    private DispatcherTimer CreateRenderRecoveryRetryTimer()
+    {
+        var timer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(RenderRecoveryRetryDelayMs)
+        };
+        timer.Tick += OnRenderRecoveryRetryTimerTick;
+        return timer;
+    }
+
+    private void OnRenderRecoveryRetryTimerTick(object? sender, EventArgs e)
+    {
+        _renderRecoveryRetryTimer?.Stop();
+
+        if (Handle == nint.Zero || _isClosing)
+        {
+            return;
+        }
+
+        if (!_renderScheduled)
+        {
+            _renderScheduled = true;
+            _dispatcher?.BeginInvokeCritical(ProcessRender);
+        }
+    }
+
+    private void StopRenderRecoveryRetry()
+    {
+        if (_renderRecoveryRetryTimer == null)
+        {
+            return;
+        }
+
+        _renderRecoveryRetryTimer.Stop();
+        _renderRecoveryRetryTimer.Tick -= OnRenderRecoveryRetryTimerTick;
+        _renderRecoveryRetryTimer = null;
     }
 
     private RenderTargetDrawingContext? _drawingContext;
@@ -2998,64 +3165,90 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         try
         {
-            if (RenderTarget != null && RenderTarget.IsValid)
+            if (RenderTarget == null || !RenderTarget.IsValid)
             {
-                // Perform layout before rendering (queue-based: only dirty elements)
-                UpdateLayout();
+                EnsureRenderTarget();
+            }
 
-                // Dirty rendering strategy:
-                // - Dirty elements drive SCHEDULING (whether to render at all)
-                // - When idle, no render → GPU idle
-                // - When rendering, always full Clear + full tree render + full Present
-                //
-                // Present1 partial dirty rects are NOT used because with FLIP_SEQUENTIAL,
-                // we Clear the entire back buffer each frame, so telling DWM only partial
-                // rects changed causes cumulative stale content on screen.
-                // The GPU savings come from not rendering at all when idle, not from
-                // partial DWM compositing.
-                lock (_dirtyLock)
-                {
-                    _dirtyElements.Clear();
-                    _fullInvalidation = false;
-                }
-                RenderTarget.SetFullInvalidation();
+            if (RenderTarget == null || !RenderTarget.IsValid)
+            {
+                return;
+            }
 
-                RenderTarget.BeginDraw();
+            // Perform layout before rendering (queue-based: only dirty elements)
+            UpdateLayout();
 
-                // Always clear and render the full window.
-                // No D2D clip — the full back buffer is redrawn every dirty frame.
-                // Present1 dirty rects handle DWM-level optimization.
-                if (Background is SolidColorBrush solidBrush)
-                {
-                    var color = solidBrush.Color;
-                    RenderTarget.Clear(color.ScR, color.ScG, color.ScB, color.ScA);
-                }
-                else
-                {
-                    RenderTarget.Clear(1.0f, 1.0f, 1.0f, 1.0f);
-                }
+            // Dirty rendering strategy:
+            // - Dirty elements drive SCHEDULING (whether to render at all)
+            // - When idle, no render → GPU idle
+            // - When rendering, always full Clear + full tree render + full Present
+            //
+            // Present1 partial dirty rects are NOT used because with FLIP_SEQUENTIAL,
+            // we Clear the entire back buffer each frame, so telling DWM only partial
+            // rects changed causes cumulative stale content on screen.
+            // The GPU savings come from not rendering at all when idle, not from
+            // partial DWM compositing.
+            lock (_dirtyLock)
+            {
+                _dirtyElements.Clear();
+                _fullInvalidation = false;
+            }
+            RenderTarget.SetFullInvalidation();
 
-                var context = RenderContext.Current;
-                if (context != null)
-                {
-                    _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
-                    _drawingContext.Offset = Point.Zero;
-                    Render(_drawingContext);
+            RenderTarget.BeginDraw();
+
+            // Always clear and render the full window.
+            // No D2D clip — the full back buffer is redrawn every dirty frame.
+            // Present1 dirty rects handle DWM-level optimization.
+            if (Background is SolidColorBrush solidBrush)
+            {
+                var color = solidBrush.Color;
+                RenderTarget.Clear(color.ScR, color.ScG, color.ScB, color.ScA);
+            }
+            else
+            {
+                RenderTarget.Clear(1.0f, 1.0f, 1.0f, 1.0f);
+            }
+
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
+            _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
+            _drawingContext.Offset = Point.Zero;
+            Render(_drawingContext);
 
 #if DEBUG
-                    // Draw DevTools highlight overlay if active
-                    DevToolsOverlay?.DrawOverlay(_drawingContext);
+            // Draw DevTools highlight overlay if active
+            DevToolsOverlay?.DrawOverlay(_drawingContext);
 #endif
-                }
 
-                // Also call legacy OnRender for backwards compatibility
-                OnRender(RenderTarget);
+            // Also call legacy OnRender for backwards compatibility
+            OnRender(RenderTarget);
 
-                RenderTarget.EndDraw();
+            RenderTarget.EndDraw();
 
-                // Trim caches to prevent memory from growing unbounded
-                _drawingContext?.TrimCacheIfNeeded();
+            // Trim caches to prevent memory from growing unbounded
+            _drawingContext?.TrimCacheIfNeeded();
+        }
+        catch (RenderPipelineException ex)
+        {
+            if (string.Equals(ex.Stage, "Begin", StringComparison.OrdinalIgnoreCase))
+            {
+                LogRenderFailure(ex, "RenderFrame");
+                throw;
             }
+
+            if (TryRecoverFromRenderPipelineFailure(ex, "RenderFrame"))
+            {
+                return;
+            }
+
+            if (IsRecoverableRenderPipelineException(ex))
+            {
+                ScheduleRenderRecoveryRetry();
+                return;
+            }
+
+            LogRenderFailure(ex, "RenderFrame");
+            throw;
         }
         catch (Exception ex)
         {
@@ -3641,6 +3834,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
         UIElement? hitElement = HitTest(position)?.VisualHit as UIElement;
+        if (captured == null && hitElement == OverlayLayer && OverlayLayer.HasLightDismissPopups)
+        {
+            // Keep WPF-like menu mode:
+            // when a menu popup is open, allow hover-switching between top-level
+            // menu headers behind the overlay, but keep all other controls blocked.
+            var topLevelMenuItem = HitTopLevelMenuItemBehindOverlay(position);
+            if (topLevelMenuItem != null)
+            {
+                hitElement = topLevelMenuItem;
+            }
+        }
         var target = captured ?? hitElement ?? this;
 
         // Track mouse over state and raise MouseEnter/MouseLeave events
@@ -3846,9 +4050,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnMouseButtonDown(MouseButton button, nint wParam, nint lParam, int clickCount = 1)
     {
         var position = GetMousePosition(lParam);
+        var topLevelMenuItemBehindOverlay = OverlayLayer.HasLightDismissPopups
+            ? HitTopLevelMenuItemBehindOverlay(position)
+            : null;
 
         // Check light dismiss via OverlayLayer — clicks outside popups close them
-        if (OverlayLayer.TryHandleLightDismiss(position))
+        if (topLevelMenuItemBehindOverlay == null && OverlayLayer.TryHandleLightDismiss(position))
         {
             _suppressMouseUpButton = button;
             return;
@@ -3887,7 +4094,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTest(position)?.VisualHit as UIElement ?? this;
+        var target = captured
+            ?? topLevelMenuItemBehindOverlay
+            ?? HitTest(position)?.VisualHit as UIElement
+            ?? this;
 
         if (button == MouseButton.Left)
         {
@@ -4037,6 +4247,50 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
 
         _activePointerTargets.Remove(MousePointerId);
+    }
+
+    private MenuItem? HitTopLevelMenuItemBehindOverlay(Point windowPosition)
+    {
+        var hitElement = HitIgnoringOverlay(windowPosition)?.VisualHit as UIElement;
+        return FindTopLevelMenuItemAncestor(hitElement);
+    }
+
+    private HitTestResult? HitIgnoringOverlay(Point windowPosition)
+    {
+        // Window.GetVisualChild order is topmost-last, so iterate reverse to preserve hit-test priority.
+        for (int i = VisualChildrenCount - 1; i >= 0; i--)
+        {
+            if (GetVisualChild(i) is not FrameworkElement fe || fe == OverlayLayer)
+            {
+                continue;
+            }
+
+            var hit = fe.HitTest(windowPosition);
+            if (hit != null)
+            {
+                return hit;
+            }
+        }
+
+        return null;
+    }
+
+    private static MenuItem? FindTopLevelMenuItemAncestor(UIElement? element)
+    {
+        var current = element;
+        while (current != null)
+        {
+            if (current is MenuItem menuItem
+                && menuItem.VisualParent is Panel panel
+                && panel.VisualParent is Menu)
+            {
+                return menuItem;
+            }
+
+            current = current.VisualParent as UIElement;
+        }
+
+        return null;
     }
 
     // Light dismiss is now handled by OverlayLayer.TryHandleLightDismiss()

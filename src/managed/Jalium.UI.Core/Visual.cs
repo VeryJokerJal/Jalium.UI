@@ -241,10 +241,21 @@ public abstract class Visual : DependencyObject
 
             var padding = eff.EffectPadding;
             var size = effectElement.RenderSize;
-            captureX = (float)(offsetDc.Offset.X - padding.Left);
-            captureY = (float)(offsetDc.Offset.Y - padding.Top);
-            captureW = (float)(size.Width + padding.Left + padding.Right);
-            captureH = (float)(size.Height + padding.Top + padding.Bottom);
+            var left = offsetDc.Offset.X - padding.Left;
+            var top = offsetDc.Offset.Y - padding.Top;
+            var right = offsetDc.Offset.X + size.Width + padding.Right;
+            var bottom = offsetDc.Offset.Y + size.Height + padding.Bottom;
+
+            // Pixel-snap the offscreen capture bounds to avoid sub-pixel resampling jitter
+            // when effect parameters (e.g. Blur radius / Shadow depth) change continuously.
+            var snappedLeft = Math.Floor(left);
+            var snappedTop = Math.Floor(top);
+            var snappedRight = Math.Ceiling(right);
+            var snappedBottom = Math.Ceiling(bottom);
+            captureX = (float)snappedLeft;
+            captureY = (float)snappedTop;
+            captureW = (float)Math.Max(0.0, snappedRight - snappedLeft);
+            captureH = (float)Math.Max(0.0, snappedBottom - snappedTop);
 
             effectDc.BeginEffectCapture(captureX, captureY, captureW, captureH);
         }

@@ -3,6 +3,8 @@
 #include "d3d12_resources.h"
 #include "liquid_glass_effects.h"
 #include "transition_shader_effect.h"
+#include <cstdlib>
+#include <cwchar>
 #include <vector>
 
 #pragma comment(lib, "d3d12.lib")
@@ -13,6 +15,29 @@
 #pragma comment(lib, "windowscodecs.lib")
 
 namespace jalium {
+
+#if defined(_DEBUG)
+namespace {
+bool IsGpuDebugEnabled() {
+    wchar_t* value = nullptr;
+    size_t valueLength = 0;
+    if (_wdupenv_s(&value, &valueLength, L"JALIUM_ENABLE_GPU_DEBUG") != 0 || !value || *value == L'\0') {
+        if (value) {
+            free(value);
+        }
+        return false;
+    }
+
+    bool enabled = _wcsicmp(value, L"1") == 0
+        || _wcsicmp(value, L"true") == 0
+        || _wcsicmp(value, L"yes") == 0
+        || _wcsicmp(value, L"on") == 0;
+
+    free(value);
+    return enabled;
+}
+}
+#endif
 
 D3D12Backend::D3D12Backend() = default;
 
@@ -57,11 +82,12 @@ bool D3D12Backend::CreateD3D12Device() {
     UINT dxgiFactoryFlags = 0;
 
 #if defined(_DEBUG)
-    // Enable debug layer in debug builds
-    ComPtr<ID3D12Debug> debugController;
-    if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
-        debugController->EnableDebugLayer();
-        dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+    if (IsGpuDebugEnabled()) {
+        ComPtr<ID3D12Debug> debugController;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
+            debugController->EnableDebugLayer();
+            dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+        }
     }
 #endif
 
@@ -71,26 +97,57 @@ bool D3D12Backend::CreateD3D12Device() {
         return false;
     }
 
-    // Find a suitable adapter
-    ComPtr<IDXGIAdapter1> adapter;
-    for (UINT adapterIndex = 0;
-         SUCCEEDED(dxgiFactory_->EnumAdapters1(adapterIndex, &adapter));
-         ++adapterIndex)
-    {
-        DXGI_ADAPTER_DESC1 desc;
-        adapter->GetDesc1(&desc);
-
-        // Skip software adapters
-        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
-            continue;
+    auto tryCreateDeviceForAdapter = [this](IDXGIAdapter1* adapter) -> bool {
+        if (!adapter) {
+            return false;
         }
 
-        // Try to create a D3D12 device
-        if (SUCCEEDED(D3D12CreateDevice(
-                adapter.Get(),
-                D3D_FEATURE_LEVEL_11_0,
-                IID_PPV_ARGS(&device_)))) {
-            break;
+        DXGI_ADAPTER_DESC1 desc{};
+        if (FAILED(adapter->GetDesc1(&desc))) {
+            return false;
+        }
+
+        // Skip software adapters (WARP fallback can be added later if needed).
+        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+            return false;
+        }
+
+        return SUCCEEDED(D3D12CreateDevice(
+            adapter,
+            D3D_FEATURE_LEVEL_11_0,
+            IID_PPV_ARGS(&device_)));
+    };
+
+    // Prefer OS GPU preference ordering (hybrid GPU aware), then fall back to legacy enumeration.
+    ComPtr<IDXGIFactory6> factory6;
+    if (SUCCEEDED(dxgiFactory_.As(&factory6))) {
+        for (UINT adapterIndex = 0;; ++adapterIndex) {
+            ComPtr<IDXGIAdapter1> adapter;
+            HRESULT hrEnum = factory6->EnumAdapterByGpuPreference(
+                adapterIndex,
+                DXGI_GPU_PREFERENCE_UNSPECIFIED,
+                IID_PPV_ARGS(&adapter));
+            if (FAILED(hrEnum)) {
+                break;
+            }
+
+            if (tryCreateDeviceForAdapter(adapter.Get())) {
+                break;
+            }
+        }
+    }
+
+    if (!device_) {
+        for (UINT adapterIndex = 0;; ++adapterIndex) {
+            ComPtr<IDXGIAdapter1> adapter;
+            HRESULT hrEnum = dxgiFactory_->EnumAdapters1(adapterIndex, &adapter);
+            if (FAILED(hrEnum)) {
+                break;
+            }
+
+            if (tryCreateDeviceForAdapter(adapter.Get())) {
+                break;
+            }
         }
     }
 
@@ -115,7 +172,9 @@ bool D3D12Backend::CreateD2DDevice() {
     // Create D2D factory
     D2D1_FACTORY_OPTIONS factoryOptions = {};
 #if defined(_DEBUG)
-    factoryOptions.debugLevel = D2D1_DEBUG_LEVEL_INFORMATION;
+    if (IsGpuDebugEnabled()) {
+        factoryOptions.debugLevel = D2D1_DEBUG_LEVEL_INFORMATION;
+    }
 #endif
 
     HRESULT hr = D2D1CreateFactory(
@@ -132,7 +191,9 @@ bool D3D12Backend::CreateD2DDevice() {
     ComPtr<IUnknown> commandQueues[] = { commandQueue_.Get() };
     UINT d3d11DeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
 #if defined(_DEBUG)
-    d3d11DeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
+    if (IsGpuDebugEnabled()) {
+        d3d11DeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
+    }
 #endif
 
     hr = D3D11On12CreateDevice(

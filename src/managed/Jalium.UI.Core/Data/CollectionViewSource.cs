@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Globalization;
+using System.Runtime.CompilerServices;
 
 namespace Jalium.UI.Data;
 
@@ -11,7 +12,12 @@ namespace Jalium.UI.Data;
 /// </summary>
 public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
 {
-    private static readonly Dictionary<object, WeakReference<ICollectionView>> _defaultViews = new();
+    private sealed class DefaultViewCacheEntry
+    {
+        public WeakReference<ICollectionView>? View { get; set; }
+    }
+
+    private static readonly ConditionalWeakTable<object, DefaultViewCacheEntry> _defaultViews = new();
 
     private bool _isInitializing;
     private bool _deferRefresh;
@@ -153,7 +159,9 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
         ArgumentNullException.ThrowIfNull(source);
 
         // Check cache
-        if (_defaultViews.TryGetValue(source, out var weakRef) && weakRef.TryGetTarget(out var existingView))
+        if (_defaultViews.TryGetValue(source, out var cacheEntry) &&
+            cacheEntry.View != null &&
+            cacheEntry.View.TryGetTarget(out var existingView))
         {
             return existingView;
         }
@@ -174,7 +182,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
         }
 
         // Cache the view
-        _defaultViews[source] = new WeakReference<ICollectionView>(view);
+        _defaultViews.GetOrCreateValue(source).View = new WeakReference<ICollectionView>(view);
 
         return view;
     }

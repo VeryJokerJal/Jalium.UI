@@ -476,110 +476,120 @@ internal sealed class EditorView
     {
         if (Document == null || _lineHeight <= 0) return;
 
+        double previousViewportWidth = ViewportWidth;
+        double previousViewportHeight = ViewportHeight;
         ViewportWidth = renderSize.Width;
         ViewportHeight = renderSize.Height;
-        UpdateGutterWidth();
-        EnsureLineMap();
-
-        double textAreaLeft = showLineNumbers ? TextAreaLeft : 0;
-        double textAreaWidth = renderSize.Width - textAreaLeft;
-
-        // Render gutter background
-        if (showLineNumbers && _gutterWidth > 0)
+        try
         {
-            dc.DrawRectangle(gutterBackground, null,
-                new Rect(0, 0, TextAreaLeft, renderSize.Height));
-        }
+            UpdateGutterWidth();
+            EnsureLineMap();
 
-        int firstVisibleIndex = GetVisibleLineIndexFromVerticalOffset(VerticalOffset);
-        int lastVisibleIndex = GetVisibleLineIndexFromVerticalOffset(VerticalOffset + Math.Max(0, ViewportHeight - 1));
-        int firstVisibleLineNumber = GetDocumentLineFromVisibleIndex(firstVisibleIndex);
-        int lastVisibleLineNumber = GetDocumentLineFromVisibleIndex(lastVisibleIndex);
-        TrimLineCache(firstVisibleLineNumber, lastVisibleLineNumber);
-        var (caretLineRaw, caretColumnRaw) = caret.GetLineColumn(Document);
-        int caretLine = GetVisibleAnchorLineNumber(caretLineRaw);
-        int caretColumn = caretColumnRaw;
-        if (caretLine != caretLineRaw)
-        {
-            var anchorLine = Document.GetLineByNumber(caretLine);
-            caretColumn = anchorLine.Length;
-        }
+            double textAreaLeft = showLineNumbers ? TextAreaLeft : 0;
+            double textAreaWidth = renderSize.Width - textAreaLeft;
 
-        for (int visibleIndex = firstVisibleIndex; visibleIndex <= lastVisibleIndex; visibleIndex++)
-        {
-            int lineNum = GetDocumentLineFromVisibleIndex(visibleIndex);
-            double y = visibleIndex * _lineHeight - VerticalOffset;
-            if (y + _lineHeight < 0 || y > renderSize.Height)
-                continue;
-
-            var docLine = Document.GetLineByNumber(lineNum);
-            var cachedLine = GetOrCreateLineCacheEntry(lineNum, docLine);
-            string lineText = Document.GetLineText(lineNum);
-            cachedLine.Y = y;
-
-            // Current line highlight
-            if (highlightCurrentLine && lineNum == caretLine)
+            // Render gutter background
+            if (showLineNumbers && _gutterWidth > 0)
             {
-                dc.DrawRectangle(currentLineBackground, null,
-                    new Rect(textAreaLeft, y, textAreaWidth, _lineHeight));
+                dc.DrawRectangle(gutterBackground, null,
+                    new Rect(0, 0, TextAreaLeft, renderSize.Height));
             }
 
-            // Selection rendering
-            var selRange = selection.GetSelectionOnLine(docLine);
-            if (selRange.HasValue)
+            int firstVisibleIndex = GetVisibleLineIndexFromVerticalOffset(VerticalOffset);
+            int lastVisibleIndex = GetVisibleLineIndexFromVerticalOffset(VerticalOffset + Math.Max(0, ViewportHeight - 1));
+            int firstVisibleLineNumber = GetDocumentLineFromVisibleIndex(firstVisibleIndex);
+            int lastVisibleLineNumber = GetDocumentLineFromVisibleIndex(lastVisibleIndex);
+            TrimLineCache(firstVisibleLineNumber, lastVisibleLineNumber);
+            var (caretLineRaw, caretColumnRaw) = caret.GetLineColumn(Document);
+            int caretLine = GetVisibleAnchorLineNumber(caretLineRaw);
+            int caretColumn = caretColumnRaw;
+            if (caretLine != caretLineRaw)
             {
-                int selStartColumn = Math.Clamp(selRange.Value.startColumn, 0, lineText.Length);
-                double selStartX = GetColumnX(cachedLine, lineText, selStartColumn, textAreaLeft);
-                double selEndX = selRange.Value.endColumn > docLine.Length
-                    ? textAreaLeft + textAreaWidth // Selection extends to end of line
-                    : GetColumnX(cachedLine, lineText, Math.Clamp(selRange.Value.endColumn, 0, lineText.Length), textAreaLeft);
-
-                dc.DrawRectangle(selectionBrush, null,
-                    new Rect(Math.Max(textAreaLeft, selStartX), y,
-                        Math.Max(0, selEndX - Math.Max(textAreaLeft, selStartX)), _lineHeight));
+                var anchorLine = Document.GetLineByNumber(caretLine);
+                caretColumn = anchorLine.Length;
             }
 
-            // Line number
-            if (showLineNumbers && renderLineNumbers)
+            for (int visibleIndex = firstVisibleIndex; visibleIndex <= lastVisibleIndex; visibleIndex++)
             {
-                var lineNumBrush = lineNum == caretLine ? foreground : lineNumberForeground;
-                var lineNumText = new FormattedText(lineNum.ToString(), fontFamily, fontSize)
-                {
-                    Foreground = lineNumBrush
-                };
-                TextMeasurement.MeasureText(lineNumText);
+                int lineNum = GetDocumentLineFromVisibleIndex(visibleIndex);
+                double y = visibleIndex * _lineHeight - VerticalOffset;
+                if (y + _lineHeight < 0 || y > renderSize.Height)
+                    continue;
 
-                var lineNumberClip = new Rect(LineNumberAreaLeft, y, Math.Max(0, _gutterWidth), _lineHeight);
-                if (lineNumberClip.Width > 0)
+                var docLine = Document.GetLineByNumber(lineNum);
+                var cachedLine = GetOrCreateLineCacheEntry(lineNum, docLine);
+                string lineText = Document.GetLineText(lineNum);
+                cachedLine.Y = y;
+
+                // Current line highlight
+                if (highlightCurrentLine && lineNum == caretLine)
                 {
-                    dc.PushClip(new RectangleGeometry(lineNumberClip));
-                    double lineNumberX = LineNumberAreaLeft + Math.Max(0, _gutterWidth - lineNumText.Width - LineNumberRightPadding);
-                    dc.DrawText(lineNumText, new Point(lineNumberX, y));
-                    dc.Pop();
+                    dc.DrawRectangle(currentLineBackground, null,
+                        new Rect(textAreaLeft, y, textAreaWidth, _lineHeight));
+                }
+
+                // Selection rendering
+                var selRange = selection.GetSelectionOnLine(docLine);
+                if (selRange.HasValue)
+                {
+                    int selStartColumn = Math.Clamp(selRange.Value.startColumn, 0, lineText.Length);
+                    double selStartX = GetColumnX(cachedLine, lineText, selStartColumn, textAreaLeft);
+                    double selEndX = selRange.Value.endColumn > docLine.Length
+                        ? textAreaLeft + textAreaWidth // Selection extends to end of line
+                        : GetColumnX(cachedLine, lineText, Math.Clamp(selRange.Value.endColumn, 0, lineText.Length), textAreaLeft);
+
+                    dc.DrawRectangle(selectionBrush, null,
+                        new Rect(Math.Max(textAreaLeft, selStartX), y,
+                            Math.Max(0, selEndX - Math.Max(textAreaLeft, selStartX)), _lineHeight));
+                }
+
+                // Line number
+                if (showLineNumbers && renderLineNumbers)
+                {
+                    var lineNumBrush = lineNum == caretLine ? foreground : lineNumberForeground;
+                    var lineNumText = new FormattedText(lineNum.ToString(), fontFamily, fontSize)
+                    {
+                        Foreground = lineNumBrush
+                    };
+                    TextMeasurement.MeasureText(lineNumText);
+
+                    var lineNumberClip = new Rect(LineNumberAreaLeft, y, Math.Max(0, _gutterWidth), _lineHeight);
+                    if (lineNumberClip.Width > 0)
+                    {
+                        dc.PushClip(new RectangleGeometry(lineNumberClip));
+                        double lineNumberX = LineNumberAreaLeft + Math.Max(0, _gutterWidth - lineNumText.Width - LineNumberRightPadding);
+                        dc.DrawText(lineNumText, new Point(lineNumberX, y));
+                        dc.Pop();
+                    }
+                }
+
+                // Line text with syntax highlighting
+                RenderLineText(dc, docLine, cachedLine, lineNum, lineText, y, textAreaLeft, fontFamily, fontSize, fontWeight, fontStyle, foreground);
+            }
+
+            // Render caret
+            if (!suppressCaret && caret.IsVisible && caret.Opacity > 0)
+            {
+                var caretDocLine = Document.GetLineByNumber(caretLine);
+                var caretCachedLine = GetOrCreateLineCacheEntry(caretLine, caretDocLine);
+                string caretLineText = Document.GetLineText(caretLine);
+                int clampedCaretColumn = Math.Clamp(caretColumn, 0, caretLineText.Length);
+                double caretX = GetColumnX(caretCachedLine, caretLineText, clampedCaretColumn, textAreaLeft);
+                double caretY = GetLineTop(caretLine);
+
+                if (caretX >= textAreaLeft && caretY >= 0 && caretY < renderSize.Height)
+                {
+                    var caretPen = new Pen(caretBrush, 2);
+                    dc.DrawLine(caretPen,
+                        new Point(caretX, caretY),
+                        new Point(caretX, caretY + _lineHeight));
                 }
             }
-
-            // Line text with syntax highlighting
-            RenderLineText(dc, docLine, cachedLine, lineNum, lineText, y, textAreaLeft, fontFamily, fontSize, fontWeight, fontStyle, foreground);
         }
-
-        // Render caret
-        if (!suppressCaret && caret.IsVisible && caret.Opacity > 0)
+        finally
         {
-            var caretDocLine = Document.GetLineByNumber(caretLine);
-            var caretCachedLine = GetOrCreateLineCacheEntry(caretLine, caretDocLine);
-            string caretLineText = Document.GetLineText(caretLine);
-            int clampedCaretColumn = Math.Clamp(caretColumn, 0, caretLineText.Length);
-            double caretX = GetColumnX(caretCachedLine, caretLineText, clampedCaretColumn, textAreaLeft);
-            double caretY = GetLineTop(caretLine);
-
-            if (caretX >= textAreaLeft && caretY >= 0 && caretY < renderSize.Height)
-            {
-                var caretPen = new Pen(caretBrush, 2);
-                dc.DrawLine(caretPen,
-                    new Point(caretX, caretY),
-                    new Point(caretX, caretY + _lineHeight));
-            }
+            ViewportWidth = previousViewportWidth;
+            ViewportHeight = previousViewportHeight;
         }
     }
 

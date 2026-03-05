@@ -5,9 +5,13 @@ namespace Jalium.UI.Interop;
 /// </summary>
 public sealed class RenderContext : IDisposable
 {
+    private static readonly object s_sync = new();
+    private static readonly HashSet<RenderContext> _retiredContexts = [];
     private static RenderContext? _current;
     private nint _handle;
     private bool _disposed;
+    private bool _retireRequested;
+    private int _activeRenderTargetCount;
 
     /// <summary>
     /// Gets the current render context.
@@ -49,6 +53,105 @@ public sealed class RenderContext : IDisposable
 
         Backend = NativeMethods.ContextGetBackend(_handle);
         _current ??= this;
+    }
+
+    /// <summary>
+    /// Gets the current context or creates a new one when unavailable.
+    /// Optionally forces a replacement to recover from device-lost scenarios.
+    /// </summary>
+    public static RenderContext GetOrCreateCurrent(RenderBackend backend = RenderBackend.Auto, bool forceReplace = false)
+    {
+        var current = _current;
+        if (!forceReplace && current != null && current.IsValid)
+        {
+            return current;
+        }
+
+        RenderContext? previous;
+        RenderContext context;
+        lock (s_sync)
+        {
+            current = _current;
+            if (!forceReplace && current != null && current.IsValid)
+            {
+                return current;
+            }
+
+            previous = current;
+            context = new RenderContext(backend);
+            _current = context;
+
+            if (previous != null &&
+                previous.IsValid &&
+                !ReferenceEquals(previous, context) &&
+                forceReplace)
+            {
+                previous._retireRequested = true;
+                _retiredContexts.Add(previous);
+            }
+        }
+
+        TryDisposeRetiredContexts();
+        return context;
+    }
+
+    internal void RegisterRenderTarget()
+    {
+        _ = Interlocked.Increment(ref _activeRenderTargetCount);
+    }
+
+    internal void UnregisterRenderTarget()
+    {
+        var remaining = Interlocked.Decrement(ref _activeRenderTargetCount);
+        if (remaining <= 0)
+        {
+            if (remaining < 0)
+            {
+                _ = Interlocked.Exchange(ref _activeRenderTargetCount, 0);
+            }
+
+            TryDisposeRetiredContexts();
+        }
+    }
+
+    private bool CanDisposeRetiredUnsafe()
+        => _retireRequested &&
+           !_disposed &&
+           _handle != nint.Zero &&
+           Volatile.Read(ref _activeRenderTargetCount) == 0 &&
+           !ReferenceEquals(_current, this);
+
+    private static void TryDisposeRetiredContexts()
+    {
+        List<RenderContext>? toDispose = null;
+        lock (s_sync)
+        {
+            foreach (var candidate in _retiredContexts)
+            {
+                if (!candidate.CanDisposeRetiredUnsafe())
+                {
+                    continue;
+                }
+
+                toDispose ??= [];
+                toDispose.Add(candidate);
+            }
+
+            if (toDispose == null)
+            {
+                return;
+            }
+
+            foreach (var candidate in toDispose)
+            {
+                _retiredContexts.Remove(candidate);
+            }
+        }
+
+        foreach (var candidate in toDispose)
+        {
+            candidate.Dispose();
+        }
     }
 
     /// <summary>
@@ -173,9 +276,13 @@ public sealed class RenderContext : IDisposable
             _handle = nint.Zero;
         }
 
-        if (_current == this)
+        lock (s_sync)
         {
-            _current = null;
+            _retiredContexts.Remove(this);
+            if (_current == this)
+            {
+                _current = null;
+            }
         }
 
         GC.SuppressFinalize(this);
@@ -185,9 +292,13 @@ public sealed class RenderContext : IDisposable
     {
         _disposed = true;
         _handle = nint.Zero;
-        if (_current == this)
+        lock (s_sync)
         {
-            _current = null;
+            _retiredContexts.Remove(this);
+            if (_current == this)
+            {
+                _current = null;
+            }
         }
     }
 }

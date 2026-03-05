@@ -435,18 +435,23 @@ public sealed partial class Popup : FrameworkElement
             (int)(popupSize.Width * dpiScale), (int)(popupSize.Height * dpiScale));
 
         // Register with parent window for light dismiss
-        _parentWindow!.ActiveExternalPopups.Add(this);
+        if (!_parentWindow!.ActiveExternalPopups.Contains(this))
+        {
+            _parentWindow.ActiveExternalPopups.Add(this);
+        }
     }
 
     private void ClosePopup()
     {
         if (_popupRoot == null) return;
 
-        if (_isUsingExternalWindow && _popupWindow != null)
+        if (_isUsingExternalWindow)
         {
-            _popupWindow.Dispose();
+            _popupWindow?.Dispose();
             _popupWindow = null;
-            _parentWindow?.ActiveExternalPopups.Remove(this);
+            while (_parentWindow?.ActiveExternalPopups.Remove(this) == true)
+            {
+            }
         }
         else if (_overlayLayer != null)
         {
@@ -702,6 +707,35 @@ public sealed partial class Popup : FrameworkElement
         return new Point(pt.X, pt.Y);
     }
 
+    private double GetAutomaticPopupMaxHeight()
+    {
+        if (_parentWindow == null)
+            return double.PositiveInfinity;
+
+        var dpiScale = _parentWindow.DpiScale;
+        if (double.IsNaN(dpiScale) || double.IsInfinity(dpiScale) || dpiScale <= 0)
+            dpiScale = 1.0;
+
+        var windowHeight = _parentWindow.ActualHeight > 0 ? _parentWindow.ActualHeight : _parentWindow.Height;
+        if (double.IsNaN(windowHeight) || double.IsInfinity(windowHeight) || windowHeight <= 0)
+            windowHeight = double.PositiveInfinity;
+
+        var workArea = GetWorkingArea();
+        var workAreaHeight = workArea.Height > 0 ? workArea.Height / dpiScale : double.PositiveInfinity;
+
+        var maxHeight = Math.Min(windowHeight, workAreaHeight);
+        if (double.IsInfinity(maxHeight))
+            maxHeight = windowHeight;
+        if (double.IsInfinity(maxHeight))
+            maxHeight = workAreaHeight;
+
+        if (double.IsNaN(maxHeight) || maxHeight <= 0 || double.IsInfinity(maxHeight))
+            return double.PositiveInfinity;
+
+        // Keep popup slightly away from monitor/window edges.
+        return Math.Max(20, maxHeight - 8);
+    }
+
     #endregion
 
     #region Helpers
@@ -716,7 +750,19 @@ public sealed partial class Popup : FrameworkElement
         // Resolve height constraints on Popup itself.
         var popupExplicitHeight = !double.IsNaN(Height) && !double.IsInfinity(Height) && Height > 0 ? Height : double.NaN;
         var popupMinHeight = MinHeight > 0 && !double.IsNaN(MinHeight) && !double.IsInfinity(MinHeight) ? MinHeight : 20;
-        var popupMaxHeight = !double.IsNaN(MaxHeight) && !double.IsInfinity(MaxHeight) && MaxHeight > 0 ? MaxHeight : double.PositiveInfinity;
+        var hasExplicitPopupMaxHeight = !double.IsNaN(MaxHeight) && !double.IsInfinity(MaxHeight) && MaxHeight > 0;
+        var popupMaxHeight = hasExplicitPopupMaxHeight ? MaxHeight : double.PositiveInfinity;
+
+        // If caller did not provide explicit height/max height, cap to screen/window work area.
+        // This keeps long menus/dropdowns reachable without manual MaxHeight.
+        if (!hasExplicitPopupMaxHeight && double.IsNaN(popupExplicitHeight))
+        {
+            var autoMaxHeight = GetAutomaticPopupMaxHeight();
+            if (!double.IsNaN(autoMaxHeight) && !double.IsInfinity(autoMaxHeight) && autoMaxHeight > 0)
+            {
+                popupMaxHeight = autoMaxHeight;
+            }
+        }
 
         // Keep global popup sizing content-driven by default.
         // Controls that need width matching (e.g., ComboBox dropdown) should set

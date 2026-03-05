@@ -1,5 +1,4 @@
 using Jalium.UI.Media;
-using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
@@ -161,8 +160,11 @@ public sealed class ProgressBar : Control
     private double _indeterminateOffset = 0;
     private double _indeterminateDirection = 1.0;
     private const double IndeterminateBlockWidth = 0.3; // 30% of track width
-    private const double IndeterminateSpeed = 0.02; // Animation speed per tick
-    private DispatcherTimer? _animationTimer;
+    private const double IndeterminateSpeedPerSecond = 1.2; // Track lengths per second
+    private const double MaxAnimationDeltaSeconds = 0.1; // Clamp to avoid huge jumps after stalls
+    private const long AnimationUpdateIntervalMs = 1; // Uncapped by render speed (game-loop style)
+    private bool _isAnimationSubscribed;
+    private long _lastAnimationTickMs;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ProgressBar"/> class.
@@ -171,6 +173,8 @@ public sealed class ProgressBar : Control
     {
         // Default size
         Height = 8;
+        Loaded += OnLoaded;
+        Unloaded += OnUnloaded;
     }
 
     #endregion
@@ -196,23 +200,28 @@ public sealed class ProgressBar : Control
 
         if (IsIndeterminate)
         {
-            // For indeterminate mode, animate the indicator
+            // For indeterminate mode, set indicator geometry once and animate offset per frame.
             var totalSize = isVertical ? RenderSize.Height : RenderSize.Width;
             var indicatorSize = totalSize * IndeterminateBlockWidth;
-            var offset = (totalSize - indicatorSize) * _indeterminateOffset;
 
             if (isVertical)
             {
                 _indicatorBorder.Height = indicatorSize;
                 _indicatorBorder.Width = double.NaN;
-                _indicatorBorder.Margin = new Thickness(0, 0, 0, offset);
+                _indicatorBorder.Margin = new Thickness(0);
+                _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Stretch;
+                _indicatorBorder.VerticalAlignment = VerticalAlignment.Top;
             }
             else
             {
                 _indicatorBorder.Width = indicatorSize;
                 _indicatorBorder.Height = double.NaN;
-                _indicatorBorder.Margin = new Thickness(offset, 0, 0, 0);
+                _indicatorBorder.Margin = new Thickness(0);
+                _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Left;
+                _indicatorBorder.VerticalAlignment = VerticalAlignment.Stretch;
             }
+
+            UpdateIndeterminateRenderOffset();
         }
         else
         {
@@ -225,14 +234,18 @@ public sealed class ProgressBar : Control
                 _indicatorBorder.Height = indicatorSize;
                 _indicatorBorder.Width = double.NaN;
                 // Vertical progress fills from bottom to top
+                _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Stretch;
                 _indicatorBorder.VerticalAlignment = VerticalAlignment.Bottom;
             }
             else
             {
                 _indicatorBorder.Width = indicatorSize;
                 _indicatorBorder.Height = double.NaN;
+                _indicatorBorder.HorizontalAlignment = HorizontalAlignment.Left;
+                _indicatorBorder.VerticalAlignment = VerticalAlignment.Stretch;
             }
             _indicatorBorder.Margin = new Thickness(0);
+            _indicatorBorder.RenderOffset = default;
         }
     }
 
@@ -242,49 +255,98 @@ public sealed class ProgressBar : Control
 
     private void StartIndeterminateAnimation()
     {
-        if (_animationTimer != null) return;
+        if (_isAnimationSubscribed) return;
 
-        _animationTimer = new DispatcherTimer
-        {
-            Interval = CompositionTarget.FrameInterval
-        };
-        _animationTimer.Tick += OnAnimationTick;
-        _animationTimer.Start();
+        // Use the centralized frame loop for maximum smoothness and to keep
+        // animation updates synchronized with the render pipeline.
+        CompositionTarget.Rendering += OnAnimationTick;
+        CompositionTarget.Subscribe();
+        _isAnimationSubscribed = true;
+        _lastAnimationTickMs = Environment.TickCount64;
     }
 
     private void StopIndeterminateAnimation()
     {
-        if (_animationTimer != null)
+        if (_isAnimationSubscribed)
         {
-            _animationTimer.Stop();
-            _animationTimer.Tick -= OnAnimationTick;
-            _animationTimer = null;
+            CompositionTarget.Rendering -= OnAnimationTick;
+            CompositionTarget.Unsubscribe();
+            _isAnimationSubscribed = false;
         }
+        _lastAnimationTickMs = 0;
         _indeterminateOffset = 0;
         _indeterminateDirection = 1.0;
+        if (_indicatorBorder != null)
+        {
+            _indicatorBorder.RenderOffset = default;
+        }
+    }
+
+    private void UpdateIndeterminateRenderOffset()
+    {
+        if (_indicatorBorder == null || !IsIndeterminate)
+        {
+            return;
+        }
+
+        var isVertical = Orientation == Orientation.Vertical;
+        var totalSize = isVertical ? RenderSize.Height : RenderSize.Width;
+        var indicatorSize = totalSize * IndeterminateBlockWidth;
+        var offset = (totalSize - indicatorSize) * _indeterminateOffset;
+
+        _indicatorBorder.RenderOffset = isVertical
+            ? new Point(0, offset)
+            : new Point(offset, 0);
     }
 
     private void OnAnimationTick(object? sender, EventArgs e)
     {
         if (!IsIndeterminate) return;
 
-        // Bounce animation: move back and forth
-        _indeterminateOffset += IndeterminateSpeed * _indeterminateDirection;
-
-        if (_indeterminateOffset >= 1.0)
+        if (!ShouldRunIndeterminateAnimation())
         {
-            _indeterminateOffset = 1.0;
-            _indeterminateDirection = -1.0;
-        }
-        else if (_indeterminateOffset <= 0.0)
-        {
-            _indeterminateOffset = 0.0;
-            _indeterminateDirection = 1.0;
+            StopIndeterminateAnimation();
+            return;
         }
 
-        // DispatcherTimer fires on the UI thread, so all property
-        // modifications (Width, Margin) are thread-safe.
-        UpdateIndicator();
+        long nowMs = Environment.TickCount64;
+        if (_lastAnimationTickMs <= 0)
+        {
+            _lastAnimationTickMs = nowMs;
+            return;
+        }
+
+        long elapsedMs = nowMs - _lastAnimationTickMs;
+        if (elapsedMs < AnimationUpdateIntervalMs)
+        {
+            return;
+        }
+        _lastAnimationTickMs = nowMs;
+
+        // Time-based movement keeps animation speed stable across frame/GPU changes.
+        double deltaSeconds = Math.Clamp(elapsedMs / 1000.0, 0.0, MaxAnimationDeltaSeconds);
+        if (deltaSeconds <= 0)
+        {
+            return;
+        }
+
+        var next = _indeterminateOffset + (IndeterminateSpeedPerSecond * deltaSeconds * _indeterminateDirection);
+        while (next > 1.0 || next < 0.0)
+        {
+            if (next > 1.0)
+            {
+                next = 2.0 - next;
+                _indeterminateDirection = -1.0;
+            }
+            else
+            {
+                next = -next;
+                _indeterminateDirection = 1.0;
+            }
+        }
+        _indeterminateOffset = next;
+
+        UpdateIndeterminateRenderOffset();
         InvalidateVisual();
     }
 
@@ -336,7 +398,7 @@ public sealed class ProgressBar : Control
         // Template-based rendering: indicator is updated from property change callbacks
         // and animation ticks (NOT here). Modifying _indicatorBorder.Width during OnRender
         // triggers InvalidateMeasure, but UpdateLayout() already ran for this frame,
-        // so the new width wouldn't take effect until the NEXT frame â€” causing a 1-frame
+        // so the new width wouldn't take effect until the NEXT frame â€?causing a 1-frame
         // delay where the indicator renders at its old size (often 0).
         if (_indicatorBorder != null)
             return;
@@ -451,18 +513,66 @@ public sealed class ProgressBar : Control
     {
         if (d is ProgressBar progressBar)
         {
-            var isIndeterminate = (bool)(e.NewValue ?? false);
-            if (isIndeterminate && progressBar.Visibility == Visibility.Visible)
-            {
-                progressBar.StartIndeterminateAnimation();
-            }
-            else
-            {
-                progressBar.StopIndeterminateAnimation();
-            }
+            progressBar.UpdateIndeterminateAnimationState();
             progressBar.UpdateIndicator();
             progressBar.InvalidateVisual();
         }
+    }
+
+    /// <inheritdoc />
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+
+        if (e.Property == VisibilityProperty)
+        {
+            UpdateIndeterminateAnimationState();
+        }
+    }
+
+    private void OnLoaded(object? sender, RoutedEventArgs e)
+    {
+        UpdateIndeterminateAnimationState();
+    }
+
+    private void OnUnloaded(object? sender, RoutedEventArgs e)
+    {
+        StopIndeterminateAnimation();
+    }
+
+    private void UpdateIndeterminateAnimationState()
+    {
+        if (ShouldRunIndeterminateAnimation())
+        {
+            StartIndeterminateAnimation();
+            return;
+        }
+
+        if (_isAnimationSubscribed)
+        {
+            StopIndeterminateAnimation();
+        }
+    }
+
+    private bool ShouldRunIndeterminateAnimation()
+    {
+        if (!IsIndeterminate || Visibility != Visibility.Visible)
+        {
+            return false;
+        }
+
+        Visual? current = this;
+        while (current != null)
+        {
+            if (current is IWindowHost)
+            {
+                return true;
+            }
+
+            current = current.VisualParent;
+        }
+
+        return false;
     }
 
     private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

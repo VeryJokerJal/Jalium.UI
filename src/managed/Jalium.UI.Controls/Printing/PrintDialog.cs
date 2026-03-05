@@ -123,7 +123,7 @@ public sealed class PrintDialog
     /// <returns>True if the user clicked Print; otherwise, false.</returns>
     public bool ShowDialog()
     {
-        return ShowDialogInternal();
+        return ShowDialogInternal(Jalium.UI.Application.Current?.MainWindow);
     }
 
     /// <summary>

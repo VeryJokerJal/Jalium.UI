@@ -66,7 +66,6 @@ bool D3D12RenderTarget::Initialize() {
     if (!CreateSwapChain()) return false;
     if (!CreateRenderTargetViews()) return false;
     if (!CreateD2DRenderTarget()) return false;
-    if (!CreateSnapshotResources()) return false;
 
     // Initialize transform stack with identity
     transformStack_.push(D2D1::Matrix3x2F::Identity());
@@ -171,6 +170,31 @@ bool D3D12RenderTarget::CreateSwapChain() {
             nullptr,
             nullptr,
             &swapChain1);
+
+        if (FAILED(hr) && swapChainDesc.Flags != 0) {
+            // Some drivers report tearing support but reject ALLOW_TEARING on recreation paths.
+            swapChainDesc.Flags = 0;
+            hr = factory->CreateSwapChainForHwnd(
+                commandQueue,
+                hwnd_,
+                &swapChainDesc,
+                nullptr,
+                nullptr,
+                &swapChain1);
+        }
+
+        if (FAILED(hr) && swapChainDesc.Scaling == DXGI_SCALING_NONE) {
+            // Compatibility fallback for adapters that reject SCALING_NONE after dynamic GPU switch.
+            swapChainDesc.Scaling = DXGI_SCALING_STRETCH;
+            swapChainDesc.Flags = 0;
+            hr = factory->CreateSwapChainForHwnd(
+                commandQueue,
+                hwnd_,
+                &swapChainDesc,
+                nullptr,
+                nullptr,
+                &swapChain1);
+        }
 
         if (FAILED(hr)) return false;
 
@@ -397,34 +421,7 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     // Make sure all GPU work is complete
     WaitForAllFrames();
 
-    // Release cached liquid glass effects (tied to d2dContext)
-    cachedLgBlurEffect_.Reset();
-    cachedLgEffect_.Reset();
-
-    // Release cached transition shader resources
-    cachedTransitionEffect_.Reset();
-    transitionBitmaps_[0].Reset();
-    transitionBitmaps_[1].Reset();
-    transitionBmpW_ = 0;
-    transitionBmpH_ = 0;
-
-    // Release cached element effect resources
-    cachedBlurEffect_.Reset();
-    cachedShadowEffect_.Reset();
-    effectBitmapSlots_.clear();
-    effectCaptureStack_.clear();
-    lastCapturedEffectBitmap_.Reset();
-    lastEffectCaptureX_ = 0;
-    lastEffectCaptureY_ = 0;
-    lastEffectCaptureW_ = 0;
-    lastEffectCaptureH_ = 0;
-
-    // Release snapshot resources
-    for (uint32_t i = 0; i < FrameCount; ++i) {
-        snapshotBitmaps_[i].Reset();
-        snapshotTextures_[i].Reset();
-        snapshotValid_[i] = false;
-    }
+    ReleaseOffscreenResources();
 
     // Release D2D render targets (these hold references to wrapped buffers)
     for (uint32_t i = 0; i < FrameCount; ++i) {
@@ -485,11 +482,6 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
     }
 
-    // Recreate snapshot resources
-    if (!CreateSnapshotResources()) {
-        return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
-    }
-
     // Reinitialize transform stack with identity (same as Initialize)
     transformStack_.push(D2D1::Matrix3x2F::Identity());
 
@@ -506,6 +498,8 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     // Resize always requires full redraw
     fullInvalidation_ = true;
     dirtyRects_.clear();
+    offscreenResourcesUsedThisFrame_ = false;
+    idleFramesWithoutOffscreenUse_ = 0;
 
     return JALIUM_OK;
 }
@@ -529,7 +523,7 @@ void D3D12RenderTarget::AddDirtyRect(float x, float y, float w, float h) {
 
     D2D1_RECT_F rect = D2D1::RectF(left, top, right, bottom);
 
-    // Check if dirty area exceeds 50% of window — upgrade to full invalidation
+    // Check if dirty area exceeds 50% of window - upgrade to full invalidation
     float dirtyArea = (right - left) * (bottom - top);
     float totalArea = static_cast<float>(width_) * static_cast<float>(height_);
     if (totalArea > 0 && dirtyArea > totalArea * 0.5f) {
@@ -551,7 +545,7 @@ void D3D12RenderTarget::AddDirtyRect(float x, float y, float w, float h) {
     }
 
     if (dirtyRects_.size() >= MaxDirtyRects) {
-        // Too many rects — upgrade to full invalidation
+        // Too many rects - upgrade to full invalidation
         SetFullInvalidation();
         return;
     }
@@ -653,6 +647,7 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
     // Defensive reset for per-frame nested effect capture state.
     effectCaptureStack_.clear();
     lastCapturedEffectBitmap_.Reset();
+    offscreenResourcesUsedThisFrame_ = false;
 
     // WPF-style dirty rendering: NO D2D clip for dirty regions.
     // D2D PushAxisAlignedClip causes artifacts (anti-aliased edges, Clear ignoring clip).
@@ -741,6 +736,7 @@ JaliumResult D3D12RenderTarget::EndDraw() {
     // Clear dirty state for next frame
     dirtyRects_.clear();
     fullInvalidation_ = false;
+    TrimOffscreenResourcesIfIdle();
 
     MoveToNextFrame();
 
@@ -948,7 +944,7 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
     float br = std::min(brRadius, maxR);
 
     // Build a path for the rect with bottom-only rounded corners
-    // Shape: top-left → top-right → right-down → BR arc → bottom-left → BL arc → left-up
+    // Shape: top-left -> top-right -> right-down -> BR arc -> bottom-left -> BL arc -> left-up
     ComPtr<ID2D1PathGeometry> fillGeometry;
     HRESULT hr = factory->CreatePathGeometry(&fillGeometry);
     if (FAILED(hr)) return;
@@ -1018,7 +1014,7 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
         // Open figure: start at top-left (left edge, at y = top of content)
         sink->BeginFigure(D2D1::Point2F(sx, sy), D2D1_FIGURE_BEGIN_HOLLOW);
 
-        // Left edge: top → bottom-left arc start
+        // Left edge: top -> bottom-left arc start
         sink->AddLine(D2D1::Point2F(sx, sb - bl));
 
         // Bottom-left arc
@@ -1044,10 +1040,10 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
                 D2D1_ARC_SIZE_SMALL));
         }
 
-        // Right edge: bottom-right → top-right
+        // Right edge: bottom-right -> top-right
         sink->AddLine(D2D1::Point2F(sr, sy));
 
-        // Open figure — no top line
+        // Open figure - no top line
         sink->EndFigure(D2D1_FIGURE_END_OPEN);
         sink->Close();
 
@@ -1497,7 +1493,7 @@ void D3D12RenderTarget::DrawLiquidGlass(
     cachedLgBlurEffect_->GetOutput(&blurOutput);
     cachedLgEffect_->SetInput(1, blurOutput.Get());
 
-    // Step 5: Set effect properties — scale DIP values to physical pixels.
+    // Step 5: Set effect properties - scale DIP values to physical pixels.
     float px = x * dpiScaleX;
     float py = y * dpiScaleY;
     float pw = w * dpiScaleX;
@@ -1606,11 +1602,81 @@ bool D3D12RenderTarget::CreateSnapshotResources() {
     return true;
 }
 
+void D3D12RenderTarget::ReleaseSnapshotResources() {
+    for (uint32_t i = 0; i < FrameCount; ++i) {
+        snapshotBitmaps_[i].Reset();
+        snapshotTextures_[i].Reset();
+        snapshotValid_[i] = false;
+    }
+    preGlassSnapshotCaptured_ = false;
+}
+
+void D3D12RenderTarget::ReleaseOffscreenResources() {
+    // Release cached liquid glass effects that reference snapshot surfaces.
+    cachedLgBlurEffect_.Reset();
+    cachedLgEffect_.Reset();
+    ReleaseSnapshotResources();
+
+    // Release transition shader resources.
+    cachedTransitionEffect_.Reset();
+    transitionBitmaps_[0].Reset();
+    transitionBitmaps_[1].Reset();
+    transitionBmpW_ = 0;
+    transitionBmpH_ = 0;
+    savedTransitionTarget_.Reset();
+
+    // Release element effect capture resources.
+    cachedBlurEffect_.Reset();
+    cachedShadowEffect_.Reset();
+    effectBitmapSlots_.clear();
+    effectCaptureStack_.clear();
+    lastCapturedEffectBitmap_.Reset();
+    lastEffectCaptureX_ = 0;
+    lastEffectCaptureY_ = 0;
+    lastEffectCaptureW_ = 0;
+    lastEffectCaptureH_ = 0;
+
+    // Release desktop capture resources.
+    desktopCaptureBitmap_.Reset();
+    desktopBlurredBitmap_.Reset();
+    desktopCaptureWidth_ = 0;
+    desktopCaptureHeight_ = 0;
+    desktopCaptureValid_ = false;
+    desktopBlurCacheValid_ = false;
+    cachedBlurRadius_ = 0.0f;
+}
+
+void D3D12RenderTarget::MarkOffscreenResourceUsed() {
+    offscreenResourcesUsedThisFrame_ = true;
+    idleFramesWithoutOffscreenUse_ = 0;
+}
+
+void D3D12RenderTarget::TrimOffscreenResourcesIfIdle() {
+    if (offscreenResourcesUsedThisFrame_) {
+        idleFramesWithoutOffscreenUse_ = 0;
+        return;
+    }
+
+    if (idleFramesWithoutOffscreenUse_ < OffscreenResourceIdleFrames) {
+        ++idleFramesWithoutOffscreenUse_;
+        return;
+    }
+
+    ReleaseOffscreenResources();
+    idleFramesWithoutOffscreenUse_ = 0;
+}
+
 bool D3D12RenderTarget::CaptureSnapshot() {
     auto d3d11Context = backend_->GetD3D11Context();
     if (!d3d11Context) return false;
 
-    if (!snapshotTextures_[frameIndex_] || !wrappedBackBuffers_[frameIndex_]) return false;
+    if (!snapshotTextures_[frameIndex_] || !snapshotBitmaps_[frameIndex_]) {
+        if (!CreateSnapshotResources()) {
+            return false;
+        }
+    }
+
+    if (!wrappedBackBuffers_[frameIndex_]) return false;
 
     // Flush D2D to ensure all drawing is complete
     d2dContext_->Flush();
@@ -1624,6 +1690,7 @@ bool D3D12RenderTarget::CaptureSnapshot() {
     d3d11Context->CopyResource(snapshotTextures_[frameIndex_].Get(), backBufferTexture.Get());
 
     snapshotValid_[frameIndex_] = true;
+    MarkOffscreenResourceUsed();
     return true;
 }
 
@@ -1631,6 +1698,7 @@ void D3D12RenderTarget::CaptureDesktopArea(
     int32_t screenX, int32_t screenY, int32_t width, int32_t height)
 {
     if (width <= 0 || height <= 0 || !d2dContext_) return;
+    MarkOffscreenResourceUsed();
 
     // Check if we need to recreate the bitmap (size changed)
     if (desktopCaptureBitmap_ &&
@@ -1714,6 +1782,7 @@ void D3D12RenderTarget::DrawDesktopBackdrop(
 {
     if (!isDrawing_ || !desktopCaptureValid_ || !desktopCaptureBitmap_) return;
     if (w <= 0 || h <= 0) return;
+    MarkOffscreenResourceUsed();
 
     D2D1_RECT_F destRect = D2D1::RectF(x, y, x + w, y + h);
 
@@ -1954,7 +2023,7 @@ void D3D12RenderTarget::DrawGlowingBorderHighlight(
 
         centerPoints.push_back(posToPoint(pos));
 
-        // Spindle width: sin(π * t) - tapers to 0 at both ends, max in middle
+        // Spindle width: sin(pi * t) - tapers to 0 at both ends, max in middle
         float spindleFactor = sinf(3.14159f * t);
         widths.push_back(maxWidth * spindleFactor);  // Pure sine: 0 at ends, 1 at middle
     }
@@ -2177,7 +2246,7 @@ void D3D12RenderTarget::DrawGlowingBorderTransition(
         float posY = lerp(tailY, headY, t);
         centerPoints.push_back(D2D1::Point2F(posX, posY));
 
-        // Spindle width: sin(π * t)
+        // Spindle width: sin(pi * t)
         float spindleFactor = sinf(3.14159f * t);
         widths.push_back(maxWidth * spindleFactor);
     }
@@ -2450,6 +2519,7 @@ bool D3D12RenderTarget::CreateTransitionBitmaps(uint32_t pixelW, uint32_t pixelH
 void D3D12RenderTarget::BeginTransitionCapture(int slot, float x, float y, float w, float h) {
     if (!isDrawing_ || slot < 0 || slot > 1) return;
     if (w <= 0 || h <= 0) return;
+    MarkOffscreenResourceUsed();
 
     // Compute physical pixel dimensions
     float dpiScaleX = dpiX_ / 96.0f;
@@ -2590,6 +2660,7 @@ bool D3D12RenderTarget::CreateEffectBitmap(EffectBitmapSlot& slot, uint32_t pixe
 void D3D12RenderTarget::BeginEffectCapture(float x, float y, float w, float h) {
     if (!isDrawing_) return;
     if (w <= 0 || h <= 0) return;
+    MarkOffscreenResourceUsed();
     lastCapturedEffectBitmap_.Reset();
 
     // Compute physical pixel dimensions

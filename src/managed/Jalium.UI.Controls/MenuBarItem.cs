@@ -155,11 +155,7 @@ public sealed class MenuBarItem : Control
 
     private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
     {
-        // If another menu in the bar is open, switch to this one on hover
-        if (ParentMenuBar?.IsAnyMenuOpen() == true)
-        {
-            OpenMenu();
-        }
+        // Keep hover visual only. Top-level menu opens by click to avoid accidental popup.
         InvalidateVisual();
     }
 

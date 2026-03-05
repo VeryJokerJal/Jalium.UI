@@ -104,7 +104,7 @@ public sealed class FontDialog
     /// <returns>True if the user clicked OK; otherwise, false.</returns>
     public bool ShowDialog()
     {
-        return ShowDialogInternal();
+        return ShowDialogInternal(Jalium.UI.Application.Current?.MainWindow);
     }
 
     /// <summary>

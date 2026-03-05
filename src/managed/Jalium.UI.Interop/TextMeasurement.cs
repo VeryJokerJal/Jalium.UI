@@ -1,3 +1,4 @@
+using System.Globalization;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Interop;
@@ -7,8 +8,24 @@ namespace Jalium.UI.Interop;
 /// </summary>
 public static class TextMeasurement
 {
-    // Cache text formats to avoid recreating them for every measurement
-    private static readonly Dictionary<string, NativeTextFormat> _formatCache = new();
+    // Cache text formats to avoid recreating them for every measurement.
+    // Keep this bounded to prevent unbounded native memory growth over long sessions.
+    private const int MaxFormatCacheEntries = 256;
+
+    private sealed class FormatCacheEntry
+    {
+        public FormatCacheEntry(NativeTextFormat format, LinkedListNode<string> lruNode)
+        {
+            Format = format;
+            LruNode = lruNode;
+        }
+
+        public NativeTextFormat Format { get; }
+        public LinkedListNode<string> LruNode { get; }
+    }
+
+    private static readonly Dictionary<string, FormatCacheEntry> _formatCache = new(StringComparer.Ordinal);
+    private static readonly LinkedList<string> _lruKeys = new();
     private static readonly object _lock = new();
 
     /// <summary>
@@ -126,29 +143,38 @@ public static class TextMeasurement
     {
         lock (_lock)
         {
-            foreach (var format in _formatCache.Values)
+            foreach (var entry in _formatCache.Values)
             {
-                format.Dispose();
+                entry.Format.Dispose();
             }
             _formatCache.Clear();
+            _lruKeys.Clear();
         }
     }
 
     private static NativeTextFormat? GetOrCreateFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle = 0)
     {
-        var key = $"{fontFamily}_{fontSize}_{fontWeight}_{fontStyle}";
+        var key = BuildCacheKey(fontFamily, fontSize, fontWeight, fontStyle);
 
         lock (_lock)
         {
-            if (_formatCache.TryGetValue(key, out var cached) && cached.IsValid)
+            if (_formatCache.TryGetValue(key, out var cached))
             {
-                return cached;
+                if (cached.Format.IsValid)
+                {
+                    TouchCachedKey(cached.LruNode);
+                    return cached.Format;
+                }
+
+                RemoveCachedEntry(key, cached);
             }
 
             try
             {
                 var format = context.CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
-                _formatCache[key] = format;
+                var lruNode = _lruKeys.AddLast(key);
+                _formatCache[key] = new FormatCacheEntry(format, lruNode);
+                TrimCacheIfNeeded();
                 return format;
             }
             catch
@@ -156,6 +182,48 @@ public static class TextMeasurement
                 return null;
             }
         }
+    }
+
+    private static string BuildCacheKey(string fontFamily, float fontSize, int fontWeight, int fontStyle)
+    {
+        return string.Concat(
+            fontFamily,
+            "_",
+            fontSize.ToString("0.###", CultureInfo.InvariantCulture),
+            "_",
+            fontWeight.ToString(CultureInfo.InvariantCulture),
+            "_",
+            fontStyle.ToString(CultureInfo.InvariantCulture));
+    }
+
+    private static void TouchCachedKey(LinkedListNode<string> node)
+    {
+        if (!ReferenceEquals(node, _lruKeys.Last))
+        {
+            _lruKeys.Remove(node);
+            _lruKeys.AddLast(node);
+        }
+    }
+
+    private static void TrimCacheIfNeeded()
+    {
+        while (_formatCache.Count > MaxFormatCacheEntries && _lruKeys.First is { } oldest)
+        {
+            var oldestKey = oldest.Value;
+            _lruKeys.RemoveFirst();
+            if (_formatCache.TryGetValue(oldestKey, out var entry))
+            {
+                entry.Format.Dispose();
+                _formatCache.Remove(oldestKey);
+            }
+        }
+    }
+
+    private static void RemoveCachedEntry(string key, FormatCacheEntry entry)
+    {
+        _formatCache.Remove(key);
+        _lruKeys.Remove(entry.LruNode);
+        entry.Format.Dispose();
     }
 
     private static void ApproximateMeasurement(FormattedText formattedText)

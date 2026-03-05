@@ -1,3 +1,4 @@
+using Jalium.UI;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Editor;
@@ -12,6 +13,7 @@ internal sealed class MinimapRenderer
     private const double MinimapLineHeight = 2;
     private const double MinimapCharWidth = 1.2;
     private const double MinViewportHeight = 4;
+    private static readonly BlurEffect s_trackBackdropBlurEffect = new(10f);
 
     /// <summary>
     /// Gets the width of the minimap.
@@ -43,13 +45,11 @@ internal sealed class MinimapRenderer
         if (minimapRect.IsEmpty || minimapRect.Width <= 0 || minimapRect.Height <= 0 || document.LineCount <= 0)
             return;
 
-        // Background
-        dc.DrawRectangle(background, null, minimapRect);
+        // Track backdrop blur + background
+        if (s_trackBackdropBlurEffect.HasEffect)
+            dc.DrawBackdropEffect(minimapRect, s_trackBackdropBlurEffect, new CornerRadius(0));
 
-        // Viewport indicator
-        var viewportRect = GetViewportRect(document, view, minimapRect);
-        if (!viewportRect.IsEmpty)
-            dc.DrawRectangle(viewportBrush, null, viewportRect);
+        dc.DrawRectangle(background, null, minimapRect);
 
         // Render each line as a thin strip
         double totalLines = document.LineCount;
@@ -79,6 +79,13 @@ internal sealed class MinimapRenderer
 
             dc.DrawRectangle(foreground, null,
                 new Rect(x, y, w, Math.Max(MinimapLineHeight, lineScale)));
+        }
+
+        // Viewport indicator
+        var viewportRect = GetViewportRect(document, view, minimapRect);
+        if (!viewportRect.IsEmpty)
+        {
+            dc.DrawRectangle(viewportBrush, null, viewportRect);
         }
     }
 

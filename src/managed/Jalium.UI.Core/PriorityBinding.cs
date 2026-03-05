@@ -158,6 +158,16 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
         {
             _isUpdating = true;
 
+            // Child bindings may be Unattached when visual ancestry was unavailable
+            // during initial activation. Retry here so they can attach later.
+            foreach (var expression in _bindingExpressions)
+            {
+                if (!expression.IsActive)
+                {
+                    expression.Activate();
+                }
+            }
+
             // Find the first binding that has a valid value
             int newActiveIndex = -1;
             object? activeValue = null;

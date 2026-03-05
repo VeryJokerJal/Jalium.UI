@@ -1642,6 +1642,7 @@ public sealed class TemplateDef
 public sealed class ElementNode
 {
     public required ElementType Type { get; init; }
+    public string? CodeBehindTypeName { get; init; }
     public string? Name { get; init; }
     public string? StyleKey { get; init; }
 
@@ -1827,6 +1828,9 @@ public readonly struct ThicknessDef
 /// </summary>
 public sealed class JalxamlParser
 {
+    private const string JaliumNamespace = "http://schemas.jalium.ui/2024";
+    private const string PresentationNamespace = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+
     private static readonly Dictionary<string, ElementType> ElementTypeMap = new(StringComparer.OrdinalIgnoreCase)
     {
         ["Grid"] = ElementType.Grid,
@@ -1851,6 +1855,24 @@ public sealed class JalxamlParser
         ["Image"] = ElementType.Image,
         ["ContentPresenter"] = ElementType.ContentPresenter,
         ["ItemsPresenter"] = ElementType.ItemsPresenter,
+    };
+
+    private static readonly HashSet<string> ShapeTypeNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Rectangle",
+        "Ellipse",
+        "Path",
+        "Line",
+        "Polygon",
+        "Polyline"
+    };
+
+    private static readonly Dictionary<string, string> ExplicitTypeNameMap = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["Application"] = "Jalium.UI.Controls.Application",
+        ["Page"] = "Jalium.UI.Controls.Page",
+        ["Window"] = "Jalium.UI.Controls.Window",
+        ["UserControl"] = "Jalium.UI.Controls.UserControl"
     };
 
     private readonly Dictionary<string, StyleDef> _styles = new();
@@ -2102,6 +2124,7 @@ public sealed class JalxamlParser
         var node = new ElementNode
         {
             Type = elementType,
+            CodeBehindTypeName = ResolveCodeBehindTypeName(element.Name.NamespaceName, localName),
             Name = GetAttributeValue(element, "x:Name") ?? GetAttributeValue(element, "Name"),
             StyleKey = GetAttributeValue(element, "Style")?.TrimStart('{').TrimEnd('}')
                         .Replace("StaticResource ", "").Replace("DynamicResource ", "").Trim(),
@@ -2183,6 +2206,65 @@ public sealed class JalxamlParser
         }
 
         return node;
+    }
+
+    private static string ResolveCodeBehindTypeName(string namespaceName, string localName)
+    {
+        if (string.IsNullOrWhiteSpace(localName) || localName.Contains('.'))
+        {
+            return "Jalium.UI.FrameworkElement";
+        }
+
+        if (ExplicitTypeNameMap.TryGetValue(localName, out var explicitTypeName))
+        {
+            return explicitTypeName;
+        }
+
+        if (string.Equals(namespaceName, JaliumNamespace, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(namespaceName, PresentationNamespace, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrEmpty(namespaceName))
+        {
+            if (ShapeTypeNames.Contains(localName))
+            {
+                return $"Jalium.UI.Shapes.{localName}";
+            }
+
+            return $"Jalium.UI.Controls.{localName}";
+        }
+
+        if (TryResolveClrNamespaceTypeName(namespaceName, localName, out var clrTypeName))
+        {
+            return clrTypeName;
+        }
+
+        return "Jalium.UI.FrameworkElement";
+    }
+
+    private static bool TryResolveClrNamespaceTypeName(string namespaceName, string localName, out string typeName)
+    {
+        const string clrNamespacePrefix = "clr-namespace:";
+        typeName = string.Empty;
+
+        if (!namespaceName.StartsWith(clrNamespacePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var remainder = namespaceName[clrNamespacePrefix.Length..];
+        if (string.IsNullOrWhiteSpace(remainder))
+        {
+            return false;
+        }
+
+        var namespacePart = remainder.Split(';', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries)
+            .FirstOrDefault();
+        if (string.IsNullOrWhiteSpace(namespacePart))
+        {
+            return false;
+        }
+
+        typeName = $"{namespacePart}.{localName}";
+        return true;
     }
 
     private static string? ParseRowColumnDefinitions(System.Xml.Linq.XElement element, string propertyElementName, string definitionElementName)
@@ -2489,7 +2571,7 @@ public sealed class JalxamlParser
             namedElements.Add(new NamedElementInfo
             {
                 Name = element.Name,
-                TypeName = GetElementTypeName(element.Type)
+                TypeName = element.CodeBehindTypeName ?? GetElementTypeName(element.Type)
             });
         }
 

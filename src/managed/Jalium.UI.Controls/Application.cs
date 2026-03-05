@@ -15,6 +15,7 @@ namespace Jalium.UI;
 public partial class Application
 {
     private static Application? _current;
+    private readonly WorkingSetTrimController? _workingSetTrimController;
 
     /// <summary>
     /// Framework-internal startup object loader registered by Jalium.UI.Xaml.
@@ -123,6 +124,9 @@ public partial class Application
 
         // Force ToolTip static constructor to register show/hide delegates early
         System.Runtime.CompilerServices.RuntimeHelpers.RunClassConstructor(typeof(ToolTip).TypeHandle);
+
+        // Optional ultra-low visible memory mode (off by default).
+        _workingSetTrimController = WorkingSetTrimController.TryCreateFromEnvironment();
     }
 
     private static object? LookupApplicationResource(object resourceKey)
@@ -224,6 +228,8 @@ public partial class Application
 
     private void Cleanup()
     {
+        _workingSetTrimController?.Dispose();
+
         // Stop all active animations
         Storyboard.StopAll();
 

@@ -29,10 +29,11 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     private static readonly SolidColorBrush s_imeCompositionBackgroundBrush = new(Color.FromArgb(60, 86, 156, 214));
     private static readonly SolidColorBrush s_imeCompositionTextBrush = new(Color.FromRgb(235, 235, 235));
     private static readonly Pen s_imeCompositionUnderlinePen = new(new SolidColorBrush(Color.FromRgb(86, 156, 214)), 1);
-    private static readonly SolidColorBrush s_scrollBarTrackBrush = new(Color.FromArgb(200, 68, 68, 68));
+    private static readonly SolidColorBrush s_scrollBarTrackBrush = new(Color.FromArgb(72, 68, 68, 68));
     private static readonly SolidColorBrush s_scrollBarThumbBrush = new(Color.FromArgb(220, 180, 180, 180));
     private static readonly SolidColorBrush s_scrollBarActiveThumbBrush = new(Color.FromArgb(235, 212, 212, 212));
     private static readonly BlurEffect s_gutterOverflowBlurEffect = new(12f);
+    private static readonly BlurEffect s_scrollBarBackdropBlurEffect = new(10f);
     private static readonly SolidColorBrush s_gutterOverflowOverlayBrush = new(Color.FromArgb(52, 20, 20, 20));
     private static readonly Pen s_foldingGuidePen = new(new SolidColorBrush(Color.FromArgb(120, 125, 137, 149)), 1);
     private static readonly Pen s_foldingChevronPen = new(new SolidColorBrush(Color.FromRgb(197, 206, 214)), 1.2);
@@ -48,8 +49,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     private static readonly SolidColorBrush s_scopeGuideTooltipBackgroundBrush = new(Color.FromArgb(236, 31, 34, 38));
     private static readonly Pen s_scopeGuideTooltipBorderPen = new(new SolidColorBrush(Color.FromArgb(220, 96, 108, 122)), 1);
     private static readonly SolidColorBrush s_scopeGuideTooltipTextBrush = new(Color.FromRgb(226, 231, 236));
-    private static readonly SolidColorBrush s_minimapBackgroundBrush = new(Color.FromArgb(180, 30, 30, 30));
-    private static readonly SolidColorBrush s_minimapForegroundBrush = new(Color.FromArgb(80, 200, 200, 200));
+    private static readonly SolidColorBrush s_minimapBackgroundBrush = new(Color.FromArgb(28, 30, 30, 30));
+    private static readonly SolidColorBrush s_minimapForegroundBrush = new(Color.FromArgb(56, 200, 200, 200));
     private static readonly SolidColorBrush s_minimapViewportBrush = new(Color.FromArgb(64, 255, 255, 255));
     private static readonly Pen s_minimapViewportBorderPen = new(new SolidColorBrush(Color.FromArgb(210, 230, 230, 230)), 1);
     private static readonly SolidColorBrush s_minimapTooltipBackgroundBrush = new(Color.FromArgb(236, 31, 34, 38));
@@ -247,6 +248,10 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         DependencyProperty.Register(nameof(ShowMinimap), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnVisualPropertyChanged));
 
+    public static readonly DependencyProperty AdornmentMinLineHeightProperty =
+        DependencyProperty.Register(nameof(AdornmentMinLineHeight), typeof(double), typeof(EditControl),
+            new PropertyMetadata(30.0, OnVisualPropertyChanged));
+
     public static readonly DependencyProperty IsScrollInertiaEnabledProperty =
         DependencyProperty.Register(nameof(IsScrollInertiaEnabled), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnScrollInertiaSettingsChanged));
@@ -351,6 +356,12 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     {
         get => (bool)GetValue(ShowMinimapProperty)!;
         set => SetValue(ShowMinimapProperty, value);
+    }
+
+    public double AdornmentMinLineHeight
+    {
+        get => (double)GetValue(AdornmentMinLineHeightProperty)!;
+        set => SetValue(AdornmentMinLineHeightProperty, value);
     }
 
     public bool IsScrollInertiaEnabled
@@ -613,7 +624,11 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
         double contentWidth = GetContentRenderWidth(RenderSize.Width);
         double contentHeight = GetContentRenderHeight(RenderSize.Height);
-        var contentSize = new Size(contentWidth, contentHeight);
+        double contentBackdropWidth = contentWidth;
+        if (!_minimapRect.IsEmpty)
+            contentBackdropWidth = Math.Max(contentBackdropWidth, _minimapRect.Right);
+
+        var contentSize = new Size(contentBackdropWidth, contentHeight);
 
         dc.PushClip(new RectangleGeometry(new Rect(0, 0, RenderSize.Width, RenderSize.Height)));
         try
@@ -624,9 +639,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 dc.DrawRectangle(Background, null, new Rect(0, 0, RenderSize.Width, RenderSize.Height));
             }
 
-            bool hasContentClip = contentWidth > 0 && contentHeight > 0;
+            bool hasContentClip = contentBackdropWidth > 0 && contentHeight > 0;
             if (hasContentClip)
-                dc.PushClip(new RectangleGeometry(new Rect(0, 0, contentWidth, contentHeight)));
+                dc.PushClip(new RectangleGeometry(new Rect(0, 0, contentBackdropWidth, contentHeight)));
 
             try
             {
@@ -4614,6 +4629,15 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 Math.Max(0, rect.Height - insetY * 2));
         }
 
+        void DrawBackdropBlur(Rect rect)
+        {
+            if (!s_scrollBarBackdropBlurEffect.HasEffect || rect.Width <= 0 || rect.Height <= 0)
+                return;
+
+            double radius = Math.Min(ScrollBarCornerRadius, Math.Min(rect.Width, rect.Height) * 0.5);
+            dc.DrawBackdropEffect(rect, s_scrollBarBackdropBlurEffect, new CornerRadius(radius));
+        }
+
         void DrawRoundedBar(Brush brush, Rect rect)
         {
             if (rect.Width <= 0 || rect.Height <= 0)
@@ -4625,7 +4649,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
         if (_isVerticalScrollBarVisible && !_isVerticalScrollBarOverlayingMinimap)
         {
-            DrawRoundedBar(s_scrollBarTrackBrush, InsetRect(_verticalScrollTrackRect, ScrollBarInnerPadding));
+            var verticalTrackRect = InsetRect(_verticalScrollTrackRect, ScrollBarInnerPadding);
+            DrawBackdropBlur(verticalTrackRect);
+            DrawRoundedBar(s_scrollBarTrackBrush, verticalTrackRect);
             DrawRoundedBar(
                 _scrollBarDragMode == ScrollBarDragMode.Vertical ? s_scrollBarActiveThumbBrush : s_scrollBarThumbBrush,
                 InsetRect(_verticalScrollThumbRect, ScrollBarInnerPadding));
@@ -4633,7 +4659,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
         if (_isHorizontalScrollBarVisible)
         {
-            DrawRoundedBar(s_scrollBarTrackBrush, InsetRect(_horizontalScrollTrackRect, ScrollBarInnerPadding));
+            var horizontalTrackRect = InsetRect(_horizontalScrollTrackRect, ScrollBarInnerPadding);
+            DrawBackdropBlur(horizontalTrackRect);
+            DrawRoundedBar(s_scrollBarTrackBrush, horizontalTrackRect);
             DrawRoundedBar(
                 _scrollBarDragMode == ScrollBarDragMode.Horizontal ? s_scrollBarActiveThumbBrush : s_scrollBarThumbBrush,
                 InsetRect(_horizontalScrollThumbRect, ScrollBarInnerPadding));
@@ -4646,7 +4674,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 Math.Max(0, RenderSize.Height - ScrollBarThickness),
                 ScrollBarThickness,
                 ScrollBarThickness);
-            DrawRoundedBar(s_scrollBarTrackBrush, InsetRect(corner, ScrollBarInnerPadding));
+            var cornerTrackRect = InsetRect(corner, ScrollBarInnerPadding);
+            DrawBackdropBlur(cornerTrackRect);
+            DrawRoundedBar(s_scrollBarTrackBrush, cornerTrackRect);
         }
     }
 
@@ -4811,8 +4841,15 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             _cachedMaxLineLengthVersion = _document.Version;
         }
 
-        return _cachedMaxLineWidth + 16;
+        double trailingAdornmentWidth = Math.Max(0, GetAdditionalHorizontalContentWidth());
+        return _cachedMaxLineWidth + 16 + trailingAdornmentWidth;
     }
+
+    /// <summary>
+    /// Allows derived editors to reserve extra horizontal content width for
+    /// adornments rendered to the right of line text (for example ErrorLens-like overlays).
+    /// </summary>
+    protected virtual double GetAdditionalHorizontalContentWidth() => 0;
 
     private double GetMaxVerticalOffset(double viewportHeight)
     {

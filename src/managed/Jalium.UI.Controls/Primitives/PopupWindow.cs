@@ -4,6 +4,7 @@ using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -24,9 +25,12 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private volatile bool _renderScheduled;
     private bool _isRendering;
     private volatile bool _renderRequested;
+    private bool _renderRecoveryInProgress;
+    private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _disposed;
     private int _width;
     private int _height;
+    private const int RenderRecoveryRetryDelayMs = 120;
 
     // Mouse tracking
     private UIElement? _lastMouseOverElement;
@@ -108,15 +112,14 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         // Uses CreateSwapChainForComposition + DirectComposition (WinUI 3 / Avalonia approach).
         // WS_EX_NOREDIRECTIONBITMAP tells DWM not to allocate a redirection surface;
         // DirectComposition provides content directly to DWM compositor.
-        var context = RenderContext.Current;
-        if (context == null || !context.IsValid)
-            context = new RenderContext(RenderBackend.D3D12);
-
-        _renderTarget = context.CreateRenderTargetForComposition(_hwnd, width, height);
-
-        // Set D2D DPI to match the parent window's monitor DPI
-        var dpi = (float)(_parentWindow.DpiScale * 96.0);
-        _renderTarget.SetDpi(dpi, dpi);
+        try
+        {
+            EnsureRenderTarget();
+        }
+        catch (RenderPipelineException ex) when (IsRecoverableRenderPipelineException(ex))
+        {
+            ScheduleRenderRecoveryRetry();
+        }
 
         // Show without activating
         _ = ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
@@ -148,7 +151,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
         if (sizeChanged && _renderTarget != null)
         {
-            _renderTarget.Resize(width, height);
+            TryResizeRenderTarget(width, height, "MoveToResize");
         }
 
         InvalidateWindow();
@@ -205,6 +208,29 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     #region Rendering
 
+    private void EnsureRenderTarget(bool forceReplaceContext = false)
+    {
+        if (_hwnd == nint.Zero)
+        {
+            return;
+        }
+
+        if (!forceReplaceContext && _renderTarget != null && _renderTarget.IsValid)
+        {
+            return;
+        }
+
+        _renderTarget?.Dispose();
+        _renderTarget = null;
+
+        var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: forceReplaceContext);
+        _renderTarget = context.CreateRenderTargetForComposition(_hwnd, Math.Max(1, _width), Math.Max(1, _height));
+
+        // Match D2D DPI to the parent monitor scale.
+        var dpi = (float)(_parentWindow.DpiScale * 96.0);
+        _renderTarget.SetDpi(dpi, dpi);
+    }
+
     private void ProcessRender()
     {
         _renderScheduled = false;
@@ -220,7 +246,15 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
         try
         {
-            if (_renderTarget == null || !_renderTarget.IsValid) return;
+            if (_renderTarget == null || !_renderTarget.IsValid)
+            {
+                EnsureRenderTarget();
+            }
+
+            if (_renderTarget == null || !_renderTarget.IsValid)
+            {
+                return;
+            }
 
             // Layout pass 鈥?_width/_height are physical pixels, layout uses DIPs
             var dpiScale = _parentWindow.DpiScale;
@@ -248,8 +282,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             // Clear with transparent background
             _renderTarget.Clear(0f, 0f, 0f, 0f);
 
-            var context = RenderContext.Current;
-            if (context != null && Child != null)
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
+            if (Child != null)
             {
                 _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
                 _drawingContext.Offset = Point.Zero;
@@ -258,6 +292,28 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
             _renderTarget.EndDraw();
             _drawingContext?.TrimCacheIfNeeded();
+        }
+        catch (RenderPipelineException ex)
+        {
+            if (string.Equals(ex.Stage, "Begin", StringComparison.OrdinalIgnoreCase))
+            {
+                LogRenderFailure(ex, "RenderFrame");
+                throw;
+            }
+
+            if (TryRecoverFromRenderPipelineFailure(ex, "RenderFrame"))
+            {
+                return;
+            }
+
+            if (IsRecoverableRenderPipelineException(ex))
+            {
+                ScheduleRenderRecoveryRetry();
+                return;
+            }
+
+            LogRenderFailure(ex, "RenderFrame");
+            throw;
         }
         catch (Exception ex)
         {
@@ -274,6 +330,147 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             _renderRequested = false;
             InvalidateWindow();
         }
+    }
+
+    private void TryResizeRenderTarget(int width, int height, string stage)
+    {
+        var renderTarget = _renderTarget;
+        if (renderTarget == null || !renderTarget.IsValid)
+        {
+            return;
+        }
+
+        try
+        {
+            renderTarget.Resize(width, height);
+        }
+        catch (RenderPipelineException ex)
+        {
+            if (TryRecoverFromRenderPipelineFailure(ex, stage))
+            {
+                return;
+            }
+
+            if (IsRecoverableRenderPipelineException(ex))
+            {
+                ScheduleRenderRecoveryRetry();
+                return;
+            }
+
+            LogRenderFailure(ex, stage);
+        }
+    }
+
+    private static bool IsRecoverableRenderPipelineException(RenderPipelineException exception)
+        => exception.Result is JaliumResult.DeviceLost
+            or JaliumResult.InvalidState
+            or JaliumResult.ResourceCreationFailed
+            || (exception.Result == JaliumResult.Unknown &&
+                string.Equals(exception.Stage, "Create", StringComparison.OrdinalIgnoreCase));
+
+    private bool TryRecoverFromRenderPipelineFailure(RenderPipelineException exception, string stage)
+    {
+        if (!IsRecoverableRenderPipelineException(exception) ||
+            _hwnd == nint.Zero ||
+            _disposed ||
+            _renderRecoveryInProgress)
+        {
+            return false;
+        }
+
+        _renderRecoveryInProgress = true;
+        try
+        {
+            _drawingContext?.ClearCache();
+            _drawingContext = null;
+
+            bool forceReplaceContext = exception.Result == JaliumResult.DeviceLost ||
+                string.Equals(exception.Stage, "Create", StringComparison.OrdinalIgnoreCase);
+            EnsureRenderTarget(forceReplaceContext);
+
+            ScheduleRenderAfterRecovery();
+            return true;
+        }
+        catch (RenderPipelineException recoveryException) when (IsRecoverableRenderPipelineException(recoveryException))
+        {
+            LogRenderFailure(recoveryException, $"{stage}:Recover");
+            return false;
+        }
+        catch (Exception recoveryException)
+        {
+            LogRenderFailure(recoveryException, $"{stage}:Recover");
+            return false;
+        }
+        finally
+        {
+            _renderRecoveryInProgress = false;
+        }
+    }
+
+    private void ScheduleRenderAfterRecovery()
+    {
+        if (_hwnd == nint.Zero || _disposed)
+        {
+            return;
+        }
+
+        if (!_renderScheduled)
+        {
+            _renderScheduled = true;
+            _dispatcher.BeginInvokeCritical(ProcessRender);
+        }
+    }
+
+    private void ScheduleRenderRecoveryRetry()
+    {
+        if (_hwnd == nint.Zero || _disposed)
+        {
+            return;
+        }
+
+        _renderRecoveryRetryTimer ??= CreateRenderRecoveryRetryTimer();
+        if (!_renderRecoveryRetryTimer.IsEnabled)
+        {
+            _renderRecoveryRetryTimer.Start();
+        }
+    }
+
+    private DispatcherTimer CreateRenderRecoveryRetryTimer()
+    {
+        var timer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(RenderRecoveryRetryDelayMs)
+        };
+        timer.Tick += OnRenderRecoveryRetryTimerTick;
+        return timer;
+    }
+
+    private void OnRenderRecoveryRetryTimerTick(object? sender, EventArgs e)
+    {
+        _renderRecoveryRetryTimer?.Stop();
+
+        if (_hwnd == nint.Zero || _disposed)
+        {
+            return;
+        }
+
+        if (!_renderScheduled)
+        {
+            _renderScheduled = true;
+            _dispatcher.BeginInvokeCritical(ProcessRender);
+        }
+    }
+
+    private void StopRenderRecoveryRetry()
+    {
+        if (_renderRecoveryRetryTimer == null)
+        {
+            return;
+        }
+
+        _renderRecoveryRetryTimer.Stop();
+        _renderRecoveryRetryTimer.Tick -= OnRenderRecoveryRetryTimerTick;
+        _renderRecoveryRetryTimer = null;
     }
 
     private void LogRenderFailure(Exception exception, string fallbackStage)
@@ -1675,10 +1872,13 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         if (_disposed) return;
         _disposed = true;
 
+        StopRenderRecoveryRetry();
+
         // Remove child before destroying window
         Child = null;
         _lastMouseOverElement = null;
 
+        _drawingContext?.ClearBitmapCache();
         _drawingContext = null;
 
         if (_renderTarget != null)

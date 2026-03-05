@@ -11,15 +11,36 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 {
     private const int MaxBrushCacheSize = 256;
     private const int MaxTextFormatCacheSize = 64;
-    private const int MaxBitmapCacheSize = 128;
+    private const int MaxBitmapCacheSize = 64;
+    private const long MaxBitmapCacheBytes = 128L * 1024 * 1024;
+    private const long MediumMemoryPressureWorkingSetBytes = 400L * 1024 * 1024;
+    private const long HighMemoryPressureWorkingSetBytes = 550L * 1024 * 1024;
+    private const long MediumPressureBitmapCacheBytes = 64L * 1024 * 1024;
+    private const long HighPressureBitmapCacheBytes = 32L * 1024 * 1024;
 
     private readonly RenderTarget _renderTarget;
     private readonly RenderContext _context;
     private readonly Dictionary<Brush, NativeBrush> _brushCache = new();
     private readonly Dictionary<string, NativeTextFormat> _textFormatCache = new();
-    private readonly Dictionary<ImageSource, NativeBitmap> _bitmapCache = new();
+    private readonly Dictionary<ImageSource, BitmapCacheEntry> _bitmapCache = new();
     private readonly Stack<DrawingState> _stateStack = new();
+    private long _bitmapCacheBytes;
+    private long _bitmapCacheSequence;
     private bool _closed;
+
+    private sealed class BitmapCacheEntry
+    {
+        public BitmapCacheEntry(NativeBitmap bitmap, long estimatedBytes, long lastAccessSequence)
+        {
+            Bitmap = bitmap;
+            EstimatedBytes = estimatedBytes;
+            LastAccessSequence = lastAccessSequence;
+        }
+
+        public NativeBitmap Bitmap { get; }
+        public long EstimatedBytes { get; }
+        public long LastAccessSequence { get; set; }
+    }
 
     /// <summary>
     /// Gets the underlying render target.
@@ -985,11 +1006,27 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
         _textFormatCache.Clear();
 
-        foreach (var bitmap in _bitmapCache.Values)
+        foreach (var entry in _bitmapCache.Values)
         {
-            bitmap.Dispose();
+            entry.Bitmap.Dispose();
         }
         _bitmapCache.Clear();
+        _bitmapCacheBytes = 0;
+    }
+
+    /// <summary>
+    /// Clears only cached bitmaps. Useful during window teardown to quickly release
+    /// large image resources while avoiding text/brush teardown order issues.
+    /// </summary>
+    public void ClearBitmapCache()
+    {
+        foreach (var entry in _bitmapCache.Values)
+        {
+            entry.Bitmap.Dispose();
+        }
+
+        _bitmapCache.Clear();
+        _bitmapCacheBytes = 0;
     }
 
     /// <summary>
@@ -1019,15 +1056,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             }
         }
 
-        if (_bitmapCache.Count > MaxBitmapCacheSize)
-        {
-            var toRemove = _bitmapCache.Take(_bitmapCache.Count / 2).ToList();
-            foreach (var kvp in toRemove)
-            {
-                kvp.Value.Dispose();
-                _bitmapCache.Remove(kvp.Key);
-            }
-        }
+        TrimBitmapCacheIfNeeded();
     }
 
     private NativeBrush? GetNativeBrush(Brush brush)
@@ -1182,7 +1211,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (_bitmapCache.TryGetValue(imageSource, out var cached))
         {
-            return cached;
+            if (cached.Bitmap.IsValid)
+            {
+                cached.LastAccessSequence = ++_bitmapCacheSequence;
+                return cached.Bitmap;
+            }
+
+            RemoveBitmapCacheEntry(imageSource, cached);
         }
 
         NativeBitmap? nativeBitmap = null;
@@ -1201,10 +1236,74 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (nativeBitmap != null)
         {
-            _bitmapCache[imageSource] = nativeBitmap;
+            var estimatedBytes = EstimateBitmapBytes(nativeBitmap);
+            _bitmapCache[imageSource] = new BitmapCacheEntry(
+                nativeBitmap,
+                estimatedBytes,
+                ++_bitmapCacheSequence);
+            _bitmapCacheBytes += estimatedBytes;
         }
 
         return nativeBitmap;
+    }
+
+    private void TrimBitmapCacheIfNeeded()
+    {
+        if (_bitmapCache.Count == 0)
+        {
+            return;
+        }
+
+        var bitmapCacheByteBudget = GetBitmapCacheByteBudget();
+        while (_bitmapCache.Count > MaxBitmapCacheSize || _bitmapCacheBytes > bitmapCacheByteBudget)
+        {
+            KeyValuePair<ImageSource, BitmapCacheEntry>? oldest = null;
+            foreach (var kvp in _bitmapCache)
+            {
+                if (oldest == null || kvp.Value.LastAccessSequence < oldest.Value.Value.LastAccessSequence)
+                {
+                    oldest = kvp;
+                }
+            }
+
+            if (oldest == null)
+            {
+                break;
+            }
+
+            RemoveBitmapCacheEntry(oldest.Value.Key, oldest.Value.Value);
+        }
+    }
+
+    private static long GetBitmapCacheByteBudget()
+    {
+        var workingSetBytes = Environment.WorkingSet;
+        if (workingSetBytes >= HighMemoryPressureWorkingSetBytes)
+        {
+            return HighPressureBitmapCacheBytes;
+        }
+
+        if (workingSetBytes >= MediumMemoryPressureWorkingSetBytes)
+        {
+            return MediumPressureBitmapCacheBytes;
+        }
+
+        return MaxBitmapCacheBytes;
+    }
+
+    private void RemoveBitmapCacheEntry(ImageSource key, BitmapCacheEntry entry)
+    {
+        if (_bitmapCache.Remove(key))
+        {
+            _bitmapCacheBytes = Math.Max(0, _bitmapCacheBytes - entry.EstimatedBytes);
+            entry.Bitmap.Dispose();
+        }
+    }
+
+    private static long EstimateBitmapBytes(NativeBitmap bitmap)
+    {
+        // Native bitmaps are stored as RGBA8 textures (4 bytes per pixel).
+        return (long)bitmap.Width * bitmap.Height * 4;
     }
 
     private enum DrawingStateType

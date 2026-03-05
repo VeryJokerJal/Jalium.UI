@@ -1,5 +1,7 @@
 using Jalium.UI.Media;
 
+using System.Runtime.CompilerServices;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>
@@ -315,7 +317,7 @@ public sealed class AdornerHitTestResult : Jalium.UI.Media.PointHitTestResult
 /// </summary>
 internal static class ValidationAdornerIntegration
 {
-    private static readonly Dictionary<DependencyObject, ValidationErrorAdorner> _adorners = new();
+    private static readonly ConditionalWeakTable<DependencyObject, ValidationErrorAdorner> _adorners = new();
 
     internal static void Initialize()
     {
@@ -328,14 +330,14 @@ internal static class ValidationAdornerIntegration
 
         if (hasError)
         {
-            if (_adorners.ContainsKey(element)) return;
+            if (_adorners.TryGetValue(element, out _)) return;
 
             var adornerLayer = AdornerLayer.GetAdornerLayer(uiElement);
             if (adornerLayer != null)
             {
                 var adorner = new ValidationErrorAdorner(uiElement);
                 adornerLayer.Add(adorner);
-                _adorners[element] = adorner;
+                _adorners.Add(element, adorner);
             }
         }
         else

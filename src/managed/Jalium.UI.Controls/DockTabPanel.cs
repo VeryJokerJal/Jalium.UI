@@ -590,6 +590,14 @@ public sealed class DockTabPanel : Selector
 
         var accentBrush = ResolveBrush("OneTabActiveBorder", "AccentBrush", s_fallbackAccentBrush);
         var borderPen = new Pen(accentBrush, 1);
+        var halfStroke = borderPen.Thickness * 0.5;
+        var left = halfStroke;
+        var top = halfStroke;
+        var right = Math.Max(left, ActualWidth - halfStroke);
+        var bottom = Math.Max(top, ActualHeight - halfStroke);
+
+        if (right <= left || bottom <= top)
+            return;
 
         // Recalculate active tab position
         double activeTabX = 0, activeTabWidth = 0;
@@ -608,19 +616,29 @@ public sealed class DockTabPanel : Selector
             }
         }
 
-        double topY = tabStripHeight;
-        double w = ActualWidth;
-        double h = ActualHeight;
+        double selectedTabX = activeTabX;
+        double selectedTabWidth = activeTabWidth;
+        if (hasActiveTab)
+        {
+            selectedTabX = Math.Clamp(activeTabX, left, right);
+            var selectedTabRight = Math.Clamp(activeTabX + activeTabWidth, left, right);
+            selectedTabWidth = Math.Max(0, selectedTabRight - selectedTabX);
+            hasActiveTab = selectedTabWidth > 0;
+        }
+
+        double topY = Math.Clamp(tabStripHeight, top, bottom);
+        double w = right;
+        double h = bottom;
         const double contentR = 4;
         const double tabTopR = 4;
         const double tabBottomR = 4;
         const double k = 0.5522847498; // cubic bezier approximation for quarter circle
-        var firstTabAtLeftEdge = hasActiveTab && activeTabX <= contentR + 0.5;
+        var firstTabAtLeftEdge = hasActiveTab && selectedTabX <= left + contentR + 0.5;
         var startY = firstTabAtLeftEdge ? topY : topY + contentR;
 
         var borderFigure = new PathFigure
         {
-            StartPoint = new Point(0, startY),
+            StartPoint = new Point(left, startY),
             IsClosed = false,
             IsFilled = false,
         };
@@ -628,28 +646,28 @@ public sealed class DockTabPanel : Selector
         if (firstTabAtLeftEdge)
         {
             // First selected tab touching the left edge should connect with a square corner.
-            borderFigure.Segments.Add(new LineSegment(new Point(0, topY)));
+            borderFigure.Segments.Add(new LineSegment(new Point(left, topY)));
         }
         else
         {
             // Top-left content corner: left edge -> top edge
             borderFigure.Segments.Add(new BezierSegment(
-                new Point(0, topY + contentR * (1 - k)),
-                new Point(contentR * (1 - k), topY),
-                new Point(contentR, topY)));
+                new Point(left, topY + contentR * (1 - k)),
+                new Point(left + contentR * (1 - k), topY),
+                new Point(left + contentR, topY)));
         }
 
         if (hasActiveTab)
         {
-            double tx = activeTabX;
-            double tw = activeTabWidth;
+            double tx = selectedTabX;
+            double tw = selectedTabWidth;
 
             // First tab touching left edge should use a square bottom-left corner.
-            var isLeftEdgeTab = tx <= contentR + 0.5;
-            var canUseLeftOutward = !isLeftEdgeTab && tx - tabBottomR >= contentR;
+            var isLeftEdgeTab = tx <= left + contentR + 0.5;
+            var canUseLeftOutward = !isLeftEdgeTab && tx - tabBottomR >= left + contentR;
             var leftJoinX = canUseLeftOutward
                 ? tx - tabBottomR
-                : (isLeftEdgeTab ? tx : Math.Clamp(tx + tabBottomR, contentR, w - contentR));
+                : (isLeftEdgeTab ? tx : Math.Clamp(tx + tabBottomR, left + contentR, w - contentR));
             borderFigure.Segments.Add(new LineSegment(new Point(leftJoinX, topY)));
 
             // Selected tab bottom-left corner: bottom edge -> left edge
@@ -673,22 +691,22 @@ public sealed class DockTabPanel : Selector
             }
 
             // Selected tab left edge
-            borderFigure.Segments.Add(new LineSegment(new Point(tx, tabTopR)));
+            borderFigure.Segments.Add(new LineSegment(new Point(tx, top + tabTopR)));
 
             // Selected tab top-left corner: left edge -> top edge
             borderFigure.Segments.Add(new BezierSegment(
-                new Point(tx, tabTopR * (1 - k)),
-                new Point(tx + tabTopR * (1 - k), 0),
-                new Point(tx + tabTopR, 0)));
+                new Point(tx, top + tabTopR * (1 - k)),
+                new Point(tx + tabTopR * (1 - k), top),
+                new Point(tx + tabTopR, top)));
 
             // Selected tab top edge
-            borderFigure.Segments.Add(new LineSegment(new Point(tx + tw - tabTopR, 0)));
+            borderFigure.Segments.Add(new LineSegment(new Point(tx + tw - tabTopR, top)));
 
             // Selected tab top-right corner: top edge -> right edge
             borderFigure.Segments.Add(new BezierSegment(
-                new Point(tx + tw - tabTopR * (1 - k), 0),
-                new Point(tx + tw, tabTopR * (1 - k)),
-                new Point(tx + tw, tabTopR)));
+                new Point(tx + tw - tabTopR * (1 - k), top),
+                new Point(tx + tw, top + tabTopR * (1 - k)),
+                new Point(tx + tw, top + tabTopR)));
 
             // Selected tab right edge
             borderFigure.Segments.Add(new LineSegment(new Point(tx + tw, topY - tabBottomR)));
@@ -730,16 +748,16 @@ public sealed class DockTabPanel : Selector
             new Point(w - contentR, h)));
 
         // Bottom edge
-        borderFigure.Segments.Add(new LineSegment(new Point(contentR, h)));
+        borderFigure.Segments.Add(new LineSegment(new Point(left + contentR, h)));
 
         // Bottom-left content corner: bottom edge -> left edge
         borderFigure.Segments.Add(new BezierSegment(
-            new Point(contentR * (1 - k), h),
-            new Point(0, h - contentR * (1 - k)),
-            new Point(0, h - contentR)));
+            new Point(left + contentR * (1 - k), h),
+            new Point(left, h - contentR * (1 - k)),
+            new Point(left, h - contentR)));
 
         // Left edge back to start
-        borderFigure.Segments.Add(new LineSegment(new Point(0, startY)));
+        borderFigure.Segments.Add(new LineSegment(new Point(left, startY)));
 
         var borderGeometry = new PathGeometry();
         borderGeometry.Figures.Add(borderFigure);

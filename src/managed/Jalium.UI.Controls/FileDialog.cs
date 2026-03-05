@@ -112,7 +112,7 @@ public abstract class FileDialog
     /// <returns>True if the user selected a file, false if canceled.</returns>
     public bool? ShowDialog()
     {
-        return ShowDialog(IntPtr.Zero);
+        return ShowDialog(DialogOwnerResolver.Resolve());
     }
 
     /// <summary>
@@ -200,6 +200,8 @@ public sealed class OpenFileDialog : FileDialog
     /// <inheritdoc />
     public override bool? ShowDialog(IntPtr owner)
     {
+        owner = DialogOwnerResolver.Resolve(owner);
+
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             return ShowWindowsDialog(owner);
@@ -383,6 +385,8 @@ public sealed class SaveFileDialog : FileDialog
     /// <inheritdoc />
     public override bool? ShowDialog(IntPtr owner)
     {
+        owner = DialogOwnerResolver.Resolve(owner);
+
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             return ShowWindowsDialog(owner);
@@ -567,7 +571,7 @@ public sealed class FolderBrowserDialog
     /// </summary>
     public bool? ShowDialog()
     {
-        return ShowDialog(IntPtr.Zero);
+        return ShowDialog(DialogOwnerResolver.Resolve());
     }
 
     /// <summary>
@@ -575,6 +579,8 @@ public sealed class FolderBrowserDialog
     /// </summary>
     public bool? ShowDialog(IntPtr owner)
     {
+        owner = DialogOwnerResolver.Resolve(owner);
+
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             return ShowWindowsDialog(owner);

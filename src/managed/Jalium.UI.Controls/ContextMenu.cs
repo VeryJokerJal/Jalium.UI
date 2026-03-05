@@ -261,6 +261,8 @@ public sealed class ContextMenu : ItemsControl
         {
             Placement = PlacementMode.MousePoint,
             StaysOpen = false,
+            // Context menus should move to external PopupWindow when they overflow the host window.
+            ShouldConstrainToRootBounds = false,
             Child = _popupBorder
         };
     }
@@ -272,7 +274,8 @@ public sealed class ContextMenu : ItemsControl
     {
         if (_popupBorder == null) return;
 
-        var panel = new StackPanel { Orientation = Orientation.Vertical };
+        var scrollHost = new MenuPopupScrollHost();
+        var panel = scrollHost.ItemsPanel;
 
         foreach (var item in Items)
         {
@@ -291,7 +294,7 @@ public sealed class ContextMenu : ItemsControl
             }
         }
 
-        _popupBorder.Child = panel;
+        _popupBorder.Child = scrollHost;
     }
 
     #endregion

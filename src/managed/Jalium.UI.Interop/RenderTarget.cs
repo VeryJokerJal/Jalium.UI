@@ -11,11 +11,13 @@ public sealed class RenderTarget : IDisposable
     private static int _drawTextDepth;
 
     private readonly IRenderTargetNative _native;
+    private readonly RenderContext? _ownerContext;
     private readonly RenderBackend _backend;
     private readonly nint _hwnd;
     private nint _handle;
     private bool _disposed;
     private bool _isDrawing;
+    private int _ownerContextReleased;
     private float _dpiX = 96.0f;
     private float _dpiY = 96.0f;
 
@@ -50,7 +52,15 @@ public sealed class RenderTarget : IDisposable
     public int Height { get; private set; }
 
     internal RenderTarget(RenderContext context, nint hwnd, int width, int height, bool useComposition = false)
-        : this(context.Backend, context.Handle, hwnd, width, height, useComposition)
+        : this(
+            context.Backend,
+            context.Handle,
+            hwnd,
+            width,
+            height,
+            useComposition,
+            native: null,
+            ownerContext: context)
     {
     }
 
@@ -61,21 +71,32 @@ public sealed class RenderTarget : IDisposable
         int width,
         int height,
         bool useComposition,
-        IRenderTargetNative? native = null)
+        IRenderTargetNative? native = null,
+        RenderContext? ownerContext = null)
     {
         _native = native ?? DefaultRenderTargetNative.Instance;
+        _ownerContext = ownerContext;
         _backend = backend;
         _hwnd = hwnd;
         Width = width;
         Height = height;
 
-        _handle = useComposition
-            ? _native.CreateForComposition(contextHandle, hwnd, width, height)
-            : _native.CreateForHwnd(contextHandle, hwnd, width, height);
-        if (_handle == nint.Zero)
+        _ownerContext?.RegisterRenderTarget();
+        try
         {
-            int resultCode = _native.GetContextLastError(contextHandle);
-            ThrowRenderPipelineException("Create", resultCode);
+            _handle = useComposition
+                ? _native.CreateForComposition(contextHandle, hwnd, width, height)
+                : _native.CreateForHwnd(contextHandle, hwnd, width, height);
+            if (_handle == nint.Zero)
+            {
+                int resultCode = _native.GetContextLastError(contextHandle);
+                ThrowRenderPipelineException("Create", resultCode);
+            }
+        }
+        catch
+        {
+            ReleaseOwnerContextReference();
+            throw;
         }
     }
 
@@ -784,8 +805,10 @@ public sealed class RenderTarget : IDisposable
     private void ThrowRenderPipelineException(string stage, int resultCode)
     {
         // RenderTarget creation can fail with a null handle while context last-error is still OK.
-        int normalizedCode = stage == "Create" && resultCode == (int)JaliumResult.Ok
-            ? (int)JaliumResult.Unknown
+        // Treat this as a transient resource-creation failure so upper layers can recover/retry.
+        bool nullHandleWithOkError = stage == "Create" && resultCode == (int)JaliumResult.Ok;
+        int normalizedCode = nullHandleWithOkError
+            ? (int)JaliumResult.ResourceCreationFailed
             : resultCode;
 
         JaliumResult mapped = JaliumResultMapper.FromCode(normalizedCode);
@@ -798,7 +821,10 @@ public sealed class RenderTarget : IDisposable
             height: Height,
             dpiX: _dpiX,
             dpiY: _dpiY,
-            backend: _backend.ToString());
+            backend: _backend.ToString(),
+            details: nullHandleWithOkError
+                ? "RenderTarget creation returned null handle while context last-error was OK."
+                : null);
     }
 
     /// <inheritdoc />
@@ -819,14 +845,26 @@ public sealed class RenderTarget : IDisposable
             _handle = nint.Zero;
         }
 
+        ReleaseOwnerContextReference();
         GC.SuppressFinalize(this);
     }
 
     ~RenderTarget()
     {
+        ReleaseOwnerContextReference();
         _isDrawing = false;
         _disposed = true;
         _handle = nint.Zero;
+    }
+
+    private void ReleaseOwnerContextReference()
+    {
+        if (Interlocked.Exchange(ref _ownerContextReleased, 1) != 0)
+        {
+            return;
+        }
+
+        _ownerContext?.UnregisterRenderTarget();
     }
 }
 

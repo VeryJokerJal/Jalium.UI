@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Runtime.CompilerServices;
 
 namespace Jalium.UI.Input;
 
@@ -131,16 +132,23 @@ public static class InputMethod
 
     #region Attached Properties
 
-    private static readonly Dictionary<IInputElement, bool> _imeEnabledMap = new();
-    private static readonly Dictionary<IInputElement, InputMethodState> _imeStateMap = new();
-    private static readonly Dictionary<IInputElement, InputScope> _inputScopeMap = new();
+    private sealed class InputMethodStateBag
+    {
+        public bool? IsInputMethodEnabled { get; set; }
+        public InputMethodState? PreferredImeState { get; set; }
+        public InputScope? InputScope { get; set; }
+    }
+
+    private static readonly ConditionalWeakTable<IInputElement, InputMethodStateBag> _stateByElement = new();
 
     /// <summary>
     /// Gets whether IME is enabled for the specified element.
     /// </summary>
     public static bool GetIsInputMethodEnabled(IInputElement element)
     {
-        return _imeEnabledMap.TryGetValue(element, out var value) ? value : true;
+        return _stateByElement.TryGetValue(element, out var state) && state.IsInputMethodEnabled.HasValue
+            ? state.IsInputMethodEnabled.Value
+            : true;
     }
 
     /// <summary>
@@ -148,7 +156,7 @@ public static class InputMethod
     /// </summary>
     public static void SetIsInputMethodEnabled(IInputElement element, bool value)
     {
-        _imeEnabledMap[element] = value;
+        _stateByElement.GetOrCreateValue(element).IsInputMethodEnabled = value;
     }
 
     /// <summary>
@@ -156,7 +164,9 @@ public static class InputMethod
     /// </summary>
     public static InputMethodState GetPreferredImeState(IInputElement element)
     {
-        return _imeStateMap.TryGetValue(element, out var value) ? value : InputMethodState.DoNotCare;
+        return _stateByElement.TryGetValue(element, out var state) && state.PreferredImeState.HasValue
+            ? state.PreferredImeState.Value
+            : InputMethodState.DoNotCare;
     }
 
     /// <summary>
@@ -164,7 +174,7 @@ public static class InputMethod
     /// </summary>
     public static void SetPreferredImeState(IInputElement element, InputMethodState value)
     {
-        _imeStateMap[element] = value;
+        _stateByElement.GetOrCreateValue(element).PreferredImeState = value;
     }
 
     /// <summary>
@@ -172,7 +182,9 @@ public static class InputMethod
     /// </summary>
     public static InputScope GetInputScope(IInputElement element)
     {
-        return _inputScopeMap.TryGetValue(element, out var value) ? value : new InputScope();
+        return _stateByElement.TryGetValue(element, out var state) && state.InputScope != null
+            ? state.InputScope
+            : new InputScope();
     }
 
     /// <summary>
@@ -180,7 +192,7 @@ public static class InputMethod
     /// </summary>
     public static void SetInputScope(IInputElement element, InputScope value)
     {
-        _inputScopeMap[element] = value;
+        _stateByElement.GetOrCreateValue(element).InputScope = value;
     }
 
     #endregion
