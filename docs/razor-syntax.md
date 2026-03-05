@@ -53,16 +53,3 @@ Inline expression equivalent:
 ```xml
 <TextBlock Text='@(IsOnline ? "Online" : "Offline")' />
 ```
-
-## Playground
-
-A temporary verification app exists at `.tmp/RazorSyntaxPlayground` with these tabs:
-
-1. Notify real-time
-2. Plain one-time
-3. Expression
-4. Mixed text
-5. DataContext vs code-behind fallback
-6. If-like block/conditional
-7. Multi-branch expression
-8. Escapes and dynamic segments
