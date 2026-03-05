@@ -496,6 +496,7 @@ public static class XamlReader
     private static void ParseContent(XmlReader reader, object instance, XamlParserContext context)
     {
         int depth = reader.Depth;
+        var ifDirectiveStack = new Stack<string>();
 
         while (reader.Read())
         {
@@ -519,6 +520,17 @@ public static class XamlReader
                         context.ClearCurrentResourceKey(); // Clear any previous key
                         var child = ParseElement(reader, context);
                         var resourceKey = context.GetCurrentResourceKey() ?? explicitKey;
+
+                        if (ifDirectiveStack.Count > 0)
+                        {
+                            var conditionExpression = BuildCombinedIfConditionExpression(ifDirectiveStack);
+                            if (!ShouldIncludeConditionalChild(instance, child, conditionExpression, context))
+                            {
+                                context.ClearCurrentResourceKey();
+                                break;
+                            }
+                        }
+
                         AddChild(instance, child, resourceKey);
                         context.ClearCurrentResourceKey(); // Clear after use
                     }
@@ -526,11 +538,192 @@ public static class XamlReader
 
                 case XmlNodeType.Text:
                 case XmlNodeType.CDATA:
+                    if (SupportsRazorIfDirectives(instance) &&
+                        TryConsumeRazorIfDirectiveText(reader.Value, ifDirectiveStack))
+                    {
+                        break;
+                    }
+
                     // Content property
                     SetContentProperty(instance, reader.Value, context);
                     break;
             }
         }
+
+        if (ifDirectiveStack.Count > 0)
+        {
+            throw new XamlParseException("Unclosed Razor @if block. Expected matching '}'.");
+        }
+    }
+
+    private static bool ShouldIncludeConditionalChild(
+        object parentInstance,
+        object child,
+        string conditionExpression,
+        XamlParserContext context)
+    {
+        if (RazorBindingEngine.TryApplyIfVisibility(child, conditionExpression, context))
+            return true;
+
+        return RazorBindingEngine.EvaluateConditionOnce(parentInstance, context.CodeBehindInstance, conditionExpression);
+    }
+
+    private static string BuildCombinedIfConditionExpression(IEnumerable<string> expressions)
+    {
+        var parts = expressions
+            .Reverse()
+            .Select(static expr => $"({expr})")
+            .ToArray();
+
+        return parts.Length == 1 ? parts[0] : string.Join(" && ", parts);
+    }
+
+    private static bool SupportsRazorIfDirectives(object instance)
+    {
+        if (instance is Panel or ItemsControl or Border or Window)
+            return true;
+
+        var contentAttr = instance.GetType().GetCustomAttribute<ContentPropertyAttribute>();
+        if (contentAttr == null)
+            return false;
+
+        var property = instance.GetType().GetProperty(contentAttr.Name);
+        if (property == null)
+            return false;
+
+        if (typeof(System.Collections.IList).IsAssignableFrom(property.PropertyType))
+            return true;
+
+        return typeof(UIElement).IsAssignableFrom(property.PropertyType);
+    }
+
+    private static bool TryConsumeRazorIfDirectiveText(string rawText, Stack<string> ifDirectiveStack)
+    {
+        if (string.IsNullOrWhiteSpace(rawText))
+            return true;
+
+        var span = rawText.AsSpan();
+        var i = 0;
+        while (i < span.Length)
+        {
+            while (i < span.Length && char.IsWhiteSpace(span[i]))
+            {
+                i++;
+            }
+
+            if (i >= span.Length)
+                break;
+
+            if (span[i] == '}')
+            {
+                if (ifDirectiveStack.Count == 0)
+                    throw new XamlParseException("Unexpected Razor @if block terminator '}'.");
+
+                ifDirectiveStack.Pop();
+                i++;
+                continue;
+            }
+
+            if (TryParseRazorIfStartDirectiveAt(span[i..], out var consumedLength, out var expression))
+            {
+                ifDirectiveStack.Push(expression);
+                i += consumedLength;
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
+    }
+
+    private static bool TryParseRazorIfStartDirectiveAt(ReadOnlySpan<char> text, out int consumedLength, out string expression)
+    {
+        consumedLength = 0;
+        expression = string.Empty;
+
+        if (text.Length < 3 || text[0] != '@' || text[1] != 'i' || text[2] != 'f')
+            return false;
+
+        var i = 3;
+        while (i < text.Length && char.IsWhiteSpace(text[i]))
+        {
+            i++;
+        }
+
+        if (i >= text.Length || text[i] != '(')
+            return false;
+
+        i++;
+        var exprStart = i;
+        var depth = 1;
+        var inString = false;
+        var escaped = false;
+        var quote = '\0';
+
+        for (; i < text.Length; i++)
+        {
+            var c = text[i];
+
+            if (escaped)
+            {
+                escaped = false;
+                continue;
+            }
+
+            if (inString)
+            {
+                if (c == '\\')
+                {
+                    escaped = true;
+                }
+                else if (c == quote)
+                {
+                    inString = false;
+                    quote = '\0';
+                }
+
+                continue;
+            }
+
+            if (c == '"' || c == '\'')
+            {
+                inString = true;
+                quote = c;
+                continue;
+            }
+
+            if (c == '(')
+            {
+                depth++;
+                continue;
+            }
+
+            if (c == ')')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    expression = text[exprStart..i].ToString().Trim();
+                    i++;
+                    break;
+                }
+            }
+        }
+
+        if (depth != 0 || string.IsNullOrWhiteSpace(expression))
+            return false;
+
+        while (i < text.Length && char.IsWhiteSpace(text[i]))
+        {
+            i++;
+        }
+
+        if (i >= text.Length || text[i] != '{')
+            return false;
+
+        consumedLength = i + 1;
+        return true;
     }
 
     [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
@@ -1222,6 +1415,12 @@ public static class XamlReader
                     instance, propertyName, stringValue, context, reader);
             }
 
+            // Razor syntax support: @Path / @(expr) / mixed templates.
+            if (RazorBindingEngine.TryApplyRazorValue(instance, property, stringValue, context, reader))
+            {
+                return;
+            }
+
             // Check for markup extension (e.g., {Binding ...})
             if (MarkupExtensionParser.TryParse(stringValue, instance, property, context, out var extensionResult))
             {
@@ -1355,6 +1554,11 @@ public static class XamlReader
             var property = type.GetProperty(contentAttr.Name);
             if (property != null)
             {
+                if (RazorBindingEngine.TryApplyRazorValue(instance, property, content, context, null))
+                {
+                    return;
+                }
+
                 var value = TypeConverterRegistry.ConvertValue(content, property.PropertyType);
                 property.SetValue(instance, value ?? content);
                 return;
@@ -1364,10 +1568,20 @@ public static class XamlReader
         // Default content handling
         if (instance is ContentControl cc)
         {
+            if (RazorBindingEngine.TryApplyRazorValue(instance, typeof(ContentControl).GetProperty(nameof(ContentControl.Content))!, content, context, null))
+            {
+                return;
+            }
+
             cc.Content = content;
         }
         else if (instance is TextBlock tb)
         {
+            if (RazorBindingEngine.TryApplyRazorValue(instance, typeof(TextBlock).GetProperty(nameof(TextBlock.Text))!, content, context, null))
+            {
+                return;
+            }
+
             tb.Text = content;
         }
     }

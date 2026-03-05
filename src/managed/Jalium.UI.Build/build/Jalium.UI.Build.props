@@ -16,6 +16,8 @@
     <!-- Debug 配置下生成调试信息 -->
     <JalxamlDebugInfo Condition="'$(JalxamlDebugInfo)' == '' And '$(Configuration)' == 'Debug'">true</JalxamlDebugInfo>
     <JalxamlDebugInfo Condition="'$(JalxamlDebugInfo)' == ''">false</JalxamlDebugInfo>
+    <EnableJalxamlRazorTransform Condition="'$(EnableJalxamlRazorTransform)' == ''">true</EnableJalxamlRazorTransform>
+    <JalxamlRazorIntermediateOutputPath Condition="'$(JalxamlRazorIntermediateOutputPath)' == ''">$(JalxamlIntermediateOutputPath)Razor\</JalxamlRazorIntermediateOutputPath>
 
     <!-- HLSL 着色器预编译 -->
     <EnableHlslShaderPrecompilation Condition="'$(EnableHlslShaderPrecompilation)' == ''">false</EnableHlslShaderPrecompilation>
@@ -52,6 +54,12 @@
   <!-- Visual Studio 属性页架构 - 定义 JalxamlPage 在属性窗口的显示 -->
   <ItemGroup>
     <PropertyPageSchema Include="$(MSBuildThisFileDirectory)Jalium.UI.Build.xml" />
+  </ItemGroup>
+
+  <!-- Provide core Jalium primitives without importing the full Jalium.UI namespace. -->
+  <ItemGroup Condition="'$(DisableJaliumGlobalUsings)' != 'true' and '$(DisableJaliumPrimitiveAliases)' != 'true'">
+    <Using Include="Jalium.UI.Thickness" Alias="Thickness" />
+    <Using Include="Jalium.UI.CornerRadius" Alias="CornerRadius" />
   </ItemGroup>
 
 </Project>

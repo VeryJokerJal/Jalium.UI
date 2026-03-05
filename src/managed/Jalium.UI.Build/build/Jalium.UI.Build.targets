@@ -39,6 +39,7 @@
   <!-- 瀵煎叆 MSBuild 浠诲姟 -->
   <UsingTask TaskName="Jalium.UI.Build.CompileJalxamlTask" AssemblyFile="$(_JalxamlTasksPath)" />
   <UsingTask TaskName="Jalium.UI.Build.GenerateJalxamlCodeBehindTask" AssemblyFile="$(_JalxamlTasksPath)" />
+  <UsingTask TaskName="Jalium.UI.Build.TransformJalxamlRazorTask" AssemblyFile="$(_JalxamlTasksPath)" />
   <UsingTask TaskName="Jalium.UI.Build.CompileHlslShadersTask" AssemblyFile="$(_JalxamlTasksPath)" />
   <UsingTask TaskName="Jalium.UI.Build.ExtractHlslShadersTask" AssemblyFile="$(_JalxamlTasksPath)" />
 
@@ -80,6 +81,56 @@
     <Message Text="宸叉坊鍔?JALXAML 鏂囦欢涓?AdditionalFiles (渚?Source Generator 浣跨敤)" Importance="low" />
   </Target>
 
+  <Target Name="TransformJalxamlRazor"
+          BeforeTargets="CompileJalxaml;EmbedJalxamlSources"
+          DependsOnTargets="PrepareForBuild"
+          Inputs="@(JalxamlPage);@(JalxamlApplicationDefinition)"
+          Outputs="@(JalxamlPage->'$(JalxamlRazorIntermediateOutputPath)%(RecursiveDir)%(Filename)%(Extension)');@(JalxamlApplicationDefinition->'$(JalxamlRazorIntermediateOutputPath)%(RecursiveDir)%(Filename)%(Extension)');$(JalxamlRazorIntermediateOutputPath)Jalxaml.RazorMetadata.g.cs"
+          Condition="'$(EnableJalxamlRazorTransform)' == 'true' And ('@(JalxamlPage)' != '' Or '@(JalxamlApplicationDefinition)' != '')">
+
+    <MakeDir Directories="$(JalxamlRazorIntermediateOutputPath)" />
+
+    <TransformJalxamlRazorTask
+        SourceFiles="@(JalxamlPage);@(JalxamlApplicationDefinition)"
+        OutputDirectory="$(JalxamlRazorIntermediateOutputPath)"
+        ProjectDirectory="$(MSBuildProjectDirectory)">
+      <Output TaskParameter="TransformedFiles" ItemName="_JalxamlRazorTransformedFiles" />
+      <Output TaskParameter="GeneratedCodeFiles" ItemName="_JalxamlRazorGeneratedCodeFiles" />
+    </TransformJalxamlRazorTask>
+
+    <ItemGroup>
+      <FileWrites Include="@(_JalxamlRazorTransformedFiles)" />
+      <FileWrites Include="@(_JalxamlRazorGeneratedCodeFiles)" />
+    </ItemGroup>
+
+    <Message Text="宸茶浆璇?JALXAML Razor: @(_JalxamlRazorTransformedFiles)" Importance="normal" />
+    <Message Condition="'@(_JalxamlRazorGeneratedCodeFiles)' != ''"
+             Text="宸茬敓鎴?JALXAML Razor 鍏冩暟鎹唬鐮? @(_JalxamlRazorGeneratedCodeFiles)" Importance="normal" />
+  </Target>
+
+  <Target Name="ResolveEffectiveJalxamlSources"
+          DependsOnTargets="TransformJalxamlRazor"
+          Condition="'@(JalxamlPage)' != '' Or '@(JalxamlApplicationDefinition)' != ''">
+    <ItemGroup>
+      <_EffectiveJalxamlSources Remove="@(_EffectiveJalxamlSources)" />
+      <_EffectiveJalxamlSources Include="@(_JalxamlRazorTransformedFiles)"
+                                Condition="'$(EnableJalxamlRazorTransform)' == 'true' And '@(_JalxamlRazorTransformedFiles)' != ''" />
+      <_EffectiveJalxamlSources Include="@(JalxamlPage);@(JalxamlApplicationDefinition)"
+                                Condition="'@(_EffectiveJalxamlSources)' == ''" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="IncludeJalxamlRazorGeneratedCode"
+          BeforeTargets="CoreCompile"
+          DependsOnTargets="TransformJalxamlRazor"
+          Condition="'$(EnableJalxamlRazorTransform)' == 'true' And '@(_JalxamlRazorGeneratedCodeFiles)' != ''">
+    <ItemGroup>
+      <Compile Remove="@(_JalxamlRazorGeneratedCodeFiles)" />
+      <Compile Include="@(_JalxamlRazorGeneratedCodeFiles)" Condition="Exists('%(Identity)')" />
+      <FileWrites Include="@(_JalxamlRazorGeneratedCodeFiles)" Condition="Exists('%(Identity)')" />
+    </ItemGroup>
+  </Target>
+
   <!--
     缂栬瘧鍓嶇洰鏍囷細鐢熸垚浠ｇ爜闅愯棌鏂囦欢
     鍦?CoreCompile 涔嬪墠杩愯
@@ -89,7 +140,7 @@
           BeforeTargets="CoreCompile"
           DependsOnTargets="PrepareForBuild"
           Inputs="@(JalxamlPage);@(JalxamlApplicationDefinition)"
-          Outputs="@(JalxamlPage->'$(JalxamlIntermediateOutputPath)%(Filename).g.cs');@(JalxamlApplicationDefinition->'$(JalxamlIntermediateOutputPath)%(Filename).g.cs')"
+          Outputs="@(JalxamlPage->'$(JalxamlIntermediateOutputPath)%(Filename).g.cs');@(JalxamlApplicationDefinition->'$(JalxamlIntermediateOutputPath)%(Filename).g.cs');$(JalxamlIntermediateOutputPath)Jalxaml.ViewAliases.g.cs"
           Condition="'$(EnableJalxamlCodeGeneration)' == 'true' And ('@(JalxamlPage)' != '' Or '@(JalxamlApplicationDefinition)' != '')">
 
     <MakeDir Directories="$(JalxamlIntermediateOutputPath)" />
@@ -123,6 +174,7 @@
     <ItemGroup>
       <_ExpectedJalxamlGeneratedFiles Include="@(JalxamlPage->'$(JalxamlIntermediateOutputPath)%(Filename).g.cs')" />
       <_ExpectedJalxamlGeneratedFiles Include="@(JalxamlApplicationDefinition->'$(JalxamlIntermediateOutputPath)%(Filename).g.cs')" />
+      <_ExpectedJalxamlGeneratedFiles Include="$(JalxamlIntermediateOutputPath)Jalxaml.ViewAliases.g.cs" />
       <Compile Remove="@(_ExpectedJalxamlGeneratedFiles)" />
       <Compile Include="@(_ExpectedJalxamlGeneratedFiles)" Condition="Exists('%(Identity)')" />
       <FileWrites Include="@(_ExpectedJalxamlGeneratedFiles)" Condition="Exists('%(Identity)')" />
@@ -138,13 +190,13 @@
   -->
   <Target Name="CompileJalxaml"
           BeforeTargets="PrepareResources;BeforeBuild;CoreCompile"
-          DependsOnTargets="PrepareForBuild"
-          Inputs="@(JalxamlPage);@(JalxamlApplicationDefinition)"
+          DependsOnTargets="PrepareForBuild;ResolveEffectiveJalxamlSources"
+          Inputs="@(_EffectiveJalxamlSources)"
           Outputs="$(JalxamlIntermediateOutputPath)%(Filename).uic"
           Condition="'@(JalxamlPage)' != '' Or '@(JalxamlApplicationDefinition)' != ''">
 
     <CompileJalxamlTask
-        SourceFiles="@(JalxamlPage);@(JalxamlApplicationDefinition)"
+        SourceFiles="@(_EffectiveJalxamlSources)"
         OutputDirectory="$(JalxamlIntermediateOutputPath)"
         ProjectDirectory="$(MSBuildProjectDirectory)"
         IntermediateOutputPath="$(JalxamlIntermediateOutputPath)"
@@ -213,6 +265,7 @@
   -->
   <Target Name="EmbedJalxamlSources"
           BeforeTargets="AssignTargetPaths;CoreCompile"
+          DependsOnTargets="ResolveEffectiveJalxamlSources"
           Condition="'@(JalxamlPage)' != '' Or '@(JalxamlApplicationDefinition)' != ''">
 
     <ItemGroup>
@@ -221,12 +274,13 @@
         %(Filename) 鏄枃浠跺悕涓嶅惈鎵╁睍鍚?
         灏嗚矾寰勫垎闅旂鏇挎崲涓虹偣锛屽舰鎴愬畬鏁寸殑璧勬簮鍚嶇О
       -->
-      <EmbeddedResource Include="@(JalxamlPage);@(JalxamlApplicationDefinition)">
-        <LogicalName>$(RootNamespace).$([System.String]::Copy('%(RecursiveDir)%(Filename)').Replace('\','.').Replace('/','.').TrimStart('.')).jalxaml</LogicalName>
+      <EmbeddedResource Include="@(_EffectiveJalxamlSources)">
+        <LogicalName Condition="'%(RazorRelativeLogicalPath)' != ''">$(RootNamespace).%(RazorRelativeLogicalPath).jalxaml</LogicalName>
+        <LogicalName Condition="'%(RazorRelativeLogicalPath)' == ''">$(RootNamespace).$([System.String]::Copy('%(RecursiveDir)%(Filename)').Replace('\','.').Replace('/','.').TrimStart('.')).jalxaml</LogicalName>
       </EmbeddedResource>
     </ItemGroup>
 
-    <Message Text="宸插祵鍏?JALXAML 婧愭枃浠? @(JalxamlPage);@(JalxamlApplicationDefinition)" Importance="normal" />
+    <Message Text="宸插祵鍏?JALXAML 婧愭枃浠? @(_EffectiveJalxamlSources)" Importance="normal" />
   </Target>
 
   <!--
@@ -336,9 +390,12 @@
   <Target Name="CleanJalxaml" AfterTargets="Clean">
     <Delete Files="$(JalxamlIntermediateOutputPath)**\*.g.cs" />
     <Delete Files="$(JalxamlIntermediateOutputPath)**\*.uic" />
+    <Delete Files="$(JalxamlRazorIntermediateOutputPath)**\*.jalxaml" />
+    <Delete Files="$(JalxamlRazorIntermediateOutputPath)**\*.g.cs" />
     <Delete Files="$(HlslShaderIntermediateOutputPath)**\*.cso" />
     <Delete Files="$(HlslShaderIntermediateOutputPath)**\*.hlsl" />
     <RemoveDir Directories="$(JalxamlIntermediateOutputPath)" />
+    <RemoveDir Directories="$(JalxamlRazorIntermediateOutputPath)" />
     <RemoveDir Directories="$(HlslShaderIntermediateOutputPath)" />
   </Target>
 
