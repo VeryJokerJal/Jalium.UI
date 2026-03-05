@@ -72,6 +72,25 @@ build-time tooling, packaging projects, and tests.
 - Build integration through packaged MSBuild targets/tasks
 - Source-generator package for compile-time assistance in JALXAML workflows
 
+## Razor Syntax In JALXAML
+
+JALXAML supports Razor-style syntax as additive sugar on top of existing `{Binding ...}`:
+
+- `@Path`
+- `@(expr)`
+- mixed text templates (for string/object targets)
+- `@if(expr){<Element />}` block directives
+- escapes: `@@` and `\@`
+
+Binding source resolution is `DataContext` first, then code-behind fallback.
+
+Update behavior:
+
+- Observable source (`INotifyPropertyChanged` / dependency property): real-time updates.
+- Non-observable CLR source: one-time evaluation at load.
+
+For syntax details and rules, see [`docs/razor-syntax.md`](docs/razor-syntax.md).
+
 ## Installation
 
 ### Recommended (metapackage)

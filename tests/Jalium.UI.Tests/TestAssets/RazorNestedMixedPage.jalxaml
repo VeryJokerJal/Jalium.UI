@@ -1,0 +1,7 @@
+<UserControl xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  <StackPanel Margin="16">
+    <TextBlock x:Name="CountText" Text="Count: @Count" />
+    <TextBlock x:Name="ExprText" Margin="0,8,0,0" Text='@(Count > 0 ? "Positive" : "ZeroOrNegative")' />
+  </StackPanel>
+</UserControl>
