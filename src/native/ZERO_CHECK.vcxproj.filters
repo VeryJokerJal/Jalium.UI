@@ -1,0 +1,13 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="18.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <CustomBuild Include="D:\Master\code\Jalium.UI\src\native\CMakeFiles\57cfad8254792fcc7942936ae8d8afbc\generate.stamp.rule">
+      <Filter>CMake Rules</Filter>
+    </CustomBuild>
+  </ItemGroup>
+  <ItemGroup>
+    <Filter Include="CMake Rules">
+      <UniqueIdentifier>{13644FF5-83E3-3544-98A5-58CCDF8AE029}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+</Project>

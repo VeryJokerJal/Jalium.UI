@@ -496,6 +496,11 @@ public sealed class FormattedText
     public Brush? Foreground { get; set; }
 
     /// <summary>
+    /// Gets or sets the color.
+    /// </summary>
+    public Brush? FontColor { get; set; }
+
+    /// <summary>
     /// Gets or sets the maximum width for text wrapping.
     /// </summary>
     public double MaxTextWidth { get; set; } = double.MaxValue;
@@ -528,11 +533,13 @@ public sealed class FormattedText
     /// <summary>
     /// Initializes a new instance of the <see cref="FormattedText"/> class.
     /// </summary>
-    public FormattedText(string text, string fontFamily, double fontSize)
+    public FormattedText(string text, string fontFamily, double fontSize,Brush? fontColor=null)
     {
+        if(fontColor==null) fontColor= new SolidColorBrush(Colors.Black);
         Text = text;
         FontFamily = fontFamily;
         FontSize = fontSize;
+        FontColor = fontColor;
     }
 
     /// <summary>

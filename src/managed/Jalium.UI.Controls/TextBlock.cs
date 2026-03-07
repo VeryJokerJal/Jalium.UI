@@ -28,9 +28,10 @@ public sealed class TextBlock : FrameworkElement
         }
 
         // Create new FormattedText
-        _cachedFormattedText = new FormattedText(Text, FontFamily, FontSize)
+        _cachedFormattedText = new FormattedText(Text, FontFamily, FontSize,FontColor)
         {
             Foreground = Foreground,
+            FontColor = FontColor,
             MaxTextWidth = RenderSize.Width,
             MaxTextHeight = RenderSize.Height,
             FontWeight = FontWeight.ToOpenTypeWeight(),
@@ -63,6 +64,14 @@ public sealed class TextBlock : FrameworkElement
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(TextBlock),
             new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged, null, inherits: true));
+
+    /// <summary>
+    /// Identifies the FontColor of the TextBlock.
+    /// </summary>
+    public static readonly DependencyProperty FontColorProperty=
+        DependencyProperty.Register(nameof(FontColor), typeof(Color), typeof(TextBlock),
+            new PropertyMetadata(Color.Black, OnVisualPropertyChanged, null, inherits: true));
+
 
     /// <summary>
     /// Identifies the FontFamily dependency property.
@@ -133,6 +142,15 @@ public sealed class TextBlock : FrameworkElement
     {
         get => (Brush?)GetValue(ForegroundProperty);
         set => SetValue(ForegroundProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the font color.
+    /// </summary>
+    public Brush? FontColor
+    {
+        get=> (Brush?)GetValue(FontColorProperty);
+        set => SetValue(FontColorProperty, value);
     }
 
     /// <summary>
@@ -229,8 +247,9 @@ public sealed class TextBlock : FrameworkElement
         }
 
         // Create FormattedText for measurement
-        var formattedText = new FormattedText(text, FontFamily, FontSize)
+        var formattedText = new FormattedText(text, FontFamily, FontSize,FontColor)
         {
+            FontColor = FontColor,
             MaxTextWidth = maxWidth,
             MaxTextHeight = double.MaxValue,
             FontWeight = FontWeight.ToOpenTypeWeight(),

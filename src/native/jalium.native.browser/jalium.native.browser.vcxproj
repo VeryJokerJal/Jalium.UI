@@ -22,11 +22,11 @@
     </ProjectConfiguration>
   </ItemGroup>
   <PropertyGroup Label="Globals">
-    <ProjectGuid>{D2B18FD1-8C88-334B-A4A4-5EAA306582EB}</ProjectGuid>
+    <ProjectGuid>{33D5F001-38E9-351B-A1D0-B04C493C0C1B}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
     <WindowsTargetPlatformVersion>10.0.26100.0</WindowsTargetPlatformVersion>
     <Platform>x64</Platform>
-    <ProjectName>jalium.native.d3d12</ProjectName>
+    <ProjectName>jalium.native.browser</ProjectName>
     <VCProjectUpgraderObjectName>NoUpgrade</VCProjectUpgraderObjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
@@ -60,26 +60,26 @@
   <PropertyGroup>
     <_ProjectFileVersion>10.0.20506.1</_ProjectFileVersion>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\Master\code\Jalium.UI\src\native\bin\native\Debug\</OutDir>
-    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">jalium.native.d3d12.dir\Debug\</IntDir>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">jalium.native.d3d12</TargetName>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">jalium.native.browser.dir\Debug\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">jalium.native.browser</TargetName>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.dll</TargetExt>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</GenerateManifest>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\Master\code\Jalium.UI\src\native\bin\Release\</OutDir>
-    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">jalium.native.d3d12.dir\Release\</IntDir>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">jalium.native.d3d12</TargetName>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='Release|x64'">jalium.native.browser.dir\Release\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='Release|x64'">jalium.native.browser</TargetName>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.dll</TargetExt>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</GenerateManifest>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\Master\code\Jalium.UI\src\native\bin\MinSizeRel\</OutDir>
-    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">jalium.native.d3d12.dir\MinSizeRel\</IntDir>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">jalium.native.d3d12</TargetName>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">jalium.native.browser.dir\MinSizeRel\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">jalium.native.browser</TargetName>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">.dll</TargetExt>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">true</GenerateManifest>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\Master\code\Jalium.UI\src\native\bin\RelWithDebInfo\</OutDir>
-    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">jalium.native.d3d12.dir\RelWithDebInfo\</IntDir>
-    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">jalium.native.d3d12</TargetName>
+    <IntDir Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">jalium.native.browser.dir\RelWithDebInfo\</IntDir>
+    <TargetName Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">jalium.native.browser</TargetName>
     <TargetExt Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">.dll</TargetExt>
     <LinkIncremental Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</LinkIncremental>
     <GenerateManifest Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">true</GenerateManifest>
@@ -87,7 +87,7 @@
   <PropertyGroup />
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <BufferSecurityCheck>
@@ -114,24 +114,39 @@
       <TreatWChar_tAsBuiltInType>
       </TreatWChar_tAsBuiltInType>
       <UseFullPaths>false</UseFullPaths>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;JALIUM_D3D12_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR="Debug";jalium_native_d3d12_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;JALIUM_BROWSER_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR="Debug";jalium_native_browser_EXPORTS</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;JALIUM_D3D12_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR=\"Debug\";jalium_native_d3d12_EXPORTS</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;JALIUM_BROWSER_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR=\"Debug\";jalium_native_browser_EXPORTS</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
       <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
       <ProxyFileName>%(Filename)_p.c</ProxyFileName>
     </Midl>
+    <PostBuildEvent>
+      <Message>
+      </Message>
+      <Command>setlocal
+D:\Master\Programs\CMake\bin\cmake.exe -E make_directory D:/Master/code/Jalium.UI/src/native/bin/native/Debug
+if %errorlevel% neq 0 goto :cmEnd
+D:\Master\Programs\CMake\bin\cmake.exe -E copy_if_different D:/Master/code/Jalium.UI/src/native/bin/Debug/jalium.native.browser.dll D:/Master/code/Jalium.UI/src/native/bin/native/Debug/jalium.native.browser.dll
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
     <Link>
-      <AdditionalDependencies>..\lib\Debug\jalium.native.core.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dwrite.lib;d2d1.lib;dcomp.lib;dxguid.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>ole32.lib;user32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
       <DataExecutionPrevention>
@@ -140,10 +155,10 @@
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <ImageHasSafeExceptionHandlers>
       </ImageHasSafeExceptionHandlers>
-      <ImportLibrary>D:/Master/code/Jalium.UI/src/native/lib/Debug/jalium.native.d3d12.lib</ImportLibrary>
+      <ImportLibrary>D:/Master/code/Jalium.UI/src/native/lib/Debug/jalium.native.browser.lib</ImportLibrary>
       <LinkErrorReporting>
       </LinkErrorReporting>
-      <ProgramDataBaseFile>D:/Master/code/Jalium.UI/src/native/bin/Debug/jalium.native.d3d12.pdb</ProgramDataBaseFile>
+      <ProgramDataBaseFile>D:/Master/code/Jalium.UI/src/native/bin/Debug/jalium.native.browser.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress>
       </RandomizedBaseAddress>
       <SubSystem>Console</SubSystem>
@@ -154,7 +169,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <BufferSecurityCheck>
@@ -180,26 +195,41 @@
       <TreatWChar_tAsBuiltInType>
       </TreatWChar_tAsBuiltInType>
       <UseFullPaths>false</UseFullPaths>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_D3D12_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR="Release";jalium_native_d3d12_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_BROWSER_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR="Release";jalium_native_browser_EXPORTS</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <DebugInformationFormat>
       </DebugInformationFormat>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_D3D12_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR=\"Release\";jalium_native_d3d12_EXPORTS</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_BROWSER_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR=\"Release\";jalium_native_browser_EXPORTS</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
       <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
       <ProxyFileName>%(Filename)_p.c</ProxyFileName>
     </Midl>
+    <PostBuildEvent>
+      <Message>
+      </Message>
+      <Command>setlocal
+D:\Master\Programs\CMake\bin\cmake.exe -E make_directory D:/Master/code/Jalium.UI/src/native/bin/native/Release
+if %errorlevel% neq 0 goto :cmEnd
+D:\Master\Programs\CMake\bin\cmake.exe -E copy_if_different D:/Master/code/Jalium.UI/src/native/bin/Release/jalium.native.browser.dll D:/Master/code/Jalium.UI/src/native/bin/native/Release/jalium.native.browser.dll
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
     <Link>
-      <AdditionalDependencies>..\lib\Release\jalium.native.core.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dwrite.lib;d2d1.lib;dcomp.lib;dxguid.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>ole32.lib;user32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
       <DataExecutionPrevention>
@@ -208,10 +238,10 @@
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <ImageHasSafeExceptionHandlers>
       </ImageHasSafeExceptionHandlers>
-      <ImportLibrary>D:/Master/code/Jalium.UI/src/native/lib/Release/jalium.native.d3d12.lib</ImportLibrary>
+      <ImportLibrary>D:/Master/code/Jalium.UI/src/native/lib/Release/jalium.native.browser.lib</ImportLibrary>
       <LinkErrorReporting>
       </LinkErrorReporting>
-      <ProgramDataBaseFile>D:/Master/code/Jalium.UI/src/native/bin/Release/jalium.native.d3d12.pdb</ProgramDataBaseFile>
+      <ProgramDataBaseFile>D:/Master/code/Jalium.UI/src/native/bin/Release/jalium.native.browser.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress>
       </RandomizedBaseAddress>
       <SubSystem>Console</SubSystem>
@@ -222,7 +252,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <BufferSecurityCheck>
@@ -248,26 +278,41 @@
       <TreatWChar_tAsBuiltInType>
       </TreatWChar_tAsBuiltInType>
       <UseFullPaths>false</UseFullPaths>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_D3D12_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR="MinSizeRel";jalium_native_d3d12_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_BROWSER_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR="MinSizeRel";jalium_native_browser_EXPORTS</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <DebugInformationFormat>
       </DebugInformationFormat>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_D3D12_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR=\"MinSizeRel\";jalium_native_d3d12_EXPORTS</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_BROWSER_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR=\"MinSizeRel\";jalium_native_browser_EXPORTS</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
       <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
       <ProxyFileName>%(Filename)_p.c</ProxyFileName>
     </Midl>
+    <PostBuildEvent>
+      <Message>
+      </Message>
+      <Command>setlocal
+D:\Master\Programs\CMake\bin\cmake.exe -E make_directory D:/Master/code/Jalium.UI/src/native/bin/native/MinSizeRel
+if %errorlevel% neq 0 goto :cmEnd
+D:\Master\Programs\CMake\bin\cmake.exe -E copy_if_different D:/Master/code/Jalium.UI/src/native/bin/MinSizeRel/jalium.native.browser.dll D:/Master/code/Jalium.UI/src/native/bin/native/MinSizeRel/jalium.native.browser.dll
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
     <Link>
-      <AdditionalDependencies>..\lib\MinSizeRel\jalium.native.core.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dwrite.lib;d2d1.lib;dcomp.lib;dxguid.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>ole32.lib;user32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
       <DataExecutionPrevention>
@@ -276,10 +321,10 @@
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <ImageHasSafeExceptionHandlers>
       </ImageHasSafeExceptionHandlers>
-      <ImportLibrary>D:/Master/code/Jalium.UI/src/native/lib/MinSizeRel/jalium.native.d3d12.lib</ImportLibrary>
+      <ImportLibrary>D:/Master/code/Jalium.UI/src/native/lib/MinSizeRel/jalium.native.browser.lib</ImportLibrary>
       <LinkErrorReporting>
       </LinkErrorReporting>
-      <ProgramDataBaseFile>D:/Master/code/Jalium.UI/src/native/bin/MinSizeRel/jalium.native.d3d12.pdb</ProgramDataBaseFile>
+      <ProgramDataBaseFile>D:/Master/code/Jalium.UI/src/native/bin/MinSizeRel/jalium.native.browser.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress>
       </RandomizedBaseAddress>
       <SubSystem>Console</SubSystem>
@@ -290,7 +335,7 @@
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
       <BufferSecurityCheck>
@@ -317,24 +362,39 @@
       <TreatWChar_tAsBuiltInType>
       </TreatWChar_tAsBuiltInType>
       <UseFullPaths>false</UseFullPaths>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_D3D12_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR="RelWithDebInfo";jalium_native_d3d12_EXPORTS</PreprocessorDefinitions>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_BROWSER_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR="RelWithDebInfo";jalium_native_browser_EXPORTS</PreprocessorDefinitions>
       <ObjectFileName>$(IntDir)</ObjectFileName>
       <ScanSourceForModuleDependencies>false</ScanSourceForModuleDependencies>
     </ClCompile>
     <ResourceCompile>
-      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_D3D12_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR=\"RelWithDebInfo\";jalium_native_d3d12_EXPORTS</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;JALIUM_BROWSER_EXPORTS;UNICODE;_UNICODE;WIN32_LEAN_AND_MEAN;NOMINMAX;CMAKE_INTDIR=\"RelWithDebInfo\";jalium_native_browser_EXPORTS</PreprocessorDefinitions>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include;D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\..\jalium.native.core\include;D:\Master\code\Jalium.UI\src\native\jalium.native.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include;D:\Master\code\Jalium.UI\src\native\jalium.native.browser\third_party\webview2\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
       <InterfaceIdentifierFileName>%(Filename)_i.c</InterfaceIdentifierFileName>
       <ProxyFileName>%(Filename)_p.c</ProxyFileName>
     </Midl>
+    <PostBuildEvent>
+      <Message>
+      </Message>
+      <Command>setlocal
+D:\Master\Programs\CMake\bin\cmake.exe -E make_directory D:/Master/code/Jalium.UI/src/native/bin/native/RelWithDebInfo
+if %errorlevel% neq 0 goto :cmEnd
+D:\Master\Programs\CMake\bin\cmake.exe -E copy_if_different D:/Master/code/Jalium.UI/src/native/bin/RelWithDebInfo/jalium.native.browser.dll D:/Master/code/Jalium.UI/src/native/bin/native/RelWithDebInfo/jalium.native.browser.dll
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd</Command>
+    </PostBuildEvent>
     <Link>
-      <AdditionalDependencies>..\lib\RelWithDebInfo\jalium.native.core.lib;d3d12.lib;dxgi.lib;d3dcompiler.lib;dwrite.lib;d2d1.lib;dcomp.lib;dxguid.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
+      <AdditionalDependencies>ole32.lib;user32.lib;kernel32.lib;user32.lib;gdi32.lib;winspool.lib;shell32.lib;ole32.lib;oleaut32.lib;uuid.lib;comdlg32.lib;advapi32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalOptions>%(AdditionalOptions) /machine:x64</AdditionalOptions>
       <DataExecutionPrevention>
@@ -343,10 +403,10 @@
       <IgnoreSpecificDefaultLibraries>%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
       <ImageHasSafeExceptionHandlers>
       </ImageHasSafeExceptionHandlers>
-      <ImportLibrary>D:/Master/code/Jalium.UI/src/native/lib/RelWithDebInfo/jalium.native.d3d12.lib</ImportLibrary>
+      <ImportLibrary>D:/Master/code/Jalium.UI/src/native/lib/RelWithDebInfo/jalium.native.browser.lib</ImportLibrary>
       <LinkErrorReporting>
       </LinkErrorReporting>
-      <ProgramDataBaseFile>D:/Master/code/Jalium.UI/src/native/bin/RelWithDebInfo/jalium.native.d3d12.pdb</ProgramDataBaseFile>
+      <ProgramDataBaseFile>D:/Master/code/Jalium.UI/src/native/bin/RelWithDebInfo/jalium.native.browser.pdb</ProgramDataBaseFile>
       <RandomizedBaseAddress>
       </RandomizedBaseAddress>
       <SubSystem>Console</SubSystem>
@@ -356,11 +416,11 @@
     </ProjectReference>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <CustomBuild Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\CMakeLists.txt">
+    <CustomBuild Include="D:\Master\code\Jalium.UI\src\native\jalium.native.browser\CMakeLists.txt">
       <UseUtf8Encoding>Always</UseUtf8Encoding>
-      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule D:/Master/code/Jalium.UI/src/native/jalium.native.d3d12/CMakeLists.txt</Message>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Building Custom Rule D:/Master/code/Jalium.UI/src/native/jalium.native.browser/CMakeLists.txt</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">setlocal
-D:\Master\Programs\CMake\bin\cmake.exe -SD:/Master/code/Jalium.UI/src/native -BD:/Master/code/Jalium.UI/src/native --check-stamp-file D:/Master/code/Jalium.UI/src/native/jalium.native.d3d12/CMakeFiles/generate.stamp
+D:\Master\Programs\CMake\bin\cmake.exe -SD:/Master/code/Jalium.UI/src/native -BD:/Master/code/Jalium.UI/src/native --check-stamp-file D:/Master/code/Jalium.UI/src/native/jalium.native.browser/CMakeFiles/generate.stamp
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -369,11 +429,11 @@ exit /b %1
 :cmDone
 if %errorlevel% neq 0 goto :VCEnd</Command>
       <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeCInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Internal\CMakeCLinkerInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Linker\MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;D:\Master\code\Jalium.UI\src\native\CMakeFiles\4.2.3\CMakeCCompiler.cmake;%(AdditionalInputs)</AdditionalInputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\CMakeFiles\generate.stamp</Outputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">D:\Master\code\Jalium.UI\src\native\jalium.native.browser\CMakeFiles\generate.stamp</Outputs>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">false</LinkObjects>
-      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule D:/Master/code/Jalium.UI/src/native/jalium.native.d3d12/CMakeLists.txt</Message>
+      <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Building Custom Rule D:/Master/code/Jalium.UI/src/native/jalium.native.browser/CMakeLists.txt</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">setlocal
-D:\Master\Programs\CMake\bin\cmake.exe -SD:/Master/code/Jalium.UI/src/native -BD:/Master/code/Jalium.UI/src/native --check-stamp-file D:/Master/code/Jalium.UI/src/native/jalium.native.d3d12/CMakeFiles/generate.stamp
+D:\Master\Programs\CMake\bin\cmake.exe -SD:/Master/code/Jalium.UI/src/native -BD:/Master/code/Jalium.UI/src/native --check-stamp-file D:/Master/code/Jalium.UI/src/native/jalium.native.browser/CMakeFiles/generate.stamp
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -382,11 +442,11 @@ exit /b %1
 :cmDone
 if %errorlevel% neq 0 goto :VCEnd</Command>
       <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeCInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Internal\CMakeCLinkerInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Linker\MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;D:\Master\code\Jalium.UI\src\native\CMakeFiles\4.2.3\CMakeCCompiler.cmake;%(AdditionalInputs)</AdditionalInputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\CMakeFiles\generate.stamp</Outputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">D:\Master\code\Jalium.UI\src\native\jalium.native.browser\CMakeFiles\generate.stamp</Outputs>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='Release|x64'">false</LinkObjects>
-      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule D:/Master/code/Jalium.UI/src/native/jalium.native.d3d12/CMakeLists.txt</Message>
+      <Message Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">Building Custom Rule D:/Master/code/Jalium.UI/src/native/jalium.native.browser/CMakeLists.txt</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">setlocal
-D:\Master\Programs\CMake\bin\cmake.exe -SD:/Master/code/Jalium.UI/src/native -BD:/Master/code/Jalium.UI/src/native --check-stamp-file D:/Master/code/Jalium.UI/src/native/jalium.native.d3d12/CMakeFiles/generate.stamp
+D:\Master\Programs\CMake\bin\cmake.exe -SD:/Master/code/Jalium.UI/src/native -BD:/Master/code/Jalium.UI/src/native --check-stamp-file D:/Master/code/Jalium.UI/src/native/jalium.native.browser/CMakeFiles/generate.stamp
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -395,11 +455,11 @@ exit /b %1
 :cmDone
 if %errorlevel% neq 0 goto :VCEnd</Command>
       <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeCInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Internal\CMakeCLinkerInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Linker\MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;D:\Master\code\Jalium.UI\src\native\CMakeFiles\4.2.3\CMakeCCompiler.cmake;%(AdditionalInputs)</AdditionalInputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\CMakeFiles\generate.stamp</Outputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">D:\Master\code\Jalium.UI\src\native\jalium.native.browser\CMakeFiles\generate.stamp</Outputs>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">false</LinkObjects>
-      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule D:/Master/code/Jalium.UI/src/native/jalium.native.d3d12/CMakeLists.txt</Message>
+      <Message Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">Building Custom Rule D:/Master/code/Jalium.UI/src/native/jalium.native.browser/CMakeLists.txt</Message>
       <Command Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">setlocal
-D:\Master\Programs\CMake\bin\cmake.exe -SD:/Master/code/Jalium.UI/src/native -BD:/Master/code/Jalium.UI/src/native --check-stamp-file D:/Master/code/Jalium.UI/src/native/jalium.native.d3d12/CMakeFiles/generate.stamp
+D:\Master\Programs\CMake\bin\cmake.exe -SD:/Master/code/Jalium.UI/src/native -BD:/Master/code/Jalium.UI/src/native --check-stamp-file D:/Master/code/Jalium.UI/src/native/jalium.native.browser/CMakeFiles/generate.stamp
 if %errorlevel% neq 0 goto :cmEnd
 :cmEnd
 endlocal &amp; call :cmErrorLevel %errorlevel% &amp; goto :cmDone
@@ -408,24 +468,13 @@ exit /b %1
 :cmDone
 if %errorlevel% neq 0 goto :VCEnd</Command>
       <AdditionalInputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeCInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeCommonLanguageInclude.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\CMakeLanguageInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\CMakeCommonCompilerMacros.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Compiler\MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Internal\CMakeCLinkerInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Internal\CMakeCommonLinkerInformation.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Linker\MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Linker\MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Linker\Windows-MSVC.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC-C.cmake;D:\Master\Programs\CMake\share\cmake-4.2\Modules\Platform\Windows-MSVC.cmake;D:\Master\code\Jalium.UI\src\native\CMakeFiles\4.2.3\CMakeCCompiler.cmake;%(AdditionalInputs)</AdditionalInputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\CMakeFiles\generate.stamp</Outputs>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">D:\Master\code\Jalium.UI\src\native\jalium.native.browser\CMakeFiles\generate.stamp</Outputs>
       <LinkObjects Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">false</LinkObjects>
     </CustomBuild>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include\d3d12_backend.h" />
-    <ClInclude Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include\d3d12_render_target.h" />
-    <ClInclude Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include\d3d12_resources.h" />
-    <ClInclude Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include\liquid_glass_effects.h" />
-    <ClInclude Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\include\transition_shader_effect.h" />
-    <ClCompile Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\src\d3d12_backend.cpp" />
-    <ClCompile Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\src\d3d12_render_target.cpp" />
-    <ClCompile Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\src\d3d12_brush.cpp" />
-    <ClCompile Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\src\d3d12_bitmap.cpp" />
-    <ClCompile Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\src\d3d12_text.cpp" />
-    <ClCompile Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\src\d3d12_init.cpp" />
-    <ClCompile Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\src\liquid_glass_effects.cpp" />
-    <ClCompile Include="D:\Master\code\Jalium.UI\src\native\jalium.native.d3d12\src\transition_shader_effect.cpp" />
+    <ClInclude Include="D:\Master\code\Jalium.UI\src\native\jalium.native.browser\include\jalium_browser_api.h" />
+    <ClCompile Include="D:\Master\code\Jalium.UI\src\native\jalium.native.browser\src\browser.cpp" />
   </ItemGroup>
   <ItemGroup />
   <ItemGroup>
@@ -434,10 +483,6 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
       <Name>ZERO_CHECK</Name>
       <ReferenceOutputAssembly>false</ReferenceOutputAssembly>
       <CopyToOutputDirectory>Never</CopyToOutputDirectory>
-    </ProjectReference>
-    <ProjectReference Include="D:\Master\code\Jalium.UI\src\native\jalium.native.core\jalium.native.core.vcxproj">
-      <Project>{15861115-664B-308B-8DE9-37BBED471930}</Project>
-      <Name>jalium.native.core</Name>
     </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />

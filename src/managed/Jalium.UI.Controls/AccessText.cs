@@ -53,6 +53,13 @@ public sealed class AccessText : FrameworkElement
             new PropertyMetadata(null));
 
     /// <summary>
+    /// Identifies the FontColor dependency property.
+    /// </summary>
+    public static readonly DependencyProperty FontColorProperty=
+        DependencyProperty.Register(nameof(FontColor), typeof(Color), typeof(AccessText),
+            new PropertyMetadata(Colors.Black));
+
+    /// <summary>
     /// Identifies the TextWrapping dependency property.
     /// </summary>
     public static readonly DependencyProperty TextWrappingProperty =
@@ -120,6 +127,12 @@ public sealed class AccessText : FrameworkElement
     {
         get => (Brush?)GetValue(ForegroundProperty);
         set => SetValue(ForegroundProperty, value);
+    }
+
+    public Color? FontColor
+    {
+        get => (Color?)GetValue(FontColorProperty);
+        set => SetValue(FontColorProperty, value);
     }
 
     /// <summary>
