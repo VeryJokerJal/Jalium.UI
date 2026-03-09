@@ -233,6 +233,12 @@ Issues and pull requests are welcome. For large changes, include:
 - behavioral impact/risk
 - validation steps (tests or manual verification)
 
+## Community
+
+For discussions, questions, or community support, you can join the QQ group:
+
+**QQ: 1079778999**
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
