@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
@@ -12,7 +12,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that displays data in a customizable grid using TemplatedControl pattern.
 /// </summary>
-public sealed class DataGrid : Control
+public class DataGrid : Control
 {
     #region Dependency Properties
 
@@ -350,6 +350,7 @@ public sealed class DataGrid : Control
     private DataGridCell? _currentEditingCell;
     private DataGridColumn? _currentEditingColumn;
     private DataGridRow? _currentEditingRow;
+    private bool _isUpdatingColumnWidthFromResize;
     private bool _isSynchronizingSelection;
     private bool _isSynchronizingColumnDisplayIndexes;
 
@@ -1435,6 +1436,11 @@ public sealed class DataGrid : Control
             return;
         }
 
+        if (change == DataGridColumnPropertyChange.Layout && _isUpdatingColumnWidthFromResize)
+        {
+            return;
+        }
+
         RefreshColumnHeaders();
         UpdateRealizedRows(forceRefresh: true);
         InvalidateMeasure();
@@ -1452,7 +1458,15 @@ public sealed class DataGrid : Control
         var colIndex = Columns.IndexOf(column);
         if (colIndex < 0) return;
 
-        column.Width = newWidth;
+        _isUpdatingColumnWidthFromResize = true;
+        try
+        {
+            column.Width = newWidth;
+        }
+        finally
+        {
+            _isUpdatingColumnWidthFromResize = false;
+        }
 
         // Update column header width
         if (_columnHeadersHost != null)
@@ -1734,7 +1748,7 @@ public sealed class DataGrid : Control
 /// <summary>
 /// Represents a row in a DataGrid.
 /// </summary>
-public sealed class DataGridRow : Control
+public class DataGridRow : Control
 {
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(DataGridRow),
@@ -1791,7 +1805,7 @@ public sealed class DataGridRow : Control
 /// <summary>
 /// Represents a cell in a DataGrid.
 /// </summary>
-public sealed class DataGridCell : ContentControl
+public class DataGridCell : ContentControl
 {
     public static readonly DependencyProperty IsEditingProperty =
         DependencyProperty.Register(nameof(IsEditing), typeof(bool), typeof(DataGridCell),
@@ -1900,8 +1914,10 @@ public sealed class DataGridCell : ContentControl
 /// <summary>
 /// Represents a column header in a DataGrid.
 /// </summary>
-public sealed class DataGridColumnHeader : ContentControl
+public class DataGridColumnHeader : ContentControl
 {
+    private const double ResizeHotZoneWidth = 8.0;
+
     internal DataGrid? ParentDataGrid { get; set; }
     internal DataGridColumn? Column { get; set; }
 
@@ -1915,6 +1931,10 @@ public sealed class DataGridColumnHeader : ContentControl
     {
         UseTemplateContentManagement();
         Focusable = false;
+
+        AddHandler(PreviewMouseDownEvent, new RoutedEventHandler(OnPreviewMouseDownHandler), true);
+        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler), true);
+        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler), true);
     }
 
     protected override void OnApplyTemplate()
@@ -1925,38 +1945,85 @@ public sealed class DataGridColumnHeader : ContentControl
 
         if (_resizeGrip != null)
         {
-            _resizeGrip.Cursor = Jalium.UI.Cursors.SizeWE;
-            _resizeGrip.AddHandler(MouseDownEvent, new RoutedEventHandler(OnGripMouseDown));
+            _resizeGrip.IsHitTestVisible = false;
         }
 
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
+        UpdateResizeGripState();
         UpdateSortIndicator(Column?.SortDirection);
     }
 
-    private void OnGripMouseDown(object sender, RoutedEventArgs e)
+    private void UpdateResizeGripState()
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left
-            && Column != null && (ParentDataGrid?.CanUserResizeColumns ?? false) && Column.CanUserResize)
+        if (_resizeGrip == null)
+        {
+            return;
+        }
+
+        var canResize = Column != null
+            && (ParentDataGrid?.CanUserResizeColumns ?? false)
+            && Column.CanUserResize;
+
+        _resizeGrip.Visibility = canResize ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private bool CanResizeCurrentColumn() =>
+        Column != null
+        && (ParentDataGrid?.CanUserResizeColumns ?? false)
+        && Column.CanUserResize;
+
+    private bool IsInResizeZone(Point point)
+    {
+        if (!CanResizeCurrentColumn())
+        {
+            return false;
+        }
+
+        var hotZoneWidth = Math.Max(1.0, Math.Min(RenderSize.Width, ResizeHotZoneWidth));
+        return point.X >= Math.Max(0.0, RenderSize.Width - hotZoneWidth);
+    }
+
+    private void UpdateResizeCursor(Point point)
+    {
+        Cursor = (_isResizing || IsInResizeZone(point))
+            ? Jalium.UI.Cursors.SizeWE
+            : null;
+    }
+
+    private void OnPreviewMouseDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is MouseButtonEventArgs mouseArgs
+            && mouseArgs.ChangedButton == MouseButton.Left
+            && Column != null
+            && IsInResizeZone(mouseArgs.GetPosition(this)))
         {
             _isResizing = true;
             _resizeStartX = mouseArgs.GetPosition(null).X;
             _resizeStartWidth = Column.Width;
             CaptureMouse();
+            Cursor = Jalium.UI.Cursors.SizeWE;
             e.Handled = true;
         }
     }
 
     private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
     {
-        if (_isResizing && e is MouseEventArgs mouseArgs && Column != null)
+        if (e is not MouseEventArgs mouseArgs)
+        {
+            return;
+        }
+
+        if (_isResizing && Column != null)
         {
             var currentX = mouseArgs.GetPosition(null).X;
             var delta = currentX - _resizeStartX;
             var newWidth = Math.Clamp(_resizeStartWidth + delta, Column.MinWidth, Column.MaxWidth);
             ParentDataGrid?.ResizeColumn(Column, newWidth);
+            Cursor = Jalium.UI.Cursors.SizeWE;
             e.Handled = true;
+            return;
         }
+
+        UpdateResizeCursor(mouseArgs.GetPosition(this));
     }
 
     private void OnMouseUpHandler(object sender, RoutedEventArgs e)
@@ -1964,9 +2031,29 @@ public sealed class DataGridColumnHeader : ContentControl
         if (_isResizing)
         {
             _isResizing = false;
-            ReleaseMouseCapture();
+            if (IsMouseCaptured)
+            {
+                ReleaseMouseCapture();
+            }
+
+            if (e is MouseEventArgs mouseArgs)
+            {
+                UpdateResizeCursor(mouseArgs.GetPosition(this));
+            }
+            else
+            {
+                Cursor = null;
+            }
+
             e.Handled = true;
         }
+    }
+
+    protected override void OnLostMouseCapture()
+    {
+        base.OnLostMouseCapture();
+        _isResizing = false;
+        Cursor = null;
     }
 
     internal void UpdateSortIndicator(ListSortDirection? direction)

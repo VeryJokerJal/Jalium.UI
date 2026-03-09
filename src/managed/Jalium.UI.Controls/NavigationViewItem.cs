@@ -1,25 +1,54 @@
-﻿using Jalium.UI.Input;
+using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents an item in a NavigationView with WinUI-style appearance.
 /// </summary>
-public sealed class NavigationViewItem : ContentControl
+public class NavigationViewItem : ContentControl
 {
     #region Constants
 
     private const double IndentPerLevel = 28;
+    private const double ExpandAnimationDurationMs = 260;
+    private const double CollapseAnimationDurationMs = 180;
+    private const double ClothStaggerProgress = 0.09;
+    private static readonly BackEase s_expandHeightEase = new() { EasingMode = EasingMode.EaseOut, Amplitude = 0.85 };
+    private static readonly CubicEase s_arrowExpandEase = new() { EasingMode = EasingMode.EaseOut };
+    private static readonly CubicEase s_collapseEase = new() { EasingMode = EasingMode.EaseInOut };
+    private static readonly BackEase s_clothEase = new() { EasingMode = EasingMode.EaseOut, Amplitude = 1.05 };
 
     #endregion
 
     #region Fields
 
     private int _indentLevel;
+    private long _expandAnimationStartTick;
+    private bool _expandAnimationTargetExpanded;
+    private double _expandAnimationFromHeight;
+    private double _expandAnimationToHeight;
+    private double _expandAnimationFromAngle;
+    private double _expandAnimationToAngle;
+    private ClothChild[] _expandAnimationChildren = [];
 
     #endregion
+
+    private readonly struct ClothChild
+    {
+        public ClothChild(UIElement element, double initialY, double progressDelay)
+        {
+            Element = element;
+            InitialY = initialY;
+            ProgressDelay = progressDelay;
+        }
+
+        public UIElement Element { get; }
+        public double InitialY { get; }
+        public double ProgressDelay { get; }
+    }
 
     #region Template Parts
 
@@ -146,6 +175,7 @@ public sealed class NavigationViewItem : ContentControl
     public NavigationViewItem()
     {
         Focusable = true;
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
         // Use template-based content management (ContentPresenter in template handles Content)
         UseTemplateContentManagement();
@@ -160,6 +190,7 @@ public sealed class NavigationViewItem : ContentControl
     protected override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
+        StopExpandAnimation();
 
         _indentSpacer = GetTemplateChild("PART_IndentSpacer") as Border;
         _chevron = GetTemplateChild("PART_Chevron") as Shapes.Path;
@@ -183,6 +214,10 @@ public sealed class NavigationViewItem : ContentControl
             SyncExpandedVisualState();
             InvalidateMeasure();
             InvalidateVisual();
+        }
+        else
+        {
+            StopExpandAnimation();
         }
     }
 
@@ -302,19 +337,285 @@ public sealed class NavigationViewItem : ContentControl
 
     private void SyncExpandedVisualState()
     {
+        StopExpandAnimation();
+
         if (_childrenPanel != null)
         {
             _childrenPanel.Visibility = IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+            _childrenPanel.MaxHeight = double.PositiveInfinity;
+            _childrenPanel.ClipToBounds = false;
         }
 
         if (_chevron != null)
         {
-            var rotateTransform = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
-            rotateTransform.Angle = IsExpanded ? 90 : 0;
-            _chevron.RenderTransform = rotateTransform;
-            _chevron.InvalidateVisual();
+            SetChevronAngle(IsExpanded ? 90 : 0);
         }
     }
+
+    private bool ShouldAnimateExpandedStateChange() =>
+        _childrenPanel != null
+        && HasUnrealizedChildren
+        && VisualParent != null;
+
+    private void BeginExpandedStateAnimation(bool expanded)
+    {
+        if (_childrenPanel == null)
+        {
+            return;
+        }
+
+        var startHeight = GetCurrentChildrenPanelHeight();
+        var targetHeight = expanded ? MeasureChildrenPanelNaturalHeight() : 0.0;
+        var startAngle = GetCurrentChevronAngle();
+        var targetAngle = expanded ? 90.0 : 0.0;
+
+        if (Math.Abs(startHeight - targetHeight) < 0.5 && Math.Abs(startAngle - targetAngle) < 0.5)
+        {
+            SyncExpandedVisualState();
+            return;
+        }
+
+        StopExpandAnimation();
+
+        _expandAnimationTargetExpanded = expanded;
+        _expandAnimationStartTick = Environment.TickCount64;
+        _expandAnimationFromHeight = startHeight;
+        _expandAnimationToHeight = targetHeight;
+        _expandAnimationFromAngle = startAngle;
+        _expandAnimationToAngle = targetAngle;
+        _expandAnimationChildren = expanded
+            ? CollectClothChildren(targetHeight)
+            : [];
+
+        _childrenPanel.Visibility = Visibility.Visible;
+        _childrenPanel.ClipToBounds = true;
+        _childrenPanel.MaxHeight = Math.Max(0, startHeight);
+
+        _expandAnimTimer = new Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
+        };
+        _expandAnimTimer.Tick += OnExpandAnimationTick;
+        _expandAnimTimer.Start();
+
+        ApplyExpandAnimationFrame(0);
+    }
+
+    private void OnExpandAnimationTick(object? sender, EventArgs e)
+    {
+        var durationMs = _expandAnimationTargetExpanded
+            ? ExpandAnimationDurationMs
+            : CollapseAnimationDurationMs;
+        var elapsedMs = Math.Max(0, Environment.TickCount64 - _expandAnimationStartTick);
+        var progress = durationMs <= 0
+            ? 1.0
+            : Math.Clamp(elapsedMs / durationMs, 0.0, 1.0);
+
+        ApplyExpandAnimationFrame(progress);
+
+        if (progress >= 1.0)
+        {
+            CompleteExpandAnimation();
+        }
+    }
+
+    private void ApplyExpandAnimationFrame(double progress)
+    {
+        if (_childrenPanel == null)
+        {
+            return;
+        }
+
+        var easedProgress = _expandAnimationTargetExpanded
+            ? s_expandHeightEase.Ease(progress)
+            : s_collapseEase.Ease(progress);
+        var arrowProgress = _expandAnimationTargetExpanded
+            ? s_arrowExpandEase.Ease(progress)
+            : s_collapseEase.Ease(progress);
+
+        _childrenPanel.MaxHeight = Math.Max(0, Lerp(_expandAnimationFromHeight, _expandAnimationToHeight, easedProgress));
+        SetChevronAngle(Lerp(_expandAnimationFromAngle, _expandAnimationToAngle, arrowProgress));
+
+        if (_expandAnimationTargetExpanded)
+        {
+            ApplyClothOffsets(progress);
+        }
+        else
+        {
+            ClearChildOffsets();
+        }
+
+        InvalidateMeasure();
+    }
+
+    private void CompleteExpandAnimation()
+    {
+        StopExpandAnimation();
+
+        if (_childrenPanel != null)
+        {
+            _childrenPanel.Visibility = _expandAnimationTargetExpanded ? Visibility.Visible : Visibility.Collapsed;
+            _childrenPanel.MaxHeight = double.PositiveInfinity;
+            _childrenPanel.ClipToBounds = false;
+        }
+
+        ClearChildOffsets();
+        SetChevronAngle(_expandAnimationTargetExpanded ? 90 : 0);
+        InvalidateMeasure();
+    }
+
+    private void StopExpandAnimation()
+    {
+        if (_expandAnimTimer == null)
+        {
+            return;
+        }
+
+        _expandAnimTimer.Stop();
+        _expandAnimTimer.Tick -= OnExpandAnimationTick;
+        _expandAnimTimer = null;
+        _expandAnimationChildren = [];
+    }
+
+    private double GetCurrentChildrenPanelHeight()
+    {
+        if (_childrenPanel == null || _childrenPanel.Visibility != Visibility.Visible)
+        {
+            return 0;
+        }
+
+        if (_childrenPanel.ActualHeight > 0)
+        {
+            return _childrenPanel.ActualHeight;
+        }
+
+        if (!double.IsInfinity(_childrenPanel.MaxHeight))
+        {
+            return Math.Max(0, _childrenPanel.MaxHeight);
+        }
+
+        return MeasureChildrenPanelNaturalHeight();
+    }
+
+    private double MeasureChildrenPanelNaturalHeight()
+    {
+        if (_childrenPanel == null)
+        {
+            return 0;
+        }
+
+        var previousVisibility = _childrenPanel.Visibility;
+        var previousMaxHeight = _childrenPanel.MaxHeight;
+        var previousClipToBounds = _childrenPanel.ClipToBounds;
+
+        var availableWidth = _childrenPanel.ActualWidth > 0
+            ? _childrenPanel.ActualWidth
+            : (ActualWidth > 0 ? ActualWidth : double.PositiveInfinity);
+
+        _childrenPanel.Visibility = Visibility.Visible;
+        _childrenPanel.MaxHeight = double.PositiveInfinity;
+        _childrenPanel.ClipToBounds = false;
+        _childrenPanel.Measure(new Size(availableWidth, double.PositiveInfinity));
+        var desiredHeight = _childrenPanel.DesiredSize.Height;
+
+        _childrenPanel.Visibility = previousVisibility;
+        _childrenPanel.MaxHeight = previousMaxHeight;
+        _childrenPanel.ClipToBounds = previousClipToBounds;
+
+        return Math.Max(0, desiredHeight);
+    }
+
+    private double GetCurrentChevronAngle()
+    {
+        if (_chevron?.RenderTransform is RotateTransform rotateTransform)
+        {
+            return rotateTransform.Angle;
+        }
+
+        return IsExpanded ? 90 : 0;
+    }
+
+    private void SetChevronAngle(double angle)
+    {
+        if (_chevron == null)
+        {
+            return;
+        }
+
+        var rotateTransform = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
+        rotateTransform.Angle = angle;
+        _chevron.RenderTransform = rotateTransform;
+        _chevron.InvalidateVisual();
+    }
+
+    private ClothChild[] CollectClothChildren(double targetHeight)
+    {
+        if (_childrenPanel == null || _childrenPanel.Children.Count == 0)
+        {
+            return [];
+        }
+
+        var children = new List<UIElement>();
+        foreach (var child in _childrenPanel.Children)
+        {
+            if (child is UIElement uiElement && uiElement.Visibility == Visibility.Visible)
+            {
+                children.Add(uiElement);
+            }
+        }
+
+        if (children.Count == 0)
+        {
+            return [];
+        }
+
+        var baseOffset = Math.Min(Math.Max(12.0, targetHeight * 0.22), 36.0);
+        var result = new ClothChild[children.Count];
+        for (int i = 0; i < children.Count; i++)
+        {
+            var normalizedIndex = (i + 1.0) / children.Count;
+            result[i] = new ClothChild(
+                children[i],
+                -baseOffset * normalizedIndex,
+                Math.Min(0.45, i * ClothStaggerProgress));
+        }
+
+        return result;
+    }
+
+    private void ApplyClothOffsets(double progress)
+    {
+        if (_expandAnimationChildren.Length == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < _expandAnimationChildren.Length; i++)
+        {
+            var child = _expandAnimationChildren[i];
+            var localProgress = child.ProgressDelay >= 1.0
+                ? 1.0
+                : Math.Clamp((progress - child.ProgressDelay) / (1.0 - child.ProgressDelay), 0.0, 1.0);
+            var eased = s_clothEase.Ease(localProgress);
+            child.Element.RenderOffset = new Point(0, child.InitialY * (1.0 - eased));
+        }
+    }
+
+    private void ClearChildOffsets()
+    {
+        if (_expandAnimationChildren.Length == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < _expandAnimationChildren.Length; i++)
+        {
+            _expandAnimationChildren[i].Element.RenderOffset = default;
+        }
+    }
+
+    private static double Lerp(double from, double to, double progress) =>
+        from + ((to - from) * progress);
 
     #endregion
 
@@ -335,13 +636,13 @@ public sealed class NavigationViewItem : ContentControl
             var expanded = (bool)(e.NewValue ?? false);
             item.ExpansionChanged?.Invoke(item, expanded);
 
-            // Animate children panel expand/collapse + chevron rotation
-            if (item._childrenPanel != null)
+            if (item.ShouldAnimateExpandedStateChange())
             {
-                if (expanded)
-                    item._expandAnimTimer = ExpandCollapseAnimator.AnimateExpand(item._childrenPanel, item._expandAnimTimer, item._chevron);
-                else
-                    item._expandAnimTimer = ExpandCollapseAnimator.AnimateCollapse(item._childrenPanel, item._expandAnimTimer, item._chevron);
+                item.BeginExpandedStateAnimation(expanded);
+            }
+            else
+            {
+                item.SyncExpandedVisualState();
             }
 
             item.InvalidateMeasure();
@@ -379,7 +680,7 @@ public sealed class NavigationViewItemInvokedEventArgs : EventArgs
 /// <summary>
 /// Represents a header item in a NavigationView.
 /// </summary>
-public sealed class NavigationViewItemHeader : ContentControl
+public class NavigationViewItemHeader : ContentControl
 {
     private static readonly SolidColorBrush s_defaultFgBrush = new(Color.FromRgb(157, 157, 157));
 
@@ -444,7 +745,7 @@ public sealed class NavigationViewItemHeader : ContentControl
 /// <summary>
 /// Represents a separator in a NavigationView.
 /// </summary>
-public sealed class NavigationViewItemSeparator : Control
+public class NavigationViewItemSeparator : Control
 {
     private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(60, 60, 60));
 

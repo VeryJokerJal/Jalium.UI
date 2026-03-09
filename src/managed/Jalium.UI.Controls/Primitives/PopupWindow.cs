@@ -28,6 +28,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private bool _renderRecoveryInProgress;
     private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _disposed;
+    private int _screenX;
+    private int _screenY;
     private int _width;
     private int _height;
     private const int RenderRecoveryRetryDelayMs = 120;
@@ -86,6 +88,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     internal void Show(int screenX, int screenY, int width, int height)
     {
+        _screenX = screenX;
+        _screenY = screenY;
         _width = width;
         _height = height;
         UpdateRootBoundsForHitTest();
@@ -141,6 +145,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         if (_hwnd == nint.Zero) return;
 
+        _screenX = screenX;
+        _screenY = screenY;
         bool sizeChanged = width != _width || height != _height;
         _width = width;
         _height = height;
@@ -1832,6 +1838,31 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         var dpiScale = _parentWindow.DpiScale <= 0 ? 1.0 : _parentWindow.DpiScale;
         SetVisualBounds(new Rect(0, 0, _width / dpiScale, _height / dpiScale));
+    }
+
+    internal Rect GetBoundsInParentWindowDips()
+    {
+        var dpiScale = _parentWindow.DpiScale <= 0 ? 1.0 : _parentWindow.DpiScale;
+
+        if (_hwnd == nint.Zero || _parentWindow.Handle == nint.Zero)
+        {
+            // In tests or before the native popup is shown, fall back to the tracked
+            // screen position as if it were already relative to the parent window.
+            return new Rect(_screenX / dpiScale, _screenY / dpiScale, _width / dpiScale, _height / dpiScale);
+        }
+
+        var parentClientPoint = new POINT
+        {
+            X = _screenX,
+            Y = _screenY
+        };
+        _ = ScreenToClient(_parentWindow.Handle, ref parentClientPoint);
+
+        return new Rect(
+            parentClientPoint.X / dpiScale,
+            parentClientPoint.Y / dpiScale,
+            _width / dpiScale,
+            _height / dpiScale);
     }
 
     private Point GetMousePosition(nint lParam)
