@@ -95,7 +95,8 @@
         <Setter Property="Padding" Value="0" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Label">
-                <Border Background="{TemplateBinding Background}"
+                <Border Name="LabelBorder"
+                        Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
                         Padding="{TemplateBinding Padding}">
