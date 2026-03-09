@@ -6,15 +6,15 @@
     <!-- DataGrid Style -->
     <!-- ============================================== -->
     <Style TargetType="DataGrid">
-        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="RowHeight" Value="28" />
         <Setter Property="ColumnHeaderHeight" Value="32" />
-        <Setter Property="HorizontalGridLinesBrush" Value="{StaticResource ControlBorder}" />
-        <Setter Property="VerticalGridLinesBrush" Value="{StaticResource ControlBorder}" />
-        <Setter Property="AlternatingRowBackground" Value="{StaticResource ControlBackgroundPressed}" />
+        <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="AlternatingRowBackground" Value="{DynamicResource ControlBackgroundPressed}" />
         <Setter Property="RowBackground" Value="Transparent" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGrid">
@@ -31,8 +31,8 @@
                         <!-- Column headers area (ClipToBounds to clip when synced with horizontal scroll) -->
                         <Border Name="PART_ColumnHeadersBorder"
                                 Grid.Row="0"
-                                Background="{StaticResource ControlBackground}"
-                                BorderBrush="{StaticResource ControlBorder}"
+                                Background="{DynamicResource ControlBackground}"
+                                BorderBrush="{DynamicResource ControlBorder}"
                                 BorderThickness="0,0,0,1"
                                 ClipToBounds="True">
                             <StackPanel Name="PART_ColumnHeadersHost" Orientation="Horizontal" />
@@ -51,7 +51,7 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -61,12 +61,12 @@
     <!-- ============================================== -->
     <Style TargetType="DataGridRow">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGridRow">
                 <Border Name="PART_RowBorder"
                         Background="{TemplateBinding Background}"
-                        BorderBrush="{StaticResource ControlBorder}"
+                        BorderBrush="{DynamicResource ControlBorder}"
                         BorderThickness="0,0,0,1">
                     <StackPanel Name="PART_CellsPanel" Orientation="Horizontal" />
                 </Border>
@@ -75,11 +75,11 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{StaticResource HighlightBackground}" />
+                <Setter Property="Background" Value="{DynamicResource HighlightBackground}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter Property="Background" Value="{StaticResource AccentBrush}" />
-                <Setter Property="Foreground" Value="{StaticResource TextOnAccent}" />
+                <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+                <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -89,13 +89,13 @@
     <!-- ============================================== -->
     <Style TargetType="DataGridCell">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGridCell">
                 <Border Name="PART_CellBorder"
                         Background="{TemplateBinding Background}"
-                        BorderBrush="{StaticResource ControlBorder}"
+                        BorderBrush="{DynamicResource ControlBorder}"
                         BorderThickness="0,0,1,0"
                         Padding="{TemplateBinding Padding}">
                     <ContentPresenter VerticalAlignment="Center" />
@@ -108,20 +108,17 @@
     <!-- DataGridColumnHeader Style -->
     <!-- ============================================== -->
     <Style TargetType="DataGridColumnHeader">
-        <Setter Property="Background" Value="{StaticResource ControlBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Padding" Value="8,6,4,6" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGridColumnHeader">
                 <Grid>
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*" />
-                        <ColumnDefinition Width="Auto" />
-                    </Grid.ColumnDefinitions>
                     <!-- Header content area -->
                     <Border Name="PART_HeaderBorder"
-                            Grid.Column="0"
                             Background="{TemplateBinding Background}"
+                            BorderBrush="{DynamicResource ControlBorder}"
+                            BorderThickness="0,0,1,0"
                             Padding="{TemplateBinding Padding}">
                         <Grid>
                             <Grid.ColumnDefinitions>
@@ -133,26 +130,24 @@
                                               VerticalAlignment="Center" />
                             <TextBlock Name="PART_SortIndicator"
                                        Grid.Column="1"
-                                       Foreground="{StaticResource TextSecondary}"
+                                       Foreground="{DynamicResource TextSecondary}"
                                        FontSize="10"
                                        VerticalAlignment="Center"
                                        Margin="4,0,0,0" />
                         </Grid>
                     </Border>
-                    <!-- Resize grip (draggable splitter) -->
+                    <!-- Invisible hit target for column resizing; the visible separator comes from PART_HeaderBorder -->
                     <Border Name="PART_ResizeGrip"
-                            Grid.Column="1"
-                            Width="4"
-                            Background="Transparent"
-                            BorderBrush="{StaticResource ControlBorder}"
-                            BorderThickness="1,0,0,0" />
+                            HorizontalAlignment="Right"
+                            Width="8"
+                            Background="Transparent" />
                 </Grid>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{StaticResource HighlightBackground}" />
+                <Setter Property="Background" Value="{DynamicResource HighlightBackground}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

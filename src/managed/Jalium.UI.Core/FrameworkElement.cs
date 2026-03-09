@@ -280,7 +280,10 @@ public class FrameworkElement : UIElement
         // For inheriting properties, check parent chain
         if (dp.DefaultMetadata.Inherits && VisualParent is FrameworkElement parent)
         {
-            return parent.GetValue(dp);
+            if (TryGetInheritedBaseValue(parent, dp, out var inheritedValue))
+            {
+                return inheritedValue;
+            }
         }
 
         return base.GetValue(dp);
@@ -312,10 +315,32 @@ public class FrameworkElement : UIElement
 
         if (dp.DefaultMetadata.Inherits && VisualParent is FrameworkElement parent)
         {
-            return (parent.GetValue(dp), BaseValueSource.Inherited);
+            if (TryGetInheritedBaseValue(parent, dp, out var inheritedValue))
+            {
+                return (inheritedValue, BaseValueSource.Inherited);
+            }
         }
 
         return localValue;
+    }
+
+    private static bool TryGetInheritedBaseValue(FrameworkElement parent, DependencyProperty dp, out object? value)
+    {
+        if (parent.HasAnimatedValue(dp))
+        {
+            value = parent.GetValue(dp);
+            return true;
+        }
+
+        var parentBaseValue = parent.GetUncoercedBaseValueInternal(dp);
+        if (parentBaseValue.source != BaseValueSource.Default)
+        {
+            value = parentBaseValue.value;
+            return true;
+        }
+
+        value = null;
+        return false;
     }
 
     #endregion
@@ -621,6 +646,11 @@ public class FrameworkElement : UIElement
     /// </summary>
     public void SetVisualBounds(Rect bounds)
     {
+        if (_visualBounds != bounds)
+        {
+            InvalidateScreenOffsetCacheRecursive();
+        }
+
         _visualBounds = bounds;
     }
 
@@ -835,10 +865,12 @@ public class FrameworkElement : UIElement
 
         // Transform point to local coordinates (relative to this element)
         var localPoint = new Point(point.X - _visualBounds.X, point.Y - _visualBounds.Y);
+        int scannedChildren = 0;
 
         // Check children in reverse order (top to bottom in z-order)
         for (int i = VisualChildrenCount - 1; i >= 0; i--)
         {
+            scannedChildren++;
             var child = GetVisualChild(i);
             if (child is FrameworkElement fe)
             {

@@ -54,7 +54,7 @@ public class MenuPopupAndArrowRegressionTests
     }
 
     [Fact]
-    public void MenuFlyoutPresenterPopup_ShouldNotForceRootConstraint()
+    public void MenuFlyoutPresenterPopup_ShouldStayConstrainedToOwnerWindow()
     {
         var flyout = new MenuFlyout();
         flyout.Items.Add(new MenuFlyoutItem { Text = "Open" });
@@ -63,7 +63,7 @@ public class MenuPopupAndArrowRegressionTests
         flyout.ShowAt(anchor);
 
         var popup = GetPrivateField<Popup>(typeof(FlyoutBase), flyout, "_popup");
-        Assert.False(popup.ShouldConstrainToRootBounds);
+        Assert.True(popup.ShouldConstrainToRootBounds);
     }
 
     [Fact]
@@ -100,6 +100,43 @@ public class MenuPopupAndArrowRegressionTests
 
         var popup = GetPrivateField<Popup>(typeof(ContextMenu), contextMenu, "_popup");
         Assert.False(popup.ShouldConstrainToRootBounds);
+    }
+
+    [Fact]
+    public void NestedPopupTargetInsidePopupWindow_ShouldResolveBoundsInOwnerWindowSpace()
+    {
+        var ownerWindow = new Window();
+        var target = new MenuFlyoutSubItem();
+        target.SetVisualBounds(new Rect(20, 30, 80, 24));
+
+        var panel = new StackPanel();
+        panel.SetVisualBounds(new Rect(6, 8, 140, 60));
+        panel.Children.Add(target);
+
+        var popupBorder = new Border { Child = panel };
+        popupBorder.SetVisualBounds(new Rect(4, 5, 160, 80));
+
+        var hostPopup = new Popup();
+        var popupRoot = new PopupRoot(hostPopup, popupBorder, isLightDismiss: true);
+        popupRoot.SetVisualBounds(new Rect(0, 0, 160, 80));
+
+        var popupWindow = new PopupWindow(ownerWindow, popupRoot);
+        popupWindow.SetVisualBounds(new Rect(0, 0, 160, 80));
+        SetPrivateField(popupWindow, "_screenX", 100);
+        SetPrivateField(popupWindow, "_screenY", 50);
+        SetPrivateField(popupWindow, "_width", 160);
+        SetPrivateField(popupWindow, "_height", 80);
+
+        var nestedPopup = new Popup { PlacementTarget = target };
+        var method = typeof(Popup).GetMethod("GetElementWindowBounds", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        var bounds = Assert.IsType<Rect>(method!.Invoke(nestedPopup, new object[] { target }));
+
+        Assert.Equal(130, bounds.X);
+        Assert.Equal(93, bounds.Y);
+        Assert.Equal(80, bounds.Width);
+        Assert.Equal(24, bounds.Height);
     }
 
     private static Control CreateOverflowingMenuPopupHost(out Type hostType)
@@ -148,6 +185,13 @@ public class MenuPopupAndArrowRegressionTests
         var value = field!.GetValue(owner);
         Assert.NotNull(value);
         return (T)value!;
+    }
+
+    private static void SetPrivateField(object owner, string fieldName, object value)
+    {
+        var field = owner.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(owner, value);
     }
 
     private sealed class RecordingDrawingContext : DrawingContext

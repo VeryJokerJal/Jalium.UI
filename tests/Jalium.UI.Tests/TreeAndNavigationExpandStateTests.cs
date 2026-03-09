@@ -86,6 +86,45 @@ public class TreeAndNavigationExpandStateTests
     }
 
     [Fact]
+    public void TreeViewItem_Expand_ShouldStartAnimationTimer()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var tree = new TreeView();
+            var item = new TreeViewItem { Header = "Root" };
+            item.Style = Assert.IsType<Style>(app.Resources[typeof(TreeViewItem)]);
+            item.Items.Add(new TreeViewItem { Header = "Child" });
+            tree.Items.Add(item);
+
+            var host = new Grid { Width = 320, Height = 240 };
+            host.Children.Add(tree);
+            host.Measure(new Size(320, 240));
+            host.Arrange(new Rect(0, 0, 320, 240));
+
+            item.IsExpanded = true;
+
+            var itemsHost = GetPrivateField<StackPanel>(item, "_itemsHost");
+            var expanderArrow = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_expanderArrow");
+            var expandAnimTimer = GetPrivateField<Jalium.UI.Threading.DispatcherTimer>(item, "_expandAnimTimer");
+
+            Assert.NotNull(expandAnimTimer);
+            Assert.True(expandAnimTimer!.IsEnabled);
+            Assert.Equal(Visibility.Visible, itemsHost!.Visibility);
+            Assert.InRange(GetAngle(expanderArrow!), 0d, 90d);
+
+            expandAnimTimer.Stop();
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
     public void NavigationViewItem_DefaultExpanded_ShouldSyncChevronAndChildrenPanel()
     {
         ResetApplicationState();
@@ -109,6 +148,48 @@ public class TreeAndNavigationExpandStateTests
             Assert.Equal(Visibility.Visible, childrenPanel!.Visibility);
             Assert.Equal(Visibility.Visible, chevron!.Visibility);
             Assert.Equal(90d, GetAngle(chevron), 3);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void NavigationViewItem_Expand_ShouldStartAnimationTimer()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var nav = new NavigationView();
+            var item = new NavigationViewItem { Content = "Root" };
+            item.Style = Assert.IsType<Style>(app.Resources[typeof(NavigationViewItem)]);
+            item.MenuItems.Add(new NavigationViewItem { Content = "Child" });
+            nav.MenuItems.Add(item);
+            nav.UpdateMenuItems();
+
+            var host = new Grid { Width = 320, Height = 240 };
+            host.Children.Add(nav);
+            host.Measure(new Size(320, 240));
+            host.Arrange(new Rect(0, 0, 320, 240));
+
+            item.IsExpanded = true;
+
+            var childrenPanel = GetPrivateField<StackPanel>(item, "_childrenPanel");
+            var chevron = GetPrivateField<Jalium.UI.Controls.Shapes.Path>(item, "_chevron");
+            var expandAnimTimer = GetPrivateField<Jalium.UI.Threading.DispatcherTimer>(item, "_expandAnimTimer");
+
+            Assert.NotNull(childrenPanel);
+            Assert.NotNull(chevron);
+            Assert.Equal(Visibility.Visible, childrenPanel!.Visibility);
+            Assert.NotNull(expandAnimTimer);
+            Assert.True(expandAnimTimer!.IsEnabled);
+            Assert.InRange(GetAngle(chevron!), 0d, 90d);
+
+            expandAnimTimer.Stop();
         }
         finally
         {
@@ -198,6 +279,34 @@ public class TreeAndNavigationExpandStateTests
     }
 
     [Fact]
+    public void Expander_Expand_ShouldApplyStateImmediately_WithoutAnimationTimer()
+    {
+        ResetApplicationState();
+
+        try
+        {
+            var expander = new Expander();
+            var contentBorder = new Border();
+            var chevron = new Jalium.UI.Controls.Shapes.Path();
+
+            SetPrivateField(expander, "_contentBorder", contentBorder);
+            SetPrivateField(expander, "_chevron", chevron);
+
+            expander.IsExpanded = true;
+
+            var animationTimer = GetPrivateField<Jalium.UI.Threading.DispatcherTimer>(expander, "_animationTimer");
+
+            Assert.Equal(Visibility.Visible, contentBorder.Visibility);
+            Assert.Equal(90d, GetAngle(chevron), 3);
+            Assert.Null(animationTimer);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
     public void NavigationView_PreloadedItems_ShouldRemainVisibleAfterAttach()
     {
         ResetApplicationState();
@@ -224,10 +333,85 @@ public class TreeAndNavigationExpandStateTests
         }
     }
 
+    [Fact]
+    public void TreeViewItem_HeaderHover_ShouldOnlyHighlightHoveredHeader()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var parent = new TreeViewItem { Header = "Parent", IsExpanded = true };
+            var child = new TreeViewItem { Header = "Child" };
+            parent.Style = Assert.IsType<Style>(app.Resources[typeof(TreeViewItem)]);
+            child.Style = Assert.IsType<Style>(app.Resources[typeof(TreeViewItem)]);
+            parent.Items.Add(child);
+
+            parent.ApplyTemplate();
+            child.ApplyTemplate();
+
+            var parentHeader = GetPrivateField<Border>(parent, "_headerBorder");
+            var childHeader = GetPrivateField<Border>(child, "_headerBorder");
+            var hoverBrush = Assert.IsAssignableFrom<Brush>(app.Resources["ControlBackgroundHover"]);
+
+            Assert.NotNull(parentHeader);
+            Assert.NotNull(childHeader);
+
+            childHeader!.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, childHeader));
+
+            Assert.Same(hoverBrush, childHeader.Background);
+            Assert.NotSame(hoverBrush, parentHeader!.Background);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void TreeViewItem_SelectedHover_ShouldUsePressedAccentBrush()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var item = new TreeViewItem { Header = "Node", IsSelected = true };
+            item.Style = Assert.IsType<Style>(app.Resources[typeof(TreeViewItem)]);
+            item.ApplyTemplate();
+
+            var header = GetPrivateField<Border>(item, "_headerBorder");
+            var selectionBrush = Assert.IsAssignableFrom<Brush>(app.Resources["SelectionBackground"]);
+            var selectedHoverBrush = Assert.IsAssignableFrom<Brush>(app.Resources["AccentBrushPressed"]);
+
+            Assert.NotNull(header);
+            Assert.Same(selectionBrush, header!.Background);
+
+            header.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, header));
+            Assert.Same(selectedHoverBrush, header.Background);
+
+            header.RaiseEvent(new RoutedEventArgs(UIElement.MouseLeaveEvent, header));
+            Assert.Same(selectionBrush, header.Background);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
     private static T? GetPrivateField<T>(object instance, string fieldName) where T : class
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
         return field?.GetValue(instance) as T;
+    }
+
+    private static void SetPrivateField(object instance, string fieldName, object? value)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(instance, value);
     }
 
     private static double GetAngle(Jalium.UI.Controls.Shapes.Path path)

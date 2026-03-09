@@ -929,14 +929,26 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         _cachedWindowHost = null;
         _cachedLayoutManager = null;
-        _isScreenOffsetValid = false;
+        InvalidateScreenOffsetCacheRecursive();
 
-        // Recursively invalidate children's caches too
+        // Recursively invalidate children's host caches too
         var count = VisualChildrenCount;
         for (int i = 0; i < count; i++)
         {
             if (GetVisualChild(i) is UIElement uiChild)
                 uiChild.InvalidateHostCaches();
+        }
+    }
+
+    internal void InvalidateScreenOffsetCacheRecursive()
+    {
+        _isScreenOffsetValid = false;
+
+        var count = VisualChildrenCount;
+        for (int i = 0; i < count; i++)
+        {
+            if (GetVisualChild(i) is UIElement uiChild)
+                uiChild.InvalidateScreenOffsetCacheRecursive();
         }
     }
 
@@ -1020,7 +1032,7 @@ public abstract partial class UIElement : Visual, IInputElement
 
         var oldRenderSize = _renderSize;
         _previousFinalRect = finalRect;
-        _isScreenOffsetValid = false; // Position changed, invalidate screen offset cache
+        InvalidateScreenOffsetCacheRecursive();
         _renderSize = ArrangeCore(finalRect);
         _isArrangeValid = true;
 
@@ -1122,7 +1134,6 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     protected virtual void OnIsMouseOverChanged(bool oldValue, bool newValue)
     {
-        InvalidateVisual();
     }
 
     /// <summary>
@@ -2301,13 +2312,29 @@ public abstract partial class UIElement : Visual, IInputElement
         public IAnimationClock Clock { get; }
         public object? BaseValue { get; }
         public ElementAnimationKind Kind { get; }
+        public bool StartPending { get; private set; }
 
-        public ElementAnimation(IAnimationTimeline animation, IAnimationClock clock, object? baseValue, ElementAnimationKind kind)
+        public ElementAnimation(
+            IAnimationTimeline animation,
+            IAnimationClock clock,
+            object? baseValue,
+            ElementAnimationKind kind,
+            bool startPending)
         {
             Animation = animation;
             Clock = clock;
             BaseValue = baseValue;
             Kind = kind;
+            StartPending = startPending;
+        }
+
+        public bool ConsumePendingStart()
+        {
+            if (!StartPending)
+                return false;
+
+            StartPending = false;
+            return true;
         }
     }
 
@@ -2345,7 +2372,10 @@ public abstract partial class UIElement : Visual, IInputElement
         HandoffBehavior handoffBehavior,
         ElementAnimationKind kind,
         bool clearAnimatedValueOnReplace,
-        bool allowAutomaticToReplaceExplicit)
+        bool allowAutomaticToReplaceExplicit,
+        object? initialAnimatedValue = null,
+        bool useInitialAnimatedValue = false,
+        bool deferClockBeginUntilRendering = false)
     {
         _activeAnimations ??= new Dictionary<DependencyProperty, ElementAnimation>();
 
@@ -2372,19 +2402,30 @@ public abstract partial class UIElement : Visual, IInputElement
         var baseValue = GetAnimationBaseValue(dp);
         var clock = animation.CreateClock();
 
-        _activeAnimations[dp] = new ElementAnimation(animation, clock, baseValue, kind);
+        _activeAnimations[dp] = new ElementAnimation(animation, clock, baseValue, kind, deferClockBeginUntilRendering);
 
         // Subscribe to completion
         clock.Completed += OnAnimationClockCompleted;
 
-        // Start the clock
-        clock.Begin();
+        if (!deferClockBeginUntilRendering)
+        {
+            // Start the clock immediately unless the caller needs the first rendered frame to begin at 0%.
+            clock.Begin();
+        }
 
         // Start the animation timer
         SubscribeToRenderingIfNeeded();
 
         // Set initial animated value
-        UpdateAnimatedValue(dp);
+        if (useInitialAnimatedValue)
+        {
+            SetAnimatedValue(dp, initialAnimatedValue, holdEndValue: false);
+        }
+        else
+        {
+            UpdateAnimatedValue(dp);
+        }
+
         return true;
     }
 
@@ -2506,6 +2547,13 @@ public abstract partial class UIElement : Visual, IInputElement
 
         foreach (var (dp, anim) in _activeAnimations.ToArray())
         {
+            if (anim.ConsumePendingStart())
+            {
+                anim.Clock.Begin();
+                hasRunningAnimation = true;
+                continue;
+            }
+
             if (!anim.Clock.IsRunning)
                 continue;
 

@@ -12,12 +12,13 @@
 
     <!-- This is a metapackage - no code, just references -->
     <IncludeBuildOutput>false</IncludeBuildOutput>
+    <IncludeSymbols>false</IncludeSymbols>
     <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
     <Authors>Supper Jal</Authors>
     <PackageProjectUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</PackageProjectUrl>
     <RepositoryUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</RepositoryUrl>
     <PackageTags>jalium;ui;xaml;jalxaml;wpf;windows;directx;gpu</PackageTags>
-    <Version>26.7.7</Version>
+    <Version>26.8.5</Version>
   </PropertyGroup>
 
   <!-- Reference all Jalium.UI packages -->

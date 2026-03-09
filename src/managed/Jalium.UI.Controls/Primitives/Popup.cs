@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -67,7 +67,7 @@ public enum PlacementMode
 /// creates a lightweight native window to render outside the parent window bounds.
 /// </summary>
 [ContentProperty("Child")]
-public sealed partial class Popup : FrameworkElement
+public partial class Popup : FrameworkElement
 {
     private PopupRoot? _popupRoot;
     private OverlayLayer? _overlayLayer;
@@ -831,6 +831,16 @@ public sealed partial class Popup : FrameworkElement
         {
             if (current is Window)
                 break;
+            if (current is PopupWindow popupWindow)
+            {
+                var popupWindowBounds = popupWindow.GetBoundsInParentWindowDips();
+                bounds = new Rect(
+                    bounds.X + popupWindowBounds.X,
+                    bounds.Y + popupWindowBounds.Y,
+                    bounds.Width,
+                    bounds.Height);
+                break;
+            }
             if (current is UIElement uiElement)
             {
                 var parentBounds = uiElement.VisualBounds;

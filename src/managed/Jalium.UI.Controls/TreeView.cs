@@ -2,6 +2,7 @@
 using System.Reflection;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Controls;
 
@@ -74,6 +75,8 @@ public class TreeView : ItemsControl
 
     public TreeView()
     {
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
+
         if (ItemsPanel == null)
         {
             ItemsPanel = CreateItemsPanelTemplate(typeof(VirtualizingStackPanel));
@@ -209,10 +212,21 @@ public class TreeViewItem : HeaderedItemsControl
 {
     private const double IndentSize = 16;
     private const double ExpanderSize = 16;
+    private const double ExpandAnimationDurationMs = 260;
+    private const double CollapseAnimationDurationMs = 180;
+    private const double ClothStaggerProgress = 0.09;
+    private static readonly BackEase s_expandHeightEase = new() { EasingMode = EasingMode.EaseOut, Amplitude = 0.85 };
+    private static readonly CubicEase s_arrowExpandEase = new() { EasingMode = EasingMode.EaseOut };
+    private static readonly CubicEase s_collapseEase = new() { EasingMode = EasingMode.EaseInOut };
+    private static readonly BackEase s_clothEase = new() { EasingMode = EasingMode.EaseOut, Amplitude = 1.05 };
+    private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Themes.ThemeColors.ControlBackgroundHover);
+    private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Themes.ThemeColors.SelectionBackground);
+    private static readonly SolidColorBrush s_fallbackSelectedHoverBackgroundBrush = new(Themes.ThemeColors.AccentPressed);
 
     internal TreeView? ParentTreeView { get; set; }
 
     private int _level;
+    private bool _isHeaderMouseOver;
 
     #region Template Parts
 
@@ -222,8 +236,30 @@ public class TreeViewItem : HeaderedItemsControl
     private Shapes.Path? _expanderArrow;
     private StackPanel? _itemsHost;
     private Threading.DispatcherTimer? _expandAnimTimer;
+    private bool _suppressChildItemsChanged;
+    private long _expandAnimationStartTick;
+    private bool _expandAnimationTargetExpanded;
+    private double _expandAnimationFromHeight;
+    private double _expandAnimationToHeight;
+    private double _expandAnimationFromAngle;
+    private double _expandAnimationToAngle;
+    private ClothChild[] _expandAnimationChildren = [];
 
     #endregion
+
+    private readonly struct ClothChild
+    {
+        public ClothChild(UIElement element, double initialY, double progressDelay)
+        {
+            Element = element;
+            InitialY = initialY;
+            ProgressDelay = progressDelay;
+        }
+
+        public UIElement Element { get; }
+        public double InitialY { get; }
+        public double ProgressDelay { get; }
+    }
 
     #region Dependency Properties
 
@@ -276,6 +312,11 @@ public class TreeViewItem : HeaderedItemsControl
         get => _level;
         set
         {
+            if (_level == value)
+            {
+                return;
+            }
+
             _level = value;
             UpdateIndent();
             UpdateDescendantLevels();
@@ -322,7 +363,9 @@ public class TreeViewItem : HeaderedItemsControl
 
     public TreeViewItem()
     {
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         Items.CollectionChanged += OnChildItemsChanged;
+        ResourcesChanged += OnResourcesChangedHandler;
     }
 
     /// <summary>
@@ -340,6 +383,14 @@ public class TreeViewItem : HeaderedItemsControl
     protected override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
+        StopExpandAnimation();
+
+        if (_headerBorder != null)
+        {
+            _headerBorder.RemoveHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
+            _headerBorder.RemoveHandler(MouseEnterEvent, new RoutedEventHandler(OnHeaderMouseEnter));
+            _headerBorder.RemoveHandler(MouseLeaveEvent, new RoutedEventHandler(OnHeaderMouseLeave));
+        }
 
         _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
         _indentSpacer = GetTemplateChild("PART_IndentSpacer") as Border;
@@ -352,6 +403,8 @@ public class TreeViewItem : HeaderedItemsControl
         if (_headerBorder != null)
         {
             _headerBorder.AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler), true);
+            _headerBorder.AddHandler(MouseEnterEvent, new RoutedEventHandler(OnHeaderMouseEnter), true);
+            _headerBorder.AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnHeaderMouseLeave), true);
         }
 
         // Sync initial state
@@ -378,6 +431,8 @@ public class TreeViewItem : HeaderedItemsControl
         {
             SyncExpandedVisualState();
         }
+
+        UpdateHeaderVisualState();
     }
 
     /// <inheritdoc />
@@ -393,14 +448,25 @@ public class TreeViewItem : HeaderedItemsControl
             InvalidateMeasure();
             InvalidateVisual();
         }
+        else
+        {
+            StopExpandAnimation();
+        }
     }
 
     #endregion
 
     private void OnChildItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
     {
+        if (_suppressChildItemsChanged)
+        {
+            return;
+        }
+
         try
         {
+            var needsDescendantRefresh = e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset;
+
             // Handle removed items
             if (e.OldItems != null)
             {
@@ -444,13 +510,54 @@ public class TreeViewItem : HeaderedItemsControl
             }
 
             UpdateExpanderVisibility();
-            UpdateDescendantLevels();
+            if (needsDescendantRefresh)
+            {
+                UpdateDescendantLevels();
+            }
+
             InvalidateMeasure();
         }
         catch
         {
             // Ignored
         }
+    }
+
+    internal void AddChildItems(IEnumerable<TreeViewItem> childItems)
+    {
+        var bufferedItems = new List<TreeViewItem>();
+        foreach (var childItem in childItems)
+        {
+            bufferedItems.Add(childItem);
+        }
+
+        if (bufferedItems.Count == 0)
+        {
+            return;
+        }
+
+        _suppressChildItemsChanged = true;
+        try
+        {
+            foreach (var childItem in bufferedItems)
+            {
+                Items.Add(childItem);
+            }
+        }
+        finally
+        {
+            _suppressChildItemsChanged = false;
+        }
+
+        foreach (var childItem in bufferedItems)
+        {
+            childItem.ParentTreeView = ParentTreeView;
+            childItem.Level = Level + 1;
+            _itemsHost?.Children.Add(childItem);
+        }
+
+        UpdateExpanderVisibility();
+        InvalidateMeasure();
     }
 
     private void UpdateDescendantLevels()
@@ -490,6 +597,28 @@ public class TreeViewItem : HeaderedItemsControl
         }
     }
 
+    private void OnHeaderMouseEnter(object sender, RoutedEventArgs e)
+    {
+        if (_isHeaderMouseOver)
+        {
+            return;
+        }
+
+        _isHeaderMouseOver = true;
+        UpdateHeaderVisualState();
+    }
+
+    private void OnHeaderMouseLeave(object sender, RoutedEventArgs e)
+    {
+        if (!_isHeaderMouseOver)
+        {
+            return;
+        }
+
+        _isHeaderMouseOver = false;
+        UpdateHeaderVisualState();
+    }
+
     #region State Updates
 
     private void UpdateIndent()
@@ -509,29 +638,336 @@ public class TreeViewItem : HeaderedItemsControl
 
         // When children are realized after template application, keep glyph direction
         // in sync with the current expanded state.
-        if (_expanderArrow != null)
+        if (_expanderArrow != null && _expandAnimTimer == null)
         {
-            var rotateTransform = _expanderArrow.RenderTransform as RotateTransform ?? new RotateTransform();
-            rotateTransform.Angle = IsExpanded ? 90 : 0;
-            _expanderArrow.RenderTransform = rotateTransform;
-            _expanderArrow.InvalidateVisual();
+            SetExpanderAngle(IsExpanded ? 90 : 0);
         }
     }
 
     private void SyncExpandedVisualState()
     {
+        StopExpandAnimation();
+
         if (_itemsHost != null)
         {
             _itemsHost.Visibility = IsExpanded ? Visibility.Visible : Visibility.Collapsed;
+            _itemsHost.MaxHeight = double.PositiveInfinity;
+            _itemsHost.ClipToBounds = false;
         }
 
         if (_expanderArrow != null)
         {
-            var rotateTransform = _expanderArrow.RenderTransform as RotateTransform ?? new RotateTransform();
-            rotateTransform.Angle = IsExpanded ? 90 : 0;
-            _expanderArrow.RenderTransform = rotateTransform;
-            _expanderArrow.InvalidateVisual();
+            SetExpanderAngle(IsExpanded ? 90 : 0);
         }
+    }
+
+    private bool ShouldAnimateExpandedStateChange() =>
+        _itemsHost != null
+        && HasItems
+        && VisualParent != null;
+
+    private void BeginExpandedStateAnimation(bool expanded)
+    {
+        if (_itemsHost == null)
+        {
+            return;
+        }
+
+        var startHeight = GetCurrentItemsHostHeight();
+        var targetHeight = expanded ? MeasureItemsHostNaturalHeight() : 0.0;
+        var startAngle = GetCurrentExpanderAngle();
+        var targetAngle = expanded ? 90.0 : 0.0;
+
+        if (Math.Abs(startHeight - targetHeight) < 0.5 && Math.Abs(startAngle - targetAngle) < 0.5)
+        {
+            SyncExpandedVisualState();
+            return;
+        }
+
+        StopExpandAnimation();
+
+        _expandAnimationTargetExpanded = expanded;
+        _expandAnimationStartTick = Environment.TickCount64;
+        _expandAnimationFromHeight = startHeight;
+        _expandAnimationToHeight = targetHeight;
+        _expandAnimationFromAngle = startAngle;
+        _expandAnimationToAngle = targetAngle;
+        _expandAnimationChildren = expanded
+            ? CollectClothChildren(targetHeight)
+            : [];
+
+        _itemsHost.Visibility = Visibility.Visible;
+        _itemsHost.ClipToBounds = true;
+        _itemsHost.MaxHeight = Math.Max(0, startHeight);
+
+        _expandAnimTimer = new Threading.DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
+        };
+        _expandAnimTimer.Tick += OnExpandAnimationTick;
+        _expandAnimTimer.Start();
+
+        ApplyExpandAnimationFrame(0);
+    }
+
+    private void OnExpandAnimationTick(object? sender, EventArgs e)
+    {
+        var durationMs = _expandAnimationTargetExpanded
+            ? ExpandAnimationDurationMs
+            : CollapseAnimationDurationMs;
+        var elapsedMs = Math.Max(0, Environment.TickCount64 - _expandAnimationStartTick);
+        var progress = durationMs <= 0
+            ? 1.0
+            : Math.Clamp(elapsedMs / durationMs, 0.0, 1.0);
+
+        ApplyExpandAnimationFrame(progress);
+
+        if (progress >= 1.0)
+        {
+            CompleteExpandAnimation();
+        }
+    }
+
+    private void ApplyExpandAnimationFrame(double progress)
+    {
+        if (_itemsHost == null)
+        {
+            return;
+        }
+
+        var easedProgress = _expandAnimationTargetExpanded
+            ? s_expandHeightEase.Ease(progress)
+            : s_collapseEase.Ease(progress);
+        var arrowProgress = _expandAnimationTargetExpanded
+            ? s_arrowExpandEase.Ease(progress)
+            : s_collapseEase.Ease(progress);
+
+        _itemsHost.MaxHeight = Math.Max(0, Lerp(_expandAnimationFromHeight, _expandAnimationToHeight, easedProgress));
+        SetExpanderAngle(Lerp(_expandAnimationFromAngle, _expandAnimationToAngle, arrowProgress));
+
+        if (_expandAnimationTargetExpanded)
+        {
+            ApplyClothOffsets(progress);
+        }
+        else
+        {
+            ClearChildOffsets();
+        }
+
+        InvalidateMeasure();
+        ParentTreeView?.InvalidateMeasure();
+    }
+
+    private void CompleteExpandAnimation()
+    {
+        StopExpandAnimation();
+
+        if (_itemsHost != null)
+        {
+            _itemsHost.Visibility = _expandAnimationTargetExpanded ? Visibility.Visible : Visibility.Collapsed;
+            _itemsHost.MaxHeight = double.PositiveInfinity;
+            _itemsHost.ClipToBounds = false;
+        }
+
+        ClearChildOffsets();
+        SetExpanderAngle(_expandAnimationTargetExpanded ? 90 : 0);
+        InvalidateMeasure();
+        ParentTreeView?.InvalidateMeasure();
+    }
+
+    private void StopExpandAnimation()
+    {
+        if (_expandAnimTimer == null)
+        {
+            return;
+        }
+
+        _expandAnimTimer.Stop();
+        _expandAnimTimer.Tick -= OnExpandAnimationTick;
+        _expandAnimTimer = null;
+        _expandAnimationChildren = [];
+    }
+
+    private double GetCurrentItemsHostHeight()
+    {
+        if (_itemsHost == null || _itemsHost.Visibility != Visibility.Visible)
+        {
+            return 0;
+        }
+
+        if (_itemsHost.ActualHeight > 0)
+        {
+            return _itemsHost.ActualHeight;
+        }
+
+        if (!double.IsInfinity(_itemsHost.MaxHeight))
+        {
+            return Math.Max(0, _itemsHost.MaxHeight);
+        }
+
+        return MeasureItemsHostNaturalHeight();
+    }
+
+    private double MeasureItemsHostNaturalHeight()
+    {
+        if (_itemsHost == null)
+        {
+            return 0;
+        }
+
+        var previousVisibility = _itemsHost.Visibility;
+        var previousMaxHeight = _itemsHost.MaxHeight;
+        var previousClipToBounds = _itemsHost.ClipToBounds;
+
+        var availableWidth = _itemsHost.ActualWidth > 0
+            ? _itemsHost.ActualWidth
+            : (ActualWidth > 0 ? ActualWidth : double.PositiveInfinity);
+
+        _itemsHost.Visibility = Visibility.Visible;
+        _itemsHost.MaxHeight = double.PositiveInfinity;
+        _itemsHost.ClipToBounds = false;
+        _itemsHost.Measure(new Size(availableWidth, double.PositiveInfinity));
+        var desiredHeight = _itemsHost.DesiredSize.Height;
+
+        _itemsHost.Visibility = previousVisibility;
+        _itemsHost.MaxHeight = previousMaxHeight;
+        _itemsHost.ClipToBounds = previousClipToBounds;
+
+        return Math.Max(0, desiredHeight);
+    }
+
+    private double GetCurrentExpanderAngle()
+    {
+        if (_expanderArrow?.RenderTransform is RotateTransform rotateTransform)
+        {
+            return rotateTransform.Angle;
+        }
+
+        return IsExpanded ? 90 : 0;
+    }
+
+    private void SetExpanderAngle(double angle)
+    {
+        if (_expanderArrow == null)
+        {
+            return;
+        }
+
+        var rotateTransform = _expanderArrow.RenderTransform as RotateTransform ?? new RotateTransform();
+        rotateTransform.Angle = angle;
+        _expanderArrow.RenderTransform = rotateTransform;
+        _expanderArrow.InvalidateVisual();
+    }
+
+    private ClothChild[] CollectClothChildren(double targetHeight)
+    {
+        if (_itemsHost == null || _itemsHost.Children.Count == 0)
+        {
+            return [];
+        }
+
+        var children = new List<UIElement>();
+        foreach (var child in _itemsHost.Children)
+        {
+            if (child is UIElement uiElement && uiElement.Visibility == Visibility.Visible)
+            {
+                children.Add(uiElement);
+            }
+        }
+
+        if (children.Count == 0)
+        {
+            return [];
+        }
+
+        var baseOffset = Math.Min(Math.Max(12.0, targetHeight * 0.22), 36.0);
+        var result = new ClothChild[children.Count];
+        for (int i = 0; i < children.Count; i++)
+        {
+            var normalizedIndex = (i + 1.0) / children.Count;
+            result[i] = new ClothChild(
+                children[i],
+                -baseOffset * normalizedIndex,
+                Math.Min(0.45, i * ClothStaggerProgress));
+        }
+
+        return result;
+    }
+
+    private void ApplyClothOffsets(double progress)
+    {
+        if (_expandAnimationChildren.Length == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < _expandAnimationChildren.Length; i++)
+        {
+            var child = _expandAnimationChildren[i];
+            var localProgress = child.ProgressDelay >= 1.0
+                ? 1.0
+                : Math.Clamp((progress - child.ProgressDelay) / (1.0 - child.ProgressDelay), 0.0, 1.0);
+            var eased = s_clothEase.Ease(localProgress);
+            child.Element.RenderOffset = new Point(0, child.InitialY * (1.0 - eased));
+        }
+    }
+
+    private void ClearChildOffsets()
+    {
+        if (_expandAnimationChildren.Length == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < _expandAnimationChildren.Length; i++)
+        {
+            _expandAnimationChildren[i].Element.RenderOffset = default;
+        }
+    }
+
+    private static double Lerp(double from, double to, double progress) =>
+        from + ((to - from) * progress);
+
+    private void UpdateHeaderVisualState()
+    {
+        if (_headerBorder == null)
+        {
+            return;
+        }
+
+        if (IsSelected && _isHeaderMouseOver)
+        {
+            _headerBorder.Background = ResolveSelectedHoverBackgroundBrush();
+            return;
+        }
+
+        if (IsSelected)
+        {
+            _headerBorder.Background = ResolveSelectedBackgroundBrush();
+            return;
+        }
+
+        if (_isHeaderMouseOver)
+        {
+            _headerBorder.Background = ResolveHoverBackgroundBrush();
+            return;
+        }
+
+        _headerBorder.ClearValue(Border.BackgroundProperty);
+    }
+
+    private Brush ResolveHoverBackgroundBrush()
+        => TryFindResource("ControlBackgroundHover") as Brush ?? s_fallbackHoverBackgroundBrush;
+
+    private Brush ResolveSelectedBackgroundBrush()
+        => TryFindResource("SelectionBackground") as Brush ?? s_fallbackSelectedBackgroundBrush;
+
+    private Brush ResolveSelectedHoverBackgroundBrush()
+        => TryFindResource("AccentBrushPressed") as Brush ?? s_fallbackSelectedHoverBackgroundBrush;
+
+    private void OnResourcesChangedHandler(object? sender, EventArgs e)
+    {
+        UpdateHeaderVisualState();
     }
 
     #endregion
@@ -549,13 +985,13 @@ public class TreeViewItem : HeaderedItemsControl
             else
                 tvi.RaiseEvent(new RoutedEventArgs(CollapsedEvent, tvi));
 
-            // Animate items host panel expand/collapse + arrow rotation
-            if (tvi._itemsHost != null)
+            if (tvi.ShouldAnimateExpandedStateChange())
             {
-                if (expanded)
-                    tvi._expandAnimTimer = ExpandCollapseAnimator.AnimateExpand(tvi._itemsHost, tvi._expandAnimTimer, tvi._expanderArrow);
-                else
-                    tvi._expandAnimTimer = ExpandCollapseAnimator.AnimateCollapse(tvi._itemsHost, tvi._expandAnimTimer, tvi._expanderArrow);
+                tvi.BeginExpandedStateAnimation(expanded);
+            }
+            else
+            {
+                tvi.SyncExpandedVisualState();
             }
 
             tvi.InvalidateMeasure();
@@ -571,10 +1007,19 @@ public class TreeViewItem : HeaderedItemsControl
             {
                 tvi.ParentTreeView.SelectItem(tvi);
             }
+
+            tvi.UpdateHeaderVisualState();
         }
     }
 
     #endregion
+
+    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
+    {
+        // TreeView item visuals are driven by header-local hover state.
+        // Avoid invalidating the full expanded subtree whenever the pointer
+        // moves across descendants inside the item.
+    }
 
     #region HierarchicalDataTemplate Support
 
