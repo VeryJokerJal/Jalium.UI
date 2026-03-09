@@ -245,6 +245,38 @@ public class PrimitiveThemeTests
     }
 
     [Fact]
+    public void Label_TemplatedRender_ShouldNotDrawTextTwice()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var label = new Label
+            {
+                Content = "Username:"
+            };
+
+            var host = new StackPanel { Width = 200, Height = 40 };
+            host.Children.Add(label);
+
+            host.Measure(new Size(200, 40));
+            host.Arrange(new Rect(0, 0, 200, 40));
+
+            var drawingContext = new RecordingDrawingContext();
+            label.Render(drawingContext);
+
+            Assert.NotNull(label.FindName("LabelBorder"));
+            Assert.Equal(1, drawingContext.DrawTextCalls);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
     public void Thumb_ImplicitThemeStyle_ShouldApplyWithoutLocalVisualOverrides()
     {
         ResetApplicationState();
@@ -424,6 +456,7 @@ public class PrimitiveThemeTests
         public Pen? LastPen { get; private set; }
         public Brush? LastBackgroundBrush { get; private set; }
         public Rect LastRectangle { get; private set; }
+        public int DrawTextCalls { get; private set; }
 
         public override void DrawLine(Pen pen, Point point0, Point point1)
         {
@@ -446,6 +479,7 @@ public class PrimitiveThemeTests
 
         public override void DrawText(FormattedText formattedText, Point origin)
         {
+            DrawTextCalls++;
         }
 
         public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
