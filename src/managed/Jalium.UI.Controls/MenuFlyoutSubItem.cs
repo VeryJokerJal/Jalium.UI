@@ -71,6 +71,7 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
     /// </summary>
     public void HideSubMenu()
     {
+        CloseDescendantSubMenus();
         _subPopup?.IsOpen = false;
     }
 
@@ -133,6 +134,7 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
 
     private void OnSubPopupClosed(object? sender, EventArgs e)
     {
+        CloseDescendantSubMenus();
         _subPopupScrollHost?.ItemsPanel.Children.Clear();
     }
 
@@ -166,6 +168,20 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
             {
                 sibling.HideSubMenu();
             }
+        }
+    }
+
+    private void CloseDescendantSubMenus()
+    {
+        foreach (var item in _items)
+        {
+            if (item is not MenuFlyoutSubItem childSubItem)
+            {
+                continue;
+            }
+
+            childSubItem.CloseDescendantSubMenus();
+            childSubItem._subPopup?.IsOpen = false;
         }
     }
 }

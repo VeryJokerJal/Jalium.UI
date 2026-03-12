@@ -92,6 +92,65 @@ public class ContentDialogTests
     }
 
     [Fact]
+    public void ShowAsync_InPlaceDialog_ShouldBypassCachedUnderlyingHit()
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+
+        try
+        {
+            var background = new Border
+            {
+                Width = 800,
+                Height = 600
+            };
+
+            var root = new Grid();
+            root.Children.Add(background);
+
+            var dialog = new ContentDialog
+            {
+                Title = "Dialog",
+                PrimaryButtonText = "Save",
+                CloseButtonText = "Cancel"
+            };
+            root.Children.Add(dialog);
+
+            var window = CreateWindow(root);
+            app.MainWindow = window;
+
+            MeasureWindow(window);
+
+            var cachedHit = InvokeHitTestElement(window, new Point(400, 300));
+            Assert.Same(background, cachedHit);
+
+            var showTask = dialog.ShowAsync(ContentDialogPlacement.InPlace);
+            MeasureWindow(window);
+            ProcessUiQueue();
+
+            var dialogCard = Assert.IsType<Border>(dialog.FindName("PART_DialogCard"));
+            var hitPoint = new Point(
+                dialogCard.VisualBounds.X + (dialogCard.VisualBounds.Width / 2),
+                dialogCard.VisualBounds.Y + (dialogCard.VisualBounds.Height / 2));
+
+            var hit = InvokeHitTestElement(window, hitPoint);
+
+            Assert.False(showTask.IsCompleted);
+            Assert.NotSame(background, hit);
+            Assert.True(IsDescendantOf(hit, dialog), $"Expected hit inside dialog, actual={hit?.GetType().Name ?? "<null>"} point={hitPoint}");
+
+            dialog.Hide();
+            ProcessUiQueue();
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
+    [Fact]
     public void PopupModalOverlay_ShouldBlockUnderlyingButtonClick()
     {
         ResetApplicationState();
@@ -128,6 +187,107 @@ public class ContentDialogTests
             InvokeMouseButtonUp(window, MouseButton.Left, x: 10, y: 10);
 
             Assert.Equal(0, clickCount);
+
+            dialog.Hide();
+            ProcessUiQueue();
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
+    [Fact]
+    public void ExplicitSizeConstraints_ShouldOnlyResizeDialogCard()
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+
+        try
+        {
+            var background = new Border
+            {
+                Width = 800,
+                Height = 600
+            };
+
+            var root = new Grid();
+            root.Children.Add(background);
+
+            var window = CreateWindow(root);
+            app.MainWindow = window;
+
+            var dialog = new ContentDialog
+            {
+                Title = "Dialog",
+                CloseButtonText = "Close",
+                Width = 640,
+                Height = 520,
+                MaxHeight = 500
+            };
+
+            _ = dialog.ShowAsync();
+            MeasureWindow(window);
+            ProcessUiQueue();
+
+            var dialogCard = Assert.IsType<Border>(dialog.FindName("PART_DialogCard"));
+            Assert.Equal(800, dialog.ActualWidth);
+            Assert.Equal(600, dialog.ActualHeight);
+            Assert.Equal(640, dialogCard.ActualWidth);
+            Assert.Equal(500, dialogCard.ActualHeight);
+            Assert.Equal(80, dialogCard.VisualBounds.X);
+            Assert.Equal(50, dialogCard.VisualBounds.Y);
+
+            var hit = InvokeHitTestElement(window, new Point(790, 10));
+            Assert.NotSame(background, hit);
+            Assert.True(IsDescendantOf(hit, dialog), $"Expected hit inside dialog overlay, actual={hit?.GetType().Name ?? "<null>"}");
+
+            dialog.Hide();
+            ProcessUiQueue();
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
+    [Fact]
+    public void ContentWidth_ShouldDriveDialogCardWidth_WhenWidthIsUnset()
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+
+        try
+        {
+            var window = CreateWindow(new Grid());
+            app.MainWindow = window;
+
+            var content = new Border
+            {
+                Width = 640,
+                Height = 120
+            };
+
+            var dialog = new ContentDialog
+            {
+                Title = "Dialog",
+                CloseButtonText = "Close",
+                Content = content
+            };
+
+            _ = dialog.ShowAsync();
+            MeasureWindow(window);
+            ProcessUiQueue();
+
+            var dialogCard = Assert.IsType<Border>(dialog.FindName("PART_DialogCard"));
+            Assert.InRange(dialogCard.ActualWidth, 640, 751);
+            Assert.Equal(
+                Math.Round((800 - dialogCard.ActualWidth) / 2, MidpointRounding.AwayFromZero),
+                dialogCard.VisualBounds.X);
 
             dialog.Hide();
             ProcessUiQueue();
@@ -554,6 +714,26 @@ public class ContentDialogTests
     {
         int packed = (y << 16) | (x & 0xFFFF);
         return (nint)packed;
+    }
+
+    private static UIElement? InvokeHitTestElement(Window window, Point point)
+    {
+        var method = typeof(Window).GetMethod("HitTestElement", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return method!.Invoke(window, new object[] { point, "content-dialog-test-hit" }) as UIElement;
+    }
+
+    private static bool IsDescendantOf(UIElement? element, UIElement ancestor)
+    {
+        for (Visual? current = element; current != null; current = current.VisualParent)
+        {
+            if (ReferenceEquals(current, ancestor))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static T GetPrivateField<T>(object instance, string fieldName) where T : class

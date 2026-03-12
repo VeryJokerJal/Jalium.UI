@@ -345,4 +345,40 @@
     <RemoveDir Directories="$(HlslShaderIntermediateOutputPath)" />
   </Target>
 
+  <Target Name="ConfigureJaliumNativeAot"
+          BeforeTargets="SetupOSSpecificProps"
+          Condition="'$(UseJaliumNativeAot)' == 'true'">
+    <PropertyGroup>
+      <_JaliumNativeAotAssetDirectory>$([System.IO.Path]::GetFullPath('$(JaliumNativeAotAssetRoot)$(RuntimeIdentifier)\'))</_JaliumNativeAotAssetDirectory>
+    </PropertyGroup>
+
+    <Error Condition="'$(RuntimeIdentifier)' == ''"
+           Text="UseJaliumNativeAot requires a RuntimeIdentifier. Set RuntimeIdentifier to win-x64 before publishing." />
+    <Error Condition="'$(RuntimeIdentifier)' != 'win-x64'"
+           Text="UseJaliumNativeAot currently supports only the win-x64 runtime." />
+    <Error Condition="'$(PublishAot)' != 'true'"
+           Text="UseJaliumNativeAot requires PublishAot=true." />
+    <Error Condition="!Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.core.static.lib')"
+           Text="Jalium NativeAOT static assets were not found at '$(_JaliumNativeAotAssetDirectory)'. Restore or rebuild the Jalium.UI.Build package." />
+
+    <ItemGroup>
+      <DirectPInvoke Include="jalium.native.core" />
+      <DirectPInvoke Include="jalium.native.d3d12" />
+      <DirectPInvoke Include="jalium.native.browser" />
+
+      <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.core.static.lib" />
+      <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.d3d12.static.lib" />
+      <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.browser.static.lib" />
+
+      <LinkerArg Include="&quot;d3d12.lib&quot;" />
+      <LinkerArg Include="&quot;dxgi.lib&quot;" />
+      <LinkerArg Include="&quot;dxguid.lib&quot;" />
+      <LinkerArg Include="&quot;d3dcompiler.lib&quot;" />
+      <LinkerArg Include="&quot;dwrite.lib&quot;" />
+      <LinkerArg Include="&quot;d2d1.lib&quot;" />
+      <LinkerArg Include="&quot;d3d11.lib&quot;" />
+      <LinkerArg Include="&quot;dcomp.lib&quot;" />
+    </ItemGroup>
+  </Target>
+
 </Project>

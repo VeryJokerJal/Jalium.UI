@@ -530,6 +530,12 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                     popupWindow.OnPaint();
                     return nint.Zero;
 
+                case WM_NCHITTEST:
+                    // Composition-backed popup HWNDs can otherwise be treated like
+                    // transparent surfaces by the OS, so force client hit testing
+                    // and let the managed visual tree decide which child is interactive.
+                    return HTCLIENT;
+
                 case WM_MOUSEACTIVATE:
                     return MA_NOACTIVATE;
 
@@ -713,7 +719,9 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         int timestamp = Environment.TickCount;
 
         var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTest(position)?.VisualHit as UIElement ?? (UIElement)this;
+        var hitElement = HitTest(position)?.VisualHit as UIElement;
+        UpdateMouseOverState(hitElement);
+        var target = captured ?? hitElement ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
@@ -764,7 +772,9 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         int timestamp = Environment.TickCount;
 
         var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTest(position)?.VisualHit as UIElement ?? (UIElement)this;
+        var hitElement = HitTest(position)?.VisualHit as UIElement;
+        UpdateMouseOverState(hitElement);
+        var target = captured ?? hitElement ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
@@ -806,6 +816,26 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         }
 
         _activePointerTargets.Remove(MousePointerId);
+    }
+
+    private void UpdateMouseOverState(UIElement? newMouseOverElement)
+    {
+        if (newMouseOverElement == _lastMouseOverElement)
+        {
+            return;
+        }
+
+        if (_lastMouseOverElement != null)
+        {
+            RaiseMouseLeaveChain(_lastMouseOverElement, newMouseOverElement);
+        }
+
+        if (newMouseOverElement != null)
+        {
+            RaiseMouseEnterChain(newMouseOverElement, _lastMouseOverElement);
+        }
+
+        _lastMouseOverElement = newMouseOverElement;
     }
 
     private void OnMouseWheel(nint wParam, nint lParam)
@@ -1961,6 +1991,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private const uint WM_ERASEBKGND = 0x0014;
     private const uint WM_SETCURSOR = 0x0020;
     private const uint WM_MOUSEACTIVATE = 0x0021;
+    private const uint WM_NCHITTEST = 0x0084;
     private const uint WM_MOUSEMOVE = 0x0200;
     private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;

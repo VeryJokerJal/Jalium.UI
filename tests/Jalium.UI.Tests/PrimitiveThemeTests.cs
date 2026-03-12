@@ -311,6 +311,62 @@ public class PrimitiveThemeTests
     }
 
     [Fact]
+    public void Label_TemplatedStringContent_ShouldMeasureTemplateText()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var label = new Label
+            {
+                Content = "Username:"
+            };
+
+            var host = new Grid { Width = 280, Height = 40 };
+            host.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            host.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Star });
+            host.Children.Add(label);
+            host.Children.Add(new TextBox { Text = "demo", MinWidth = 120, Margin = new Thickness(12, 0, 0, 0) });
+            Grid.SetColumn(host.Children[1], 1);
+
+            host.Measure(new Size(280, 40));
+            host.Arrange(new Rect(0, 0, 280, 40));
+
+            var textBlock = FindDescendant<TextBlock>(label);
+
+            Assert.NotNull(textBlock);
+            Assert.True(textBlock!.DesiredSize.Width > 40);
+            Assert.True(textBlock.ActualWidth > 40);
+            Assert.True(host.ColumnDefinitions[0].ActualWidth > 40);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void TextBlock_NoWrapRender_ShouldNotConstrainTextToRenderWidth()
+    {
+        var textBlock = new TextBlock
+        {
+            Text = "Username:",
+            Width = 12
+        };
+
+        textBlock.Measure(new Size(12, 40));
+        textBlock.Arrange(new Rect(0, 0, 12, 40));
+
+        var drawingContext = new TextRecordingDrawingContext();
+        textBlock.Render(drawingContext);
+
+        Assert.NotNull(drawingContext.LastFormattedText);
+        Assert.True(drawingContext.LastFormattedText!.MaxTextWidth > textBlock.ActualWidth);
+    }
+
+    [Fact]
     public void Thumb_ImplicitThemeStyle_ShouldApplyWithoutLocalVisualOverrides()
     {
         ResetApplicationState();
@@ -514,6 +570,64 @@ public class PrimitiveThemeTests
         public override void DrawText(FormattedText formattedText, Point origin)
         {
             DrawTextCalls++;
+        }
+
+        public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
+        {
+        }
+
+        public override void DrawImage(ImageSource imageSource, Rect rectangle)
+        {
+        }
+
+        public override void DrawBackdropEffect(Rect rectangle, IBackdropEffect effect, CornerRadius cornerRadius)
+        {
+        }
+
+        public override void PushTransform(Transform transform)
+        {
+        }
+
+        public override void PushClip(Geometry clipGeometry)
+        {
+        }
+
+        public override void PushOpacity(double opacity)
+        {
+        }
+
+        public override void Pop()
+        {
+        }
+
+        public override void Close()
+        {
+        }
+    }
+
+    private sealed class TextRecordingDrawingContext : DrawingContext
+    {
+        public FormattedText? LastFormattedText { get; private set; }
+
+        public override void DrawLine(Pen pen, Point point0, Point point1)
+        {
+        }
+
+        public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle)
+        {
+        }
+
+        public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY)
+        {
+        }
+
+        public override void DrawEllipse(Brush? brush, Pen? pen, Point center, double radiusX, double radiusY)
+        {
+        }
+
+        public override void DrawText(FormattedText formattedText, Point origin)
+        {
+            LastFormattedText = formattedText;
         }
 
         public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)

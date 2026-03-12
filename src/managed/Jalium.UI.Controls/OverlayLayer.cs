@@ -9,6 +9,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 internal sealed class OverlayLayer : Canvas
 {
+    private readonly HashSet<PopupRoot> _popupRoots = [];
     private readonly HashSet<PopupRoot> _lightDismissRoots = [];
     private readonly HashSet<UIElement> _modalRoots = [];
 
@@ -25,6 +26,11 @@ internal sealed class OverlayLayer : Canvas
     public bool HasLightDismissPopups => _lightDismissRoots.Count > 0;
 
     /// <summary>
+    /// Returns true if any popup roots are currently hosted in the overlay.
+    /// </summary>
+    public bool HasPopupRoots => _popupRoots.Count > 0;
+
+    /// <summary>
     /// Returns true when any modal overlay content is currently open.
     /// </summary>
     public bool HasModalRoots => _modalRoots.Count > 0;
@@ -35,6 +41,7 @@ internal sealed class OverlayLayer : Canvas
     public void AddPopupRoot(PopupRoot root)
     {
         Children.Add(root);
+        _popupRoots.Add(root);
 
         if (root.IsLightDismiss)
         {
@@ -50,6 +57,7 @@ internal sealed class OverlayLayer : Canvas
     /// </summary>
     public void RemovePopupRoot(PopupRoot root)
     {
+        _popupRoots.Remove(root);
         _lightDismissRoots.Remove(root);
         Children.Remove(root);
 

@@ -1601,6 +1601,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         int physicalWidth = (int)(Width * _dpiScale);
         int physicalHeight = (int)(Height * _dpiScale);
 
+        PrepareTaskbarRelaunchIdentity();
+
         // Create the window
         Handle = CreateWindowEx(
             dwExStyle,
@@ -1618,6 +1620,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             throw new InvalidOperationException("Failed to create window.");
         }
+
+        ApplyTaskbarRelaunchProperties();
 
         // Store reference for message handling
         _windows[Handle] = this;
@@ -3009,7 +3013,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     break;
 
                 case WM_KILLFOCUS:
-                    window.OnKillFocus();
+                    window.OnKillFocus(wParam);
                     break;
             }
         }
@@ -3850,9 +3854,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         HandleWindowDeactivated(nint.Zero, clearKeyboardFocus: false);
     }
 
-    private void OnKillFocus()
+    private void OnKillFocus(nint newFocusWindow)
     {
-        HandleWindowDeactivated(nint.Zero, clearKeyboardFocus: true);
+        HandleWindowDeactivated(newFocusWindow, clearKeyboardFocus: true);
     }
 
     private void OnSetFocus()
@@ -4496,9 +4500,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
+        var hitElement = topLevelMenuItemBehindOverlay ?? HitTestElement(position, "mouse-down");
+        UpdateMouseOverState(hitElement, timestamp);
         var target = captured
-            ?? topLevelMenuItemBehindOverlay
-            ?? HitTestElement(position, "mouse-down")
+            ?? hitElement
             ?? this;
 
         if (button == MouseButton.Left)
@@ -4600,7 +4605,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTestElement(position, "mouse-up") ?? this;
+        var hitElement = HitTestElement(position, "mouse-up");
+        UpdateMouseOverState(hitElement, timestamp);
+        var target = captured ?? hitElement ?? this;
 
         var currentState = MouseButtonState.Released;
 
@@ -4651,6 +4658,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         _activePointerTargets.Remove(MousePointerId);
     }
 
+    private void UpdateMouseOverState(UIElement? newMouseOverElement, int timestamp)
+    {
+        if (newMouseOverElement == _lastMouseOverElement)
+        {
+            return;
+        }
+
+        if (_lastMouseOverElement != null)
+        {
+            RaiseMouseLeaveChain(_lastMouseOverElement, newMouseOverElement, timestamp);
+        }
+
+        if (newMouseOverElement != null)
+        {
+            RaiseMouseEnterChain(newMouseOverElement, _lastMouseOverElement, timestamp);
+        }
+
+        _lastMouseOverElement = newMouseOverElement;
+    }
+
     private MenuItem? HitTopLevelMenuItemBehindOverlay(Point windowPosition)
     {
         var hitElement = HitIgnoringOverlay(windowPosition)?.VisualHit as UIElement;
@@ -4686,7 +4713,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private HitTestResult? HitTestWithCache(Point windowPosition)
     {
-        if (OverlayLayer.HasModalRoots || OverlayLayer.HasLightDismissPopups)
+        if (ActiveContentDialog != null || OverlayLayer.HasModalRoots || OverlayLayer.HasLightDismissPopups || OverlayLayer.HasPopupRoots)
         {
             return HitTest(windowPosition);
         }

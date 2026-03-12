@@ -146,6 +146,18 @@ public abstract class Panel : FrameworkElement
         dc.DrawRectangle(Background, null, new Rect(renderSize));
     }
 
+    /// <inheritdoc />
+    protected override HitTestResult? HitTestCore(Point point)
+    {
+        var result = base.HitTestCore(point);
+        if (result?.VisualHit == this && Background == null)
+        {
+            return null;
+        }
+
+        return result;
+    }
+
     /// <summary>
     /// Adds a child to the visual tree. Called by UIElementCollection.
     /// </summary>

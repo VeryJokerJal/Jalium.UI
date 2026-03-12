@@ -269,6 +269,13 @@ public abstract partial class UIElement : Visual, IInputElement
             new PropertyMetadata(true, OnIsEnabledChanged));
 
     /// <summary>
+    /// Identifies the IsHitTestVisible dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsHitTestVisibleProperty =
+        DependencyProperty.Register(nameof(IsHitTestVisible), typeof(bool), typeof(UIElement),
+            new PropertyMetadata(true, OnIsHitTestVisibleChanged));
+
+    /// <summary>
     /// Identifies the Opacity dependency property.
     /// </summary>
     public static readonly DependencyProperty OpacityProperty =
@@ -350,6 +357,30 @@ public abstract partial class UIElement : Visual, IInputElement
             new PropertyMetadata(false, OnIsFocusedChanged));
 
     /// <summary>
+    /// Identifies the IsKeyboardFocused read-only dependency property key.
+    /// </summary>
+    private static readonly DependencyPropertyKey IsKeyboardFocusedPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsKeyboardFocused), typeof(bool), typeof(UIElement),
+            new PropertyMetadata(false, OnIsKeyboardFocusedPropertyChanged));
+
+    /// <summary>
+    /// Identifies the IsKeyboardFocused dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsKeyboardFocusedProperty = IsKeyboardFocusedPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the IsKeyboardFocusWithin read-only dependency property key.
+    /// </summary>
+    private static readonly DependencyPropertyKey IsKeyboardFocusWithinPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsKeyboardFocusWithin), typeof(bool), typeof(UIElement),
+            new PropertyMetadata(false, OnIsKeyboardFocusWithinPropertyChanged));
+
+    /// <summary>
+    /// Identifies the IsKeyboardFocusWithin dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsKeyboardFocusWithinProperty = IsKeyboardFocusWithinPropertyKey.DependencyProperty;
+
+    /// <summary>
     /// Identifies the IsFocused dependency property.
     /// </summary>
     public static readonly DependencyProperty IsFocusedProperty = IsFocusedPropertyKey.DependencyProperty;
@@ -396,6 +427,22 @@ public abstract partial class UIElement : Visual, IInputElement
             return VisualParent is not UIElement parent || parent.IsEnabled;
         }
         set => SetValue(IsEnabledProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether this element can participate in hit testing.
+    /// The effective value considers the parent chain — if any ancestor is not hit-test visible,
+    /// this element is also effectively not hit-test visible.
+    /// </summary>
+    public bool IsHitTestVisible
+    {
+        get
+        {
+            var localValue = (bool)GetValue(IsHitTestVisibleProperty)!;
+            if (!localValue) return false;
+            return VisualParent is not UIElement parent || parent.IsHitTestVisible;
+        }
+        set => SetValue(IsHitTestVisibleProperty, value);
     }
 
     /// <summary>
@@ -514,18 +561,15 @@ public abstract partial class UIElement : Visual, IInputElement
 
     #region Focus
 
-    private bool _isKeyboardFocused;
-    private bool _isKeyboardFocusWithin;
-
     /// <summary>
     /// Gets a value indicating whether this element has keyboard focus.
     /// </summary>
-    public bool IsKeyboardFocused => _isKeyboardFocused;
+    public bool IsKeyboardFocused => (bool)GetValue(IsKeyboardFocusedProperty)!;
 
     /// <summary>
     /// Gets a value indicating whether keyboard focus is anywhere within this element or its visual subtree.
     /// </summary>
-    public bool IsKeyboardFocusWithin => _isKeyboardFocusWithin;
+    public bool IsKeyboardFocusWithin => (bool)GetValue(IsKeyboardFocusWithinProperty)!;
 
     /// <summary>
     /// Gets a value indicating whether this element has logical focus.
@@ -570,12 +614,9 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     internal void UpdateIsKeyboardFocused(bool isFocused)
     {
-        if (_isKeyboardFocused != isFocused)
+        if (IsKeyboardFocused != isFocused)
         {
-            _isKeyboardFocused = isFocused;
-            SetIsFocused(isFocused);
-            OnIsKeyboardFocusedChanged(isFocused);
-            InvalidateVisual();
+            SetValue(IsKeyboardFocusedPropertyKey.DependencyProperty, isFocused);
         }
     }
 
@@ -584,10 +625,9 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     internal void UpdateIsKeyboardFocusWithin(bool isFocusWithin)
     {
-        if (_isKeyboardFocusWithin != isFocusWithin)
+        if (IsKeyboardFocusWithin != isFocusWithin)
         {
-            _isKeyboardFocusWithin = isFocusWithin;
-            OnIsKeyboardFocusWithinChanged(isFocusWithin);
+            SetValue(IsKeyboardFocusWithinPropertyKey.DependencyProperty, isFocusWithin);
         }
     }
 
@@ -1085,6 +1125,15 @@ public abstract partial class UIElement : Visual, IInputElement
         }
     }
 
+    private static void OnIsHitTestVisibleChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            element.OnIsHitTestVisibleChanged((bool)(e.OldValue ?? true), (bool)(e.NewValue ?? true));
+            element.PropagateIsHitTestVisibleToDescendants();
+        }
+    }
+
     /// <summary>
     /// Called when the IsEnabled property changes.
     /// </summary>
@@ -1101,6 +1150,26 @@ public abstract partial class UIElement : Visual, IInputElement
                 child.InvalidateVisual();
                 child.OnIsEnabledChanged(true, child.IsEnabled);
                 child.PropagateIsEnabledToDescendants();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Called when the IsHitTestVisible property changes.
+    /// </summary>
+    protected virtual void OnIsHitTestVisibleChanged(bool oldValue, bool newValue)
+    {
+    }
+
+    private void PropagateIsHitTestVisibleToDescendants()
+    {
+        for (int i = 0; i < VisualChildrenCount; i++)
+        {
+            if (GetVisualChild(i) is UIElement child)
+            {
+                child.InvalidateVisual();
+                child.OnIsHitTestVisibleChanged(true, child.IsHitTestVisible);
+                child.PropagateIsHitTestVisibleToDescendants();
             }
         }
     }
@@ -1126,6 +1195,29 @@ public abstract partial class UIElement : Visual, IInputElement
         if (d is UIElement element)
         {
             element.OnIsFocusedChanged((bool)(e.OldValue ?? false), (bool)(e.NewValue ?? false));
+        }
+    }
+
+    private static void OnIsKeyboardFocusedPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            var isFocused = (bool)(e.NewValue ?? false);
+            if (element.IsFocused != isFocused)
+            {
+                element.SetIsFocused(isFocused);
+            }
+
+            element.OnIsKeyboardFocusedChanged(isFocused);
+            element.InvalidateVisual();
+        }
+    }
+
+    private static void OnIsKeyboardFocusWithinPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is UIElement element)
+        {
+            element.OnIsKeyboardFocusWithinChanged((bool)(e.NewValue ?? false));
         }
     }
 

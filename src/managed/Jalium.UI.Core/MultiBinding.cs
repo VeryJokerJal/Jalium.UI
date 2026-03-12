@@ -296,6 +296,11 @@ public sealed class MultiBindingExpression : BindingExpressionBase
             if (targetValue == null && (hasUnset || _multiBinding.FallbackValue != null))
                 targetValue = _multiBinding.FallbackValue;
 
+            targetValue = BindingValueCoercion.Coerce(
+                targetValue,
+                TargetProperty.PropertyType,
+                _multiBinding.ConverterCulture ?? CultureInfo.CurrentCulture);
+
             Target.SetValue(TargetProperty, targetValue);
         }
         finally

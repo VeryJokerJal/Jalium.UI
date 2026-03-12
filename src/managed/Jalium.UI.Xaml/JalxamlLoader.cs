@@ -231,6 +231,19 @@ public static class JalxamlLoader
     }
 
     /// <summary>
+    /// Loads JALXAML content into an existing component instance and returns named elements through a dictionary.
+    /// This avoids relying on reflection for generated code-behind wiring.
+    /// </summary>
+    /// <param name="component">The component instance to load into.</param>
+    /// <param name="resourceName">The embedded resource name of the JALXAML file.</param>
+    /// <param name="namedElements">Dictionary to populate with named elements.</param>
+    /// <param name="assembly">The assembly containing the resource. If null, uses the assembly of the component type.</param>
+    public static void LoadComponent(object component, string resourceName, Dictionary<string, object> namedElements, Assembly? assembly = null)
+    {
+        XamlReader.LoadComponent(component, resourceName, namedElements, assembly);
+    }
+
+    /// <summary>
     /// Loads JALXAML content into an existing component instance using a Pack URI.
     /// This is the preferred method called from generated InitializeComponent() methods.
     /// </summary>

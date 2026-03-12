@@ -74,4 +74,13 @@
     <Using Include="Jalium.UI.CornerRadius" Alias="CornerRadius" />
   </ItemGroup>
 
+  <PropertyGroup>
+    <UseJaliumNativeAot Condition="'$(UseJaliumNativeAot)' == ''">false</UseJaliumNativeAot>
+    <JaliumNativeAotAssetRoot Condition="'$(JaliumNativeAotAssetRoot)' == ''">$(MSBuildThisFileDirectory)nativeaot\</JaliumNativeAotAssetRoot>
+    <PublishAot Condition="'$(UseJaliumNativeAot)' == 'true' and '$(PublishAot)' == ''">true</PublishAot>
+    <SelfContained Condition="'$(UseJaliumNativeAot)' == 'true' and '$(SelfContained)' == ''">true</SelfContained>
+    <PublishSingleFile Condition="'$(UseJaliumNativeAot)' == 'true' and '$(PublishSingleFile)' == ''">true</PublishSingleFile>
+    <UseAppHost Condition="'$(UseJaliumNativeAot)' == 'true' and '$(UseAppHost)' == ''">true</UseAppHost>
+  </PropertyGroup>
+
 </Project>

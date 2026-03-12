@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 
 namespace Jalium.UI;
 
@@ -211,6 +212,10 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
             }
 
             _activeBindingIndex = newActiveIndex;
+            activeValue = BindingValueCoercion.Coerce(
+                activeValue,
+                TargetProperty.PropertyType,
+                CultureInfo.CurrentCulture);
             Target.SetValue(TargetProperty, activeValue);
         }
         finally

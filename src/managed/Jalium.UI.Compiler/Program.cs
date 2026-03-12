@@ -173,13 +173,22 @@ internal sealed class Program
         var resourceName = ComputeResourceName(rootNamespace, actualClassName, inputFile, projectDirectory);
         sb.AppendLine("    private void InitializeComponent()");
         sb.AppendLine("    {");
-        sb.AppendLine($"        Jalium.UI.Markup.JalxamlLoader.LoadComponent(this, \"{resourceName}\");");
-        sb.AppendLine();
-
-        // 初始化命名元素引用
-        foreach (var namedElement in document.NamedElements)
+        if (document.NamedElements.Count > 0)
         {
-            sb.AppendLine($"        this.{namedElement.Name} = ({namedElement.TypeName ?? "Jalium.UI.FrameworkElement"})this.FindName(\"{namedElement.Name}\")!;");
+            sb.AppendLine("        var _namedElements = new global::System.Collections.Generic.Dictionary<string, object>();");
+            sb.AppendLine($"        Jalium.UI.Markup.JalxamlLoader.LoadComponent(this, \"{resourceName}\", _namedElements);");
+            sb.AppendLine();
+
+            // 初始化命名元素引用
+            foreach (var namedElement in document.NamedElements)
+            {
+                sb.AppendLine($"        if (_namedElements.TryGetValue(\"{namedElement.Name}\", out var _{namedElement.Name}_value))");
+                sb.AppendLine($"            this.{namedElement.Name} = ({namedElement.TypeName ?? "Jalium.UI.FrameworkElement"})_{namedElement.Name}_value;");
+            }
+        }
+        else
+        {
+            sb.AppendLine($"        Jalium.UI.Markup.JalxamlLoader.LoadComponent(this, \"{resourceName}\");");
         }
 
         sb.AppendLine("    }");

@@ -10,6 +10,17 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Label : ContentControl
 {
+    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0, 120, 212));
+
+    private bool _pendingTemplateTextFocus;
+    private bool _isSelectingDirectText;
+    private int _directSelectionStart;
+    private int _directSelectionLength;
+    private int _directSelectionAnchor;
+    private bool _isDirectWordSelecting;
+    private int _directWordSelectionAnchorStart;
+    private int _directWordSelectionAnchorEnd;
+
     #region Dependency Properties
 
     /// <summary>
@@ -48,6 +59,28 @@ public class Label : ContentControl
         set => SetValue(AccessKeyProperty, value);
     }
 
+    /// <summary>
+    /// Gets the currently selected text.
+    /// </summary>
+    public string SelectedText
+    {
+        get
+        {
+            if (_labelBorder != null &&
+                FindDescendantTextBlock(_labelBorder) is TextBlock textBlock)
+            {
+                return textBlock.SelectedText;
+            }
+
+            if (Content is string text && _directSelectionLength > 0)
+            {
+                return text.Substring(_directSelectionStart, _directSelectionLength);
+            }
+
+            return string.Empty;
+        }
+    }
+
     #endregion
 
     #region Constructor
@@ -59,11 +92,17 @@ public class Label : ContentControl
     {
         UseTemplateContentManagement();
 
-        // Labels are not focusable by default
-        Focusable = false;
+        Focusable = true;
+        KeyboardNavigation.SetIsTabStop(this, false);
 
-        // Register mouse click handler to focus target
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
+        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler), handledEventsToo: true);
+        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
+        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
+        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler), handledEventsToo: true);
+        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnKeyboardFocusChanged));
+        AddHandler(LostKeyboardFocusEvent, new RoutedEventHandler(OnKeyboardFocusChanged));
     }
 
     #endregion
@@ -84,6 +123,7 @@ public class Label : ContentControl
     protected override void OnContentChanged(object? oldContent, object? newContent)
     {
         base.OnContentChanged(oldContent, newContent);
+        CoerceDirectSelectionIntoBounds();
         ApplyPresentedTextStyle();
     }
 
@@ -93,11 +133,84 @@ public class Label : ContentControl
 
     private void OnMouseDownHandler(object sender, RoutedEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        if (TryHandleTemplateTextMouseDown(mouseArgs) || TryHandleDirectTextMouseDown(mouseArgs))
+        {
+            e.Handled = true;
+            return;
+        }
+
+        FocusTarget();
+        e.Handled = true;
+    }
+
+    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    {
+        UpdateDirectTextCursor();
+
+        if (!_isSelectingDirectText || e is not MouseEventArgs mouseArgs || Content is not string text)
+        {
+            return;
+        }
+
+        var index = GetDirectTextCharacterIndex(mouseArgs.GetPosition(this), text);
+        UpdateDirectSelection(index);
+        e.Handled = true;
+    }
+
+    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    {
+        UpdateDirectTextCursor();
+    }
+
+    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    {
+        if (_labelBorder == null)
+        {
+            Cursor = null;
+        }
+    }
+
+    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        if (_pendingTemplateTextFocus)
+        {
+            _pendingTemplateTextFocus = false;
+            if (_labelBorder != null &&
+                FindDescendantTextBlock(_labelBorder) is TextBlock textBlock &&
+                textBlock.SelectionLength == 0)
+            {
+                FocusTarget();
+                e.Handled = true;
+            }
+
+            return;
+        }
+
+        if (!_isSelectingDirectText)
+        {
+            return;
+        }
+
+        _isSelectingDirectText = false;
+        _isDirectWordSelecting = false;
+        ReleaseMouseCapture();
+
+        if (_directSelectionLength == 0)
         {
             FocusTarget();
-            e.Handled = true;
         }
+
+        e.Handled = true;
     }
 
     /// <summary>
@@ -111,6 +224,285 @@ public class Label : ContentControl
         }
     }
 
+    /// <summary>
+    /// Copies the current text selection to the clipboard.
+    /// </summary>
+    public void Copy()
+    {
+        if (!string.IsNullOrEmpty(SelectedText))
+        {
+            Clipboard.SetText(SelectedText);
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnLostMouseCapture()
+    {
+        base.OnLostMouseCapture();
+        _isSelectingDirectText = false;
+        _isDirectWordSelecting = false;
+    }
+
+    private bool TryHandleTemplateTextMouseDown(MouseButtonEventArgs mouseArgs)
+    {
+        if (_labelBorder == null)
+        {
+            return false;
+        }
+
+        if (FindDescendantTextBlock(_labelBorder) is not TextBlock textBlock)
+        {
+            return false;
+        }
+
+        if (!IsSourceWithinPresentedText(mouseArgs.OriginalSource, textBlock))
+        {
+            return false;
+        }
+
+        _pendingTemplateTextFocus = true;
+        return true;
+    }
+
+    private bool TryHandleDirectTextMouseDown(MouseButtonEventArgs mouseArgs)
+    {
+        if (_labelBorder != null || Content is not string text || string.IsNullOrEmpty(text))
+        {
+            return false;
+        }
+
+        var index = GetDirectTextCharacterIndex(mouseArgs.GetPosition(this), text);
+
+        if (mouseArgs.ClickCount >= 3)
+        {
+            _directSelectionAnchor = 0;
+            _isDirectWordSelecting = false;
+            ApplyDirectSelection(0, text.Length);
+            return true;
+        }
+
+        if (mouseArgs.ClickCount == 2)
+        {
+            Focus();
+            SelectDirectWordAt(text, index);
+            _directWordSelectionAnchorStart = _directSelectionStart;
+            _directWordSelectionAnchorEnd = _directSelectionStart + _directSelectionLength;
+            _isDirectWordSelecting = _directSelectionLength > 0;
+            _isSelectingDirectText = true;
+            CaptureMouse();
+            return true;
+        }
+
+        Focus();
+        CaptureMouse();
+        _isSelectingDirectText = true;
+        _isDirectWordSelecting = false;
+        _directSelectionAnchor = index;
+        ApplyDirectSelection(index, 0);
+        return true;
+    }
+
+    private static bool IsSourceWithinPresentedText(object? source, TextBlock textBlock)
+    {
+        for (var current = source as Visual; current != null; current = current.VisualParent)
+        {
+            if (ReferenceEquals(current, textBlock))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void SelectDirectWordAt(string text, int index)
+    {
+        var clampedIndex = Math.Clamp(index, 0, text.Length);
+        var start = clampedIndex;
+        while (start > 0 && !IsWordBoundary(text[start - 1]))
+        {
+            start--;
+        }
+
+        var end = clampedIndex;
+        while (end < text.Length && !IsWordBoundary(text[end]))
+        {
+            end++;
+        }
+
+        _directSelectionAnchor = start;
+        ApplyDirectSelection(start, end - start);
+    }
+
+    private static bool IsWordBoundary(char c)
+    {
+        return char.IsWhiteSpace(c) || char.IsPunctuation(c);
+    }
+
+    private void UpdateDirectSelection(int caretIndex)
+    {
+        if (_isDirectWordSelecting && Content is string text)
+        {
+            ExtendDirectWordSelection(text, caretIndex);
+            return;
+        }
+
+        var start = Math.Min(_directSelectionAnchor, caretIndex);
+        var length = Math.Abs(caretIndex - _directSelectionAnchor);
+        ApplyDirectSelection(start, length);
+    }
+
+    private void ExtendDirectWordSelection(string text, int caretIndex)
+    {
+        var (currentWordStart, currentWordEnd) = GetDirectWordRangeAtIndex(text, caretIndex);
+        int selectionStart;
+        int selectionEnd;
+
+        if (currentWordEnd <= _directWordSelectionAnchorStart)
+        {
+            selectionStart = currentWordStart;
+            selectionEnd = _directWordSelectionAnchorEnd;
+        }
+        else if (currentWordStart >= _directWordSelectionAnchorEnd)
+        {
+            selectionStart = _directWordSelectionAnchorStart;
+            selectionEnd = currentWordEnd;
+        }
+        else
+        {
+            selectionStart = _directWordSelectionAnchorStart;
+            selectionEnd = _directWordSelectionAnchorEnd;
+        }
+
+        ApplyDirectSelection(selectionStart, Math.Max(0, selectionEnd - selectionStart));
+    }
+
+    private void ApplyDirectSelection(int start, int length)
+    {
+        if (Content is not string text)
+        {
+            _directSelectionStart = 0;
+            _directSelectionLength = 0;
+            return;
+        }
+
+        var clampedStart = Math.Clamp(start, 0, text.Length);
+        var clampedLength = Math.Clamp(length, 0, text.Length - clampedStart);
+        if (_directSelectionStart == clampedStart && _directSelectionLength == clampedLength)
+        {
+            return;
+        }
+
+        _directSelectionStart = clampedStart;
+        _directSelectionLength = clampedLength;
+        InvalidateVisual();
+    }
+
+    private static (int start, int end) GetDirectWordRangeAtIndex(string text, int index)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return (0, 0);
+        }
+
+        var clampedIndex = Math.Clamp(index, 0, text.Length);
+        if (clampedIndex == text.Length && clampedIndex > 0 && !IsWordBoundary(text[clampedIndex - 1]))
+        {
+            clampedIndex--;
+        }
+
+        if (clampedIndex < text.Length && IsWordBoundary(text[clampedIndex]))
+        {
+            if (clampedIndex > 0 && !IsWordBoundary(text[clampedIndex - 1]))
+            {
+                clampedIndex--;
+            }
+            else
+            {
+                while (clampedIndex < text.Length && IsWordBoundary(text[clampedIndex]))
+                {
+                    clampedIndex++;
+                }
+
+                if (clampedIndex >= text.Length)
+                {
+                    return (text.Length, text.Length);
+                }
+            }
+        }
+
+        var start = clampedIndex;
+        while (start > 0 && !IsWordBoundary(text[start - 1]))
+        {
+            start--;
+        }
+
+        var end = clampedIndex;
+        while (end < text.Length && !IsWordBoundary(text[end]))
+        {
+            end++;
+        }
+
+        return (start, end);
+    }
+
+    private void CoerceDirectSelectionIntoBounds()
+    {
+        if (Content is not string text)
+        {
+            _directSelectionStart = 0;
+            _directSelectionLength = 0;
+            _directSelectionAnchor = 0;
+            _isSelectingDirectText = false;
+            _isDirectWordSelecting = false;
+            return;
+        }
+
+        _directSelectionStart = Math.Clamp(_directSelectionStart, 0, text.Length);
+        _directSelectionLength = Math.Clamp(_directSelectionLength, 0, text.Length - _directSelectionStart);
+        _directSelectionAnchor = Math.Clamp(_directSelectionAnchor, 0, text.Length);
+    }
+
+    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (_labelBorder != null || e is not KeyEventArgs keyArgs || keyArgs.Handled || Content is not string text)
+        {
+            return;
+        }
+
+        if (keyArgs.IsControlDown && keyArgs.Key == Key.C && _directSelectionLength > 0)
+        {
+            Copy();
+            keyArgs.Handled = true;
+            return;
+        }
+
+        if (keyArgs.IsControlDown && keyArgs.Key == Key.A && !string.IsNullOrEmpty(text))
+        {
+            _directSelectionAnchor = 0;
+            ApplyDirectSelection(0, text.Length);
+            keyArgs.Handled = true;
+        }
+    }
+
+    private void UpdateDirectTextCursor()
+    {
+        if (_labelBorder == null)
+        {
+            Cursor = CanShowDirectTextCursor() ? Jalium.UI.Cursors.IBeam : null;
+        }
+    }
+
+    private void OnKeyboardFocusChanged(object sender, RoutedEventArgs e)
+    {
+        InvalidateVisual();
+    }
+
+    private bool CanShowDirectTextCursor()
+    {
+        return IsEnabled && _labelBorder == null && Content is string text && !string.IsNullOrEmpty(text);
+    }
+
     #endregion
 
     #region Layout
@@ -118,6 +510,13 @@ public class Label : ContentControl
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
+        // Prefer template measurement so the ContentPresenter/TextBlock tree is
+        // measured before arrange. Falling back keeps untemplated labels working.
+        if (Template != null)
+        {
+            return base.MeasureOverride(availableSize);
+        }
+
         var padding = Padding;
         var border = BorderThickness;
         var contentAvailable = new Size(
@@ -208,6 +607,11 @@ public class Label : ContentControl
                     break;
             }
 
+            if (_directSelectionLength > 0)
+            {
+                DrawDirectSelection(dc, text, textX, textY, formattedText.Height);
+            }
+
             dc.DrawText(formattedText, new Point(textX, textY));
 
             // Draw access key underline if set
@@ -271,6 +675,7 @@ public class Label : ContentControl
         textBlock.FontSize = FontSize;
         textBlock.FontStyle = FontStyle;
         textBlock.FontWeight = FontWeight;
+        textBlock.IsTextSelectionEnabled = true;
     }
 
     private static TextBlock? FindDescendantTextBlock(Visual root)
@@ -305,6 +710,96 @@ public class Label : ContentControl
         return TryFindResource("TextSecondary") as Brush
             ?? TryFindResource("TextPrimary") as Brush
             ?? Foreground;
+    }
+
+    private void DrawDirectSelection(DrawingContext dc, string text, double textX, double textY, double textHeight)
+    {
+        var selectionBrush = TryFindResource("SelectionBackground") as Brush
+            ?? TryFindResource("AccentFillColorSelectedTextBackgroundBrush") as Brush
+            ?? s_defaultSelectionBrush;
+
+        var textBefore = text.Substring(0, _directSelectionStart);
+        var selectedText = text.Substring(_directSelectionStart, _directSelectionLength);
+        var startX = textX + MeasureDirectTextWidth(textBefore);
+        var width = Math.Max(1, MeasureDirectTextWidth(selectedText));
+
+        dc.DrawRectangle(selectionBrush, null, new Rect(startX, textY, width, textHeight));
+    }
+
+    private int GetDirectTextCharacterIndex(Point position, string text)
+    {
+        var origin = GetDirectTextOrigin(text);
+        var relativeX = position.X - origin.X;
+        if (relativeX <= 0)
+        {
+            return 0;
+        }
+
+        int index = text.Length;
+        double previousWidth = 0;
+        for (int i = 0; i <= text.Length; i++)
+        {
+            var width = MeasureDirectTextWidth(text.Substring(0, i));
+            if (width >= relativeX)
+            {
+                index = i;
+                if (i > 0 && (relativeX - previousWidth) < (width - relativeX))
+                {
+                    index = i - 1;
+                }
+
+                break;
+            }
+
+            previousWidth = width;
+        }
+
+        return index;
+    }
+
+    private Point GetDirectTextOrigin(string text)
+    {
+        var rect = new Rect(RenderSize);
+        var padding = Padding;
+        var formattedText = new FormattedText(text, FontFamily, FontSize);
+        TextMeasurement.MeasureText(formattedText);
+
+        var textX = padding.Left;
+        var textY = padding.Top;
+
+        switch (HorizontalAlignment)
+        {
+            case HorizontalAlignment.Center:
+                textX = (rect.Width - formattedText.Width) / 2;
+                break;
+            case HorizontalAlignment.Right:
+                textX = rect.Width - formattedText.Width - padding.Right;
+                break;
+        }
+
+        switch (VerticalAlignment)
+        {
+            case VerticalAlignment.Center:
+                textY = (rect.Height - formattedText.Height) / 2;
+                break;
+            case VerticalAlignment.Bottom:
+                textY = rect.Height - formattedText.Height - padding.Bottom;
+                break;
+        }
+
+        return new Point(textX, textY);
+    }
+
+    private double MeasureDirectTextWidth(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return 0;
+        }
+
+        var formattedText = new FormattedText(text, FontFamily, FontSize);
+        TextMeasurement.MeasureText(formattedText);
+        return formattedText.Width;
     }
 
     #endregion

@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Defines row-specific properties that apply to Grid elements.
 /// </summary>
-public sealed class RowDefinition : DependencyObject
+public sealed class RowDefinition : DefinitionBase
 {
     /// <summary>
     /// Identifies the Height dependency property.
@@ -69,7 +69,7 @@ public sealed class RowDefinition : DependencyObject
 /// <summary>
 /// Defines column-specific properties that apply to Grid elements.
 /// </summary>
-public sealed class ColumnDefinition : DependencyObject
+public sealed class ColumnDefinition : DefinitionBase
 {
     /// <summary>
     /// Identifies the Width dependency property.

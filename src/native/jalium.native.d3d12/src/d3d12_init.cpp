@@ -26,14 +26,18 @@ void RegisterD3D12Backend() {
 
 } // namespace jalium
 
-// Exported initialization function - safe to call after DLL load
-// This avoids loader lock issues with mutex operations in DllMain
+// Exported initialization function for both DLL and static NativeAOT linking.
 extern "C" {
+#if defined(JALIUM_STATIC)
+    void jalium_d3d12_init() {
+#else
     __declspec(dllexport) void jalium_d3d12_init() {
+#endif
         jalium::RegisterD3D12Backend();
     }
 }
 
+#if !defined(JALIUM_STATIC)
 // DLL entry point - also registers as fallback
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
@@ -50,6 +54,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
     }
     return TRUE;
 }
+#endif
 
 #else
 // Non-Windows platforms - use constructor attribute

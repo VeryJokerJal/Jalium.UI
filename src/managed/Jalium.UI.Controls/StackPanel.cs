@@ -6,6 +6,9 @@
 /// </summary>
 public class StackPanel : Panel, IScrollInfo
 {
+    private static double SnapLayoutValue(double value) =>
+        Math.Round(value, MidpointRounding.AwayFromZero);
+
     #region Dependency Properties
 
     /// <summary>
@@ -268,12 +271,28 @@ public class StackPanel : Panel, IScrollInfo
             Rect childRect;
             if (isVertical)
             {
-                childRect = new Rect(scrollOffsetX, offset + scrollOffsetY, arrangeWidth, childSize.Height);
+                var startY = offset + scrollOffsetY;
+                var endY = startY + childSize.Height;
+                var snappedY = SnapLayoutValue(startY);
+                var snappedBottom = SnapLayoutValue(endY);
+                childRect = new Rect(
+                    SnapLayoutValue(scrollOffsetX),
+                    snappedY,
+                    SnapLayoutValue(arrangeWidth),
+                    Math.Max(0, snappedBottom - snappedY));
                 offset += childSize.Height;
             }
             else
             {
-                childRect = new Rect(offset + scrollOffsetX, scrollOffsetY, childSize.Width, arrangeHeight);
+                var startX = offset + scrollOffsetX;
+                var endX = startX + childSize.Width;
+                var snappedX = SnapLayoutValue(startX);
+                var snappedRight = SnapLayoutValue(endX);
+                childRect = new Rect(
+                    snappedX,
+                    SnapLayoutValue(scrollOffsetY),
+                    Math.Max(0, snappedRight - snappedX),
+                    SnapLayoutValue(arrangeHeight));
                 offset += childSize.Width;
             }
 

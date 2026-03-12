@@ -1028,18 +1028,21 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         var cornerRadius = CornerRadius;
         var lineHeight = Math.Round(GetLineHeight());
         var padding = Padding;
+        var strokeThickness = BorderThickness.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background and border
         if (Background != null)
         {
-            directDc.DrawRoundedRectangle(Background, null, inputRect, cornerRadius);
+            directDc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
         }
 
         var borderBrush = IsFocused ? ResolveFocusedBorderBrush() : BorderBrush;
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
-            var pen = new Pen(borderBrush, BorderThickness.Left);
-            directDc.DrawRoundedRectangle(null, pen, inputRect, cornerRadius);
+            var pen = new Pen(borderBrush, strokeThickness);
+            directDc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
         }
 
         // Content area

@@ -469,6 +469,7 @@ public partial class Popup : FrameworkElement
             _parentWindow = null;
         }
         _overlayLayer = null;
+        SetIsMouseOver(false);
 
         Closed?.Invoke(this, EventArgs.Empty);
     }

@@ -777,14 +777,19 @@ public class TreeViewItem : HeaderedItemsControl
 
     private void StopExpandAnimation()
     {
-        if (_expandAnimTimer == null)
+        if (_expandAnimTimer == null && _expandAnimationChildren.Length == 0)
         {
             return;
         }
 
-        _expandAnimTimer.Stop();
-        _expandAnimTimer.Tick -= OnExpandAnimationTick;
-        _expandAnimTimer = null;
+        if (_expandAnimTimer != null)
+        {
+            _expandAnimTimer.Stop();
+            _expandAnimTimer.Tick -= OnExpandAnimationTick;
+            _expandAnimTimer = null;
+        }
+
+        ClearChildOffsets();
         _expandAnimationChildren = [];
     }
 

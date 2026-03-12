@@ -467,6 +467,47 @@ public readonly struct CornerRadius : IEquatable<CornerRadius>
         BottomLeft = bottomLeft;
     }
 
+    /// <summary>
+    /// Scales corner radii down proportionally so adjacent corners always fit within the bounds.
+    /// </summary>
+    internal CornerRadius Normalize(double width, double height)
+    {
+        if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 0 || height <= 0)
+        {
+            return new CornerRadius(0);
+        }
+
+        static double Sanitize(double radius) =>
+            double.IsFinite(radius) && radius > 0 ? radius : 0;
+
+        static double GetScale(double available, double first, double second)
+        {
+            var sum = first + second;
+            return sum > 0 ? Math.Min(1.0, available / sum) : 1.0;
+        }
+
+        var tl = Sanitize(TopLeft);
+        var tr = Sanitize(TopRight);
+        var br = Sanitize(BottomRight);
+        var bl = Sanitize(BottomLeft);
+
+        var scale = 1.0;
+        scale = Math.Min(scale, GetScale(width, tl, tr));
+        scale = Math.Min(scale, GetScale(width, bl, br));
+        scale = Math.Min(scale, GetScale(height, tl, bl));
+        scale = Math.Min(scale, GetScale(height, tr, br));
+
+        if (scale < 1.0)
+        {
+            tl *= scale;
+            tr *= scale;
+            br *= scale;
+            bl *= scale;
+        }
+
+        return new CornerRadius(tl, tr, br, bl);
+    }
+
     /// <inheritdoc />
     public bool Equals(CornerRadius other) =>
         TopLeft == other.TopLeft && TopRight == other.TopRight &&

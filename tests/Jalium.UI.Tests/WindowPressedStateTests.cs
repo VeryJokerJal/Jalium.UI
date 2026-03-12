@@ -356,6 +356,228 @@ public class WindowPressedStateTests
     }
 
     [Fact]
+    public void KillFocus_ToPopupWindow_ShouldKeepExternalLightDismissPopupOpen()
+    {
+        ResetInputState();
+
+        var popupHandle = (nint)0x2345;
+
+        try
+        {
+            var window = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 320,
+                Height = 240
+            };
+
+            var popup = new Popup
+            {
+                StaysOpen = false
+            };
+            popup.IsOpen = true;
+            window.ActiveExternalPopups.Add(popup);
+
+            var popupRoot = new PopupRoot(popup, new Border { Width = 120, Height = 48 }, isLightDismiss: true);
+            var popupWindow = new PopupWindow(window, popupRoot);
+            RegisterPopupWindowForTest(popupHandle, popupWindow);
+
+            InvokeWndProc(window, msg: 0x0008, wParam: popupHandle, lParam: nint.Zero); // WM_KILLFOCUS
+
+            Assert.True(popup.IsOpen);
+            Assert.Contains(popup, window.ActiveExternalPopups);
+        }
+        finally
+        {
+            UnregisterPopupWindowForTest(popupHandle);
+            ResetInputState();
+        }
+    }
+
+    [Fact]
+    public void OverlayPopup_ClickInsideBounds_ShouldReachPopupContent()
+    {
+        ResetInputState();
+
+        try
+        {
+            int clickCount = 0;
+            var anchor = new Border
+            {
+                Width = 80,
+                Height = 24,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top
+            };
+
+            var popupButton = new Button
+            {
+                Content = "Popup",
+                Width = 96,
+                Height = 32
+            };
+            popupButton.Click += (_, _) => clickCount++;
+
+            var popup = new Popup
+            {
+                Child = popupButton,
+                PlacementTarget = anchor,
+                ShouldConstrainToRootBounds = true,
+                StaysOpen = false
+            };
+
+            var root = new Grid
+            {
+                Width = 320,
+                Height = 240
+            };
+            root.Children.Add(anchor);
+            root.Children.Add(popup);
+
+            var window = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 320,
+                Height = 240,
+                Content = root
+            };
+
+            popup.IsOpen = true;
+            window.Measure(new Size(320, 240));
+            window.Arrange(new Rect(0, 0, 320, 240));
+
+            var popupRoot = GetPrivateField<PopupRoot>(popup, "_popupRoot");
+            var bounds = popupRoot.VisualBounds;
+            var clickPoint = new Point(bounds.X + (bounds.Width / 2), bounds.Y + (bounds.Height / 2));
+
+            var hit = InvokeHitTestElement(window, clickPoint);
+
+            InvokeMouseButtonDown(window, MouseButton.Left, x: (int)Math.Round(clickPoint.X), y: (int)Math.Round(clickPoint.Y));
+            InvokeMouseButtonUp(window, MouseButton.Left, x: (int)Math.Round(clickPoint.X), y: (int)Math.Round(clickPoint.Y));
+
+            Assert.True(popup.IsOpen, $"Popup closed early. Hit={hit?.GetType().Name ?? "<null>"} Bounds={bounds} Point={clickPoint}");
+            Assert.True(clickCount == 1, $"Click did not reach popup content. Hit={hit?.GetType().Name ?? "<null>"} Bounds={bounds} Point={clickPoint}");
+            Assert.NotSame(window.OverlayLayer, hit);
+        }
+        finally
+        {
+            ResetInputState();
+        }
+    }
+
+    [Fact]
+    public void OverlayPopup_WithStaysOpen_ShouldBypassCachedUnderlyingHit()
+    {
+        ResetInputState();
+
+        try
+        {
+            int clickCount = 0;
+            var background = new Border
+            {
+                Width = 320,
+                Height = 240
+            };
+
+            var anchor = new Border
+            {
+                Width = 80,
+                Height = 24,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                VerticalAlignment = VerticalAlignment.Top
+            };
+
+            var popupButton = new Button
+            {
+                Content = "Popup",
+                Width = 96,
+                Height = 32
+            };
+            popupButton.Click += (_, _) => clickCount++;
+
+            var popup = new Popup
+            {
+                Child = popupButton,
+                PlacementTarget = anchor,
+                ShouldConstrainToRootBounds = true,
+                StaysOpen = true
+            };
+
+            var root = new Grid
+            {
+                Width = 320,
+                Height = 240
+            };
+            root.Children.Add(background);
+            root.Children.Add(anchor);
+            root.Children.Add(popup);
+
+            var window = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 320,
+                Height = 240,
+                Content = root
+            };
+
+            window.Measure(new Size(320, 240));
+            window.Arrange(new Rect(0, 0, 320, 240));
+
+            var futureClickPoint = new Point(48, 40);
+            var cachedHit = InvokeHitTestElement(window, futureClickPoint);
+            Assert.Same(popup, cachedHit);
+
+            popup.IsOpen = true;
+            window.Measure(new Size(320, 240));
+            window.Arrange(new Rect(0, 0, 320, 240));
+
+            var popupRoot = GetPrivateField<PopupRoot>(popup, "_popupRoot");
+            var bounds = popupRoot.VisualBounds;
+            var clickPoint = new Point(bounds.X + (bounds.Width / 2), bounds.Y + (bounds.Height / 2));
+
+            InvokeMouseButtonDown(window, MouseButton.Left, x: (int)Math.Round(clickPoint.X), y: (int)Math.Round(clickPoint.Y));
+            InvokeMouseButtonUp(window, MouseButton.Left, x: (int)Math.Round(clickPoint.X), y: (int)Math.Round(clickPoint.Y));
+
+            Assert.True(clickCount == 1, $"Click did not reach non-light-dismiss popup content. Bounds={bounds} Point={clickPoint}");
+        }
+        finally
+        {
+            ResetInputState();
+        }
+    }
+
+    [Fact]
+    public void PopupWindow_NcHitTest_ShouldReturnClientArea()
+    {
+        var popupHandle = (nint)0x3456;
+
+        try
+        {
+            var window = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 320,
+                Height = 240
+            };
+
+            var popup = new Popup { StaysOpen = false };
+            var popupRoot = new PopupRoot(popup, new Border { Width = 120, Height = 48 }, isLightDismiss: true);
+            var popupWindow = new PopupWindow(window, popupRoot);
+            RegisterPopupWindowForTest(popupHandle, popupWindow);
+
+            var wndProc = typeof(PopupWindow).GetMethod("PopupWndProc", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert.NotNull(wndProc);
+
+            var hit = Assert.IsType<nint>(wndProc!.Invoke(null, new object[] { popupHandle, 0x0084u, nint.Zero, PackPointToLParam(10, 10) }));
+            Assert.Equal((nint)1, hit);
+        }
+        finally
+        {
+            UnregisterPopupWindowForTest(popupHandle);
+        }
+    }
+
+    [Fact]
     public void SetFocus_ShouldWakeRenderPipeline()
     {
         ResetInputState();
@@ -656,6 +878,45 @@ public class WindowPressedStateTests
     }
 
     [Fact]
+    public void ImeWithFocusedRichTextBox_ShouldStartComposition()
+    {
+        ResetInputState();
+
+        try
+        {
+            var window = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native
+            };
+
+            var host = new TestPanel();
+            var richTextBox = new RichTextBox
+            {
+                Width = 240,
+                Height = 120
+            };
+            host.AddChild(richTextBox);
+            window.Content = host;
+
+            richTextBox.Measure(new Size(240, 120));
+            richTextBox.Arrange(new Rect(0, 0, 240, 120));
+
+            Assert.True(richTextBox.Focus());
+
+            InvokeImeStartComposition(window);
+
+            Assert.True(InvokeCanHandleImeMessages(window));
+            Assert.True(InputMethod.IsComposing);
+            Assert.True(richTextBox.IsImeComposing);
+            Assert.Same(richTextBox, InputMethod.Current);
+        }
+        finally
+        {
+            ResetInputState();
+        }
+    }
+
+    [Fact]
     public void WndProc_ShouldSwallowKeyHandlerExceptions()
     {
         ResetInputState();
@@ -816,6 +1077,29 @@ public class WindowPressedStateTests
         var method = typeof(Window).GetMethod("HitTestElement", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         return method!.Invoke(window, new object[] { point, "test-hit" }) as UIElement;
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName) where T : class
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return Assert.IsType<T>(field!.GetValue(instance));
+    }
+
+    private static void RegisterPopupWindowForTest(nint handle, PopupWindow popupWindow)
+    {
+        var field = typeof(PopupWindow).GetField("_popupWindows", BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        var popupWindows = Assert.IsAssignableFrom<IDictionary<nint, PopupWindow>>(field!.GetValue(null));
+        popupWindows[handle] = popupWindow;
+    }
+
+    private static void UnregisterPopupWindowForTest(nint handle)
+    {
+        var field = typeof(PopupWindow).GetField("_popupWindows", BindingFlags.Static | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        var popupWindows = Assert.IsAssignableFrom<IDictionary<nint, PopupWindow>>(field!.GetValue(null));
+        popupWindows.Remove(handle);
     }
 
     private static void InvokeImeStartComposition(Window window)

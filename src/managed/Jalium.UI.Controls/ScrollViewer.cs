@@ -1285,8 +1285,7 @@ public partial class ScrollViewer : Control
 
         _horizontalOffset = _scrollInfo.HorizontalOffset;
         _verticalOffset = _scrollInfo.VerticalOffset;
-        _extentWidth = _scrollInfo.ExtentWidth;
-        _extentHeight = _scrollInfo.ExtentHeight;
+        SyncExtentFromScrollInfo();
         // Note: Do NOT sync _viewportWidth/_viewportHeight here; those are authoritatively
         // computed in ArrangeOverride based on finalSize and scrollbar visibility.
         // The IScrollInfo.ViewportWidth/Height reflects the Measure constraint, which can
@@ -1517,8 +1516,7 @@ public partial class ScrollViewer : Control
         // Update extent from IScrollInfo or from content desired size
         if (_scrollInfo != null)
         {
-            _extentWidth = _scrollInfo.ExtentWidth;
-            _extentHeight = _scrollInfo.ExtentHeight;
+            SyncExtentFromScrollInfo();
         }
         else
         {
@@ -1544,8 +1542,7 @@ public partial class ScrollViewer : Control
         {
             _horizontalOffset = _scrollInfo.HorizontalOffset;
             _verticalOffset = _scrollInfo.VerticalOffset;
-            _extentWidth = _scrollInfo.ExtentWidth;
-            _extentHeight = _scrollInfo.ExtentHeight;
+            SyncExtentFromScrollInfo();
         }
 
         // Calculate if scrollbars are needed (now using up-to-date extent values)
@@ -2089,6 +2086,35 @@ public partial class ScrollViewer : Control
         }
 
         ApplyScrollBarAutoHideVisualState();
+    }
+
+    private void SyncExtentFromScrollInfo()
+    {
+        if (_scrollInfo == null)
+            return;
+
+        var margin = GetContentMargin();
+        _extentWidth = Math.Max(0, _scrollInfo.ExtentWidth + margin.Width);
+        _extentHeight = Math.Max(0, _scrollInfo.ExtentHeight + margin.Height);
+    }
+
+    private Size GetContentMargin()
+    {
+        if (_content is not FrameworkElement frameworkElement)
+            return Size.Empty;
+
+        var margin = frameworkElement.Margin;
+        return new Size(
+            CoerceFiniteMargin(margin.Left) + CoerceFiniteMargin(margin.Right),
+            CoerceFiniteMargin(margin.Top) + CoerceFiniteMargin(margin.Bottom));
+    }
+
+    private static double CoerceFiniteMargin(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            return 0;
+
+        return value;
     }
 
     private static void ConfigureScrollBar(

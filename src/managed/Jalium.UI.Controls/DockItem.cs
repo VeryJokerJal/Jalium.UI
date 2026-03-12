@@ -12,6 +12,8 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public partial class DockItem : HeaderedContentControl
 {
+    private const string HeaderEllipsis = "...";
+
     // Cached brushes and pens for OnRender (OneTheme-aligned deep blue-gray palette)
     private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Color.FromRgb(0x1E, 0x1E, 0x2E));
     private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Color.FromRgb(0x22, 0x22, 0x34));
@@ -1143,27 +1145,8 @@ public partial class DockItem : HeaderedContentControl
         }
 
         // Header text
-        var headerText = Header?.ToString() ?? "";
-        if (!string.IsNullOrEmpty(headerText))
+        if (CreateHeaderTextLayout(ResolveHeaderTextBrush(activeTextBrush, inactiveTextBrush), ActualWidth, ActualHeight) is FormattedText text)
         {
-            var textBrush = IsSelected || IsMouseOver
-                ? activeTextBrush
-                : inactiveTextBrush;
-
-            var fontSize = FontSize > 0 ? FontSize : 12;
-            var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : "Segoe UI";
-
-            var text = new FormattedText(headerText, fontFamily, fontSize)
-            {
-                Foreground = textBrush
-            };
-
-            // Keep text inside the tab and trim when space is insufficient.
-            var closeSpace = CanClose ? 20.0 : 0.0;
-            text.MaxTextWidth = Math.Max(0, ActualWidth - padding.Left - padding.Right - closeSpace);
-            text.Trimming = TextTrimming.CharacterEllipsis;
-            TextMeasurement.MeasureText(text);
-
             var textX = padding.Left;
             var textY = (ActualHeight - text.Height) / 2;
             dc.PushClip(new RectangleGeometry(bounds));
@@ -1218,6 +1201,108 @@ public partial class DockItem : HeaderedContentControl
         if (padding.Left == 0 && padding.Top == 0 && padding.Right == 0 && padding.Bottom == 0)
             return new Thickness(10, 5, 10, 5);
         return padding;
+    }
+
+    internal FormattedText? CreateHeaderTextLayoutForTesting(double availableWidth, double availableHeight)
+    {
+        return CreateHeaderTextLayout(ResolveActiveTextBrush(), availableWidth, availableHeight);
+    }
+
+    private Brush ResolveHeaderTextBrush(Brush activeTextBrush, Brush inactiveTextBrush)
+    {
+        return IsSelected || IsMouseOver
+            ? activeTextBrush
+            : inactiveTextBrush;
+    }
+
+    private FormattedText? CreateHeaderTextLayout(Brush textBrush, double availableWidth, double availableHeight)
+    {
+        var headerText = Header?.ToString() ?? string.Empty;
+        if (string.IsNullOrEmpty(headerText))
+            return null;
+
+        var fontSize = FontSize > 0 ? FontSize : 12;
+        var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : "Segoe UI";
+        if (!ShouldConstrainHeaderTextWidth())
+        {
+            var naturalText = new FormattedText(headerText, fontFamily, fontSize)
+            {
+                Foreground = textBrush
+            };
+            TextMeasurement.MeasureText(naturalText);
+            return naturalText;
+        }
+
+        var padding = GetEffectivePadding();
+        var closeSpace = CanClose ? 20.0 : 0.0;
+        var textWidth = Math.Max(0, availableWidth - padding.Left - padding.Right - closeSpace);
+        if (textWidth <= 0)
+            return null;
+
+        var textHeight = GetSingleLineHeaderHeight(fontFamily, fontSize, availableHeight, padding);
+        var displayText = TrimHeaderTextToFit(headerText, fontFamily, fontSize, textWidth, textHeight);
+        if (string.IsNullOrEmpty(displayText))
+            return null;
+
+        var text = new FormattedText(displayText, fontFamily, fontSize)
+        {
+            Foreground = textBrush,
+            MaxTextWidth = textWidth,
+            MaxTextHeight = textHeight,
+            Trimming = TextTrimming.CharacterEllipsis
+        };
+        TextMeasurement.MeasureText(text);
+        return text;
+    }
+
+    private bool ShouldConstrainHeaderTextWidth()
+    {
+        return double.IsFinite(MaxWidth);
+    }
+
+    private static double GetSingleLineHeaderHeight(string fontFamily, double fontSize, double availableHeight, Thickness padding)
+    {
+        var contentHeight = availableHeight - padding.Top - padding.Bottom;
+        if (!double.IsFinite(contentHeight))
+            contentHeight = TextMeasurement.GetLineHeight(fontFamily, fontSize);
+
+        var singleLineHeight = TextMeasurement.GetLineHeight(fontFamily, fontSize);
+        return Math.Max(1, Math.Min(Math.Max(1, contentHeight), singleLineHeight));
+    }
+
+    private static string TrimHeaderTextToFit(string headerText, string fontFamily, double fontSize, double maxWidth, double maxHeight)
+    {
+        if (MeasureHeaderTextWidth(headerText, fontFamily, fontSize, maxHeight) <= maxWidth)
+            return headerText;
+
+        if (MeasureHeaderTextWidth(HeaderEllipsis, fontFamily, fontSize, maxHeight) > maxWidth)
+            return string.Empty;
+
+        int low = 0;
+        int high = headerText.Length;
+        while (low < high)
+        {
+            var mid = (low + high + 1) / 2;
+            var candidate = headerText.Substring(0, mid) + HeaderEllipsis;
+            if (MeasureHeaderTextWidth(candidate, fontFamily, fontSize, maxHeight) <= maxWidth)
+                low = mid;
+            else
+                high = mid - 1;
+        }
+
+        return low > 0
+            ? headerText.Substring(0, low) + HeaderEllipsis
+            : HeaderEllipsis;
+    }
+
+    private static double MeasureHeaderTextWidth(string text, string fontFamily, double fontSize, double maxHeight)
+    {
+        var measured = new FormattedText(text, fontFamily, fontSize)
+        {
+            MaxTextHeight = maxHeight
+        };
+        TextMeasurement.MeasureText(measured);
+        return measured.Width;
     }
 
     private Brush ResolveSelectedBackgroundBrush()

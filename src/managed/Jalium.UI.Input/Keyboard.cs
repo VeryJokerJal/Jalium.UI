@@ -212,27 +212,41 @@ internal sealed class KeyboardFocusProvider : IFocusProvider
 
     private void UpdateIsKeyboardFocusWithin(UIElement? oldFocus, UIElement? newFocus)
     {
-        // Clear IsKeyboardFocusWithin on old ancestors
-        if (oldFocus != null)
+        var oldChain = GetVisualAncestorChain(oldFocus);
+        var newChain = GetVisualAncestorChain(newFocus);
+        var newSet = new HashSet<UIElement>(newChain);
+        var oldSet = new HashSet<UIElement>(oldChain);
+
+        // Clear IsKeyboardFocusWithin only for ancestors that no longer contain the focused element.
+        foreach (var element in oldChain)
         {
-            var current = oldFocus;
-            while (current != null)
+            if (!newSet.Contains(element))
             {
-                current.UpdateIsKeyboardFocusWithin(false);
-                current = current.VisualParent as UIElement;
+                element.UpdateIsKeyboardFocusWithin(false);
             }
         }
 
-        // Set IsKeyboardFocusWithin on new ancestors
-        if (newFocus != null)
+        // Set IsKeyboardFocusWithin only for ancestors newly entered by the focused element.
+        foreach (var element in newChain)
         {
-            var current = newFocus;
-            while (current != null)
+            if (!oldSet.Contains(element))
             {
-                current.UpdateIsKeyboardFocusWithin(true);
-                current = current.VisualParent as UIElement;
+                element.UpdateIsKeyboardFocusWithin(true);
             }
         }
+    }
+
+    private static List<UIElement> GetVisualAncestorChain(UIElement? element)
+    {
+        var chain = new List<UIElement>();
+        var current = element;
+        while (current != null)
+        {
+            chain.Add(current);
+            current = current.VisualParent as UIElement;
+        }
+
+        return chain;
     }
 }
 

@@ -4,7 +4,9 @@
 
 // Platform-specific export macros
 #ifdef _WIN32
-    #ifdef JALIUM_EXPORTS
+    #if defined(JALIUM_STATIC)
+        #define JALIUM_API
+    #elif defined(JALIUM_EXPORTS)
         #define JALIUM_API __declspec(dllexport)
     #else
         #define JALIUM_API __declspec(dllimport)
