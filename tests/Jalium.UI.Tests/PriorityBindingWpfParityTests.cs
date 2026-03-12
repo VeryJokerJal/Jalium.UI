@@ -55,6 +55,22 @@ public class PriorityBindingWpfParityTests
         Assert.Equal("Fallback", target.Tag);
     }
 
+    [Fact]
+    public void PriorityBinding_ShouldConvertActiveNonStringValueToStringTarget()
+    {
+        var target = new TextBlock
+        {
+            DataContext = new PriorityViewModel { Primary = 42 }
+        };
+
+        var priorityBinding = new PriorityBinding();
+        priorityBinding.Bindings.Add(new Binding("Primary"));
+
+        target.SetBinding(TextBlock.TextProperty, priorityBinding);
+
+        Assert.Equal("42", target.Text);
+    }
+
     private sealed class PriorityViewModel : INotifyPropertyChanged
     {
         private object? _primary;

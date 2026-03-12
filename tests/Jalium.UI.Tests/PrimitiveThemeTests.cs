@@ -277,6 +277,96 @@ public class PrimitiveThemeTests
     }
 
     [Fact]
+    public void Label_TemplatedStringContent_ShouldInheritThemeTextStyle()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var label = new Label
+            {
+                Content = "Username:"
+            };
+
+            var host = new StackPanel { Width = 200, Height = 40 };
+            host.Children.Add(label);
+
+            host.Measure(new Size(200, 40));
+            host.Arrange(new Rect(0, 0, 200, 40));
+
+            var textBlock = FindDescendant<TextBlock>(label);
+            var expectedForeground = Assert.IsAssignableFrom<Brush>(app.Resources["TextSecondary"]);
+
+            Assert.NotNull(textBlock);
+            Assert.Same(expectedForeground, textBlock!.Foreground);
+            Assert.Equal(14, textBlock.FontSize);
+            Assert.Equal(label.FontFamily, textBlock.FontFamily);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void Label_TemplatedStringContent_ShouldMeasureTemplateText()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var label = new Label
+            {
+                Content = "Username:"
+            };
+
+            var host = new Grid { Width = 280, Height = 40 };
+            host.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            host.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Star });
+            host.Children.Add(label);
+            host.Children.Add(new TextBox { Text = "demo", MinWidth = 120, Margin = new Thickness(12, 0, 0, 0) });
+            Grid.SetColumn(host.Children[1], 1);
+
+            host.Measure(new Size(280, 40));
+            host.Arrange(new Rect(0, 0, 280, 40));
+
+            var textBlock = FindDescendant<TextBlock>(label);
+
+            Assert.NotNull(textBlock);
+            Assert.True(textBlock!.DesiredSize.Width > 40);
+            Assert.True(textBlock.ActualWidth > 40);
+            Assert.True(host.ColumnDefinitions[0].ActualWidth > 40);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void TextBlock_NoWrapRender_ShouldNotConstrainTextToRenderWidth()
+    {
+        var textBlock = new TextBlock
+        {
+            Text = "Username:",
+            Width = 12
+        };
+
+        textBlock.Measure(new Size(12, 40));
+        textBlock.Arrange(new Rect(0, 0, 12, 40));
+
+        var drawingContext = new TextRecordingDrawingContext();
+        textBlock.Render(drawingContext);
+
+        Assert.NotNull(drawingContext.LastFormattedText);
+        Assert.True(drawingContext.LastFormattedText!.MaxTextWidth > textBlock.ActualWidth);
+    }
+
+    [Fact]
     public void Thumb_ImplicitThemeStyle_ShouldApplyWithoutLocalVisualOverrides()
     {
         ResetApplicationState();
@@ -513,6 +603,86 @@ public class PrimitiveThemeTests
         public override void Close()
         {
         }
+    }
+
+    private sealed class TextRecordingDrawingContext : DrawingContext
+    {
+        public FormattedText? LastFormattedText { get; private set; }
+
+        public override void DrawLine(Pen pen, Point point0, Point point1)
+        {
+        }
+
+        public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle)
+        {
+        }
+
+        public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY)
+        {
+        }
+
+        public override void DrawEllipse(Brush? brush, Pen? pen, Point center, double radiusX, double radiusY)
+        {
+        }
+
+        public override void DrawText(FormattedText formattedText, Point origin)
+        {
+            LastFormattedText = formattedText;
+        }
+
+        public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
+        {
+        }
+
+        public override void DrawImage(ImageSource imageSource, Rect rectangle)
+        {
+        }
+
+        public override void DrawBackdropEffect(Rect rectangle, IBackdropEffect effect, CornerRadius cornerRadius)
+        {
+        }
+
+        public override void PushTransform(Transform transform)
+        {
+        }
+
+        public override void PushClip(Geometry clipGeometry)
+        {
+        }
+
+        public override void PushOpacity(double opacity)
+        {
+        }
+
+        public override void Pop()
+        {
+        }
+
+        public override void Close()
+        {
+        }
+    }
+
+    private static T? FindDescendant<T>(Visual root) where T : class
+    {
+        if (root is T match)
+        {
+            return match;
+        }
+
+        for (int i = 0; i < root.VisualChildrenCount; i++)
+        {
+            if (root.GetVisualChild(i) is Visual child)
+            {
+                var result = FindDescendant<T>(child);
+                if (result != null)
+                {
+                    return result;
+                }
+            }
+        }
+
+        return null;
     }
 
     private static Brush InvokePrivateBrushResolver(object control, string methodName, params object[] args)

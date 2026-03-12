@@ -55,29 +55,28 @@ internal static partial class NativeMethods
     private const string CoreLib = "jalium.native.core";
     private const string D3D12Lib = "jalium.native.d3d12";
 
-    private static nint _d3d12Module;
-
     /// <summary>
-    /// Static constructor to load backend DLLs.
+    /// Static constructor to register the D3D12 backend once the native library is available.
     /// </summary>
     static NativeMethods()
     {
-        // Load the D3D12 backend DLL
-        _d3d12Module = NativeLibrary.Load(D3D12Lib, typeof(NativeMethods).Assembly, null);
-
-        // Call the explicit init function to register the backend
-        // This is done outside DllMain to avoid loader lock issues with mutex operations
-        if (_d3d12Module != nint.Zero)
+        try
         {
-            // Try to find and call the init function
-            // If it doesn't exist (old DLL version), the DLL might still work via DllMain registration
-            if (NativeLibrary.TryGetExport(_d3d12Module, "jalium_d3d12_init", out var initFunc) && initFunc != nint.Zero)
-            {
-                var init = Marshal.GetDelegateForFunctionPointer<Action>(initFunc);
-                init();
-            }
+            D3D12Init();
+        }
+        catch (DllNotFoundException)
+        {
+        }
+        catch (EntryPointNotFoundException)
+        {
+        }
+        catch (BadImageFormatException)
+        {
         }
     }
+
+    [LibraryImport(D3D12Lib, EntryPoint = "jalium_d3d12_init")]
+    private static partial void D3D12Init();
 
     #region Context Management
 

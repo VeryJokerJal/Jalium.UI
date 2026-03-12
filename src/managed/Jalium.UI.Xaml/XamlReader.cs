@@ -240,6 +240,7 @@ public static class XamlReader
             {
                 case XmlNodeType.Element:
                     var result = ParseElement(reader, context, existingInstance);
+                    RegisterNamedElementsInScope(result, context.NamedElements);
                     if (existingInstance != null)
                     {
                         if (namedElementsOut != null)
@@ -259,6 +260,37 @@ public static class XamlReader
         }
 
         throw new XamlParseException("No root element found in XAML.");
+    }
+
+    private static void RegisterNamedElementsInScope(object root, Dictionary<string, object> namedElements)
+    {
+        if (root is not DependencyObject dependencyObject || namedElements.Count == 0)
+        {
+            return;
+        }
+
+        var nameScope = NameScope.GetNameScope(dependencyObject);
+        if (nameScope == null)
+        {
+            nameScope = new NameScope();
+            NameScope.SetNameScope(dependencyObject, nameScope);
+        }
+
+        foreach (var (name, element) in namedElements)
+        {
+            var existing = nameScope.FindName(name);
+            if (ReferenceEquals(existing, element))
+            {
+                continue;
+            }
+
+            if (existing != null)
+            {
+                nameScope.UnregisterName(name);
+            }
+
+            nameScope.RegisterName(name, element);
+        }
     }
 
     [UnconditionalSuppressMessage("AOT", "IL2070:Target method argument",
@@ -358,6 +390,11 @@ public static class XamlReader
                 instance = ParseContent(reader, instance, context);
             }
 
+            if (instance is Grid grid)
+            {
+                context.ResolvePendingGridReferences(grid);
+            }
+
             // Post-process Setter to convert Value based on Property type
             if (instance is Setter setter)
             {
@@ -437,6 +474,14 @@ public static class XamlReader
                 {
                     fe.Name = value;
                 }
+                else
+                {
+                    var nameProperty = instance.GetType().GetProperty(nameof(FrameworkElement.Name));
+                    if (nameProperty?.CanWrite == true && nameProperty.PropertyType == typeof(string))
+                    {
+                        nameProperty.SetValue(instance, value);
+                    }
+                }
                 // Register the named element for code-behind wiring
                 context.RegisterNamedElement(value, instance);
                 break;
@@ -486,7 +531,40 @@ public static class XamlReader
             if (parameters.Length == 2)
             {
                 var targetType = parameters[1].ParameterType;
-                var convertedValue = TypeConverterRegistry.ConvertValue(value, targetType);
+                object? convertedValue = null;
+
+                if (ownerType == typeof(Grid) &&
+                    instance is UIElement element &&
+                    targetType == typeof(int) &&
+                    (propertyName == "Row" || propertyName == "Column"))
+                {
+                    if (!int.TryParse(value, out var index))
+                    {
+                        var parentGrid = context.FindParent<Grid>();
+                        if (parentGrid == null)
+                        {
+                            throw new XamlParseException(
+                                $"Named Grid.{propertyName} reference '{value}' requires the element to be inside a Grid.");
+                        }
+
+                        var resolved = propertyName == "Row"
+                            ? GridDefinitionParser.TryResolveRowReference(parentGrid, value, out index)
+                            : GridDefinitionParser.TryResolveColumnReference(parentGrid, value, out index);
+
+                        if (!resolved)
+                        {
+                            context.AddPendingGridReference(parentGrid, element, propertyName, value);
+                            return;
+                        }
+                    }
+
+                    convertedValue = index;
+                }
+                else
+                {
+                    convertedValue = TypeConverterRegistry.ConvertValue(value, targetType);
+                }
+
                 setMethod.Invoke(null, [instance, convertedValue]);
                 return;
             }
@@ -1017,28 +1095,39 @@ public static class XamlReader
         int depth = reader.Depth;
         var visualTreeXaml = new System.Text.StringBuilder();
         bool hasVisualTree = false;
+        bool skipRead = false; // Flag to skip Read() after ReadOuterXml()
 
-        while (reader.Read())
+        while (skipRead || reader.Read())
         {
+            skipRead = false;
+
             if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == depth)
             {
                 break;
             }
 
-            switch (reader.NodeType)
+            if (reader.NodeType != XmlNodeType.Element)
             {
-                case XmlNodeType.Element:
-                    if (!hasVisualTree)
-                    {
-                        // Capture the visual tree as XML
-                        visualTreeXaml.Append(reader.ReadOuterXml());
-                        hasVisualTree = true;
-                    }
-                    else
-                    {
-                        throw new XamlParseException("DataTemplate can only have one visual tree root element.");
-                    }
-                    break;
+                continue;
+            }
+
+            if (reader.LocalName.Contains('.'))
+            {
+                ParsePropertyElement(reader, template, context);
+            }
+            else if (!hasVisualTree)
+            {
+                // Capture the visual tree as XML
+                visualTreeXaml.Append(reader.ReadOuterXml());
+                hasVisualTree = true;
+
+                // ReadOuterXml advances the reader past this element to the next node.
+                // Re-process that node without calling Read() again.
+                skipRead = true;
+            }
+            else
+            {
+                throw new XamlParseException("DataTemplate can only have one visual tree root element.");
             }
         }
 
@@ -1424,16 +1513,28 @@ public static class XamlReader
         var type = instance.GetType();
         var property = type.GetProperty(propertyName);
 
-        if (property == null || !property.CanWrite)
+        if (property == null)
         {
             // Check if it's an event (e.g., Click="OnClick")
             if (value is string handlerName && TryWireEvent(instance, propertyName, handlerName, context))
                 return instance;
 
-            if (property == null)
-                return instance; // Not a property or event, ignore
-            if (!property.CanWrite)
+            return instance;
+        }
+
+        if (!property.CanWrite)
+        {
+            if (TryPopulateReadOnlyCollectionProperty(instance, property, value, context))
+            {
                 return instance;
+            }
+
+            if (value is string handlerName && TryWireEvent(instance, propertyName, handlerName, context))
+            {
+                return instance;
+            }
+
+            return instance;
         }
 
         // Special handling for ResourceDictionary.Source
@@ -1514,6 +1615,62 @@ public static class XamlReader
         }
 
         return instance;
+    }
+
+    private static bool TryPopulateReadOnlyCollectionProperty(
+        object instance,
+        PropertyInfo property,
+        object? value,
+        XamlParserContext context)
+    {
+        if (!IsCollectionType(property.PropertyType))
+        {
+            return false;
+        }
+
+        var targetCollection = property.GetValue(instance);
+        if (targetCollection == null)
+        {
+            return false;
+        }
+
+        object? convertedValue = value;
+        if (value is string stringValue)
+        {
+            convertedValue = TypeConverterRegistry.ConvertValue(stringValue, property.PropertyType);
+        }
+
+        convertedValue = ResolveMarkupExtensionValueIfNeeded(convertedValue, instance, property, context);
+        if (convertedValue == null)
+        {
+            return false;
+        }
+
+        if (ReferenceEquals(targetCollection, convertedValue))
+        {
+            return true;
+        }
+
+        if (targetCollection is not System.Collections.IList targetList)
+        {
+            return false;
+        }
+
+        targetList.Clear();
+
+        if (convertedValue is System.Collections.IEnumerable enumerable && convertedValue is not string)
+        {
+            foreach (var item in enumerable)
+            {
+                targetList.Add(item);
+            }
+        }
+        else
+        {
+            targetList.Add(convertedValue);
+        }
+
+        return true;
     }
 
     private static XamlParseException CreateUnresolvedDependencyPropertyException(
@@ -1985,6 +2142,7 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     private readonly Dictionary<string, Type> _typeCache = new();
     private readonly Dictionary<string, object> _namedElements = new();
     private readonly Stack<object> _parentStack = new();
+    private readonly List<PendingGridReference> _pendingGridReferences = new();
     private string? _currentResourceKey;
 
     /// <summary>
@@ -2149,6 +2307,44 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         _namedElements[name] = element;
     }
 
+    public void AddPendingGridReference(Grid grid, UIElement element, string propertyName, string reference)
+    {
+        _pendingGridReferences.Add(new PendingGridReference(grid, element, propertyName, reference));
+    }
+
+    public void ResolvePendingGridReferences(Grid grid)
+    {
+        for (var i = _pendingGridReferences.Count - 1; i >= 0; i--)
+        {
+            var pending = _pendingGridReferences[i];
+            if (!ReferenceEquals(pending.Grid, grid))
+            {
+                continue;
+            }
+
+            if (pending.PropertyName == "Row")
+            {
+                if (!GridDefinitionParser.TryResolveRowReference(grid, pending.Reference, out var rowIndex))
+                {
+                    throw new XamlParseException($"Cannot resolve Grid.Row reference '{pending.Reference}'.");
+                }
+
+                Grid.SetRow(pending.Element, rowIndex);
+            }
+            else
+            {
+                if (!GridDefinitionParser.TryResolveColumnReference(grid, pending.Reference, out var columnIndex))
+                {
+                    throw new XamlParseException($"Cannot resolve Grid.Column reference '{pending.Reference}'.");
+                }
+
+                Grid.SetColumn(pending.Element, columnIndex);
+            }
+
+            _pendingGridReferences.RemoveAt(i);
+        }
+    }
+
     public Type? ResolveType(string namespaceUri, string typeName)
     {
         var cacheKey = $"{namespaceUri}:{typeName}";
@@ -2239,6 +2435,8 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         // AOT-friendly: Use static type registry instead of Assembly.GetType
         return XamlTypeRegistry.GetType(typeName);
     }
+
+    private readonly record struct PendingGridReference(Grid Grid, UIElement Element, string PropertyName, string Reference);
 }
 
 /// <summary>

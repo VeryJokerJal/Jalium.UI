@@ -185,6 +185,36 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Height" Value="28" />
         <Setter Property="Padding" Value="8,0,8,0" />
+        <Style.Triggers>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="Role" Value="TopLevelItem" />
+                    <Condition Property="IsSelected" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource MenuBarItemBackgroundHover}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="Role" Value="TopLevelHeader" />
+                    <Condition Property="IsSelected" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource MenuBarItemBackgroundHover}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="Role" Value="SubmenuItem" />
+                    <Condition Property="IsSelected" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource MenuFlyoutItemBackgroundHover}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="Role" Value="SubmenuHeader" />
+                    <Condition Property="IsSelected" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource MenuFlyoutItemBackgroundHover}" />
+            </MultiTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->

@@ -1,8 +1,10 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Interop;
 
 namespace Jalium.UI.Tests;
 
+[Collection("Application")]
 public class DockTabPanelLayoutTests
 {
     [Fact]
@@ -86,6 +88,61 @@ public class DockTabPanelLayoutTests
         Assert.True(contentPos.X >= 95);
         Assert.True(content.ActualWidth <= 425);
         Assert.True(content.ActualHeight <= 320);
+    }
+
+    [Fact]
+    public void DockItem_HeaderLayout_ShouldUseNaturalWidth_WhenMaxWidthIsUnset()
+    {
+        TextMeasurement.ClearCache();
+        RenderContext.Current?.Dispose();
+        RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: true);
+
+        try
+        {
+            var item = new DockItem
+            {
+                Header = "MainWindow.jalxaml.cs"
+            };
+
+            var text = item.CreateHeaderTextLayoutForTesting(120, 28);
+
+            Assert.NotNull(text);
+            Assert.Equal(1, text!.LineCount);
+            Assert.Equal("MainWindow.jalxaml.cs", text.Text);
+        }
+        finally
+        {
+            TextMeasurement.ClearCache();
+            RenderContext.Current?.Dispose();
+        }
+    }
+
+    [Fact]
+    public void DockItem_HeaderLayout_ShouldTrim_WhenMaxWidthIsSet()
+    {
+        TextMeasurement.ClearCache();
+        RenderContext.Current?.Dispose();
+        RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: true);
+
+        try
+        {
+            var item = new DockItem
+            {
+                Header = "MainWindow.jalxaml.cs",
+                MaxWidth = 120
+            };
+
+            var text = item.CreateHeaderTextLayoutForTesting(120, 28);
+
+            Assert.NotNull(text);
+            Assert.Equal(1, text!.LineCount);
+            Assert.EndsWith("...", text.Text, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TextMeasurement.ClearCache();
+            RenderContext.Current?.Dispose();
+        }
     }
 
     private sealed class LayoutHostPanel : Panel, ILayoutManagerHost

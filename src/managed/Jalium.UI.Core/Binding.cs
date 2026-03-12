@@ -521,6 +521,10 @@ public sealed class BindingExpression : BindingExpressionBase
             try
             {
                 sourceValue = ConvertBack(targetValue);
+                sourceValue = BindingValueCoercion.Coerce(
+                    sourceValue,
+                    _sourceProperty.PropertyType,
+                    _binding.ConverterCulture ?? CultureInfo.CurrentCulture);
             }
             catch (Exception ex)
             {
@@ -693,7 +697,10 @@ public sealed class BindingExpression : BindingExpressionBase
             _isUpdating = true;
 
             var sourceValue = GetSourceValue();
-            var targetValue = Convert(sourceValue);
+            var targetValue = BindingValueCoercion.Coerce(
+                Convert(sourceValue),
+                TargetProperty.PropertyType,
+                _binding.ConverterCulture ?? CultureInfo.CurrentCulture);
 
             Target.SetValue(TargetProperty, targetValue);
 

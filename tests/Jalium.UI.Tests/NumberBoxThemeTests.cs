@@ -126,6 +126,8 @@ public class NumberBoxThemeTests
 
             Assert.Same(secondaryText, upPath.Stroke);
             Assert.Same(secondaryText, downPath.Stroke);
+            Assert.Same(Jalium.UI.Cursors.Arrow, upSpinButton.Cursor);
+            Assert.Same(Jalium.UI.Cursors.Arrow, downSpinButton.Cursor);
         }
         finally
         {

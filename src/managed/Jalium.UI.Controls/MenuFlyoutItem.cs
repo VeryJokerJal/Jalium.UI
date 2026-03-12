@@ -236,12 +236,29 @@ public class MenuFlyoutItem : Control
 
     private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
     {
+        CloseSiblingSubMenus();
         InvalidateVisual();
     }
 
     private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
     {
         InvalidateVisual();
+    }
+
+    private void CloseSiblingSubMenus()
+    {
+        if (VisualParent is not Panel panel)
+        {
+            return;
+        }
+
+        foreach (var child in panel.Children)
+        {
+            if (child is MenuFlyoutSubItem sibling && !ReferenceEquals(sibling, this))
+            {
+                sibling.HideSubMenu();
+            }
+        }
     }
 
     private static void OnCommandChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

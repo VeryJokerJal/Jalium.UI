@@ -229,6 +229,79 @@ public class TreeAndNavigationExpandStateTests
     }
 
     [Fact]
+    public void NavigationViewItem_StopExpandAnimation_ShouldClearChildRenderOffsets()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var nav = new NavigationView();
+            var item = new NavigationViewItem { Content = "Root" };
+            var child = new NavigationViewItem { Content = "Child" };
+            item.Style = Assert.IsType<Style>(app.Resources[typeof(NavigationViewItem)]);
+            child.Style = Assert.IsType<Style>(app.Resources[typeof(NavigationViewItem)]);
+            item.MenuItems.Add(child);
+            nav.MenuItems.Add(item);
+            nav.UpdateMenuItems();
+
+            var host = new Grid { Width = 320, Height = 240 };
+            host.Children.Add(nav);
+            host.Measure(new Size(320, 240));
+            host.Arrange(new Rect(0, 0, 320, 240));
+
+            item.IsExpanded = true;
+
+            Assert.NotEqual(default, GetRenderOffset(child));
+
+            InvokePrivateMethod(item, "StopExpandAnimation");
+
+            Assert.Equal(default, GetRenderOffset(child));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void TreeViewItem_StopExpandAnimation_ShouldClearChildRenderOffsets()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var tree = new TreeView();
+            var item = new TreeViewItem { Header = "Root" };
+            var child = new TreeViewItem { Header = "Child" };
+            item.Style = Assert.IsType<Style>(app.Resources[typeof(TreeViewItem)]);
+            child.Style = Assert.IsType<Style>(app.Resources[typeof(TreeViewItem)]);
+            item.Items.Add(child);
+            tree.Items.Add(item);
+
+            var host = new Grid { Width = 320, Height = 240 };
+            host.Children.Add(tree);
+            host.Measure(new Size(320, 240));
+            host.Arrange(new Rect(0, 0, 320, 240));
+
+            item.IsExpanded = true;
+
+            Assert.NotEqual(default, GetRenderOffset(child));
+
+            InvokePrivateMethod(item, "StopExpandAnimation");
+
+            Assert.Equal(default, GetRenderOffset(child));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
     public void NavigationView_MenuItemsAdd_ShouldRefreshWithoutManualUpdate()
     {
         ResetApplicationState();
@@ -417,5 +490,19 @@ public class TreeAndNavigationExpandStateTests
     private static double GetAngle(Jalium.UI.Controls.Shapes.Path path)
     {
         return path.RenderTransform is RotateTransform rotate ? rotate.Angle : 0;
+    }
+
+    private static Point GetRenderOffset(UIElement element)
+    {
+        var property = typeof(UIElement).GetProperty("RenderOffset", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(property);
+        return (Point)(property!.GetValue(element) ?? default(Point));
+    }
+
+    private static void InvokePrivateMethod(object instance, string methodName)
+    {
+        var method = instance.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        method!.Invoke(instance, null);
     }
 }

@@ -39,6 +39,24 @@ public class RazorSyntaxTests
     }
 
     [Fact]
+    public void RazorPath_OnStringProperty_ShouldConvertNonStringValueUsingToString()
+    {
+        const string xaml = """
+            <TextBlock xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                       Text='@Count' />
+            """;
+
+        var model = new CounterNotifyModel { Count = 3 };
+        var textBlock = (TextBlock)XamlReader.Parse(xaml);
+        textBlock.DataContext = model;
+
+        Assert.Equal("3", textBlock.Text);
+
+        model.Count = 7;
+        Assert.Equal("7", textBlock.Text);
+    }
+
+    [Fact]
     public void RazorExpression_ShouldRecalculateWhenDependenciesChange()
     {
         var model = new CounterNotifyModel { Count = 0 };
@@ -159,6 +177,19 @@ public class RazorSyntaxTests
 
         model.IsOnline = false;
         Assert.Equal(Visibility.Collapsed, host.OnlineBorder.Visibility);
+    }
+
+    [Fact]
+    public void LoadComponent_WithExistingInstance_ShouldRegisterNamedElementsForFindName()
+    {
+        var host = new RazorIfBlockHost();
+
+        XamlReader.LoadComponent(
+            host,
+            "Jalium.UI.Tests.TestAssets.RazorIfBlockPanel.jalxaml",
+            typeof(RazorSyntaxTests).Assembly);
+
+        Assert.Same(host.OnlineBorder, host.FindName("OnlineBorder"));
     }
 
     [Fact]

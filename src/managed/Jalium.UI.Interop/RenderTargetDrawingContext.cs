@@ -7,7 +7,7 @@ namespace Jalium.UI.Interop;
 /// <summary>
 /// A DrawingContext implementation that renders to a RenderTarget.
 /// </summary>
-public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingContext, IOpacityDrawingContext, IEffectDrawingContext
+public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext
 {
     private const int MaxBrushCacheSize = 256;
     private const int MaxTextFormatCacheSize = 64;
@@ -24,6 +24,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     private readonly Dictionary<string, NativeTextFormat> _textFormatCache = new();
     private readonly Dictionary<ImageSource, BitmapCacheEntry> _bitmapCache = new();
     private readonly Stack<DrawingState> _stateStack = new();
+    private readonly Stack<Rect?> _clipBoundsStack = new();
     private long _bitmapCacheBytes;
     private long _bitmapCacheSequence;
     private bool _closed;
@@ -52,6 +53,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// </summary>
     public Point Offset { get; set; }
 
+    /// <inheritdoc />
+    public Rect? CurrentClipBounds => _clipBoundsStack.Count > 0 ? _clipBoundsStack.Peek() : null;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="RenderTargetDrawingContext"/> class.
     /// </summary>
@@ -61,6 +65,40 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         _renderTarget = renderTarget ?? throw new ArgumentNullException(nameof(renderTarget));
         _context = context ?? throw new ArgumentNullException(nameof(context));
+    }
+
+    private static (float RadiusX, float RadiusY) NormalizeRoundedRectRadii(float width, float height, double radiusX, double radiusY)
+    {
+        static double Sanitize(double radius) =>
+            double.IsFinite(radius) && radius > 0 ? radius : 0;
+
+        var halfWidth = Math.Max(0f, width) / 2f;
+        var halfHeight = Math.Max(0f, height) / 2f;
+        var normalizedRadiusX = (float)Math.Min(Sanitize(radiusX), halfWidth);
+        var normalizedRadiusY = (float)Math.Min(Sanitize(radiusY), halfHeight);
+        return (normalizedRadiusX, normalizedRadiusY);
+    }
+
+    private static float SnapCoordinate(double value)
+    {
+        if (!double.IsFinite(value))
+        {
+            return 0f;
+        }
+
+        var rounded = Math.Round(value);
+        if (Math.Abs(value - rounded) < 0.0001)
+        {
+            return (float)rounded;
+        }
+
+        var halfPixel = Math.Floor(value) + 0.5;
+        if (Math.Abs(value - halfPixel) < 0.0001)
+        {
+            return (float)halfPixel;
+        }
+
+        return (float)rounded;
     }
 
     /// <inheritdoc />
@@ -86,9 +124,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        // Round origin to pixel boundaries to prevent sub-pixel jittering
-        var x = (float)Math.Round(rectangle.X + Offset.X);
-        var y = (float)Math.Round(rectangle.Y + Offset.Y);
+        // Preserve intentional half-pixel alignment for odd-width strokes.
+        var x = SnapCoordinate(rectangle.X + Offset.X);
+        var y = SnapCoordinate(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
 
@@ -102,12 +140,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             }
         }
 
-        // Stroke — snap all four edges so the stroke is uniform on every side.
+        // Stroke – snap all four edges so the stroke is uniform on every side.
         // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
-            var strokeRight = (float)Math.Round(rectangle.X + rectangle.Width + Offset.X);
-            var strokeBottom = (float)Math.Round(rectangle.Y + rectangle.Height + Offset.Y);
+            var strokeRight = SnapCoordinate(rectangle.X + rectangle.Width + Offset.X);
+            var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
             var strokeW = strokeRight - x;
             var strokeH = strokeBottom - y;
             var strokeBrush = GetNativeBrush(pen.Brush, x, y, strokeW, strokeH);
@@ -123,13 +161,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        // Round origin to pixel boundaries to prevent sub-pixel jittering
-        var x = (float)Math.Round(rectangle.X + Offset.X);
-        var y = (float)Math.Round(rectangle.Y + Offset.Y);
+        // Preserve intentional half-pixel alignment for odd-width strokes.
+        var x = SnapCoordinate(rectangle.X + Offset.X);
+        var y = SnapCoordinate(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
-        var rx = (float)radiusX;
-        var ry = (float)radiusY;
+        var (rx, ry) = NormalizeRoundedRectRadii(width, height, radiusX, radiusY);
 
         // Fill
         if (brush != null)
@@ -141,18 +178,19 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             }
         }
 
-        // Stroke — snap all four edges so the stroke is uniform on every side.
+        // Stroke – snap all four edges so the stroke is uniform on every side.
         // The fill keeps the original width/height to avoid shrinking backgrounds.
         if (pen?.Brush != null)
         {
-            var strokeRight = (float)Math.Round(rectangle.X + rectangle.Width + Offset.X);
-            var strokeBottom = (float)Math.Round(rectangle.Y + rectangle.Height + Offset.Y);
+            var strokeRight = SnapCoordinate(rectangle.X + rectangle.Width + Offset.X);
+            var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
             var strokeW = strokeRight - x;
             var strokeH = strokeBottom - y;
+            var (strokeRx, strokeRy) = NormalizeRoundedRectRadii(strokeW, strokeH, radiusX, radiusY);
             var strokeBrush = GetNativeBrush(pen.Brush, x, y, strokeW, strokeH);
             if (strokeBrush != null)
             {
-                _renderTarget.DrawRoundedRectangle(x, y, strokeW, strokeH, rx, ry, strokeBrush, (float)pen.Thickness);
+                _renderTarget.DrawRoundedRectangle(x, y, strokeW, strokeH, strokeRx, strokeRy, strokeBrush, (float)pen.Thickness);
             }
         }
     }
@@ -237,8 +275,8 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var width = (float)formattedText.MaxTextWidth;
         var height = (float)formattedText.MaxTextHeight;
 
-        if (double.IsInfinity(width) || double.IsNaN(width)) width = 10000;
-        if (double.IsInfinity(height) || double.IsNaN(height)) height = 10000;
+        if (width <= 0 || float.IsInfinity(width) || float.IsNaN(width)) width = 10000;
+        if (height <= 0 || float.IsInfinity(height) || float.IsNaN(height)) height = 10000;
 
         _renderTarget.DrawText(formattedText.Text, format, x, y, width, height, brush);
     }
@@ -637,6 +675,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var y = (float)Math.Round(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
+        var normalizedCornerRadius = cornerRadius.Normalize(rectangle.Width, rectangle.Height);
 
         // Convert IBackdropEffect to native parameters
         // Build backdrop filter string based on effect properties
@@ -663,10 +702,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             materialTint,
             effect.TintOpacity,
             effect.BlurRadius,
-            (float)cornerRadius.TopLeft,
-            (float)cornerRadius.TopRight,
-            (float)cornerRadius.BottomRight,
-            (float)cornerRadius.BottomLeft);
+            (float)normalizedCornerRadius.TopLeft,
+            (float)normalizedCornerRadius.TopRight,
+            (float)normalizedCornerRadius.BottomRight,
+            (float)normalizedCornerRadius.BottomLeft);
     }
 
     /// <summary>
@@ -877,9 +916,19 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var w = (float)Math.Ceiling(exactRight) - x;
         var h = (float)Math.Ceiling(exactBottom) - y;
 
+        var clipRect = new Rect(exactLeft, exactTop, Math.Max(0, exactRight - exactLeft), Math.Max(0, exactBottom - exactTop));
+        Rect? effectiveClip = clipRect;
+        if (_clipBoundsStack.Count > 0)
+        {
+            var parentClip = _clipBoundsStack.Peek();
+            effectiveClip = parentClip.HasValue ? parentClip.Value.Intersect(clipRect) : clipRect;
+        }
+        _clipBoundsStack.Push(effectiveClip);
+
         if (clipGeometry is RectangleGeometry rectGeom && (rectGeom.RadiusX > 0 || rectGeom.RadiusY > 0))
         {
-            _renderTarget.PushRoundedRectClip(x, y, w, h, (float)rectGeom.RadiusX, (float)rectGeom.RadiusY);
+            var (rx, ry) = NormalizeRoundedRectRadii(w, h, rectGeom.RadiusX, rectGeom.RadiusY);
+            _renderTarget.PushRoundedRectClip(x, y, w, h, rx, ry);
         }
         else
         {
@@ -946,6 +995,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 _renderTarget.PopTransform();
                 break;
             case DrawingStateType.Clip:
+                if (_clipBoundsStack.Count > 0)
+                {
+                    _clipBoundsStack.Pop();
+                }
                 _renderTarget.PopClip();
                 break;
             case DrawingStateType.Opacity:

@@ -307,9 +307,18 @@ public abstract class Visual : DependencyObject
                 var bounds = uiChild.VisualBounds;
                 var savedOffset = offsetContext.Offset;
                 var ro = uiChild.RenderOffset;
-                offsetContext.Offset = new Point(
+                var childOffset = new Point(
                     savedOffset.X + bounds.X + ro.X,
                     savedOffset.Y + bounds.Y + ro.Y);
+
+                if (!ShouldRenderChild(drawingContext, uiChild, childOffset))
+                {
+                    continue;
+                }
+
+                offsetContext.Offset = new Point(
+                    childOffset.X,
+                    childOffset.Y);
 
                 var childOpacity = uiChild.Opacity;
                 var pushedOpacity = false;
@@ -348,6 +357,27 @@ public abstract class Visual : DependencyObject
         }
         _isRenderDirty = false;
         _isSubtreeDirty = false;
+    }
+
+    private static bool ShouldRenderChild(object drawingContext, UIElement child, Point childOffset)
+    {
+        if (drawingContext is not IClipBoundsDrawingContext { CurrentClipBounds: Rect clipBounds })
+        {
+            return true;
+        }
+
+        var childBounds = new Rect(childOffset.X, childOffset.Y, child.VisualBounds.Width, child.VisualBounds.Height);
+        if (child.Effect is IEffect effect && effect.HasEffect)
+        {
+            var padding = effect.EffectPadding;
+            childBounds = new Rect(
+                childBounds.X - padding.Left,
+                childBounds.Y - padding.Top,
+                childBounds.Width + padding.Left + padding.Right,
+                childBounds.Height + padding.Top + padding.Bottom);
+        }
+
+        return clipBounds.IntersectsWith(childBounds);
     }
 
     /// <summary>

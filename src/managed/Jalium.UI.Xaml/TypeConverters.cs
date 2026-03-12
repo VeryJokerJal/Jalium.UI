@@ -271,6 +271,38 @@ public sealed class GridLengthConverter : TypeConverter
 }
 
 /// <summary>
+/// Converts strings to <see cref="RowDefinitionCollection"/> values.
+/// </summary>
+public sealed class RowDefinitionCollectionConverter : TypeConverter
+{
+    public override object? ConvertFrom(object? value)
+    {
+        return value switch
+        {
+            RowDefinitionCollection collection => collection,
+            string str => GridDefinitionParser.ParseRowDefinitions(str),
+            _ => null
+        };
+    }
+}
+
+/// <summary>
+/// Converts strings to <see cref="ColumnDefinitionCollection"/> values.
+/// </summary>
+public sealed class ColumnDefinitionCollectionConverter : TypeConverter
+{
+    public override object? ConvertFrom(object? value)
+    {
+        return value switch
+        {
+            ColumnDefinitionCollection collection => collection,
+            string str => GridDefinitionParser.ParseColumnDefinitions(str),
+            _ => null
+        };
+    }
+}
+
+/// <summary>
 /// Converts strings to HorizontalAlignment values.
 /// </summary>
 public sealed class HorizontalAlignmentConverter : TypeConverter
@@ -428,6 +460,8 @@ public static class TypeConverterRegistry
         [typeof(SolidColorBrush)] = new BrushConverter(),
         [typeof(Color)] = new ColorConverter(),
         [typeof(GridLength)] = new GridLengthConverter(),
+        [typeof(RowDefinitionCollection)] = new RowDefinitionCollectionConverter(),
+        [typeof(ColumnDefinitionCollection)] = new ColumnDefinitionCollectionConverter(),
         [typeof(HorizontalAlignment)] = new HorizontalAlignmentConverter(),
         [typeof(VerticalAlignment)] = new VerticalAlignmentConverter(),
         [typeof(Orientation)] = new OrientationConverter(),

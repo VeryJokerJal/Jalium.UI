@@ -7,6 +7,16 @@ namespace Jalium.UI;
 /// </summary>
 public class FrameworkElement : UIElement
 {
+    private static double SnapLayoutValue(double value)
+    {
+        if (!double.IsFinite(value))
+        {
+            return 0;
+        }
+
+        return Math.Round(value, MidpointRounding.AwayFromZero);
+    }
+
     #region Dependency Properties
 
     /// <summary>
@@ -247,6 +257,11 @@ public class FrameworkElement : UIElement
     /// <returns>The element, or null if not found.</returns>
     public object? FindName(string name)
     {
+        if (NameScope.GetNameScope(this)?.FindName(name) is { } scopedElement)
+        {
+            return scopedElement;
+        }
+
         if (_namedElements != null && _namedElements.TryGetValue(name, out var element))
         {
             return element;
@@ -802,8 +817,9 @@ public class FrameworkElement : UIElement
             }
         }
 
-        // Set visual bounds for rendering
-        _visualBounds = new Rect(x, y, renderSize.Width, renderSize.Height);
+        // Pixel-snap the arranged origin so centered/animated children don't drift between
+        // fractional device pixels across frames. Keep the arranged size as computed.
+        _visualBounds = new Rect(SnapLayoutValue(x), SnapLayoutValue(y), renderSize.Width, renderSize.Height);
 
         // Update _renderSize BEFORE firing SizeChanged so that handlers
         // reading ActualWidth/ActualHeight/RenderSize see the new values.
@@ -857,8 +873,8 @@ public class FrameworkElement : UIElement
             return null;
         }
 
-        // Check if this element is visible and enabled for hit testing
-        if (this is UIElement uiElement && uiElement.Visibility != Visibility.Visible)
+        // Skip the entire subtree when the element is not visible or not hit-test visible.
+        if (Visibility != Visibility.Visible || !IsHitTestVisible)
         {
             return null;
         }
@@ -883,19 +899,8 @@ public class FrameworkElement : UIElement
             }
         }
 
-        // No child was hit, check if we're hit-testable
-        if (IsHitTestVisible)
-        {
-            return HitTestResult.GetReusable(this);
-        }
-
-        return null;
+        return HitTestResult.GetReusable(this);
     }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether this element can be hit tested.
-    /// </summary>
-    public bool IsHitTestVisible { get; set; } = true;
 
     /// <summary>
     /// Performs hit testing at the specified point.

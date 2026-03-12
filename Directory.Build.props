@@ -10,9 +10,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- Versioning -->
-    <Version>26.8.5</Version>
-    <AssemblyVersion>26.8.5.0</AssemblyVersion>
-    <FileVersion>26.8.5.0</FileVersion>
+    <Version>26.8.10</Version>
+    <AssemblyVersion>26.8.10.0</AssemblyVersion>
+    <FileVersion>26.8.10.0</FileVersion>
 
     <!-- NuGet Package Metadata -->
     <Authors>Jalium Team</Authors>
@@ -31,6 +31,10 @@
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+
+    <!-- Some local builds currently emit duplicate SDK-generated assembly attributes. -->
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <GenerateTargetFrameworkAttribute>false</GenerateTargetFrameworkAttribute>
   </PropertyGroup>
 
   <PropertyGroup>
