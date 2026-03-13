@@ -78,6 +78,38 @@ public class BindingTests
         Assert.Equal("42", target.GetValue(TestFrameworkElement.TextProperty));
     }
 
+    [Fact]
+    public void Binding_WithoutConverter_ShouldConvertNonStringSourceToStringTarget()
+    {
+        var source = new TestViewModel { Count = 42 };
+        var target = new TestFrameworkElement();
+        var binding = new Binding("Count") { Source = source };
+
+        target.SetBinding(TestFrameworkElement.TextProperty, binding);
+
+        Assert.Equal("42", target.GetValue(TestFrameworkElement.TextProperty));
+
+        source.Count = 108;
+        Assert.Equal("108", target.GetValue(TestFrameworkElement.TextProperty));
+    }
+
+    [Fact]
+    public void Binding_TwoWay_WithoutConverter_ShouldConvertStringTargetBackToIntSource()
+    {
+        var source = new TestViewModel { Count = 1 };
+        var target = new TestFrameworkElement();
+        var binding = new Binding("Count")
+        {
+            Source = source,
+            Mode = BindingMode.TwoWay
+        };
+
+        target.SetBinding(TestFrameworkElement.TextProperty, binding);
+        target.SetValue(TestFrameworkElement.TextProperty, "256");
+
+        Assert.Equal(256, source.Count);
+    }
+
     private class TestViewModel : INotifyPropertyChanged
     {
         private string _name = string.Empty;

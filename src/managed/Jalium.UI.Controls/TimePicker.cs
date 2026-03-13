@@ -609,19 +609,22 @@ public class TimePicker : Control
         }
 
         var inputRect = new Rect(0, headerHeight, rect.Width, rect.Height - headerHeight);
+        var strokeThickness = BorderThickness.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background
         if (Background != null)
         {
-            dc.DrawRoundedRectangle(Background, null, inputRect, cornerRadius);
+            dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
         }
 
         // Draw border
         var borderBrush = IsFocused ? ResolveFocusedBorderBrush() : BorderBrush;
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
-            var pen = new Pen(borderBrush, BorderThickness.Left);
-            dc.DrawRoundedRectangle(null, pen, inputRect, cornerRadius);
+            var pen = new Pen(borderBrush, strokeThickness);
+            dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
         }
 
         // Draw time text or placeholder

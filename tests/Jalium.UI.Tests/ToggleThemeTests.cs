@@ -4,6 +4,7 @@ using Jalium.UI.Controls;
 using Jalium.UI.Controls.Shapes;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using Jalium.UI.Markup;
 using ShapePath = Jalium.UI.Controls.Shapes.Path;
 
 namespace Jalium.UI.Tests;
@@ -26,6 +27,7 @@ public class ToggleThemeTests
     public void CheckGlyphs_ShouldUseTextOnAccentThemeResource()
     {
         ResetApplicationState();
+        ThemeLoader.Initialize();
         var app = new Application();
 
         try
@@ -34,18 +36,68 @@ public class ToggleThemeTests
 
             var checkBox = new CheckBox { IsChecked = true };
             var radioButton = new RadioButton { IsChecked = true };
+            checkBox.Style = Assert.IsType<Style>(app.Resources[typeof(CheckBox)]);
+            radioButton.Style = Assert.IsType<Style>(app.Resources[typeof(RadioButton)]);
             var host = new StackPanel { Width = 320, Height = 120 };
             host.Children.Add(checkBox);
             host.Children.Add(radioButton);
 
             host.Measure(new Size(320, 120));
             host.Arrange(new Rect(0, 0, 320, 120));
+            checkBox.ApplyTemplate();
+            radioButton.ApplyTemplate();
 
-            var checkMark = Assert.IsType<ShapePath>(checkBox.FindName("CheckMark"));
-            var radioDot = Assert.IsType<Ellipse>(radioButton.FindName("RadioDot"));
+            var checkMark = FindDescendant<ShapePath>(checkBox);
+            var radioDot = FindDescendant<Ellipse>(radioButton);
 
+            Assert.NotNull(checkMark);
+            Assert.NotNull(radioDot);
             Assert.Same(accentText, checkMark.Stroke);
             Assert.Same(accentText, radioDot.Fill);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void CheckBox_IndeterminateState_ShouldShowDashGlyph()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var checkBox = new CheckBox
+            {
+                IsThreeState = true,
+                IsChecked = null
+            };
+            checkBox.Style = Assert.IsType<Style>(app.Resources[typeof(CheckBox)]);
+            var host = new StackPanel { Width = 320, Height = 80 };
+            host.Children.Add(checkBox);
+
+            host.Measure(new Size(320, 80));
+            host.Arrange(new Rect(0, 0, 320, 80));
+            checkBox.ApplyTemplate();
+
+            var checkMark = FindDescendant<ShapePath>(checkBox);
+            var indeterminateMark = FindNamedDescendant<Border>(checkBox, "IndeterminateMark");
+            var checkBoxBorder = FindNamedDescendant<Border>(checkBox, "CheckBoxBorder");
+            var checkedBackground = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleCheckedBackground"]);
+            var checkedBorder = Assert.IsAssignableFrom<Brush>(app.Resources["ToggleCheckedBorder"]);
+
+            Assert.NotNull(checkMark);
+            Assert.NotNull(indeterminateMark);
+            Assert.NotNull(checkBoxBorder);
+            Assert.Equal(0.0, checkMark.Opacity);
+            Assert.Equal(1.0, indeterminateMark.Opacity);
+            Assert.Same(checkedBackground, checkBox.Background);
+            Assert.Same(checkedBorder, checkBox.BorderBrush);
+            Assert.Same(checkedBackground, checkBoxBorder!.Background);
+            Assert.Same(checkedBorder, checkBoxBorder.BorderBrush);
         }
         finally
         {
@@ -57,6 +109,7 @@ public class ToggleThemeTests
     public void ToggleSwitch_ShouldResolveBorderAndDisabledBrushesFromTheme()
     {
         ResetApplicationState();
+        ThemeLoader.Initialize();
         var app = new Application();
 
         try
@@ -102,5 +155,49 @@ public class ToggleThemeTests
         {
             ResetApplicationState();
         }
+    }
+
+    private static T? FindDescendant<T>(Visual root) where T : class
+    {
+        if (root is T match)
+        {
+            return match;
+        }
+
+        for (int i = 0; i < root.VisualChildrenCount; i++)
+        {
+            if (root.GetVisualChild(i) is Visual child)
+            {
+                var result = FindDescendant<T>(child);
+                if (result != null)
+                {
+                    return result;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static T? FindNamedDescendant<T>(Visual root, string name) where T : FrameworkElement
+    {
+        if (root is T match && string.Equals(match.Name, name, StringComparison.Ordinal))
+        {
+            return match;
+        }
+
+        for (int i = 0; i < root.VisualChildrenCount; i++)
+        {
+            if (root.GetVisualChild(i) is Visual child)
+            {
+                var result = FindNamedDescendant<T>(child, name);
+                if (result != null)
+                {
+                    return result;
+                }
+            }
+        }
+
+        return null;
     }
 }

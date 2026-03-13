@@ -7,6 +7,33 @@ namespace Jalium.UI.Tests;
 public class ScrollViewerScrollBarMetricsTests
 {
     [Fact]
+    public void ScrollViewer_WithScrollInfoContentMargin_ShouldIncludeMarginInScrollableExtent()
+    {
+        var content = new StackPanel
+        {
+            Margin = new Thickness(0, 24, 0, 24)
+        };
+        content.Children.Add(new Border { Height = 120 });
+        content.Children.Add(new Border { Height = 120 });
+
+        var viewer = new ScrollViewer
+        {
+            Content = content,
+            Width = 160,
+            Height = 160,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto
+        };
+
+        viewer.Measure(new Size(160, 160));
+        viewer.Arrange(new Rect(0, 0, 160, 160));
+        viewer.ScrollToBottom();
+
+        Assert.Equal(288, viewer.ExtentHeight, precision: 3);
+        Assert.Equal(128, viewer.ScrollableHeight, precision: 3);
+        Assert.Equal(128, viewer.VerticalOffset, precision: 3);
+    }
+
+    [Fact]
     public void ConfigureScrollBar_NonFiniteMetrics_ShouldClampToSafeDefaults()
     {
         var scrollBar = new ScrollBar

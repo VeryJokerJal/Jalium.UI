@@ -622,15 +622,18 @@ public class PasswordBox : Control, IImeSupport
 
         // Draw background and border
         var cornerRadius = CornerRadius;
+        var strokeThickness = border.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
         if (Background != null)
         {
-            dc.DrawRoundedRectangle(Background, null, bounds, cornerRadius);
+            dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
         }
 
-        if (BorderBrush != null && border.Left > 0)
+        if (BorderBrush != null && strokeThickness > 0)
         {
-            var borderPen = new Pen(BorderBrush, border.Left);
-            dc.DrawRoundedRectangle(null, borderPen, bounds, cornerRadius);
+            var borderPen = new Pen(BorderBrush, strokeThickness);
+            dc.DrawRoundedRectangle(null, borderPen, borderRect, borderRadius);
         }
 
         // Content area
@@ -687,14 +690,18 @@ public class PasswordBox : Control, IImeSupport
         // Draw focus indicator
         if (IsKeyboardFocused)
         {
-            var focusPen = new Pen(ResolveFocusedBorderBrush(), 1);
-            if (CornerRadius.TopLeft > 0)
+            var focusThickness = 1.0;
+            var focusRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, focusThickness);
+            var focusRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(CornerRadius, focusThickness);
+            var focusPen = new Pen(ResolveFocusedBorderBrush(), focusThickness);
+            if (focusRadius.TopLeft > 0 || focusRadius.TopRight > 0 ||
+                focusRadius.BottomRight > 0 || focusRadius.BottomLeft > 0)
             {
-                dc.DrawRoundedRectangle(null, focusPen, bounds, CornerRadius.TopLeft, CornerRadius.TopLeft);
+                dc.DrawRoundedRectangle(null, focusPen, focusRect, focusRadius);
             }
             else
             {
-                dc.DrawRectangle(null, focusPen, bounds);
+                dc.DrawRectangle(null, focusPen, focusRect);
             }
         }
 

@@ -93,6 +93,9 @@ internal static partial class NativeMethods
         }
     }
 
+    [LibraryImport(D3D12Lib, EntryPoint = "jalium_d3d12_init")]
+    private static partial void D3D12Init();
+
     #region Context Management
 
     /// <summary>

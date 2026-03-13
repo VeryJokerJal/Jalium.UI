@@ -1,6 +1,8 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Documents;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
+using System.Reflection;
 
 namespace Jalium.UI.Tests;
 
@@ -382,6 +384,110 @@ public class RichTextBoxTests
 
         // Assert
         Assert.Same(brush, rtb.CaretBrush);
+    }
+
+    [Fact]
+    public void RichTextBox_Focus_ShouldRegisterImeTarget()
+    {
+        InputMethod.SetTarget(null);
+        Keyboard.ClearFocus();
+
+        try
+        {
+            var rtb = new RichTextBox();
+            var updateFocusMethod = typeof(UIElement).GetMethod("UpdateIsKeyboardFocused", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(updateFocusMethod);
+
+            updateFocusMethod!.Invoke(rtb, [true]);
+            Assert.Same(rtb, InputMethod.Current);
+
+            updateFocusMethod.Invoke(rtb, [false]);
+            Assert.Null(InputMethod.Current);
+        }
+        finally
+        {
+            InputMethod.CancelComposition();
+            InputMethod.SetTarget(null);
+            Keyboard.ClearFocus();
+        }
+    }
+
+    [Fact]
+    public void RichTextBox_ImeCompositionState_ShouldToggleAndAdvanceCaretWindow()
+    {
+        var rtb = new RichTextBox
+        {
+            Width = 320,
+            Height = 120
+        };
+        rtb.SetText("hello");
+        rtb.CaretPosition = rtb.Document.ContentEnd;
+        rtb.Measure(new Size(320, 120));
+        rtb.Arrange(new Rect(0, 0, 320, 120));
+
+        rtb.OnImeCompositionStart();
+        Assert.True(rtb.IsImeComposing);
+
+        var startPoint = rtb.GetImeCaretPosition();
+        rtb.OnImeCompositionUpdate("zhong", 2);
+        var updatedPoint = rtb.GetImeCaretPosition();
+
+        Assert.True(updatedPoint.X > startPoint.X);
+
+        rtb.OnImeCompositionEnd("中");
+        Assert.False(rtb.IsImeComposing);
+    }
+
+    [Fact]
+    public void RichTextBox_ImeCommit_ShouldInsertTextViaTextInput()
+    {
+        var rtb = new RichTextBox
+        {
+            Width = 320,
+            Height = 120
+        };
+        rtb.Measure(new Size(320, 120));
+        rtb.Arrange(new Rect(0, 0, 320, 120));
+
+        rtb.OnImeCompositionStart();
+        rtb.OnImeCompositionUpdate("zhong", 2);
+        rtb.RaiseEvent(new TextCompositionEventArgs(UIElement.TextInputEvent, "中", 1));
+        rtb.OnImeCompositionEnd("中");
+
+        Assert.Contains("中", rtb.GetText());
+        Assert.False(rtb.IsImeComposing);
+    }
+
+    [Fact]
+    public void RichTextBox_ImeComposition_ShouldNotHandleEnterAsEditorInput()
+    {
+        var rtb = new RichTextBox();
+        rtb.SetText("hello");
+        rtb.OnImeCompositionStart();
+        var before = rtb.GetText();
+
+        var keyArgs = new KeyEventArgs(UIElement.KeyDownEvent, Key.Enter, ModifierKeys.None, isDown: true, isRepeat: false, timestamp: 1);
+        rtb.RaiseEvent(keyArgs);
+
+        Assert.False(keyArgs.Handled);
+        Assert.Equal(before, rtb.GetText());
+        rtb.OnImeCompositionEnd(null);
+    }
+
+    [Fact]
+    public void RichTextBox_ImeComposition_ShouldNotHandleCtrlFormattingShortcut()
+    {
+        var rtb = new RichTextBox();
+        rtb.SetText("hello");
+        rtb.OnImeCompositionStart();
+        var before = rtb.GetText();
+
+        var keyArgs = new KeyEventArgs(UIElement.KeyDownEvent, Key.B, ModifierKeys.Control, isDown: true, isRepeat: false, timestamp: 1);
+        rtb.RaiseEvent(keyArgs);
+
+        Assert.False(keyArgs.Handled);
+        Assert.Equal(before, rtb.GetText());
+        rtb.OnImeCompositionEnd(null);
     }
 
     #endregion

@@ -29,6 +29,18 @@ public interface IClipDrawingContext
 }
 
 /// <summary>
+/// Interface for drawing contexts that can expose the effective clip bounds
+/// of the current render pass in absolute drawing coordinates.
+/// </summary>
+public interface IClipBoundsDrawingContext
+{
+    /// <summary>
+    /// Gets the current effective clip bounds, or null when unclipped.
+    /// </summary>
+    Rect? CurrentClipBounds { get; }
+}
+
+/// <summary>
 /// Interface for drawing contexts that support opacity.
 /// </summary>
 public interface IOpacityDrawingContext

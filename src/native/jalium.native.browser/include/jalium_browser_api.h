@@ -3,7 +3,9 @@
 #include <stdint.h>
 
 #ifdef _WIN32
-    #ifdef JALIUM_BROWSER_EXPORTS
+    #if defined(JALIUM_STATIC)
+        #define JALIUM_BROWSER_API
+    #elif defined(JALIUM_BROWSER_EXPORTS)
         #define JALIUM_BROWSER_API __declspec(dllexport)
     #else
         #define JALIUM_BROWSER_API __declspec(dllimport)

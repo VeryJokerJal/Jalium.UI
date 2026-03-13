@@ -123,6 +123,9 @@ public class ScrollBar : RangeBase
     private const double DefaultThickness = 16;
     private const double MinThumbLength = 20;
     private bool _isDragging;
+    private double _thumbDragStartValue;
+    private double _thumbDragAccumulatedHorizontal;
+    private double _thumbDragAccumulatedVertical;
     private bool _hasCustomLineButtonStyle;
     private DispatcherTimer? _autoHideVisualTimer;
     private long _autoHideVisualAnimStartTick;
@@ -724,15 +727,23 @@ public class ScrollBar : RangeBase
 
     private void OnThumbDragStarted(object sender, DragStartedEventArgs e)
     {
-        _isDragging = true;
+        BeginThumbDrag();
     }
 
     private void OnThumbDragDelta(object sender, DragDeltaEventArgs e)
     {
         if (_track != null)
         {
-            var valueDelta = _track.ValueFromDistance(e.HorizontalChange, e.VerticalChange);
-            var newValue = Math.Clamp(Value + valueDelta, Minimum, Maximum);
+            if (!_isDragging)
+            {
+                BeginThumbDrag();
+            }
+
+            _thumbDragAccumulatedHorizontal += e.HorizontalChange;
+            _thumbDragAccumulatedVertical += e.VerticalChange;
+
+            var newValue = _thumbDragStartValue + _track.ValueFromDistance(_thumbDragAccumulatedHorizontal, _thumbDragAccumulatedVertical);
+            newValue = Math.Clamp(newValue, Minimum, Maximum);
 
             if (Math.Abs(newValue - Value) > double.Epsilon)
             {
@@ -744,7 +755,7 @@ public class ScrollBar : RangeBase
 
     private void OnThumbDragCompleted(object sender, DragCompletedEventArgs e)
     {
-        _isDragging = false;
+        EndThumbDrag();
         RaiseScrollEvent(ScrollEventType.EndScroll);
     }
 
@@ -952,6 +963,21 @@ public class ScrollBar : RangeBase
     private static double Lerp(double from, double to, double t)
     {
         return from + ((to - from) * t);
+    }
+
+    private void BeginThumbDrag()
+    {
+        _isDragging = true;
+        _thumbDragStartValue = Value;
+        _thumbDragAccumulatedHorizontal = 0;
+        _thumbDragAccumulatedVertical = 0;
+    }
+
+    private void EndThumbDrag()
+    {
+        _isDragging = false;
+        _thumbDragAccumulatedHorizontal = 0;
+        _thumbDragAccumulatedVertical = 0;
     }
 
     #endregion

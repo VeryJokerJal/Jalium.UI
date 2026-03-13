@@ -1,4 +1,4 @@
-﻿# Jalium.UI
+﻿﻿# Jalium.UI
 
 Jalium.UI is a Windows-first, GPU-accelerated UI framework for .NET 10.
 It combines a WPF-style object model, JALXAML markup, and a DirectX 12 renderer.

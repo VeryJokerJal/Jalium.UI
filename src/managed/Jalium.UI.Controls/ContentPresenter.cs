@@ -209,15 +209,13 @@ public class ContentPresenter : FrameworkElement
         if (content is string text)
         {
             var tb = new TextBlock { Text = text };
-            if (foreground != null)
-                tb.Foreground = foreground;
+            ApplyTextBlockFormatting(tb, foreground);
             return tb;
         }
 
         // For other objects, use ToString()
         var otherTb = new TextBlock { Text = content.ToString() ?? string.Empty };
-        if (foreground != null)
-            otherTb.Foreground = foreground;
+        ApplyTextBlockFormatting(otherTb, foreground);
         return otherTb;
     }
 
@@ -268,14 +266,59 @@ public class ContentPresenter : FrameworkElement
         {
             ApplyTemplateBindings();
         }
+
+        if (_contentElement is TextBlock textBlock)
+        {
+            ApplyTextBlockFormatting(textBlock, FindForegroundBrush());
+        }
     }
 
     private void OnTemplatedParentPropertyChanged(DependencyProperty dp, object? oldValue, object? newValue)
     {
-        // Propagate Foreground changes to child TextBlock
-        if (dp == Control.ForegroundProperty && _contentElement is TextBlock tb)
+        if (_contentElement is not TextBlock tb)
         {
-            tb.Foreground = newValue as Brush;
+            return;
+        }
+
+        if (dp == Control.ForegroundProperty ||
+            dp == Control.FontFamilyProperty ||
+            dp == Control.FontSizeProperty ||
+            dp == Control.FontStyleProperty ||
+            dp == Control.FontWeightProperty)
+        {
+            ApplyTextBlockFormatting(tb, FindForegroundBrush());
+        }
+    }
+
+    private void ApplyTextBlockFormatting(TextBlock textBlock, Brush? foreground)
+    {
+        if (foreground != null)
+        {
+            textBlock.Foreground = foreground;
+        }
+
+        if (TemplatedParent is Control templatedControl)
+        {
+            textBlock.FontFamily = templatedControl.FontFamily;
+            textBlock.FontSize = templatedControl.FontSize;
+            textBlock.FontStyle = templatedControl.FontStyle;
+            textBlock.FontWeight = templatedControl.FontWeight;
+            return;
+        }
+
+        Visual? current = VisualParent;
+        while (current != null)
+        {
+            if (current is Control control)
+            {
+                textBlock.FontFamily = control.FontFamily;
+                textBlock.FontSize = control.FontSize;
+                textBlock.FontStyle = control.FontStyle;
+                textBlock.FontWeight = control.FontWeight;
+                return;
+            }
+
+            current = current.VisualParent;
         }
     }
 

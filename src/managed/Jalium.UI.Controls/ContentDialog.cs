@@ -38,8 +38,7 @@ public enum ContentDialogPlacement
 public class ContentDialog : ContentControl
 {
     private const double DefaultDialogMargin = 24.0;
-    private const double DefaultDialogCardMaxWidth = 560.0;
-    private const double MinimumCardHeight = 120.0;
+    private const double DefaultDialogCardMinWidth = 320.0;
 
     public static readonly DependencyProperty TitleProperty =
         DependencyProperty.Register(nameof(Title), typeof(object), typeof(ContentDialog),
@@ -124,6 +123,7 @@ public class ContentDialog : ContentControl
     private TaskCompletionSource<ContentDialogResult>? _showTaskSource;
     private Task? _closeTask;
     private ContentDialogPlacement _activePlacement;
+    private Size _previousOverlayRenderSize;
 
     public ContentDialog()
     {
@@ -341,6 +341,64 @@ public class ContentDialog : ContentControl
         CompleteClose(ContentDialogResult.None);
     }
 
+    protected override Size MeasureCore(Size availableSize)
+    {
+        var margin = Margin;
+        var marginWidth = margin.Left + margin.Right;
+        var marginHeight = margin.Top + margin.Bottom;
+
+        var overlayAvailable = new Size(
+            Math.Max(0, availableSize.Width - marginWidth),
+            Math.Max(0, availableSize.Height - marginHeight));
+
+        var contentSize = MeasureOverride(overlayAvailable);
+
+        var desiredWidth = double.IsInfinity(overlayAvailable.Width)
+            ? contentSize.Width
+            : overlayAvailable.Width;
+        var desiredHeight = double.IsInfinity(overlayAvailable.Height)
+            ? contentSize.Height
+            : overlayAvailable.Height;
+
+        return new Size(
+            Math.Max(0, desiredWidth + marginWidth),
+            Math.Max(0, desiredHeight + marginHeight));
+    }
+
+    protected override Size ArrangeCore(Rect finalRect)
+    {
+        var margin = Margin;
+        var marginWidth = margin.Left + margin.Right;
+        var marginHeight = margin.Top + margin.Bottom;
+
+        var overlaySize = new Size(
+            Math.Max(0, finalRect.Width - marginWidth),
+            Math.Max(0, finalRect.Height - marginHeight));
+
+        ArrangeOverride(overlaySize);
+
+        SetVisualBounds(new Rect(
+            SnapDialogLayoutValue(finalRect.X + margin.Left),
+            SnapDialogLayoutValue(finalRect.Y + margin.Top),
+            overlaySize.Width,
+            overlaySize.Height));
+
+        // Keep the overlay render size authoritative so popup sizing does not
+        // inherit card-level Width/Height constraints.
+        _renderSize = overlaySize;
+
+        if (overlaySize != _previousOverlayRenderSize)
+        {
+            var widthChanged = overlaySize.Width != _previousOverlayRenderSize.Width;
+            var heightChanged = overlaySize.Height != _previousOverlayRenderSize.Height;
+            var sizeInfo = new SizeChangedInfo(this, _previousOverlayRenderSize, widthChanged, heightChanged);
+            _previousOverlayRenderSize = overlaySize;
+            OnSizeChanged(sizeInfo);
+        }
+
+        return overlaySize;
+    }
+
     protected override void OnApplyTemplate()
     {
         DetachButtonHandlers();
@@ -355,6 +413,21 @@ public class ContentDialog : ContentControl
 
         AttachButtonHandlers();
         UpdateVisualState();
+    }
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+
+        if (e.Property == WidthProperty ||
+            e.Property == HeightProperty ||
+            e.Property == MinWidthProperty ||
+            e.Property == MinHeightProperty ||
+            e.Property == MaxWidthProperty ||
+            e.Property == MaxHeightProperty)
+        {
+            UpdateCardLayout();
+        }
     }
 
     private static void OnDialogVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -769,6 +842,10 @@ public class ContentDialog : ContentControl
         {
             _dialogCard.HorizontalAlignment = HorizontalAlignment.Stretch;
             _dialogCard.VerticalAlignment = VerticalAlignment.Stretch;
+            _dialogCard.Width = double.NaN;
+            _dialogCard.Height = double.NaN;
+            _dialogCard.MinWidth = 0;
+            _dialogCard.MinHeight = 0;
             _dialogCard.MaxWidth = double.PositiveInfinity;
             _dialogCard.MaxHeight = double.PositiveInfinity;
             return;
@@ -776,20 +853,106 @@ public class ContentDialog : ContentControl
 
         _dialogCard.HorizontalAlignment = HorizontalAlignment.Center;
         _dialogCard.VerticalAlignment = VerticalAlignment.Center;
-        _dialogCard.MaxWidth = DefaultDialogCardMaxWidth;
+        var viewport = ResolveViewportSize();
+        var availableCardWidth = viewport.Width > 0
+            ? Math.Max(0, viewport.Width - (DefaultDialogMargin * 2))
+            : double.PositiveInfinity;
+        var availableCardHeight = viewport.Height > 0
+            ? Math.Max(0, viewport.Height - (DefaultDialogMargin * 2))
+            : double.PositiveInfinity;
 
-        var availableHeight = ActualHeight > 0
-            ? ActualHeight
-            : _popupHost?.Height ?? (_hostWindow?.ActualHeight > 0 ? _hostWindow.ActualHeight : _hostWindow?.Height ?? 0);
-        if (availableHeight > 0)
-        {
-            _dialogCard.MaxHeight = Math.Max(MinimumCardHeight, availableHeight - (DefaultDialogMargin * 2));
-        }
+        var explicitWidth = NormalizeExplicitLength(Width);
+        var explicitHeight = NormalizeExplicitLength(Height);
+        var hasExplicitWidth = !double.IsNaN(explicitWidth);
+        var hasExplicitHeight = !double.IsNaN(explicitHeight);
+        var hasExplicitMinWidth = MinWidth > 0;
+        var hasExplicitMinHeight = MinHeight > 0;
+        var hasExplicitMaxWidth = HasExplicitMaximum(MaxWidth);
+        var hasExplicitMaxHeight = HasExplicitMaximum(MaxHeight);
+
+        var requestedMinWidth = hasExplicitMinWidth
+            ? MinWidth
+            : hasExplicitWidth ? 0.0 : DefaultDialogCardMinWidth;
+        var requestedMinHeight = hasExplicitMinHeight ? MinHeight : 0.0;
+        var requestedMaxWidth = hasExplicitMaxWidth
+            ? MaxWidth
+            : double.PositiveInfinity;
+        var requestedMaxHeight = hasExplicitMaxHeight ? MaxHeight : double.PositiveInfinity;
+
+        var effectiveMaxWidth = ClampMaximumToAvailable(requestedMaxWidth, availableCardWidth);
+        var effectiveMaxHeight = ClampMaximumToAvailable(requestedMaxHeight, availableCardHeight);
+
+        _dialogCard.Width = hasExplicitWidth ? explicitWidth : double.NaN;
+        _dialogCard.Height = hasExplicitHeight ? explicitHeight : double.NaN;
+        _dialogCard.MinWidth = ClampMinimumToMaximum(requestedMinWidth, effectiveMaxWidth);
+        _dialogCard.MinHeight = ClampMinimumToMaximum(requestedMinHeight, effectiveMaxHeight);
+        _dialogCard.MaxWidth = effectiveMaxWidth;
+        _dialogCard.MaxHeight = effectiveMaxHeight;
     }
 
     private void OnDialogSizeChanged(object sender, SizeChangedEventArgs e)
     {
         UpdateCardLayout();
+    }
+
+    private Size ResolveViewportSize()
+    {
+        var width = ActualWidth > 0
+            ? ActualWidth
+            : _popupHost?.Width ?? (_hostWindow?.ActualWidth > 0 ? _hostWindow.ActualWidth : _hostWindow?.Width ?? 0);
+        var height = ActualHeight > 0
+            ? ActualHeight
+            : _popupHost?.Height ?? (_hostWindow?.ActualHeight > 0 ? _hostWindow.ActualHeight : _hostWindow?.Height ?? 0);
+
+        return new Size(Math.Max(0, width), Math.Max(0, height));
+    }
+
+    private static double NormalizeExplicitLength(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+        {
+            return double.NaN;
+        }
+
+        return Math.Max(0, value);
+    }
+
+    private static bool HasExplicitMaximum(double value)
+    {
+        return !double.IsNaN(value) && !double.IsInfinity(value) && value >= 0;
+    }
+
+    private static double ClampMaximumToAvailable(double requestedMaximum, double availableMaximum)
+    {
+        if (double.IsNaN(availableMaximum) || double.IsInfinity(availableMaximum))
+        {
+            return requestedMaximum;
+        }
+
+        return double.IsInfinity(requestedMaximum)
+            ? availableMaximum
+            : Math.Min(requestedMaximum, availableMaximum);
+    }
+
+    private static double ClampMinimumToMaximum(double requestedMinimum, double effectiveMaximum)
+    {
+        var minimum = Math.Max(0, requestedMinimum);
+        if (double.IsInfinity(effectiveMaximum))
+        {
+            return minimum;
+        }
+
+        return Math.Min(minimum, Math.Max(0, effectiveMaximum));
+    }
+
+    private static double SnapDialogLayoutValue(double value)
+    {
+        if (!double.IsFinite(value))
+        {
+            return 0;
+        }
+
+        return Math.Round(value, MidpointRounding.AwayFromZero);
     }
 
     private void ScheduleInitialFocus()

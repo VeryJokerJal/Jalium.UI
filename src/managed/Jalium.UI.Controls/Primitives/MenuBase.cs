@@ -66,7 +66,7 @@ public abstract class MenuBase : ItemsControl
     }
 
     /// <summary>
-    /// Gets the currently selected or highlighted menu item.
+    /// Gets the currently selected menu item.
     /// </summary>
     public MenuItem? CurrentSelection { get; protected set; }
 

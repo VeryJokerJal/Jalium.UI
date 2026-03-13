@@ -475,10 +475,12 @@ public class NumberBox : TextBoxBase, IImeSupport
         if (_upSpinButton != null)
         {
             _upSpinButton.Click += OnUpButtonClick;
+            _upSpinButton.Cursor = Jalium.UI.Cursors.Arrow;
         }
         if (_downSpinButton != null)
         {
             _downSpinButton.Click += OnDownButtonClick;
+            _downSpinButton.Cursor = Jalium.UI.Cursors.Arrow;
         }
     }
 
@@ -1080,20 +1082,23 @@ public class NumberBox : TextBoxBase, IImeSupport
 
         // Input area rect
         var inputRect = new Rect(0, headerHeight, bounds.Width, bounds.Height - headerHeight);
+        var strokeThickness = border.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background and border only in direct rendering mode (template provides these)
         if (!HasContentHost)
         {
             if (Background != null)
             {
-                dc.DrawRoundedRectangle(Background, null, inputRect, cornerRadius);
+                dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
             }
 
             var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
             if (borderBrush != null && border.TotalWidth > 0)
             {
-                var pen = new Pen(borderBrush, border.Left);
-                dc.DrawRoundedRectangle(null, pen, inputRect, cornerRadius);
+                var pen = new Pen(borderBrush, strokeThickness);
+                dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
             }
         }
 

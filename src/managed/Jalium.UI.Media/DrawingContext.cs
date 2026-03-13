@@ -64,6 +64,8 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <param name="cornerRadius">The corner radius for each corner.</param>
     public void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, CornerRadius cornerRadius)
     {
+        cornerRadius = cornerRadius.Normalize(rectangle.Width, rectangle.Height);
+
         // Fast path: no corner radius
         if (cornerRadius.TopLeft == 0 && cornerRadius.TopRight == 0 &&
             cornerRadius.BottomLeft == 0 && cornerRadius.BottomRight == 0)
@@ -157,12 +159,11 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
         double w = rect.Width;
         double h = rect.Height;
 
-        // Clamp corner radii to half the minimum dimension
-        double maxRadius = Math.Min(w, h) / 2;
-        double tl = Math.Min(cornerRadius.TopLeft, maxRadius);
-        double tr = Math.Min(cornerRadius.TopRight, maxRadius);
-        double br = Math.Min(cornerRadius.BottomRight, maxRadius);
-        double bl = Math.Min(cornerRadius.BottomLeft, maxRadius);
+        cornerRadius = cornerRadius.Normalize(w, h);
+        double tl = cornerRadius.TopLeft;
+        double tr = cornerRadius.TopRight;
+        double br = cornerRadius.BottomRight;
+        double bl = cornerRadius.BottomLeft;
 
         // Start at top-left corner, after the arc
         figure.StartPoint = new Point(x + tl, y);

@@ -100,6 +100,21 @@ public abstract class TextBoxBase : Control
     protected bool _isSelecting;
 
     /// <summary>
+    /// Whether the current drag gesture should expand by whole-word ranges.
+    /// </summary>
+    protected bool _isWordSelecting;
+
+    /// <summary>
+    /// The start of the word range captured when a double-click selection begins.
+    /// </summary>
+    protected int _wordSelectionAnchorStart;
+
+    /// <summary>
+    /// The end of the word range captured when a double-click selection begins.
+    /// </summary>
+    protected int _wordSelectionAnchorEnd;
+
+    /// <summary>
     /// The anchor point for selection extension.
     /// </summary>
     protected int _selectionAnchor;
@@ -1374,6 +1389,11 @@ public abstract class TextBoxBase : Control
                 {
                     // Double-click: select word
                     SelectCurrentWord();
+                    _wordSelectionAnchorStart = _selectionStart;
+                    _wordSelectionAnchorEnd = _selectionStart + _selectionLength;
+                    _isWordSelecting = _selectionLength > 0;
+                    _isSelecting = true;
+                    CaptureMouse();
                 }
                 else
                 {
@@ -1391,6 +1411,7 @@ public abstract class TextBoxBase : Control
                         _selectionAnchor = newCaretIndex;
                         _selectionStart = newCaretIndex;
                         _selectionLength = 0;
+                        _isWordSelecting = false;
                         _isSelecting = true;
                         OnSelectionChanged();
                     }
@@ -1423,6 +1444,7 @@ public abstract class TextBoxBase : Control
             if (_isSelecting)
             {
                 _isSelecting = false;
+                _isWordSelecting = false;
                 ReleaseMouseCapture();
             }
 
@@ -1455,9 +1477,16 @@ public abstract class TextBoxBase : Control
             var position = mouseArgs.GetPosition(this);
             var newCaretIndex = GetCaretIndexFromPosition(position);
 
-            _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
-            _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
-            _caretIndex = newCaretIndex;
+            if (_isWordSelecting)
+            {
+                ExtendWordSelection(newCaretIndex);
+            }
+            else
+            {
+                _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
+                _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
+                _caretIndex = newCaretIndex;
+            }
 
             EnsureCaretVisible();
             InvalidateVisual();
@@ -1490,6 +1519,8 @@ public abstract class TextBoxBase : Control
         {
             _isSelecting = false;
         }
+
+        _isWordSelecting = false;
     }
 
     /// <inheritdoc />
@@ -1854,6 +1885,95 @@ public abstract class TextBoxBase : Control
             index++;
 
         return index;
+    }
+
+    private void ExtendWordSelection(int newCaretIndex)
+    {
+        var text = GetText();
+        if (string.IsNullOrEmpty(text))
+        {
+            _selectionStart = 0;
+            _selectionLength = 0;
+            _caretIndex = 0;
+            OnSelectionChanged();
+            return;
+        }
+
+        var (currentWordStart, currentWordEnd) = GetWordRangeAtIndex(newCaretIndex);
+
+        int selectionStart;
+        int selectionEnd;
+        if (currentWordEnd <= _wordSelectionAnchorStart)
+        {
+            selectionStart = currentWordStart;
+            selectionEnd = _wordSelectionAnchorEnd;
+            _caretIndex = selectionStart;
+        }
+        else if (currentWordStart >= _wordSelectionAnchorEnd)
+        {
+            selectionStart = _wordSelectionAnchorStart;
+            selectionEnd = currentWordEnd;
+            _caretIndex = selectionEnd;
+        }
+        else
+        {
+            selectionStart = _wordSelectionAnchorStart;
+            selectionEnd = _wordSelectionAnchorEnd;
+            _caretIndex = selectionEnd;
+        }
+
+        _selectionStart = selectionStart;
+        _selectionLength = Math.Max(0, selectionEnd - selectionStart);
+        OnSelectionChanged();
+    }
+
+    private (int start, int end) GetWordRangeAtIndex(int index)
+    {
+        var text = GetText();
+        if (string.IsNullOrEmpty(text))
+        {
+            return (0, 0);
+        }
+
+        var clampedIndex = Math.Clamp(index, 0, text.Length);
+        if (clampedIndex == text.Length && clampedIndex > 0 && !IsWordBoundary(text[clampedIndex - 1]))
+        {
+            clampedIndex--;
+        }
+
+        if (clampedIndex < text.Length && IsWordBoundary(text[clampedIndex]))
+        {
+            if (clampedIndex > 0 && !IsWordBoundary(text[clampedIndex - 1]))
+            {
+                clampedIndex--;
+            }
+            else
+            {
+                while (clampedIndex < text.Length && IsWordBoundary(text[clampedIndex]))
+                {
+                    clampedIndex++;
+                }
+
+                if (clampedIndex >= text.Length)
+                {
+                    return (text.Length, text.Length);
+                }
+            }
+        }
+
+        var start = clampedIndex;
+        while (start > 0 && !IsWordBoundary(text[start - 1]))
+        {
+            start--;
+        }
+
+        var end = clampedIndex;
+        while (end < text.Length && !IsWordBoundary(text[end]))
+        {
+            end++;
+        }
+
+        return (start, end);
     }
 
     private void SelectCurrentWord()

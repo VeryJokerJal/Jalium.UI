@@ -1460,26 +1460,17 @@ internal sealed class RazorTemplateConverter : IMultiValueConverter
 
     private static object? ConvertToTargetType(object? value, Type targetType)
     {
-        if (value == null)
-            return null;
-
-        var underlyingType = Nullable.GetUnderlyingType(targetType) ?? targetType;
-        if (underlyingType == typeof(object) || underlyingType.IsInstanceOfType(value))
-            return value;
-
-        if (value is string stringValue && underlyingType != typeof(string))
+        var coerced = BindingValueCoercion.Coerce(value, targetType, CultureInfo.InvariantCulture);
+        if (coerced is string stringValue)
         {
-            return TypeConverterRegistry.ConvertValue(stringValue, underlyingType);
+            var underlyingType = Nullable.GetUnderlyingType(targetType) ?? targetType;
+            if (underlyingType != typeof(string) && !underlyingType.IsInstanceOfType(coerced))
+            {
+                return TypeConverterRegistry.ConvertValue(stringValue, underlyingType) ?? coerced;
+            }
         }
 
-        try
-        {
-            return System.Convert.ChangeType(value, underlyingType, CultureInfo.InvariantCulture);
-        }
-        catch
-        {
-            return value;
-        }
+        return coerced;
     }
 }
 
@@ -1770,26 +1761,17 @@ internal static class RazorBindingEngine
 
     private static object? ConvertOnceValue(object? value, Type propertyType)
     {
-        var targetType = Nullable.GetUnderlyingType(propertyType) ?? propertyType;
-        if (value == null)
-            return null;
-
-        if (targetType == typeof(object) || targetType.IsInstanceOfType(value))
-            return value;
-
-        if (value is string str && targetType != typeof(string))
+        var coerced = BindingValueCoercion.Coerce(value, propertyType, CultureInfo.InvariantCulture);
+        if (coerced is string stringValue)
         {
-            return TypeConverterRegistry.ConvertValue(str, targetType);
+            var targetType = Nullable.GetUnderlyingType(propertyType) ?? propertyType;
+            if (targetType != typeof(string) && !targetType.IsInstanceOfType(coerced))
+            {
+                return TypeConverterRegistry.ConvertValue(stringValue, targetType) ?? coerced;
+            }
         }
 
-        try
-        {
-            return System.Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
-        }
-        catch
-        {
-            return value;
-        }
+        return coerced;
     }
 
     private static bool HasMissingRootValue(RazorExpressionPlan plan, object target, object? codeBehind)

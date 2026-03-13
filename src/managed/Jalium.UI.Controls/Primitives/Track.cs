@@ -154,7 +154,9 @@ public class Track : FrameworkElement
                 if (_thumb != null)
                 {
                     RemoveVisualChild(_thumb);
+                    _thumb.DragStarted -= OnThumbDragStarted;
                     _thumb.DragDelta -= OnThumbDragDelta;
+                    _thumb.DragCompleted -= OnThumbDragCompleted;
                 }
 
                 _thumb = value;
@@ -162,7 +164,9 @@ public class Track : FrameworkElement
                 if (_thumb != null)
                 {
                     AddVisualChild(_thumb);
+                    _thumb.DragStarted += OnThumbDragStarted;
                     _thumb.DragDelta += OnThumbDragDelta;
+                    _thumb.DragCompleted += OnThumbDragCompleted;
                 }
 
                 InvalidateMeasure();
@@ -232,6 +236,10 @@ public class Track : FrameworkElement
     private RepeatButton? _decreaseButton;
     private RepeatButton? _increaseButton;
     private double _density;
+    private bool _isThumbDragging;
+    private double _thumbDragStartValue;
+    private double _thumbDragAccumulatedHorizontal;
+    private double _thumbDragAccumulatedVertical;
 
     #endregion
 
@@ -583,14 +591,32 @@ public class Track : FrameworkElement
 
     #region Event Handlers
 
+    private void OnThumbDragStarted(object sender, DragStartedEventArgs e)
+    {
+        BeginThumbDrag();
+    }
+
     private void OnThumbDragDelta(object sender, DragDeltaEventArgs e)
     {
-        var newValue = Value + ValueFromDistance(e.HorizontalChange, e.VerticalChange);
+        if (!_isThumbDragging)
+        {
+            BeginThumbDrag();
+        }
+
+        _thumbDragAccumulatedHorizontal += e.HorizontalChange;
+        _thumbDragAccumulatedVertical += e.VerticalChange;
+
+        var newValue = _thumbDragStartValue + ValueFromDistance(_thumbDragAccumulatedHorizontal, _thumbDragAccumulatedVertical);
         newValue = Math.Clamp(newValue, Minimum, Maximum);
 
         // This should be bound to the parent control's Value property
         // For now, we'll just update our local value
         Value = newValue;
+    }
+
+    private void OnThumbDragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        EndThumbDrag();
     }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -607,6 +633,21 @@ public class Track : FrameworkElement
         {
             track.RefreshThumbVisualLayout();
         }
+    }
+
+    private void BeginThumbDrag()
+    {
+        _isThumbDragging = true;
+        _thumbDragStartValue = Value;
+        _thumbDragAccumulatedHorizontal = 0;
+        _thumbDragAccumulatedVertical = 0;
+    }
+
+    private void EndThumbDrag()
+    {
+        _isThumbDragging = false;
+        _thumbDragAccumulatedHorizontal = 0;
+        _thumbDragAccumulatedVertical = 0;
     }
 
     #endregion

@@ -1879,6 +1879,7 @@ public sealed class JalxamlParser
     private readonly Dictionary<string, AnimationDef> _animations = new();
     private readonly List<TemplateDef> _templates = new();
     private uint _handlerIndex;
+    private readonly record struct GridDefinitionReference(string Size, string? Name);
 
     public JalxamlAst Parse(string source)
     {
@@ -2109,7 +2110,10 @@ public sealed class JalxamlParser
         };
     }
 
-    private ElementNode ParseElement(System.Xml.Linq.XElement element)
+    private ElementNode ParseElement(
+        System.Xml.Linq.XElement element,
+        IReadOnlyList<GridDefinitionReference>? parentRowDefinitions = null,
+        IReadOnlyList<GridDefinitionReference>? parentColumnDefinitions = null)
     {
         var localName = element.Name.LocalName;
 
@@ -2120,6 +2124,21 @@ public sealed class JalxamlParser
         var elementType = ElementTypeMap.TryGetValue(localName, out var type)
             ? type
             : ElementType.Custom;
+
+        var rowDefinitions = ParseGridDefinitions(
+            element,
+            "RowDefinitions",
+            "Grid.RowDefinitions",
+            "RowDefinition",
+            "Height",
+            "Width");
+        var columnDefinitions = ParseGridDefinitions(
+            element,
+            "ColumnDefinitions",
+            "Grid.ColumnDefinitions",
+            "ColumnDefinition",
+            "Width",
+            "Height");
 
         var node = new ElementNode
         {
@@ -2137,10 +2156,10 @@ public sealed class JalxamlParser
             ZIndex = (int)ParseDouble(GetAttributeValue(element, "Panel.ZIndex")),
 
             // Grid 布局属性
-            RowDefinitions = ParseRowColumnDefinitions(element, "Grid.RowDefinitions", "RowDefinition"),
-            ColumnDefinitions = ParseRowColumnDefinitions(element, "Grid.ColumnDefinitions", "ColumnDefinition"),
-            GridRow = (int)ParseDouble(GetAttributeValue(element, "Grid.Row")),
-            GridColumn = (int)ParseDouble(GetAttributeValue(element, "Grid.Column")),
+            RowDefinitions = NormalizeGridDefinitionSizes(rowDefinitions),
+            ColumnDefinitions = NormalizeGridDefinitionSizes(columnDefinitions),
+            GridRow = ParseGridPosition(GetAttributeValue(element, "Grid.Row"), parentRowDefinitions ?? [], "Grid.Row"),
+            GridColumn = ParseGridPosition(GetAttributeValue(element, "Grid.Column"), parentColumnDefinitions ?? [], "Grid.Column"),
             GridRowSpan = Math.Max(1, (int)ParseDouble(GetAttributeValue(element, "Grid.RowSpan"), 1)),
             GridColumnSpan = Math.Max(1, (int)ParseDouble(GetAttributeValue(element, "Grid.ColumnSpan"), 1)),
 
@@ -2194,6 +2213,9 @@ public sealed class JalxamlParser
         };
 
         // 解析子元素
+        var childRowDefinitions = elementType == ElementType.Grid ? rowDefinitions : [];
+        var childColumnDefinitions = elementType == ElementType.Grid ? columnDefinitions : [];
+
         foreach (var child in element.Elements())
         {
             var childName = child.Name.LocalName;
@@ -2202,7 +2224,7 @@ public sealed class JalxamlParser
             if (childName.Contains('.'))
                 continue;
 
-            node.Children.Add(ParseElement(child));
+            node.Children.Add(ParseElement(child, childRowDefinitions, childColumnDefinitions));
         }
 
         return node;
@@ -2267,24 +2289,255 @@ public sealed class JalxamlParser
         return true;
     }
 
-    private static string? ParseRowColumnDefinitions(System.Xml.Linq.XElement element, string propertyElementName, string definitionElementName)
+    private static List<GridDefinitionReference> ParseGridDefinitions(
+        System.Xml.Linq.XElement element,
+        string attributeName,
+        string propertyElementName,
+        string definitionElementName,
+        string primaryLengthProperty,
+        string alternateLengthProperty)
     {
-        // 查找属性元素（如 Grid.RowDefinitions）
+        var attributeValue = GetAttributeValue(element, attributeName);
+        if (!string.IsNullOrWhiteSpace(attributeValue))
+        {
+            return ParseGridDefinitionAttribute(attributeValue, primaryLengthProperty, alternateLengthProperty);
+        }
+
         var propElement = element.Elements()
             .FirstOrDefault(e => e.Name.LocalName == propertyElementName);
 
         if (propElement == null)
-            return null;
-
-        // 解析子定义元素
-        var definitions = new List<string>();
-        foreach (var defElement in propElement.Elements().Where(e => e.Name.LocalName == definitionElementName))
         {
-            var height = GetAttributeValue(defElement, "Height") ?? GetAttributeValue(defElement, "Width");
-            definitions.Add(height ?? "*");
+            return [];
         }
 
-        return definitions.Count > 0 ? string.Join(",", definitions) : null;
+        var definitions = new List<GridDefinitionReference>();
+        foreach (var defElement in propElement.Elements().Where(e => e.Name.LocalName == definitionElementName))
+        {
+            var size = GetAttributeValue(defElement, primaryLengthProperty)
+                ?? GetAttributeValue(defElement, alternateLengthProperty)
+                ?? GetAttributeValue(defElement, "Size")
+                ?? "*";
+            var name = GetAttributeValue(defElement, "Name") ?? GetAttributeValue(defElement, "x:Name");
+            definitions.Add(new GridDefinitionReference(size, name));
+        }
+
+        return definitions;
+    }
+
+    private static string? NormalizeGridDefinitionSizes(IReadOnlyList<GridDefinitionReference> definitions)
+    {
+        if (definitions.Count == 0)
+        {
+            return null;
+        }
+
+        return string.Join(",", definitions.Select(static definition => definition.Size));
+    }
+
+    private static int ParseGridPosition(
+        string? value,
+        IReadOnlyList<GridDefinitionReference> definitions,
+        string propertyName)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return 0;
+        }
+
+        if (int.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var index))
+        {
+            return index;
+        }
+
+        for (var i = 0; i < definitions.Count; i++)
+        {
+            if (string.Equals(definitions[i].Name, value, StringComparison.Ordinal))
+            {
+                return i;
+            }
+        }
+
+        throw new InvalidOperationException($"Cannot resolve named grid reference '{value}' for {propertyName}.");
+    }
+
+    private static List<GridDefinitionReference> ParseGridDefinitionAttribute(
+        string value,
+        string primaryLengthProperty,
+        string alternateLengthProperty)
+    {
+        var definitions = new List<GridDefinitionReference>();
+        foreach (var entry in SplitGridDefinitionEntries(value))
+        {
+            var trimmed = entry.Trim();
+            if (string.IsNullOrEmpty(trimmed))
+            {
+                continue;
+            }
+
+            if (trimmed.Length >= 2 && trimmed[0] == '{' && trimmed[^1] == '}')
+            {
+                var properties = ParseGridDefinitionPropertyBag(trimmed[1..^1]);
+                var size = TryGetGridDefinitionValue(properties, primaryLengthProperty, alternateLengthProperty)
+                    ?? "*";
+                properties.TryGetValue("Name", out var name);
+                definitions.Add(new GridDefinitionReference(size, name));
+            }
+            else
+            {
+                definitions.Add(new GridDefinitionReference(trimmed, null));
+            }
+        }
+
+        return definitions;
+    }
+
+    private static string? TryGetGridDefinitionValue(
+        IReadOnlyDictionary<string, string> properties,
+        string primaryLengthProperty,
+        string alternateLengthProperty)
+    {
+        if (properties.TryGetValue(primaryLengthProperty, out var primary))
+        {
+            return primary;
+        }
+
+        if (properties.TryGetValue(alternateLengthProperty, out var alternate))
+        {
+            return alternate;
+        }
+
+        if (properties.TryGetValue("Size", out var size))
+        {
+            return size;
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<string> SplitGridDefinitionEntries(string value)
+    {
+        var start = 0;
+        var depth = 0;
+        var quote = '\0';
+
+        for (var i = 0; i < value.Length; i++)
+        {
+            var ch = value[i];
+            if (quote != '\0')
+            {
+                if (ch == quote)
+                {
+                    quote = '\0';
+                }
+
+                continue;
+            }
+
+            if (ch == '"' || ch == '\'')
+            {
+                quote = ch;
+                continue;
+            }
+
+            if (ch == '{')
+            {
+                depth++;
+                continue;
+            }
+
+            if (ch == '}')
+            {
+                depth--;
+                continue;
+            }
+
+            if (ch == ',' && depth == 0)
+            {
+                yield return value[start..i];
+                start = i + 1;
+            }
+        }
+
+        yield return value[start..];
+    }
+
+    private static Dictionary<string, string> ParseGridDefinitionPropertyBag(string text)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var index = 0;
+
+        while (index < text.Length)
+        {
+            SkipGridDefinitionWhitespace(text, ref index);
+            if (index >= text.Length)
+            {
+                break;
+            }
+
+            var nameStart = index;
+            while (index < text.Length && !char.IsWhiteSpace(text[index]) && text[index] != '=')
+            {
+                index++;
+            }
+
+            var name = text[nameStart..index];
+            SkipGridDefinitionWhitespace(text, ref index);
+
+            if (index >= text.Length || text[index] != '=')
+            {
+                throw new InvalidOperationException($"Invalid grid definition property assignment near '{name}'.");
+            }
+
+            index++;
+            SkipGridDefinitionWhitespace(text, ref index);
+
+            if (index >= text.Length)
+            {
+                throw new InvalidOperationException($"Missing value for grid definition property '{name}'.");
+            }
+
+            string parsedValue;
+            if (text[index] == '"' || text[index] == '\'')
+            {
+                var quote = text[index++];
+                var valueStart = index;
+                while (index < text.Length && text[index] != quote)
+                {
+                    index++;
+                }
+
+                if (index >= text.Length)
+                {
+                    throw new InvalidOperationException($"Unterminated quoted value for grid definition property '{name}'.");
+                }
+
+                parsedValue = text[valueStart..index];
+                index++;
+            }
+            else
+            {
+                var valueStart = index;
+                while (index < text.Length && !char.IsWhiteSpace(text[index]))
+                {
+                    index++;
+                }
+
+                parsedValue = text[valueStart..index];
+            }
+
+            result[name] = parsedValue;
+        }
+
+        return result;
+    }
+
+    private static void SkipGridDefinitionWhitespace(string text, ref int index)
+    {
+        while (index < text.Length && char.IsWhiteSpace(text[index]))
+        {
+            index++;
+        }
     }
 
     private static Orientation ParseOrientation(string? value)

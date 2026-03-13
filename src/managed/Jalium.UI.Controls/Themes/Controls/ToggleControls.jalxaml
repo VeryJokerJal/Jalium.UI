@@ -27,16 +27,27 @@
                                 BorderThickness="{TemplateBinding BorderThickness}"
                                 CornerRadius="{TemplateBinding CornerRadius}"
                                 VerticalAlignment="Center">
-
-                            <!-- Check Mark Path -->
-                            <Path Name="CheckMark"
-                                  Data="M 0,5 L 3,8 L 8,2"
-                                  Stroke="{DynamicResource TextOnAccent}"
-                                  StrokeThickness="2"
-                                  Stretch="None"
-                                  HorizontalAlignment="Center"
-                                  VerticalAlignment="Center"
-                                  Opacity="0" />
+                            <Grid>
+                                <!-- Check Mark Path -->
+                                <Path Name="CheckMark"
+                                      Data="M 0,5 L 3,8 L 8,2"
+                                      Stroke="{DynamicResource TextOnAccent}"
+                                      StrokeThickness="2"
+                                      Width="8"
+                                      Height="8"
+                                      Stretch="Uniform"
+                                      HorizontalAlignment="Center"
+                                      VerticalAlignment="Center"
+                                      Opacity="0" />
+                                <Border Name="IndeterminateMark"
+                                        Width="8"
+                                        Height="2"
+                                        Background="{DynamicResource TextOnAccent}"
+                                        HorizontalAlignment="Center"
+                                        VerticalAlignment="Center"
+                                        CornerRadius="1"
+                                        Opacity="0" />
+                            </Grid>
                         </Border>
 
                         <!-- Content -->
@@ -56,6 +67,26 @@
                 </MultiTrigger.Conditions>
                 <Setter Property="Background" Value="{DynamicResource ToggleUncheckedBackgroundHover}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ToggleUncheckedBorderHover}" />
+            </MultiTrigger>
+
+            <!-- Indeterminate (not hovered) -->
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsChecked" Value="{x:Null}" />
+                    <Condition Property="IsMouseOver" Value="False" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource ToggleCheckedBackground}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ToggleCheckedBorder}" />
+            </MultiTrigger>
+
+            <!-- Indeterminate + Hover -->
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="IsChecked" Value="{x:Null}" />
+                    <Condition Property="IsMouseOver" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource ToggleCheckedBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ToggleCheckedBorderHover}" />
             </MultiTrigger>
 
             <!-- Checked (not hovered) -->

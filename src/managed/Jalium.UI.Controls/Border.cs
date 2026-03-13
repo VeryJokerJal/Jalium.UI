@@ -383,14 +383,9 @@ public class Border : FrameworkElement
         if (!ClipToBounds)
             return null;
 
-        var border = BorderThickness;
-        var borderWidth = Math.Max(border.Left, Math.Max(border.Top, Math.Max(border.Right, border.Bottom)));
-
-        // Clip area is inside the border stroke
-        var clipRect = new Rect(
-            borderWidth, borderWidth,
-            Math.Max(0, _renderSize.Width - borderWidth * 2),
-            Math.Max(0, _renderSize.Height - borderWidth * 2));
+        // Clip to the Border's outer shape. Child layout is already inset by BorderThickness
+        // and Padding, so shrinking the clip here removes visible edge pixels from children.
+        var clipRect = new Rect(0, 0, _renderSize.Width, _renderSize.Height);
 
         if (Shape == BorderShape.SuperEllipse)
         {
@@ -404,11 +399,10 @@ public class Border : FrameworkElement
 
         if (maxRadius > 0)
         {
-            var innerRadius = Math.Max(0, maxRadius - borderWidth);
-            return new RectangleGeometry(clipRect, innerRadius, innerRadius);
+            return new RectangleGeometry(clipRect, maxRadius, maxRadius);
         }
 
-        return new Rect(0, 0, _renderSize.Width, _renderSize.Height);
+        return clipRect;
     }
 
     #endregion
@@ -796,12 +790,12 @@ public class Border : FrameworkElement
         _lgTrackingWindow = window;
         _lgMouseMoveHandler = new RoutedEventHandler(OnLgWindowMouseMove);
         _lgMouseLeaveHandler = new RoutedEventHandler(OnLgWindowMouseLeave);
-        window.AddHandler(MouseMoveEvent, _lgMouseMoveHandler);
-        window.AddHandler(MouseLeaveEvent, _lgMouseLeaveHandler);
+        window.AddHandler(MouseMoveEvent, _lgMouseMoveHandler, handledEventsToo: true);
+        window.AddHandler(MouseLeaveEvent, _lgMouseLeaveHandler, handledEventsToo: true);
 
         // Also wire MouseUp for interactive press tracking if handler is ready
         if (_lgMouseUpHandler != null)
-            window.AddHandler(MouseUpEvent, _lgMouseUpHandler);
+            window.AddHandler(MouseUpEvent, _lgMouseUpHandler, handledEventsToo: true);
 
         _lgEventsWired = true;
         return true;
@@ -904,9 +898,9 @@ public class Border : FrameworkElement
             _lgMouseDownHandler = new RoutedEventHandler(OnLgMouseDown);
             _lgMouseUpHandler = new RoutedEventHandler(OnLgMouseUp);
             // MouseDown on Border (press starts here)
-            AddHandler(MouseDownEvent, _lgMouseDownHandler);
+            AddHandler(MouseDownEvent, _lgMouseDownHandler, handledEventsToo: true);
             // MouseUp on Window (release works even when mouse is outside Border)
-            _lgTrackingWindow?.AddHandler(MouseUpEvent, _lgMouseUpHandler);
+            _lgTrackingWindow?.AddHandler(MouseUpEvent, _lgMouseUpHandler, handledEventsToo: true);
             // Handle lost mouse capture (e.g. window deactivation) to release drag state
             LostMouseCapture += OnLgLostMouseCapture;
         }

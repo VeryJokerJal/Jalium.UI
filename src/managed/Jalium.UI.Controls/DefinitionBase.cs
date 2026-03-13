@@ -7,6 +7,11 @@ namespace Jalium.UI.Controls;
 public abstract class DefinitionBase : DependencyObject
 {
     /// <summary>
+    /// Gets or sets the logical name of the definition.
+    /// </summary>
+    public string? Name { get; set; }
+
+    /// <summary>
     /// Identifies the SharedSizeGroup dependency property.
     /// </summary>
     public static readonly DependencyProperty SharedSizeGroupProperty =

@@ -99,6 +99,11 @@ public partial class Application
             throw new InvalidOperationException("Only one Application instance can be created.");
         }
 
+        // Make the process DPI-aware before any framework HWND is created so
+        // consumer apps launched from the NuGet quick-start path stay crisp on
+        // scaled displays even without a custom app.manifest.
+        _ = TryEnablePerMonitorDpiAwareness();
+
         _current = this;
 
         // Initialize the dispatcher for the main UI thread
@@ -341,7 +346,46 @@ public partial class Application
         }
     }
 
+    internal static bool TryEnablePerMonitorDpiAwareness(
+        Func<nint, bool>? setProcessDpiAwarenessContext = null,
+        Func<int>? getLastError = null,
+        Func<ProcessDpiAwareness, int>? setProcessDpiAwareness = null,
+        Func<bool>? setProcessDpiAware = null)
+    {
+        setProcessDpiAwarenessContext ??= SetProcessDpiAwarenessContext;
+        getLastError ??= Marshal.GetLastWin32Error;
+        setProcessDpiAwareness ??= SetProcessDpiAwareness;
+        setProcessDpiAware ??= SetProcessDPIAware;
+
+        if (setProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+        {
+            return true;
+        }
+
+        var error = getLastError();
+        if (error == ERROR_ACCESS_DENIED)
+        {
+            // The host process or manifest already configured DPI awareness.
+            return true;
+        }
+
+        var shcoreResult = setProcessDpiAwareness(ProcessDpiAwareness.ProcessPerMonitorDpiAware);
+        if (shcoreResult is S_OK or E_ACCESSDENIED)
+        {
+            return true;
+        }
+
+        return setProcessDpiAware();
+    }
+
     #region Win32 Interop
+
+    internal enum ProcessDpiAwareness
+    {
+        ProcessDpiUnaware = 0,
+        ProcessSystemDpiAware = 1,
+        ProcessPerMonitorDpiAware = 2
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MSG
@@ -373,6 +417,22 @@ public partial class Application
 
     [LibraryImport("user32.dll")]
     private static partial void PostQuitMessage(int nExitCode);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetProcessDpiAwarenessContext(nint dpiContext);
+
+    [LibraryImport("shcore.dll", SetLastError = true)]
+    private static partial int SetProcessDpiAwareness(ProcessDpiAwareness awareness);
+
+    [LibraryImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetProcessDPIAware();
+
+    private static readonly nint DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4;
+    private const int ERROR_ACCESS_DENIED = 5;
+    private const int S_OK = 0;
+    private const int E_ACCESSDENIED = unchecked((int)0x80070005);
 
     #endregion
 }

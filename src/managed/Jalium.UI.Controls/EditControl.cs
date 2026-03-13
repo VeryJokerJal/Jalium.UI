@@ -81,6 +81,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     // Input state
     private bool _isDragging;
+    private bool _isWordSelecting;
+    private int _wordSelectionAnchorStart;
+    private int _wordSelectionAnchorEnd;
     private DateTime _lastClickTime;
     private Point _lastClickPosition;
     private int _clickCount;
@@ -1051,12 +1054,18 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             var line = _document.GetLineByOffset(offset);
             _selection.SetSelection(line.Offset, line.Length);
             _caret.Offset = line.Offset + line.Length;
+            _isWordSelecting = false;
             _clickCount = 0;
         }
         else if (_clickCount == 2)
         {
             // Double-click: select word
             SelectWordAt(offset);
+            _wordSelectionAnchorStart = _selection.StartOffset;
+            _wordSelectionAnchorEnd = _selection.EndOffset;
+            _isWordSelecting = _selection.Length > 0;
+            _isDragging = true;
+            CaptureMouse();
         }
         else
         {
@@ -1071,6 +1080,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 _caret.Offset = offset;
                 _selection.ClearSelection(offset);
             }
+            _isWordSelecting = false;
             _isDragging = true;
             CaptureMouse();
         }
@@ -1132,6 +1142,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         if (_isDragging)
         {
             _isDragging = false;
+            _isWordSelecting = false;
             ReleaseMouseCapture();
         }
 
@@ -1202,8 +1213,15 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         int oldCaret = _caret.Offset;
         int offset = _view.GetOffsetFromPoint(position, ShowLineNumbers);
 
-        _selection.ExtendTo(offset);
-        _caret.Offset = offset;
+        if (_isWordSelecting)
+        {
+            ExtendWordSelectionToOffset(offset);
+        }
+        else
+        {
+            _selection.ExtendTo(offset);
+            _caret.Offset = offset;
+        }
         _caret.DesiredColumn = -1;
         _caret.ResetBlink();
         EnsureCaretVisible();
@@ -1672,6 +1690,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         _isMinimapViewportPressPending = false;
         ClearMinimapHover();
         _isDragging = false;
+        _isWordSelecting = false;
         CancelScrollAnimation();
         ReleaseMouseCapture();
         ClearChordState();
@@ -2299,6 +2318,38 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
+    }
+
+    private void ExtendWordSelectionToOffset(int offset)
+    {
+        if (_document.TextLength == 0)
+        {
+            _selection.ClearSelection(0);
+            _caret.Offset = 0;
+            return;
+        }
+
+        var (currentStart, currentLength) = GetWordRangeAtOffset(Math.Clamp(offset, 0, _document.TextLength - 1));
+        int currentEnd = currentStart + currentLength;
+
+        if (currentEnd <= _wordSelectionAnchorStart)
+        {
+            _selection.AnchorOffset = _wordSelectionAnchorEnd;
+            _selection.ActiveOffset = currentStart;
+            _caret.Offset = currentStart;
+        }
+        else if (currentStart >= _wordSelectionAnchorEnd)
+        {
+            _selection.AnchorOffset = _wordSelectionAnchorStart;
+            _selection.ActiveOffset = currentEnd;
+            _caret.Offset = currentEnd;
+        }
+        else
+        {
+            _selection.AnchorOffset = _wordSelectionAnchorStart;
+            _selection.ActiveOffset = _wordSelectionAnchorEnd;
+            _caret.Offset = _wordSelectionAnchorEnd;
+        }
     }
 
     #endregion

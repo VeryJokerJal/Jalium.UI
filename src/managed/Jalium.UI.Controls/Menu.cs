@@ -154,6 +154,30 @@ public class MenuItem : HeaderedItemsControl
             new PropertyMetadata(false, OnIsSubmenuOpenChanged));
 
     /// <summary>
+    /// Identifies the IsSelected read-only dependency property key.
+    /// </summary>
+    private static readonly DependencyPropertyKey IsSelectedPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsSelected), typeof(bool), typeof(MenuItem),
+            new PropertyMetadata(false, OnIsSelectedChanged));
+
+    /// <summary>
+    /// Identifies the IsSelected dependency property.
+    /// </summary>
+    public static readonly DependencyProperty IsSelectedProperty = IsSelectedPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Identifies the Role read-only dependency property key.
+    /// </summary>
+    private static readonly DependencyPropertyKey RolePropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(Role), typeof(MenuItemRole), typeof(MenuItem),
+            new PropertyMetadata(MenuItemRole.SubmenuItem, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the Role dependency property.
+    /// </summary>
+    public static readonly DependencyProperty RoleProperty = RolePropertyKey.DependencyProperty;
+
+    /// <summary>
     /// Identifies the StaysOpenOnClick dependency property.
     /// </summary>
     public static readonly DependencyProperty StaysOpenOnClickProperty =
@@ -294,6 +318,16 @@ public class MenuItem : HeaderedItemsControl
     }
 
     /// <summary>
+    /// Gets a value indicating whether this menu item is currently selected.
+    /// </summary>
+    public bool IsSelected => (bool)GetValue(IsSelectedProperty)!;
+
+    /// <summary>
+    /// Gets the visual role of this menu item.
+    /// </summary>
+    public MenuItemRole Role => (MenuItemRole)GetValue(RoleProperty)!;
+
+    /// <summary>
     /// Gets or sets a value indicating whether the menu stays open when clicked.
     /// </summary>
     public bool StaysOpenOnClick
@@ -311,7 +345,7 @@ public class MenuItem : HeaderedItemsControl
 
     #region Private Fields
 
-    private bool _isHighlighted;
+    private bool _isPointerOverMenuItem;
     private bool _isUpdatingSubmenuOpen;
     private Popup? _submenuPopup;
     private Border? _submenuBorder;
@@ -332,11 +366,15 @@ public class MenuItem : HeaderedItemsControl
     public MenuItem()
     {
         Focusable = true;
+        Items.CollectionChanged += OnItemsCollectionChanged;
 
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
         AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+
+        UpdateRole();
+        UpdateIsSelected();
     }
 
     #endregion
@@ -383,8 +421,15 @@ public class MenuItem : HeaderedItemsControl
 
     private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
     {
-        _isHighlighted = true;
-        InvalidateVisual();
+        if (!IsEnabled)
+        {
+            _isPointerOverMenuItem = false;
+            UpdateIsSelected();
+            return;
+        }
+
+        _isPointerOverMenuItem = IsEnabled;
+        UpdateIsSelected();
 
         if (!IsTopLevelMenuItem)
         {
@@ -411,8 +456,8 @@ public class MenuItem : HeaderedItemsControl
 
     private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
     {
-        _isHighlighted = false;
-        InvalidateVisual();
+        _isPointerOverMenuItem = false;
+        UpdateIsSelected();
         // Don't close submenu here 鈥?let sibling mouse enter or popup dismiss handle it.
         // This prevents the submenu from closing when the mouse moves from the
         // MenuItem into the popup content area.
@@ -577,6 +622,32 @@ public class MenuItem : HeaderedItemsControl
         }
     }
 
+    private void CloseSubmenuBranch()
+    {
+        CloseDescendantSubmenus();
+        if (IsSubmenuOpen)
+        {
+            IsSubmenuOpen = false;
+        }
+    }
+
+    private void CloseDescendantSubmenus()
+    {
+        foreach (var item in Items)
+        {
+            if (item is not MenuItem childMenuItem)
+            {
+                continue;
+            }
+
+            childMenuItem.CloseDescendantSubmenus();
+            if (childMenuItem.IsSubmenuOpen)
+            {
+                childMenuItem.IsSubmenuOpen = false;
+            }
+        }
+    }
+
     /// <summary>
     /// Finds the parent MenuItem that owns the submenu popup containing this item.
     /// Walks the visual tree up, and if a Popup is found, uses its PlacementTarget.
@@ -613,6 +684,13 @@ public class MenuItem : HeaderedItemsControl
     #endregion
 
     #region Visual Tree
+
+    /// <inheritdoc />
+    protected override void OnVisualParentChanged(Visual? oldParent)
+    {
+        base.OnVisualParentChanged(oldParent);
+        UpdateRole();
+    }
 
     // MenuItem renders everything via OnRender (header, icon, gesture text, etc.).
     // Child items (submenu entries) must NOT be rendered inline 鈥?they are shown
@@ -696,18 +774,35 @@ public class MenuItem : HeaderedItemsControl
         var rect = new Rect(RenderSize);
         var padding = Padding;
         var isTopLevel = VisualParent is Panel p && p.VisualParent is Menu;
+        var background = ResolveBackgroundBrush(isTopLevel);
 
-        // Draw background
-        if (_isHighlighted || IsSubmenuOpen)
+        if (background != null)
         {
-            var highlightBrush = isTopLevel
-                ? ResolveMenuBrush("MenuBarItemBackgroundHover", s_highlightBrush)
-                : ResolveMenuBrush("MenuFlyoutItemBackgroundHover", s_highlightBrush);
-            dc.DrawRectangle(highlightBrush, null, rect);
-        }
-        else if (Background != null)
-        {
-            dc.DrawRectangle(Background, null, rect);
+            if (IsSelected)
+            {
+                if (isTopLevel)
+                {
+                    dc.DrawRoundedRectangle(background, null, rect, 4, 4);
+                }
+                else
+                {
+                    const double hoverInset = 2.0;
+                    dc.DrawRoundedRectangle(
+                        background,
+                        null,
+                        new Rect(
+                            hoverInset,
+                            hoverInset,
+                            Math.Max(0, rect.Width - hoverInset * 2),
+                            Math.Max(0, rect.Height - hoverInset * 2)),
+                        4,
+                        4);
+                }
+            }
+            else
+            {
+                dc.DrawRectangle(background, null, rect);
+            }
         }
 
         var fgBrush = IsEnabled
@@ -811,12 +906,30 @@ public class MenuItem : HeaderedItemsControl
 
     private Brush ResolvePrimaryTextBrush()
     {
-        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
+        var valueSource = DependencyPropertyHelper.GetValueSource(this, Control.ForegroundProperty).BaseValueSource;
+        if (Foreground != null && valueSource != BaseValueSource.Default)
         {
             return Foreground;
         }
 
         return ResolveMenuBrush("TextPrimary", s_whiteBrush);
+    }
+
+    private Brush? ResolveBackgroundBrush(bool isTopLevel)
+    {
+        if (Background != null)
+        {
+            return Background;
+        }
+
+        if (IsSelected)
+        {
+            return isTopLevel
+                ? ResolveMenuBrush("MenuBarItemBackgroundHover", s_highlightBrush)
+                : ResolveMenuBrush("MenuFlyoutItemBackgroundHover", s_highlightBrush);
+        }
+
+        return null;
     }
 
     private SolidColorBrush ResolveMenuBrush(string resourceKey, SolidColorBrush fallback)
@@ -945,9 +1058,9 @@ public class MenuItem : HeaderedItemsControl
         {
             foreach (var child in panel.Children)
             {
-                if (child is MenuItem sibling && sibling != this && sibling.IsSubmenuOpen)
+                if (child is MenuItem sibling && sibling != this)
                 {
-                    sibling.IsSubmenuOpen = false;
+                    sibling.CloseSubmenuBranch();
                 }
             }
         }
@@ -1013,6 +1126,14 @@ public class MenuItem : HeaderedItemsControl
         }
     }
 
+    private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is MenuItem menuItem)
+        {
+            menuItem.InvalidateVisual();
+        }
+    }
+
     private static void OnIsCheckedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is MenuItem menuItem)
@@ -1047,6 +1168,7 @@ public class MenuItem : HeaderedItemsControl
                 }
                 else
                 {
+                    menuItem.CloseDescendantSubmenus();
                     if (menuItem._submenuPopup != null)
                     {
                         menuItem._submenuPopup.IsOpen = false;
@@ -1055,6 +1177,7 @@ public class MenuItem : HeaderedItemsControl
                     menuItem.RaiseEvent(new RoutedEventArgs(SubmenuClosedEvent, menuItem));
                 }
 
+                menuItem.UpdateIsSelected();
                 menuItem.InvalidateVisual();
             }
             finally
@@ -1062,6 +1185,49 @@ public class MenuItem : HeaderedItemsControl
                 menuItem._isUpdatingSubmenuOpen = false;
             }
         }
+    }
+
+    #endregion
+
+    #region State Helpers
+
+    /// <inheritdoc />
+    protected override void OnIsKeyboardFocusedChanged(bool isFocused)
+    {
+        base.OnIsKeyboardFocusedChanged(isFocused);
+        UpdateIsSelected();
+    }
+
+    /// <inheritdoc />
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        if (!newValue)
+        {
+            _isPointerOverMenuItem = false;
+        }
+
+        UpdateIsSelected();
+    }
+
+    private void UpdateIsSelected()
+    {
+        SetValue(IsSelectedPropertyKey.DependencyProperty,
+            IsEnabled && (_isPointerOverMenuItem || IsKeyboardFocused || IsSubmenuOpen));
+    }
+
+    private void UpdateRole()
+    {
+        var role = IsTopLevelMenuItem
+            ? (HasItems ? MenuItemRole.TopLevelHeader : MenuItemRole.TopLevelItem)
+            : (HasItems ? MenuItemRole.SubmenuHeader : MenuItemRole.SubmenuItem);
+
+        SetValue(RolePropertyKey.DependencyProperty, role);
+    }
+
+    private void OnItemsCollectionChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
+    {
+        UpdateRole();
     }
 
     #endregion

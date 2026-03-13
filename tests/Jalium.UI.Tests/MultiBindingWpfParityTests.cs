@@ -45,9 +45,27 @@ public class MultiBindingWpfParityTests
         Assert.Equal("(null)", target.Text);
     }
 
+    [Fact]
+    public void MultiBinding_WithoutConverter_ShouldConvertFirstValueToStringTarget()
+    {
+        var target = new TextBlock
+        {
+            DataContext = new SampleViewModel { Count = 42 }
+        };
+
+        var multiBinding = new MultiBinding();
+        multiBinding.Bindings.Add(new Binding("Count"));
+
+        target.SetBinding(TextBlock.TextProperty, multiBinding);
+
+        Assert.Equal("42", target.Text);
+    }
+
     private sealed class SampleViewModel
     {
         public string? Name { get; set; }
+
+        public int Count { get; set; }
     }
 
     private sealed class AlwaysUnsetConverter : IMultiValueConverter

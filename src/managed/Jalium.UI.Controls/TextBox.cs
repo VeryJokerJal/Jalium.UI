@@ -785,15 +785,18 @@ public class TextBox : TextBoxBase, IImeSupport
 
         // Draw background and border (no template = direct rendering)
         var cornerRadius = CornerRadius;
+        var strokeThickness = border.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
         if (Background != null)
         {
-            dc.DrawRoundedRectangle(Background, null, bounds, cornerRadius);
+            dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
         }
 
-        if (BorderBrush != null && border.Left > 0)
+        if (BorderBrush != null && strokeThickness > 0)
         {
-            var borderPen = new Pen(BorderBrush, border.Left);
-            dc.DrawRoundedRectangle(null, borderPen, bounds, cornerRadius);
+            var borderPen = new Pen(BorderBrush, strokeThickness);
+            dc.DrawRoundedRectangle(null, borderPen, borderRect, borderRadius);
         }
 
         // Content area
@@ -809,8 +812,11 @@ public class TextBox : TextBoxBase, IImeSupport
         // Draw focus indicator
         if (IsKeyboardFocused)
         {
-            var focusPen = new Pen(ResolveFocusedBorderBrush(), 1);
-            dc.DrawRoundedRectangle(null, focusPen, bounds, cornerRadius);
+            var focusThickness = 1.0;
+            var focusRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, focusThickness);
+            var focusRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, focusThickness);
+            var focusPen = new Pen(ResolveFocusedBorderBrush(), focusThickness);
+            dc.DrawRoundedRectangle(null, focusPen, focusRect, focusRadius);
         }
     }
 

@@ -34,11 +34,32 @@ internal sealed class PopupRoot : Decorator
 
         // Track Popup's DataContext changes for dynamic updates
         popup.DataContextChanged += OnOwnerDataContextChanged;
+
+        // Popup itself is detached from the interactive visual tree, so mirror the hosted
+        // subtree's hover state back onto the owner Popup for controls that inspect it.
+        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler), handledEventsToo: true);
+        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler), handledEventsToo: true);
+        AddHandler(PreviewMouseDownEvent, new RoutedEventHandler(OnPreviewMouseDownHandler), handledEventsToo: true);
     }
 
     private void OnOwnerDataContextChanged(object? sender, DependencyPropertyChangedEventArgs e)
     {
         DataContext = e.NewValue;
+    }
+
+    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    {
+        OwnerPopup.SetIsMouseOver(true);
+    }
+
+    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    {
+        OwnerPopup.SetIsMouseOver(false);
+    }
+
+    private void OnPreviewMouseDownHandler(object sender, RoutedEventArgs e)
+    {
+        OwnerPopup.SetIsMouseOver(true);
     }
 
     /// <summary>
@@ -47,6 +68,10 @@ internal sealed class PopupRoot : Decorator
     internal void Detach()
     {
         OwnerPopup.DataContextChanged -= OnOwnerDataContextChanged;
+        RemoveHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
+        RemoveHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
+        RemoveHandler(PreviewMouseDownEvent, new RoutedEventHandler(OnPreviewMouseDownHandler));
+        OwnerPopup.SetIsMouseOver(false);
         Child = null;
     }
 }
