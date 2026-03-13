@@ -68,7 +68,7 @@ public class RenderTargetFailureTests
         return new RenderTarget(
             backend: RenderBackend.D3D12,
             contextHandle: new nint(0x1111),
-            hwnd: new nint(0x1234),
+            surface: NativeSurfaceDescriptor.ForWindowsHwnd(new nint(0x1234)),
             width: width,
             height: height,
             useComposition: false,

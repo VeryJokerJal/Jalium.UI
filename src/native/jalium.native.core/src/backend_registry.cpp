@@ -10,7 +10,19 @@ JALIUM_API JaliumResult jalium_register_backend(JaliumBackend backend, JaliumBac
     if (!factory) {
         return JALIUM_ERROR_INVALID_ARGUMENT;
     }
-    return jalium::GetBackendRegistry().Register(backend, factory);
+    return jalium_register_backend_ex(backend, factory, nullptr);
+}
+
+JALIUM_API JaliumResult jalium_register_backend_ex(
+    JaliumBackend backend,
+    JaliumBackendFactory factory,
+    JaliumBackendAvailabilityCallback availability)
+{
+    if (!factory) {
+        return JALIUM_ERROR_INVALID_ARGUMENT;
+    }
+
+    return jalium::GetBackendRegistry().Register(backend, factory, availability);
 }
 
 JALIUM_API int32_t jalium_is_backend_available(JaliumBackend backend) {

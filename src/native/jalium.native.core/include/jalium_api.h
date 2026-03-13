@@ -79,6 +79,27 @@ JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_composition(
     int32_t height
 );
 
+/// Creates a render target from a platform-neutral surface descriptor.
+/// @param ctx The rendering context.
+/// @param surface The platform-native surface descriptor.
+/// @param width The width in pixels.
+/// @param height The height in pixels.
+/// @return A handle to the created render target, or nullptr on failure.
+JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_surface(
+    JaliumContext* ctx,
+    const JaliumSurfaceDescriptor* surface,
+    int32_t width,
+    int32_t height
+);
+
+/// Creates a composition-capable render target from a platform-neutral surface descriptor.
+JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_composition_surface(
+    JaliumContext* ctx,
+    const JaliumSurfaceDescriptor* surface,
+    int32_t width,
+    int32_t height
+);
+
 /// Destroys a render target.
 /// @param rt The render target to destroy.
 JALIUM_API void jalium_render_target_destroy(JaliumRenderTarget* rt);
@@ -527,6 +548,17 @@ JALIUM_API void jalium_draw_bitmap(
 /// @param factory The factory function to create the backend.
 /// @return JALIUM_OK on success.
 JALIUM_API JaliumResult jalium_register_backend(JaliumBackend backend, JaliumBackendFactory factory);
+
+/// Registers a rendering backend with an optional availability probe.
+/// @param backend The backend type.
+/// @param factory The factory function to create the backend.
+/// @param availability Optional callback that returns 1 when the backend can run
+/// on the current machine. Null means "registered implies available".
+/// @return JALIUM_OK on success.
+JALIUM_API JaliumResult jalium_register_backend_ex(
+    JaliumBackend backend,
+    JaliumBackendFactory factory,
+    JaliumBackendAvailabilityCallback availability);
 
 /// Checks if a backend is available.
 /// @param backend The backend type.

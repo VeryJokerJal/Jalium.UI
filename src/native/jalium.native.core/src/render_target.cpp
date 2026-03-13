@@ -4,6 +4,59 @@
 // C API Implementation
 // ============================================================================
 
+namespace {
+
+bool IsValidSurfaceDescriptor(const JaliumSurfaceDescriptor* surface)
+{
+    return surface != nullptr && surface->handle0 != 0;
+}
+
+JaliumRenderTarget* CreateRenderTargetCore(
+    JaliumContext* ctx,
+    const JaliumSurfaceDescriptor* surface,
+    int32_t width,
+    int32_t height,
+    bool useComposition)
+{
+    if (!ctx) {
+        return nullptr;
+    }
+
+    auto* context = reinterpret_cast<jalium::Context*>(ctx);
+
+    if (!IsValidSurfaceDescriptor(surface) || width <= 0 || height <= 0) {
+        context->SetLastError(
+            JALIUM_ERROR_INVALID_ARGUMENT,
+            useComposition
+                ? L"Invalid composition render target surface creation arguments."
+                : L"Invalid render target surface creation arguments.");
+        return nullptr;
+    }
+
+    auto backend = jalium::GetBackendFromContext(ctx);
+    if (!backend) {
+        context->SetLastError(JALIUM_ERROR_INVALID_STATE, L"Render backend is unavailable for this context.");
+        return nullptr;
+    }
+
+    auto rt = useComposition
+        ? backend->CreateRenderTargetForCompositionSurface(surface, width, height)
+        : backend->CreateRenderTargetForSurface(surface, width, height);
+    if (!rt) {
+        context->SetLastError(
+            JALIUM_ERROR_RESOURCE_CREATION_FAILED,
+            useComposition
+                ? L"Backend failed to create composition render target from surface descriptor."
+                : L"Backend failed to create render target from surface descriptor.");
+        return nullptr;
+    }
+
+    context->SetLastError(JALIUM_OK);
+    return reinterpret_cast<JaliumRenderTarget*>(rt);
+}
+
+} // namespace
+
 extern "C" {
 
 JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_hwnd(
@@ -12,31 +65,11 @@ JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_hwnd(
     int32_t width,
     int32_t height)
 {
-    if (!ctx) {
-        return nullptr;
-    }
-
-    auto* context = reinterpret_cast<jalium::Context*>(ctx);
-
-    if (!hwnd || width <= 0 || height <= 0) {
-        context->SetLastError(JALIUM_ERROR_INVALID_ARGUMENT, L"Invalid render target creation arguments.");
-        return nullptr;
-    }
-
-    auto backend = jalium::GetBackendFromContext(ctx);
-    if (!backend) {
-        context->SetLastError(JALIUM_ERROR_INVALID_STATE, L"Render backend is unavailable for this context.");
-        return nullptr;
-    }
-
-    auto rt = backend->CreateRenderTarget(hwnd, width, height);
-    if (!rt) {
-        context->SetLastError(JALIUM_ERROR_RESOURCE_CREATION_FAILED, L"Backend failed to create HWND render target.");
-        return nullptr;
-    }
-
-    context->SetLastError(JALIUM_OK);
-    return reinterpret_cast<JaliumRenderTarget*>(rt);
+    JaliumSurfaceDescriptor surface{};
+    surface.platform = JALIUM_PLATFORM_WINDOWS;
+    surface.kind = JALIUM_SURFACE_KIND_NATIVE_WINDOW;
+    surface.handle0 = reinterpret_cast<intptr_t>(hwnd);
+    return CreateRenderTargetCore(ctx, &surface, width, height, false);
 }
 
 JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_composition(
@@ -45,31 +78,29 @@ JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_composition(
     int32_t width,
     int32_t height)
 {
-    if (!ctx) {
-        return nullptr;
-    }
+    JaliumSurfaceDescriptor surface{};
+    surface.platform = JALIUM_PLATFORM_WINDOWS;
+    surface.kind = JALIUM_SURFACE_KIND_COMPOSITION_TARGET;
+    surface.handle0 = reinterpret_cast<intptr_t>(hwnd);
+    return CreateRenderTargetCore(ctx, &surface, width, height, true);
+}
 
-    auto* context = reinterpret_cast<jalium::Context*>(ctx);
+JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_surface(
+    JaliumContext* ctx,
+    const JaliumSurfaceDescriptor* surface,
+    int32_t width,
+    int32_t height)
+{
+    return CreateRenderTargetCore(ctx, surface, width, height, false);
+}
 
-    if (!hwnd || width <= 0 || height <= 0) {
-        context->SetLastError(JALIUM_ERROR_INVALID_ARGUMENT, L"Invalid composition render target creation arguments.");
-        return nullptr;
-    }
-
-    auto backend = jalium::GetBackendFromContext(ctx);
-    if (!backend) {
-        context->SetLastError(JALIUM_ERROR_INVALID_STATE, L"Render backend is unavailable for this context.");
-        return nullptr;
-    }
-
-    auto rt = backend->CreateRenderTargetForComposition(hwnd, width, height);
-    if (!rt) {
-        context->SetLastError(JALIUM_ERROR_RESOURCE_CREATION_FAILED, L"Backend failed to create composition render target.");
-        return nullptr;
-    }
-
-    context->SetLastError(JALIUM_OK);
-    return reinterpret_cast<JaliumRenderTarget*>(rt);
+JALIUM_API JaliumRenderTarget* jalium_render_target_create_for_composition_surface(
+    JaliumContext* ctx,
+    const JaliumSurfaceDescriptor* surface,
+    int32_t width,
+    int32_t height)
+{
+    return CreateRenderTargetCore(ctx, surface, width, height, true);
 }
 
 JALIUM_API void jalium_render_target_destroy(JaliumRenderTarget* rt) {

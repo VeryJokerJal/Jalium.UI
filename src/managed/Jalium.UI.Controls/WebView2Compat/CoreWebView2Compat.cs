@@ -202,6 +202,12 @@ internal static class WebView2NativeHelpers
                || code == 0x80040154u
                || code == 0x80070490u;
     }
+
+    public static bool IsPlatformNotSupportedError(int hr)
+    {
+        uint code = unchecked((uint)hr);
+        return code == 0x80004001u;
+    }
 }
 
 public sealed class CoreWebView2Environment : IDisposable

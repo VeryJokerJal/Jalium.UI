@@ -54,15 +54,33 @@ internal static partial class NativeMethods
 {
     private const string CoreLib = "jalium.native.core";
     private const string D3D12Lib = "jalium.native.d3d12";
+    private const string VulkanLib = "jalium.native.vulkan";
+    private const string MetalLib = "jalium.native.metal";
 
     /// <summary>
     /// Static constructor to register the D3D12 backend once the native library is available.
     /// </summary>
     static NativeMethods()
     {
+        TryInitializeBackend(D3D12Init);
+        TryInitializeBackend(VulkanInit);
+        TryInitializeBackend(MetalInit);
+    }
+
+    [LibraryImport(D3D12Lib, EntryPoint = "jalium_d3d12_init")]
+    private static partial void D3D12Init();
+
+    [LibraryImport(VulkanLib, EntryPoint = "jalium_vulkan_init")]
+    private static partial void VulkanInit();
+
+    [LibraryImport(MetalLib, EntryPoint = "jalium_metal_init")]
+    private static partial void MetalInit();
+
+    private static void TryInitializeBackend(Action init)
+    {
         try
         {
-            D3D12Init();
+            init();
         }
         catch (DllNotFoundException)
         {
@@ -121,6 +139,18 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_create_for_composition")]
     internal static partial nint RenderTargetCreateForComposition(nint context, nint hwnd, int width, int height);
+
+    /// <summary>
+    /// Creates a render target from a platform-neutral surface descriptor.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_create_for_surface")]
+    internal static partial nint RenderTargetCreateForSurface(nint context, in NativeSurfaceDescriptor surface, int width, int height);
+
+    /// <summary>
+    /// Creates a composition-capable render target from a platform-neutral surface descriptor.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_create_for_composition_surface")]
+    internal static partial nint RenderTargetCreateForCompositionSurface(nint context, in NativeSurfaceDescriptor surface, int width, int height);
 
     /// <summary>
     /// Destroys a render target.

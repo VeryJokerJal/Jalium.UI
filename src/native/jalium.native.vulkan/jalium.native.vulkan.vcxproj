@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Label="ProjectConfigurations">
+    <ProjectConfiguration Include="Debug|x64">
+      <Configuration>Debug</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+    <ProjectConfiguration Include="Release|x64">
+      <Configuration>Release</Configuration>
+      <Platform>x64</Platform>
+    </ProjectConfiguration>
+  </ItemGroup>
+  <PropertyGroup Label="Globals">
+    <VCProjectVersion>17.0</VCProjectVersion>
+    <Keyword>Win32Proj</Keyword>
+    <ProjectGuid>{D4E5F6A7-4567-89AB-CDEF-0123456789AB}</ProjectGuid>
+    <RootNamespace>jaliumnativevulkan</RootNamespace>
+    <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>true</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
+    <ConfigurationType>DynamicLibrary</ConfigurationType>
+    <UseDebugLibraries>false</UseDebugLibraries>
+    <PlatformToolset>v145</PlatformToolset>
+    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <CharacterSet>Unicode</CharacterSet>
+  </PropertyGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
+  <ImportGroup Label="ExtensionSettings">
+  </ImportGroup>
+  <ImportGroup Label="Shared">
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <ImportGroup Label="PropertySheets" Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
+  </ImportGroup>
+  <PropertyGroup Label="UserMacros" />
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <IntDir>$(Configuration)\</IntDir>
+    <TargetName>jalium.native.vulkan</TargetName>
+    <VulkanSdkRoot Condition="'$(VULKAN_SDK)' != ''">$(VULKAN_SDK)</VulkanSdkRoot>
+    <VulkanSdkRoot Condition="'$(VulkanSdkRoot)' == ''">$(SolutionDir)..\..\third_party\VulkanSDK\1.4.341.1</VulkanSdkRoot>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
+    <IntDir>$(Configuration)\</IntDir>
+    <TargetName>jalium.native.vulkan</TargetName>
+    <VulkanSdkRoot Condition="'$(VULKAN_SDK)' != ''">$(VULKAN_SDK)</VulkanSdkRoot>
+    <VulkanSdkRoot Condition="'$(VulkanSdkRoot)' == ''">$(SolutionDir)..\..\third_party\VulkanSDK\1.4.341.1</VulkanSdkRoot>
+  </PropertyGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;_DEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(VulkanSdkRoot)\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vulkan-1.lib;dwrite.lib;windowscodecs.lib;ole32.lib;dxgi.lib;d3d11.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
+    <ClCompile>
+      <WarningLevel>Level3</WarningLevel>
+      <FunctionLevelLinking>true</FunctionLevelLinking>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
+      <SDLCheck>true</SDLCheck>
+      <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <ConformanceMode>true</ConformanceMode>
+      <LanguageStandard>stdcpp20</LanguageStandard>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <RuntimeTypeInfo>true</RuntimeTypeInfo>
+    </ClCompile>
+    <Link>
+      <SubSystem>Windows</SubSystem>
+      <EnableCOMDATFolding>true</EnableCOMDATFolding>
+      <OptimizeReferences>true</OptimizeReferences>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
+      <AdditionalLibraryDirectories>$(VulkanSdkRoot)\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
+      <AdditionalDependencies>vulkan-1.lib;dwrite.lib;windowscodecs.lib;ole32.lib;dxgi.lib;d3d11.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+    </Link>
+  </ItemDefinitionGroup>
+  <ItemGroup>
+    <ClInclude Include="include\vulkan_backend.h" />
+    <ClInclude Include="include\vulkan_embedded_shaders.h" />
+    <ClInclude Include="include\vulkan_render_target.h" />
+    <ClInclude Include="include\vulkan_resources.h" />
+    <ClInclude Include="include\vulkan_runtime.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\vulkan_backend.cpp" />
+    <ClCompile Include="src\vulkan_init.cpp" />
+    <ClCompile Include="src\vulkan_render_target.cpp" />
+    <ClCompile Include="src\vulkan_resources.cpp" />
+    <ClCompile Include="src\vulkan_runtime.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="shaders\blur_quad.frag.hlsl" />
+    <None Include="shaders\blur_quad.vert.hlsl" />
+    <None Include="shaders\backdrop_quad.frag.hlsl" />
+    <None Include="shaders\backdrop_quad.vert.hlsl" />
+    <None Include="shaders\bitmap_quad.frag.hlsl" />
+    <None Include="shaders\bitmap_quad.vert.hlsl" />
+    <None Include="shaders\frame_composite.frag.hlsl" />
+    <None Include="shaders\frame_composite.vert.hlsl" />
+    <None Include="shaders\glow_quad.frag.hlsl" />
+    <None Include="shaders\glow_quad.vert.hlsl" />
+    <None Include="shaders\liquid_glass_quad.frag.hlsl" />
+    <None Include="shaders\liquid_glass_quad.vert.hlsl" />
+    <None Include="shaders\solid_rect.frag.hlsl" />
+    <None Include="shaders\solid_rect.vert.hlsl" />
+    <None Include="shaders\transition_quad.frag.hlsl" />
+    <None Include="shaders\transition_quad.vert.hlsl" />
+    <None Include="shaders\triangle_fill.frag.hlsl" />
+    <None Include="shaders\triangle_fill.vert.hlsl" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\jalium.native.core\jalium.native.core.vcxproj">
+      <Project>{A1B2C3D4-1234-5678-9ABC-DEF012345678}</Project>
+      <SetConfiguration>Configuration=$(Configuration)</SetConfiguration>
+      <SetPlatform>Platform=$(Platform)</SetPlatform>
+    </ProjectReference>
+  </ItemGroup>
+  <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+  <ImportGroup Label="ExtensionTargets">
+  </ImportGroup>
+</Project>
