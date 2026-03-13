@@ -7,6 +7,10 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.core", "jaliu
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.d3d12", "jalium.native.d3d12\jalium.native.d3d12.vcxproj", "{B2C3D4E5-2345-6789-ABCD-EF0123456789}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.vulkan", "jalium.native.vulkan\jalium.native.vulkan.vcxproj", "{D4E5F6A7-4567-89AB-CDEF-0123456789AB}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.metal", "jalium.native.metal\jalium.native.metal.vcxproj", "{E5F6A7B8-5678-9ABC-DEF0-123456789ABC}"
+EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.browser", "jalium.native.browser\jalium.native.browser.vcxproj", "{C3D4E5F6-3456-789A-BCDE-F0123456789A}"
 EndProject
 Global
@@ -23,6 +27,14 @@ Global
 		{B2C3D4E5-2345-6789-ABCD-EF0123456789}.Debug|x64.Build.0 = Debug|x64
 		{B2C3D4E5-2345-6789-ABCD-EF0123456789}.Release|x64.ActiveCfg = Release|x64
 		{B2C3D4E5-2345-6789-ABCD-EF0123456789}.Release|x64.Build.0 = Release|x64
+		{D4E5F6A7-4567-89AB-CDEF-0123456789AB}.Debug|x64.ActiveCfg = Debug|x64
+		{D4E5F6A7-4567-89AB-CDEF-0123456789AB}.Debug|x64.Build.0 = Debug|x64
+		{D4E5F6A7-4567-89AB-CDEF-0123456789AB}.Release|x64.ActiveCfg = Release|x64
+		{D4E5F6A7-4567-89AB-CDEF-0123456789AB}.Release|x64.Build.0 = Release|x64
+		{E5F6A7B8-5678-9ABC-DEF0-123456789ABC}.Debug|x64.ActiveCfg = Debug|x64
+		{E5F6A7B8-5678-9ABC-DEF0-123456789ABC}.Debug|x64.Build.0 = Debug|x64
+		{E5F6A7B8-5678-9ABC-DEF0-123456789ABC}.Release|x64.ActiveCfg = Release|x64
+		{E5F6A7B8-5678-9ABC-DEF0-123456789ABC}.Release|x64.Build.0 = Release|x64
 		{C3D4E5F6-3456-789A-BCDE-F0123456789A}.Debug|x64.ActiveCfg = Debug|x64
 		{C3D4E5F6-3456-789A-BCDE-F0123456789A}.Debug|x64.Build.0 = Debug|x64
 		{C3D4E5F6-3456-789A-BCDE-F0123456789A}.Release|x64.ActiveCfg = Release|x64

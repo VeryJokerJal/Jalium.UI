@@ -14,6 +14,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public partial class WebView : FrameworkElement, IDisposable
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.WebViewAutomationPeer(this);
+    }
+
     private bool _isInitialized;
     private bool _isInitializing;
     private bool _isNavigating;
@@ -69,6 +75,7 @@ public partial class WebView : FrameworkElement, IDisposable
 
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(WebView),
             new PropertyMetadata(null, OnSourceChanged));
@@ -77,18 +84,21 @@ public partial class WebView : FrameworkElement, IDisposable
         DependencyProperty.RegisterReadOnly(nameof(CanGoBack), typeof(bool), typeof(WebView),
             new PropertyMetadata(false));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanGoBackProperty = CanGoBackPropertyKey.DependencyProperty;
 
     private static readonly DependencyPropertyKey CanGoForwardPropertyKey =
         DependencyProperty.RegisterReadOnly(nameof(CanGoForward), typeof(bool), typeof(WebView),
             new PropertyMetadata(false));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanGoForwardProperty = CanGoForwardPropertyKey.DependencyProperty;
 
     public static readonly DependencyProperty ZoomFactorProperty =
         DependencyProperty.Register(nameof(ZoomFactor), typeof(double), typeof(WebView),
             new PropertyMetadata(1.0, OnZoomFactorChanged, CoerceZoomFactor));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty DefaultBackgroundColorProperty =
         DependencyProperty.Register(nameof(DefaultBackgroundColor), typeof(Media.Color), typeof(WebView),
             new PropertyMetadata(Media.Color.White, OnDefaultBackgroundColorChanged));
@@ -110,21 +120,25 @@ public partial class WebView : FrameworkElement, IDisposable
 
     #region CLR Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? Source
     {
         get => (Uri?)GetValue(SourceProperty);
         set => SetValue(SourceProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanGoBack => (bool)GetValue(CanGoBackProperty)!;
     public bool CanGoForward => (bool)GetValue(CanGoForwardProperty)!;
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public double ZoomFactor
     {
         get => (double)GetValue(ZoomFactorProperty)!;
         set => SetValue(ZoomFactorProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Media.Color DefaultBackgroundColor
     {
         get => (Media.Color)(GetValue(DefaultBackgroundColorProperty) ?? Media.Color.White);
@@ -1241,6 +1255,15 @@ public partial class WebView : FrameworkElement, IDisposable
             return;
         }
 
+        if (ex is COMException platformComEx &&
+            WebView2NativeHelpers.IsPlatformNotSupportedError(platformComEx.HResult))
+        {
+            SetInitializationError(
+                "WebView is not supported on this platform yet. The cross-platform browser backend has not been connected.",
+                ex);
+            return;
+        }
+
         SetInitializationError("Failed to initialize WebView2.", ex);
     }
 
@@ -1353,6 +1376,7 @@ public sealed class WebViewContentLoadingEventArgs : EventArgs
 
 public sealed class WebViewSourceChangedEventArgs : EventArgs
 {
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? Source { get; }
     public bool IsNewDocument { get; }
 

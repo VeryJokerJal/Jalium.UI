@@ -23,4 +23,6 @@ set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/lib)
 # Subdirectories
 add_subdirectory(jalium.native.core)
 add_subdirectory(jalium.native.d3d12)
+add_subdirectory(jalium.native.vulkan)
+add_subdirectory(jalium.native.metal)
 add_subdirectory(jalium.native.browser)

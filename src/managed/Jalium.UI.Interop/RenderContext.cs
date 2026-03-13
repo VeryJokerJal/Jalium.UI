@@ -45,6 +45,8 @@ public sealed class RenderContext : IDisposable
     /// <param name="backend">The rendering backend to use.</param>
     public RenderContext(RenderBackend backend = RenderBackend.Auto)
     {
+        backend = NormalizeRequestedBackend(backend);
+
         // Check if backend is available before trying to create context
         if (backend != RenderBackend.Auto && NativeMethods.IsBackendAvailable(backend) == 0)
         {
@@ -68,6 +70,8 @@ public sealed class RenderContext : IDisposable
     /// </summary>
     public static RenderContext GetOrCreateCurrent(RenderBackend backend = RenderBackend.Auto, bool forceReplace = false)
     {
+        backend = NormalizeRequestedBackend(backend);
+
         var current = _current;
         if (!forceReplace && current != null && current.IsValid)
         {
@@ -178,7 +182,7 @@ public sealed class RenderContext : IDisposable
     public RenderTarget CreateRenderTarget(nint hwnd, int width, int height)
     {
         ThrowIfDisposed();
-        return new RenderTarget(this, hwnd, width, height);
+        return CreateRenderTarget(NativeSurfaceDescriptor.ForWindowsHwnd(hwnd), width, height);
     }
 
     /// <summary>
@@ -193,7 +197,19 @@ public sealed class RenderContext : IDisposable
     public RenderTarget CreateRenderTargetForComposition(nint hwnd, int width, int height)
     {
         ThrowIfDisposed();
-        return new RenderTarget(this, hwnd, width, height, useComposition: true);
+        return CreateRenderTargetForComposition(NativeSurfaceDescriptor.ForWindowsHwnd(hwnd, composition: true), width, height);
+    }
+
+    internal RenderTarget CreateRenderTarget(NativeSurfaceDescriptor surface, int width, int height)
+    {
+        ThrowIfDisposed();
+        return new RenderTarget(this, surface, width, height);
+    }
+
+    internal RenderTarget CreateRenderTargetForComposition(NativeSurfaceDescriptor surface, int width, int height)
+    {
+        ThrowIfDisposed();
+        return new RenderTarget(this, surface, width, height, useComposition: true);
     }
 
     /// <summary>
@@ -277,6 +293,11 @@ public sealed class RenderContext : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
     }
+
+    private static RenderBackend NormalizeRequestedBackend(RenderBackend backend)
+        => backend == RenderBackend.Auto
+            ? RenderBackendSelector.GetPreferredBackend()
+            : backend;
 
     /// <inheritdoc />
     public void Dispose()

@@ -4,7 +4,8 @@ namespace Jalium.UI.Interop;
 
 internal static class BrowserInterop
 {
-    private const string BrowserLib = "jalium.native.browser";
+    private const int NotSupported = unchecked((int)0x80004001);
+    private static readonly IBrowserInteropBackend s_backend = CreateBackend();
 
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     internal delegate void NavigationStartingCallback(nint userData, nint uri, int isRedirected, ref int cancel);
@@ -36,32 +37,15 @@ internal static class BrowserInterop
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     internal delegate void ScriptCompletedCallback(nint userData, int result, nint resultJson);
 
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_initialize", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int Initialize();
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_shutdown", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void Shutdown();
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_get_available_browser_version_string", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
-    internal static extern int GetAvailableBrowserVersionString(string? browserExecutableFolder, out nint version);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_free_string", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void FreeString(nint value);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_create_environment", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
-    internal static extern int CreateEnvironment(string? browserExecutableFolder, string? userDataFolder, out nint environment);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_destroy_environment", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void DestroyEnvironment(nint environment);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_create_controller", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int CreateController(nint environment, nint parentWindow, int useCompositionController, out nint controller);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_destroy_controller", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern void DestroyController(nint controller);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_set_callbacks", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int SetCallbacks(
+    internal static int Initialize() => s_backend.Initialize();
+    internal static void Shutdown() => s_backend.Shutdown();
+    internal static int GetAvailableBrowserVersionString(string? browserExecutableFolder, out nint version) => s_backend.GetAvailableBrowserVersionString(browserExecutableFolder, out version);
+    internal static void FreeString(nint value) => s_backend.FreeString(value);
+    internal static int CreateEnvironment(string? browserExecutableFolder, string? userDataFolder, out nint environment) => s_backend.CreateEnvironment(browserExecutableFolder, userDataFolder, out environment);
+    internal static void DestroyEnvironment(nint environment) => s_backend.DestroyEnvironment(environment);
+    internal static int CreateController(nint environment, nint parentWindow, int useCompositionController, out nint controller) => s_backend.CreateController(environment, parentWindow, useCompositionController, out controller);
+    internal static void DestroyController(nint controller) => s_backend.DestroyController(controller);
+    internal static int SetCallbacks(
         nint controller,
         NavigationStartingCallback? navigationStarting,
         NavigationCompletedCallback? navigationCompleted,
@@ -72,80 +56,43 @@ internal static class BrowserInterop
         NewWindowRequestedCallback? newWindowRequested,
         ProcessFailedCallback? processFailed,
         ZoomFactorChangedCallback? zoomFactorChanged,
-        nint userData);
+        nint userData)
+        => s_backend.SetCallbacks(controller, navigationStarting, navigationCompleted, sourceChanged, contentLoading, documentTitleChanged, webMessageReceived, newWindowRequested, processFailed, zoomFactorChanged, userData);
+    internal static int Navigate(nint controller, string uri) => s_backend.Navigate(controller, uri);
+    internal static int NavigateToString(nint controller, string html) => s_backend.NavigateToString(controller, html);
+    internal static int Reload(nint controller) => s_backend.Reload(controller);
+    internal static int Stop(nint controller) => s_backend.Stop(controller);
+    internal static int GoBack(nint controller) => s_backend.GoBack(controller);
+    internal static int GoForward(nint controller) => s_backend.GoForward(controller);
+    internal static int GetCanGoBack(nint controller, out int canGoBack) => s_backend.GetCanGoBack(controller, out canGoBack);
+    internal static int GetCanGoForward(nint controller, out int canGoForward) => s_backend.GetCanGoForward(controller, out canGoForward);
+    internal static int ExecuteScriptAsync(nint controller, string script, ScriptCompletedCallback callback, nint userData) => s_backend.ExecuteScriptAsync(controller, script, callback, userData);
+    internal static int PostWebMessageAsString(nint controller, string message) => s_backend.PostWebMessageAsString(controller, message);
+    internal static int PostWebMessageAsJson(nint controller, string jsonMessage) => s_backend.PostWebMessageAsJson(controller, jsonMessage);
+    internal static int GetSource(nint controller, out nint source) => s_backend.GetSource(controller, out source);
+    internal static int GetDocumentTitle(nint controller, out nint title) => s_backend.GetDocumentTitle(controller, out title);
+    internal static int SetBounds(nint controller, int x, int y, int width, int height) => s_backend.SetBounds(controller, x, y, width, height);
+    internal static int GetBounds(nint controller, out int x, out int y, out int width, out int height) => s_backend.GetBounds(controller, out x, out y, out width, out height);
+    internal static int SetIsVisible(nint controller, int isVisible) => s_backend.SetIsVisible(controller, isVisible);
+    internal static int NotifyParentWindowPositionChanged(nint controller) => s_backend.NotifyParentWindowPositionChanged(controller);
+    internal static int Close(nint controller) => s_backend.Close(controller);
+    internal static int SetZoomFactor(nint controller, double zoomFactor) => s_backend.SetZoomFactor(controller, zoomFactor);
+    internal static int GetZoomFactor(nint controller, out double zoomFactor) => s_backend.GetZoomFactor(controller, out zoomFactor);
+    internal static int SetDefaultBackgroundColor(nint controller, uint argb) => s_backend.SetDefaultBackgroundColor(controller, argb);
+    internal static int GetDefaultBackgroundColor(nint controller, out uint argb) => s_backend.GetDefaultBackgroundColor(controller, out argb);
+    internal static int SetRootVisualTarget(nint controller, nint visualTarget) => s_backend.SetRootVisualTarget(controller, visualTarget);
+    internal static int SendMouseInput(nint controller, int eventKind, int virtualKeys, uint mouseData, int x, int y) => s_backend.SendMouseInput(controller, eventKind, virtualKeys, mouseData, x, y);
+    internal static int OpenDevToolsWindow(nint controller) => s_backend.OpenDevToolsWindow(controller);
 
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_navigate", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
-    internal static extern int Navigate(nint controller, string uri);
+    private static IBrowserInteropBackend CreateBackend()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return new WindowsBrowserInteropBackend();
+        }
 
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_navigate_to_string", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
-    internal static extern int NavigateToString(nint controller, string html);
+        return new UnsupportedBrowserInteropBackend();
+    }
 
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_reload", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int Reload(nint controller);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_stop", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int Stop(nint controller);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_go_back", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int GoBack(nint controller);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_go_forward", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int GoForward(nint controller);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_get_can_go_back", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int GetCanGoBack(nint controller, out int canGoBack);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_get_can_go_forward", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int GetCanGoForward(nint controller, out int canGoForward);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_execute_script_async", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
-    internal static extern int ExecuteScriptAsync(nint controller, string script, ScriptCompletedCallback callback, nint userData);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_post_web_message_as_string", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
-    internal static extern int PostWebMessageAsString(nint controller, string message);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_post_web_message_as_json", CallingConvention = CallingConvention.Cdecl, CharSet = CharSet.Unicode)]
-    internal static extern int PostWebMessageAsJson(nint controller, string jsonMessage);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_get_source", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int GetSource(nint controller, out nint source);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_get_document_title", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int GetDocumentTitle(nint controller, out nint title);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_set_bounds", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int SetBounds(nint controller, int x, int y, int width, int height);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_get_bounds", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int GetBounds(nint controller, out int x, out int y, out int width, out int height);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_set_is_visible", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int SetIsVisible(nint controller, int isVisible);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_notify_parent_window_position_changed", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int NotifyParentWindowPositionChanged(nint controller);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_close", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int Close(nint controller);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_set_zoom_factor", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int SetZoomFactor(nint controller, double zoomFactor);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_get_zoom_factor", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int GetZoomFactor(nint controller, out double zoomFactor);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_set_default_background_color", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int SetDefaultBackgroundColor(nint controller, uint argb);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_get_default_background_color", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int GetDefaultBackgroundColor(nint controller, out uint argb);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_set_root_visual_target", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int SetRootVisualTarget(nint controller, nint visualTarget);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_send_mouse_input", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int SendMouseInput(nint controller, int eventKind, int virtualKeys, uint mouseData, int x, int y);
-
-    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_open_devtools_window", CallingConvention = CallingConvention.Cdecl)]
-    internal static extern int OpenDevToolsWindow(nint controller);
+    internal static int GetNotSupportedErrorCode() => NotSupported;
 }

@@ -12,17 +12,33 @@ JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
     // If AUTO, try to find the best available backend
     JaliumBackend actualBackend = backend;
     if (backend == JALIUM_BACKEND_AUTO) {
-        // Prefer D3D12 on Windows
-        if (jalium_is_backend_available(JALIUM_BACKEND_D3D12)) {
-            actualBackend = JALIUM_BACKEND_D3D12;
-        } else if (jalium_is_backend_available(JALIUM_BACKEND_D3D11)) {
-            actualBackend = JALIUM_BACKEND_D3D11;
-        } else if (jalium_is_backend_available(JALIUM_BACKEND_VULKAN)) {
-            actualBackend = JALIUM_BACKEND_VULKAN;
-        } else if (jalium_is_backend_available(JALIUM_BACKEND_OPENGL)) {
-            actualBackend = JALIUM_BACKEND_OPENGL;
-        } else {
-            // No backend available
+        const JaliumBackend preferredOrder[] = {
+#if defined(_WIN32)
+            JALIUM_BACKEND_D3D12,
+            JALIUM_BACKEND_VULKAN,
+            JALIUM_BACKEND_D3D11,
+            JALIUM_BACKEND_OPENGL,
+            JALIUM_BACKEND_SOFTWARE
+#elif defined(__APPLE__)
+            JALIUM_BACKEND_METAL,
+            JALIUM_BACKEND_VULKAN,
+            JALIUM_BACKEND_OPENGL,
+            JALIUM_BACKEND_SOFTWARE
+#else
+            JALIUM_BACKEND_VULKAN,
+            JALIUM_BACKEND_OPENGL,
+            JALIUM_BACKEND_SOFTWARE
+#endif
+        };
+
+        for (auto candidate : preferredOrder) {
+            if (registry.IsAvailable(candidate)) {
+                actualBackend = candidate;
+                break;
+            }
+        }
+
+        if (actualBackend == JALIUM_BACKEND_AUTO) {
             return nullptr;
         }
     }

@@ -14,6 +14,7 @@ public sealed class RenderTarget : IDisposable
     private readonly IRenderTargetNative _native;
     private readonly RenderContext? _ownerContext;
     private readonly RenderBackend _backend;
+    private readonly NativeSurfaceDescriptor _surface;
     private readonly nint _hwnd;
     private nint _handle;
     private bool _disposed;
@@ -52,11 +53,11 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     public int Height { get; private set; }
 
-    internal RenderTarget(RenderContext context, nint hwnd, int width, int height, bool useComposition = false)
+    internal RenderTarget(RenderContext context, NativeSurfaceDescriptor surface, int width, int height, bool useComposition = false)
         : this(
             context.Backend,
             context.Handle,
-            hwnd,
+            surface,
             width,
             height,
             useComposition,
@@ -68,7 +69,7 @@ public sealed class RenderTarget : IDisposable
     internal RenderTarget(
         RenderBackend backend,
         nint contextHandle,
-        nint hwnd,
+        NativeSurfaceDescriptor surface,
         int width,
         int height,
         bool useComposition,
@@ -78,7 +79,8 @@ public sealed class RenderTarget : IDisposable
         _native = native ?? DefaultRenderTargetNative.Instance;
         _ownerContext = ownerContext;
         _backend = backend;
-        _hwnd = hwnd;
+        _surface = surface;
+        _hwnd = surface.Platform == NativePlatform.Windows ? surface.Handle0 : nint.Zero;
         Width = width;
         Height = height;
 
@@ -86,8 +88,8 @@ public sealed class RenderTarget : IDisposable
         try
         {
             _handle = useComposition
-                ? _native.CreateForComposition(contextHandle, hwnd, width, height)
-                : _native.CreateForHwnd(contextHandle, hwnd, width, height);
+                ? _native.CreateForCompositionSurface(contextHandle, surface, width, height)
+                : _native.CreateForSurface(contextHandle, surface, width, height);
             if (_handle == nint.Zero)
             {
                 int resultCode = _native.GetContextLastError(contextHandle);
@@ -903,8 +905,8 @@ public sealed class RenderTarget : IDisposable
 
 internal interface IRenderTargetNative
 {
-    nint CreateForHwnd(nint context, nint hwnd, int width, int height);
-    nint CreateForComposition(nint context, nint hwnd, int width, int height);
+    nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height);
+    nint CreateForCompositionSurface(nint context, NativeSurfaceDescriptor surface, int width, int height);
     int GetContextLastError(nint context);
     int Resize(nint renderTarget, int width, int height);
     int BeginDraw(nint renderTarget);
@@ -921,11 +923,11 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
     {
     }
 
-    public nint CreateForHwnd(nint context, nint hwnd, int width, int height)
-        => NativeMethods.RenderTargetCreateForHwnd(context, hwnd, width, height);
+    public nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
+        => NativeMethods.RenderTargetCreateForSurface(context, in surface, width, height);
 
-    public nint CreateForComposition(nint context, nint hwnd, int width, int height)
-        => NativeMethods.RenderTargetCreateForComposition(context, hwnd, width, height);
+    public nint CreateForCompositionSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
+        => NativeMethods.RenderTargetCreateForCompositionSurface(context, in surface, width, height);
 
     public int GetContextLastError(nint context)
         => NativeMethods.ContextGetLastError(context);

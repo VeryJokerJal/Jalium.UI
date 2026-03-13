@@ -30,6 +30,34 @@ public:
     /// Creates a render target with composition swap chain for per-pixel alpha transparency.
     virtual RenderTarget* CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height) = 0;
 
+    /// Creates a render target from a platform-neutral surface descriptor.
+    /// Default implementation preserves the legacy HWND-style path by forwarding
+    /// handle0 as the native window handle.
+    virtual RenderTarget* CreateRenderTargetForSurface(
+        const JaliumSurfaceDescriptor* surface,
+        int32_t width,
+        int32_t height)
+    {
+        if (!surface || surface->handle0 == 0) {
+            return nullptr;
+        }
+
+        return CreateRenderTarget(reinterpret_cast<void*>(surface->handle0), width, height);
+    }
+
+    /// Creates a composition-capable render target from a platform-neutral surface descriptor.
+    virtual RenderTarget* CreateRenderTargetForCompositionSurface(
+        const JaliumSurfaceDescriptor* surface,
+        int32_t width,
+        int32_t height)
+    {
+        if (!surface || surface->handle0 == 0) {
+            return nullptr;
+        }
+
+        return CreateRenderTargetForComposition(reinterpret_cast<void*>(surface->handle0), width, height);
+    }
+
     /// Creates a solid color brush.
     virtual Brush* CreateSolidBrush(float r, float g, float b, float a) = 0;
 
