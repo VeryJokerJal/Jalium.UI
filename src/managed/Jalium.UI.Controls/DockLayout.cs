@@ -15,6 +15,7 @@ public class DockLayout : ContentControl
     private static readonly SolidColorBrush s_fallbackBorderBrush = new(ThemeColors.DockTabStripBorder);
     private static readonly SolidColorBrush s_fallbackAccentBrush = new(ThemeColors.Accent);
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanFloatProperty =
         DependencyProperty.Register(nameof(CanFloat), typeof(bool), typeof(DockLayout),
             new PropertyMetadata(true));
@@ -24,6 +25,7 @@ public class DockLayout : ContentControl
     /// <summary>
     /// Controls whether dock items in this layout can be torn off into standalone windows.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanFloat
     {
         get => (bool)(GetValue(CanFloatProperty) ?? true);

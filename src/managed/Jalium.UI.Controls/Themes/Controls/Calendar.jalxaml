@@ -14,6 +14,12 @@
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="MinHeight" Value="32" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -28,6 +34,12 @@
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="MinHeight" Value="32" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -41,6 +53,12 @@
         <Setter Property="Padding" Value="8" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="FontSize" Value="14" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -53,6 +71,12 @@
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8" />
         <Setter Property="FontSize" Value="14" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -74,6 +98,10 @@
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
                 <Setter Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
             </PropertyTrigger>
             <PropertyTrigger Property="HasSelectedDays" Value="True">
                 <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
@@ -102,6 +130,10 @@
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
                 <Setter Property="Background" Value="{DynamicResource HighlightBackground}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
+                <Setter Property="BorderThickness" Value="1" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsToday" Value="True">
                 <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />

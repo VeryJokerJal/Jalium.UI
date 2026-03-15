@@ -7,6 +7,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ProgressBar : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ProgressBarAutomationPeer(this);
+    }
+
     // Cached brushes for OnRender
     private static readonly SolidColorBrush s_trackBrush = new(Color.FromRgb(45, 45, 45));
     private static readonly SolidColorBrush s_accentBrush = new(Color.FromRgb(0, 120, 212));
@@ -18,6 +24,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Identifies the Minimum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinimumProperty =
         DependencyProperty.Register(nameof(Minimum), typeof(double), typeof(ProgressBar),
             new PropertyMetadata(0.0, OnRangePropertyChanged));
@@ -25,6 +32,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Identifies the Maximum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaximumProperty =
         DependencyProperty.Register(nameof(Maximum), typeof(double), typeof(ProgressBar),
             new PropertyMetadata(100.0, OnRangePropertyChanged));
@@ -32,6 +40,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Identifies the Value dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ValueProperty =
         DependencyProperty.Register(nameof(Value), typeof(double), typeof(ProgressBar),
             new PropertyMetadata(0.0, OnValuePropertyChanged, CoerceValue));
@@ -39,6 +48,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Identifies the IsIndeterminate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsIndeterminateProperty =
         DependencyProperty.Register(nameof(IsIndeterminate), typeof(bool), typeof(ProgressBar),
             new PropertyMetadata(false, OnIsIndeterminateChanged));
@@ -46,6 +56,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(ProgressBar),
             new PropertyMetadata(Orientation.Horizontal, OnVisualPropertyChanged));
@@ -53,6 +64,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Identifies the ProgressBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ProgressBrushProperty =
         DependencyProperty.Register(nameof(ProgressBrush), typeof(Brush), typeof(ProgressBar),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -84,6 +96,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Gets or sets the minimum value of the ProgressBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Minimum
     {
         get => (double)GetValue(MinimumProperty)!;
@@ -93,6 +106,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Gets or sets the maximum value of the ProgressBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Maximum
     {
         get => (double)GetValue(MaximumProperty)!;
@@ -102,6 +116,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Gets or sets the current value of the ProgressBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Value
     {
         get => (double)GetValue(ValueProperty)!;
@@ -111,6 +126,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Gets or sets whether the ProgressBar shows indeterminate progress.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsIndeterminate
     {
         get => (bool)GetValue(IsIndeterminateProperty)!;
@@ -120,6 +136,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Gets or sets the orientation of the ProgressBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -129,6 +146,7 @@ public class ProgressBar : Control
     /// <summary>
     /// Gets or sets the brush used for the progress indicator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? ProgressBrush
     {
         get => (Brush?)GetValue(ProgressBrushProperty);
@@ -401,7 +419,7 @@ public class ProgressBar : Control
         // Template-based rendering: indicator is updated from property change callbacks
         // and animation ticks (NOT here). Modifying _indicatorBorder.Width during OnRender
         // triggers InvalidateMeasure, but UpdateLayout() already ran for this frame,
-        // so the new width wouldn't take effect until the NEXT frame 锟?causing a 1-frame
+        // so the new width wouldn't take effect until the NEXT frame 闁?causing a 1-frame
         // delay where the indicator renders at its old size (often 0).
         if (_indicatorBorder != null)
             return;

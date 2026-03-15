@@ -13,6 +13,7 @@ public class TextBlockSelectionTests
         var textBlock = new TextBlock
         {
             Text = "Hello world",
+            IsTextSelectionEnabled = true,
             Width = 240,
             Height = 32
         };
@@ -25,6 +26,27 @@ public class TextBlockSelectionTests
         Assert.Equal(0, textBlock.SelectionStart);
         Assert.Equal(textBlock.Text.Length, textBlock.SelectionLength);
         Assert.Equal(textBlock.Text, textBlock.SelectedText);
+    }
+
+    [Fact]
+    public void TextBlock_MouseSelection_ShouldBeDisabledByDefault()
+    {
+        var textBlock = new TextBlock
+        {
+            Text = "Hello world",
+            Width = 240,
+            Height = 32
+        };
+        textBlock.Arrange(new Rect(0, 0, 240, 32));
+
+        textBlock.RaiseEvent(CreateMouseEnter(new Point(4, 12)));
+        textBlock.RaiseEvent(CreateMouseDown(new Point(0, 12)));
+        textBlock.RaiseEvent(CreateMouseMove(new Point(220, 12), MouseButtonState.Pressed));
+        textBlock.RaiseEvent(CreateMouseUp(new Point(220, 12)));
+
+        Assert.Null(textBlock.Cursor);
+        Assert.Equal(0, textBlock.SelectionLength);
+        Assert.Equal(string.Empty, textBlock.SelectedText);
     }
 
     [Fact]
@@ -48,6 +70,7 @@ public class TextBlockSelectionTests
         var textBlock = new TextBlock
         {
             Text = "Copy me",
+            IsTextSelectionEnabled = true,
             Width = 200,
             Height = 32
         };
@@ -70,6 +93,7 @@ public class TextBlockSelectionTests
         var textBlock = new TextBlock
         {
             Text = "Persist me",
+            IsTextSelectionEnabled = true,
             Width = 220,
             Height = 32
         };
@@ -124,6 +148,7 @@ public class TextBlockSelectionTests
         var label = new Label
         {
             Content = "Copy label",
+            IsTextSelectionEnabled = true,
             Template = new ControlTemplate(typeof(Label)),
             Width = 220,
             Height = 28
@@ -148,6 +173,7 @@ public class TextBlockSelectionTests
         var label = new Label
         {
             Content = "Persist label",
+            IsTextSelectionEnabled = true,
             Template = new ControlTemplate(typeof(Label)),
             Width = 240,
             Height = 28
@@ -177,6 +203,7 @@ public class TextBlockSelectionTests
         var label = new Label
         {
             Content = "Selectable text",
+            IsTextSelectionEnabled = true,
             Target = target,
             Template = new ControlTemplate(typeof(Label)),
             Width = 240,
@@ -194,6 +221,27 @@ public class TextBlockSelectionTests
 
         Assert.False(target.IsFocused);
         Assert.True(GetPrivateField<int>(label, "_directSelectionLength") > 0);
+    }
+
+    [Fact]
+    public void Label_DirectTextSelection_ShouldBeDisabledByDefault()
+    {
+        var label = new Label
+        {
+            Content = "Copy label",
+            Template = new ControlTemplate(typeof(Label)),
+            Width = 220,
+            Height = 28
+        };
+        label.Arrange(new Rect(0, 0, 220, 28));
+
+        label.RaiseEvent(CreateMouseEnter(new Point(4, 12)));
+        label.RaiseEvent(CreateMouseDown(new Point(0, 12)));
+        label.RaiseEvent(CreateMouseMove(new Point(210, 12), MouseButtonState.Pressed));
+        label.RaiseEvent(CreateMouseUp(new Point(210, 12)));
+
+        Assert.Null(label.Cursor);
+        Assert.Equal(string.Empty, label.SelectedText);
     }
 
     private static MouseButtonEventArgs CreateMouseDown(Point position)

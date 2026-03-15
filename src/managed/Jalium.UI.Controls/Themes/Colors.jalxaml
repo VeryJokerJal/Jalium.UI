@@ -684,6 +684,8 @@
             <Color x:Key="TextOnAccentFillColorPrimary">#FFFFFFFF</Color>
             <Color x:Key="ControlFillColorDefault">#FF000000</Color>
             <Color x:Key="ControlStrokeColorDefault">#FFFFFFFF</Color>
+            <Color x:Key="FocusStrokeColorOuter">#FFFFFF00</Color>
+            <Color x:Key="FocusStrokeColorInner">#FF000000</Color>
             <Color x:Key="SolidBackgroundFillColorBase">#FF000000</Color>
             <Color x:Key="ControlOnImageFillColorDefault">#FF000000</Color>
             <Color x:Key="ControlOnImageFillColorSecondary">#FF000000</Color>
@@ -704,6 +706,8 @@
             <SolidColorBrush x:Key="TextOnAccentFillColorPrimaryBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="ControlFillColorDefaultBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="ControlStrokeColorDefaultBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="FocusStrokeColorOuterBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="FocusStrokeColorInnerBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="SolidBackgroundFillColorBaseBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="ControlOnImageFillColorDefaultBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="ControlOnImageFillColorSecondaryBrush" Color="#FF000000" />
@@ -715,6 +719,7 @@
             <SolidColorBrush x:Key="ControlBackground" Color="#FF000000" />
             <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#FF7F7F7F" />
             <SolidColorBrush x:Key="ControlBorder" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="ControlBorderFocused" Color="#FFFFFF00" />
             <SolidColorBrush x:Key="Background" Color="#FF000000" />
             <SolidColorBrush x:Key="Foreground" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="BorderBrush" Color="#FFFFFFFF" />

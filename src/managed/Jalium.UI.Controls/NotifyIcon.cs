@@ -18,6 +18,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(NotifyIcon),
             new PropertyMetadata(string.Empty, OnTextChanged));
@@ -25,6 +26,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Identifies the Icon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty IconProperty =
         DependencyProperty.Register(nameof(Icon), typeof(ImageSource), typeof(NotifyIcon),
             new PropertyMetadata(null, OnIconChanged));
@@ -32,6 +34,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Identifies the Visible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VisibleProperty =
         DependencyProperty.Register(nameof(Visible), typeof(bool), typeof(NotifyIcon),
             new PropertyMetadata(false, OnVisibleChanged));
@@ -39,6 +42,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Identifies the BalloonTipIcon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BalloonTipIconProperty =
         DependencyProperty.Register(nameof(BalloonTipIcon), typeof(BalloonTipIcon), typeof(NotifyIcon),
             new PropertyMetadata(BalloonTipIcon.None));
@@ -46,6 +50,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Identifies the BalloonTipTitle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BalloonTipTitleProperty =
         DependencyProperty.Register(nameof(BalloonTipTitle), typeof(string), typeof(NotifyIcon),
             new PropertyMetadata(string.Empty));
@@ -53,6 +58,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Identifies the BalloonTipText dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BalloonTipTextProperty =
         DependencyProperty.Register(nameof(BalloonTipText), typeof(string), typeof(NotifyIcon),
             new PropertyMetadata(string.Empty));
@@ -108,6 +114,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Gets or sets the ToolTip text displayed when the mouse pointer is over the icon.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
@@ -117,6 +124,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Gets or sets the icon displayed in the system tray.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public ImageSource? Icon
     {
         get => (ImageSource?)GetValue(IconProperty);
@@ -126,6 +134,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Gets or sets a value indicating whether the icon is visible in the system tray.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool Visible
     {
         get => (bool)GetValue(VisibleProperty)!;
@@ -135,6 +144,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Gets or sets the icon for the balloon tip.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public BalloonTipIcon BalloonTipIcon
     {
         get => (BalloonTipIcon)(GetValue(BalloonTipIconProperty) ?? BalloonTipIcon.None);
@@ -144,6 +154,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Gets or sets the title of the balloon tip.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string BalloonTipTitle
     {
         get => (string)(GetValue(BalloonTipTitleProperty) ?? string.Empty);
@@ -153,6 +164,7 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Gets or sets the text of the balloon tip.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string BalloonTipText
     {
         get => (string)(GetValue(BalloonTipTextProperty) ?? string.Empty);

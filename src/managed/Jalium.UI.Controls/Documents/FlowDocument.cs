@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls;
+using Jalium.UI.Controls;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
@@ -13,6 +13,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the FontFamily dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(string), typeof(FlowDocument),
             new PropertyMetadata("Segoe UI"));
@@ -20,6 +21,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the FontSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(FlowDocument),
             new PropertyMetadata(14.0));
@@ -27,6 +29,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the Foreground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(FlowDocument),
             new PropertyMetadata(null));
@@ -34,6 +37,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(FlowDocument),
             new PropertyMetadata(null));
@@ -41,6 +45,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the PageWidth dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PageWidthProperty =
         DependencyProperty.Register(nameof(PageWidth), typeof(double), typeof(FlowDocument),
             new PropertyMetadata(double.NaN));
@@ -48,6 +53,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the PageHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PageHeightProperty =
         DependencyProperty.Register(nameof(PageHeight), typeof(double), typeof(FlowDocument),
             new PropertyMetadata(double.NaN));
@@ -55,6 +61,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the PagePadding dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PagePaddingProperty =
         DependencyProperty.Register(nameof(PagePadding), typeof(Thickness), typeof(FlowDocument),
             new PropertyMetadata(new Thickness(0)));
@@ -62,6 +69,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the ColumnWidth dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnWidthProperty =
         DependencyProperty.Register(nameof(ColumnWidth), typeof(double), typeof(FlowDocument),
             new PropertyMetadata(double.NaN));
@@ -69,6 +77,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the ColumnGap dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnGapProperty =
         DependencyProperty.Register(nameof(ColumnGap), typeof(double), typeof(FlowDocument),
             new PropertyMetadata(10.0));
@@ -76,6 +85,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the TextAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextAlignmentProperty =
         DependencyProperty.Register(nameof(TextAlignment), typeof(TextAlignment), typeof(FlowDocument),
             new PropertyMetadata(TextAlignment.Left));
@@ -83,6 +93,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the LineHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty LineHeightProperty =
         DependencyProperty.Register(nameof(LineHeight), typeof(double), typeof(FlowDocument),
             new PropertyMetadata(double.NaN));
@@ -90,6 +101,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the IsOptimalParagraphEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOptimalParagraphEnabledProperty =
         DependencyProperty.Register(nameof(IsOptimalParagraphEnabled), typeof(bool), typeof(FlowDocument),
             new PropertyMetadata(false));
@@ -97,6 +109,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Identifies the IsHyphenationEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsHyphenationEnabledProperty =
         DependencyProperty.Register(nameof(IsHyphenationEnabled), typeof(bool), typeof(FlowDocument),
             new PropertyMetadata(false));
@@ -113,6 +126,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the font family.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public string FontFamily
     {
         get => (string)(GetValue(FontFamilyProperty) ?? "Segoe UI");
@@ -122,6 +136,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the font size.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double FontSize
     {
         get => (double)GetValue(FontSizeProperty)!;
@@ -131,6 +146,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the foreground brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Foreground
     {
         get => (Brush?)GetValue(ForegroundProperty);
@@ -140,6 +156,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the background brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -149,6 +166,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the page width.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double PageWidth
     {
         get => (double)GetValue(PageWidthProperty)!;
@@ -158,6 +176,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the page height.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double PageHeight
     {
         get => (double)GetValue(PageHeightProperty)!;
@@ -167,6 +186,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the page padding.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness PagePadding
     {
         get => (Thickness)GetValue(PagePaddingProperty)!;
@@ -176,6 +196,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the column width.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ColumnWidth
     {
         get => (double)GetValue(ColumnWidthProperty)!;
@@ -185,6 +206,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the gap between columns.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ColumnGap
     {
         get => (double)GetValue(ColumnGapProperty)!;
@@ -194,6 +216,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the text alignment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextAlignment TextAlignment
     {
         get => (TextAlignment)GetValue(TextAlignmentProperty)!;
@@ -203,6 +226,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets the line height.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double LineHeight
     {
         get => (double)GetValue(LineHeightProperty)!;
@@ -212,6 +236,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets whether optimal paragraph layout is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOptimalParagraphEnabled
     {
         get => (bool)GetValue(IsOptimalParagraphEnabledProperty)!;
@@ -221,6 +246,7 @@ public sealed class FlowDocument : DependencyObject
     /// <summary>
     /// Gets or sets whether hyphenation is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsHyphenationEnabled
     {
         get => (bool)GetValue(IsHyphenationEnabledProperty)!;

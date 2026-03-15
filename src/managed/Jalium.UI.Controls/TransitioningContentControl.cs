@@ -23,6 +23,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     /// <summary>
     /// Identifies the Transition dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TransitionProperty =
         DependencyProperty.Register(nameof(Transition), typeof(ContentTransition), typeof(TransitioningContentControl),
             new PropertyMetadata(null));
@@ -31,6 +32,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     /// Identifies the TransitionMode dependency property.
     /// Provides a shortcut to set common transitions without creating a ContentTransition instance.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TransitionModeProperty =
         DependencyProperty.Register(nameof(TransitionMode), typeof(TransitionMode?), typeof(TransitioningContentControl),
             new PropertyMetadata(null));
@@ -39,6 +41,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     /// Gets or sets the custom transition to use when content changes.
     /// Takes precedence over <see cref="TransitionMode"/>.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public ContentTransition? Transition
     {
         get => (ContentTransition?)GetValue(TransitionProperty);
@@ -48,6 +51,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     /// <summary>
     /// Gets or sets the transition mode. Used when <see cref="Transition"/> is null.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public new TransitionMode? TransitionMode
     {
         get => (TransitionMode?)GetValue(TransitionModeProperty);

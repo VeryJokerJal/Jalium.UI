@@ -9,10 +9,17 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ComboBox : Selector
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ComboBoxAutomationPeer(this);
+    }
+
     private Popup? _popup;
     private ToggleButton? _toggleButton;
     private TextBox? _editableTextBox;
     private ContentPresenter? _selectionPresenter;
+    private Grid? _dropDownArea;
     private StackPanel? _itemsPanel;
     private bool _isDropDownOpen;
     private bool _isUpdatingEditableText;
@@ -26,6 +33,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the IsDropDownOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(ComboBox),
             new PropertyMetadata(false, OnIsDropDownOpenChanged));
@@ -33,6 +41,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the MaxDropDownHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxDropDownHeightProperty =
         DependencyProperty.Register(nameof(MaxDropDownHeight), typeof(double), typeof(ComboBox),
             new PropertyMetadata(200.0));
@@ -40,6 +49,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the IsEditable dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsEditableProperty =
         DependencyProperty.Register(nameof(IsEditable), typeof(bool), typeof(ComboBox),
             new PropertyMetadata(false, OnIsEditableChanged));
@@ -47,6 +57,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(ComboBox),
             new PropertyMetadata(string.Empty, OnTextChanged));
@@ -54,6 +65,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the Placeholder dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(ComboBox),
             new PropertyMetadata("Select an item...", OnPlaceholderTextChanged));
@@ -61,6 +73,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the SelectionBoxItem dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectionBoxItemProperty =
         DependencyProperty.Register(nameof(SelectionBoxItem), typeof(object), typeof(ComboBox),
             new PropertyMetadata(null, OnSelectionBoxItemChanged));
@@ -79,6 +92,7 @@ public class ComboBox : Selector
         if (d is ComboBox comboBox)
         {
             comboBox.UpdateEditableModeVisualState();
+            comboBox.UpdateCursorState();
             comboBox.UpdateSelectionBoxItem();
         }
     }
@@ -106,6 +120,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets whether the dropdown is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDropDownOpen
     {
         get => (bool)GetValue(IsDropDownOpenProperty);
@@ -115,6 +130,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets the maximum height of the dropdown.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxDropDownHeight
     {
         get => (double)GetValue(MaxDropDownHeightProperty);
@@ -124,6 +140,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets whether users can type text directly into the control.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsEditable
     {
         get => (bool)GetValue(IsEditableProperty);
@@ -133,6 +150,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets the current text in the combo box.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
@@ -142,6 +160,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets the placeholder text shown when no item is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string PlaceholderText
     {
         get => (string)(GetValue(PlaceholderTextProperty) ?? "Select an item...");
@@ -151,6 +170,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets the item displayed in the selection box.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectionBoxItem
     {
         get => GetValue(SelectionBoxItemProperty);
@@ -185,9 +205,9 @@ public class ComboBox : Selector
 
         // Set up mouse handling for toggle
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-
-        // Set up keyboard handling for navigation
+        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnGotKeyboardFocusHandler));
     }
 
     /// <inheritdoc />
@@ -217,12 +237,14 @@ public class ComboBox : Selector
         _popup = GetTemplateChild("PART_Popup") as Popup;
         _editableTextBox = GetTemplateChild("PART_EditableTextBox") as TextBox;
         _selectionPresenter = GetTemplateChild("PART_SelectionPresenter") as ContentPresenter;
+        _dropDownArea = GetTemplateChild("PART_DropDownArea") as Grid;
 
         // Wire up toggle button
         if (_toggleButton != null)
         {
             _toggleButton.Checked += OnToggleButtonChecked;
             _toggleButton.Unchecked += OnToggleButtonUnchecked;
+            _toggleButton.Cursor = Jalium.UI.Cursors.Arrow;
         }
 
         // Wire up popup
@@ -249,6 +271,7 @@ public class ComboBox : Selector
         // Update selection box
         UpdatePlaceholderState();
         UpdateEditableModeVisualState();
+        UpdateCursorState();
         UpdateSelectionBoxItem();
     }
 
@@ -281,17 +304,67 @@ public class ComboBox : Selector
         DropDownClosed?.Invoke(this, EventArgs.Empty);
     }
 
+    private void OnGotKeyboardFocusHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEditable || _editableTextBox == null || !ReferenceEquals(e.OriginalSource, this))
+        {
+            return;
+        }
+
+        if (_editableTextBox.Focus())
+        {
+            _editableTextBox.CaretIndex = _editableTextBox.Text?.Length ?? 0;
+            e.Handled = true;
+        }
+    }
+
     private void OnMouseDownHandler(object sender, RoutedEventArgs e)
     {
-        if (IsEditable && IsEventFromEditableTextBox(e))
+        if (!IsEnabled)
         {
-            // Let the inner TextBox handle focus/caret behavior.
             return;
+        }
+
+        if (e is not MouseButtonEventArgs mouseArgs)
+        {
+            return;
+        }
+
+        if (IsEditable)
+        {
+            if (IsEventFromToggleButton(e) || IsMousePositionInToggleButton(mouseArgs))
+            {
+                IsDropDownOpen = !IsDropDownOpen;
+                e.Handled = true;
+                return;
+            }
+
+            if (IsEventFromEditableTextBox(e))
+            {
+                // Let the inner TextBox handle focus/caret behavior.
+                return;
+            }
+
+            if (TryForwardMouseButtonEventToEditableTextBox(mouseArgs))
+            {
+                e.Handled = true;
+                return;
+            }
         }
 
         // Toggle dropdown
         IsDropDownOpen = !IsDropDownOpen;
         e.Handled = true;
+    }
+
+    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEditable || e is not MouseEventArgs mouseArgs)
+        {
+            return;
+        }
+
+        UpdateCursorState(mouseArgs.GetPosition(this));
     }
 
     private void OnKeyDownHandler(object sender, RoutedEventArgs e)
@@ -401,6 +474,28 @@ public class ComboBox : Selector
         UpdateSelectionBoxItem();
     }
 
+    /// <inheritdoc />
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+
+        if (!newValue && IsDropDownOpen)
+        {
+            IsDropDownOpen = false;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnIsKeyboardFocusedChanged(bool isFocused)
+    {
+        base.OnIsKeyboardFocusedChanged(isFocused);
+
+        if (isFocused && IsEditable && _editableTextBox != null && !_editableTextBox.IsKeyboardFocused)
+        {
+            _editableTextBox.Focus();
+        }
+    }
+
     private void UpdateSelectionBoxItem()
     {
         var selectedItem = SelectedItem;
@@ -466,6 +561,28 @@ public class ComboBox : Selector
         }
 
         UpdateEditableTextBoxText();
+    }
+
+    private void UpdateCursorState()
+    {
+        UpdateCursorState(null);
+    }
+
+    private void UpdateCursorState(Point? pointerPosition)
+    {
+        Cursor = !IsEditable || (pointerPosition.HasValue && IsPointInToggleArea(pointerPosition.Value))
+            ? Jalium.UI.Cursors.Arrow
+            : Jalium.UI.Cursors.IBeam;
+
+        if (_dropDownArea != null)
+        {
+            _dropDownArea.Cursor = Jalium.UI.Cursors.Arrow;
+        }
+
+        if (_toggleButton != null)
+        {
+            _toggleButton.Cursor = Jalium.UI.Cursors.Arrow;
+        }
     }
 
     private void UpdateEditableTextBoxText()
@@ -536,14 +653,79 @@ public class ComboBox : Selector
 
     private bool IsEventFromEditableTextBox(RoutedEventArgs e)
     {
-        if (_editableTextBox == null || e.OriginalSource is not Visual sourceVisual)
+        return IsEventFromVisualTree(e, _editableTextBox);
+    }
+
+    private bool IsEventFromToggleButton(RoutedEventArgs e)
+    {
+        return IsEventFromVisualTree(e, _toggleButton);
+    }
+
+    private bool IsMousePositionInToggleButton(MouseButtonEventArgs e)
+    {
+        return IsPointInToggleArea(e.GetPosition(this));
+    }
+
+    private bool IsPointInToggleArea(Point position)
+    {
+        if (position.X < 0 || position.Y < 0 || position.X > RenderSize.Width || position.Y > RenderSize.Height)
+        {
+            return false;
+        }
+
+        double toggleWidth = 0;
+        if (_toggleButton != null)
+        {
+            toggleWidth = Math.Max(_toggleButton.ActualWidth, _toggleButton.RenderSize.Width);
+            if (toggleWidth <= 0 && _toggleButton.VisualBounds.Width > 0)
+            {
+                toggleWidth = _toggleButton.VisualBounds.Width;
+            }
+        }
+
+        if (toggleWidth <= 0)
+        {
+            toggleWidth = 28;
+        }
+
+        return position.X >= Math.Max(0, RenderSize.Width - toggleWidth);
+    }
+
+    private bool TryForwardMouseButtonEventToEditableTextBox(MouseButtonEventArgs e)
+    {
+        if (_editableTextBox == null || e.RoutedEvent == null)
+        {
+            return false;
+        }
+
+        var forwardedArgs = new MouseButtonEventArgs(
+            e.RoutedEvent,
+            e.Position,
+            e.ChangedButton,
+            e.ButtonState,
+            e.ClickCount,
+            e.LeftButton,
+            e.MiddleButton,
+            e.RightButton,
+            e.XButton1,
+            e.XButton2,
+            e.KeyboardModifiers,
+            e.Timestamp);
+
+        _editableTextBox.RaiseEvent(forwardedArgs);
+        return forwardedArgs.Handled;
+    }
+
+    private static bool IsEventFromVisualTree(RoutedEventArgs e, Visual? targetVisual)
+    {
+        if (targetVisual == null || e.OriginalSource is not Visual sourceVisual)
         {
             return false;
         }
 
         for (Visual? current = sourceVisual; current != null; current = current.VisualParent)
         {
-            if (ReferenceEquals(current, _editableTextBox))
+            if (ReferenceEquals(current, targetVisual))
             {
                 return true;
             }

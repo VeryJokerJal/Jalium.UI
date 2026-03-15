@@ -7,6 +7,12 @@ namespace Jalium.UI.Controls.Navigation;
 /// </summary>
 public class NavigationWindow : Window
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.NavigationWindowAutomationPeer(this);
+    }
+
     private NavigationService? _navigationService;
     private Frame? _frame;
 
@@ -15,6 +21,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Identifies the Source dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(NavigationWindow),
             new PropertyMetadata(null, OnSourceChanged));
@@ -22,6 +29,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Identifies the ShowsNavigationUI dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowsNavigationUIProperty =
         DependencyProperty.Register(nameof(ShowsNavigationUI), typeof(bool), typeof(NavigationWindow),
             new PropertyMetadata(true, OnShowsNavigationUIChanged));
@@ -29,6 +37,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Identifies the SandboxExternalContent dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SandboxExternalContentProperty =
         DependencyProperty.Register(nameof(SandboxExternalContent), typeof(bool), typeof(NavigationWindow),
             new PropertyMetadata(false));
@@ -40,6 +49,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Gets or sets the uniform resource identifier (URI) of the current content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? Source
     {
         get => (Uri?)GetValue(SourceProperty);
@@ -49,6 +59,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Gets or sets a value that indicates whether navigation UI is displayed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowsNavigationUI
     {
         get => (bool)GetValue(ShowsNavigationUIProperty)!;
@@ -58,6 +69,7 @@ public class NavigationWindow : Window
     /// <summary>
     /// Gets or sets a value that indicates whether external content is sandboxed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool SandboxExternalContent
     {
         get => (bool)GetValue(SandboxExternalContentProperty)!;

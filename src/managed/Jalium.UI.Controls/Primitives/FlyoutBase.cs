@@ -42,6 +42,7 @@ public sealed class FlyoutShowOptions
     /// <summary>
     /// Gets or sets the preferred placement of the flyout.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public FlyoutPlacementMode Placement { get; set; } = FlyoutPlacementMode.Auto;
 
     /// <summary>
@@ -71,6 +72,7 @@ public abstract class FlyoutBase : DependencyObject
     /// <summary>
     /// Identifies the Placement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementProperty =
         DependencyProperty.Register(nameof(Placement), typeof(FlyoutPlacementMode), typeof(FlyoutBase),
             new PropertyMetadata(FlyoutPlacementMode.Bottom));
@@ -82,6 +84,7 @@ public abstract class FlyoutBase : DependencyObject
     /// <summary>
     /// Gets or sets the default placement to be used for the flyout.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public FlyoutPlacementMode Placement
     {
         get => (FlyoutPlacementMode)(GetValue(PlacementProperty) ?? FlyoutPlacementMode.Bottom);

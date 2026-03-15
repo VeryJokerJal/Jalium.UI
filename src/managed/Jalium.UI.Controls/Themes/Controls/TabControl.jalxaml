@@ -15,6 +15,12 @@
         <Setter Property="TabStripHeight" Value="36" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="TabStripBorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->

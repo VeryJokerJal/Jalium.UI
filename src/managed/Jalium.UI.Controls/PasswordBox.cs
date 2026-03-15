@@ -78,13 +78,15 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the PasswordChar dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PasswordCharProperty =
         DependencyProperty.Register(nameof(PasswordChar), typeof(char), typeof(PasswordBox),
-            new PropertyMetadata('●', OnVisualPropertyChanged));
+            new PropertyMetadata('\u2022', OnVisualPropertyChanged));
 
     /// <summary>
     /// Identifies the MaxLength dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxLengthProperty =
         DependencyProperty.Register(nameof(MaxLength), typeof(int), typeof(PasswordBox),
             new PropertyMetadata(0));
@@ -92,6 +94,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the Placeholder dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(PasswordBox),
             new PropertyMetadata(string.Empty, OnVisualPropertyChanged));
@@ -99,6 +102,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the RevealMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty RevealModeProperty =
         DependencyProperty.Register(nameof(RevealMode), typeof(PasswordRevealMode), typeof(PasswordBox),
             new PropertyMetadata(PasswordRevealMode.Hidden, OnVisualPropertyChanged));
@@ -106,6 +110,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the IsPasswordRevealed dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsPasswordRevealedProperty =
         DependencyProperty.Register(nameof(IsPasswordRevealed), typeof(bool), typeof(PasswordBox),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -113,6 +118,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the IsReadOnly dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(PasswordBox),
             new PropertyMetadata(false));
@@ -120,6 +126,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the SelectionBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
         DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(PasswordBox),
             new PropertyMetadata(new SolidColorBrush(Color.FromArgb(180, 0, 120, 212)), OnVisualPropertyChanged));
@@ -127,6 +134,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the CaretBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CaretBrushProperty =
         DependencyProperty.Register(nameof(CaretBrush), typeof(Brush), typeof(PasswordBox),
             new PropertyMetadata(new SolidColorBrush(Color.White), OnVisualPropertyChanged));
@@ -134,6 +142,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the TextTrimming dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextTrimmingProperty =
         DependencyProperty.Register(nameof(TextTrimming), typeof(TextTrimming), typeof(PasswordBox),
             new PropertyMetadata(TextTrimming.CharacterEllipsis, OnVisualPropertyChanged));
@@ -141,6 +150,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the IsUndoEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsUndoEnabledProperty =
         DependencyProperty.Register(nameof(IsUndoEnabled), typeof(bool), typeof(PasswordBox),
             new PropertyMetadata(true));
@@ -148,6 +158,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Identifies the UndoLimit dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UndoLimitProperty =
         DependencyProperty.Register(nameof(UndoLimit), typeof(int), typeof(PasswordBox),
             new PropertyMetadata(100));
@@ -225,6 +236,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the masking character.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public char PasswordChar
     {
         get
@@ -234,7 +246,7 @@ public class PasswordBox : Control, IImeSupport
                 return c;
             if (value is string s && s.Length > 0)
                 return s[0];
-            return '●';
+            return '\u2022';
         }
         set => SetValue(PasswordCharProperty, value);
     }
@@ -242,6 +254,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the maximum password length (0 = unlimited).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int MaxLength
     {
         get => (int)GetValue(MaxLengthProperty)!;
@@ -251,6 +264,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the placeholder text shown when the password is empty.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string PlaceholderText
     {
         get => (string)(GetValue(PlaceholderTextProperty) ?? string.Empty);
@@ -260,6 +274,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the password reveal mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public PasswordRevealMode RevealMode
     {
         get => (PasswordRevealMode)(GetValue(RevealModeProperty) ?? PasswordRevealMode.Hidden);
@@ -269,6 +284,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets whether the password is currently revealed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsPasswordRevealed
     {
         get => (bool)GetValue(IsPasswordRevealedProperty)!;
@@ -278,6 +294,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets whether the password box is read-only.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsReadOnly
     {
         get => (bool)GetValue(IsReadOnlyProperty)!;
@@ -287,6 +304,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the brush for text selection highlighting.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SelectionBrush
     {
         get => (Brush?)GetValue(SelectionBrushProperty);
@@ -296,6 +314,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the brush for the caret.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? CaretBrush
     {
         get => (Brush?)GetValue(CaretBrushProperty);
@@ -305,6 +324,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the trimming behavior for visible text when it overflows the content area.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextTrimming TextTrimming
     {
         get => (TextTrimming)GetValue(TextTrimmingProperty)!;
@@ -314,6 +334,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets whether undo is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsUndoEnabled
     {
         get => (bool)GetValue(IsUndoEnabledProperty)!;
@@ -323,6 +344,7 @@ public class PasswordBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the maximum number of undo entries.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int UndoLimit
     {
         get => (int)GetValue(UndoLimitProperty)!;
@@ -690,19 +712,7 @@ public class PasswordBox : Control, IImeSupport
         // Draw focus indicator
         if (IsKeyboardFocused)
         {
-            var focusThickness = 1.0;
-            var focusRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, focusThickness);
-            var focusRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(CornerRadius, focusThickness);
-            var focusPen = new Pen(ResolveFocusedBorderBrush(), focusThickness);
-            if (focusRadius.TopLeft > 0 || focusRadius.TopRight > 0 ||
-                focusRadius.BottomRight > 0 || focusRadius.BottomLeft > 0)
-            {
-                dc.DrawRoundedRectangle(null, focusPen, focusRect, focusRadius);
-            }
-            else
-            {
-                dc.DrawRectangle(null, focusPen, focusRect);
-            }
+            ControlFocusVisual.Draw(dc, this, bounds, CornerRadius);
         }
 
         // Draw reveal button if mode allows

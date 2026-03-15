@@ -10,6 +10,7 @@ public class DockPanel : Panel
     /// <summary>
     /// Identifies the Dock attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DockProperty =
         DependencyProperty.RegisterAttached("Dock", typeof(Dock), typeof(DockPanel),
             new PropertyMetadata(Dock.Left, OnDockChanged));
@@ -17,6 +18,7 @@ public class DockPanel : Panel
     /// <summary>
     /// Gets the value of the Dock attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static Dock GetDock(UIElement element)
     {
         return (Dock)(element.GetValue(DockProperty) ?? Dock.Left);
@@ -25,6 +27,7 @@ public class DockPanel : Panel
     /// <summary>
     /// Sets the value of the Dock attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetDock(UIElement element, Dock value)
     {
         element.SetValue(DockProperty, value);
@@ -49,6 +52,7 @@ public class DockPanel : Panel
     /// <summary>
     /// Identifies the LastChildFill dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LastChildFillProperty =
         DependencyProperty.Register(nameof(LastChildFill), typeof(bool), typeof(DockPanel),
             new PropertyMetadata(true, OnLastChildFillChanged));
@@ -60,6 +64,7 @@ public class DockPanel : Panel
     /// <summary>
     /// Gets or sets whether the last child element stretches to fill the remaining available space.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool LastChildFill
     {
         get => (bool)GetValue(LastChildFillProperty)!;

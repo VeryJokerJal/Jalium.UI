@@ -10,11 +10,18 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Menu : ItemsControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.MenuAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the IsMainMenu dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsMainMenuProperty =
         DependencyProperty.Register(nameof(IsMainMenu), typeof(bool), typeof(Menu),
             new PropertyMetadata(true));
@@ -26,6 +33,7 @@ public class Menu : ItemsControl
     /// <summary>
     /// Gets or sets a value indicating whether this is the main application menu.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsMainMenu
     {
         get => (bool)GetValue(IsMainMenuProperty)!;
@@ -110,6 +118,12 @@ public class Menu : ItemsControl
 /// </summary>
 public class MenuItem : HeaderedItemsControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.MenuItemAutomationPeer(this);
+    }
+
     // Cached brushes for OnRender
     private static readonly SolidColorBrush s_highlightBrush = new(Color.FromRgb(60, 60, 60));
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
@@ -121,6 +135,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Identifies the Icon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty IconProperty =
         DependencyProperty.Register(nameof(Icon), typeof(object), typeof(MenuItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -128,6 +143,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Identifies the InputGestureText dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty InputGestureTextProperty =
         DependencyProperty.Register(nameof(InputGestureText), typeof(string), typeof(MenuItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -135,6 +151,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Identifies the IsCheckable dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsCheckableProperty =
         DependencyProperty.Register(nameof(IsCheckable), typeof(bool), typeof(MenuItem),
             new PropertyMetadata(false));
@@ -142,6 +159,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Identifies the IsChecked dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsCheckedProperty =
         DependencyProperty.Register(nameof(IsChecked), typeof(bool), typeof(MenuItem),
             new PropertyMetadata(false, OnIsCheckedChanged));
@@ -149,6 +167,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Identifies the IsSubmenuOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSubmenuOpenProperty =
         DependencyProperty.Register(nameof(IsSubmenuOpen), typeof(bool), typeof(MenuItem),
             new PropertyMetadata(false, OnIsSubmenuOpenChanged));
@@ -163,6 +182,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty = IsSelectedPropertyKey.DependencyProperty;
 
     /// <summary>
@@ -175,11 +195,13 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Identifies the Role dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty RoleProperty = RolePropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the StaysOpenOnClick dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StaysOpenOnClickProperty =
         DependencyProperty.Register(nameof(StaysOpenOnClick), typeof(bool), typeof(MenuItem),
             new PropertyMetadata(false));
@@ -275,6 +297,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Gets or sets the icon displayed with the menu item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Icon
     {
         get => GetValue(IconProperty);
@@ -284,6 +307,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Gets or sets the input gesture text (keyboard shortcut) displayed with the menu item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public string? InputGestureText
     {
         get => (string?)GetValue(InputGestureTextProperty);
@@ -293,6 +317,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Gets or sets a value indicating whether the menu item can be checked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsCheckable
     {
         get => (bool)GetValue(IsCheckableProperty)!;
@@ -302,6 +327,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Gets or sets a value indicating whether the menu item is checked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsChecked
     {
         get => (bool)GetValue(IsCheckedProperty)!;
@@ -311,6 +337,7 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Gets or sets a value indicating whether the submenu is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSubmenuOpen
     {
         get => (bool)GetValue(IsSubmenuOpenProperty)!;
@@ -320,16 +347,19 @@ public class MenuItem : HeaderedItemsControl
     /// <summary>
     /// Gets a value indicating whether this menu item is currently selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected => (bool)GetValue(IsSelectedProperty)!;
 
     /// <summary>
     /// Gets the visual role of this menu item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public MenuItemRole Role => (MenuItemRole)GetValue(RoleProperty)!;
 
     /// <summary>
     /// Gets or sets a value indicating whether the menu stays open when clicked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool StaysOpenOnClick
     {
         get => (bool)GetValue(StaysOpenOnClickProperty)!;
@@ -458,7 +488,7 @@ public class MenuItem : HeaderedItemsControl
     {
         _isPointerOverMenuItem = false;
         UpdateIsSelected();
-        // Don't close submenu here 鈥?let sibling mouse enter or popup dismiss handle it.
+        // Don't close submenu here 闁?let sibling mouse enter or popup dismiss handle it.
         // This prevents the submenu from closing when the mouse moves from the
         // MenuItem into the popup content area.
     }
@@ -665,7 +695,7 @@ public class MenuItem : HeaderedItemsControl
             // If we reach a PopupRoot, follow the Popup's PlacementTarget
             if (parent is PopupRoot popupRoot)
             {
-                // PopupRoot is owned by a Popup 鈥?get the Popup's PlacementTarget
+                // PopupRoot is owned by a Popup 闁?get the Popup's PlacementTarget
                 var popup = popupRoot.OwnerPopup;
                 if (popup?.PlacementTarget is MenuItem ownerItem)
                 {
@@ -693,7 +723,7 @@ public class MenuItem : HeaderedItemsControl
     }
 
     // MenuItem renders everything via OnRender (header, icon, gesture text, etc.).
-    // Child items (submenu entries) must NOT be rendered inline 鈥?they are shown
+    // Child items (submenu entries) must NOT be rendered inline 闁?they are shown
     // exclusively through a Popup when the submenu opens.  The base ItemsControl
     // adds a _fallbackItemsHost panel as a visual child, which would cause all
     // sub-items to be laid out and drawn inside the MenuItem.  Returning 0 here
@@ -1243,6 +1273,7 @@ public class HeaderedItemsControl : ItemsControl
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(HeaderedItemsControl),
             new PropertyMetadata(null, OnHeaderChanged));
@@ -1250,6 +1281,7 @@ public class HeaderedItemsControl : ItemsControl
     /// <summary>
     /// Identifies the HeaderTemplate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderTemplateProperty =
         DependencyProperty.Register(nameof(HeaderTemplate), typeof(DataTemplate), typeof(HeaderedItemsControl),
             new PropertyMetadata(null));
@@ -1261,6 +1293,7 @@ public class HeaderedItemsControl : ItemsControl
     /// <summary>
     /// Gets or sets the header content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
@@ -1270,6 +1303,7 @@ public class HeaderedItemsControl : ItemsControl
     /// <summary>
     /// Gets or sets the template for the header.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplate? HeaderTemplate
     {
         get => (DataTemplate?)GetValue(HeaderTemplateProperty);

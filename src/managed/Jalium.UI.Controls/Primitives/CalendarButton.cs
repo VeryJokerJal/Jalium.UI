@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -20,11 +20,13 @@ public sealed class CalendarButton : Button
     /// <summary>
     /// Identifies the HasSelectedDays dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty HasSelectedDaysProperty = HasSelectedDaysPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the IsInactive dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsInactiveProperty =
         DependencyProperty.Register(nameof(IsInactive), typeof(bool), typeof(CalendarButton),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -36,11 +38,13 @@ public sealed class CalendarButton : Button
     /// <summary>
     /// Gets a value indicating whether the month/year contains selected days.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool HasSelectedDays => (bool)GetValue(HasSelectedDaysProperty)!;
 
     /// <summary>
     /// Gets or sets a value indicating whether this button is for display purposes only.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsInactive
     {
         get => (bool)GetValue(IsInactiveProperty)!;

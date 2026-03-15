@@ -17,6 +17,7 @@ public class SymbolIcon : IconElement
     /// <summary>
     /// Identifies the Symbol dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SymbolProperty =
         DependencyProperty.Register(nameof(Symbol), typeof(Symbol), typeof(SymbolIcon),
             new PropertyMetadata(Symbol.Cancel, OnSymbolChanged));
@@ -24,6 +25,7 @@ public class SymbolIcon : IconElement
     /// <summary>
     /// Gets or sets the glyph code used as the icon content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Symbol Symbol
     {
         get => (Symbol)GetValue(SymbolProperty)!;

@@ -13,6 +13,7 @@ public abstract class IconElement : FrameworkElement
     /// <summary>
     /// Identifies the Foreground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(IconElement),
             new PropertyMetadata(null, OnForegroundChanged));
@@ -21,6 +22,7 @@ public abstract class IconElement : FrameworkElement
     /// Gets or sets the foreground brush for the icon.
     /// When null, inherits from the parent visual tree.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Foreground
     {
         get => (Brush?)GetValue(ForegroundProperty);

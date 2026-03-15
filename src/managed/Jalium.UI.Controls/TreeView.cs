@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Reflection;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -11,6 +11,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class TreeView : ItemsControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TreeViewAutomationPeer(this);
+    }
+
     private TreeViewItem? _selectedItem;
 
     #region Dependency Properties
@@ -18,6 +24,7 @@ public class TreeView : ItemsControl
     /// <summary>
     /// Identifies the SelectedItem dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedItemProperty =
         DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(TreeView),
             new PropertyMetadata(null, OnSelectedItemChanged));
@@ -25,6 +32,7 @@ public class TreeView : ItemsControl
     /// <summary>
     /// Identifies the SelectedValue dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedValueProperty =
         DependencyProperty.Register(nameof(SelectedValue), typeof(object), typeof(TreeView),
             new PropertyMetadata(null));
@@ -36,6 +44,7 @@ public class TreeView : ItemsControl
     /// <summary>
     /// Gets or sets the currently selected item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedItem
     {
         get => GetValue(SelectedItemProperty);
@@ -45,6 +54,7 @@ public class TreeView : ItemsControl
     /// <summary>
     /// Gets or sets the value of the selected item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedValue
     {
         get => GetValue(SelectedValueProperty);
@@ -76,11 +86,14 @@ public class TreeView : ItemsControl
     public TreeView()
     {
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
+        Focusable = true;
 
         if (ItemsPanel == null)
         {
             ItemsPanel = CreateItemsPanelTemplate(typeof(VirtualizingStackPanel));
         }
+
+        AddHandler(KeyDownEvent, new RoutedEventHandler(OnTreeViewKeyDown));
     }
 
     #region Template
@@ -121,6 +134,7 @@ public class TreeView : ItemsControl
         }
 
         tvi.ParentTreeView = this;
+        tvi.ParentItem = null;
         tvi.Level = 0;
 
         if (item is TreeViewItem)
@@ -203,6 +217,96 @@ public class TreeView : ItemsControl
             SelectedItem = item;
         }
     }
+
+    internal bool FocusAdjacentVisibleItem(TreeViewItem currentItem, int direction)
+    {
+        var visibleItems = GetVisibleItems();
+        var currentIndex = visibleItems.IndexOf(currentItem);
+        if (currentIndex < 0)
+        {
+            return false;
+        }
+
+        var nextIndex = currentIndex + direction;
+        if (nextIndex < 0 || nextIndex >= visibleItems.Count)
+        {
+            return false;
+        }
+
+        return visibleItems[nextIndex].Focus();
+    }
+
+    internal bool FocusBoundaryVisibleItem(bool last)
+    {
+        var visibleItems = GetVisibleItems();
+        if (visibleItems.Count == 0)
+        {
+            return false;
+        }
+
+        return (last ? visibleItems[^1] : visibleItems[0]).Focus();
+    }
+
+    private void OnTreeViewKeyDown(object sender, RoutedEventArgs e)
+    {
+        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        {
+            return;
+        }
+
+        if (Keyboard.FocusedElement is TreeViewItem)
+        {
+            return;
+        }
+
+        var handled = keyArgs.Key switch
+        {
+            Key.Down or Key.Right or Key.Home => FocusBoundaryVisibleItem(last: false),
+            Key.Up or Key.Left or Key.End => FocusBoundaryVisibleItem(last: true),
+            _ => false
+        };
+
+        if (handled)
+        {
+            keyArgs.Handled = true;
+        }
+    }
+
+    private List<TreeViewItem> GetVisibleItems()
+    {
+        var items = new List<TreeViewItem>();
+        if (ItemsHost == null)
+        {
+            return items;
+        }
+
+        CollectVisibleItems(ItemsHost, items);
+        return items;
+    }
+
+    private static void CollectVisibleItems(Panel panel, List<TreeViewItem> items)
+    {
+        foreach (var child in panel.Children)
+        {
+            if (child is not TreeViewItem treeViewItem || treeViewItem.Visibility != Visibility.Visible)
+            {
+                continue;
+            }
+
+            items.Add(treeViewItem);
+
+            if (!treeViewItem.IsExpanded)
+            {
+                continue;
+            }
+
+            var childHost = treeViewItem.GetItemsHostPanel();
+            if (childHost != null)
+            {
+                CollectVisibleItems(childHost, items);
+            }
+        }
+    }
 }
 
 /// <summary>
@@ -210,6 +314,12 @@ public class TreeView : ItemsControl
 /// </summary>
 public class TreeViewItem : HeaderedItemsControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TreeViewItemAutomationPeer(this);
+    }
+
     private const double IndentSize = 16;
     private const double ExpanderSize = 16;
     private const double ExpandAnimationDurationMs = 260;
@@ -224,6 +334,7 @@ public class TreeViewItem : HeaderedItemsControl
     private static readonly SolidColorBrush s_fallbackSelectedHoverBackgroundBrush = new(Themes.ThemeColors.AccentPressed);
 
     internal TreeView? ParentTreeView { get; set; }
+    internal TreeViewItem? ParentItem { get; set; }
 
     private int _level;
     private bool _isHeaderMouseOver;
@@ -266,6 +377,7 @@ public class TreeViewItem : HeaderedItemsControl
     /// <summary>
     /// Identifies the IsExpanded dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsExpandedProperty =
         DependencyProperty.Register(nameof(IsExpanded), typeof(bool), typeof(TreeViewItem),
             new PropertyMetadata(false, OnIsExpandedChanged));
@@ -273,6 +385,7 @@ public class TreeViewItem : HeaderedItemsControl
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(TreeViewItem),
             new PropertyMetadata(false, OnIsSelectedChanged));
@@ -284,6 +397,7 @@ public class TreeViewItem : HeaderedItemsControl
     /// <summary>
     /// Gets or sets whether this item is expanded.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsExpanded
     {
         get => (bool)GetValue(IsExpandedProperty)!;
@@ -293,6 +407,7 @@ public class TreeViewItem : HeaderedItemsControl
     /// <summary>
     /// Gets or sets whether this item is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty)!;
@@ -364,8 +479,10 @@ public class TreeViewItem : HeaderedItemsControl
     public TreeViewItem()
     {
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
+        Focusable = true;
         Items.CollectionChanged += OnChildItemsChanged;
         ResourcesChanged += OnResourcesChangedHandler;
+        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
     }
 
     /// <summary>
@@ -419,6 +536,7 @@ public class TreeViewItem : HeaderedItemsControl
                 if (item is TreeViewItem childTvi)
                 {
                     childTvi.ParentTreeView = ParentTreeView;
+                    childTvi.ParentItem = this;
                     childTvi.Level = Level + 1;
                     _itemsHost.Children.Add(childTvi);
                 }
@@ -454,6 +572,26 @@ public class TreeViewItem : HeaderedItemsControl
         }
     }
 
+    protected override HitTestResult? HitTestCore(Point point)
+    {
+        var result = base.HitTestCore(point);
+        if (result == null || result.VisualHit != this)
+        {
+            return result;
+        }
+
+        // TreeViewItem itself is a transparent wrapper around template parts.
+        // Avoid swallowing unrelated clicks when layout stretches the container
+        // beyond the actual header / realized child content.
+        if (IsPointWithinElementBounds(_headerBorder, point) ||
+            IsPointWithinElementBounds(_itemsHost, point))
+        {
+            return result;
+        }
+
+        return null;
+    }
+
     #endregion
 
     private void OnChildItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
@@ -476,6 +614,7 @@ public class TreeViewItem : HeaderedItemsControl
                     {
                         _itemsHost?.Children.Remove(childTvi);
                         childTvi.ParentTreeView = null;
+                        childTvi.ParentItem = null;
                     }
                 }
             }
@@ -488,6 +627,7 @@ public class TreeViewItem : HeaderedItemsControl
                     if (item is TreeViewItem childTvi)
                     {
                         childTvi.ParentTreeView = ParentTreeView;
+                        childTvi.ParentItem = this;
                         childTvi.Level = Level + 1;
                         _itemsHost?.Children.Add(childTvi);
                     }
@@ -503,6 +643,7 @@ public class TreeViewItem : HeaderedItemsControl
                     if (item is TreeViewItem childTvi)
                     {
                         childTvi.ParentTreeView = ParentTreeView;
+                        childTvi.ParentItem = this;
                         childTvi.Level = Level + 1;
                         _itemsHost?.Children.Add(childTvi);
                     }
@@ -552,6 +693,7 @@ public class TreeViewItem : HeaderedItemsControl
         foreach (var childItem in bufferedItems)
         {
             childItem.ParentTreeView = ParentTreeView;
+            childItem.ParentItem = this;
             childItem.Level = Level + 1;
             _itemsHost?.Children.Add(childItem);
         }
@@ -570,6 +712,7 @@ public class TreeViewItem : HeaderedItemsControl
             }
 
             childTvi.ParentTreeView = ParentTreeView;
+            childTvi.ParentItem = this;
             childTvi.Level = _level + 1;
         }
     }
@@ -590,6 +733,15 @@ public class TreeViewItem : HeaderedItemsControl
                     return;
                 }
             }
+
+            // Let focusable controls inside the header (for example buttons or text boxes)
+            // receive the click instead of treating the whole header as a selection surface.
+            if (e.OriginalSource is DependencyObject source && IsInsideInteractiveHeaderElement(source))
+            {
+                return;
+            }
+
+            Focus();
 
             // Select this item
             ParentTreeView?.SelectItem(this);
@@ -617,6 +769,89 @@ public class TreeViewItem : HeaderedItemsControl
 
         _isHeaderMouseOver = false;
         UpdateHeaderVisualState();
+    }
+
+    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        {
+            return;
+        }
+
+        var handled = keyArgs.Key switch
+        {
+            Key.Up => ParentTreeView?.FocusAdjacentVisibleItem(this, -1) == true,
+            Key.Down => ParentTreeView?.FocusAdjacentVisibleItem(this, 1) == true,
+            Key.Home => ParentTreeView?.FocusBoundaryVisibleItem(last: false) == true,
+            Key.End => ParentTreeView?.FocusBoundaryVisibleItem(last: true) == true,
+            Key.Right => HandleRightArrow(),
+            Key.Left => HandleLeftArrow(),
+            Key.Enter or Key.Space => HandleSelectionKey(),
+            _ => false
+        };
+
+        if (handled)
+        {
+            keyArgs.Handled = true;
+        }
+    }
+
+    private bool HandleRightArrow()
+    {
+        if (HasItems && !IsExpanded)
+        {
+            IsExpanded = true;
+            return true;
+        }
+
+        if (!IsExpanded)
+        {
+            return false;
+        }
+
+        foreach (var item in Items)
+        {
+            if (item is TreeViewItem treeViewItem &&
+                treeViewItem.Visibility == Visibility.Visible &&
+                treeViewItem.Focus())
+            {
+                return true;
+            }
+        }
+
+        var childHost = GetItemsHostPanel();
+        if (childHost == null)
+        {
+            return false;
+        }
+
+        foreach (var child in childHost.Children)
+        {
+            if (child is TreeViewItem treeViewItem && treeViewItem.Visibility == Visibility.Visible && treeViewItem.Focus())
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private bool HandleLeftArrow()
+    {
+        if (HasItems && IsExpanded)
+        {
+            IsExpanded = false;
+            return true;
+        }
+
+        var parentItem = FindParentTreeViewItem();
+        return parentItem != null && parentItem.Focus();
+    }
+
+    private bool HandleSelectionKey()
+    {
+        ParentTreeView?.SelectItem(this);
+        return true;
     }
 
     #region State Updates
@@ -973,6 +1208,62 @@ public class TreeViewItem : HeaderedItemsControl
     private void OnResourcesChangedHandler(object? sender, EventArgs e)
     {
         UpdateHeaderVisualState();
+    }
+
+    internal StackPanel? GetItemsHostPanel()
+    {
+        if (_itemsHost == null)
+        {
+            ApplyTemplate();
+        }
+
+        return _itemsHost;
+    }
+
+    private TreeViewItem? FindParentTreeViewItem()
+    {
+        if (ParentItem != null)
+        {
+            return ParentItem;
+        }
+
+        for (Visual? current = VisualParent; current != null; current = current.VisualParent)
+        {
+            if (current is TreeViewItem treeViewItem)
+            {
+                return treeViewItem;
+            }
+        }
+
+        return null;
+    }
+
+    private bool IsInsideInteractiveHeaderElement(DependencyObject element)
+    {
+        for (var current = element; current != null; current = (current as UIElement)?.VisualParent as DependencyObject)
+        {
+            if (ReferenceEquals(current, this))
+            {
+                break;
+            }
+
+            if (current is UIElement uiElement && uiElement.Focusable)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsPointWithinElementBounds(FrameworkElement? element, Point point)
+    {
+        if (element == null || element.Visibility != Visibility.Visible)
+        {
+            return false;
+        }
+
+        return element.VisualBounds.Contains(point);
     }
 
     #endregion

@@ -75,6 +75,30 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
         _subPopup?.IsOpen = false;
     }
 
+    internal void FocusFirstSubMenuItem()
+    {
+        if (_items.Count == 0)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvokeCritical(() =>
+        {
+            foreach (var item in _items)
+            {
+                if (!item.IsEnabled || item.Visibility != Visibility.Visible)
+                {
+                    continue;
+                }
+
+                if (item.Focus())
+                {
+                    return;
+                }
+            }
+        });
+    }
+
     /// <inheritdoc />
     protected override void OnVisualParentChanged(Visual? oldParent)
     {
@@ -146,6 +170,12 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
     private void OnSubItemMouseLeave(object sender, RoutedEventArgs e)
     {
         // Keep submenu open while pointer moves from item into submenu popup.
+    }
+
+    protected override void InvokeItem()
+    {
+        ShowSubMenu();
+        FocusFirstSubMenuItem();
     }
 
     private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)

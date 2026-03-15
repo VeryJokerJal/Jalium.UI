@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls;
+using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
@@ -13,6 +13,12 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public abstract class TextBoxBase : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TextBoxBaseAutomationPeer(this);
+    }
+
     #region Content Host Fields
 
     /// <summary>
@@ -186,6 +192,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the IsReadOnly dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(TextBoxBase),
             new PropertyMetadata(false));
@@ -193,6 +200,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the AcceptsReturn dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty AcceptsReturnProperty =
         DependencyProperty.Register(nameof(AcceptsReturn), typeof(bool), typeof(TextBoxBase),
             new PropertyMetadata(false));
@@ -200,6 +208,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the AcceptsTab dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty AcceptsTabProperty =
         DependencyProperty.Register(nameof(AcceptsTab), typeof(bool), typeof(TextBoxBase),
             new PropertyMetadata(false));
@@ -207,6 +216,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the SelectionBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
         DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(TextBoxBase),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -214,6 +224,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the CaretBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CaretBrushProperty =
         DependencyProperty.Register(nameof(CaretBrush), typeof(Brush), typeof(TextBoxBase),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -221,6 +232,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the IsUndoEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsUndoEnabledProperty =
         DependencyProperty.Register(nameof(IsUndoEnabled), typeof(bool), typeof(TextBoxBase),
             new PropertyMetadata(true));
@@ -228,6 +240,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the UndoLimit dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UndoLimitProperty =
         DependencyProperty.Register(nameof(UndoLimit), typeof(int), typeof(TextBoxBase),
             new PropertyMetadata(100));
@@ -235,6 +248,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the HorizontalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(TextBoxBase),
             new PropertyMetadata(ScrollBarVisibility.Hidden));
@@ -242,6 +256,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the VerticalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(TextBoxBase),
             new PropertyMetadata(ScrollBarVisibility.Hidden));
@@ -249,6 +264,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the TextTrimming dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextTrimmingProperty =
         DependencyProperty.Register(nameof(TextTrimming), typeof(TextTrimming), typeof(TextBoxBase),
             new PropertyMetadata(TextTrimming.CharacterEllipsis, OnVisualPropertyChanged));
@@ -260,6 +276,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets whether the text box is read-only.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsReadOnly
     {
         get => (bool)GetValue(IsReadOnlyProperty)!;
@@ -269,6 +286,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets whether the text box accepts Enter key for new lines.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool AcceptsReturn
     {
         get => (bool)GetValue(AcceptsReturnProperty)!;
@@ -278,6 +296,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets whether the text box accepts Tab key for tab characters.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool AcceptsTab
     {
         get => (bool)GetValue(AcceptsTabProperty)!;
@@ -287,6 +306,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the brush for text selection highlighting.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SelectionBrush
     {
         get => (Brush?)GetValue(SelectionBrushProperty);
@@ -296,6 +316,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the brush for the caret.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? CaretBrush
     {
         get => (Brush?)GetValue(CaretBrushProperty);
@@ -305,6 +326,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets whether undo is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsUndoEnabled
     {
         get => (bool)GetValue(IsUndoEnabledProperty)!;
@@ -314,6 +336,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the maximum number of undo entries.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int UndoLimit
     {
         get => (int)GetValue(UndoLimitProperty)!;
@@ -323,6 +346,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the horizontal scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility HorizontalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty)!;
@@ -332,6 +356,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the vertical scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility VerticalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty)!;
@@ -341,6 +366,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the trimming behavior for visible text when it overflows the content area.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextTrimming TextTrimming
     {
         get => (TextTrimming)GetValue(TextTrimmingProperty)!;
@@ -2113,18 +2139,18 @@ public abstract class TextBoxBase : Control
 
         if (!IsReadOnly)
         {
-            AddContextMenuItem(panel, "还原", "Ctrl+Z", CanUndo, () => AnimateCloseContextMenu(() => Undo()));
-            AddContextMenuItem(panel, "重做", "Ctrl+Y", CanRedo, () => AnimateCloseContextMenu(() => Redo()));
+            AddContextMenuItem(panel, "Undo", "Ctrl+Z", CanUndo, () => AnimateCloseContextMenu(() => Undo()));
+            AddContextMenuItem(panel, "Redo", "Ctrl+Y", CanRedo, () => AnimateCloseContextMenu(() => Redo()));
             AddContextMenuSeparator(panel);
-            AddContextMenuItem(panel, "剪切", "Ctrl+X", hasSelection, () => AnimateCloseContextMenu(() => Cut()));
+            AddContextMenuItem(panel, "Cut", "Ctrl+X", hasSelection, () => AnimateCloseContextMenu(() => Cut()));
         }
-        AddContextMenuItem(panel, "复制", "Ctrl+C", hasSelection, () => AnimateCloseContextMenu(() => Copy()));
+        AddContextMenuItem(panel, "Copy", "Ctrl+C", hasSelection, () => AnimateCloseContextMenu(() => Copy()));
         if (!IsReadOnly)
         {
-            AddContextMenuItem(panel, "粘贴", "Ctrl+V", hasClipboard, () => AnimateCloseContextMenu(() => Paste()));
+            AddContextMenuItem(panel, "Paste", "Ctrl+V", hasClipboard, () => AnimateCloseContextMenu(() => Paste()));
         }
         AddContextMenuSeparator(panel);
-        AddContextMenuItem(panel, "全选", "Ctrl+A", hasText, () => AnimateCloseContextMenu(() => SelectAll()));
+        AddContextMenuItem(panel, "Select All", "Ctrl+A", hasText, () => AnimateCloseContextMenu(() => SelectAll()));
 
         var border = new Border
         {

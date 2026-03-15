@@ -34,6 +34,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(SwipeItem),
             new PropertyMetadata(string.Empty));
@@ -41,6 +42,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Identifies the IconSource dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty IconSourceProperty =
         DependencyProperty.Register(nameof(IconSource), typeof(object), typeof(SwipeItem),
             new PropertyMetadata(null));
@@ -48,6 +50,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(SwipeItem),
             new PropertyMetadata(null));
@@ -55,6 +58,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Identifies the Foreground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(SwipeItem),
             new PropertyMetadata(null));
@@ -62,6 +66,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Identifies the Command dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
         DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(SwipeItem),
             new PropertyMetadata(null));
@@ -69,6 +74,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Identifies the CommandParameter dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandParameterProperty =
         DependencyProperty.Register(nameof(CommandParameter), typeof(object), typeof(SwipeItem),
             new PropertyMetadata(null));
@@ -76,6 +82,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Identifies the BehaviorOnInvoked dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BehaviorOnInvokedProperty =
         DependencyProperty.Register(nameof(BehaviorOnInvoked), typeof(BehaviorOnInvoked), typeof(SwipeItem),
             new PropertyMetadata(BehaviorOnInvoked.Auto));
@@ -87,6 +94,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Gets or sets the text label for the swipe item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string?)GetValue(TextProperty) ?? string.Empty;
@@ -96,6 +104,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Gets or sets the icon for the swipe item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? IconSource
     {
         get => GetValue(IconSourceProperty);
@@ -105,6 +114,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Gets or sets the background color of the swipe item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -114,6 +124,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Gets or sets the foreground color of the swipe item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Foreground
     {
         get => (Brush?)GetValue(ForegroundProperty);
@@ -123,6 +134,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Gets or sets the command to execute when the item is invoked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public ICommand? Command
     {
         get => (ICommand?)GetValue(CommandProperty);
@@ -132,6 +144,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Gets or sets the parameter to pass to the Command.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public object? CommandParameter
     {
         get => GetValue(CommandParameterProperty);
@@ -141,6 +154,7 @@ public sealed class SwipeItem : DependencyObject
     /// <summary>
     /// Gets or sets the behavior after the item is invoked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public BehaviorOnInvoked BehaviorOnInvoked
     {
         get => (BehaviorOnInvoked)(GetValue(BehaviorOnInvokedProperty) ?? BehaviorOnInvoked.Auto);

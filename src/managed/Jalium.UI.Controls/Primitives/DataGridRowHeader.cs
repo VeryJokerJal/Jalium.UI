@@ -18,6 +18,7 @@ public class DataGridRowHeader : ButtonBase
     /// <summary>
     /// Identifies the IsRowSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsRowSelectedProperty =
         DependencyProperty.Register(nameof(IsRowSelected), typeof(bool), typeof(DataGridRowHeader),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -25,6 +26,7 @@ public class DataGridRowHeader : ButtonBase
     /// <summary>
     /// Identifies the RowIndex dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowIndexProperty =
         DependencyProperty.Register(nameof(RowIndex), typeof(int), typeof(DataGridRowHeader),
             new PropertyMetadata(-1, OnVisualPropertyChanged));
@@ -32,6 +34,7 @@ public class DataGridRowHeader : ButtonBase
     /// <summary>
     /// Identifies the SeparatorBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SeparatorBrushProperty =
         DependencyProperty.Register(nameof(SeparatorBrush), typeof(Brush), typeof(DataGridRowHeader),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -39,6 +42,7 @@ public class DataGridRowHeader : ButtonBase
     /// <summary>
     /// Identifies the SeparatorVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SeparatorVisibilityProperty =
         DependencyProperty.Register(nameof(SeparatorVisibility), typeof(Visibility), typeof(DataGridRowHeader),
             new PropertyMetadata(Visibility.Visible, OnVisualPropertyChanged));
@@ -50,6 +54,7 @@ public class DataGridRowHeader : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether the row is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsRowSelected
     {
         get => (bool)GetValue(IsRowSelectedProperty)!;
@@ -59,6 +64,7 @@ public class DataGridRowHeader : ButtonBase
     /// <summary>
     /// Gets or sets the index of the row.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int RowIndex
     {
         get => (int)GetValue(RowIndexProperty)!;
@@ -68,6 +74,7 @@ public class DataGridRowHeader : ButtonBase
     /// <summary>
     /// Gets or sets the brush used for the separator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SeparatorBrush
     {
         get => (Brush?)GetValue(SeparatorBrushProperty);
@@ -77,6 +84,7 @@ public class DataGridRowHeader : ButtonBase
     /// <summary>
     /// Gets or sets the visibility of the separator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Visibility SeparatorVisibility
     {
         get => (Visibility)GetValue(SeparatorVisibilityProperty)!;

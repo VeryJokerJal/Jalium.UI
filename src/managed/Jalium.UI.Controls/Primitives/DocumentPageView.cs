@@ -30,6 +30,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(DocumentPageView),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -37,6 +38,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Identifies the BorderBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BorderBrushProperty =
         DependencyProperty.Register(nameof(BorderBrush), typeof(Brush), typeof(DocumentPageView),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -44,6 +46,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Identifies the BorderThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BorderThicknessProperty =
         DependencyProperty.Register(nameof(BorderThickness), typeof(Thickness), typeof(DocumentPageView),
             new PropertyMetadata(new Thickness(1), OnVisualPropertyChanged));
@@ -51,6 +54,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Identifies the DocumentPaginator dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DocumentPaginatorProperty =
         DependencyProperty.Register(nameof(DocumentPaginator), typeof(DocumentPaginator), typeof(DocumentPageView),
             new PropertyMetadata(null, OnDocumentPaginatorChanged));
@@ -58,6 +62,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Identifies the PageNumber dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PageNumberProperty =
         DependencyProperty.Register(nameof(PageNumber), typeof(int), typeof(DocumentPageView),
             new PropertyMetadata(0, OnPageNumberChanged));
@@ -65,6 +70,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Identifies the Stretch dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchProperty =
         DependencyProperty.Register(nameof(Stretch), typeof(Stretch), typeof(DocumentPageView),
             new PropertyMetadata(Stretch.Uniform, OnLayoutPropertyChanged));
@@ -72,6 +78,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Identifies the StretchDirection dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchDirectionProperty =
         DependencyProperty.Register(nameof(StretchDirection), typeof(StretchDirection), typeof(DocumentPageView),
             new PropertyMetadata(StretchDirection.Both, OnLayoutPropertyChanged));
@@ -83,6 +90,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Gets or sets the background brush used for the rendered page surface.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -92,6 +100,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Gets or sets the border brush used for the rendered page outline.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? BorderBrush
     {
         get => (Brush?)GetValue(BorderBrushProperty);
@@ -101,6 +110,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Gets or sets the thickness of the rendered page outline.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness BorderThickness
     {
         get => (Thickness)(GetValue(BorderThicknessProperty) ?? new Thickness(1));
@@ -110,6 +120,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Gets or sets the document paginator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DocumentPaginator? DocumentPaginator
     {
         get => (DocumentPaginator?)GetValue(DocumentPaginatorProperty);
@@ -119,6 +130,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Gets or sets the page number to display (0-based).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int PageNumber
     {
         get => (int)GetValue(PageNumberProperty)!;
@@ -128,6 +140,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Gets or sets the stretch mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Stretch Stretch
     {
         get => (Stretch)GetValue(StretchProperty)!;
@@ -137,6 +150,7 @@ public class DocumentPageView : FrameworkElement
     /// <summary>
     /// Gets or sets the stretch direction.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StretchDirection StretchDirection
     {
         get => (StretchDirection)GetValue(StretchDirectionProperty)!;

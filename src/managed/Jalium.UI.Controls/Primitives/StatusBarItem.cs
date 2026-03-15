@@ -21,6 +21,7 @@ public class StatusBarItem : ContentControl
     /// <summary>
     /// Identifies the Separator dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SeparatorProperty =
         DependencyProperty.Register(nameof(Separator), typeof(bool), typeof(StatusBarItem),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -32,6 +33,7 @@ public class StatusBarItem : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether this item shows a separator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool Separator
     {
         get => (bool)GetValue(SeparatorProperty)!;

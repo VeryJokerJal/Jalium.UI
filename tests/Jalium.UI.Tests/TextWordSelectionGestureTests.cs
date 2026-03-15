@@ -35,6 +35,7 @@ public class TextWordSelectionGestureTests
         var textBlock = new TextBlock
         {
             Text = "one two three",
+            IsTextSelectionEnabled = true,
             Width = 240,
             Height = 32
         };
@@ -56,6 +57,7 @@ public class TextWordSelectionGestureTests
         var label = new Label
         {
             Content = "one two three",
+            IsTextSelectionEnabled = true,
             Template = new ControlTemplate(typeof(Label)),
             Width = 240,
             Height = 28

@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -13,6 +13,7 @@ public abstract class MultiSelector : Selector
     /// <summary>
     /// Identifies the CanSelectMultipleItems dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanSelectMultipleItemsProperty =
         DependencyProperty.Register(nameof(CanSelectMultipleItems), typeof(bool), typeof(MultiSelector),
             new PropertyMetadata(true));
@@ -24,6 +25,7 @@ public abstract class MultiSelector : Selector
     /// <summary>
     /// Gets or sets a value indicating whether multiple items can be selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     protected bool CanSelectMultipleItems
     {
         get => (bool)GetValue(CanSelectMultipleItemsProperty)!;

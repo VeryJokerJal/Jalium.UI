@@ -14,6 +14,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Identifies the Document dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DocumentProperty =
         DependencyProperty.Register(nameof(Document), typeof(FlowDocument), typeof(FlowDocumentPageViewer),
             new PropertyMetadata(null, OnDocumentChanged));
@@ -21,6 +22,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Identifies the Zoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomProperty =
         DependencyProperty.Register(nameof(Zoom), typeof(double), typeof(FlowDocumentPageViewer),
             new PropertyMetadata(100.0));
@@ -28,6 +30,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Identifies the MinZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinZoomProperty =
         DependencyProperty.Register(nameof(MinZoom), typeof(double), typeof(FlowDocumentPageViewer),
             new PropertyMetadata(80.0));
@@ -35,6 +38,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Identifies the MaxZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxZoomProperty =
         DependencyProperty.Register(nameof(MaxZoom), typeof(double), typeof(FlowDocumentPageViewer),
             new PropertyMetadata(200.0));
@@ -42,6 +46,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Identifies the ZoomIncrement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomIncrementProperty =
         DependencyProperty.Register(nameof(ZoomIncrement), typeof(double), typeof(FlowDocumentPageViewer),
             new PropertyMetadata(10.0));
@@ -53,6 +58,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Identifies the PageCount dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PageCountProperty = PageCountPropertyKey.DependencyProperty;
 
     private static readonly DependencyPropertyKey PageNumberPropertyKey =
@@ -62,6 +68,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Identifies the PageNumber dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PageNumberProperty = PageNumberPropertyKey.DependencyProperty;
 
     #endregion
@@ -71,6 +78,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Gets or sets the FlowDocument displayed by this viewer.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public FlowDocument? Document
     {
         get => (FlowDocument?)GetValue(DocumentProperty);
@@ -80,6 +88,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Gets or sets the current zoom level as a percentage.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double Zoom
     {
         get => (double)GetValue(ZoomProperty);
@@ -89,6 +98,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Gets or sets the minimum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinZoom
     {
         get => (double)GetValue(MinZoomProperty);
@@ -98,6 +108,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Gets or sets the maximum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxZoom
     {
         get => (double)GetValue(MaxZoomProperty);
@@ -107,6 +118,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Gets or sets the zoom increment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double ZoomIncrement
     {
         get => (double)GetValue(ZoomIncrementProperty);
@@ -116,6 +128,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Gets the page count of the document.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int PageCount
     {
         get => (int)GetValue(PageCountProperty);
@@ -125,6 +138,7 @@ public class FlowDocumentPageViewer : Control
     /// <summary>
     /// Gets the current page number.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int PageNumber
     {
         get => (int)GetValue(PageNumberProperty);

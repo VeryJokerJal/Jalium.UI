@@ -112,6 +112,60 @@ public class TrackTests
     }
 
     [Fact]
+    public void Track_ThumbDrag_ShouldUpdateValue_ByDefault()
+    {
+        var thumb = new Thumb();
+        var track = new Track
+        {
+            Orientation = Orientation.Vertical,
+            Minimum = 0,
+            Maximum = 100,
+            Value = 50,
+            Thumb = thumb
+        };
+
+        track.Measure(new Size(12, 120));
+        track.Arrange(new Rect(0, 0, 12, 120));
+
+        var start = GetAbsoluteCenter(thumb);
+        var end = new Point(start.X, start.Y + 12);
+
+        thumb.RaiseEvent(CreateMouseDown(start));
+        thumb.RaiseEvent(CreateMouseMove(end, MouseButtonState.Pressed));
+        thumb.RaiseEvent(CreateMouseUp(end));
+
+        Assert.True(track.Value > 50, $"Value={track.Value}");
+    }
+
+    [Fact]
+    public void Track_ThumbDrag_WhenInternalHandlingDisabled_ShouldNotUpdateValue()
+    {
+        var thumb = new Thumb();
+        var track = new Track
+        {
+            Orientation = Orientation.Vertical,
+            Minimum = 0,
+            Maximum = 100,
+            Value = 50,
+            Thumb = thumb
+        };
+
+        SetTrackHandlesThumbDragInternally(track, false);
+
+        track.Measure(new Size(12, 120));
+        track.Arrange(new Rect(0, 0, 12, 120));
+
+        var start = GetAbsoluteCenter(thumb);
+        var end = new Point(start.X, start.Y + 12);
+
+        thumb.RaiseEvent(CreateMouseDown(start));
+        thumb.RaiseEvent(CreateMouseMove(end, MouseButtonState.Pressed));
+        thumb.RaiseEvent(CreateMouseUp(end));
+
+        Assert.Equal(50.0, track.Value, precision: 3);
+    }
+
+    [Fact]
     public void ScrollBar_ThumbLength_ShouldFollowTrack_WhenThumbStyleSetsFixedHeight()
     {
         var scrollBar = new ScrollBar
@@ -326,5 +380,14 @@ public class TrackTests
             xButton2: MouseButtonState.Released,
             modifiers: ModifierKeys.None,
             timestamp: 2);
+    }
+
+    private static void SetTrackHandlesThumbDragInternally(Track track, bool value)
+    {
+        var property = typeof(Track).GetProperty(
+            "HandlesThumbDragInternally",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(property);
+        property!.SetValue(track, value);
     }
 }

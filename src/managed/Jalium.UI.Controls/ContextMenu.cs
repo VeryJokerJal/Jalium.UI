@@ -22,6 +22,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Identifies the IsOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOpenProperty =
         DependencyProperty.Register(nameof(IsOpen), typeof(bool), typeof(ContextMenu),
             new PropertyMetadata(false, OnIsOpenChanged));
@@ -29,6 +30,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Identifies the PlacementTarget dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementTargetProperty =
         DependencyProperty.Register(nameof(PlacementTarget), typeof(UIElement), typeof(ContextMenu),
             new PropertyMetadata(null));
@@ -36,6 +38,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Identifies the Placement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementProperty =
         DependencyProperty.Register(nameof(Placement), typeof(PlacementMode), typeof(ContextMenu),
             new PropertyMetadata(PlacementMode.MousePoint));
@@ -43,6 +46,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Identifies the HorizontalOffset dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HorizontalOffsetProperty =
         DependencyProperty.Register(nameof(HorizontalOffset), typeof(double), typeof(ContextMenu),
             new PropertyMetadata(0.0));
@@ -50,6 +54,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Identifies the VerticalOffset dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty VerticalOffsetProperty =
         DependencyProperty.Register(nameof(VerticalOffset), typeof(double), typeof(ContextMenu),
             new PropertyMetadata(0.0));
@@ -57,6 +62,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Identifies the StaysOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty StaysOpenProperty =
         DependencyProperty.Register(nameof(StaysOpen), typeof(bool), typeof(ContextMenu),
             new PropertyMetadata(false));
@@ -104,6 +110,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Gets or sets a value indicating whether the context menu is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOpen
     {
         get => (bool)GetValue(IsOpenProperty)!;
@@ -113,6 +120,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Gets or sets the element relative to which the context menu is positioned.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public UIElement? PlacementTarget
     {
         get => (UIElement?)GetValue(PlacementTargetProperty);
@@ -122,6 +130,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Gets or sets the placement mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public PlacementMode Placement
     {
         get => (PlacementMode)GetValue(PlacementProperty)!;
@@ -131,6 +140,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Gets or sets the horizontal offset from the placement target.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double HorizontalOffset
     {
         get => (double)GetValue(HorizontalOffsetProperty)!;
@@ -140,6 +150,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Gets or sets the vertical offset from the placement target.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double VerticalOffset
     {
         get => (double)GetValue(VerticalOffsetProperty)!;
@@ -149,6 +160,7 @@ public class ContextMenu : ItemsControl
     /// <summary>
     /// Gets or sets a value indicating whether the menu stays open when clicked outside.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool StaysOpen
     {
         get => (bool)GetValue(StaysOpenProperty)!;
@@ -389,7 +401,7 @@ public class ContextMenu : ItemsControl
 
                 // Transfer placement properties to the popup.
                 // When Open(Point) was called, it already set Absolute placement
-                // and the offsets to the requested position — keep those.
+                // and the offsets to the requested position 閳?keep those.
                 if (!wasExplicitPosition)
                 {
                     popup.Placement = contextMenu.Placement;

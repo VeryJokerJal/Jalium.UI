@@ -82,6 +82,7 @@ public class RibbonContextualTabGroup : Control
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(RibbonContextualTabGroup),
             new PropertyMetadata(null));
@@ -89,6 +90,7 @@ public class RibbonContextualTabGroup : Control
     /// <summary>
     /// Identifies the Visibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsVisibleProperty =
         DependencyProperty.Register("IsGroupVisible", typeof(bool), typeof(RibbonContextualTabGroup),
             new PropertyMetadata(true));
@@ -96,6 +98,7 @@ public class RibbonContextualTabGroup : Control
     /// <summary>
     /// Gets or sets the header.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
@@ -106,4 +109,24 @@ public class RibbonContextualTabGroup : Control
     /// Gets or sets the background brush for the group.
     /// </summary>
     public Brush? Background { get; set; }
+
+    /// <summary>
+    /// Gets or sets whether the contextual group should be shown.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool IsGroupVisible
+    {
+        get => (bool)(GetValue(IsVisibleProperty) ?? true);
+        set => SetValue(IsVisibleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether the contextual tab group is visible.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool IsVisible
+    {
+        get => IsGroupVisible;
+        set => IsGroupVisible = value;
+    }
 }

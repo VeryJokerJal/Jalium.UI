@@ -229,7 +229,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _renderTarget?.Dispose();
         _renderTarget = null;
 
-        var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: forceReplaceContext);
+        var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceReplaceContext);
         _renderTarget = context.CreateRenderTargetForComposition(_hwnd, Math.Max(1, _width), Math.Max(1, _height));
 
         // Match D2D DPI to the parent monitor scale.
@@ -288,7 +288,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             // Clear with transparent background
             _renderTarget.Clear(0f, 0f, 0f, 0f);
 
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
             if (Child != null)
             {
                 _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);

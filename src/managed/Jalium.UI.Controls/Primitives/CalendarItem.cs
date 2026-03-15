@@ -21,6 +21,7 @@ public class CalendarItem : Control
     /// <summary>
     /// Identifies the DisplayMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayModeProperty =
         DependencyProperty.Register(nameof(DisplayMode), typeof(CalendarMode), typeof(CalendarItem),
             new PropertyMetadata(CalendarMode.Month, OnDisplayModeChanged));
@@ -32,6 +33,7 @@ public class CalendarItem : Control
     /// <summary>
     /// Gets or sets the current display mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public CalendarMode DisplayMode
     {
         get => (CalendarMode)GetValue(DisplayModeProperty)!;

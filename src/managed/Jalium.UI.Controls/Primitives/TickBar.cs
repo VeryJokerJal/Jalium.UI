@@ -46,6 +46,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the Minimum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinimumProperty =
         DependencyProperty.Register(nameof(Minimum), typeof(double), typeof(TickBar),
             new PropertyMetadata(0.0, OnVisualPropertyChanged));
@@ -53,6 +54,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the Maximum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaximumProperty =
         DependencyProperty.Register(nameof(Maximum), typeof(double), typeof(TickBar),
             new PropertyMetadata(100.0, OnVisualPropertyChanged));
@@ -60,6 +62,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the TickFrequency dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty TickFrequencyProperty =
         DependencyProperty.Register(nameof(TickFrequency), typeof(double), typeof(TickBar),
             new PropertyMetadata(1.0, OnVisualPropertyChanged));
@@ -67,6 +70,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the Ticks dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty TicksProperty =
         DependencyProperty.Register(nameof(Ticks), typeof(DoubleCollection), typeof(TickBar),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -74,6 +78,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the Placement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementProperty =
         DependencyProperty.Register(nameof(Placement), typeof(TickBarPlacement), typeof(TickBar),
             new PropertyMetadata(TickBarPlacement.Top, OnVisualPropertyChanged));
@@ -81,6 +86,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the Fill dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty FillProperty =
         DependencyProperty.Register(nameof(Fill), typeof(Brush), typeof(TickBar),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -88,6 +94,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the IsDirectionReversed dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDirectionReversedProperty =
         DependencyProperty.Register(nameof(IsDirectionReversed), typeof(bool), typeof(TickBar),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -95,6 +102,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the ReservedSpace dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ReservedSpaceProperty =
         DependencyProperty.Register(nameof(ReservedSpace), typeof(double), typeof(TickBar),
             new PropertyMetadata(0.0, OnVisualPropertyChanged));
@@ -102,6 +110,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the IsSelectionRangeEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectionRangeEnabledProperty =
         DependencyProperty.Register(nameof(IsSelectionRangeEnabled), typeof(bool), typeof(TickBar),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -109,6 +118,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the SelectionStart dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SelectionStartProperty =
         DependencyProperty.Register(nameof(SelectionStart), typeof(double), typeof(TickBar),
             new PropertyMetadata(-1.0, OnVisualPropertyChanged));
@@ -116,6 +126,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Identifies the SelectionEnd dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SelectionEndProperty =
         DependencyProperty.Register(nameof(SelectionEnd), typeof(double), typeof(TickBar),
             new PropertyMetadata(-1.0, OnVisualPropertyChanged));
@@ -127,6 +138,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets the minimum value for the tick bar range.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Minimum
     {
         get => (double)GetValue(MinimumProperty)!;
@@ -136,6 +148,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets the maximum value for the tick bar range.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Maximum
     {
         get => (double)GetValue(MaximumProperty)!;
@@ -145,6 +158,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets the interval between tick marks.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double TickFrequency
     {
         get => (double)GetValue(TickFrequencyProperty)!;
@@ -154,6 +168,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets a set of tick marks to display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DoubleCollection? Ticks
     {
         get => (DoubleCollection?)GetValue(TicksProperty);
@@ -163,6 +178,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets the position of the tick marks relative to the Track.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public TickBarPlacement Placement
     {
         get => (TickBarPlacement)(GetValue(PlacementProperty) ?? TickBarPlacement.Top);
@@ -172,6 +188,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets the brush used to fill the tick marks.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Fill
     {
         get => (Brush?)GetValue(FillProperty);
@@ -181,6 +198,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets whether the direction of increasing value is reversed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDirectionReversed
     {
         get => (bool)GetValue(IsDirectionReversedProperty)!;
@@ -190,6 +208,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets the space reserved for the thumb of the Slider.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ReservedSpace
     {
         get => (double)GetValue(ReservedSpaceProperty)!;
@@ -199,6 +218,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets whether the selection range is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelectionRangeEnabled
     {
         get => (bool)GetValue(IsSelectionRangeEnabledProperty)!;
@@ -208,6 +228,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets the start of the selection range.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SelectionStart
     {
         get => (double)GetValue(SelectionStartProperty)!;
@@ -217,6 +238,7 @@ public class TickBar : FrameworkElement
     /// <summary>
     /// Gets or sets the end of the selection range.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SelectionEnd
     {
         get => (double)GetValue(SelectionEndProperty)!;

@@ -64,6 +64,12 @@ public enum DocumentViewerFitMode
 /// </summary>
 public class DocumentViewer : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.DocumentViewerAutomationPeer(this);
+    }
+
     private DocumentPaginator? _document;
     private int _pageCount;
     private int _currentPage = 1;
@@ -76,6 +82,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Identifies the Document dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DocumentProperty =
         DependencyProperty.Register(nameof(Document), typeof(DocumentPaginator), typeof(DocumentViewer),
             new PropertyMetadata(null, OnDocumentChanged));
@@ -83,6 +90,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Identifies the Zoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomProperty =
         DependencyProperty.Register(nameof(Zoom), typeof(double), typeof(DocumentViewer),
             new PropertyMetadata(100.0, OnZoomChanged, CoerceZoom));
@@ -90,6 +98,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Identifies the MinZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinZoomProperty =
         DependencyProperty.Register(nameof(MinZoom), typeof(double), typeof(DocumentViewer),
             new PropertyMetadata(25.0));
@@ -97,6 +106,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Identifies the MaxZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxZoomProperty =
         DependencyProperty.Register(nameof(MaxZoom), typeof(double), typeof(DocumentViewer),
             new PropertyMetadata(400.0));
@@ -104,6 +114,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Identifies the FitMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty FitModeProperty =
         DependencyProperty.Register(nameof(FitMode), typeof(DocumentViewerFitMode), typeof(DocumentViewer),
             new PropertyMetadata(DocumentViewerFitMode.FitWidth, OnFitModeChanged));
@@ -111,6 +122,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Identifies the PageDisplay dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PageDisplayProperty =
         DependencyProperty.Register(nameof(PageDisplay), typeof(DocumentViewerPageDisplay), typeof(DocumentViewer),
             new PropertyMetadata(DocumentViewerPageDisplay.OnePage, OnPageDisplayChanged));
@@ -118,6 +130,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Identifies the ShowPageBorders dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowPageBordersProperty =
         DependencyProperty.Register(nameof(ShowPageBorders), typeof(bool), typeof(DocumentViewer),
             new PropertyMetadata(true));
@@ -125,6 +138,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Identifies the HorizontalPageSpacing dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalPageSpacingProperty =
         DependencyProperty.Register(nameof(HorizontalPageSpacing), typeof(double), typeof(DocumentViewer),
             new PropertyMetadata(10.0));
@@ -132,6 +146,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Identifies the VerticalPageSpacing dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalPageSpacingProperty =
         DependencyProperty.Register(nameof(VerticalPageSpacing), typeof(double), typeof(DocumentViewer),
             new PropertyMetadata(10.0));
@@ -162,6 +177,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Gets or sets the document to display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DocumentPaginator? Document
     {
         get => (DocumentPaginator?)GetValue(DocumentProperty);
@@ -171,6 +187,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Gets or sets the zoom level (percentage).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double Zoom
     {
         get => (double)GetValue(ZoomProperty)!;
@@ -180,6 +197,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Gets or sets the minimum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinZoom
     {
         get => (double)GetValue(MinZoomProperty)!;
@@ -189,6 +207,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Gets or sets the maximum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxZoom
     {
         get => (double)GetValue(MaxZoomProperty)!;
@@ -198,6 +217,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Gets or sets the fit mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DocumentViewerFitMode FitMode
     {
         get => (DocumentViewerFitMode)(GetValue(FitModeProperty) ?? DocumentViewerFitMode.FitWidth);
@@ -207,6 +227,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Gets or sets the page display mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public DocumentViewerPageDisplay PageDisplay
     {
         get => (DocumentViewerPageDisplay)(GetValue(PageDisplayProperty) ?? DocumentViewerPageDisplay.OnePage);
@@ -216,6 +237,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Gets or sets a value indicating whether to show page borders.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowPageBorders
     {
         get => (bool)GetValue(ShowPageBordersProperty)!;
@@ -225,6 +247,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Gets or sets the horizontal spacing between pages.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double HorizontalPageSpacing
     {
         get => (double)GetValue(HorizontalPageSpacingProperty)!;
@@ -234,6 +257,7 @@ public class DocumentViewer : Control
     /// <summary>
     /// Gets or sets the vertical spacing between pages.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double VerticalPageSpacing
     {
         get => (double)GetValue(VerticalPageSpacingProperty)!;

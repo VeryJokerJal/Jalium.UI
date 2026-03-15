@@ -1,3 +1,7 @@
+using System.Collections.Concurrent;
+using System.ComponentModel;
+using System.Globalization;
+using System.Reflection;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
@@ -62,7 +66,21 @@ public class DevToolsWindow : Window
     private static readonly SolidColorBrush BrushBoxPadding = new(Color.FromArgb(180, 140, 200, 140));
     private static readonly SolidColorBrush BrushBoxContent = new(Color.FromArgb(180, 100, 160, 220));
     private static readonly SolidColorBrush BrushBoxLabel = new(Color.FromRgb(200, 200, 200));
+    private static readonly SolidColorBrush BrushCategoryFramework = new(Color.FromRgb(94, 196, 255));
+    private static readonly SolidColorBrush BrushCategoryLayout = new(Color.FromRgb(152, 195, 121));
+    private static readonly SolidColorBrush BrushCategoryAppearance = new(Color.FromRgb(255, 178, 102));
+    private static readonly SolidColorBrush BrushCategoryTypography = new(Color.FromRgb(244, 166, 232));
+    private static readonly SolidColorBrush BrushCategoryContent = new(Color.FromRgb(97, 175, 239));
+    private static readonly SolidColorBrush BrushCategoryItems = new(Color.FromRgb(86, 182, 194));
+    private static readonly SolidColorBrush BrushCategoryData = new(Color.FromRgb(229, 192, 123));
+    private static readonly SolidColorBrush BrushCategoryInput = new(Color.FromRgb(224, 108, 117));
+    private static readonly SolidColorBrush BrushCategoryBehavior = new(Color.FromRgb(198, 120, 221));
+    private static readonly SolidColorBrush BrushCategoryState = new(Color.FromRgb(163, 190, 140));
+    private static readonly SolidColorBrush BrushCategoryOther = new(Color.FromRgb(171, 178, 191));
     private const double NameWidth = 145;
+    private static readonly ConcurrentDictionary<Type, IReadOnlyList<DependencyPropertyInspectorEntry>> s_dependencyPropertyCache = new();
+
+    private sealed record DependencyPropertyInspectorEntry(DependencyProperty Property, DevToolsPropertyCategory Category);
 
     protected override bool CanOpenDevTools => false;
 
@@ -815,6 +833,11 @@ public class DevToolsWindow : Window
             AddBoxModel(boxFe);
         }
 
+        if (visual is DependencyObject dependencyObject)
+        {
+            AddCategorizedDependencyPropertyInspector(dependencyObject);
+        }
+
         // 鈹€鈹€ UIElement 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         if (visual is UIElement uiElement)
         {
@@ -1072,6 +1095,391 @@ public class DevToolsWindow : Window
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Element Statistics
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+
+    private void AddCategorizedDependencyPropertyInspector(DependencyObject dependencyObject)
+    {
+        var entries = GetCategorizedDependencyProperties(dependencyObject.GetType());
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        AddSection($"Properties by Category ({entries.Count})");
+
+        foreach (var group in entries
+                     .GroupBy(static entry => entry.Category)
+                     .OrderBy(static group => GetCategorySortOrder(group.Key)))
+        {
+            var categoryEntries = group.ToList();
+            AddCategoryHeader(group.Key, categoryEntries.Count);
+
+            foreach (var entry in categoryEntries.OrderBy(static entry => entry.Property.Name, StringComparer.Ordinal))
+            {
+                AddCategorizedDependencyProperty(dependencyObject, entry);
+            }
+        }
+    }
+
+    private static IReadOnlyList<DependencyPropertyInspectorEntry> GetCategorizedDependencyProperties(Type targetType)
+    {
+        return s_dependencyPropertyCache.GetOrAdd(targetType, static type =>
+        {
+            var entries = new Dictionary<int, DependencyPropertyInspectorEntry>();
+            var fields = type.GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+            foreach (var field in fields)
+            {
+                if (field.FieldType != typeof(DependencyProperty))
+                {
+                    continue;
+                }
+
+                if (field.GetValue(null) is not DependencyProperty dependencyProperty)
+                {
+                    continue;
+                }
+
+                entries.TryAdd(
+                    dependencyProperty.GlobalIndex,
+                    new DependencyPropertyInspectorEntry(
+                        dependencyProperty,
+                        ResolveDependencyPropertyCategory(dependencyProperty, type)));
+            }
+
+            return entries.Values
+                .OrderBy(static entry => GetCategorySortOrder(entry.Category))
+                .ThenBy(static entry => entry.Property.Name, StringComparer.Ordinal)
+                .ToArray();
+        });
+    }
+
+    private static DevToolsPropertyCategory ResolveDependencyPropertyCategory(DependencyProperty dependencyProperty, Type targetType)
+    {
+        if (TryGetPropertyCategory(targetType, dependencyProperty.Name, out var category))
+        {
+            return category;
+        }
+
+        if (TryGetPropertyCategory(dependencyProperty.OwnerType, dependencyProperty.Name, out category))
+        {
+            return category;
+        }
+
+        var field = dependencyProperty.OwnerType.GetField(
+            dependencyProperty.Name + "Property",
+            BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+        if (TryGetDeclaredCategory(field, out category))
+        {
+            return category;
+        }
+
+        var getter = dependencyProperty.OwnerType.GetMethod(
+            "Get" + dependencyProperty.Name,
+            BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+        if (TryGetDeclaredCategory(getter, out category))
+        {
+            return category;
+        }
+
+        var setter = dependencyProperty.OwnerType.GetMethod(
+            "Set" + dependencyProperty.Name,
+            BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+        if (TryGetDeclaredCategory(setter, out category))
+        {
+            return category;
+        }
+
+        return DevToolsPropertyCategory.Other;
+    }
+
+    private static bool TryGetPropertyCategory(Type type, string propertyName, out DevToolsPropertyCategory category)
+    {
+        var property = type.GetProperty(
+            propertyName,
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+        return TryGetDeclaredCategory(property, out category);
+    }
+
+    private static bool TryGetDeclaredCategory(MemberInfo? member, out DevToolsPropertyCategory category)
+    {
+        if (member == null)
+        {
+            category = DevToolsPropertyCategory.Other;
+            return false;
+        }
+
+        if (member.GetCustomAttribute<DevToolsPropertyCategoryAttribute>(inherit: true) is { } attribute)
+        {
+            category = attribute.Category;
+            return true;
+        }
+
+        if (member.GetCustomAttribute<CategoryAttribute>(inherit: true) is { } categoryAttribute &&
+            TryParseCategory(categoryAttribute.Category, out category))
+        {
+            return true;
+        }
+
+        category = DevToolsPropertyCategory.Other;
+        return false;
+    }
+
+    private static bool TryParseCategory(string categoryName, out DevToolsPropertyCategory category)
+    {
+        return Enum.TryParse(categoryName, ignoreCase: true, out category);
+    }
+
+    private static int GetCategorySortOrder(DevToolsPropertyCategory category)
+    {
+        return category switch
+        {
+            DevToolsPropertyCategory.Framework => 0,
+            DevToolsPropertyCategory.Layout => 1,
+            DevToolsPropertyCategory.Appearance => 2,
+            DevToolsPropertyCategory.Typography => 3,
+            DevToolsPropertyCategory.Content => 4,
+            DevToolsPropertyCategory.Items => 5,
+            DevToolsPropertyCategory.Data => 6,
+            DevToolsPropertyCategory.Input => 7,
+            DevToolsPropertyCategory.Behavior => 8,
+            DevToolsPropertyCategory.State => 9,
+            _ => 10
+        };
+    }
+
+    private static SolidColorBrush GetCategoryBrush(DevToolsPropertyCategory category)
+    {
+        return category switch
+        {
+            DevToolsPropertyCategory.Framework => BrushCategoryFramework,
+            DevToolsPropertyCategory.Layout => BrushCategoryLayout,
+            DevToolsPropertyCategory.Appearance => BrushCategoryAppearance,
+            DevToolsPropertyCategory.Typography => BrushCategoryTypography,
+            DevToolsPropertyCategory.Content => BrushCategoryContent,
+            DevToolsPropertyCategory.Items => BrushCategoryItems,
+            DevToolsPropertyCategory.Data => BrushCategoryData,
+            DevToolsPropertyCategory.Input => BrushCategoryInput,
+            DevToolsPropertyCategory.Behavior => BrushCategoryBehavior,
+            DevToolsPropertyCategory.State => BrushCategoryState,
+            _ => BrushCategoryOther
+        };
+    }
+
+    private void AddCategoryHeader(DevToolsPropertyCategory category, int count)
+    {
+        _propertiesPanel.Children.Add(new TextBlock
+        {
+            Text = $"\u25cf {category} ({count})",
+            Foreground = GetCategoryBrush(category),
+            FontSize = 10,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(8, 8, 4, 1)
+        });
+    }
+
+    private void AddCategorizedDependencyProperty(DependencyObject target, DependencyPropertyInspectorEntry entry)
+    {
+        var property = entry.Property;
+        var value = GetInspectablePropertyValue(target, property);
+        var nameBrush = GetCategoryBrush(entry.Category);
+
+        switch (value)
+        {
+            case null:
+                AddNull(property.Name, nameBrush);
+                break;
+
+            case string text when property.PropertyType == typeof(string):
+                if (property.ReadOnly)
+                {
+                    AddStr(property.Name, text, nameBrush);
+                }
+                else
+                {
+                    AddEditable(property.Name, text, v => TrySetDependencyPropertyValue(target, property, v), nameBrush);
+                }
+                break;
+
+            case bool boolValue when property.PropertyType == typeof(bool):
+                AddBool(
+                    property.Name,
+                    boolValue,
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case double numberValue when property.PropertyType == typeof(double):
+                AddNum(
+                    property.Name,
+                    numberValue,
+                    "F1",
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case float floatValue when property.PropertyType == typeof(float):
+                AddNum(
+                    property.Name,
+                    floatValue,
+                    "F1",
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, (float)v),
+                    nameBrush);
+                break;
+
+            case Enum enumValue:
+                AddEnum(
+                    property.Name,
+                    enumValue,
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case Brush brushValue:
+                AddBrush(
+                    property.Name,
+                    brushValue,
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case Thickness thicknessValue:
+                AddThickness(
+                    property.Name,
+                    thicknessValue,
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case Size sizeValue:
+                AddSize(property.Name, sizeValue, nameBrush);
+                break;
+
+            case Rect rectValue:
+                AddRect(property.Name, rectValue, nameBrush);
+                break;
+
+            default:
+                AddFormattedDependencyPropertyValue(property.Name, value, nameBrush);
+                break;
+        }
+    }
+
+    private static object? GetInspectablePropertyValue(DependencyObject target, DependencyProperty property)
+    {
+        var clrProperty = target.GetType().GetProperty(
+            property.Name,
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+
+        if (clrProperty != null && clrProperty.GetIndexParameters().Length == 0)
+        {
+            try
+            {
+                return clrProperty.GetValue(target);
+            }
+            catch
+            {
+                // Fall back to the raw dependency property value when a CLR wrapper throws.
+            }
+        }
+
+        return target.GetValue(property);
+    }
+
+    private static void TrySetDependencyPropertyValue(DependencyObject target, DependencyProperty property, object? value)
+    {
+        try
+        {
+            if (value == null || property.PropertyType.IsInstanceOfType(value))
+            {
+                target.SetValue(property, value);
+                return;
+            }
+
+            if (TryChangeType(value, property.PropertyType, out var converted))
+            {
+                target.SetValue(property, converted);
+            }
+        }
+        catch
+        {
+            // DevTools editors should stay resilient when a conversion fails.
+        }
+    }
+
+    private static bool TryChangeType(object value, Type targetType, out object? convertedValue)
+    {
+        try
+        {
+            if (targetType.IsEnum)
+            {
+                convertedValue = value is string text
+                    ? Enum.Parse(targetType, text, ignoreCase: true)
+                    : Enum.ToObject(targetType, value);
+                return true;
+            }
+
+            if (value is IConvertible && typeof(IConvertible).IsAssignableFrom(targetType))
+            {
+                convertedValue = Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
+                return true;
+            }
+        }
+        catch
+        {
+            // Ignored on purpose; the caller treats failed conversion as a no-op.
+        }
+
+        convertedValue = null;
+        return false;
+    }
+
+    private void AddFormattedDependencyPropertyValue(string name, object? value, Brush? nameBrush = null)
+    {
+        if (value == null)
+        {
+            AddNull(name, nameBrush);
+            return;
+        }
+
+        var row = Row(name, nameBrush);
+        row.Children.Add(new TextBlock
+        {
+            Text = FormatDependencyPropertyValue(value),
+            Foreground = GetDependencyPropertyValueBrush(value),
+            FontSize = 11
+        });
+    }
+
+    private static string FormatDependencyPropertyValue(object value)
+    {
+        return value switch
+        {
+            DependencyObject dependencyObject => dependencyObject.GetType().Name,
+            Type type => type.Name,
+            System.Collections.IEnumerable enumerable when value is not string =>
+                enumerable is System.Collections.ICollection collection
+                    ? $"{value.GetType().Name} ({collection.Count})"
+                    : value.GetType().Name,
+            _ => value.ToString() ?? value.GetType().Name
+        };
+    }
+
+    private static SolidColorBrush GetDependencyPropertyValueBrush(object value)
+    {
+        return value switch
+        {
+            bool => BrushBool,
+            Enum => BrushEnum,
+            string => BrushString,
+            byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal => BrushNumber,
+            Thickness => BrushThickness,
+            _ => BrushType
+        };
+    }
 
     private void AddElementStats(Visual visual)
     {
@@ -1740,7 +2148,7 @@ public class DevToolsWindow : Window
     }
 
     /// <summary>Creates a horizontal row with the property name already added.</summary>
-    private StackPanel Row(string name)
+    private StackPanel Row(string name, Brush? nameBrush = null)
     {
         var isAlt = _rowIndex % 2 == 1;
         _rowIndex++;
@@ -1754,7 +2162,7 @@ public class DevToolsWindow : Window
         row.Children.Add(new TextBlock
         {
             Text = name,
-            Foreground = BrushPropName,
+            Foreground = nameBrush ?? BrushPropName,
             FontSize = 11,
             Width = NameWidth
         });
@@ -1778,9 +2186,9 @@ public class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 1. String value (orange) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddStr(string name, string value)
+    private void AddStr(string name, string value, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         row.Children.Add(new TextBlock
         {
             Text = $"\"{value}\"",
@@ -1790,9 +2198,9 @@ public class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 2. Editable string (orange + TextBox) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddEditable(string name, string value, Action<string> setter)
+    private void AddEditable(string name, string value, Action<string> setter, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         var tb = new TextBox
         {
             Text = value,
@@ -1812,9 +2220,9 @@ public class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 3. Number value (green), optionally editable 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddNum(string name, double value, string fmt = "F1", Action<double>? setter = null)
+    private void AddNum(string name, double value, string fmt = "F1", Action<double>? setter = null, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         var text = double.IsNaN(value) ? "NaN"
                  : double.IsInfinity(value) ? "\u221e"
                  : value.ToString(fmt);
@@ -1853,9 +2261,9 @@ public class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 4. Boolean value (blue, click-to-toggle) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddBool(string name, bool value, Action<bool>? setter = null)
+    private void AddBool(string name, bool value, Action<bool>? setter = null, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
 
         var indicator = new TextBlock
         {
@@ -1905,7 +2313,12 @@ public class DevToolsWindow : Window
     // 鈹€鈹€ 5. Enum value (gold, click-to-cycle) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     private void AddEnum<T>(string name, T value, Action<object>? setter = null) where T : struct, Enum
     {
-        var row = Row(name);
+        AddEnum(name, (Enum)(object)value, setter);
+    }
+
+    private void AddEnum(string name, Enum value, Action<object>? setter = null, Brush? nameBrush = null)
+    {
+        var row = Row(name, nameBrush);
 
         if (setter != null)
         {
@@ -1934,9 +2347,9 @@ public class DevToolsWindow : Window
             {
                 try
                 {
-                    var vals = Enum.GetValues<T>();
-                    int idx = Array.IndexOf(vals, value);
-                    setter(vals[(idx + 1) % vals.Length]);
+                    var values = Enum.GetValues(value.GetType());
+                    int index = Array.IndexOf(values, value);
+                    setter(values.GetValue((index + 1) % values.Length)!);
                     if (_selectedVisual != null) UpdatePropertiesPanel(_selectedVisual);
                 }
                 catch { }
@@ -1955,9 +2368,9 @@ public class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 6. Null value (gray) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddNull(string name)
+    private void AddNull(string name, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         row.Children.Add(new TextBlock
         {
             Text = "null",
@@ -1967,9 +2380,9 @@ public class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 7. Brush/Color with swatch rectangle 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddBrush(string name, Brush? brush, Action<Brush>? setter = null)
+    private void AddBrush(string name, Brush? brush, Action<Brush>? setter = null, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
 
         if (brush is SolidColorBrush scb)
         {
@@ -2050,9 +2463,9 @@ public class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 8. Thickness value (teal, editable) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddThickness(string name, Thickness t, Action<Thickness>? setter = null)
+    private void AddThickness(string name, Thickness t, Action<Thickness>? setter = null, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
 
         string text = t.Left == t.Right && t.Top == t.Bottom && t.Left == t.Top
             ? $"{t.Left:F0}"
@@ -2094,9 +2507,9 @@ public class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 9. Size value (green) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddSize(string name, Size size)
+    private void AddSize(string name, Size size, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         row.Children.Add(new TextBlock
         {
             Text = $"{size.Width:F1} \u00d7 {size.Height:F1}",
@@ -2106,9 +2519,9 @@ public class DevToolsWindow : Window
     }
 
     // 鈹€鈹€ 10. Rect value (green) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
-    private void AddRect(string name, Rect rect)
+    private void AddRect(string name, Rect rect, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         row.Children.Add(new TextBlock
         {
             Text = $"{rect.X:F1}, {rect.Y:F1}  {rect.Width:F1} \u00d7 {rect.Height:F1}",

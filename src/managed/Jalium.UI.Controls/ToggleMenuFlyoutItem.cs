@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -14,6 +14,7 @@ public class ToggleMenuFlyoutItem : MenuFlyoutItem
     /// <summary>
     /// Identifies the IsChecked dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsCheckedProperty =
         DependencyProperty.Register(nameof(IsChecked), typeof(bool), typeof(ToggleMenuFlyoutItem),
             new PropertyMetadata(false));
@@ -25,6 +26,7 @@ public class ToggleMenuFlyoutItem : MenuFlyoutItem
     /// <summary>
     /// Gets or sets whether the ToggleMenuFlyoutItem is checked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsChecked
     {
         get => (bool)GetValue(IsCheckedProperty)!;
@@ -52,7 +54,7 @@ public class ToggleMenuFlyoutItem : MenuFlyoutItem
         {
             var checkBrush = ResolveCheckGlyphBrush();
             var checkText = new Jalium.UI.Media.FormattedText(
-                "\u2713", FontFamily, 14) { Foreground = checkBrush }; // ✓
+                "\u2713", FontFamily, 14) { Foreground = checkBrush }; // 鉁?
             dc.DrawText(checkText, new Point(8, (RenderSize.Height - 14) / 2));
         }
     }

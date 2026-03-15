@@ -15,7 +15,7 @@ public class ScrollBar : RangeBase
     private static readonly SolidColorBrush s_defaultThumbBrush = new(Color.FromRgb(170, 170, 170));
     private static readonly SolidColorBrush s_defaultArrowBrush = new(Color.FromRgb(210, 210, 210));
     private static readonly SolidColorBrush s_transparentBrush = new(Color.FromArgb(0, 0, 0, 0));
-    private static readonly BlurEffect s_defaultTrackBackdropEffect = new(16f, BackdropBlurType.Gaussian);
+    private static readonly BlurEffect s_defaultTrackBackdropEffect = new(0f, BackdropBlurType.Gaussian);
     private static readonly Style s_internalRepeatButtonStyle = new(typeof(RepeatButton));
     private static readonly Style s_internalThumbStyle = CreateInternalThumbStyle();
 
@@ -26,6 +26,7 @@ public class ScrollBar : RangeBase
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(ScrollBar),
             new PropertyMetadata(Orientation.Vertical, OnLayoutPropertyChanged));
@@ -33,6 +34,7 @@ public class ScrollBar : RangeBase
     /// <summary>
     /// Identifies the ViewportSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ViewportSizeProperty =
         DependencyProperty.Register(nameof(ViewportSize), typeof(double), typeof(ScrollBar),
             new PropertyMetadata(0.0, OnLayoutPropertyChanged));
@@ -41,6 +43,7 @@ public class ScrollBar : RangeBase
     /// Identifies the ThumbStyle dependency property.
     /// Allows ScrollBar themes to directly inject a keyed thumb style.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ThumbStyleProperty =
         DependencyProperty.Register(nameof(ThumbStyle), typeof(Style), typeof(ScrollBar),
             new PropertyMetadata(null, OnPartStylePropertyChanged));
@@ -49,6 +52,7 @@ public class ScrollBar : RangeBase
     /// Identifies the IsThumbSlim dependency property.
     /// When true, the Track renders the thumb as a thin line centered in the track.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsThumbSlimProperty =
         DependencyProperty.Register(nameof(IsThumbSlim), typeof(bool), typeof(ScrollBar),
             new PropertyMetadata(false, OnThumbPresentationPropertyChanged));
@@ -80,6 +84,7 @@ public class ScrollBar : RangeBase
     /// <summary>
     /// Gets or sets the orientation of the ScrollBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -89,6 +94,7 @@ public class ScrollBar : RangeBase
     /// <summary>
     /// Gets or sets the size of the viewport, which determines the thumb size.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ViewportSize
     {
         get => (double)GetValue(ViewportSizeProperty)!;
@@ -98,6 +104,7 @@ public class ScrollBar : RangeBase
     /// <summary>
     /// Gets or sets the style applied to the internal Track thumb.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Style? ThumbStyle
     {
         get => (Style?)GetValue(ThumbStyleProperty);
@@ -107,6 +114,7 @@ public class ScrollBar : RangeBase
     /// <summary>
     /// Gets or sets whether the thumb should render in slim mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsThumbSlim
     {
         get => (bool)GetValue(IsThumbSlimProperty)!;
@@ -196,7 +204,12 @@ public class ScrollBar : RangeBase
         AddVisualChild(_lineUpButton);
 
         // Create track
-        _track = new Track();
+        _track = new Track
+        {
+            // ScrollBar owns thumb dragging so we do not pay for a second Track.Value update
+            // and Arrange invalidation on every pointer move.
+            HandlesThumbDragInternally = false
+        };
         _track.SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         _track.Thumb = new Thumb
         {
@@ -827,7 +840,10 @@ public class ScrollBar : RangeBase
     {
         if (d is ScrollBar scrollBar)
         {
-            scrollBar.StartAutoHideVisualTransition(scrollBar.IsThumbSlim ? 1.0 : 0.0);
+            var targetProgress = scrollBar.IsThumbSlim ? 1.0 : 0.0;
+            scrollBar._autoHideCollapseProgress = targetProgress;
+            scrollBar.StopAutoHideVisualTimer();
+            scrollBar.ApplyAutoHideVisualState(targetProgress);
         }
     }
 
@@ -1031,8 +1047,8 @@ public class ScrollBar : RangeBase
 
         dc.PushOpacity(chromeOpacity);
 
-        var backdropEffect = BackdropEffect ?? s_defaultTrackBackdropEffect;
-        if (backdropEffect.HasEffect)
+        var backdropEffect = BackdropEffect;
+        if ((backdropEffect ?? s_defaultTrackBackdropEffect).HasEffect && backdropEffect != null)
         {
             dc.DrawBackdropEffect(innerRect, backdropEffect, CornerRadius);
         }

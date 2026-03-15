@@ -53,4 +53,23 @@ public sealed class NativeSurfaceDescriptorTests
         Assert.True(validSurface.IsValid);
         Assert.False(invalidSurface.IsValid);
     }
+
+    [Fact]
+    public void AdditionalPlatformFactories_PopulateExpectedHandles()
+    {
+        var androidWindow = new nint(0x3000);
+        var macView = new nint(0x4000);
+
+        var androidSurface = NativeSurfaceDescriptor.ForAndroidNativeWindow(androidWindow);
+        var macSurface = NativeSurfaceDescriptor.ForMacOSView(macView, composition: true);
+
+        Assert.Equal(NativePlatform.Android, androidSurface.Platform);
+        Assert.Equal(androidWindow, androidSurface.Handle0);
+        Assert.True(androidSurface.IsValid);
+
+        Assert.Equal(NativePlatform.MacOS, macSurface.Platform);
+        Assert.Equal(NativeSurfaceKind.CompositionTarget, macSurface.Kind);
+        Assert.Equal(macView, macSurface.Handle0);
+        Assert.True(macSurface.IsValid);
+    }
 }

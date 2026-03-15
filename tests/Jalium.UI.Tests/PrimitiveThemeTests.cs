@@ -123,6 +123,52 @@ public class PrimitiveThemeTests
     }
 
     [Fact]
+    public void FocusableTemplates_ShouldExposeNamedFocusChrome()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var button = new Button { Content = "Launch" };
+            var checkBox = new CheckBox { Content = "Remember me" };
+            var comboBox = new ComboBox();
+            comboBox.Items.Add("Alpha");
+            var toggleSwitch = new ToggleSwitch();
+            var listBox = new ListBox();
+            listBox.Items.Add("Row 1");
+
+            var host = new StackPanel { Width = 360, Height = 320 };
+            host.Children.Add(button);
+            host.Children.Add(checkBox);
+            host.Children.Add(comboBox);
+            host.Children.Add(toggleSwitch);
+            host.Children.Add(listBox);
+
+            host.Measure(new Size(360, 320));
+            host.Arrange(new Rect(0, 0, 360, 320));
+
+            var listBoxItem = FindDescendant<ListBoxItem>(listBox);
+
+            Assert.NotNull(button.FindName("FocusOuter"));
+            Assert.NotNull(button.FindName("FocusInner"));
+            Assert.NotNull(checkBox.FindName("FocusOuter"));
+            Assert.NotNull(checkBox.FindName("FocusInner"));
+            Assert.NotNull(comboBox.FindName("FocusOuter"));
+            Assert.NotNull(comboBox.FindName("FocusInner"));
+            Assert.NotNull(toggleSwitch.FindName("FocusOuter"));
+            Assert.NotNull(toggleSwitch.FindName("FocusInner"));
+            Assert.NotNull(listBoxItem);
+            Assert.NotNull(listBoxItem!.FindName("FocusOuter"));
+            Assert.NotNull(listBoxItem.FindName("FocusInner"));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
     public void Slider_ImplicitThemeStyle_ShouldApplyWithoutLocalHeightOverride()
     {
         ResetApplicationState();

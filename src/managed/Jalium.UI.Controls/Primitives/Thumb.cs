@@ -10,6 +10,12 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class Thumb : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ThumbAutomationPeer(this);
+    }
+
     #region Static Brushes & Pens
 
     private static readonly SolidColorBrush s_draggingBgBrush = new(Color.FromRgb(0, 100, 190));
@@ -34,11 +40,13 @@ public class Thumb : Control
     /// <summary>
     /// Identifies the IsDragging dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDraggingProperty = IsDraggingPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the ShowGrip dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowGripProperty =
         DependencyProperty.Register(nameof(ShowGrip), typeof(bool), typeof(Thumb),
             new PropertyMetadata(true, OnVisualPropertyChanged));
@@ -102,11 +110,13 @@ public class Thumb : Control
     /// <summary>
     /// Gets a value indicating whether the thumb is currently being dragged.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDragging => (bool)GetValue(IsDraggingProperty)!;
 
     /// <summary>
     /// Gets or sets whether grip lines are rendered by the default thumb renderer.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowGrip
     {
         get => (bool)GetValue(ShowGripProperty)!;

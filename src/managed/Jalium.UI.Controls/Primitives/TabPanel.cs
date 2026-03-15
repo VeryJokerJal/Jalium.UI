@@ -10,6 +10,7 @@ public class TabPanel : Panel
     /// <summary>
     /// Identifies the TabStripPlacement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabStripPlacementProperty =
         DependencyProperty.Register(nameof(TabStripPlacement), typeof(Dock), typeof(TabPanel),
             new PropertyMetadata(Dock.Top, OnLayoutPropertyChanged));
@@ -21,6 +22,7 @@ public class TabPanel : Panel
     /// <summary>
     /// Gets or sets the placement of the tab strip.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public Dock TabStripPlacement
     {
         get => (Dock)GetValue(TabStripPlacementProperty)!;

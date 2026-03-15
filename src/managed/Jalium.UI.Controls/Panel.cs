@@ -13,6 +13,7 @@ public abstract class Panel : FrameworkElement
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(Panel),
             new PropertyMetadata(null, OnBackgroundChanged));
@@ -20,6 +21,7 @@ public abstract class Panel : FrameworkElement
     /// <summary>
     /// Gets or sets the brush used to fill the panel's bounds.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -41,6 +43,7 @@ public abstract class Panel : FrameworkElement
     /// <summary>
     /// Identifies the ZIndex attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ZIndexProperty =
         DependencyProperty.RegisterAttached("ZIndex", typeof(int), typeof(Panel),
             new PropertyMetadata(0, OnZIndexChanged));
@@ -48,12 +51,14 @@ public abstract class Panel : FrameworkElement
     /// <summary>
     /// Gets the ZIndex value for a UIElement.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static int GetZIndex(UIElement element) =>
         (int)(element.GetValue(ZIndexProperty) ?? 0);
 
     /// <summary>
     /// Sets the ZIndex value for a UIElement.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetZIndex(UIElement element, int value) =>
         element.SetValue(ZIndexProperty, value);
 

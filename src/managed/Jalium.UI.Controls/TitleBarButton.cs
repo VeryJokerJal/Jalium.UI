@@ -34,6 +34,12 @@ public enum TitleBarButtonKind
 /// </summary>
 public class TitleBarButton : ButtonBase
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TitleBarButtonAutomationPeer(this);
+    }
+
     private const double DefaultButtonWidth = 46;
     private const double DefaultButtonHeight = 32;
     private static readonly SolidColorBrush s_fallbackTitleBarButtonHoverBrush = new(Themes.ThemeColors.TitleBarButtonHover);
@@ -47,6 +53,7 @@ public class TitleBarButton : ButtonBase
     /// <summary>
     /// Identifies the Kind dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty KindProperty =
         DependencyProperty.Register(nameof(Kind), typeof(TitleBarButtonKind), typeof(TitleBarButton),
             new PropertyMetadata(TitleBarButtonKind.Close, OnKindChanged));
@@ -54,6 +61,7 @@ public class TitleBarButton : ButtonBase
     /// <summary>
     /// Identifies the GlyphSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty GlyphSizeProperty =
         DependencyProperty.Register(nameof(GlyphSize), typeof(double), typeof(TitleBarButton),
             new PropertyMetadata(10.0));
@@ -65,6 +73,7 @@ public class TitleBarButton : ButtonBase
     /// <summary>
     /// Gets or sets the kind of title bar button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public TitleBarButtonKind Kind
     {
         get => (TitleBarButtonKind)(GetValue(KindProperty) ?? TitleBarButtonKind.Close);
@@ -74,6 +83,7 @@ public class TitleBarButton : ButtonBase
     /// <summary>
     /// Gets or sets the size of the glyph.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public double GlyphSize
     {
         get => (double)GetValue(GlyphSizeProperty)!;

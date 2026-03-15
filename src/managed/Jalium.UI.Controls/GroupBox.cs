@@ -7,11 +7,18 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class GroupBox : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.GroupBoxAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(GroupBox),
             new PropertyMetadata(null, OnHeaderChanged));
@@ -19,6 +26,7 @@ public class GroupBox : ContentControl
     /// <summary>
     /// Identifies the HeaderBackground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderBackgroundProperty =
         DependencyProperty.Register(nameof(HeaderBackground), typeof(Brush), typeof(GroupBox),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -30,6 +38,7 @@ public class GroupBox : ContentControl
     /// <summary>
     /// Gets or sets the header content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
@@ -39,6 +48,7 @@ public class GroupBox : ContentControl
     /// <summary>
     /// Gets or sets the background brush for the header area.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Brush? HeaderBackground
     {
         get => (Brush?)GetValue(HeaderBackgroundProperty);

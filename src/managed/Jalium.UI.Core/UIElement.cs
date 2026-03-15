@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Input.StylusPlugIns;
+using Jalium.UI.Input.StylusPlugIns;
 
 namespace Jalium.UI;
 
@@ -257,6 +257,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the Visibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VisibilityProperty =
         DependencyProperty.Register(nameof(Visibility), typeof(Visibility), typeof(UIElement),
             new PropertyMetadata(Visibility.Visible, OnVisibilityChanged));
@@ -264,6 +265,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the IsEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsEnabledProperty =
         DependencyProperty.Register(nameof(IsEnabled), typeof(bool), typeof(UIElement),
             new PropertyMetadata(true, OnIsEnabledChanged));
@@ -271,6 +273,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the IsHitTestVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsHitTestVisibleProperty =
         DependencyProperty.Register(nameof(IsHitTestVisible), typeof(bool), typeof(UIElement),
             new PropertyMetadata(true, OnIsHitTestVisibleChanged));
@@ -278,6 +281,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the Opacity dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OpacityProperty =
         DependencyProperty.Register(nameof(Opacity), typeof(double), typeof(UIElement),
             new PropertyMetadata(1.0, OnRenderPropertyChanged));
@@ -285,6 +289,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the BackdropEffect dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BackdropEffectProperty =
         DependencyProperty.Register(nameof(BackdropEffect), typeof(IBackdropEffect), typeof(UIElement),
             new PropertyMetadata(null, OnBackdropEffectChanged));
@@ -293,6 +298,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Identifies the Effect dependency property.
     /// This is for element-level bitmap effects like DropShadowEffect, distinct from BackdropEffect.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty EffectProperty =
         DependencyProperty.Register(nameof(Effect), typeof(object), typeof(UIElement),
             new PropertyMetadata(null, OnEffectChanged));
@@ -300,6 +306,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the OpacityMask dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OpacityMaskProperty =
         DependencyProperty.Register(nameof(OpacityMask), typeof(object), typeof(UIElement),
             new PropertyMetadata(null, OnOpacityMaskChanged));
@@ -307,6 +314,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the RenderTransform dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty RenderTransformProperty =
         DependencyProperty.Register(nameof(RenderTransform), typeof(object), typeof(UIElement),
             new PropertyMetadata(null, OnRenderPropertyChanged));
@@ -314,6 +322,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the Focusable dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty FocusableProperty =
         DependencyProperty.Register(nameof(Focusable), typeof(bool), typeof(UIElement),
             new PropertyMetadata(false));
@@ -321,6 +330,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the IsManipulationEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsManipulationEnabledProperty =
         DependencyProperty.Register(nameof(IsManipulationEnabled), typeof(bool), typeof(UIElement),
             new PropertyMetadata(false));
@@ -335,6 +345,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the IsMouseOver dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsMouseOverProperty = IsMouseOverPropertyKey.DependencyProperty;
 
     /// <summary>
@@ -347,6 +358,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the IsPressed dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsPressedProperty = IsPressedPropertyKey.DependencyProperty;
 
     /// <summary>
@@ -366,6 +378,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the IsKeyboardFocused dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsKeyboardFocusedProperty = IsKeyboardFocusedPropertyKey.DependencyProperty;
 
     /// <summary>
@@ -378,16 +391,19 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the IsKeyboardFocusWithin dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsKeyboardFocusWithinProperty = IsKeyboardFocusWithinPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the IsFocused dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsFocusedProperty = IsFocusedPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the ClipToBounds dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ClipToBoundsProperty =
         DependencyProperty.Register(nameof(ClipToBounds), typeof(bool), typeof(UIElement),
             new PropertyMetadata(false, OnClipToBoundsChanged));
@@ -395,6 +411,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Identifies the Clip dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ClipProperty =
         DependencyProperty.Register(nameof(Clip), typeof(object), typeof(UIElement),
             new PropertyMetadata(null, OnRenderPropertyChanged));
@@ -406,6 +423,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets or sets the visibility of this element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public Visibility Visibility
     {
         get => (Visibility)GetValue(VisibilityProperty)!;
@@ -417,6 +435,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// The effective value considers the parent chain — if any ancestor is disabled,
     /// this element is also effectively disabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsEnabled
     {
         get
@@ -434,6 +453,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// The effective value considers the parent chain — if any ancestor is not hit-test visible,
     /// this element is also effectively not hit-test visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsHitTestVisible
     {
         get
@@ -448,6 +468,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets or sets the opacity of this element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public double Opacity
     {
         get => (double)GetValue(OpacityProperty)!;
@@ -458,6 +479,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Gets or sets the backdrop effect.
     /// Use implementations like BlurEffect, AcrylicEffect, MicaEffect, etc.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public IBackdropEffect? BackdropEffect
     {
         get => (IBackdropEffect?)GetValue(BackdropEffectProperty);
@@ -469,6 +491,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Use DropShadowEffect, ElementBlurEffect, etc. from Jalium.UI.Media.Effects.
     /// This is distinct from BackdropEffect which affects content behind the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public object? Effect
     {
         get => GetValue(EffectProperty);
@@ -479,6 +502,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Gets or sets a brush that specifies the opacity mask for this element.
     /// The alpha channel of the brush determines the opacity of corresponding parts of the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public object? OpacityMask
     {
         get => GetValue(OpacityMaskProperty);
@@ -488,6 +512,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets or sets the render transform.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public object? RenderTransform
     {
         get => GetValue(RenderTransformProperty);
@@ -497,6 +522,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets or sets a value that indicates whether this element can receive focus.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool Focusable
     {
         get => (bool)GetValue(FocusableProperty)!;
@@ -506,6 +532,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets or sets a value indicating whether manipulation events are enabled for this element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsManipulationEnabled
     {
         get => (bool)GetValue(IsManipulationEnabledProperty)!;
@@ -515,6 +542,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets a value indicating whether the mouse pointer is over this element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsMouseOver => (bool)GetValue(IsMouseOverProperty)!;
 
     /// <summary>
@@ -528,6 +556,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets a value indicating whether this element is currently pressed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsPressed => (bool)GetValue(IsPressedProperty)!;
 
     /// <summary>
@@ -541,6 +570,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets or sets a value indicating whether to clip the content of this element to its bounds.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public bool ClipToBounds
     {
         get => (bool)GetValue(ClipToBoundsProperty)!;
@@ -551,6 +581,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Gets or sets the geometry used to define the outline of the contents of an element.
     /// The Clip geometry is applied to the element's rendering.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public object? Clip
     {
         get => GetValue(ClipProperty);
@@ -564,16 +595,19 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Gets a value indicating whether this element has keyboard focus.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsKeyboardFocused => (bool)GetValue(IsKeyboardFocusedProperty)!;
 
     /// <summary>
     /// Gets a value indicating whether keyboard focus is anywhere within this element or its visual subtree.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsKeyboardFocusWithin => (bool)GetValue(IsKeyboardFocusWithinProperty)!;
 
     /// <summary>
     /// Gets a value indicating whether this element has logical focus.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsFocused => (bool)GetValue(IsFocusedProperty)!;
 
     /// <summary>
@@ -994,7 +1028,8 @@ public abstract partial class UIElement : Visual, IInputElement
 
     /// <summary>
     /// Gets the screen-space bounds of this element relative to its Window.
-    /// Uses cached screen offset when available (O(1) instead of O(depth)).
+    /// Uses cached layout offset (O(1)) plus current RenderOffset (not cached,
+    /// since RenderOffset changes during animations without triggering layout).
     /// </summary>
     internal Rect GetScreenBounds()
     {
@@ -1017,7 +1052,13 @@ public abstract partial class UIElement : Visual, IInputElement
             _cachedScreenOffset = new Point(x, y);
             _isScreenOffsetValid = true;
         }
-        return new Rect(_cachedScreenOffset.X, _cachedScreenOffset.Y,
+
+        // Include RenderOffset — animation systems (ProgressBar indeterminate,
+        // spring physics, etc.) move elements via RenderOffset without triggering
+        // layout. Without this, the dirty region wouldn't cover the actual
+        // rendered position, causing ghost images during animation.
+        var ro = RenderOffset;
+        return new Rect(_cachedScreenOffset.X + ro.X, _cachedScreenOffset.Y + ro.Y,
                         _renderSize.Width, _renderSize.Height);
     }
 

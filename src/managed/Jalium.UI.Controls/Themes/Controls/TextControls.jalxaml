@@ -252,6 +252,12 @@
         <Setter Property="Padding" Value="4" />
         <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -269,6 +275,12 @@
         <Setter Property="LineNumberForeground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="CurrentLineBackground" Value="{DynamicResource HighlightBackground}" />
         <Setter Property="GutterBackground" Value="{DynamicResource ControlBackground}" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
 </ResourceDictionary>

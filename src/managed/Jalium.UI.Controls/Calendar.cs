@@ -10,6 +10,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Calendar : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.CalendarAutomationPeer(this);
+    }
+
     #region Static Brushes & Pens
 
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
@@ -28,6 +34,7 @@ public class Calendar : Control
     /// <summary>
     /// Identifies the SelectedDate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedDateProperty =
         DependencyProperty.Register(nameof(SelectedDate), typeof(DateTime?), typeof(Calendar),
             new PropertyMetadata(null, OnSelectedDateChanged));
@@ -35,6 +42,7 @@ public class Calendar : Control
     /// <summary>
     /// Identifies the DisplayDate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateProperty =
         DependencyProperty.Register(nameof(DisplayDate), typeof(DateTime), typeof(Calendar),
             new PropertyMetadata(DateTime.Today, OnDisplayDateChanged));
@@ -42,6 +50,7 @@ public class Calendar : Control
     /// <summary>
     /// Identifies the DisplayDateStart dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateStartProperty =
         DependencyProperty.Register(nameof(DisplayDateStart), typeof(DateTime?), typeof(Calendar),
             new PropertyMetadata(null));
@@ -49,6 +58,7 @@ public class Calendar : Control
     /// <summary>
     /// Identifies the DisplayDateEnd dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateEndProperty =
         DependencyProperty.Register(nameof(DisplayDateEnd), typeof(DateTime?), typeof(Calendar),
             new PropertyMetadata(null));
@@ -56,6 +66,7 @@ public class Calendar : Control
     /// <summary>
     /// Identifies the FirstDayOfWeek dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty FirstDayOfWeekProperty =
         DependencyProperty.Register(nameof(FirstDayOfWeek), typeof(DayOfWeek), typeof(Calendar),
             new PropertyMetadata(DayOfWeek.Sunday, OnDisplayDateChanged));
@@ -63,6 +74,7 @@ public class Calendar : Control
     /// <summary>
     /// Identifies the IsTodayHighlighted dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsTodayHighlightedProperty =
         DependencyProperty.Register(nameof(IsTodayHighlighted), typeof(bool), typeof(Calendar),
             new PropertyMetadata(true, OnVisualPropertyChanged));
@@ -70,6 +82,7 @@ public class Calendar : Control
     /// <summary>
     /// Identifies the SelectionMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectionModeProperty =
         DependencyProperty.Register(nameof(SelectionMode), typeof(CalendarSelectionMode), typeof(Calendar),
             new PropertyMetadata(CalendarSelectionMode.SingleDate));
@@ -117,6 +130,7 @@ public class Calendar : Control
     /// <summary>
     /// Gets or sets the currently selected date.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public DateTime? SelectedDate
     {
         get => (DateTime?)GetValue(SelectedDateProperty);
@@ -126,6 +140,7 @@ public class Calendar : Control
     /// <summary>
     /// Gets or sets the date to display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DateTime DisplayDate
     {
         get => (DateTime)GetValue(DisplayDateProperty)!;
@@ -135,6 +150,7 @@ public class Calendar : Control
     /// <summary>
     /// Gets or sets the first date to display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DateTime? DisplayDateStart
     {
         get => (DateTime?)GetValue(DisplayDateStartProperty);
@@ -144,6 +160,7 @@ public class Calendar : Control
     /// <summary>
     /// Gets or sets the last date to display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DateTime? DisplayDateEnd
     {
         get => (DateTime?)GetValue(DisplayDateEndProperty);
@@ -153,6 +170,7 @@ public class Calendar : Control
     /// <summary>
     /// Gets or sets the first day of the week.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DayOfWeek FirstDayOfWeek
     {
         get => (DayOfWeek)(GetValue(FirstDayOfWeekProperty) ?? DayOfWeek.Sunday);
@@ -162,6 +180,7 @@ public class Calendar : Control
     /// <summary>
     /// Gets or sets a value indicating whether today is highlighted.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsTodayHighlighted
     {
         get => (bool)GetValue(IsTodayHighlightedProperty)!;
@@ -171,6 +190,7 @@ public class Calendar : Control
     /// <summary>
     /// Gets or sets the selection mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public CalendarSelectionMode SelectionMode
     {
         get => (CalendarSelectionMode)GetValue(SelectionModeProperty)!;

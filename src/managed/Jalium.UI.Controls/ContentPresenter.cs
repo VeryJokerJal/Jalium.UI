@@ -13,6 +13,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Identifies the Content dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentProperty =
         DependencyProperty.Register(nameof(Content), typeof(object), typeof(ContentPresenter),
             new PropertyMetadata(null, OnContentChanged));
@@ -20,6 +21,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Identifies the ContentTemplate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentTemplateProperty =
         DependencyProperty.Register(nameof(ContentTemplate), typeof(DataTemplate), typeof(ContentPresenter),
             new PropertyMetadata(null, OnContentTemplateChanged));
@@ -27,6 +29,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Identifies the ContentTemplateSelector dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentTemplateSelectorProperty =
         DependencyProperty.Register(nameof(ContentTemplateSelector), typeof(DataTemplateSelector), typeof(ContentPresenter),
             new PropertyMetadata(null, OnContentTemplateSelectorChanged));
@@ -34,6 +37,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Identifies the ContentSource dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentSourceProperty =
         DependencyProperty.Register(nameof(ContentSource), typeof(string), typeof(ContentPresenter),
             new PropertyMetadata("Content"));
@@ -45,6 +49,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Gets or sets the content to display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Content
     {
         get => GetValue(ContentProperty);
@@ -54,6 +59,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Gets or sets the template used to display the content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplate? ContentTemplate
     {
         get => (DataTemplate?)GetValue(ContentTemplateProperty);
@@ -63,6 +69,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Gets or sets the DataTemplateSelector used to choose a template for the content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplateSelector? ContentTemplateSelector
     {
         get => (DataTemplateSelector?)GetValue(ContentTemplateSelectorProperty);
@@ -72,6 +79,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Gets or sets the name of the property on the templated parent to use as content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string ContentSource
     {
         get => (string)(GetValue(ContentSourceProperty) ?? "Content");

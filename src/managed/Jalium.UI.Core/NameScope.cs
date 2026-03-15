@@ -9,14 +9,17 @@ public sealed class NameScope : INameScope, IEnumerable<KeyValuePair<string, obj
 {
     private readonly Dictionary<string, object> _nameMap = new();
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty NameScopeProperty =
         DependencyProperty.RegisterAttached("NameScope", typeof(INameScope), typeof(NameScope), new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static INameScope? GetNameScope(DependencyObject dependencyObject)
     {
         return (INameScope?)dependencyObject.GetValue(NameScopeProperty);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetNameScope(DependencyObject dependencyObject, INameScope? value)
     {
         dependencyObject.SetValue(NameScopeProperty, value);

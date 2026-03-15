@@ -1004,7 +1004,53 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             case DrawingStateType.Opacity:
                 _renderTarget.PopOpacity();
                 break;
+            case DrawingStateType.ViewportOnly:
+                if (_clipBoundsStack.Count > 0)
+                {
+                    _clipBoundsStack.Pop();
+                }
+                // No native PopClip — ViewportOnly only affects managed culling
+                break;
         }
+    }
+
+    /// <summary>
+    /// Pushes a dirty region clip that restricts D2D rendering AND managed viewport
+    /// culling to the specified rectangle. Uses the native PushClip for GPU-side
+    /// clipping and updates <see cref="CurrentClipBounds"/> for
+    /// <see cref="Visual.ShouldRenderChild"/> viewport culling.
+    /// </summary>
+    internal void PushDirtyRegionClip(Rect dirtyRegion)
+    {
+        if (_closed) return;
+
+        var x = (float)Math.Floor(dirtyRegion.X);
+        var y = (float)Math.Floor(dirtyRegion.Y);
+        var w = (float)Math.Ceiling(dirtyRegion.X + dirtyRegion.Width) - x;
+        var h = (float)Math.Ceiling(dirtyRegion.Y + dirtyRegion.Height) - y;
+
+        Rect? effectiveClip = dirtyRegion;
+        if (_clipBoundsStack.Count > 0)
+        {
+            var parentClip = _clipBoundsStack.Peek();
+            effectiveClip = parentClip.HasValue ? parentClip.Value.Intersect(dirtyRegion) : dirtyRegion;
+        }
+        _clipBoundsStack.Push(effectiveClip);
+
+        // Push D2D clip with ALIASED mode — hard pixel boundary, no semi-transparent
+        // edge artifacts. PER_PRIMITIVE mode creates anti-aliased clip edges that
+        // produce visible seam lines when the clip boundary intersects opaque content.
+        _renderTarget.PushClipAliased(x, y, w, h);
+        _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
+    }
+
+    /// <summary>
+    /// Pops a dirty region clip previously pushed by <see cref="PushDirtyRegionClip"/>.
+    /// </summary>
+    internal void PopDirtyRegionClip()
+    {
+        if (_closed) return;
+        Pop();
     }
 
     // ========================================================================
@@ -1293,11 +1339,24 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         NativeBitmap? nativeBitmap = null;
 
-        if (imageSource is BitmapImage bitmapImage && bitmapImage.ImageData != null)
+        if (imageSource is BitmapImage bitmapImage)
         {
             try
             {
-                nativeBitmap = _context.CreateBitmap(bitmapImage.ImageData);
+                if (bitmapImage.RawPixelData != null &&
+                    bitmapImage.PixelWidth > 0 &&
+                    bitmapImage.PixelHeight > 0)
+                {
+                    nativeBitmap = _context.CreateBitmapFromPixels(
+                        bitmapImage.RawPixelData,
+                        bitmapImage.PixelWidth,
+                        bitmapImage.PixelHeight,
+                        bitmapImage.PixelStride);
+                }
+                else if (bitmapImage.ImageData != null)
+                {
+                    nativeBitmap = _context.CreateBitmap(bitmapImage.ImageData);
+                }
             }
             catch
             {
@@ -1382,7 +1441,8 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         Transform,
         NativeTransform,
         Clip,
-        Opacity
+        Opacity,
+        ViewportOnly
     }
 
     private readonly struct DrawingState

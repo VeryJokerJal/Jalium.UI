@@ -125,6 +125,54 @@ public class DevToolsWindowTests
         }
     }
 
+    [Fact]
+    public void DevToolsWindow_ShouldGroupDependencyPropertiesByCategory()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var button = new Button
+            {
+                Name = "CategorizedButton",
+                Content = "Inspect me"
+            };
+
+            var host = new Window
+            {
+                Title = "Host",
+                Content = button
+            };
+
+            var devTools = new DevToolsWindow(host);
+            try
+            {
+                InvokePrivate(devTools, "UpdatePropertiesPanel", button);
+
+                var propertiesPanel = GetPrivateField<StackPanel>(devTools, "_propertiesPanel");
+                var headerTexts = propertiesPanel.Children
+                    .OfType<TextBlock>()
+                    .Select(textBlock => textBlock.Text ?? string.Empty)
+                    .ToList();
+
+                Assert.Contains(headerTexts, text => text.Contains("Properties by Category", StringComparison.Ordinal));
+                Assert.Contains(headerTexts, text => text.Contains("Framework", StringComparison.Ordinal));
+                Assert.Contains(headerTexts, text => text.Contains("Layout", StringComparison.Ordinal));
+                Assert.Contains(headerTexts, text => text.Contains("Appearance", StringComparison.Ordinal));
+                Assert.Contains(headerTexts, text => text.Contains("Other", StringComparison.Ordinal));
+            }
+            finally
+            {
+                devTools.CloseDevTools();
+            }
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
     private static T GetPrivateField<T>(object instance, string fieldName) where T : class
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);

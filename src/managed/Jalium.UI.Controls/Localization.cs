@@ -83,6 +83,7 @@ public static class Localization
     /// <summary>
     /// Identifies the Comments attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CommentsProperty =
         DependencyProperty.RegisterAttached("Comments", typeof(string), typeof(Localization),
             new PropertyMetadata(string.Empty));
@@ -90,6 +91,7 @@ public static class Localization
     /// <summary>
     /// Identifies the Attributes attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AttributesProperty =
         DependencyProperty.RegisterAttached("Attributes", typeof(string), typeof(Localization),
             new PropertyMetadata(string.Empty));
@@ -97,6 +99,7 @@ public static class Localization
     /// <summary>
     /// Gets the localization comments for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static string GetComments(DependencyObject element)
     {
         return (string)(element.GetValue(CommentsProperty) ?? string.Empty);
@@ -105,6 +108,7 @@ public static class Localization
     /// <summary>
     /// Sets the localization comments for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetComments(DependencyObject element, string value)
     {
         element.SetValue(CommentsProperty, value);
@@ -113,6 +117,7 @@ public static class Localization
     /// <summary>
     /// Gets the localization attributes for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static string GetAttributes(DependencyObject element)
     {
         return (string)(element.GetValue(AttributesProperty) ?? string.Empty);
@@ -121,6 +126,7 @@ public static class Localization
     /// <summary>
     /// Sets the localization attributes for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetAttributes(DependencyObject element, string value)
     {
         element.SetValue(AttributesProperty, value);

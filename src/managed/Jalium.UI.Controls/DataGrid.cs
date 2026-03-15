@@ -14,96 +14,125 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class DataGrid : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.DataGridAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty ItemsSourceProperty =
         DependencyProperty.Register(nameof(ItemsSource), typeof(IEnumerable), typeof(DataGrid),
             new PropertyMetadata(null, OnItemsSourceChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedItemProperty =
         DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(DataGrid),
             new PropertyMetadata(null, OnSelectedItemChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedIndexProperty =
         DependencyProperty.Register(nameof(SelectedIndex), typeof(int), typeof(DataGrid),
             new PropertyMetadata(-1, OnSelectedIndexChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AutoGenerateColumnsProperty =
         DependencyProperty.Register(nameof(AutoGenerateColumns), typeof(bool), typeof(DataGrid),
             new PropertyMetadata(true, OnAutoGenerateColumnsChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanUserSortColumnsProperty =
         DependencyProperty.Register(nameof(CanUserSortColumns), typeof(bool), typeof(DataGrid),
             new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanUserResizeColumnsProperty =
         DependencyProperty.Register(nameof(CanUserResizeColumns), typeof(bool), typeof(DataGrid),
             new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanUserReorderColumnsProperty =
         DependencyProperty.Register(nameof(CanUserReorderColumns), typeof(bool), typeof(DataGrid),
             new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty EnableRowVirtualizationProperty =
         DependencyProperty.Register(nameof(EnableRowVirtualization), typeof(bool), typeof(DataGrid),
             new PropertyMetadata(true, OnVirtualizationSettingsChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty EnableColumnVirtualizationProperty =
         DependencyProperty.Register(nameof(EnableColumnVirtualization), typeof(bool), typeof(DataGrid),
             new PropertyMetadata(false, OnVirtualizationSettingsChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectionModeProperty =
         DependencyProperty.Register(nameof(SelectionMode), typeof(DataGridSelectionMode), typeof(DataGrid),
             new PropertyMetadata(DataGridSelectionMode.Extended, OnSelectionModeChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SelectionUnitProperty =
         DependencyProperty.Register(nameof(SelectionUnit), typeof(DataGridSelectionUnit), typeof(DataGrid),
             new PropertyMetadata(DataGridSelectionUnit.FullRow, OnSelectionUnitChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty GridLinesVisibilityProperty =
         DependencyProperty.Register(nameof(GridLinesVisibility), typeof(DataGridGridLinesVisibility), typeof(DataGrid),
             new PropertyMetadata(DataGridGridLinesVisibility.All));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeadersVisibilityProperty =
         DependencyProperty.Register(nameof(HeadersVisibility), typeof(DataGridHeadersVisibility), typeof(DataGrid),
             new PropertyMetadata(DataGridHeadersVisibility.All, OnHeadersVisibilityChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowHeightProperty =
         DependencyProperty.Register(nameof(RowHeight), typeof(double), typeof(DataGrid),
             new PropertyMetadata(double.NaN, OnRowHeightChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnHeaderHeightProperty =
         DependencyProperty.Register(nameof(ColumnHeaderHeight), typeof(double), typeof(DataGrid),
             new PropertyMetadata(double.NaN, OnColumnHeaderHeightChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowHeaderWidthProperty =
         DependencyProperty.Register(nameof(RowHeaderWidth), typeof(double), typeof(DataGrid),
             new PropertyMetadata(double.NaN, OnRowHeaderWidthChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(DataGrid),
             new PropertyMetadata(false));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowDetailsTemplateProperty =
         DependencyProperty.Register(nameof(RowDetailsTemplate), typeof(DataTemplate), typeof(DataGrid),
             new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowDetailsVisibilityModeProperty =
         DependencyProperty.Register(nameof(RowDetailsVisibilityMode), typeof(DataGridRowDetailsVisibilityMode), typeof(DataGrid),
             new PropertyMetadata(DataGridRowDetailsVisibilityMode.VisibleWhenSelected));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AlternatingRowBackgroundProperty =
         DependencyProperty.Register(nameof(AlternatingRowBackground), typeof(Brush), typeof(DataGrid),
             new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowBackgroundProperty =
         DependencyProperty.Register(nameof(RowBackground), typeof(Brush), typeof(DataGrid),
             new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty HorizontalGridLinesBrushProperty =
         DependencyProperty.Register(nameof(HorizontalGridLinesBrush), typeof(Brush), typeof(DataGrid),
             new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty VerticalGridLinesBrushProperty =
         DependencyProperty.Register(nameof(VerticalGridLinesBrush), typeof(Brush), typeof(DataGrid),
             new PropertyMetadata(null));
@@ -176,102 +205,119 @@ public class DataGrid : Control
 
     #region CLR Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public IEnumerable? ItemsSource
     {
         get => (IEnumerable?)GetValue(ItemsSourceProperty);
         set => SetValue(ItemsSourceProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedItem
     {
         get => GetValue(SelectedItemProperty);
         set => SetValue(SelectedItemProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public int SelectedIndex
     {
         get => (int)GetValue(SelectedIndexProperty)!;
         set => SetValue(SelectedIndexProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool AutoGenerateColumns
     {
         get => (bool)GetValue(AutoGenerateColumnsProperty)!;
         set => SetValue(AutoGenerateColumnsProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanUserSortColumns
     {
         get => (bool)GetValue(CanUserSortColumnsProperty)!;
         set => SetValue(CanUserSortColumnsProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanUserResizeColumns
     {
         get => (bool)GetValue(CanUserResizeColumnsProperty)!;
         set => SetValue(CanUserResizeColumnsProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanUserReorderColumns
     {
         get => (bool)GetValue(CanUserReorderColumnsProperty)!;
         set => SetValue(CanUserReorderColumnsProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool EnableRowVirtualization
     {
         get => (bool)GetValue(EnableRowVirtualizationProperty)!;
         set => SetValue(EnableRowVirtualizationProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool EnableColumnVirtualization
     {
         get => (bool)GetValue(EnableColumnVirtualizationProperty)!;
         set => SetValue(EnableColumnVirtualizationProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public DataGridSelectionMode SelectionMode
     {
         get => (DataGridSelectionMode)GetValue(SelectionModeProperty)!;
         set => SetValue(SelectionModeProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DataGridSelectionUnit SelectionUnit
     {
         get => (DataGridSelectionUnit)GetValue(SelectionUnitProperty)!;
         set => SetValue(SelectionUnitProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DataGridGridLinesVisibility GridLinesVisibility
     {
         get => (DataGridGridLinesVisibility)GetValue(GridLinesVisibilityProperty)!;
         set => SetValue(GridLinesVisibilityProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataGridHeadersVisibility HeadersVisibility
     {
         get => (DataGridHeadersVisibility)GetValue(HeadersVisibilityProperty)!;
         set => SetValue(HeadersVisibilityProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double RowHeight
     {
         get => (double)GetValue(RowHeightProperty)!;
         set => SetValue(RowHeightProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ColumnHeaderHeight
     {
         get => (double)GetValue(ColumnHeaderHeightProperty)!;
         set => SetValue(ColumnHeaderHeightProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double RowHeaderWidth
     {
         get => (double)GetValue(RowHeaderWidthProperty)!;
         set => SetValue(RowHeaderWidthProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsReadOnly
     {
         get => (bool)GetValue(IsReadOnlyProperty)!;
@@ -281,6 +327,7 @@ public class DataGrid : Control
     /// <summary>
     /// Gets or sets the template to use to display the details section of a row.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public DataTemplate? RowDetailsTemplate
     {
         get => (DataTemplate?)GetValue(RowDetailsTemplateProperty);
@@ -290,30 +337,35 @@ public class DataGrid : Control
     /// <summary>
     /// Gets or sets a value that indicates when the details section of a row is displayed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public DataGridRowDetailsVisibilityMode RowDetailsVisibilityMode
     {
         get => (DataGridRowDetailsVisibilityMode)(GetValue(RowDetailsVisibilityModeProperty) ?? DataGridRowDetailsVisibilityMode.VisibleWhenSelected);
         set => SetValue(RowDetailsVisibilityModeProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? AlternatingRowBackground
     {
         get => (Brush?)GetValue(AlternatingRowBackgroundProperty);
         set => SetValue(AlternatingRowBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Brush? RowBackground
     {
         get => (Brush?)GetValue(RowBackgroundProperty);
         set => SetValue(RowBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? HorizontalGridLinesBrush
     {
         get => (Brush?)GetValue(HorizontalGridLinesBrushProperty);
         set => SetValue(HorizontalGridLinesBrushProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? VerticalGridLinesBrush
     {
         get => (Brush?)GetValue(VerticalGridLinesBrushProperty);
@@ -1750,10 +1802,18 @@ public class DataGrid : Control
 /// </summary>
 public class DataGridRow : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.DataGridRowAutomationPeer(this);
+    }
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(DataGridRow),
             new PropertyMetadata(false));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty)!;
@@ -1807,6 +1867,13 @@ public class DataGridRow : Control
 /// </summary>
 public class DataGridCell : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.DataGridCellAutomationPeer(this);
+    }
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsEditingProperty =
         DependencyProperty.Register(nameof(IsEditing), typeof(bool), typeof(DataGridCell),
             new PropertyMetadata(false, OnIsEditingChanged));
@@ -1814,6 +1881,7 @@ public class DataGridCell : ContentControl
     /// <summary>
     /// Gets or sets whether this cell is in editing mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsEditing
     {
         get => (bool)GetValue(IsEditingProperty)!;
@@ -1916,6 +1984,12 @@ public class DataGridCell : ContentControl
 /// </summary>
 public class DataGridColumnHeader : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.DataGridColumnHeaderAutomationPeer(this);
+    }
+
     private const double ResizeHotZoneWidth = 8.0;
 
     internal DataGrid? ParentDataGrid { get; set; }
@@ -2225,42 +2299,50 @@ public abstract class DataGridColumn : DependencyObject
     private Visibility _visibility = Visibility.Visible;
     private int _displayIndex = -1;
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(DataGridColumn),
             new PropertyMetadata(null, OnHeaderPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty WidthProperty =
         DependencyProperty.Register(nameof(Width), typeof(double), typeof(DataGridColumn),
             new PropertyMetadata(DefaultWidth, OnWidthPropertyChanged, CoerceWidth));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinWidthProperty =
         DependencyProperty.Register(nameof(MinWidth), typeof(double), typeof(DataGridColumn),
             new PropertyMetadata(DefaultMinWidth, OnMinWidthPropertyChanged, CoerceMinWidth));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxWidthProperty =
         DependencyProperty.Register(nameof(MaxWidth), typeof(double), typeof(DataGridColumn),
             new PropertyMetadata(double.PositiveInfinity, OnMaxWidthPropertyChanged, CoerceMaxWidth));
 
     internal DataGrid? DataGridOwner { get; set; }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
         set => SetValue(HeaderProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Width
     {
         get => (double)GetValue(WidthProperty)!;
         set => SetValue(WidthProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinWidth
     {
         get => (double)GetValue(MinWidthProperty)!;
         set => SetValue(MinWidthProperty, value < 0 || double.IsNaN(value) || double.IsInfinity(value) ? 0.0 : value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxWidth
     {
         get => (double)GetValue(MaxWidthProperty)!;
@@ -2287,6 +2369,7 @@ public abstract class DataGridColumn : DependencyObject
         }
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsReadOnly { get; set; }
 
     /// <summary>
@@ -2665,6 +2748,7 @@ public sealed class DataGridCheckBoxColumn : DataGridBoundColumn
 
 public sealed class DataGridComboBoxColumn : DataGridBoundColumn
 {
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public IEnumerable? ItemsSource { get; set; }
     public string? DisplayMemberPath { get; set; }
     public string? SelectedValuePath { get; set; }

@@ -10,28 +10,40 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class TimePicker : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TimePickerAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedTimeProperty =
         DependencyProperty.Register(nameof(SelectedTime), typeof(TimeSpan?), typeof(TimePicker),
             new PropertyMetadata(null, OnSelectedTimeChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ClockIdentifierProperty =
         DependencyProperty.Register(nameof(ClockIdentifier), typeof(string), typeof(TimePicker),
             new PropertyMetadata("12HourClock", OnClockIdentifierChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinuteIncrementProperty =
         DependencyProperty.Register(nameof(MinuteIncrement), typeof(int), typeof(TimePicker),
             new PropertyMetadata(1));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(TimePicker),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(TimePicker),
             new PropertyMetadata("Select a time", OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(TimePicker),
             new PropertyMetadata(false, OnIsDropDownOpenChanged));
@@ -54,36 +66,42 @@ public class TimePicker : Control
 
     #region CLR Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public TimeSpan? SelectedTime
     {
         get => (TimeSpan?)GetValue(SelectedTimeProperty);
         set => SetValue(SelectedTimeProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string ClockIdentifier
     {
         get => (string)(GetValue(ClockIdentifierProperty) ?? "12HourClock");
         set => SetValue(ClockIdentifierProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int MinuteIncrement
     {
         get => (int)GetValue(MinuteIncrementProperty)!;
         set => SetValue(MinuteIncrementProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
         set => SetValue(HeaderProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? PlaceholderText
     {
         get => (string?)GetValue(PlaceholderTextProperty);
         set => SetValue(PlaceholderTextProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDropDownOpen
     {
         get => (bool)GetValue(IsDropDownOpenProperty)!;
@@ -620,11 +638,16 @@ public class TimePicker : Control
         }
 
         // Draw border
-        var borderBrush = IsFocused ? ResolveFocusedBorderBrush() : BorderBrush;
+        var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
             var pen = new Pen(borderBrush, strokeThickness);
             dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
+        }
+
+        if (IsKeyboardFocused)
+        {
+            ControlFocusVisual.Draw(dc, this, inputRect, cornerRadius);
         }
 
         // Draw time text or placeholder

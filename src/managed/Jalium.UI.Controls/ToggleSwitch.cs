@@ -10,6 +10,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ToggleSwitch : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ToggleSwitchAutomationPeer(this);
+    }
+
     #region Animation Constants
 
     private const double TrackWidth = 44.0;
@@ -42,26 +48,32 @@ public class ToggleSwitch : Control
 
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOnProperty =
         DependencyProperty.Register(nameof(IsOn), typeof(bool), typeof(ToggleSwitch),
             new PropertyMetadata(false, OnIsOnChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty OnContentProperty =
         DependencyProperty.Register(nameof(OnContent), typeof(object), typeof(ToggleSwitch),
             new PropertyMetadata("On", OnContentPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty OffContentProperty =
         DependencyProperty.Register(nameof(OffContent), typeof(object), typeof(ToggleSwitch),
             new PropertyMetadata("Off", OnContentPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(ToggleSwitch),
             new PropertyMetadata(null, OnHeaderPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty OnBackgroundProperty =
         DependencyProperty.Register(nameof(OnBackground), typeof(Brush), typeof(ToggleSwitch),
             new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty OffBackgroundProperty =
         DependencyProperty.Register(nameof(OffBackground), typeof(Brush), typeof(ToggleSwitch),
             new PropertyMetadata(null));
@@ -84,36 +96,42 @@ public class ToggleSwitch : Control
 
     #region CLR Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOn
     {
         get => (bool)GetValue(IsOnProperty)!;
         set => SetValue(IsOnProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? OnContent
     {
         get => GetValue(OnContentProperty);
         set => SetValue(OnContentProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? OffContent
     {
         get => GetValue(OffContentProperty);
         set => SetValue(OffContentProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
         set => SetValue(HeaderProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? OnBackground
     {
         get => (Brush?)GetValue(OnBackgroundProperty);
         set => SetValue(OnBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? OffBackground
     {
         get => (Brush?)GetValue(OffBackgroundProperty);

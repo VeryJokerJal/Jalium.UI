@@ -18,39 +18,61 @@
         <Setter Property="RowBackground" Value="Transparent" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGrid">
-                <Border Name="PART_OuterBorder"
-                        Background="{TemplateBinding Background}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="4">
-                    <Grid>
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="Auto" />
-                            <RowDefinition Height="*" />
-                        </Grid.RowDefinitions>
-                        <!-- Column headers area (ClipToBounds to clip when synced with horizontal scroll) -->
-                        <Border Name="PART_ColumnHeadersBorder"
-                                Grid.Row="0"
-                                Background="{DynamicResource ControlBackground}"
-                                BorderBrush="{DynamicResource ControlBorder}"
-                                BorderThickness="0,0,0,1"
-                                ClipToBounds="True">
-                            <StackPanel Name="PART_ColumnHeadersHost" Orientation="Horizontal" />
-                        </Border>
-                        <!-- Data rows area -->
-                        <ScrollViewer Name="PART_DataScrollViewer"
-                                      Grid.Row="1"
-                                      VerticalScrollBarVisibility="Auto"
-                                      HorizontalScrollBarVisibility="Auto">
-                            <StackPanel Name="PART_RowsHost" />
-                        </ScrollViewer>
-                    </Grid>
-                </Border>
+                <Grid>
+                    <Border Name="PART_OuterBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="4">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+                            <!-- Column headers area (ClipToBounds to clip when synced with horizontal scroll) -->
+                            <Border Name="PART_ColumnHeadersBorder"
+                                    Grid.Row="0"
+                                    Background="{DynamicResource ControlBackground}"
+                                    BorderBrush="{DynamicResource ControlBorder}"
+                                    BorderThickness="0,0,0,1"
+                                    ClipToBounds="True">
+                                <StackPanel Name="PART_ColumnHeadersHost" Orientation="Horizontal" />
+                            </Border>
+                            <!-- Data rows area -->
+                            <ScrollViewer Name="PART_DataScrollViewer"
+                                          Grid.Row="1"
+                                          VerticalScrollBarVisibility="Auto"
+                                          HorizontalScrollBarVisibility="Auto">
+                                <StackPanel Name="PART_RowsHost" />
+                            </ScrollViewer>
+                        </Grid>
+                    </Border>
+                    <Border Name="FocusOuter"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Opacity="0" />
+                    <Border Name="FocusInner"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Margin="2"
+                            Opacity="0" />
+                </Grid>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>

@@ -84,6 +84,10 @@
         </Setter>
 
         <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="PART_Thumb" Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
+                <Setter TargetName="PART_Thumb" Property="BorderThickness" Value="3" />
+            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
                 <Setter Property="Foreground" Value="{DynamicResource AccentBrushDisabled}" />
             </PropertyTrigger>
@@ -109,20 +113,35 @@
         <Setter Property="Height" Value="20" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Thumb">
-                <Border Name="ThumbBorder"
-                        Background="{TemplateBinding Background}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="{TemplateBinding CornerRadius}">
-                    <!-- Grip Lines -->
-                    <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <StackPanel Orientation="Vertical" VerticalAlignment="Center">
-                            <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" Margin="0,0,0,2" />
-                            <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" Margin="0,0,0,2" />
-                            <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" />
-                        </StackPanel>
-                    </Grid>
-                </Border>
+                <Grid>
+                    <Border Name="ThumbBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}">
+                        <!-- Grip Lines -->
+                        <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
+                            <StackPanel Orientation="Vertical" VerticalAlignment="Center">
+                                <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" Margin="0,0,0,2" />
+                                <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" Margin="0,0,0,2" />
+                                <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <Border Name="FocusOuter"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Opacity="0" />
+                    <Border Name="FocusInner"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Margin="2"
+                            Opacity="0" />
+                </Grid>
             </ControlTemplate>
         </Setter>
 
@@ -134,7 +153,13 @@
             <PropertyTrigger Property="IsDragging" Value="True">
                 <Setter Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
             </PropertyTrigger>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
                 <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
             </PropertyTrigger>

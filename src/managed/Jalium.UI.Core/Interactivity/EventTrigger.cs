@@ -14,6 +14,7 @@ public sealed class EventTrigger : TriggerBase<FrameworkElement>
     /// <summary>
     /// Identifies the EventName dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty EventNameProperty =
         DependencyProperty.Register(nameof(EventName), typeof(string), typeof(EventTrigger),
             new PropertyMetadata("Loaded", OnEventNameChanged));
@@ -21,6 +22,7 @@ public sealed class EventTrigger : TriggerBase<FrameworkElement>
     /// <summary>
     /// Identifies the SourceObject dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceObjectProperty =
         DependencyProperty.Register(nameof(SourceObject), typeof(object), typeof(EventTrigger),
             new PropertyMetadata(null, OnSourceObjectChanged));
@@ -28,6 +30,7 @@ public sealed class EventTrigger : TriggerBase<FrameworkElement>
     /// <summary>
     /// Identifies the SourceName dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceNameProperty =
         DependencyProperty.Register(nameof(SourceName), typeof(string), typeof(EventTrigger),
             new PropertyMetadata(null, OnSourceNameChanged));
@@ -35,6 +38,7 @@ public sealed class EventTrigger : TriggerBase<FrameworkElement>
     /// <summary>
     /// Gets or sets the name of the event to listen for.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public string EventName
     {
         get => (string)(GetValue(EventNameProperty) ?? "Loaded");
@@ -44,6 +48,7 @@ public sealed class EventTrigger : TriggerBase<FrameworkElement>
     /// <summary>
     /// Gets or sets the source object to listen to.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? SourceObject
     {
         get => GetValue(SourceObjectProperty);
@@ -53,6 +58,7 @@ public sealed class EventTrigger : TriggerBase<FrameworkElement>
     /// <summary>
     /// Gets or sets the name of the element to listen to.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? SourceName
     {
         get => (string?)GetValue(SourceNameProperty);

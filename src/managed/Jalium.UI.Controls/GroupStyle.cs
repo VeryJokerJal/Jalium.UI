@@ -58,4 +58,9 @@ public sealed class GroupStyle
 /// </summary>
 public class GroupItem : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.GroupItemAutomationPeer(this);
+    }
 }

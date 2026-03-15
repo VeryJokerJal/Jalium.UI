@@ -10,12 +10,19 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ListView : ListBox
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ListViewAutomationPeer(this);
+    }
+
     private StackPanel? _columnHeadersHost;
     private Border? _columnHeadersBorder;
 
     /// <summary>
     /// Identifies the View dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty ViewProperty =
         DependencyProperty.Register(nameof(View), typeof(ViewBase), typeof(ListView),
             new PropertyMetadata(null, OnViewChanged));
@@ -23,6 +30,7 @@ public class ListView : ListBox
     /// <summary>
     /// Gets or sets an object that defines how the data is styled and organized in a ListView control.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public ViewBase? View
     {
         get => (ViewBase?)GetValue(ViewProperty);
@@ -288,6 +296,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Identifies the ColumnHeaderContainerStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnHeaderContainerStyleProperty =
         DependencyProperty.Register(nameof(ColumnHeaderContainerStyle), typeof(Style), typeof(GridView),
             new PropertyMetadata(null));
@@ -295,6 +304,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Identifies the ColumnHeaderTemplate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnHeaderTemplateProperty =
         DependencyProperty.Register(nameof(ColumnHeaderTemplate), typeof(DataTemplate), typeof(GridView),
             new PropertyMetadata(null));
@@ -302,6 +312,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Identifies the ColumnHeaderTemplateSelector dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnHeaderTemplateSelectorProperty =
         DependencyProperty.Register(nameof(ColumnHeaderTemplateSelector), typeof(DataTemplateSelector), typeof(GridView),
             new PropertyMetadata(null));
@@ -309,6 +320,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Identifies the ColumnHeaderContextMenu dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnHeaderContextMenuProperty =
         DependencyProperty.Register(nameof(ColumnHeaderContextMenu), typeof(ContextMenu), typeof(GridView),
             new PropertyMetadata(null));
@@ -316,6 +328,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Identifies the ColumnHeaderToolTip dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnHeaderToolTipProperty =
         DependencyProperty.Register(nameof(ColumnHeaderToolTip), typeof(object), typeof(GridView),
             new PropertyMetadata(null));
@@ -323,6 +336,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Identifies the AllowsColumnReorder dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AllowsColumnReorderProperty =
         DependencyProperty.Register(nameof(AllowsColumnReorder), typeof(bool), typeof(GridView),
             new PropertyMetadata(true));
@@ -335,6 +349,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Gets or sets the style to apply to column headers.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Style? ColumnHeaderContainerStyle
     {
         get => (Style?)GetValue(ColumnHeaderContainerStyleProperty);
@@ -344,6 +359,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Gets or sets the template to use to display the column headers.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public DataTemplate? ColumnHeaderTemplate
     {
         get => (DataTemplate?)GetValue(ColumnHeaderTemplateProperty);
@@ -353,6 +369,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Gets or sets the selector object that provides logic for selecting a template to use for each column header.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public DataTemplateSelector? ColumnHeaderTemplateSelector
     {
         get => (DataTemplateSelector?)GetValue(ColumnHeaderTemplateSelectorProperty);
@@ -362,6 +379,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Gets or sets a ContextMenu for the GridView column headers.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public ContextMenu? ColumnHeaderContextMenu
     {
         get => (ContextMenu?)GetValue(ColumnHeaderContextMenuProperty);
@@ -371,6 +389,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Gets or sets the content of a tooltip that appears when the mouse pointer pauses over one of the column headers.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public object? ColumnHeaderToolTip
     {
         get => GetValue(ColumnHeaderToolTipProperty);
@@ -380,6 +399,7 @@ public sealed class GridView : ViewBase
     /// <summary>
     /// Gets or sets whether columns in a GridView can be reordered by a drag-and-drop operation.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool AllowsColumnReorder
     {
         get => (bool)GetValue(AllowsColumnReorderProperty)!;
@@ -409,6 +429,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(GridViewColumn),
             new PropertyMetadata(null));
@@ -416,6 +437,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Identifies the HeaderContainerStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderContainerStyleProperty =
         DependencyProperty.Register(nameof(HeaderContainerStyle), typeof(Style), typeof(GridViewColumn),
             new PropertyMetadata(null));
@@ -423,6 +445,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Identifies the HeaderTemplate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderTemplateProperty =
         DependencyProperty.Register(nameof(HeaderTemplate), typeof(DataTemplate), typeof(GridViewColumn),
             new PropertyMetadata(null));
@@ -430,6 +453,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Identifies the HeaderTemplateSelector dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderTemplateSelectorProperty =
         DependencyProperty.Register(nameof(HeaderTemplateSelector), typeof(DataTemplateSelector), typeof(GridViewColumn),
             new PropertyMetadata(null));
@@ -437,6 +461,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Identifies the HeaderStringFormat dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderStringFormatProperty =
         DependencyProperty.Register(nameof(HeaderStringFormat), typeof(string), typeof(GridViewColumn),
             new PropertyMetadata(null));
@@ -444,6 +469,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Identifies the Width dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty WidthProperty =
         DependencyProperty.Register(nameof(Width), typeof(double), typeof(GridViewColumn),
             new PropertyMetadata(double.NaN));
@@ -451,6 +477,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Identifies the CellTemplate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CellTemplateProperty =
         DependencyProperty.Register(nameof(CellTemplate), typeof(DataTemplate), typeof(GridViewColumn),
             new PropertyMetadata(null));
@@ -458,6 +485,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Identifies the CellTemplateSelector dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CellTemplateSelectorProperty =
         DependencyProperty.Register(nameof(CellTemplateSelector), typeof(DataTemplateSelector), typeof(GridViewColumn),
             new PropertyMetadata(null));
@@ -465,6 +493,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Identifies the DisplayMemberBinding dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty DisplayMemberBindingProperty =
         DependencyProperty.Register(nameof(DisplayMemberBinding), typeof(BindingBase), typeof(GridViewColumn),
             new PropertyMetadata(null));
@@ -472,6 +501,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets or sets the content of the header of a GridViewColumn.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
@@ -481,6 +511,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets or sets the style to use for the header of the GridViewColumn.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Style? HeaderContainerStyle
     {
         get => (Style?)GetValue(HeaderContainerStyleProperty);
@@ -490,6 +521,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets or sets the template to use to display the content of the column header.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplate? HeaderTemplate
     {
         get => (DataTemplate?)GetValue(HeaderTemplateProperty);
@@ -499,6 +531,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets or sets a DataTemplateSelector that provides logic for choosing the template to use to display the column header.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplateSelector? HeaderTemplateSelector
     {
         get => (DataTemplateSelector?)GetValue(HeaderTemplateSelectorProperty);
@@ -508,6 +541,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets or sets a composite string that specifies how to format the Header property if it is displayed as a string.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? HeaderStringFormat
     {
         get => (string?)GetValue(HeaderStringFormatProperty);
@@ -517,6 +551,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets or sets the width of the column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Width
     {
         get => (double)GetValue(WidthProperty)!;
@@ -531,6 +566,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets or sets the template to use to display the contents of a column cell.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DataTemplate? CellTemplate
     {
         get => (DataTemplate?)GetValue(CellTemplateProperty);
@@ -540,6 +576,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets or sets a DataTemplateSelector that determines the template to use to display cells in a column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DataTemplateSelector? CellTemplateSelector
     {
         get => (DataTemplateSelector?)GetValue(CellTemplateSelectorProperty);
@@ -549,6 +586,7 @@ public sealed class GridViewColumn : DependencyObject
     /// <summary>
     /// Gets or sets the data item to bind to for this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public BindingBase? DisplayMemberBinding
     {
         get => (BindingBase?)GetValue(DisplayMemberBindingProperty);
@@ -571,6 +609,7 @@ public class GridViewColumnHeader : ContentControl
     /// <summary>
     /// Identifies the Column dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnProperty =
         DependencyProperty.Register(nameof(Column), typeof(GridViewColumn), typeof(GridViewColumnHeader),
             new PropertyMetadata(null));
@@ -578,6 +617,7 @@ public class GridViewColumnHeader : ContentControl
     /// <summary>
     /// Gets or sets the GridViewColumn that is associated with this header.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public GridViewColumn? Column
     {
         get => (GridViewColumn?)GetValue(ColumnProperty);

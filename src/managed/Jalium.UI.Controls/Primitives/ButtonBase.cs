@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls;
+using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
@@ -9,6 +9,12 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public abstract class ButtonBase : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ButtonBaseAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
@@ -19,6 +25,7 @@ public abstract class ButtonBase : ContentControl
     /// <summary>
     /// Identifies the ClickMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ClickModeProperty =
         DependencyProperty.Register(nameof(ClickMode), typeof(ClickMode), typeof(ButtonBase),
             new PropertyMetadata(ClickMode.Release));
@@ -55,6 +62,7 @@ public abstract class ButtonBase : ContentControl
     /// <summary>
     /// Gets or sets when the Click event should be raised.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ClickMode ClickMode
     {
         get => (ClickMode)GetValue(ClickModeProperty)!;

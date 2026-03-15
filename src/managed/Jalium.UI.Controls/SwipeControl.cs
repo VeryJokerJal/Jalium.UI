@@ -21,6 +21,7 @@ public class SwipeControl : ContentControl
     /// <summary>
     /// Identifies the LeftItems dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty LeftItemsProperty =
         DependencyProperty.Register(nameof(LeftItems), typeof(SwipeItems), typeof(SwipeControl),
             new PropertyMetadata(null));
@@ -28,6 +29,7 @@ public class SwipeControl : ContentControl
     /// <summary>
     /// Identifies the RightItems dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RightItemsProperty =
         DependencyProperty.Register(nameof(RightItems), typeof(SwipeItems), typeof(SwipeControl),
             new PropertyMetadata(null));
@@ -35,6 +37,7 @@ public class SwipeControl : ContentControl
     /// <summary>
     /// Identifies the TopItems dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty TopItemsProperty =
         DependencyProperty.Register(nameof(TopItems), typeof(SwipeItems), typeof(SwipeControl),
             new PropertyMetadata(null));
@@ -42,6 +45,7 @@ public class SwipeControl : ContentControl
     /// <summary>
     /// Identifies the BottomItems dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BottomItemsProperty =
         DependencyProperty.Register(nameof(BottomItems), typeof(SwipeItems), typeof(SwipeControl),
             new PropertyMetadata(null));
@@ -53,6 +57,7 @@ public class SwipeControl : ContentControl
     /// <summary>
     /// Gets or sets the items that can be invoked when the control is swiped from the left side.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public SwipeItems? LeftItems
     {
         get => (SwipeItems?)GetValue(LeftItemsProperty);
@@ -62,6 +67,7 @@ public class SwipeControl : ContentControl
     /// <summary>
     /// Gets or sets the items that can be invoked when the control is swiped from the right side.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public SwipeItems? RightItems
     {
         get => (SwipeItems?)GetValue(RightItemsProperty);
@@ -71,6 +77,7 @@ public class SwipeControl : ContentControl
     /// <summary>
     /// Gets or sets the items that can be invoked when the control is swiped from the top.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public SwipeItems? TopItems
     {
         get => (SwipeItems?)GetValue(TopItemsProperty);
@@ -80,6 +87,7 @@ public class SwipeControl : ContentControl
     /// <summary>
     /// Gets or sets the items that can be invoked when the control is swiped from the bottom.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public SwipeItems? BottomItems
     {
         get => (SwipeItems?)GetValue(BottomItemsProperty);

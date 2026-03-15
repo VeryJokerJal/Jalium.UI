@@ -19,36 +19,48 @@
                 <Border Name="RootBorder" Background="Transparent">
                     <StackPanel Orientation="Horizontal">
                         <!-- CheckBox Box -->
-                        <Border Name="CheckBoxBorder"
-                                Width="18"
-                                Height="18"
-                                Background="{TemplateBinding Background}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="{TemplateBinding BorderThickness}"
-                                CornerRadius="{TemplateBinding CornerRadius}"
-                                VerticalAlignment="Center">
-                            <Grid>
-                                <!-- Check Mark Path -->
-                                <Path Name="CheckMark"
-                                      Data="M 0,5 L 3,8 L 8,2"
-                                      Stroke="{DynamicResource TextOnAccent}"
-                                      StrokeThickness="2"
-                                      Width="8"
-                                      Height="8"
-                                      Stretch="Uniform"
-                                      HorizontalAlignment="Center"
-                                      VerticalAlignment="Center"
-                                      Opacity="0" />
-                                <Border Name="IndeterminateMark"
-                                        Width="8"
-                                        Height="2"
-                                        Background="{DynamicResource TextOnAccent}"
-                                        HorizontalAlignment="Center"
-                                        VerticalAlignment="Center"
-                                        CornerRadius="1"
-                                        Opacity="0" />
-                            </Grid>
-                        </Border>
+                        <Grid Width="18" Height="18" VerticalAlignment="Center">
+                            <Border Name="FocusOuter"
+                                    IsHitTestVisible="False"
+                                    BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="{TemplateBinding CornerRadius}"
+                                    Opacity="0" />
+                            <Border Name="FocusInner"
+                                    IsHitTestVisible="False"
+                                    BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="{TemplateBinding CornerRadius}"
+                                    Margin="2"
+                                    Opacity="0" />
+                            <Border Name="CheckBoxBorder"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="{TemplateBinding CornerRadius}">
+                                <Grid>
+                                    <!-- Check Mark Path -->
+                                    <Path Name="CheckMark"
+                                          Data="M 0,5 L 3,8 L 8,2"
+                                          Stroke="{DynamicResource TextOnAccent}"
+                                          StrokeThickness="2"
+                                          Width="8"
+                                          Height="8"
+                                          Stretch="Uniform"
+                                          HorizontalAlignment="Center"
+                                          VerticalAlignment="Center"
+                                          Opacity="0" />
+                                    <Border Name="IndeterminateMark"
+                                            Width="8"
+                                            Height="2"
+                                            Background="{DynamicResource TextOnAccent}"
+                                            HorizontalAlignment="Center"
+                                            VerticalAlignment="Center"
+                                            CornerRadius="1"
+                                            Opacity="0" />
+                                </Grid>
+                            </Border>
+                        </Grid>
 
                         <!-- Content -->
                         <ContentPresenter Margin="8,0,0,0"
@@ -112,7 +124,13 @@
             </MultiTrigger>
 
             <!-- Disabled state (highest priority) -->
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
                 <Setter Property="Background" Value="{DynamicResource ToggleDisabledBackground}" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ToggleDisabledBorder}" />
@@ -136,10 +154,22 @@
                 <Border Name="RootBorder" Background="Transparent">
                     <StackPanel Orientation="Horizontal">
                         <!-- RadioButton Circle Container -->
-                        <Border Width="18"
-                                Height="18"
-                                VerticalAlignment="Center"
-                                Background="Transparent">
+                        <Grid Width="18"
+                              Height="18"
+                              VerticalAlignment="Center">
+                            <Border Name="FocusOuter"
+                                    IsHitTestVisible="False"
+                                    BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="9"
+                                    Opacity="0" />
+                            <Border Name="FocusInner"
+                                    IsHitTestVisible="False"
+                                    BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="9"
+                                    Margin="2"
+                                    Opacity="0" />
 
                             <!-- Use a Border with full corner radius for circle effect -->
                             <Border Name="OuterCircle"
@@ -157,7 +187,7 @@
                                          VerticalAlignment="Center"
                                          Opacity="0" />
                             </Border>
-                        </Border>
+                        </Grid>
 
                         <!-- Content -->
                         <ContentPresenter Margin="8,0,0,0"
@@ -201,7 +231,13 @@
             </MultiTrigger>
 
             <!-- Disabled state (highest priority) -->
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
                 <Setter Property="Background" Value="{DynamicResource ToggleDisabledBackground}" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ToggleDisabledBorder}" />
@@ -236,25 +272,41 @@
                                       Foreground="{TemplateBinding Foreground}" />
 
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
-                        <!-- Switch Track -->
-                        <Border Name="PART_SwitchTrack"
-                                Width="44"
-                                Height="20"
-                                CornerRadius="10"
-                                Background="{TemplateBinding OffBackground}"
-                                BorderBrush="{TemplateBinding BorderBrush}"
-                                BorderThickness="1">
+                        <Grid Width="44"
+                              Height="20">
+                            <Border Name="FocusOuter"
+                                    IsHitTestVisible="False"
+                                    BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="10"
+                                    Opacity="0" />
+                            <Border Name="FocusInner"
+                                    IsHitTestVisible="False"
+                                    BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                                    BorderThickness="1"
+                                    CornerRadius="10"
+                                    Margin="2"
+                                    Opacity="0" />
+                            <!-- Switch Track -->
+                            <Border Name="PART_SwitchTrack"
+                                    Width="44"
+                                    Height="20"
+                                    CornerRadius="10"
+                                    Background="{TemplateBinding OffBackground}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="1">
 
-                            <!-- Switch Thumb -->
-                            <Border Name="PART_SwitchThumb"
-                                    Width="14"
-                                    Height="14"
-                                    CornerRadius="7"
-                                    Background="{DynamicResource SliderThumb}"
-                                    HorizontalAlignment="Left"
-                                    VerticalAlignment="Center"
-                                    Margin="3,0,0,0" />
-                        </Border>
+                                <!-- Switch Thumb -->
+                                <Border Name="PART_SwitchThumb"
+                                        Width="14"
+                                        Height="14"
+                                        CornerRadius="7"
+                                        Background="{DynamicResource SliderThumb}"
+                                        HorizontalAlignment="Left"
+                                        VerticalAlignment="Center"
+                                        Margin="3,0,0,0" />
+                            </Border>
+                        </Grid>
 
                         <!-- On/Off Content -->
                         <ContentPresenter Name="PART_ContentPresenter"
@@ -270,7 +322,18 @@
             </ControlTemplate>
         </Setter>
 
-        <!-- All visual states (IsOn, hover, disabled) managed by code-behind spring animation -->
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+            </PropertyTrigger>
+        </Style.Triggers>
+
+        <!-- All other visual states (IsOn, hover, disabled colors) managed by code-behind spring animation -->
     </Style>
 
 </ResourceDictionary>

@@ -11,6 +11,7 @@ public class PathIcon : IconElement
     /// <summary>
     /// Identifies the Data dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty DataProperty =
         DependencyProperty.Register(nameof(Data), typeof(Geometry), typeof(PathIcon),
             new PropertyMetadata(null, OnDataChanged));
@@ -18,6 +19,7 @@ public class PathIcon : IconElement
     /// <summary>
     /// Gets or sets the Geometry that specifies the shape to be drawn.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public Geometry? Data
     {
         get => (Geometry?)GetValue(DataProperty);

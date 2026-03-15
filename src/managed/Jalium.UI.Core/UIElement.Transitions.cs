@@ -23,6 +23,7 @@ public abstract partial class UIElement
     /// <summary>
     /// Identifies the TransitionProperty dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TransitionPropertyProperty =
         DependencyProperty.Register(nameof(TransitionProperty), typeof(TransitionPropertyCollection), typeof(UIElement),
             new PropertyMetadata(DefaultTransitionPropertyValue, OnTransitionConfigurationChanged));
@@ -30,6 +31,7 @@ public abstract partial class UIElement
     /// <summary>
     /// Identifies the TransitionDuration dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TransitionDurationProperty =
         DependencyProperty.Register(nameof(TransitionDuration), typeof(Duration), typeof(UIElement),
             new PropertyMetadata(new Duration(s_defaultTransitionDuration), OnTransitionConfigurationChanged));
@@ -37,6 +39,7 @@ public abstract partial class UIElement
     /// <summary>
     /// Identifies the TransitionTimingFunction dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TransitionTimingFunctionProperty =
         DependencyProperty.Register(nameof(TransitionTimingFunction), typeof(TransitionTimingFunction), typeof(UIElement),
             new PropertyMetadata(TransitionTimingFunction.Recommended, OnTransitionConfigurationChanged));
@@ -44,6 +47,7 @@ public abstract partial class UIElement
     /// <summary>
     /// Gets or sets the collection of properties that should participate in automatic transitions.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public TransitionPropertyCollection TransitionProperty
     {
         get => TransitionPropertyCollection.FromRawValue(GetValue(TransitionPropertyProperty));
@@ -53,6 +57,7 @@ public abstract partial class UIElement
     /// <summary>
     /// Gets or sets the duration used by automatic property transitions.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public Duration TransitionDuration
     {
         get => GetValue(TransitionDurationProperty) is Duration duration
@@ -64,6 +69,7 @@ public abstract partial class UIElement
     /// <summary>
     /// Gets or sets the timing function used by automatic property transitions.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public TransitionTimingFunction TransitionTimingFunction
     {
         get => GetValue(TransitionTimingFunctionProperty) is TransitionTimingFunction timingFunction

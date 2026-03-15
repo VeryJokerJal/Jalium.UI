@@ -11,6 +11,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class RichTextBox : Control, IImeSupport
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.RichTextBoxAutomationPeer(this);
+    }
+
     #region Static Brushes
 
     private static readonly SolidColorBrush s_defaultForegroundBrush = new(Color.White);
@@ -139,6 +145,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Identifies the IsReadOnly dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(RichTextBox),
             new PropertyMetadata(false));
@@ -146,6 +153,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Identifies the AcceptsTab dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty AcceptsTabProperty =
         DependencyProperty.Register(nameof(AcceptsTab), typeof(bool), typeof(RichTextBox),
             new PropertyMetadata(false));
@@ -153,6 +161,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Identifies the SelectionBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
         DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(RichTextBox),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -160,6 +169,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Identifies the CaretBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CaretBrushProperty =
         DependencyProperty.Register(nameof(CaretBrush), typeof(Brush), typeof(RichTextBox),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -167,6 +177,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Identifies the IsUndoEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsUndoEnabledProperty =
         DependencyProperty.Register(nameof(IsUndoEnabled), typeof(bool), typeof(RichTextBox),
             new PropertyMetadata(true));
@@ -174,6 +185,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Identifies the UndoLimit dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UndoLimitProperty =
         DependencyProperty.Register(nameof(UndoLimit), typeof(int), typeof(RichTextBox),
             new PropertyMetadata(100));
@@ -181,6 +193,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Identifies the HorizontalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(RichTextBox),
             new PropertyMetadata(ScrollBarVisibility.Auto));
@@ -188,6 +201,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Identifies the VerticalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(RichTextBox),
             new PropertyMetadata(ScrollBarVisibility.Auto));
@@ -195,6 +209,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Identifies the IsSpellCheckEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSpellCheckEnabledProperty =
         DependencyProperty.Register(nameof(IsSpellCheckEnabled), typeof(bool), typeof(RichTextBox),
             new PropertyMetadata(false));
@@ -206,6 +221,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets whether the control is read-only.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsReadOnly
     {
         get => (bool)GetValue(IsReadOnlyProperty)!;
@@ -215,6 +231,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets whether the control accepts Tab key for tab characters.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool AcceptsTab
     {
         get => (bool)GetValue(AcceptsTabProperty)!;
@@ -224,6 +241,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the brush for text selection highlighting.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SelectionBrush
     {
         get => (Brush?)GetValue(SelectionBrushProperty);
@@ -233,6 +251,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the brush for the caret.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? CaretBrush
     {
         get => (Brush?)GetValue(CaretBrushProperty);
@@ -242,6 +261,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets whether undo is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsUndoEnabled
     {
         get => (bool)GetValue(IsUndoEnabledProperty)!;
@@ -251,6 +271,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the maximum number of undo entries.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int UndoLimit
     {
         get => (int)GetValue(UndoLimitProperty)!;
@@ -260,6 +281,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the horizontal scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility HorizontalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty)!;
@@ -269,6 +291,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets the vertical scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility VerticalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty)!;
@@ -278,6 +301,7 @@ public class RichTextBox : Control, IImeSupport
     /// <summary>
     /// Gets or sets whether spell checking is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSpellCheckEnabled
     {
         get => (bool)GetValue(IsSpellCheckEnabledProperty)!;
@@ -919,6 +943,11 @@ public class RichTextBox : Control, IImeSupport
         if (BorderBrush != null && BorderThickness.Left > 0)
         {
             dc.DrawRectangle(null, new Pen(BorderBrush, BorderThickness.Left), bounds);
+        }
+
+        if (IsKeyboardFocused)
+        {
+            ControlFocusVisual.Draw(dc, this, bounds, CornerRadius);
         }
 
         // Calculate content area

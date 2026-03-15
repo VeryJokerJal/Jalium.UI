@@ -10,6 +10,7 @@ public sealed class CallMethodAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Identifies the TargetObject dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty TargetObjectProperty =
         DependencyProperty.Register(nameof(TargetObject), typeof(object), typeof(CallMethodAction),
             new PropertyMetadata(null));
@@ -17,6 +18,7 @@ public sealed class CallMethodAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Identifies the MethodName dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty MethodNameProperty =
         DependencyProperty.Register(nameof(MethodName), typeof(string), typeof(CallMethodAction),
             new PropertyMetadata(null));
@@ -24,6 +26,7 @@ public sealed class CallMethodAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Gets or sets the object that exposes the method of interest.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? TargetObject
     {
         get => GetValue(TargetObjectProperty);
@@ -33,6 +36,7 @@ public sealed class CallMethodAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Gets or sets the name of the method to invoke.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string? MethodName
     {
         get => (string?)GetValue(MethodNameProperty);
@@ -96,6 +100,7 @@ public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Identifies the TargetObject dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty TargetObjectProperty =
         DependencyProperty.Register(nameof(TargetObject), typeof(object), typeof(ChangePropertyAction),
             new PropertyMetadata(null));
@@ -103,6 +108,7 @@ public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Identifies the PropertyName dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PropertyNameProperty =
         DependencyProperty.Register(nameof(PropertyName), typeof(string), typeof(ChangePropertyAction),
             new PropertyMetadata(null));
@@ -110,6 +116,7 @@ public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Identifies the Value dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ValueProperty =
         DependencyProperty.Register(nameof(Value), typeof(object), typeof(ChangePropertyAction),
             new PropertyMetadata(null));
@@ -117,6 +124,7 @@ public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Gets or sets the object that exposes the property of interest.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? TargetObject
     {
         get => GetValue(TargetObjectProperty);
@@ -126,6 +134,7 @@ public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Gets or sets the name of the property to change.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string? PropertyName
     {
         get => (string?)GetValue(PropertyNameProperty);
@@ -135,6 +144,7 @@ public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Gets or sets the value to set on the property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? Value
     {
         get => GetValue(ValueProperty);

@@ -14,11 +14,13 @@ public class WebBrowser : FrameworkElement
     /// <summary>
     /// Identifies the <see cref="Source"/> dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(WebBrowser),
             new PropertyMetadata(null, OnSourceChanged));
 
     /// <summary>Gets or sets the URI of the current document.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? Source
     {
         get => (Uri?)GetValue(SourceProperty);

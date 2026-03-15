@@ -13,6 +13,7 @@ public class GridViewRowPresenter : FrameworkElement
     /// <summary>
     /// Identifies the Content dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentProperty =
         DependencyProperty.Register(nameof(Content), typeof(object), typeof(GridViewRowPresenter),
             new PropertyMetadata(null, OnContentChanged));
@@ -20,6 +21,7 @@ public class GridViewRowPresenter : FrameworkElement
     /// <summary>
     /// Gets or sets the data item that this row represents.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Content
     {
         get => GetValue(ContentProperty);

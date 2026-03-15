@@ -14,6 +14,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(VirtualizingStackPanel),
             new PropertyMetadata(Orientation.Vertical, OnLayoutPropertyChanged));
@@ -25,6 +26,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     /// <summary>
     /// Gets or sets the dimension by which child elements are stacked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;

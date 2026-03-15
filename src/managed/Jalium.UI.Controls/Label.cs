@@ -10,6 +10,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Label : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.LabelAutomationPeer(this);
+    }
+
     private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0, 120, 212));
 
     private bool _pendingTemplateTextFocus;
@@ -26,6 +32,7 @@ public class Label : ContentControl
     /// <summary>
     /// Identifies the Target dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty TargetProperty =
         DependencyProperty.Register(nameof(Target), typeof(UIElement), typeof(Label),
             new PropertyMetadata(null));
@@ -33,9 +40,18 @@ public class Label : ContentControl
     /// <summary>
     /// Identifies the AccessKey dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AccessKeyProperty =
         DependencyProperty.Register(nameof(AccessKey), typeof(char?), typeof(Label),
             new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    /// <summary>
+    /// Identifies the IsTextSelectionEnabled dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty IsTextSelectionEnabledProperty =
+        DependencyProperty.Register(nameof(IsTextSelectionEnabled), typeof(bool), typeof(Label),
+            new PropertyMetadata(false, OnIsTextSelectionEnabledChanged));
 
     #endregion
 
@@ -44,6 +60,7 @@ public class Label : ContentControl
     /// <summary>
     /// Gets or sets the target element that receives focus when the label's access key is pressed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public UIElement? Target
     {
         get => (UIElement?)GetValue(TargetProperty);
@@ -53,10 +70,21 @@ public class Label : ContentControl
     /// <summary>
     /// Gets or sets the access key character for this label.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public char? AccessKey
     {
         get => (char?)GetValue(AccessKeyProperty);
         set => SetValue(AccessKeyProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the label text can be selected with the mouse.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool IsTextSelectionEnabled
+    {
+        get => (bool)GetValue(IsTextSelectionEnabledProperty)!;
+        set => SetValue(IsTextSelectionEnabledProperty, value);
     }
 
     /// <summary>
@@ -245,6 +273,11 @@ public class Label : ContentControl
 
     private bool TryHandleTemplateTextMouseDown(MouseButtonEventArgs mouseArgs)
     {
+        if (!IsTextSelectionEnabled)
+        {
+            return false;
+        }
+
         if (_labelBorder == null)
         {
             return false;
@@ -266,7 +299,7 @@ public class Label : ContentControl
 
     private bool TryHandleDirectTextMouseDown(MouseButtonEventArgs mouseArgs)
     {
-        if (_labelBorder != null || Content is not string text || string.IsNullOrEmpty(text))
+        if (!IsTextSelectionEnabled || _labelBorder != null || Content is not string text || string.IsNullOrEmpty(text))
         {
             return false;
         }
@@ -465,7 +498,7 @@ public class Label : ContentControl
 
     private void OnKeyDownHandler(object sender, RoutedEventArgs e)
     {
-        if (_labelBorder != null || e is not KeyEventArgs keyArgs || keyArgs.Handled || Content is not string text)
+        if (!IsTextSelectionEnabled || _labelBorder != null || e is not KeyEventArgs keyArgs || keyArgs.Handled || Content is not string text)
         {
             return;
         }
@@ -500,7 +533,11 @@ public class Label : ContentControl
 
     private bool CanShowDirectTextCursor()
     {
-        return IsEnabled && _labelBorder == null && Content is string text && !string.IsNullOrEmpty(text);
+        return IsEnabled &&
+            IsTextSelectionEnabled &&
+            _labelBorder == null &&
+            Content is string text &&
+            !string.IsNullOrEmpty(text);
     }
 
     #endregion
@@ -653,6 +690,23 @@ public class Label : ContentControl
         }
     }
 
+    private static void OnIsTextSelectionEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not Label label)
+        {
+            return;
+        }
+
+        if (!(bool)(e.NewValue ?? false))
+        {
+            label.ClearDirectSelectionState();
+        }
+
+        label.ApplyPresentedTextStyle();
+        label.UpdateDirectTextCursor();
+        label.InvalidateVisual();
+    }
+
     private void ApplyPresentedTextStyle()
     {
         if (_labelBorder == null || Content is UIElement)
@@ -675,7 +729,21 @@ public class Label : ContentControl
         textBlock.FontSize = FontSize;
         textBlock.FontStyle = FontStyle;
         textBlock.FontWeight = FontWeight;
-        textBlock.IsTextSelectionEnabled = true;
+        textBlock.IsTextSelectionEnabled = IsTextSelectionEnabled;
+        if (!IsTextSelectionEnabled)
+        {
+            textBlock.ClearSelection();
+        }
+    }
+
+    private void ClearDirectSelectionState()
+    {
+        _pendingTemplateTextFocus = false;
+        _isSelectingDirectText = false;
+        _isDirectWordSelecting = false;
+        _directSelectionAnchor = 0;
+        ApplyDirectSelection(0, 0);
+        ReleaseMouseCapture();
     }
 
     private static TextBlock? FindDescendantTextBlock(Visual root)

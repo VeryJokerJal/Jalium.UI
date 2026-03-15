@@ -12,9 +12,16 @@ public class ContentControl : Control
     private UIElement? _contentElement;
     private bool _usesDirectContent = true; // Default to direct content management
 
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ContentControlAutomationPeer(this);
+    }
+
     /// <summary>
     /// Identifies the Content dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentProperty =
         DependencyProperty.Register(nameof(Content), typeof(object), typeof(ContentControl),
             new PropertyMetadata(null, OnContentChanged));
@@ -22,6 +29,7 @@ public class ContentControl : Control
     /// <summary>
     /// Identifies the ContentTemplate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentTemplateProperty =
         DependencyProperty.Register(nameof(ContentTemplate), typeof(DataTemplate), typeof(ContentControl),
             new PropertyMetadata(null, OnContentTemplateChanged));
@@ -29,6 +37,7 @@ public class ContentControl : Control
     /// <summary>
     /// Identifies the ContentTemplateSelector dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentTemplateSelectorProperty =
         DependencyProperty.Register(nameof(ContentTemplateSelector), typeof(DataTemplateSelector), typeof(ContentControl),
             new PropertyMetadata(null, OnContentTemplateSelectorChanged));
@@ -37,6 +46,7 @@ public class ContentControl : Control
     /// Identifies the ContentTransition dependency property.
     /// When set, content changes are animated using the specified transition.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentTransitionProperty =
         DependencyProperty.Register(nameof(ContentTransition), typeof(ContentTransition), typeof(ContentControl),
             new PropertyMetadata(null));
@@ -46,6 +56,7 @@ public class ContentControl : Control
     /// Provides a shortcut to set common transitions without creating a ContentTransition instance.
     /// Used when <see cref="ContentTransition"/> is null.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TransitionModeProperty =
         DependencyProperty.Register(nameof(TransitionMode), typeof(TransitionMode?), typeof(ContentControl),
             new PropertyMetadata(null));
@@ -53,6 +64,7 @@ public class ContentControl : Control
     /// <summary>
     /// Gets or sets the content of this control.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Content
     {
         get => GetValue(ContentProperty);
@@ -62,6 +74,7 @@ public class ContentControl : Control
     /// <summary>
     /// Gets or sets the template used to display the content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplate? ContentTemplate
     {
         get => (DataTemplate?)GetValue(ContentTemplateProperty);
@@ -71,6 +84,7 @@ public class ContentControl : Control
     /// <summary>
     /// Gets or sets the DataTemplateSelector used to choose a template for content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplateSelector? ContentTemplateSelector
     {
         get => (DataTemplateSelector?)GetValue(ContentTemplateSelectorProperty);
@@ -81,6 +95,7 @@ public class ContentControl : Control
     /// Gets or sets the content transition animation.
     /// When set, content changes are animated using this transition.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public ContentTransition? ContentTransition
     {
         get => (ContentTransition?)GetValue(ContentTransitionProperty);
@@ -91,6 +106,7 @@ public class ContentControl : Control
     /// Gets or sets the transition mode shortcut.
     /// Used when <see cref="ContentTransition"/> is null.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public TransitionMode? TransitionMode
     {
         get => (TransitionMode?)GetValue(TransitionModeProperty);

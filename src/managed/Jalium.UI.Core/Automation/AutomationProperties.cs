@@ -10,6 +10,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the Name attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public static readonly DependencyProperty NameProperty =
         DependencyProperty.RegisterAttached(
             "Name",
@@ -20,6 +21,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the Name attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public static string GetName(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -29,6 +31,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the Name attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public static void SetName(DependencyObject element, string value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -54,6 +57,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the AutomationId attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AutomationIdProperty =
         DependencyProperty.RegisterAttached(
             "AutomationId",
@@ -64,6 +68,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the AutomationId attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static string GetAutomationId(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -73,6 +78,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the AutomationId attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetAutomationId(DependencyObject element, string value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -98,6 +104,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the HelpText attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HelpTextProperty =
         DependencyProperty.RegisterAttached(
             "HelpText",
@@ -108,6 +115,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the HelpText attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static string GetHelpText(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -117,6 +125,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the HelpText attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetHelpText(DependencyObject element, string value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -130,6 +139,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the ItemStatus attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty ItemStatusProperty =
         DependencyProperty.RegisterAttached(
             "ItemStatus",
@@ -140,6 +150,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the ItemStatus attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static string GetItemStatus(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -149,6 +160,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the ItemStatus attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static void SetItemStatus(DependencyObject element, string value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -162,6 +174,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the ItemType attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ItemTypeProperty =
         DependencyProperty.RegisterAttached(
             "ItemType",
@@ -172,6 +185,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the ItemType attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static string GetItemType(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -181,6 +195,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the ItemType attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetItemType(DependencyObject element, string value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -194,6 +209,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the LabeledBy attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty LabeledByProperty =
         DependencyProperty.RegisterAttached(
             "LabeledBy",
@@ -204,6 +220,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the LabeledBy attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static UIElement? GetLabeledBy(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -213,6 +230,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the LabeledBy attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static void SetLabeledBy(DependencyObject element, UIElement? value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -226,6 +244,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the IsRequiredForForm attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsRequiredForFormProperty =
         DependencyProperty.RegisterAttached(
             "IsRequiredForForm",
@@ -236,6 +255,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the IsRequiredForForm attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetIsRequiredForForm(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -245,6 +265,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the IsRequiredForForm attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static void SetIsRequiredForForm(DependencyObject element, bool value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -258,6 +279,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the AcceleratorKey attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AcceleratorKeyProperty =
         DependencyProperty.RegisterAttached(
             "AcceleratorKey",
@@ -268,6 +290,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the AcceleratorKey attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static string GetAcceleratorKey(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -277,6 +300,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the AcceleratorKey attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetAcceleratorKey(DependencyObject element, string value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -290,6 +314,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the AccessKey attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AccessKeyProperty =
         DependencyProperty.RegisterAttached(
             "AccessKey",
@@ -300,6 +325,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the AccessKey attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static string GetAccessKey(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -309,6 +335,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the AccessKey attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetAccessKey(DependencyObject element, string value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -322,6 +349,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the LiveSetting attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LiveSettingProperty =
         DependencyProperty.RegisterAttached(
             "LiveSetting",
@@ -332,6 +360,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the LiveSetting attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static AutomationLiveSetting GetLiveSetting(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -341,6 +370,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the LiveSetting attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetLiveSetting(DependencyObject element, AutomationLiveSetting value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -354,6 +384,7 @@ public static class AutomationProperties
     /// <summary>
     /// Identifies the IsOffscreenBehavior attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOffscreenBehaviorProperty =
         DependencyProperty.RegisterAttached(
             "IsOffscreenBehavior",
@@ -364,6 +395,7 @@ public static class AutomationProperties
     /// <summary>
     /// Gets the IsOffscreenBehavior attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static IsOffscreenBehavior GetIsOffscreenBehavior(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -373,6 +405,7 @@ public static class AutomationProperties
     /// <summary>
     /// Sets the IsOffscreenBehavior attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static void SetIsOffscreenBehavior(DependencyObject element, IsOffscreenBehavior value)
     {
         ArgumentNullException.ThrowIfNull(element);

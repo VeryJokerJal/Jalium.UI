@@ -34,6 +34,7 @@ public class RadioButton : ToggleButton
     /// <summary>
     /// Identifies the GroupName dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty GroupNameProperty =
         DependencyProperty.Register(nameof(GroupName), typeof(string), typeof(RadioButton),
             new PropertyMetadata(string.Empty, OnGroupNameChanged));
@@ -46,6 +47,7 @@ public class RadioButton : ToggleButton
     /// Gets or sets the name of the group that the RadioButton belongs to.
     /// RadioButtons in the same group are mutually exclusive.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public string GroupName
     {
         get => (string)(GetValue(GroupNameProperty) ?? string.Empty);

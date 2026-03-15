@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -10,11 +10,18 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ListBox : Selector
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ListBoxAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the SelectionMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectionModeProperty =
         DependencyProperty.Register(nameof(SelectionMode), typeof(SelectionMode), typeof(ListBox),
             new PropertyMetadata(SelectionMode.Single, OnSelectionModeChanged));
@@ -43,6 +50,7 @@ public class ListBox : Selector
     /// <summary>
     /// Gets or sets the selection mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public SelectionMode SelectionMode
     {
         get => (SelectionMode)GetValue(SelectionModeProperty)!;
@@ -850,11 +858,18 @@ public class ListBoxItem : ContentControl
     private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Themes.ThemeColors.HighlightBackground);
     private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Themes.ThemeColors.SelectionBackground);
 
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ListBoxItemAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(ListBoxItem),
             new PropertyMetadata(false, OnIsSelectedChanged));
@@ -866,6 +881,7 @@ public class ListBoxItem : ContentControl
     /// <summary>
     /// Gets or sets whether the item is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty)!;

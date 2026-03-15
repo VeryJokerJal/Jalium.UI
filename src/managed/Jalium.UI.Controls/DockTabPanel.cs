@@ -26,26 +26,32 @@ public class DockTabPanel : Selector
 
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedContentProperty =
         DependencyProperty.Register(nameof(SelectedContent), typeof(object), typeof(DockTabPanel),
             new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabStripPlacementProperty =
         DependencyProperty.Register(nameof(TabStripPlacement), typeof(Dock), typeof(DockTabPanel),
             new PropertyMetadata(Dock.Top, OnTabStripPlacementChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabStripHeightProperty =
         DependencyProperty.Register(nameof(TabStripHeight), typeof(double), typeof(DockTabPanel),
             new PropertyMetadata(28.0, OnLayoutPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabStripBackgroundProperty =
         DependencyProperty.Register(nameof(TabStripBackground), typeof(Brush), typeof(DockTabPanel),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty TabStripBorderBrushProperty =
         DependencyProperty.Register(nameof(TabStripBorderBrush), typeof(Brush), typeof(DockTabPanel),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedContentTransitionModeProperty =
         DependencyProperty.Register(nameof(SelectedContentTransitionMode), typeof(TransitionMode?), typeof(DockTabPanel),
             new PropertyMetadata(null, OnSelectedContentTransitionModeChanged));
@@ -54,36 +60,42 @@ public class DockTabPanel : Selector
 
     #region Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedContent
     {
         get => GetValue(SelectedContentProperty);
         set => SetValue(SelectedContentProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public Dock TabStripPlacement
     {
         get => (Dock)(GetValue(TabStripPlacementProperty) ?? Dock.Top);
         set => SetValue(TabStripPlacementProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public double TabStripHeight
     {
         get => (double)GetValue(TabStripHeightProperty);
         set => SetValue(TabStripHeightProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public Brush? TabStripBackground
     {
         get => (Brush?)GetValue(TabStripBackgroundProperty);
         set => SetValue(TabStripBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? TabStripBorderBrush
     {
         get => (Brush?)GetValue(TabStripBorderBrushProperty);
         set => SetValue(TabStripBorderBrushProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public TransitionMode? SelectedContentTransitionMode
     {
         get => (TransitionMode?)GetValue(SelectedContentTransitionModeProperty);

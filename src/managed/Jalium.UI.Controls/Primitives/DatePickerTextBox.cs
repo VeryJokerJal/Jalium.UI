@@ -13,6 +13,7 @@ public sealed class DatePickerTextBox : TextBox
     /// <summary>
     /// Identifies the Watermark dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty WatermarkProperty =
         DependencyProperty.Register(nameof(Watermark), typeof(object), typeof(DatePickerTextBox),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -24,6 +25,7 @@ public sealed class DatePickerTextBox : TextBox
     /// <summary>
     /// Gets or sets the watermark content displayed when the text box is empty.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Watermark
     {
         get => GetValue(WatermarkProperty);

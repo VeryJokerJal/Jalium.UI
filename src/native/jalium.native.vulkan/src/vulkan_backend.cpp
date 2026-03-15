@@ -3,6 +3,15 @@
 #include "vulkan_render_target.h"
 #include "vulkan_runtime.h"
 
+#include <cstring>
+
+#ifndef _WIN32
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_NO_STDIO
+#define STBI_FAILURE_USERMSG
+#include "../../../../third_party/stb/stb_image.h"
+#endif
+
 #ifdef _WIN32
 #include <dwrite.h>
 #include <wincodec.h>
@@ -10,6 +19,43 @@
 #endif
 
 namespace jalium {
+
+namespace {
+
+#ifndef _WIN32
+Bitmap* DecodeBitmapWithStb(const uint8_t* data, uint32_t dataSize)
+{
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    stbi_uc* decodedPixels = stbi_load_from_memory(
+        data,
+        static_cast<int>(dataSize),
+        &width,
+        &height,
+        &channels,
+        STBI_rgb_alpha);
+    if (!decodedPixels || width <= 0 || height <= 0) {
+        if (decodedPixels) {
+            stbi_image_free(decodedPixels);
+        }
+        return nullptr;
+    }
+
+    std::vector<uint8_t> bgraPixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0);
+    for (size_t offset = 0; offset + 3 < bgraPixels.size(); offset += 4u) {
+        bgraPixels[offset + 0] = decodedPixels[offset + 2];
+        bgraPixels[offset + 1] = decodedPixels[offset + 1];
+        bgraPixels[offset + 2] = decodedPixels[offset + 0];
+        bgraPixels[offset + 3] = decodedPixels[offset + 3];
+    }
+
+    stbi_image_free(decodedPixels);
+    return new VulkanBitmap(static_cast<uint32_t>(width), static_cast<uint32_t>(height), std::move(bgraPixels));
+}
+#endif
+
+} // namespace
 
 bool VulkanBackend::Initialize()
 {
@@ -173,8 +219,25 @@ Bitmap* VulkanBackend::CreateBitmapFromMemory(const uint8_t* data, uint32_t data
 
     return new VulkanBitmap(width, height, std::move(pixels));
 #else
-    return nullptr;
+    return DecodeBitmapWithStb(data, dataSize);
 #endif
+}
+
+Bitmap* VulkanBackend::CreateBitmapFromPixels(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t stride)
+{
+    if (!Initialize() || !pixels || width == 0 || height == 0 || stride < width * 4u) {
+        return nullptr;
+    }
+
+    const size_t rowBytes = static_cast<size_t>(width) * 4u;
+    std::vector<uint8_t> packedPixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0);
+    for (uint32_t row = 0; row < height; ++row) {
+        const auto* sourceRow = pixels + static_cast<size_t>(row) * stride;
+        auto* destRow = packedPixels.data() + static_cast<size_t>(row) * rowBytes;
+        std::memcpy(destRow, sourceRow, rowBytes);
+    }
+
+    return new VulkanBitmap(width, height, std::move(packedPixels));
 }
 
 IRenderBackend* CreateVulkanBackend()

@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Interop;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -28,6 +28,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(CalendarDayButton),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -35,6 +36,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Identifies the IsToday dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsTodayProperty =
         DependencyProperty.Register(nameof(IsToday), typeof(bool), typeof(CalendarDayButton),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -42,6 +44,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Identifies the IsBlackedOut dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsBlackedOutProperty =
         DependencyProperty.Register(nameof(IsBlackedOut), typeof(bool), typeof(CalendarDayButton),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -49,6 +52,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Identifies the IsInactive dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsInactiveProperty =
         DependencyProperty.Register(nameof(IsInactive), typeof(bool), typeof(CalendarDayButton),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -56,6 +60,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Identifies the IsHighlighted dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsHighlightedProperty =
         DependencyProperty.Register(nameof(IsHighlighted), typeof(bool), typeof(CalendarDayButton),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -67,6 +72,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Gets or sets a value indicating whether this day is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty)!;
@@ -76,6 +82,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Gets or sets a value indicating whether this day is today.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsToday
     {
         get => (bool)GetValue(IsTodayProperty)!;
@@ -85,6 +92,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Gets or sets a value indicating whether this day is blacked out (not selectable).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsBlackedOut
     {
         get => (bool)GetValue(IsBlackedOutProperty)!;
@@ -94,6 +102,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Gets or sets a value indicating whether this day is from an adjacent month.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsInactive
     {
         get => (bool)GetValue(IsInactiveProperty)!;
@@ -103,6 +112,7 @@ public sealed class CalendarDayButton : Button
     /// <summary>
     /// Gets or sets a value indicating whether this day is highlighted.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsHighlighted
     {
         get => (bool)GetValue(IsHighlightedProperty)!;

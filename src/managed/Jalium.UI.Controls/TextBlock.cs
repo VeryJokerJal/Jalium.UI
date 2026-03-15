@@ -10,6 +10,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class TextBlock : FrameworkElement
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TextBlockAutomationPeer(this);
+    }
+
     private const int MaxTextWidthCacheEntries = 256;
     private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0, 120, 212));
 
@@ -37,6 +43,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(TextBlock),
             new PropertyMetadata(string.Empty, OnTextChanged));
@@ -44,6 +51,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the Foreground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(TextBlock),
             new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged, null, inherits: true));
@@ -51,6 +59,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the FontFamily dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(string), typeof(TextBlock),
             new PropertyMetadata("Segoe UI", OnTextChanged));
@@ -58,6 +67,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the FontSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(TextBlock),
             new PropertyMetadata(14.0, OnTextChanged));
@@ -65,6 +75,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the FontStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontStyleProperty =
         DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(TextBlock),
             new PropertyMetadata(FontStyles.Normal, OnTextChanged));
@@ -72,6 +83,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the FontWeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontWeightProperty =
         DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(TextBlock),
             new PropertyMetadata(FontWeights.Normal, OnTextChanged));
@@ -79,6 +91,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the TextWrapping dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextWrappingProperty =
         DependencyProperty.Register(nameof(TextWrapping), typeof(TextWrapping), typeof(TextBlock),
             new PropertyMetadata(TextWrapping.NoWrap, OnTextChanged));
@@ -86,6 +99,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the TextAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextAlignmentProperty =
         DependencyProperty.Register(nameof(TextAlignment), typeof(TextAlignment), typeof(TextBlock),
             new PropertyMetadata(TextAlignment.Left, OnVisualPropertyChanged));
@@ -93,6 +107,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the TextTrimming dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextTrimmingProperty =
         DependencyProperty.Register(nameof(TextTrimming), typeof(TextTrimming), typeof(TextBlock),
             new PropertyMetadata(TextTrimming.None, OnVisualPropertyChanged));
@@ -100,13 +115,15 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Identifies the IsTextSelectionEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsTextSelectionEnabledProperty =
         DependencyProperty.Register(nameof(IsTextSelectionEnabled), typeof(bool), typeof(TextBlock),
-            new PropertyMetadata(true));
+            new PropertyMetadata(false, OnIsTextSelectionEnabledChanged));
 
     /// <summary>
     /// Identifies the SelectionBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
         DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(TextBlock),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -148,6 +165,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the text content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
@@ -157,6 +175,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the foreground brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Foreground
     {
         get => (Brush?)GetValue(ForegroundProperty);
@@ -166,6 +185,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the font family.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public string FontFamily
     {
         get => (string)(GetValue(FontFamilyProperty) ?? "Segoe UI");
@@ -175,6 +195,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the font size.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double FontSize
     {
         get => (double)GetValue(FontSizeProperty)!;
@@ -184,6 +205,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the font style.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontStyle FontStyle
     {
         get => GetValue(FontStyleProperty) is FontStyle fs ? fs : FontStyles.Normal;
@@ -193,6 +215,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the font weight.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontWeight FontWeight
     {
         get => GetValue(FontWeightProperty) is FontWeight fw ? fw : FontWeights.Normal;
@@ -202,6 +225,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the text wrapping mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextWrapping TextWrapping
     {
         get => (TextWrapping)GetValue(TextWrappingProperty)!;
@@ -211,6 +235,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the text alignment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextAlignment TextAlignment
     {
         get => (TextAlignment)GetValue(TextAlignmentProperty)!;
@@ -220,6 +245,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the text trimming mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextTrimming TextTrimming
     {
         get => (TextTrimming)GetValue(TextTrimmingProperty)!;
@@ -229,6 +255,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets a value indicating whether the text can be selected with the mouse.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsTextSelectionEnabled
     {
         get => (bool)GetValue(IsTextSelectionEnabledProperty)!;
@@ -238,6 +265,7 @@ public class TextBlock : FrameworkElement
     /// <summary>
     /// Gets or sets the brush used to paint the selected text background.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SelectionBrush
     {
         get => (Brush?)GetValue(SelectionBrushProperty);
@@ -1149,6 +1177,25 @@ public class TextBlock : FrameworkElement
         }
 
         textBlock.InvalidateMeasure();
+        textBlock.InvalidateVisual();
+    }
+
+    private static void OnIsTextSelectionEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not TextBlock textBlock)
+        {
+            return;
+        }
+
+        if (!(bool)(e.NewValue ?? false))
+        {
+            textBlock._isSelecting = false;
+            textBlock._isWordSelecting = false;
+            textBlock.ReleaseMouseCapture();
+            textBlock.ClearSelection();
+        }
+
+        textBlock.UpdateHoverCursor();
         textBlock.InvalidateVisual();
     }
 

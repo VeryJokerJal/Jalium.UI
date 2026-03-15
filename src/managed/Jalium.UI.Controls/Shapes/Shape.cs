@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Shapes;
 
@@ -12,6 +12,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Identifies the Fill dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty FillProperty =
         DependencyProperty.Register(nameof(Fill), typeof(Brush), typeof(Shape),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -19,6 +20,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Identifies the Stroke dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty StrokeProperty =
         DependencyProperty.Register(nameof(Stroke), typeof(Brush), typeof(Shape),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -26,6 +28,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Identifies the StrokeThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty StrokeThicknessProperty =
         DependencyProperty.Register(nameof(StrokeThickness), typeof(double), typeof(Shape),
             new PropertyMetadata(1.0, OnVisualPropertyChanged));
@@ -33,6 +36,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Identifies the Stretch dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchProperty =
         DependencyProperty.Register(nameof(Stretch), typeof(Stretch), typeof(Shape),
             new PropertyMetadata(Stretch.Fill, OnLayoutPropertyChanged));
@@ -40,6 +44,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Identifies the StrokeStartLineCap dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty StrokeStartLineCapProperty =
         DependencyProperty.Register(nameof(StrokeStartLineCap), typeof(PenLineCap), typeof(Shape),
             new PropertyMetadata(PenLineCap.Flat, OnVisualPropertyChanged));
@@ -47,6 +52,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Identifies the StrokeEndLineCap dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty StrokeEndLineCapProperty =
         DependencyProperty.Register(nameof(StrokeEndLineCap), typeof(PenLineCap), typeof(Shape),
             new PropertyMetadata(PenLineCap.Flat, OnVisualPropertyChanged));
@@ -54,6 +60,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Identifies the StrokeLineJoin dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty StrokeLineJoinProperty =
         DependencyProperty.Register(nameof(StrokeLineJoin), typeof(PenLineJoin), typeof(Shape),
             new PropertyMetadata(PenLineJoin.Miter, OnVisualPropertyChanged));
@@ -65,6 +72,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Gets or sets the brush used to fill the shape.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Fill
     {
         get => (Brush?)GetValue(FillProperty);
@@ -74,6 +82,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Gets or sets the brush used to stroke the shape.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Stroke
     {
         get => (Brush?)GetValue(StrokeProperty);
@@ -83,6 +92,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Gets or sets the stroke thickness.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public double StrokeThickness
     {
         get => (double)GetValue(StrokeThicknessProperty)!;
@@ -92,6 +102,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Gets or sets how the shape is stretched to fill its allocated space.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Stretch Stretch
     {
         get => (Stretch)GetValue(StretchProperty)!;
@@ -101,6 +112,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Gets or sets the line cap style for the start of the stroke.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public PenLineCap StrokeStartLineCap
     {
         get => (PenLineCap)(GetValue(StrokeStartLineCapProperty) ?? PenLineCap.Flat);
@@ -110,6 +122,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Gets or sets the line cap style for the end of the stroke.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public PenLineCap StrokeEndLineCap
     {
         get => (PenLineCap)(GetValue(StrokeEndLineCapProperty) ?? PenLineCap.Flat);
@@ -119,6 +132,7 @@ public abstract class Shape : FrameworkElement
     /// <summary>
     /// Gets or sets the line join style for the stroke.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public PenLineJoin StrokeLineJoin
     {
         get => (PenLineJoin)(GetValue(StrokeLineJoinProperty) ?? PenLineJoin.Miter);

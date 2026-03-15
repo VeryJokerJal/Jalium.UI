@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls;
+using Jalium.UI.Controls;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -12,6 +12,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Identifies the SelectedIndex dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedIndexProperty =
         DependencyProperty.Register(nameof(SelectedIndex), typeof(int), typeof(Selector),
             new PropertyMetadata(-1, OnSelectedIndexChanged));
@@ -19,6 +20,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Identifies the SelectedItem dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedItemProperty =
         DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(Selector),
             new PropertyMetadata(null, OnSelectedItemChanged));
@@ -26,6 +28,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Identifies the SelectedValue dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedValueProperty =
         DependencyProperty.Register(nameof(SelectedValue), typeof(object), typeof(Selector),
             new PropertyMetadata(null, OnSelectedValueChanged));
@@ -33,6 +36,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Identifies the SelectedValuePath dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty SelectedValuePathProperty =
         DependencyProperty.Register(nameof(SelectedValuePath), typeof(string), typeof(Selector),
             new PropertyMetadata(string.Empty, OnSelectedValuePathChanged));
@@ -40,6 +44,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Identifies the IsSynchronizedWithCurrentItem dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty IsSynchronizedWithCurrentItemProperty =
         DependencyProperty.Register(nameof(IsSynchronizedWithCurrentItem), typeof(bool?), typeof(Selector),
             new PropertyMetadata(null));
@@ -71,6 +76,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Gets or sets the index of the currently selected item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public int SelectedIndex
     {
         get => (int)GetValue(SelectedIndexProperty)!;
@@ -80,6 +86,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Gets or sets the currently selected item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedItem
     {
         get => GetValue(SelectedItemProperty);
@@ -89,6 +96,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Gets or sets the value of the currently selected item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedValue
     {
         get => GetValue(SelectedValueProperty);
@@ -98,6 +106,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Gets or sets the path used to get the SelectedValue from the SelectedItem.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public string SelectedValuePath
     {
         get => (string)(GetValue(SelectedValuePathProperty) ?? string.Empty);
@@ -107,6 +116,7 @@ public abstract class Selector : ItemsControl
     /// <summary>
     /// Gets or sets whether the Selector should synchronize with the current item in the Items property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public bool? IsSynchronizedWithCurrentItem
     {
         get => (bool?)GetValue(IsSynchronizedWithCurrentItemProperty);

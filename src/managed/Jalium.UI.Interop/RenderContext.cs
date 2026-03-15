@@ -289,6 +289,19 @@ public sealed class RenderContext : IDisposable
         return new NativeBitmap(this, imageData);
     }
 
+    /// <summary>
+    /// Creates a bitmap from raw BGRA8 pixel data.
+    /// </summary>
+    /// <param name="pixelData">The source pixel buffer.</param>
+    /// <param name="width">The bitmap width in pixels.</param>
+    /// <param name="height">The bitmap height in pixels.</param>
+    /// <param name="stride">The number of bytes between adjacent rows. Defaults to <c>width * 4</c>.</param>
+    public NativeBitmap CreateBitmapFromPixels(byte[] pixelData, int width, int height, int stride = 0)
+    {
+        ThrowIfDisposed();
+        return new NativeBitmap(this, pixelData, width, height, stride);
+    }
+
     private void ThrowIfDisposed()
     {
         ObjectDisposedException.ThrowIf(_disposed, this);

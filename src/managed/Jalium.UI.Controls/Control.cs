@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -11,11 +11,18 @@ public class Control : FrameworkElement
     private static readonly Dictionary<string, SolidColorBrush> s_brushStringCache =
         new(StringComparer.OrdinalIgnoreCase);
 
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Automation.FrameworkElementAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(Control),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -23,6 +30,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the Foreground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(Control),
             new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged, null, inherits: true));
@@ -30,6 +38,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the BorderBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BorderBrushProperty =
         DependencyProperty.Register(nameof(BorderBrush), typeof(Brush), typeof(Control),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -37,6 +46,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the BorderThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BorderThicknessProperty =
         DependencyProperty.Register(nameof(BorderThickness), typeof(Thickness), typeof(Control),
             new PropertyMetadata(new Thickness(0), OnLayoutPropertyChanged));
@@ -44,6 +54,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the Padding dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PaddingProperty =
         DependencyProperty.Register(nameof(Padding), typeof(Thickness), typeof(Control),
             new PropertyMetadata(new Thickness(0), OnLayoutPropertyChanged));
@@ -51,6 +62,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the FontFamily dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(string), typeof(Control),
             new PropertyMetadata("Segoe UI", OnVisualPropertyChanged, null, inherits: true));
@@ -58,6 +70,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the FontSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(Control),
             new PropertyMetadata(14.0, OnLayoutPropertyChanged, null, inherits: true));
@@ -65,6 +78,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the FontWeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontWeightProperty =
         DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(Control),
             new PropertyMetadata(FontWeights.Normal, OnLayoutPropertyChanged, null, inherits: true));
@@ -72,6 +86,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the FontStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontStyleProperty =
         DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(Control),
             new PropertyMetadata(FontStyles.Normal, OnLayoutPropertyChanged, null, inherits: true));
@@ -79,6 +94,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the FontStretch dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontStretchProperty =
         DependencyProperty.Register(nameof(FontStretch), typeof(FontStretch), typeof(Control),
             new PropertyMetadata(FontStretches.Normal, OnLayoutPropertyChanged, null, inherits: true));
@@ -86,6 +102,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the CornerRadius dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CornerRadiusProperty =
         DependencyProperty.Register(nameof(CornerRadius), typeof(CornerRadius), typeof(Control),
             new PropertyMetadata(new CornerRadius(0), OnVisualPropertyChanged));
@@ -93,6 +110,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the HorizontalContentAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HorizontalContentAlignmentProperty =
         DependencyProperty.Register(nameof(HorizontalContentAlignment), typeof(HorizontalAlignment), typeof(Control),
             new PropertyMetadata(HorizontalAlignment.Left, OnLayoutPropertyChanged));
@@ -100,6 +118,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the VerticalContentAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty VerticalContentAlignmentProperty =
         DependencyProperty.Register(nameof(VerticalContentAlignment), typeof(VerticalAlignment), typeof(Control),
             new PropertyMetadata(VerticalAlignment.Top, OnLayoutPropertyChanged));
@@ -107,6 +126,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Identifies the Template dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public static readonly DependencyProperty TemplateProperty =
         DependencyProperty.Register(nameof(Template), typeof(ControlTemplate), typeof(Control),
             new PropertyMetadata(null, OnTemplateChanged));
@@ -126,6 +146,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the background brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => CoerceBrush(GetValue(BackgroundProperty));
@@ -135,6 +156,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the foreground brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Foreground
     {
         get => CoerceBrush(GetValue(ForegroundProperty));
@@ -144,6 +166,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the border brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? BorderBrush
     {
         get => CoerceBrush(GetValue(BorderBrushProperty));
@@ -153,6 +176,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the border thickness.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness BorderThickness
     {
         get => (Thickness)GetValue(BorderThicknessProperty)!;
@@ -162,6 +186,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the padding.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness Padding
     {
         get => (Thickness)GetValue(PaddingProperty)!;
@@ -171,6 +196,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the font family.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public string FontFamily
     {
         get => (string)(GetValue(FontFamilyProperty) ?? "Segoe UI");
@@ -180,6 +206,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the font size.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double FontSize
     {
         get => (double)GetValue(FontSizeProperty)!;
@@ -189,6 +216,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the font weight.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontWeight FontWeight
     {
         get => GetValue(FontWeightProperty) is FontWeight fw ? fw : FontWeights.Normal;
@@ -198,6 +226,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the font style.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontStyle FontStyle
     {
         get => GetValue(FontStyleProperty) is FontStyle fs ? fs : FontStyles.Normal;
@@ -207,6 +236,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the font stretch.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontStretch FontStretch
     {
         get => GetValue(FontStretchProperty) is FontStretch fst ? fst : FontStretches.Normal;
@@ -216,6 +246,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the corner radius for rounded corners.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public CornerRadius CornerRadius
     {
         get => (CornerRadius)GetValue(CornerRadiusProperty)!;
@@ -225,6 +256,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the horizontal alignment of the control's content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public HorizontalAlignment HorizontalContentAlignment
     {
         get => (HorizontalAlignment)GetValue(HorizontalContentAlignmentProperty)!;
@@ -234,6 +266,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the vertical alignment of the control's content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public VerticalAlignment VerticalContentAlignment
     {
         get => (VerticalAlignment)GetValue(VerticalContentAlignmentProperty)!;
@@ -243,6 +276,7 @@ public class Control : FrameworkElement
     /// <summary>
     /// Gets or sets the template that defines the visual appearance of the control.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public ControlTemplate? Template
     {
         get => (ControlTemplate?)GetValue(TemplateProperty);

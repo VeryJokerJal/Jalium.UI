@@ -10,6 +10,7 @@ public class Line : Shape
     /// <summary>
     /// Identifies the X1 dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty X1Property =
         DependencyProperty.Register(nameof(X1), typeof(double), typeof(Line),
             new PropertyMetadata(0.0, OnGeometryPropertyChanged));
@@ -17,6 +18,7 @@ public class Line : Shape
     /// <summary>
     /// Identifies the Y1 dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty Y1Property =
         DependencyProperty.Register(nameof(Y1), typeof(double), typeof(Line),
             new PropertyMetadata(0.0, OnGeometryPropertyChanged));
@@ -24,6 +26,7 @@ public class Line : Shape
     /// <summary>
     /// Identifies the X2 dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty X2Property =
         DependencyProperty.Register(nameof(X2), typeof(double), typeof(Line),
             new PropertyMetadata(0.0, OnGeometryPropertyChanged));
@@ -31,6 +34,7 @@ public class Line : Shape
     /// <summary>
     /// Identifies the Y2 dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty Y2Property =
         DependencyProperty.Register(nameof(Y2), typeof(double), typeof(Line),
             new PropertyMetadata(0.0, OnGeometryPropertyChanged));
@@ -38,6 +42,7 @@ public class Line : Shape
     /// <summary>
     /// Gets or sets the x-coordinate of the line start point.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double X1
     {
         get => (double)GetValue(X1Property)!;
@@ -47,6 +52,7 @@ public class Line : Shape
     /// <summary>
     /// Gets or sets the y-coordinate of the line start point.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Y1
     {
         get => (double)GetValue(Y1Property)!;
@@ -56,6 +62,7 @@ public class Line : Shape
     /// <summary>
     /// Gets or sets the x-coordinate of the line end point.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double X2
     {
         get => (double)GetValue(X2Property)!;
@@ -65,6 +72,7 @@ public class Line : Shape
     /// <summary>
     /// Gets or sets the y-coordinate of the line end point.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Y2
     {
         get => (double)GetValue(Y2Property)!;

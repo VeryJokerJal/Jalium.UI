@@ -17,6 +17,7 @@ public class FontIcon : IconElement
     /// <summary>
     /// Identifies the Glyph dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty GlyphProperty =
         DependencyProperty.Register(nameof(Glyph), typeof(string), typeof(FontIcon),
             new PropertyMetadata(string.Empty, OnVisualPropertyChanged));
@@ -24,6 +25,7 @@ public class FontIcon : IconElement
     /// <summary>
     /// Identifies the FontFamily dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(FontFamily), typeof(FontIcon),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -31,6 +33,7 @@ public class FontIcon : IconElement
     /// <summary>
     /// Identifies the FontSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(FontIcon),
             new PropertyMetadata(20.0, OnVisualPropertyChanged));
@@ -42,6 +45,7 @@ public class FontIcon : IconElement
     /// <summary>
     /// Gets or sets the character code that identifies the icon glyph.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string Glyph
     {
         get => (string?)GetValue(GlyphProperty) ?? string.Empty;
@@ -52,6 +56,7 @@ public class FontIcon : IconElement
     /// Gets or sets the font used to display the icon glyph.
     /// Defaults to Segoe MDL2 Assets if not specified.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontFamily? FontFamily
     {
         get => (FontFamily?)GetValue(FontFamilyProperty);
@@ -61,6 +66,7 @@ public class FontIcon : IconElement
     /// <summary>
     /// Gets or sets the size of the icon glyph.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double FontSize
     {
         get => (double)GetValue(FontSizeProperty)!;

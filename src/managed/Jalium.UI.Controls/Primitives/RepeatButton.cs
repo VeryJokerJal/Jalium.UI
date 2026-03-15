@@ -12,6 +12,12 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class RepeatButton : ButtonBase
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.RepeatButtonAutomationPeer(this);
+    }
+
     private const string ScrollBarArrowBrushKey = "ScrollBarArrow";
     private const string ScrollBarArrowHoverBrushKey = "ScrollBarArrowHover";
     private const string ScrollBarArrowPressedBrushKey = "ScrollBarArrowPressed";
@@ -21,6 +27,7 @@ public class RepeatButton : ButtonBase
     /// <summary>
     /// Identifies the Delay dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty DelayProperty =
         DependencyProperty.Register(nameof(Delay), typeof(int), typeof(RepeatButton),
             new PropertyMetadata(SystemParameters.KeyboardDelay, OnDelayChanged));
@@ -28,6 +35,7 @@ public class RepeatButton : ButtonBase
     /// <summary>
     /// Identifies the Interval dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty IntervalProperty =
         DependencyProperty.Register(nameof(Interval), typeof(int), typeof(RepeatButton),
             new PropertyMetadata(SystemParameters.KeyboardSpeed, OnIntervalChanged));
@@ -35,6 +43,7 @@ public class RepeatButton : ButtonBase
     /// <summary>
     /// Identifies the UseScrollBarArrowAnimation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UseScrollBarArrowAnimationProperty =
         DependencyProperty.Register(nameof(UseScrollBarArrowAnimation), typeof(bool), typeof(RepeatButton),
             new PropertyMetadata(false, OnUseScrollBarArrowAnimationChanged));
@@ -47,6 +56,7 @@ public class RepeatButton : ButtonBase
     /// Gets or sets the amount of time, in milliseconds, that the RepeatButton waits while it is pressed
     /// before it starts repeating the Click event.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public int Delay
     {
         get => (int)GetValue(DelayProperty)!;
@@ -57,6 +67,7 @@ public class RepeatButton : ButtonBase
     /// Gets or sets the amount of time, in milliseconds, between repeats of the Click event
     /// after repeating starts.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int Interval
     {
         get => (int)GetValue(IntervalProperty)!;
@@ -67,6 +78,7 @@ public class RepeatButton : ButtonBase
     /// Gets or sets whether PART_Arrow visuals should animate using eased hover/pressed states.
     /// Intended for ScrollBar line buttons.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool UseScrollBarArrowAnimation
     {
         get => (bool)GetValue(UseScrollBarArrowAnimationProperty)!;

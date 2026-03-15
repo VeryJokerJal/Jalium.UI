@@ -11,6 +11,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class GridSplitter : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.GridSplitterAutomationPeer(this);
+    }
+
     #region Static Brushes
 
     private static readonly SolidColorBrush s_draggingBrush = new(Color.FromRgb(0, 120, 212));
@@ -22,6 +28,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Identifies the ResizeDirection dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ResizeDirectionProperty =
         DependencyProperty.Register(nameof(ResizeDirection), typeof(GridResizeDirection), typeof(GridSplitter),
             new PropertyMetadata(GridResizeDirection.Auto, OnResizeDirectionChanged));
@@ -29,6 +36,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Identifies the ResizeBehavior dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ResizeBehaviorProperty =
         DependencyProperty.Register(nameof(ResizeBehavior), typeof(GridResizeBehavior), typeof(GridSplitter),
             new PropertyMetadata(GridResizeBehavior.BasedOnAlignment));
@@ -36,6 +44,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Identifies the ShowsPreview dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowsPreviewProperty =
         DependencyProperty.Register(nameof(ShowsPreview), typeof(bool), typeof(GridSplitter),
             new PropertyMetadata(false));
@@ -43,6 +52,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Identifies the PreviewStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PreviewStyleProperty =
         DependencyProperty.Register(nameof(PreviewStyle), typeof(Style), typeof(GridSplitter),
             new PropertyMetadata(null));
@@ -50,6 +60,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Identifies the DragIncrement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DragIncrementProperty =
         DependencyProperty.Register(nameof(DragIncrement), typeof(double), typeof(GridSplitter),
             new PropertyMetadata(1.0));
@@ -57,6 +68,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Identifies the KeyboardIncrement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty KeyboardIncrementProperty =
         DependencyProperty.Register(nameof(KeyboardIncrement), typeof(double), typeof(GridSplitter),
             new PropertyMetadata(10.0));
@@ -68,6 +80,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Gets or sets the direction in which the splitter resizes.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public GridResizeDirection ResizeDirection
     {
         get => (GridResizeDirection)GetValue(ResizeDirectionProperty)!;
@@ -77,6 +90,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Gets or sets how the splitter resizes adjacent rows/columns.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public GridResizeBehavior ResizeBehavior
     {
         get => (GridResizeBehavior)GetValue(ResizeBehaviorProperty)!;
@@ -86,6 +100,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Gets or sets whether a preview is shown during drag.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowsPreview
     {
         get => (bool)GetValue(ShowsPreviewProperty)!;
@@ -95,6 +110,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Gets or sets the style for the preview.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Style? PreviewStyle
     {
         get => (Style?)GetValue(PreviewStyleProperty);
@@ -104,6 +120,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Gets or sets the minimum drag increment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double DragIncrement
     {
         get => (double)GetValue(DragIncrementProperty)!;
@@ -113,6 +130,7 @@ public class GridSplitter : Control
     /// <summary>
     /// Gets or sets the keyboard movement increment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double KeyboardIncrement
     {
         get => (double)GetValue(KeyboardIncrementProperty)!;
@@ -419,9 +437,9 @@ public class GridSplitter : Control
             case GridResizeBehavior.BasedOnAlignment:
             default:
                 // Based on alignment (WPF behavior):
-                // Left/Top → PreviousAndCurrent
-                // Right/Bottom → CurrentAndNext
-                // Center/Stretch → PreviousAndNext
+                // Left/Top 閳?PreviousAndCurrent
+                // Right/Bottom 閳?CurrentAndNext
+                // Center/Stretch 閳?PreviousAndNext
                 if (_effectiveResizeDirection == GridResizeDirection.Columns)
                 {
                     return HorizontalAlignment switch

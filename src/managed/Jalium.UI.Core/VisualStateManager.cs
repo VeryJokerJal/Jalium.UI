@@ -381,6 +381,7 @@ public static class VisualStateManager
     /// <summary>
     /// Identifies the VisualStateGroups attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty VisualStateGroupsProperty =
         DependencyProperty.RegisterAttached(
             "VisualStateGroups",
@@ -393,6 +394,7 @@ public static class VisualStateManager
     /// </summary>
     /// <param name="element">The element to get the visual state groups from.</param>
     /// <returns>The collection of visual state groups.</returns>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static IList<VisualStateGroup>? GetVisualStateGroups(FrameworkElement element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -404,6 +406,7 @@ public static class VisualStateManager
     /// </summary>
     /// <param name="element">The element to set the visual state groups on.</param>
     /// <param name="value">The collection of visual state groups.</param>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetVisualStateGroups(FrameworkElement element, IList<VisualStateGroup>? value)
     {
         ArgumentNullException.ThrowIfNull(element);

@@ -30,26 +30,32 @@ public partial class DockItem : HeaderedContentControl
 
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(DockItem),
             new PropertyMetadata(false, OnIsSelectedChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanCloseProperty =
         DependencyProperty.Register(nameof(CanClose), typeof(bool), typeof(DockItem),
             new PropertyMetadata(true, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanFloatProperty =
         DependencyProperty.Register(nameof(CanFloat), typeof(bool), typeof(DockItem),
             new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedBackgroundProperty =
         DependencyProperty.Register(nameof(SelectedBackground), typeof(Brush), typeof(DockItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HoverBackgroundProperty =
         DependencyProperty.Register(nameof(HoverBackground), typeof(Brush), typeof(DockItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty IndicatorBrushProperty =
         DependencyProperty.Register(nameof(IndicatorBrush), typeof(Brush), typeof(DockItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -58,36 +64,42 @@ public partial class DockItem : HeaderedContentControl
 
     #region Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty);
         set => SetValue(IsSelectedProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanClose
     {
         get => (bool)GetValue(CanCloseProperty)!;
         set => SetValue(CanCloseProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanFloat
     {
         get => (bool)(GetValue(CanFloatProperty) ?? true);
         set => SetValue(CanFloatProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public Brush? SelectedBackground
     {
         get => (Brush?)GetValue(SelectedBackgroundProperty);
         set => SetValue(SelectedBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? HoverBackground
     {
         get => (Brush?)GetValue(HoverBackgroundProperty);
         set => SetValue(HoverBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? IndicatorBrush
     {
         get => (Brush?)GetValue(IndicatorBrushProperty);
@@ -140,7 +152,7 @@ public partial class DockItem : HeaderedContentControl
     }
 
     /// <summary>
-    /// Do NOT add Content as visual child — DockTabPanel manages content display.
+    /// Do NOT add Content as visual child 閳?DockTabPanel manages content display.
     /// When content changes, notify OwnerPanel to release the old content and adopt the new one.
     /// </summary>
     protected override void OnContentChanged(object? oldContent, object? newContent)
@@ -229,7 +241,7 @@ public partial class DockItem : HeaderedContentControl
             // Select tab and begin potential drag
             OwnerPanel?.SelectTab(this);
             _isMouseDown = true;
-            // Track in OwnerPanel's coordinate space — stable during tab reorder
+            // Track in OwnerPanel's coordinate space 閳?stable during tab reorder
             _mouseDownPos = mouseArgs.GetPosition((UIElement?)OwnerPanel ?? this);
             e.Handled = true;
         }
@@ -280,7 +292,7 @@ public partial class DockItem : HeaderedContentControl
     {
         if (e is not MouseEventArgs mouseArgs) return;
 
-        // Floating window drag — move the window and update dock highlights
+        // Floating window drag 閳?move the window and update dock highlights
         if (_isDraggingFloatingWindow && _floatingDragWindow != null)
         {
             GetCursorPos(out var cursor);
@@ -300,7 +312,7 @@ public partial class DockItem : HeaderedContentControl
             return;
         }
 
-        // Reorder preview drag — update insertion indicator position
+        // Reorder preview drag 閳?update insertion indicator position
         if (_isReorderDragging && OwnerPanel != null)
         {
             if (mouseArgs.LeftButton == MouseButtonState.Released)
@@ -646,7 +658,7 @@ public partial class DockItem : HeaderedContentControl
             }
             else
             {
-                // Dock failed — restore content to floating window to prevent content loss
+                // Dock failed 閳?restore content to floating window to prevent content loss
                 newItem.Content = null;
                 Content = content;
                 _floatingDragWindow = windowToClose;
@@ -654,7 +666,7 @@ public partial class DockItem : HeaderedContentControl
         }
         else if (targetPanel != null && _floatingDragWindow != null)
         {
-            // Cursor is over a panel but not on any indicator button — add as tab (fallback)
+            // Cursor is over a panel but not on any indicator button 閳?add as tab (fallback)
             var content = Content;
             var headerText = Header?.ToString() ?? "Panel";
             var floatingPanel2 = OwnerPanel;
@@ -702,7 +714,7 @@ public partial class DockItem : HeaderedContentControl
         }
         else if (parent is ContentControl contentParent)
         {
-            // Target is direct child of DockLayout or Window — wrap in a new split panel
+            // Target is direct child of DockLayout or Window 閳?wrap in a new split panel
             contentParent.Content = null;
 
             var orientation = position is DockPosition.Left or DockPosition.Right
@@ -758,7 +770,7 @@ public partial class DockItem : HeaderedContentControl
 
         if (existingContent is DockSplitPanel existingSplit && existingSplit.Orientation == orientation)
         {
-            // Same orientation — insert at the edge
+            // Same orientation 閳?insert at the edge
             if (insertBefore)
                 existingSplit.Children.Insert(0, newTabPanel);
             else
@@ -1154,7 +1166,7 @@ public partial class DockItem : HeaderedContentControl
             dc.Pop();
         }
 
-        // Close button (X) — only show when selected or hovered
+        // Close button (X) 閳?only show when selected or hovered
         if (CanClose && (IsSelected || IsMouseOver))
         {
             var closeSize = 14.0;

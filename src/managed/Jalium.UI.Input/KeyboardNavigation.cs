@@ -10,6 +10,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Identifies the TabIndex attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabIndexProperty =
         DependencyProperty.RegisterAttached("TabIndex", typeof(int), typeof(KeyboardNavigation),
             new PropertyMetadata(int.MaxValue));
@@ -17,6 +18,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Identifies the IsTabStop attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsTabStopProperty =
         DependencyProperty.RegisterAttached("IsTabStop", typeof(bool), typeof(KeyboardNavigation),
             new PropertyMetadata(true));
@@ -24,6 +26,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Identifies the TabNavigation attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabNavigationProperty =
         DependencyProperty.RegisterAttached("TabNavigation", typeof(KeyboardNavigationMode), typeof(KeyboardNavigation),
             new PropertyMetadata(KeyboardNavigationMode.Continue));
@@ -31,6 +34,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Identifies the DirectionalNavigation attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty DirectionalNavigationProperty =
         DependencyProperty.RegisterAttached("DirectionalNavigation", typeof(KeyboardNavigationMode), typeof(KeyboardNavigation),
             new PropertyMetadata(KeyboardNavigationMode.Continue));
@@ -38,6 +42,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Gets the tab index for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static int GetTabIndex(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -47,6 +52,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Sets the tab index for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static void SetTabIndex(DependencyObject element, int value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -56,6 +62,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Gets whether the specified element is a tab stop.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static bool GetIsTabStop(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -65,6 +72,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Sets whether the specified element is a tab stop.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static void SetIsTabStop(DependencyObject element, bool value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -74,6 +82,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Gets the tab navigation mode for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static KeyboardNavigationMode GetTabNavigation(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -83,6 +92,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Sets the tab navigation mode for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static void SetTabNavigation(DependencyObject element, KeyboardNavigationMode value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -92,6 +102,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Gets the directional navigation mode for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static KeyboardNavigationMode GetDirectionalNavigation(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -101,6 +112,7 @@ public static class KeyboardNavigation
     /// <summary>
     /// Sets the directional navigation mode for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static void SetDirectionalNavigation(DependencyObject element, KeyboardNavigationMode value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -120,48 +132,37 @@ public static class KeyboardNavigation
     public static bool MoveFocus(UIElement currentElement, bool reverse = false)
     {
         ArgumentNullException.ThrowIfNull(currentElement);
-
-        // Get the root of the visual tree
-        var root = GetVisualRoot(currentElement);
-        if (root == null) return false;
-
-        // Collect all focusable elements
-        var focusableElements = new List<UIElement>();
-        CollectFocusableElements(root, focusableElements);
-
-        if (focusableElements.Count == 0) return false;
-
-        // Sort by tab index, then by visual tree order
-        focusableElements.Sort((a, b) =>
+        if (!TryGetTabNavigationContext(currentElement, out var context))
         {
-            var indexA = GetTabIndex(a);
-            var indexB = GetTabIndex(b);
-            return indexA.CompareTo(indexB);
-        });
+            return false;
+        }
 
-        // Find the current element
+        var focusableElements = GetOrderedFocusableElements(context.ScopeRoot, NavigationPropertyKind.Tab);
+        if (focusableElements.Count == 0)
+        {
+            return false;
+        }
+
         int currentIndex = focusableElements.IndexOf(currentElement);
         if (currentIndex < 0)
         {
-            // Current element not in list, focus first element
-            return FocusElement(focusableElements[0]);
+            return FocusElement(reverse ? focusableElements[^1] : focusableElements[0]);
         }
 
-        // Calculate next index
-        int nextIndex;
-        if (reverse)
+        var nextIndex = currentIndex + (reverse ? -1 : 1);
+        if (nextIndex < 0 || nextIndex >= focusableElements.Count)
         {
-            nextIndex = currentIndex - 1;
-            if (nextIndex < 0) nextIndex = focusableElements.Count - 1;
-        }
-        else
-        {
-            nextIndex = currentIndex + 1;
-            if (nextIndex >= focusableElements.Count) nextIndex = 0;
+            if (!context.Wraps)
+            {
+                return false;
+            }
+
+            nextIndex = reverse ? focusableElements.Count - 1 : 0;
         }
 
-        // Focus the next element
-        return FocusElement(focusableElements[nextIndex]);
+        return nextIndex == currentIndex
+            ? false
+            : FocusElement(focusableElements[nextIndex]);
     }
 
     /// <summary>
@@ -187,41 +188,48 @@ public static class KeyboardNavigation
 
     private static bool MoveFocusToFirst(UIElement currentElement)
     {
-        var root = GetVisualRoot(currentElement);
-        if (root == null) return false;
+        if (!TryGetTabNavigationContext(currentElement, out var context))
+        {
+            return false;
+        }
 
-        var focusableElements = new List<UIElement>();
-        CollectFocusableElements(root, focusableElements);
+        var focusableElements = GetOrderedFocusableElements(context.ScopeRoot, NavigationPropertyKind.Tab);
+        if (focusableElements.Count == 0)
+        {
+            return false;
+        }
 
-        if (focusableElements.Count == 0) return false;
-
-        focusableElements.Sort((a, b) => GetTabIndex(a).CompareTo(GetTabIndex(b)));
         return FocusElement(focusableElements[0]);
     }
 
     private static bool MoveFocusToLast(UIElement currentElement)
     {
-        var root = GetVisualRoot(currentElement);
-        if (root == null) return false;
+        if (!TryGetTabNavigationContext(currentElement, out var context))
+        {
+            return false;
+        }
 
-        var focusableElements = new List<UIElement>();
-        CollectFocusableElements(root, focusableElements);
+        var focusableElements = GetOrderedFocusableElements(context.ScopeRoot, NavigationPropertyKind.Tab);
+        if (focusableElements.Count == 0)
+        {
+            return false;
+        }
 
-        if (focusableElements.Count == 0) return false;
-
-        focusableElements.Sort((a, b) => GetTabIndex(a).CompareTo(GetTabIndex(b)));
         return FocusElement(focusableElements[^1]);
     }
 
     private static bool MoveFocusDirectional(UIElement currentElement, FocusNavigationDirection direction)
     {
-        var root = GetVisualRoot(currentElement);
-        if (root == null) return false;
+        if (!TryGetDirectionalNavigationContext(currentElement, out var context))
+        {
+            return false;
+        }
 
-        var focusableElements = new List<UIElement>();
-        CollectFocusableElements(root, focusableElements);
-
-        if (focusableElements.Count <= 1) return false;
+        var focusableElements = GetOrderedFocusableElements(context.ScopeRoot, NavigationPropertyKind.Directional);
+        if (focusableElements.Count <= 1)
+        {
+            return false;
+        }
 
         // Get current element bounds
         var currentBounds = currentElement.VisualBounds;
@@ -280,7 +288,13 @@ public static class KeyboardNavigation
             return FocusElement(bestCandidate);
         }
 
-        return false;
+        if (!context.Wraps)
+        {
+            return false;
+        }
+
+        var wrappedCandidate = GetWrappedDirectionalCandidate(currentElement, direction, focusableElements);
+        return wrappedCandidate != null && FocusElement(wrappedCandidate);
     }
 
     private static UIElement? GetVisualRoot(UIElement element)
@@ -293,14 +307,104 @@ public static class KeyboardNavigation
         return current;
     }
 
-    private static void CollectFocusableElements(UIElement element, List<UIElement> results)
+    private static bool TryGetTabNavigationContext(UIElement currentElement, out NavigationContext context)
+    {
+        return TryGetNavigationContext(currentElement, NavigationPropertyKind.Tab, out context);
+    }
+
+    private static bool TryGetDirectionalNavigationContext(UIElement currentElement, out NavigationContext context)
+    {
+        return TryGetNavigationContext(currentElement, NavigationPropertyKind.Directional, out context);
+    }
+
+    private static bool TryGetNavigationContext(UIElement currentElement, NavigationPropertyKind kind, out NavigationContext context)
+    {
+        var container = FindNavigationContainer(currentElement, kind);
+        if (container == null)
+        {
+            var visualRoot = GetVisualRoot(currentElement);
+            if (visualRoot == null)
+            {
+                context = default;
+                return false;
+            }
+
+            context = new NavigationContext(visualRoot, false);
+            return true;
+        }
+
+        var mode = GetNavigationMode(container, kind);
+        if (mode == KeyboardNavigationMode.None)
+        {
+            context = default;
+            return false;
+        }
+
+        context = new NavigationContext(container, mode == KeyboardNavigationMode.Cycle);
+        return true;
+    }
+
+    private static UIElement? FindNavigationContainer(UIElement element, NavigationPropertyKind kind)
+    {
+        for (UIElement? current = element; current != null; current = current.VisualParent as UIElement)
+        {
+            if (GetNavigationMode(current, kind) != KeyboardNavigationMode.Continue)
+            {
+                return current;
+            }
+        }
+
+        return null;
+    }
+
+    private static KeyboardNavigationMode GetNavigationMode(UIElement element, NavigationPropertyKind kind)
+    {
+        return kind == NavigationPropertyKind.Tab
+            ? GetTabNavigation(element)
+            : GetDirectionalNavigation(element);
+    }
+
+    private static List<UIElement> GetOrderedFocusableElements(UIElement root, NavigationPropertyKind kind)
+    {
+        var orderedElements = new List<(UIElement Element, int VisualOrder)>();
+        var visualOrder = 0;
+        CollectFocusableElements(root, root, kind, orderedElements, ref visualOrder);
+
+        orderedElements.Sort((a, b) =>
+        {
+            var tabCompare = GetTabIndex(a.Element).CompareTo(GetTabIndex(b.Element));
+            return tabCompare != 0 ? tabCompare : a.VisualOrder.CompareTo(b.VisualOrder);
+        });
+
+        var result = new List<UIElement>(orderedElements.Count);
+        foreach (var (element, _) in orderedElements)
+        {
+            result.Add(element);
+        }
+
+        return result;
+    }
+
+    private static void CollectFocusableElements(
+        UIElement element,
+        UIElement traversalRoot,
+        NavigationPropertyKind kind,
+        List<(UIElement Element, int VisualOrder)> results,
+        ref int visualOrder)
     {
         if (!element.IsEnabled || element.Visibility != Visibility.Visible)
+        {
             return;
+        }
 
         if (element.Focusable && GetIsTabStop(element))
         {
-            results.Add(element);
+            results.Add((element, visualOrder++));
+        }
+
+        if (!ReferenceEquals(element, traversalRoot) && GetNavigationMode(element, kind) == KeyboardNavigationMode.None)
+        {
+            return;
         }
 
         // Recursively check children
@@ -308,9 +412,77 @@ public static class KeyboardNavigation
         {
             if (element.GetVisualChild(i) is UIElement child)
             {
-                CollectFocusableElements(child, results);
+                CollectFocusableElements(child, traversalRoot, kind, results, ref visualOrder);
             }
         }
+    }
+
+    private static UIElement? GetWrappedDirectionalCandidate(UIElement currentElement, FocusNavigationDirection direction, List<UIElement> focusableElements)
+    {
+        var currentBounds = currentElement.VisualBounds;
+        var currentCenter = new Point(
+            currentBounds.X + currentBounds.Width / 2,
+            currentBounds.Y + currentBounds.Height / 2);
+
+        UIElement? bestCandidate = null;
+        double bestPrimary = direction switch
+        {
+            FocusNavigationDirection.Left or FocusNavigationDirection.Up => double.MinValue,
+            _ => double.MaxValue
+        };
+        double bestAlignment = double.MaxValue;
+
+        foreach (var candidate in focusableElements)
+        {
+            if (candidate == currentElement)
+            {
+                continue;
+            }
+
+            var bounds = candidate.VisualBounds;
+            var center = new Point(bounds.X + bounds.Width / 2, bounds.Y + bounds.Height / 2);
+
+            double primary;
+            double alignment;
+            bool improves;
+
+            switch (direction)
+            {
+                case FocusNavigationDirection.Left:
+                    primary = center.X;
+                    alignment = Math.Abs(center.Y - currentCenter.Y);
+                    improves = primary > bestPrimary || (Math.Abs(primary - bestPrimary) < 0.001 && alignment < bestAlignment);
+                    break;
+                case FocusNavigationDirection.Right:
+                    primary = center.X;
+                    alignment = Math.Abs(center.Y - currentCenter.Y);
+                    improves = primary < bestPrimary || (Math.Abs(primary - bestPrimary) < 0.001 && alignment < bestAlignment);
+                    break;
+                case FocusNavigationDirection.Up:
+                    primary = center.Y;
+                    alignment = Math.Abs(center.X - currentCenter.X);
+                    improves = primary > bestPrimary || (Math.Abs(primary - bestPrimary) < 0.001 && alignment < bestAlignment);
+                    break;
+                case FocusNavigationDirection.Down:
+                    primary = center.Y;
+                    alignment = Math.Abs(center.X - currentCenter.X);
+                    improves = primary < bestPrimary || (Math.Abs(primary - bestPrimary) < 0.001 && alignment < bestAlignment);
+                    break;
+                default:
+                    return null;
+            }
+
+            if (!improves)
+            {
+                continue;
+            }
+
+            bestCandidate = candidate;
+            bestPrimary = primary;
+            bestAlignment = alignment;
+        }
+
+        return bestCandidate;
     }
 
     private static bool FocusElement(UIElement element)
@@ -320,6 +492,14 @@ public static class KeyboardNavigation
             return element.Focus();
         }
         return false;
+    }
+
+    private readonly record struct NavigationContext(UIElement ScopeRoot, bool Wraps);
+
+    private enum NavigationPropertyKind
+    {
+        Tab,
+        Directional
     }
 
     #endregion

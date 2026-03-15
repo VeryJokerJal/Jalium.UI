@@ -31,6 +31,7 @@ public static class ContextMenuService
     /// <summary>
     /// Identifies the ContextMenu attached dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ContextMenuProperty =
         DependencyProperty.RegisterAttached("ContextMenu", typeof(ContextMenu), typeof(ContextMenuService),
             new PropertyMetadata(null));
@@ -38,6 +39,7 @@ public static class ContextMenuService
     /// <summary>
     /// Identifies the IsEnabled attached dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsEnabledProperty =
         DependencyProperty.RegisterAttached("IsEnabled", typeof(bool), typeof(ContextMenuService),
             new PropertyMetadata(true));
@@ -45,6 +47,7 @@ public static class ContextMenuService
     /// <summary>
     /// Identifies the Placement attached dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementProperty =
         DependencyProperty.RegisterAttached("Placement", typeof(PlacementMode), typeof(ContextMenuService),
             new PropertyMetadata(PlacementMode.MousePoint));
@@ -52,6 +55,7 @@ public static class ContextMenuService
     /// <summary>
     /// Identifies the PlacementTarget attached dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementTargetProperty =
         DependencyProperty.RegisterAttached("PlacementTarget", typeof(UIElement), typeof(ContextMenuService),
             new PropertyMetadata(null));
@@ -59,6 +63,7 @@ public static class ContextMenuService
     /// <summary>
     /// Identifies the HorizontalOffset attached dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HorizontalOffsetProperty =
         DependencyProperty.RegisterAttached("HorizontalOffset", typeof(double), typeof(ContextMenuService),
             new PropertyMetadata(0.0));
@@ -66,6 +71,7 @@ public static class ContextMenuService
     /// <summary>
     /// Identifies the VerticalOffset attached dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty VerticalOffsetProperty =
         DependencyProperty.RegisterAttached("VerticalOffset", typeof(double), typeof(ContextMenuService),
             new PropertyMetadata(0.0));
@@ -73,6 +79,7 @@ public static class ContextMenuService
     /// <summary>
     /// Identifies the HasDropShadow attached dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty HasDropShadowProperty =
         DependencyProperty.RegisterAttached("HasDropShadow", typeof(bool), typeof(ContextMenuService),
             new PropertyMetadata(false));
@@ -80,6 +87,7 @@ public static class ContextMenuService
     /// <summary>
     /// Identifies the ShowOnDisabled attached dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowOnDisabledProperty =
         DependencyProperty.RegisterAttached("ShowOnDisabled", typeof(bool), typeof(ContextMenuService),
             new PropertyMetadata(false));
@@ -115,6 +123,7 @@ public static class ContextMenuService
     /// <summary>
     /// Gets the context menu for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static ContextMenu? GetContextMenu(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -124,6 +133,7 @@ public static class ContextMenuService
     /// <summary>
     /// Sets the context menu for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetContextMenu(DependencyObject element, ContextMenu? value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -133,6 +143,7 @@ public static class ContextMenuService
     /// <summary>
     /// Gets whether context menu is enabled for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetIsEnabled(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -142,6 +153,7 @@ public static class ContextMenuService
     /// <summary>
     /// Sets whether context menu is enabled for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static void SetIsEnabled(DependencyObject element, bool value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -151,6 +163,7 @@ public static class ContextMenuService
     /// <summary>
     /// Gets the placement mode for the context menu.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static PlacementMode GetPlacement(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -160,6 +173,7 @@ public static class ContextMenuService
     /// <summary>
     /// Sets the placement mode for the context menu.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetPlacement(DependencyObject element, PlacementMode value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -169,6 +183,7 @@ public static class ContextMenuService
     /// <summary>
     /// Gets the placement target for the context menu.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static UIElement? GetPlacementTarget(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -178,6 +193,7 @@ public static class ContextMenuService
     /// <summary>
     /// Sets the placement target for the context menu.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetPlacementTarget(DependencyObject element, UIElement? value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -187,6 +203,7 @@ public static class ContextMenuService
     /// <summary>
     /// Gets the horizontal offset for the context menu.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetHorizontalOffset(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -196,6 +213,7 @@ public static class ContextMenuService
     /// <summary>
     /// Sets the horizontal offset for the context menu.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetHorizontalOffset(DependencyObject element, double value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -205,6 +223,7 @@ public static class ContextMenuService
     /// <summary>
     /// Gets the vertical offset for the context menu.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetVerticalOffset(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -214,6 +233,7 @@ public static class ContextMenuService
     /// <summary>
     /// Sets the vertical offset for the context menu.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetVerticalOffset(DependencyObject element, double value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -223,6 +243,7 @@ public static class ContextMenuService
     /// <summary>
     /// Gets whether the context menu has a drop shadow.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetHasDropShadow(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -232,6 +253,7 @@ public static class ContextMenuService
     /// <summary>
     /// Sets whether the context menu has a drop shadow.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static void SetHasDropShadow(DependencyObject element, bool value)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -241,6 +263,7 @@ public static class ContextMenuService
     /// <summary>
     /// Gets whether the context menu should show on disabled elements.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static bool GetShowOnDisabled(DependencyObject element)
     {
         ArgumentNullException.ThrowIfNull(element);
@@ -250,6 +273,7 @@ public static class ContextMenuService
     /// <summary>
     /// Sets whether the context menu should show on disabled elements.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetShowOnDisabled(DependencyObject element, bool value)
     {
         ArgumentNullException.ThrowIfNull(element);

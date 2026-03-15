@@ -413,6 +413,12 @@ JALIUM_API void jalium_push_clip(JaliumRenderTarget* rt, float x, float y, float
     }
 }
 
+JALIUM_API void jalium_push_clip_aliased(JaliumRenderTarget* rt, float x, float y, float width, float height) {
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->PushClipAliased(x, y, width, height);
+    }
+}
+
 JALIUM_API void jalium_push_rounded_rect_clip(JaliumRenderTarget* rt, float x, float y, float width, float height, float rx, float ry) {
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->PushRoundedRectClip(x, y, width, height, rx, ry);

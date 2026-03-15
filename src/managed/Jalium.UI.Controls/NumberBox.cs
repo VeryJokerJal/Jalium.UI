@@ -12,6 +12,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class NumberBox : TextBoxBase, IImeSupport
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.NumberBoxAutomationPeer(this);
+    }
+
     #region Fields
 
     // Internal text storage
@@ -72,6 +78,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Value dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ValueProperty =
         DependencyProperty.Register(nameof(Value), typeof(double), typeof(NumberBox),
             new PropertyMetadata(0.0, OnValueChanged, CoerceValue));
@@ -79,6 +86,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Minimum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinimumProperty =
         DependencyProperty.Register(nameof(Minimum), typeof(double), typeof(NumberBox),
             new PropertyMetadata(double.MinValue, OnRangeChanged));
@@ -86,6 +94,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Maximum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaximumProperty =
         DependencyProperty.Register(nameof(Maximum), typeof(double), typeof(NumberBox),
             new PropertyMetadata(double.MaxValue, OnRangeChanged));
@@ -93,6 +102,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the SmallChange dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SmallChangeProperty =
         DependencyProperty.Register(nameof(SmallChange), typeof(double), typeof(NumberBox),
             new PropertyMetadata(1.0));
@@ -100,6 +110,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the LargeChange dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LargeChangeProperty =
         DependencyProperty.Register(nameof(LargeChange), typeof(double), typeof(NumberBox),
             new PropertyMetadata(10.0));
@@ -107,6 +118,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the SpinButtonPlacementMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SpinButtonPlacementModeProperty =
         DependencyProperty.Register(nameof(SpinButtonPlacementMode), typeof(NumberBoxSpinButtonPlacementMode), typeof(NumberBox),
             new PropertyMetadata(NumberBoxSpinButtonPlacementMode.Inline, OnLayoutPropertyChanged));
@@ -114,6 +126,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Placeholder dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(NumberBox),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -121,6 +134,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(NumberBox),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
@@ -128,6 +142,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the NumberFormatter dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty NumberFormatterProperty =
         DependencyProperty.Register(nameof(NumberFormatter), typeof(string), typeof(NumberBox),
             new PropertyMetadata("G", OnFormatChanged));
@@ -135,6 +150,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the AcceptsExpression dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty AcceptsExpressionProperty =
         DependencyProperty.Register(nameof(AcceptsExpression), typeof(bool), typeof(NumberBox),
             new PropertyMetadata(false));
@@ -142,6 +158,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the IsWrapEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsWrapEnabledProperty =
         DependencyProperty.Register(nameof(IsWrapEnabled), typeof(bool), typeof(NumberBox),
             new PropertyMetadata(false));
@@ -149,6 +166,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the DecimalPlaces dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DecimalPlacesProperty =
         DependencyProperty.Register(nameof(DecimalPlaces), typeof(int), typeof(NumberBox),
             new PropertyMetadata(-1, OnFormatChanged));
@@ -180,6 +198,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the numeric value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Value
     {
         get => (double)GetValue(ValueProperty)!;
@@ -189,6 +208,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the minimum value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Minimum
     {
         get => (double)GetValue(MinimumProperty)!;
@@ -198,6 +218,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the maximum value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Maximum
     {
         get => (double)GetValue(MaximumProperty)!;
@@ -207,6 +228,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the small change value (for arrow keys and spin buttons).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SmallChange
     {
         get => (double)GetValue(SmallChangeProperty)!;
@@ -216,6 +238,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the large change value (for page up/down).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double LargeChange
     {
         get => (double)GetValue(LargeChangeProperty)!;
@@ -225,6 +248,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the spin button placement mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public NumberBoxSpinButtonPlacementMode SpinButtonPlacementMode
     {
         get => (NumberBoxSpinButtonPlacementMode)(GetValue(SpinButtonPlacementModeProperty) ?? NumberBoxSpinButtonPlacementMode.Inline);
@@ -234,6 +258,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the placeholder text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? PlaceholderText
     {
         get => (string?)GetValue(PlaceholderTextProperty);
@@ -243,6 +268,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the header content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
@@ -252,6 +278,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the number format string.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string NumberFormatter
     {
         get => (string)(GetValue(NumberFormatterProperty) ?? "G");
@@ -261,6 +288,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether mathematical expressions are accepted.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool AcceptsExpression
     {
         get => (bool)GetValue(AcceptsExpressionProperty)!;
@@ -270,6 +298,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether the value wraps around at min/max.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsWrapEnabled
     {
         get => (bool)GetValue(IsWrapEnabledProperty)!;
@@ -279,6 +308,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the number of decimal places (-1 for auto).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int DecimalPlaces
     {
         get => (int)GetValue(DecimalPlacesProperty)!;
@@ -1099,6 +1129,11 @@ public class NumberBox : TextBoxBase, IImeSupport
             {
                 var pen = new Pen(borderBrush, strokeThickness);
                 dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
+            }
+
+            if (IsKeyboardFocused)
+            {
+                ControlFocusVisual.Draw(dc, this, inputRect, cornerRadius);
             }
         }
 

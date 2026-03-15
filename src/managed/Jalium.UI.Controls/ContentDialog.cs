@@ -40,74 +40,92 @@ public class ContentDialog : ContentControl
     private const double DefaultDialogMargin = 24.0;
     private const double DefaultDialogCardMinWidth = 320.0;
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TitleProperty =
         DependencyProperty.Register(nameof(Title), typeof(object), typeof(ContentDialog),
             new PropertyMetadata(null, OnDialogVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TitleTemplateProperty =
         DependencyProperty.Register(nameof(TitleTemplate), typeof(DataTemplate), typeof(ContentDialog),
             new PropertyMetadata(null, OnDialogVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PrimaryButtonTextProperty =
         DependencyProperty.Register(nameof(PrimaryButtonText), typeof(string), typeof(ContentDialog),
             new PropertyMetadata(string.Empty, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SecondaryButtonTextProperty =
         DependencyProperty.Register(nameof(SecondaryButtonText), typeof(string), typeof(ContentDialog),
             new PropertyMetadata(string.Empty, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CloseButtonTextProperty =
         DependencyProperty.Register(nameof(CloseButtonText), typeof(string), typeof(ContentDialog),
             new PropertyMetadata(string.Empty, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty DefaultButtonProperty =
         DependencyProperty.Register(nameof(DefaultButton), typeof(ContentDialogButton), typeof(ContentDialog),
             new PropertyMetadata(ContentDialogButton.None, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsPrimaryButtonEnabledProperty =
         DependencyProperty.Register(nameof(IsPrimaryButtonEnabled), typeof(bool), typeof(ContentDialog),
             new PropertyMetadata(true, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSecondaryButtonEnabledProperty =
         DependencyProperty.Register(nameof(IsSecondaryButtonEnabled), typeof(bool), typeof(ContentDialog),
             new PropertyMetadata(true, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PrimaryButtonCommandProperty =
         DependencyProperty.Register(nameof(PrimaryButtonCommand), typeof(ICommand), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonCommandChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SecondaryButtonCommandProperty =
         DependencyProperty.Register(nameof(SecondaryButtonCommand), typeof(ICommand), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonCommandChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CloseButtonCommandProperty =
         DependencyProperty.Register(nameof(CloseButtonCommand), typeof(ICommand), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonCommandChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PrimaryButtonCommandParameterProperty =
         DependencyProperty.Register(nameof(PrimaryButtonCommandParameter), typeof(object), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SecondaryButtonCommandParameterProperty =
         DependencyProperty.Register(nameof(SecondaryButtonCommandParameter), typeof(object), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CloseButtonCommandParameterProperty =
         DependencyProperty.Register(nameof(CloseButtonCommandParameter), typeof(object), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PrimaryButtonStyleProperty =
         DependencyProperty.Register(nameof(PrimaryButtonStyle), typeof(Style), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SecondaryButtonStyleProperty =
         DependencyProperty.Register(nameof(SecondaryButtonStyle), typeof(Style), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CloseButtonStyleProperty =
         DependencyProperty.Register(nameof(CloseButtonStyle), typeof(Style), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonConfigurationChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty FullSizeDesiredProperty =
         DependencyProperty.Register(nameof(FullSizeDesired), typeof(bool), typeof(ContentDialog),
             new PropertyMetadata(false, OnDialogVisualPropertyChanged));
@@ -134,112 +152,131 @@ public class ContentDialog : ContentControl
         VerticalAlignment = VerticalAlignment.Stretch;
         BackdropEffect = new BlurEffect(18f);
         KeyboardNavigation.SetTabNavigation(this, KeyboardNavigationMode.Cycle);
+        KeyboardNavigation.SetDirectionalNavigation(this, KeyboardNavigationMode.Cycle);
         AddHandler(KeyDownEvent, new KeyEventHandler(OnDialogKeyDown), handledEventsToo: true);
         SizeChanged += OnDialogSizeChanged;
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Title
     {
         get => GetValue(TitleProperty);
         set => SetValue(TitleProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplate? TitleTemplate
     {
         get => (DataTemplate?)GetValue(TitleTemplateProperty);
         set => SetValue(TitleTemplateProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string PrimaryButtonText
     {
         get => (string)(GetValue(PrimaryButtonTextProperty) ?? string.Empty);
         set => SetValue(PrimaryButtonTextProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string SecondaryButtonText
     {
         get => (string)(GetValue(SecondaryButtonTextProperty) ?? string.Empty);
         set => SetValue(SecondaryButtonTextProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string CloseButtonText
     {
         get => (string)(GetValue(CloseButtonTextProperty) ?? string.Empty);
         set => SetValue(CloseButtonTextProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public ContentDialogButton DefaultButton
     {
         get => (ContentDialogButton)(GetValue(DefaultButtonProperty) ?? ContentDialogButton.None);
         set => SetValue(DefaultButtonProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsPrimaryButtonEnabled
     {
         get => (bool)(GetValue(IsPrimaryButtonEnabledProperty) ?? true);
         set => SetValue(IsPrimaryButtonEnabledProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSecondaryButtonEnabled
     {
         get => (bool)(GetValue(IsSecondaryButtonEnabledProperty) ?? true);
         set => SetValue(IsSecondaryButtonEnabledProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ICommand? PrimaryButtonCommand
     {
         get => (ICommand?)GetValue(PrimaryButtonCommandProperty);
         set => SetValue(PrimaryButtonCommandProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ICommand? SecondaryButtonCommand
     {
         get => (ICommand?)GetValue(SecondaryButtonCommandProperty);
         set => SetValue(SecondaryButtonCommandProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ICommand? CloseButtonCommand
     {
         get => (ICommand?)GetValue(CloseButtonCommandProperty);
         set => SetValue(CloseButtonCommandProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? PrimaryButtonCommandParameter
     {
         get => GetValue(PrimaryButtonCommandParameterProperty);
         set => SetValue(PrimaryButtonCommandParameterProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? SecondaryButtonCommandParameter
     {
         get => GetValue(SecondaryButtonCommandParameterProperty);
         set => SetValue(SecondaryButtonCommandParameterProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? CloseButtonCommandParameter
     {
         get => GetValue(CloseButtonCommandParameterProperty);
         set => SetValue(CloseButtonCommandParameterProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Style? PrimaryButtonStyle
     {
         get => (Style?)GetValue(PrimaryButtonStyleProperty);
         set => SetValue(PrimaryButtonStyleProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Style? SecondaryButtonStyle
     {
         get => (Style?)GetValue(SecondaryButtonStyleProperty);
         set => SetValue(SecondaryButtonStyleProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Style? CloseButtonStyle
     {
         get => (Style?)GetValue(CloseButtonStyleProperty);
         set => SetValue(CloseButtonStyleProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool FullSizeDesired
     {
         get => (bool)(GetValue(FullSizeDesiredProperty) ?? false);

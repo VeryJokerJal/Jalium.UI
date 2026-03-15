@@ -8,6 +8,7 @@ public static class DesignerProperties
     /// <summary>
     /// Identifies the IsInDesignMode attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsInDesignModeProperty =
         DependencyProperty.RegisterAttached("IsInDesignMode", typeof(bool), typeof(DesignerProperties),
             new PropertyMetadata(false));
@@ -15,6 +16,7 @@ public static class DesignerProperties
     /// <summary>
     /// Gets the value of the IsInDesignMode attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetIsInDesignMode(DependencyObject element)
     {
         return (bool)(element.GetValue(IsInDesignModeProperty) ?? false);
@@ -23,6 +25,7 @@ public static class DesignerProperties
     /// <summary>
     /// Sets the value of the IsInDesignMode attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static void SetIsInDesignMode(DependencyObject element, bool value)
     {
         element.SetValue(IsInDesignModeProperty, value);

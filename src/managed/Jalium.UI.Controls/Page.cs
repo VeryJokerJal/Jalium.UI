@@ -12,6 +12,7 @@ public class Page : ContentControl
     /// <summary>
     /// Identifies the Title dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TitleProperty =
         DependencyProperty.Register(nameof(Title), typeof(string), typeof(Page),
             new PropertyMetadata(string.Empty));
@@ -19,6 +20,7 @@ public class Page : ContentControl
     /// <summary>
     /// Identifies the NavigationCacheMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty NavigationCacheModeProperty =
         DependencyProperty.Register(nameof(NavigationCacheMode), typeof(NavigationCacheMode), typeof(Page),
             new PropertyMetadata(NavigationCacheMode.Disabled));
@@ -30,6 +32,7 @@ public class Page : ContentControl
     /// <summary>
     /// Gets or sets the title of the page.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Title
     {
         get => (string)(GetValue(TitleProperty) ?? string.Empty);
@@ -39,6 +42,7 @@ public class Page : ContentControl
     /// <summary>
     /// Gets or sets the navigation cache mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public NavigationCacheMode NavigationCacheMode
     {
         get => (NavigationCacheMode)(GetValue(NavigationCacheModeProperty) ?? NavigationCacheMode.Disabled);

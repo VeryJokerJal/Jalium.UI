@@ -10,6 +10,7 @@ public class DataGridCellsPresenter : Panel
     /// <summary>
     /// Identifies the Item dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ItemProperty =
         DependencyProperty.Register(nameof(Item), typeof(object), typeof(DataGridCellsPresenter),
             new PropertyMetadata(null, OnItemChanged));
@@ -21,6 +22,7 @@ public class DataGridCellsPresenter : Panel
     /// <summary>
     /// Gets or sets the data item for this row.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? Item
     {
         get => GetValue(ItemProperty);

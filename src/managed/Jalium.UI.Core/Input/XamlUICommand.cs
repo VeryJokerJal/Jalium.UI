@@ -11,6 +11,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Identifies the Label dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty LabelProperty =
         DependencyProperty.Register(nameof(Label), typeof(string), typeof(XamlUICommand),
             new PropertyMetadata(string.Empty));
@@ -18,6 +19,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Identifies the IconSource dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty IconSourceProperty =
         DependencyProperty.Register(nameof(IconSource), typeof(object), typeof(XamlUICommand),
             new PropertyMetadata(null));
@@ -25,6 +27,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Identifies the Description dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty DescriptionProperty =
         DependencyProperty.Register(nameof(Description), typeof(string), typeof(XamlUICommand),
             new PropertyMetadata(string.Empty));
@@ -32,6 +35,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Identifies the AccessKey dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AccessKeyProperty =
         DependencyProperty.Register(nameof(AccessKey), typeof(string), typeof(XamlUICommand),
             new PropertyMetadata(string.Empty));
@@ -39,6 +43,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Identifies the Command dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
         DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(XamlUICommand),
             new PropertyMetadata(null, OnCommandChanged));
@@ -50,6 +55,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Gets or sets the label for this command.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Label
     {
         get => (string?)GetValue(LabelProperty) ?? string.Empty;
@@ -59,6 +65,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Gets or sets the icon source for this command.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? IconSource
     {
         get => GetValue(IconSourceProperty);
@@ -68,6 +75,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Gets or sets a description for this command.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Description
     {
         get => (string?)GetValue(DescriptionProperty) ?? string.Empty;
@@ -77,6 +85,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Gets or sets the access key (mnemonic) for this command.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string AccessKey
     {
         get => (string?)GetValue(AccessKeyProperty) ?? string.Empty;
@@ -86,6 +95,7 @@ public class XamlUICommand : DependencyObject, ICommand
     /// <summary>
     /// Gets or sets an ICommand that this XamlUICommand delegates to.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public ICommand? Command
     {
         get => (ICommand?)GetValue(CommandProperty);

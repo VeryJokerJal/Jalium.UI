@@ -8,9 +8,9 @@ namespace Jalium.UI;
 /// its own System.Threading.Timer, everyone subscribes to the static
 /// <see cref="Rendering"/> event which fires once per frame on the UI thread.
 ///
-/// This eliminates timer proliferation (N timers â†?1) and ensures all
+/// This eliminates timer proliferation (N timers ï¿½?1) and ensures all
 /// animation ticks happen in the same Dispatcher batch, so only ONE
-/// render pass occurs per frame â€?critical for integrated GPU performance.
+/// render pass occurs per frame ï¿½?critical for integrated GPU performance.
 /// </summary>
 public static partial class CompositionTarget
 {
@@ -40,7 +40,7 @@ public static partial class CompositionTarget
 
     /// <summary>
     /// Gets whether the frame timer is active (at least one subscriber).
-    /// When active, rendering is driven by the frame timer â€?external callers
+    /// When active, rendering is driven by the frame timer ï¿½?external callers
     /// (mouse drag, property changes) should not schedule extra renders.
     /// </summary>
     public static bool IsActive => Volatile.Read(ref _subscriberCount) > 0;
@@ -59,7 +59,7 @@ public static partial class CompositionTarget
 
     /// <summary>
     /// Gets the detected monitor refresh rate as the nominal target frame rate.
-    /// The animation loop is uncapped â€?actual FPS is determined by rendering speed.
+    /// The animation loop is uncapped ï¿½?actual FPS is determined by rendering speed.
     /// </summary>
     public static int TargetFrameRate => _refreshRate;
 
@@ -178,6 +178,23 @@ public static partial class CompositionTarget
         finally
         {
             _inRaiseRendering = false;
+        }
+
+        // Safety net: if all Rendering subscribers have been removed but the
+        // subscriber count leaked (e.g. Subscribe without matching Unsubscribe),
+        // stop the timer to prevent an empty frame loop burning CPU/GPU.
+        var handlers = Rendering;
+        if (handlers == null || handlers.GetInvocationList().Length == 0)
+        {
+            lock (_timerLock)
+            {
+                if (_subscriberCount > 0)
+                {
+                    _subscriberCount = 0;
+                    StopTimer();
+                    return; // Don't re-arm â€” timer is stopped.
+                }
+            }
         }
 
         // Defer re-arm via BeginInvoke so it runs AFTER ProcessRender completes.

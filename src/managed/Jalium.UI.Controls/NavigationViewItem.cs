@@ -10,6 +10,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class NavigationViewItem : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.NavigationViewItemAutomationPeer(this);
+    }
+
     #region Constants
 
     private const double IndentPerLevel = 28;
@@ -64,6 +70,7 @@ public class NavigationViewItem : ContentControl
     /// <summary>
     /// Identifies the Icon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty IconProperty =
         DependencyProperty.Register(nameof(Icon), typeof(object), typeof(NavigationViewItem),
             new PropertyMetadata(null));
@@ -71,6 +78,7 @@ public class NavigationViewItem : ContentControl
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(NavigationViewItem),
             new PropertyMetadata(false, OnIsSelectedChanged));
@@ -78,6 +86,7 @@ public class NavigationViewItem : ContentControl
     /// <summary>
     /// Identifies the IsExpanded dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsExpandedProperty =
         DependencyProperty.Register(nameof(IsExpanded), typeof(bool), typeof(NavigationViewItem),
             new PropertyMetadata(false, OnIsExpandedChanged));
@@ -90,6 +99,7 @@ public class NavigationViewItem : ContentControl
     /// <summary>
     /// Identifies the SelectsOnInvoked dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SelectsOnInvokedProperty =
         DependencyProperty.Register(nameof(SelectsOnInvoked), typeof(bool), typeof(NavigationViewItem),
             new PropertyMetadata(true));
@@ -101,6 +111,7 @@ public class NavigationViewItem : ContentControl
     /// <summary>
     /// Gets or sets the icon for this item. Can be a string (glyph), IconElement, or any UIElement.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Icon
     {
         get => GetValue(IconProperty);
@@ -110,6 +121,7 @@ public class NavigationViewItem : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether this item is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty)!;
@@ -119,6 +131,7 @@ public class NavigationViewItem : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether this item is expanded.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsExpanded
     {
         get => (bool)GetValue(IsExpandedProperty)!;
@@ -133,6 +146,7 @@ public class NavigationViewItem : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether this item becomes selected when invoked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool SelectsOnInvoked
     {
         get => (bool)GetValue(SelectsOnInvokedProperty)!;

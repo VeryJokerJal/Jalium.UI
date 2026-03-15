@@ -22,6 +22,12 @@ public enum Dock
 /// </summary>
 public class TabControl : Selector
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TabControlAutomationPeer(this);
+    }
+
     // Cached brushes for OnRender fallback paths
     private static readonly SolidColorBrush s_tabStripBackgroundBrush = new(ThemeColors.TabStripBackground);
     private static readonly SolidColorBrush s_tabStripBorderBrush = new(ThemeColors.TabStripBorder);
@@ -31,6 +37,7 @@ public class TabControl : Selector
     /// <summary>
     /// Identifies the SelectedContent dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedContentProperty =
         DependencyProperty.Register(nameof(SelectedContent), typeof(object), typeof(TabControl),
             new PropertyMetadata(null));
@@ -38,6 +45,7 @@ public class TabControl : Selector
     /// <summary>
     /// Identifies the TabStripPlacement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabStripPlacementProperty =
         DependencyProperty.Register(nameof(TabStripPlacement), typeof(Dock), typeof(TabControl),
             new PropertyMetadata(Dock.Top, OnTabStripPlacementChanged));
@@ -45,6 +53,7 @@ public class TabControl : Selector
     /// <summary>
     /// Identifies the TabStripBackground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabStripBackgroundProperty =
         DependencyProperty.Register(nameof(TabStripBackground), typeof(Brush), typeof(TabControl),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -52,6 +61,7 @@ public class TabControl : Selector
     /// <summary>
     /// Identifies the TabStripBorderBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty TabStripBorderBrushProperty =
         DependencyProperty.Register(nameof(TabStripBorderBrush), typeof(Brush), typeof(TabControl),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -59,6 +69,7 @@ public class TabControl : Selector
     /// <summary>
     /// Identifies the TabStripHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabStripHeightProperty =
         DependencyProperty.Register(nameof(TabStripHeight), typeof(double), typeof(TabControl),
             new PropertyMetadata(36.0, OnLayoutPropertyChanged));
@@ -70,6 +81,7 @@ public class TabControl : Selector
     /// <summary>
     /// Gets or sets the content of the selected tab.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedContent
     {
         get => GetValue(SelectedContentProperty);
@@ -79,6 +91,7 @@ public class TabControl : Selector
     /// <summary>
     /// Gets or sets the position of the tab strip.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public Dock TabStripPlacement
     {
         get => (Dock)GetValue(TabStripPlacementProperty);
@@ -88,6 +101,7 @@ public class TabControl : Selector
     /// <summary>
     /// Gets or sets the background brush for the tab strip.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public Brush? TabStripBackground
     {
         get => (Brush?)GetValue(TabStripBackgroundProperty);
@@ -97,6 +111,7 @@ public class TabControl : Selector
     /// <summary>
     /// Gets or sets the border brush for the tab strip.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? TabStripBorderBrush
     {
         get => (Brush?)GetValue(TabStripBorderBrushProperty);
@@ -106,6 +121,7 @@ public class TabControl : Selector
     /// <summary>
     /// Gets or sets the height of the tab strip.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public double TabStripHeight
     {
         get => (double)GetValue(TabStripHeightProperty);
@@ -559,6 +575,12 @@ public class TabControl : Selector
 /// </summary>
 public class TabItem : HeaderedContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TabItemAutomationPeer(this);
+    }
+
     // Cached brushes for OnRender fallback paths
     private static readonly SolidColorBrush s_selectedBackgroundBrush = new(ThemeColors.TabItemSelectedBackground);
     private static readonly SolidColorBrush s_hoverBackgroundBrush = new(ThemeColors.TabItemHoverBackground);
@@ -574,6 +596,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(TabItem),
             new PropertyMetadata(false, OnIsSelectedChanged));
@@ -581,6 +604,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Identifies the IndicatorBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty IndicatorBrushProperty =
         DependencyProperty.Register(nameof(IndicatorBrush), typeof(Brush), typeof(TabItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -588,6 +612,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Identifies the IndicatorHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty IndicatorHeightProperty =
         DependencyProperty.Register(nameof(IndicatorHeight), typeof(double), typeof(TabItem),
             new PropertyMetadata(2.0, OnVisualPropertyChanged));
@@ -595,6 +620,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Identifies the SelectedBackground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedBackgroundProperty =
         DependencyProperty.Register(nameof(SelectedBackground), typeof(Brush), typeof(TabItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -602,6 +628,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Identifies the HoverBackground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HoverBackgroundProperty =
         DependencyProperty.Register(nameof(HoverBackground), typeof(Brush), typeof(TabItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -613,6 +640,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Gets or sets whether this tab is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty);
@@ -622,6 +650,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Gets or sets the brush for the selection indicator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? IndicatorBrush
     {
         get => (Brush?)GetValue(IndicatorBrushProperty);
@@ -631,6 +660,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Gets or sets the height of the selection indicator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double IndicatorHeight
     {
         get => (double)GetValue(IndicatorHeightProperty);
@@ -640,6 +670,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Gets or sets the background when selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public Brush? SelectedBackground
     {
         get => (Brush?)GetValue(SelectedBackgroundProperty);
@@ -649,6 +680,7 @@ public class TabItem : HeaderedContentControl
     /// <summary>
     /// Gets or sets the background when hovered.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? HoverBackground
     {
         get => (Brush?)GetValue(HoverBackgroundProperty);
@@ -858,6 +890,7 @@ public class HeaderedContentControl : ContentControl
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(HeaderedContentControl),
             new PropertyMetadata(null));
@@ -865,6 +898,7 @@ public class HeaderedContentControl : ContentControl
     /// <summary>
     /// Gets or sets the header content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);

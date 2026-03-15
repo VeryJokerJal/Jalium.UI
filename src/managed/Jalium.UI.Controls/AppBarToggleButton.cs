@@ -13,6 +13,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Identifies the Icon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty IconProperty =
         DependencyProperty.Register(nameof(Icon), typeof(IconElement), typeof(AppBarToggleButton),
             new PropertyMetadata(null));
@@ -20,6 +21,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Identifies the Label dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty LabelProperty =
         DependencyProperty.Register(nameof(Label), typeof(string), typeof(AppBarToggleButton),
             new PropertyMetadata(string.Empty));
@@ -27,6 +29,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Identifies the LabelPosition dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty LabelPositionProperty =
         DependencyProperty.Register(nameof(LabelPosition), typeof(CommandBarLabelPosition), typeof(AppBarToggleButton),
             new PropertyMetadata(CommandBarLabelPosition.Default));
@@ -34,6 +37,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Identifies the IsCompact dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsCompactProperty =
         DependencyProperty.Register(nameof(IsCompact), typeof(bool), typeof(AppBarToggleButton),
             new PropertyMetadata(false));
@@ -41,6 +45,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Identifies the DynamicOverflowOrder dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DynamicOverflowOrderProperty =
         DependencyProperty.Register(nameof(DynamicOverflowOrder), typeof(int), typeof(AppBarToggleButton),
             new PropertyMetadata(0));
@@ -52,6 +57,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Gets or sets the graphic content of the app bar toggle button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public IconElement? Icon
     {
         get => (IconElement?)GetValue(IconProperty);
@@ -61,6 +67,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Gets or sets the text label displayed on the app bar toggle button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Label
     {
         get => (string?)GetValue(LabelProperty) ?? string.Empty;
@@ -70,6 +77,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Gets or sets a value indicating the placement and visibility of the label.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public CommandBarLabelPosition LabelPosition
     {
         get => (CommandBarLabelPosition)(GetValue(LabelPositionProperty) ?? CommandBarLabelPosition.Default);
@@ -79,6 +87,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Gets or sets a value indicating whether the element is shown in its compact representation.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsCompact
     {
         get => (bool)GetValue(IsCompactProperty)!;
@@ -88,6 +97,7 @@ public class AppBarToggleButton : ToggleButton, ICommandBarElement
     /// <summary>
     /// Gets or sets the priority of this element's dynamic overflow behavior.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int DynamicOverflowOrder
     {
         get => (int)GetValue(DynamicOverflowOrderProperty)!;

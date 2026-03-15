@@ -1,4 +1,4 @@
-﻿using System.IO;
+using System.IO;
 
 namespace Jalium.UI;
 
@@ -22,6 +22,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the Width dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty WidthProperty =
         DependencyProperty.Register(nameof(Width), typeof(double), typeof(FrameworkElement),
             new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
@@ -29,6 +30,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the Height dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HeightProperty =
         DependencyProperty.Register(nameof(Height), typeof(double), typeof(FrameworkElement),
             new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
@@ -36,6 +38,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the MinWidth dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinWidthProperty =
         DependencyProperty.Register(nameof(MinWidth), typeof(double), typeof(FrameworkElement),
             new PropertyMetadata(0.0, OnLayoutPropertyChanged));
@@ -43,6 +46,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the MinHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinHeightProperty =
         DependencyProperty.Register(nameof(MinHeight), typeof(double), typeof(FrameworkElement),
             new PropertyMetadata(0.0, OnLayoutPropertyChanged));
@@ -50,6 +54,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the MaxWidth dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxWidthProperty =
         DependencyProperty.Register(nameof(MaxWidth), typeof(double), typeof(FrameworkElement),
             new PropertyMetadata(double.PositiveInfinity, OnLayoutPropertyChanged));
@@ -57,6 +62,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the MaxHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxHeightProperty =
         DependencyProperty.Register(nameof(MaxHeight), typeof(double), typeof(FrameworkElement),
             new PropertyMetadata(double.PositiveInfinity, OnLayoutPropertyChanged));
@@ -64,6 +70,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the Margin dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MarginProperty =
         DependencyProperty.Register(nameof(Margin), typeof(Thickness), typeof(FrameworkElement),
             new PropertyMetadata(new Thickness(0), OnLayoutPropertyChanged));
@@ -71,6 +78,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the HorizontalAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HorizontalAlignmentProperty =
         DependencyProperty.Register(nameof(HorizontalAlignment), typeof(HorizontalAlignment), typeof(FrameworkElement),
             new PropertyMetadata(HorizontalAlignment.Stretch, OnLayoutPropertyChanged));
@@ -78,6 +86,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the VerticalAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty VerticalAlignmentProperty =
         DependencyProperty.Register(nameof(VerticalAlignment), typeof(VerticalAlignment), typeof(FrameworkElement),
             new PropertyMetadata(VerticalAlignment.Stretch, OnLayoutPropertyChanged));
@@ -85,6 +94,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the DataContext dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty DataContextProperty =
         DependencyProperty.Register(nameof(DataContext), typeof(object), typeof(FrameworkElement),
             new PropertyMetadata(null, OnDataContextChanged));
@@ -92,6 +102,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the Name dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public static readonly DependencyProperty NameProperty =
         DependencyProperty.Register(nameof(Name), typeof(string), typeof(FrameworkElement),
             new PropertyMetadata(string.Empty));
@@ -99,6 +110,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the Tag dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public static readonly DependencyProperty TagProperty =
         DependencyProperty.Register(nameof(Tag), typeof(object), typeof(FrameworkElement),
             new PropertyMetadata(null));
@@ -106,6 +118,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the ToolTip dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ToolTipProperty =
         DependencyProperty.Register(nameof(ToolTip), typeof(object), typeof(FrameworkElement),
             new PropertyMetadata(null, OnToolTipPropertyChanged));
@@ -113,6 +126,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the Style dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StyleProperty =
         DependencyProperty.Register(nameof(Style), typeof(Style), typeof(FrameworkElement),
             new PropertyMetadata(null, OnStyleChanged));
@@ -120,6 +134,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Identifies the Cursor dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty CursorProperty =
         DependencyProperty.Register(nameof(Cursor), typeof(Cursor), typeof(FrameworkElement),
             new PropertyMetadata(null, null, null, inherits: true));
@@ -365,6 +380,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the width of the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Width
     {
         get => (double)GetValue(WidthProperty)!;
@@ -374,6 +390,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the height of the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Height
     {
         get => (double)GetValue(HeightProperty)!;
@@ -383,6 +400,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the minimum width of the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinWidth
     {
         get => (double)GetValue(MinWidthProperty)!;
@@ -392,6 +410,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the minimum height of the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinHeight
     {
         get => (double)GetValue(MinHeightProperty)!;
@@ -401,6 +420,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the maximum width of the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxWidth
     {
         get => (double)GetValue(MaxWidthProperty)!;
@@ -410,6 +430,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the maximum height of the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxHeight
     {
         get => (double)GetValue(MaxHeightProperty)!;
@@ -419,6 +440,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the margin around the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness Margin
     {
         get => (Thickness)GetValue(MarginProperty)!;
@@ -428,6 +450,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the horizontal alignment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public HorizontalAlignment HorizontalAlignment
     {
         get => (HorizontalAlignment)GetValue(HorizontalAlignmentProperty)!;
@@ -437,6 +460,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the vertical alignment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public VerticalAlignment VerticalAlignment
     {
         get => (VerticalAlignment)GetValue(VerticalAlignmentProperty)!;
@@ -446,6 +470,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the data context for data binding.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public object? DataContext
     {
         get => GetValue(DataContextProperty);
@@ -455,6 +480,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the name of the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public string Name
     {
         get => (string)(GetValue(NameProperty) ?? string.Empty);
@@ -464,6 +490,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets arbitrary object data associated with this element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public object? Tag
     {
         get => GetValue(TagProperty);
@@ -473,6 +500,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the tooltip for this element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? ToolTip
     {
         get => GetValue(ToolTipProperty);
@@ -627,6 +655,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the style used by this element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Style? Style
     {
         get => (Style?)GetValue(StyleProperty);
@@ -636,6 +665,7 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Gets or sets the cursor that displays when the mouse pointer is over this element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public Cursor? Cursor
     {
         get => (Cursor?)GetValue(CursorProperty);

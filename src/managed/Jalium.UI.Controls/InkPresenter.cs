@@ -14,6 +14,7 @@ public class InkPresenter : Decorator
     /// <summary>
     /// Identifies the Strokes dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StrokesProperty =
         DependencyProperty.Register(nameof(Strokes), typeof(StrokeCollection), typeof(InkPresenter),
             new PropertyMetadata(null, OnStrokesChanged));
@@ -21,6 +22,7 @@ public class InkPresenter : Decorator
     /// <summary>
     /// Gets or sets the strokes that the InkPresenter displays.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StrokeCollection? Strokes
     {
         get => (StrokeCollection?)GetValue(StrokesProperty);

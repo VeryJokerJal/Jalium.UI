@@ -146,7 +146,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         _renderTarget?.Dispose();
         _renderTarget = null;
 
-        var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: forceReplaceContext);
+        var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceReplaceContext);
         _renderTarget = context.CreateRenderTargetForComposition(_hwnd, Math.Max(1, _width), Math.Max(1, _height));
 
         var dpi = (float)(_dpiScale * 96.0);
@@ -209,7 +209,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
             // Clear with fully transparent background
             _renderTarget.Clear(0f, 0f, 0f, 0f);
 
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
             _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
             _drawingContext.Offset = Point.Zero;
             _visual.Render(_drawingContext);

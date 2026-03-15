@@ -84,6 +84,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(Border),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -91,6 +92,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Identifies the BorderBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BorderBrushProperty =
         DependencyProperty.Register(nameof(BorderBrush), typeof(Brush), typeof(Border),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -98,6 +100,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Identifies the BorderThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BorderThicknessProperty =
         DependencyProperty.Register(nameof(BorderThickness), typeof(Thickness), typeof(Border),
             new PropertyMetadata(new Thickness(0), OnLayoutPropertyChanged));
@@ -105,6 +108,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Identifies the CornerRadius dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CornerRadiusProperty =
         DependencyProperty.Register(nameof(CornerRadius), typeof(CornerRadius), typeof(Border),
             new PropertyMetadata(new CornerRadius(0), OnVisualPropertyChanged));
@@ -112,6 +116,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Identifies the Padding dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PaddingProperty =
         DependencyProperty.Register(nameof(Padding), typeof(Thickness), typeof(Border),
             new PropertyMetadata(new Thickness(0), OnLayoutPropertyChanged));
@@ -121,6 +126,7 @@ public class Border : FrameworkElement
     /// When true, renders the background using the liquid glass effect
     /// with SDF-based refraction, edge highlights, and inner shadow.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LiquidGlassProperty =
         DependencyProperty.Register(nameof(LiquidGlass), typeof(bool), typeof(Border),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -128,6 +134,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Identifies the LiquidGlassBlurRadius dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty LiquidGlassBlurRadiusProperty =
         DependencyProperty.Register(nameof(LiquidGlassBlurRadius), typeof(double), typeof(Border),
             new PropertyMetadata(8.0, OnVisualPropertyChanged));
@@ -135,6 +142,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Identifies the LiquidGlassRefractionAmount dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty LiquidGlassRefractionAmountProperty =
         DependencyProperty.Register(nameof(LiquidGlassRefractionAmount), typeof(double), typeof(Border),
             new PropertyMetadata(60.0, OnVisualPropertyChanged));
@@ -142,6 +150,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Identifies the LiquidGlassChromaticAberration dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty LiquidGlassChromaticAberrationProperty =
         DependencyProperty.Register(nameof(LiquidGlassChromaticAberration), typeof(double), typeof(Border),
             new PropertyMetadata(0.0, OnVisualPropertyChanged));
@@ -150,6 +159,7 @@ public class Border : FrameworkElement
     /// Identifies the LiquidGlassInteractive dependency property.
     /// When true, enables spring-based press animation on the liquid glass effect.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LiquidGlassInteractiveProperty =
         DependencyProperty.Register(nameof(LiquidGlassInteractive), typeof(bool), typeof(Border),
             new PropertyMetadata(false, OnVisualPropertyChanged));
@@ -158,6 +168,7 @@ public class Border : FrameworkElement
     /// Identifies the LiquidGlassFusionRadius dependency property.
     /// Controls the smooth-min radius (in pixels) for fusion between adjacent liquid glass panels.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty LiquidGlassFusionRadiusProperty =
         DependencyProperty.Register(nameof(LiquidGlassFusionRadius), typeof(double), typeof(Border),
             new PropertyMetadata(30.0, OnVisualPropertyChanged));
@@ -166,6 +177,7 @@ public class Border : FrameworkElement
     /// Identifies the Shape dependency property.
     /// Controls whether the border uses standard rounded rectangle or superellipse shape.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ShapeProperty =
         DependencyProperty.Register(nameof(Shape), typeof(BorderShape), typeof(Border),
             new PropertyMetadata(BorderShape.RoundedRectangle, OnVisualPropertyChanged));
@@ -174,6 +186,7 @@ public class Border : FrameworkElement
     /// Identifies the SuperEllipseN dependency property.
     /// Controls the superellipse exponent when Shape is SuperEllipse. Default is 4 (iOS-style squircle).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SuperEllipseNProperty =
         DependencyProperty.Register(nameof(SuperEllipseN), typeof(double), typeof(Border),
             new PropertyMetadata(4.0, OnVisualPropertyChanged));
@@ -185,6 +198,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the background brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -194,6 +208,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the border brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? BorderBrush
     {
         get => (Brush?)GetValue(BorderBrushProperty);
@@ -203,6 +218,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the border thickness.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness BorderThickness
     {
         get => (Thickness)GetValue(BorderThicknessProperty)!;
@@ -212,6 +228,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the corner radius.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public CornerRadius CornerRadius
     {
         get => (CornerRadius)GetValue(CornerRadiusProperty)!;
@@ -221,6 +238,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the padding inside the border.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness Padding
     {
         get => (Thickness)GetValue(PaddingProperty)!;
@@ -230,6 +248,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets whether to render the liquid glass effect.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool LiquidGlass
     {
         get => (bool)GetValue(LiquidGlassProperty)!;
@@ -239,6 +258,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the liquid glass blur radius (default 8).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public double LiquidGlassBlurRadius
     {
         get => (double)GetValue(LiquidGlassBlurRadiusProperty)!;
@@ -248,6 +268,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the liquid glass refraction amount (default 60).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public double LiquidGlassRefractionAmount
     {
         get => (double)GetValue(LiquidGlassRefractionAmountProperty)!;
@@ -257,6 +278,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the chromatic aberration amount (0-1, default 0).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public double LiquidGlassChromaticAberration
     {
         get => (double)GetValue(LiquidGlassChromaticAberrationProperty)!;
@@ -266,6 +288,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets whether the liquid glass effect responds to press with a spring animation.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool LiquidGlassInteractive
     {
         get => (bool)GetValue(LiquidGlassInteractiveProperty)!;
@@ -276,6 +299,7 @@ public class Border : FrameworkElement
     /// Gets or sets the fusion radius for merging adjacent liquid glass panels.
     /// Higher values create a wider, smoother blend between nearby glass panels.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public double LiquidGlassFusionRadius
     {
         get => (double)GetValue(LiquidGlassFusionRadiusProperty)!;
@@ -285,6 +309,7 @@ public class Border : FrameworkElement
     /// <summary>
     /// Gets or sets the border shape (RoundedRectangle or SuperEllipse).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public BorderShape Shape
     {
         get => (BorderShape)(GetValue(ShapeProperty) ?? BorderShape.RoundedRectangle);
@@ -295,6 +320,7 @@ public class Border : FrameworkElement
     /// Gets or sets the superellipse exponent (default 4.0, iOS-style squircle).
     /// Only used when Shape is SuperEllipse. Higher values = more rectangular, lower = more circular.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SuperEllipseN
     {
         get => (double)GetValue(SuperEllipseNProperty)!;
@@ -424,25 +450,25 @@ public class Border : FrameworkElement
 
             ctx.BeginFigure(new Point(cx + a, cy), true, true);
 
-            // Right → Bottom
+            // Right 閳?Bottom
             ctx.BezierTo(
                 new Point(cx + a, cy + b * k),
                 new Point(cx + a * k, cy + b),
                 new Point(cx, cy + b), true, false);
 
-            // Bottom → Left
+            // Bottom 閳?Left
             ctx.BezierTo(
                 new Point(cx - a * k, cy + b),
                 new Point(cx - a, cy + b * k),
                 new Point(cx - a, cy), true, false);
 
-            // Left → Top
+            // Left 閳?Top
             ctx.BezierTo(
                 new Point(cx - a, cy - b * k),
                 new Point(cx - a * k, cy - b),
                 new Point(cx, cy - b), true, false);
 
-            // Top → Right
+            // Top 閳?Right
             ctx.BezierTo(
                 new Point(cx + a * k, cy - b),
                 new Point(cx + a, cy - b * k),
@@ -560,7 +586,7 @@ public class Border : FrameworkElement
             // Discover sibling liquid glass panels for fusion
             float fusionRadius = (float)LiquidGlassFusionRadius;
             int neighborCount = 0;
-            Span<float> neighborData = stackalloc float[20]; // max 4 neighbors × 5 floats
+            Span<float> neighborData = stackalloc float[20]; // max 4 neighbors 鑴?5 floats
             if (fusionRadius > 0 && VisualParent is Panel parentPanel)
             {
                 foreach (var child in parentPanel.Children)
@@ -641,7 +667,7 @@ public class Border : FrameworkElement
         {
             var seN = SuperEllipseN;
 
-            // Skip Background fill when LiquidGlass is enabled — the shader handles
+            // Skip Background fill when LiquidGlass is enabled 閳?the shader handles
             // tint via the Background color. Drawing it on top would create a visible
             // boundary at the panel's original shape, breaking fusion bridge continuity.
             if (Background != null && !LiquidGlass)
@@ -709,7 +735,7 @@ public class Border : FrameworkElement
         }
 
         // The ScaleTransform pushed AFTER DrawLiquidGlass stays active for children.
-        // Visual.Render order: OnRender → children → OnPostRender.
+        // Visual.Render order: OnRender 閳?children 閳?OnPostRender.
         // Glass gets a deformed rect (SDF shape change); bg/border/children get ScaleTransform.
     }
 
@@ -767,7 +793,7 @@ public class Border : FrameworkElement
         {
             if (!TryWireLgWindowTracking())
             {
-                // Not in visual tree yet — defer to Loaded
+                // Not in visual tree yet 閳?defer to Loaded
                 Loaded += OnLgDeferredLoaded;
             }
         }
@@ -956,7 +982,7 @@ public class Border : FrameworkElement
 
     private void OnLgLostMouseCapture(object sender, RoutedEventArgs e)
     {
-        // Mouse capture was stolen (e.g. window deactivation, another element captured) —
+        // Mouse capture was stolen (e.g. window deactivation, another element captured) 閳?
         // treat as release to prevent stuck drag state.
         if (_lgPressed)
         {
@@ -997,12 +1023,12 @@ public class Border : FrameworkElement
         if (dt <= 0) return;
 
         double stiffness = _lgPressed ? LgPressStiffness : LgReleaseStiffness;
-        // maxDisplacement=0.5 prevents scale spring from diverging beyond ±0.5 of target (0.5..1.5 range)
+        // maxDisplacement=0.5 prevents scale spring from diverging beyond 鍗?.5 of target (0.5..1.5 range)
         bool settledX = _lgSpringX.Step(dt, stiffness, LgDampingX, 0.5);
         bool settledY = _lgSpringY.Step(dt, stiffness, LgDampingY, 0.5);
 
         // Step drag offset springs (only meaningful after release, during drag they track mouse directly)
-        // maxDisplacement=200 prevents offset from diverging beyond ±200px
+        // maxDisplacement=200 prevents offset from diverging beyond 鍗?00px
         bool settledOffX = _lgSpringOffX.Step(dt, LgOffsetStiffness, LgOffsetDamping, 200);
         bool settledOffY = _lgSpringOffY.Step(dt, LgOffsetStiffness, LgOffsetDamping, 200);
 

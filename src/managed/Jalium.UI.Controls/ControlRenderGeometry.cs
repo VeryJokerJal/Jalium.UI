@@ -31,4 +31,18 @@ internal static class ControlRenderGeometry
             Math.Max(0, cornerRadius.BottomRight - inset),
             Math.Max(0, cornerRadius.BottomLeft - inset));
     }
+
+    public static CornerRadius InsetCornerRadius(CornerRadius cornerRadius, double inset)
+    {
+        if (!double.IsFinite(inset) || inset <= 0)
+        {
+            return cornerRadius;
+        }
+
+        return new CornerRadius(
+            Math.Max(0, cornerRadius.TopLeft - inset),
+            Math.Max(0, cornerRadius.TopRight - inset),
+            Math.Max(0, cornerRadius.BottomRight - inset),
+            Math.Max(0, cornerRadius.BottomLeft - inset));
+    }
 }

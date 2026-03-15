@@ -7,6 +7,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Frame : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.FrameAutomationPeer(this);
+    }
+
     #region Fields
 
     private readonly Stack<PageStackEntry> _backStack = new();
@@ -21,6 +27,7 @@ public class Frame : ContentControl
     /// <summary>
     /// Identifies the SourcePageType dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourcePageTypeProperty =
         DependencyProperty.Register(nameof(SourcePageType), typeof(Type), typeof(Frame),
             new PropertyMetadata(null));
@@ -32,6 +39,7 @@ public class Frame : ContentControl
     /// <summary>
     /// Gets or sets the type of the current source page.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Type? SourcePageType
     {
         get => GetValue(SourcePageTypeProperty) as Type;
@@ -310,6 +318,7 @@ public class Frame : ContentControl
 
     private readonly struct PageStackEntry
     {
+        [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
         public Type SourcePageType { get; }
         public object? Parameter { get; }
 

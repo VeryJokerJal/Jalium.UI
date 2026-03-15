@@ -26,6 +26,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the SortDirection dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty SortDirectionProperty =
         DependencyProperty.Register(nameof(SortDirection), typeof(ListSortDirection?), typeof(DataGridColumnHeader),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -33,6 +34,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the CanUserSort dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanUserSortProperty =
         DependencyProperty.Register(nameof(CanUserSort), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(true));
@@ -40,6 +42,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the CanUserResize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanUserResizeProperty =
         DependencyProperty.Register(nameof(CanUserResize), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(true));
@@ -47,6 +50,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the CanUserReorder dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanUserReorderProperty =
         DependencyProperty.Register(nameof(CanUserReorder), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(true));
@@ -54,6 +58,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the DisplayIndex dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayIndexProperty =
         DependencyProperty.Register(nameof(DisplayIndex), typeof(int), typeof(DataGridColumnHeader),
             new PropertyMetadata(-1));
@@ -61,6 +66,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the IsFrozen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsFrozenProperty =
         DependencyProperty.Register(nameof(IsFrozen), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(false));
@@ -68,6 +74,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the SeparatorBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SeparatorBrushProperty =
         DependencyProperty.Register(nameof(SeparatorBrush), typeof(Brush), typeof(DataGridColumnHeader),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -75,6 +82,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the SeparatorVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SeparatorVisibilityProperty =
         DependencyProperty.Register(nameof(SeparatorVisibility), typeof(Visibility), typeof(DataGridColumnHeader),
             new PropertyMetadata(Visibility.Visible, OnVisualPropertyChanged));
@@ -86,6 +94,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets the sort direction for this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public ListSortDirection? SortDirection
     {
         get => (ListSortDirection?)GetValue(SortDirectionProperty);
@@ -95,6 +104,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether the user can sort by this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanUserSort
     {
         get => (bool)GetValue(CanUserSortProperty)!;
@@ -104,6 +114,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether the user can resize this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanUserResize
     {
         get => (bool)GetValue(CanUserResizeProperty)!;
@@ -113,6 +124,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether the user can reorder this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanUserReorder
     {
         get => (bool)GetValue(CanUserReorderProperty)!;
@@ -122,6 +134,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets the display index of this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int DisplayIndex
     {
         get => (int)GetValue(DisplayIndexProperty)!;
@@ -131,6 +144,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether this column is frozen.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsFrozen
     {
         get => (bool)GetValue(IsFrozenProperty)!;
@@ -140,6 +154,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets the brush used for the separator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SeparatorBrush
     {
         get => (Brush?)GetValue(SeparatorBrushProperty);
@@ -149,6 +164,7 @@ public class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets the visibility of the separator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Visibility SeparatorVisibility
     {
         get => (Visibility)GetValue(SeparatorVisibilityProperty)!;

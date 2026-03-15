@@ -93,9 +93,6 @@ internal static partial class NativeMethods
         }
     }
 
-    [LibraryImport(D3D12Lib, EntryPoint = "jalium_d3d12_init")]
-    private static partial void D3D12Init();
-
     #region Context Management
 
     /// <summary>
@@ -491,6 +488,13 @@ internal static partial class NativeMethods
     internal static partial void PushClip(nint renderTarget, float x, float y, float width, float height);
 
     /// <summary>
+    /// Pushes a clip rectangle with ALIASED anti-aliasing (hard pixel boundary).
+    /// Used for dirty region clips where semi-transparent edges cause artifacts.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_push_clip_aliased")]
+    internal static partial void PushClipAliased(nint renderTarget, float x, float y, float width, float height);
+
+    /// <summary>
     /// Pushes a rounded rectangle clip using a geometry mask layer.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_push_rounded_rect_clip")]
@@ -610,6 +614,12 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_bitmap_create_from_memory")]
     internal static partial nint BitmapCreateFromMemory(nint context, [In] byte[] data, uint dataSize);
+
+    /// <summary>
+    /// Creates a bitmap from raw BGRA8 pixel data.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_bitmap_create_from_pixels")]
+    internal static partial nint BitmapCreateFromPixels(nint context, [In] byte[] pixels, uint width, uint height, uint stride);
 
     /// <summary>
     /// Gets the width of a bitmap.

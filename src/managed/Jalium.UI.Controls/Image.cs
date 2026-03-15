@@ -9,6 +9,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class Image : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ImageAutomationPeer(this);
+    }
+
     private ImageHost? _imageHost;
     private Border? _container;
 
@@ -17,6 +23,7 @@ public class Image : Control
     /// <summary>
     /// Identifies the Source dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(ImageSource), typeof(Image),
             new PropertyMetadata(null, OnSourceChanged));
@@ -24,6 +31,7 @@ public class Image : Control
     /// <summary>
     /// Identifies the Stretch dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchProperty =
         DependencyProperty.Register(nameof(Stretch), typeof(Stretch), typeof(Image),
             new PropertyMetadata(Stretch.Uniform, OnLayoutPropertyChanged));
@@ -31,6 +39,7 @@ public class Image : Control
     /// <summary>
     /// Identifies the StretchDirection dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchDirectionProperty =
         DependencyProperty.Register(nameof(StretchDirection), typeof(StretchDirection), typeof(Image),
             new PropertyMetadata(StretchDirection.Both, OnLayoutPropertyChanged));
@@ -42,6 +51,7 @@ public class Image : Control
     /// <summary>
     /// Gets or sets the image source.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public ImageSource? Source
     {
         get => (ImageSource?)GetValue(SourceProperty);
@@ -51,6 +61,7 @@ public class Image : Control
     /// <summary>
     /// Gets or sets how the image is stretched to fill its allocated space.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Stretch Stretch
     {
         get => (Stretch)GetValue(StretchProperty)!;
@@ -60,6 +71,7 @@ public class Image : Control
     /// <summary>
     /// Gets or sets the direction to stretch the image.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StretchDirection StretchDirection
     {
         get => (StretchDirection)GetValue(StretchDirectionProperty)!;

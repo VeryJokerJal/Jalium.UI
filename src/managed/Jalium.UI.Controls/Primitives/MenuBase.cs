@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Input;
+using Jalium.UI.Input;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -12,6 +12,7 @@ public abstract class MenuBase : ItemsControl
     /// <summary>
     /// Identifies the ItemContainerStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ItemContainerStyleProperty =
         DependencyProperty.Register(nameof(ItemContainerStyle), typeof(Style), typeof(MenuBase),
             new PropertyMetadata(null));
@@ -19,6 +20,7 @@ public abstract class MenuBase : ItemsControl
     /// <summary>
     /// Identifies the UsesItemContainerTemplate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UsesItemContainerTemplateProperty =
         DependencyProperty.Register(nameof(UsesItemContainerTemplate), typeof(bool), typeof(MenuBase),
             new PropertyMetadata(false));
@@ -50,6 +52,7 @@ public abstract class MenuBase : ItemsControl
     /// <summary>
     /// Gets or sets the style applied to menu item containers.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Style? ItemContainerStyle
     {
         get => (Style?)GetValue(ItemContainerStyleProperty);
@@ -59,6 +62,7 @@ public abstract class MenuBase : ItemsControl
     /// <summary>
     /// Gets or sets a value indicating whether the menu uses item container templates.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool UsesItemContainerTemplate
     {
         get => (bool)GetValue(UsesItemContainerTemplateProperty)!;

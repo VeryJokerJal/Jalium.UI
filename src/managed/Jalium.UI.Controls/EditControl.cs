@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Editor;
+using Jalium.UI.Controls.Editor;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -191,82 +191,102 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(EditControl),
             new PropertyMetadata(string.Empty, OnTextChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LanguageProperty =
         DependencyProperty.Register(nameof(Language), typeof(string), typeof(EditControl),
             new PropertyMetadata("plaintext", OnLanguageChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DocumentFilePathProperty =
         DependencyProperty.Register(nameof(DocumentFilePath), typeof(string), typeof(EditControl),
             new PropertyMetadata(string.Empty, OnDocumentFilePathChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(EditControl),
             new PropertyMetadata(false));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowLineNumbersProperty =
         DependencyProperty.Register(nameof(ShowLineNumbers), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HighlightCurrentLineProperty =
         DependencyProperty.Register(nameof(HighlightCurrentLine), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabSizeProperty =
         DependencyProperty.Register(nameof(TabSize), typeof(int), typeof(EditControl),
             new PropertyMetadata(4));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ConvertTabsToSpacesProperty =
         DependencyProperty.Register(nameof(ConvertTabsToSpaces), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SyntaxHighlighterProperty =
         DependencyProperty.Register(nameof(SyntaxHighlighter), typeof(ISyntaxHighlighter), typeof(EditControl),
             new PropertyMetadata(null, OnSyntaxHighlighterChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
         DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(EditControl),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CaretBrushProperty =
         DependencyProperty.Register(nameof(CaretBrush), typeof(Brush), typeof(EditControl),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LineNumberForegroundProperty =
         DependencyProperty.Register(nameof(LineNumberForeground), typeof(Brush), typeof(EditControl),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CurrentLineBackgroundProperty =
         DependencyProperty.Register(nameof(CurrentLineBackground), typeof(Brush), typeof(EditControl),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty GutterBackgroundProperty =
         DependencyProperty.Register(nameof(GutterBackground), typeof(Brush), typeof(EditControl),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowMinimapProperty =
         DependencyProperty.Register(nameof(ShowMinimap), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AdornmentMinLineHeightProperty =
         DependencyProperty.Register(nameof(AdornmentMinLineHeight), typeof(double), typeof(EditControl),
             new PropertyMetadata(30.0, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LeadingGutterInsetProperty =
         DependencyProperty.Register(nameof(LeadingGutterInset), typeof(double), typeof(EditControl),
             new PropertyMetadata(0.0, OnLeadingGutterInsetChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsScrollInertiaEnabledProperty =
         DependencyProperty.Register(nameof(IsScrollInertiaEnabled), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnScrollInertiaSettingsChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ScrollInertiaDurationMsProperty =
         DependencyProperty.Register(nameof(ScrollInertiaDurationMs), typeof(double), typeof(EditControl),
             new PropertyMetadata(DefaultScrollInertiaDurationMs, OnScrollInertiaSettingsChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AutoFollowBottomProperty =
         DependencyProperty.Register(nameof(AutoFollowBottom), typeof(bool), typeof(EditControl),
             new PropertyMetadata(false, OnAutoFollowBottomChanged));
@@ -275,96 +295,112 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     #region CLR Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
         set => SetValue(TextProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string Language
     {
         get => (string)(GetValue(LanguageProperty) ?? "plaintext");
         set => SetValue(LanguageProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string DocumentFilePath
     {
         get => (string)(GetValue(DocumentFilePathProperty) ?? string.Empty);
         set => SetValue(DocumentFilePathProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsReadOnly
     {
         get => (bool)GetValue(IsReadOnlyProperty)!;
         set => SetValue(IsReadOnlyProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowLineNumbers
     {
         get => (bool)GetValue(ShowLineNumbersProperty)!;
         set => SetValue(ShowLineNumbersProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool HighlightCurrentLine
     {
         get => (bool)GetValue(HighlightCurrentLineProperty)!;
         set => SetValue(HighlightCurrentLineProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public int TabSize
     {
         get => (int)GetValue(TabSizeProperty)!;
         set => SetValue(TabSizeProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool ConvertTabsToSpaces
     {
         get => (bool)GetValue(ConvertTabsToSpacesProperty)!;
         set => SetValue(ConvertTabsToSpacesProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ISyntaxHighlighter? SyntaxHighlighter
     {
         get => (ISyntaxHighlighter?)GetValue(SyntaxHighlighterProperty);
         set => SetValue(SyntaxHighlighterProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SelectionBrush
     {
         get => (Brush?)GetValue(SelectionBrushProperty);
         set => SetValue(SelectionBrushProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? CaretBrush
     {
         get => (Brush?)GetValue(CaretBrushProperty);
         set => SetValue(CaretBrushProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? LineNumberForeground
     {
         get => (Brush?)GetValue(LineNumberForegroundProperty);
         set => SetValue(LineNumberForegroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? CurrentLineBackground
     {
         get => (Brush?)GetValue(CurrentLineBackgroundProperty);
         set => SetValue(CurrentLineBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? GutterBackground
     {
         get => (Brush?)GetValue(GutterBackgroundProperty);
         set => SetValue(GutterBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowMinimap
     {
         get => (bool)GetValue(ShowMinimapProperty)!;
         set => SetValue(ShowMinimapProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double AdornmentMinLineHeight
     {
         get => (double)GetValue(AdornmentMinLineHeightProperty)!;
@@ -375,24 +411,28 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     /// Reserves horizontal space before line numbers (inside the editor bounds).
     /// Useful for custom gutters such as breakpoint toggles.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double LeadingGutterInset
     {
         get => (double)GetValue(LeadingGutterInsetProperty)!;
         set => SetValue(LeadingGutterInsetProperty, Math.Max(0, value));
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsScrollInertiaEnabled
     {
         get => (bool)GetValue(IsScrollInertiaEnabledProperty)!;
         set => SetValue(IsScrollInertiaEnabledProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double ScrollInertiaDurationMs
     {
         get => (double)GetValue(ScrollInertiaDurationMsProperty)!;
         set => SetValue(ScrollInertiaDurationMsProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool AutoFollowBottom
     {
         get => (bool)GetValue(AutoFollowBottomProperty)!;
@@ -649,6 +689,19 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             if (Background != null)
             {
                 dc.DrawRectangle(Background, null, new Rect(0, 0, RenderSize.Width, RenderSize.Height));
+            }
+
+            var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
+            var borderThickness = BorderThickness.Left;
+            if (BorderBrush != null && borderThickness > 0)
+            {
+                var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, borderThickness);
+                dc.DrawRectangle(null, new Pen(BorderBrush, borderThickness), borderRect);
+            }
+
+            if (IsKeyboardFocused)
+            {
+                ControlFocusVisual.Draw(dc, this, bounds, CornerRadius);
             }
 
             bool hasContentClip = contentBackdropWidth > 0 && contentHeight > 0;

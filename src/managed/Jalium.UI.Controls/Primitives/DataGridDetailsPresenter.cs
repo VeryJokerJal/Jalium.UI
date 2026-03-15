@@ -10,6 +10,7 @@ public class DataGridDetailsPresenter : ContentPresenter
     /// <summary>
     /// Identifies the ContentHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentHeightProperty =
         DependencyProperty.Register(nameof(ContentHeight), typeof(double), typeof(DataGridDetailsPresenter),
             new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
@@ -21,6 +22,7 @@ public class DataGridDetailsPresenter : ContentPresenter
     /// <summary>
     /// Gets or sets the height of the details content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public double ContentHeight
     {
         get => (double)GetValue(ContentHeightProperty)!;

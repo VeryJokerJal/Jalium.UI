@@ -9,6 +9,7 @@ public class RibbonGallery : ItemsControl
     /// <summary>
     /// Identifies the SelectedItem dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedItemProperty =
         DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(RibbonGallery),
             new PropertyMetadata(null));
@@ -16,6 +17,7 @@ public class RibbonGallery : ItemsControl
     /// <summary>
     /// Identifies the SelectedValue dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedValueProperty =
         DependencyProperty.Register(nameof(SelectedValue), typeof(object), typeof(RibbonGallery),
             new PropertyMetadata(null));
@@ -23,6 +25,7 @@ public class RibbonGallery : ItemsControl
     /// <summary>
     /// Gets or sets the selected item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedItem
     {
         get => GetValue(SelectedItemProperty);
@@ -32,6 +35,7 @@ public class RibbonGallery : ItemsControl
     /// <summary>
     /// Gets or sets the selected value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedValue
     {
         get => GetValue(SelectedValueProperty);
@@ -97,6 +101,7 @@ public class RibbonGalleryItem : ContentControl
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(RibbonGalleryItem),
             new PropertyMetadata(false));
@@ -104,6 +109,7 @@ public class RibbonGalleryItem : ContentControl
     /// <summary>
     /// Gets or sets whether this item is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty);

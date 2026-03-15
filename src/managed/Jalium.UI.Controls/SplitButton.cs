@@ -18,6 +18,7 @@ public class SplitButton : ContentControl
     /// <summary>
     /// Identifies the Command dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
         DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(SplitButton),
             new PropertyMetadata(null));
@@ -25,6 +26,7 @@ public class SplitButton : ContentControl
     /// <summary>
     /// Identifies the CommandParameter dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandParameterProperty =
         DependencyProperty.Register(nameof(CommandParameter), typeof(object), typeof(SplitButton),
             new PropertyMetadata(null));
@@ -32,6 +34,7 @@ public class SplitButton : ContentControl
     /// <summary>
     /// Identifies the Flyout dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty FlyoutProperty =
         DependencyProperty.Register(nameof(Flyout), typeof(FlyoutBase), typeof(SplitButton),
             new PropertyMetadata(null, OnFlyoutChanged));
@@ -43,6 +46,7 @@ public class SplitButton : ContentControl
     /// <summary>
     /// Gets or sets the command to invoke when the primary button is clicked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public ICommand? Command
     {
         get => (ICommand?)GetValue(CommandProperty);
@@ -52,6 +56,7 @@ public class SplitButton : ContentControl
     /// <summary>
     /// Gets or sets the parameter to pass to the <see cref="Command"/>.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public object? CommandParameter
     {
         get => GetValue(CommandParameterProperty);
@@ -61,6 +66,7 @@ public class SplitButton : ContentControl
     /// <summary>
     /// Gets or sets the flyout shown by the secondary drop-down button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public FlyoutBase? Flyout
     {
         get => (FlyoutBase?)GetValue(FlyoutProperty);

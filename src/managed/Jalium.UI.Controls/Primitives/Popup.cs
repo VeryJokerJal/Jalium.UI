@@ -69,6 +69,12 @@ public enum PlacementMode
 [ContentProperty("Child")]
 public partial class Popup : FrameworkElement
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.PopupAutomationPeer(this);
+    }
+
     private PopupRoot? _popupRoot;
     private OverlayLayer? _overlayLayer;
     private PopupWindow? _popupWindow;
@@ -80,6 +86,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Identifies the IsOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOpenProperty =
         DependencyProperty.Register(nameof(IsOpen), typeof(bool), typeof(Popup),
             new PropertyMetadata(false, OnIsOpenChanged));
@@ -87,6 +94,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Identifies the Child dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ChildProperty =
         DependencyProperty.Register(nameof(Child), typeof(UIElement), typeof(Popup),
             new PropertyMetadata(null, OnChildChanged));
@@ -94,6 +102,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Identifies the PlacementTarget dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementTargetProperty =
         DependencyProperty.Register(nameof(PlacementTarget), typeof(UIElement), typeof(Popup),
             new PropertyMetadata(null));
@@ -101,6 +110,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Identifies the Placement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementProperty =
         DependencyProperty.Register(nameof(Placement), typeof(PlacementMode), typeof(Popup),
             new PropertyMetadata(PlacementMode.Bottom, OnPlacementChanged));
@@ -108,6 +118,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Identifies the HorizontalOffset dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HorizontalOffsetProperty =
         DependencyProperty.Register(nameof(HorizontalOffset), typeof(double), typeof(Popup),
             new PropertyMetadata(0.0, OnOffsetChanged));
@@ -115,6 +126,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Identifies the VerticalOffset dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty VerticalOffsetProperty =
         DependencyProperty.Register(nameof(VerticalOffset), typeof(double), typeof(Popup),
             new PropertyMetadata(0.0, OnOffsetChanged));
@@ -123,6 +135,7 @@ public partial class Popup : FrameworkElement
     /// Identifies the StaysOpen dependency property.
     /// When false, the popup closes when the user clicks outside of it.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty StaysOpenProperty =
         DependencyProperty.Register(nameof(StaysOpen), typeof(bool), typeof(Popup),
             new PropertyMetadata(true));
@@ -132,6 +145,7 @@ public partial class Popup : FrameworkElement
     /// WinUI 3 style: when true, the popup closes when the user clicks outside of it.
     /// This is the inverse of StaysOpen.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsLightDismissEnabledProperty =
         DependencyProperty.Register(nameof(IsLightDismissEnabled), typeof(bool), typeof(Popup),
             new PropertyMetadata(false, OnIsLightDismissEnabledChanged));
@@ -140,6 +154,7 @@ public partial class Popup : FrameworkElement
     /// Identifies the OverflowStrategy dependency property.
     /// Controls how the popup handles content that would overflow window bounds.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OverflowStrategyProperty =
         DependencyProperty.Register(nameof(OverflowStrategy), typeof(PopupOverflowStrategy), typeof(Popup),
             new PropertyMetadata(PopupOverflowStrategy.AutoFlip));
@@ -150,6 +165,7 @@ public partial class Popup : FrameworkElement
     /// by using a separate native window. When true, the popup is always constrained
     /// to the parent window bounds (overlay mode only).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ShouldConstrainToRootBoundsProperty =
         DependencyProperty.Register(nameof(ShouldConstrainToRootBounds), typeof(bool), typeof(Popup),
             new PropertyMetadata(false));
@@ -161,6 +177,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Gets or sets whether the popup is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOpen
     {
         get => (bool)GetValue(IsOpenProperty);
@@ -170,6 +187,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Gets or sets the content of the popup.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public UIElement? Child
     {
         get => (UIElement?)GetValue(ChildProperty);
@@ -179,6 +197,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Gets or sets the element relative to which the popup is positioned.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public UIElement? PlacementTarget
     {
         get => (UIElement?)GetValue(PlacementTargetProperty);
@@ -188,6 +207,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Gets or sets how the popup is positioned.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public PlacementMode Placement
     {
         get => (PlacementMode)GetValue(PlacementProperty);
@@ -197,6 +217,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Gets or sets the horizontal offset from the placement position.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double HorizontalOffset
     {
         get => (double)GetValue(HorizontalOffsetProperty);
@@ -206,6 +227,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Gets or sets the vertical offset from the placement position.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double VerticalOffset
     {
         get => (double)GetValue(VerticalOffsetProperty);
@@ -216,6 +238,7 @@ public partial class Popup : FrameworkElement
     /// Gets or sets whether the popup stays open when it loses focus.
     /// If false, the popup will close when clicking outside of it.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool StaysOpen
     {
         get => (bool)GetValue(StaysOpenProperty);
@@ -227,6 +250,7 @@ public partial class Popup : FrameworkElement
     /// When true, the popup closes when clicking outside of it.
     /// This is the inverse of <see cref="StaysOpen"/>.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsLightDismissEnabled
     {
         get => (bool)GetValue(IsLightDismissEnabledProperty);
@@ -236,6 +260,7 @@ public partial class Popup : FrameworkElement
     /// <summary>
     /// Gets or sets how the popup handles content that would overflow window bounds.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public PopupOverflowStrategy OverflowStrategy
     {
         get => (PopupOverflowStrategy)GetValue(OverflowStrategyProperty);
@@ -247,6 +272,7 @@ public partial class Popup : FrameworkElement
     /// When false (default, WinUI 3 style), overflowing content renders in a separate native window.
     /// When true, content is always clamped to the parent window bounds.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool ShouldConstrainToRootBounds
     {
         get => (bool)GetValue(ShouldConstrainToRootBoundsProperty);
@@ -592,7 +618,7 @@ public partial class Popup : FrameworkElement
         var target = PlacementTarget ?? this;
         var targetBounds = GetElementWindowBounds(target);
 
-        // Check bottom overflow → flip to top
+        // Check bottom overflow 閳?flip to top
         if (position.Y + popupSize.Height > windowSize.Height && Placement == PlacementMode.Bottom)
         {
             double flippedY = targetBounds.Y - popupSize.Height;
@@ -600,7 +626,7 @@ public partial class Popup : FrameworkElement
                 position = new Point(position.X, flippedY);
         }
 
-        // Check top overflow → flip to bottom
+        // Check top overflow 閳?flip to bottom
         if (position.Y < 0 && Placement == PlacementMode.Top)
         {
             double flippedY = targetBounds.Y + targetBounds.Height;
@@ -608,13 +634,13 @@ public partial class Popup : FrameworkElement
                 position = new Point(position.X, flippedY);
         }
 
-        // Check right overflow → shift left
+        // Check right overflow 閳?shift left
         if (position.X + popupSize.Width > windowSize.Width)
         {
             position = new Point(Math.Max(0, windowSize.Width - popupSize.Width), position.Y);
         }
 
-        // Check left overflow → shift right
+        // Check left overflow 閳?shift right
         if (position.X < 0)
         {
             position = new Point(0, position.Y);
@@ -653,7 +679,7 @@ public partial class Popup : FrameworkElement
         var targetScreenTopLeft = WindowLocalToScreen(new Point(targetWindowBounds.X, targetWindowBounds.Y));
         var physTargetH = targetWindowBounds.Height * dpiScale;
 
-        // Check bottom overflow → flip to top of target
+        // Check bottom overflow 閳?flip to top of target
         if (screenPos.Y + physPopupH > workArea.Bottom &&
             (Placement == PlacementMode.Bottom || Placement == PlacementMode.Custom))
         {
@@ -662,7 +688,7 @@ public partial class Popup : FrameworkElement
                 screenPos = new Point(screenPos.X, flippedY);
         }
 
-        // Check top overflow → flip to bottom of target
+        // Check top overflow 閳?flip to bottom of target
         if (screenPos.Y < workArea.Top && Placement == PlacementMode.Top)
         {
             double flippedY = targetScreenTopLeft.Y + physTargetH;
@@ -701,7 +727,7 @@ public partial class Popup : FrameworkElement
 
     private Point WindowLocalToScreen(Point windowLocal)
     {
-        // Input is DIPs — convert to physical pixels before ClientToScreen
+        // Input is DIPs 閳?convert to physical pixels before ClientToScreen
         var dpiScale = _parentWindow!.DpiScale;
         var pt = new POINT { X = (int)(windowLocal.X * dpiScale), Y = (int)(windowLocal.Y * dpiScale) };
         ClientToScreen(_parentWindow!.Handle, ref pt);

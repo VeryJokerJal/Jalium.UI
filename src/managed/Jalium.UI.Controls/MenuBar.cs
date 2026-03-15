@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -27,6 +28,7 @@ public class MenuBar : Control
     {
         Focusable = true;
         _items.CollectionChanged += OnItemsCollectionChanged;
+        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
     }
 
     /// <inheritdoc />
@@ -128,5 +130,127 @@ public class MenuBar : Control
     internal bool IsAnyMenuOpen()
     {
         return _items.Any(item => item.IsMenuOpen);
+    }
+
+    internal bool FocusSibling(MenuBarItem currentItem, int direction, bool openMenu)
+    {
+        if (_items.Count == 0)
+        {
+            return false;
+        }
+
+        var currentIndex = _items.IndexOf(currentItem);
+        if (currentIndex < 0)
+        {
+            return false;
+        }
+
+        for (int offset = 1; offset <= _items.Count; offset++)
+        {
+            var nextIndex = (currentIndex + (direction * offset) + _items.Count) % _items.Count;
+            var candidate = _items[nextIndex];
+            if (!candidate.IsEnabled || candidate.Visibility != Visibility.Visible)
+            {
+                continue;
+            }
+
+            if (!candidate.Focus())
+            {
+                continue;
+            }
+
+            if (openMenu)
+            {
+                candidate.OpenMenuAndFocusFirstItem();
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    internal bool FocusBoundaryItem(bool last, bool openMenu)
+    {
+        if (_items.Count == 0)
+        {
+            return false;
+        }
+
+        if (!last)
+        {
+            for (int index = 0; index < _items.Count; index++)
+            {
+                var candidate = _items[index];
+                if (!candidate.IsEnabled || candidate.Visibility != Visibility.Visible)
+                {
+                    continue;
+                }
+
+                if (!candidate.Focus())
+                {
+                    continue;
+                }
+
+                if (openMenu)
+                {
+                    candidate.OpenMenuAndFocusFirstItem();
+                }
+
+                return true;
+            }
+
+            return false;
+        }
+
+        for (int index = _items.Count - 1; index >= 0; index--)
+        {
+            var candidate = _items[index];
+            if (!candidate.IsEnabled || candidate.Visibility != Visibility.Visible)
+            {
+                continue;
+            }
+
+            if (!candidate.Focus())
+            {
+                continue;
+            }
+
+            if (openMenu)
+            {
+                candidate.OpenMenuAndFocusFirstItem();
+            }
+
+            return true;
+        }
+
+        return false;
+    }
+
+    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        {
+            return;
+        }
+
+        if (Keyboard.FocusedElement is MenuBarItem)
+        {
+            return;
+        }
+
+        var handled = keyArgs.Key switch
+        {
+            Key.Left => FocusBoundaryItem(last: true, openMenu: false),
+            Key.Right or Key.Down => FocusBoundaryItem(last: false, openMenu: false),
+            Key.Home => FocusBoundaryItem(last: false, openMenu: false),
+            Key.End => FocusBoundaryItem(last: true, openMenu: false),
+            _ => false
+        };
+
+        if (handled)
+        {
+            keyArgs.Handled = true;
+        }
     }
 }

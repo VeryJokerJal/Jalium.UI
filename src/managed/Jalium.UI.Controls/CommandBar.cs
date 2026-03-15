@@ -25,6 +25,7 @@ public class CommandBar : Control
     /// <summary>
     /// Identifies the IsOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOpenProperty =
         DependencyProperty.Register(nameof(IsOpen), typeof(bool), typeof(CommandBar),
             new PropertyMetadata(false, OnIsOpenChanged));
@@ -32,6 +33,7 @@ public class CommandBar : Control
     /// <summary>
     /// Identifies the ClosedDisplayMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ClosedDisplayModeProperty =
         DependencyProperty.Register(nameof(ClosedDisplayMode), typeof(CommandBarClosedDisplayMode), typeof(CommandBar),
             new PropertyMetadata(CommandBarClosedDisplayMode.Compact));
@@ -39,6 +41,7 @@ public class CommandBar : Control
     /// <summary>
     /// Identifies the DefaultLabelPosition dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DefaultLabelPositionProperty =
         DependencyProperty.Register(nameof(DefaultLabelPosition), typeof(CommandBarDefaultLabelPosition), typeof(CommandBar),
             new PropertyMetadata(CommandBarDefaultLabelPosition.Bottom));
@@ -46,6 +49,7 @@ public class CommandBar : Control
     /// <summary>
     /// Identifies the OverflowButtonVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty OverflowButtonVisibilityProperty =
         DependencyProperty.Register(nameof(OverflowButtonVisibility), typeof(CommandBarOverflowButtonVisibility), typeof(CommandBar),
             new PropertyMetadata(CommandBarOverflowButtonVisibility.Auto));
@@ -53,6 +57,7 @@ public class CommandBar : Control
     /// <summary>
     /// Identifies the IsSticky dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsStickyProperty =
         DependencyProperty.Register(nameof(IsSticky), typeof(bool), typeof(CommandBar),
             new PropertyMetadata(false));
@@ -74,6 +79,7 @@ public class CommandBar : Control
     /// <summary>
     /// Gets or sets a value indicating whether the CommandBar is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOpen
     {
         get => (bool)GetValue(IsOpenProperty)!;
@@ -83,6 +89,7 @@ public class CommandBar : Control
     /// <summary>
     /// Gets or sets the display mode when the CommandBar is closed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public CommandBarClosedDisplayMode ClosedDisplayMode
     {
         get => (CommandBarClosedDisplayMode)(GetValue(ClosedDisplayModeProperty) ?? CommandBarClosedDisplayMode.Compact);
@@ -92,6 +99,7 @@ public class CommandBar : Control
     /// <summary>
     /// Gets or sets the default label position for primary commands.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public CommandBarDefaultLabelPosition DefaultLabelPosition
     {
         get => (CommandBarDefaultLabelPosition)(GetValue(DefaultLabelPositionProperty) ?? CommandBarDefaultLabelPosition.Bottom);
@@ -101,6 +109,7 @@ public class CommandBar : Control
     /// <summary>
     /// Gets or sets the visibility of the overflow button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public CommandBarOverflowButtonVisibility OverflowButtonVisibility
     {
         get => (CommandBarOverflowButtonVisibility)(GetValue(OverflowButtonVisibilityProperty) ?? CommandBarOverflowButtonVisibility.Auto);
@@ -110,6 +119,7 @@ public class CommandBar : Control
     /// <summary>
     /// Gets or sets a value indicating whether the CommandBar remains open after a command is invoked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSticky
     {
         get => (bool)GetValue(IsStickyProperty)!;
@@ -246,7 +256,7 @@ public class CommandBar : Control
         // More button ("...")
         _moreButton = new Button
         {
-            Content = "\u22EF", // ⋯ horizontal ellipsis
+            Content = "\u22EF", // 閳?horizontal ellipsis
             Width = 40,
             Focusable = true,
             Background = Jalium.UI.Media.Brushes.Transparent,

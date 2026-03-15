@@ -19,18 +19,21 @@ public class DockSplitPanel : Panel
 
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(DockSplitPanel),
             new PropertyMetadata(Orientation.Horizontal, OnLayoutPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SplitterSizeProperty =
         DependencyProperty.Register(nameof(SplitterSize), typeof(double), typeof(DockSplitPanel),
             new PropertyMetadata(6.0, OnLayoutPropertyChanged));
 
     /// <summary>
     /// Attached property: the initial size of a child pane.
-    /// Uses <see cref="GridLength"/> — e.g. "250" for 250px, "*" for 1-star, "2*" for 2-star.
+    /// Uses <see cref="GridLength"/> 閳?e.g. "250" for 250px, "*" for 1-star, "2*" for 2-star.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SizeProperty =
         DependencyProperty.RegisterAttached("Size", typeof(GridLength), typeof(DockSplitPanel),
             new PropertyMetadata(GridLength.Star, OnLayoutPropertyChanged));
@@ -38,6 +41,7 @@ public class DockSplitPanel : Panel
     /// <summary>
     /// Attached property: the minimum size (in pixels) of a child pane.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinSizeProperty =
         DependencyProperty.RegisterAttached("MinSize", typeof(double), typeof(DockSplitPanel),
             new PropertyMetadata(100.0, OnLayoutPropertyChanged));
@@ -46,27 +50,33 @@ public class DockSplitPanel : Panel
 
     #region CLR Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
         set => SetValue(OrientationProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SplitterSize
     {
         get => (double)GetValue(SplitterSizeProperty)!;
         set => SetValue(SplitterSizeProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static GridLength GetSize(UIElement element)
         => (GridLength)(element.GetValue(SizeProperty) ?? GridLength.Star);
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetSize(UIElement element, GridLength value)
         => element.SetValue(SizeProperty, value);
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetMinSize(UIElement element)
         => (double)(element.GetValue(MinSizeProperty) ?? 100.0);
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetMinSize(UIElement element, double value)
         => element.SetValue(MinSizeProperty, value);
 
@@ -123,7 +133,7 @@ public class DockSplitPanel : Panel
         }
         else if (d is UIElement element)
         {
-            // Attached property changed on a child — invalidate the parent DockSplitPanel
+            // Attached property changed on a child 閳?invalidate the parent DockSplitPanel
             if (element.VisualParent is DockSplitPanel parentPanel)
                 parentPanel.InvalidateMeasure();
         }
@@ -222,7 +232,7 @@ public class DockSplitPanel : Panel
                 starTotal += gridLength.Value;
                 sizes[i] = -1; // Placeholder for star
             }
-            else // Auto — treat as star(1)
+            else // Auto 閳?treat as star(1)
             {
                 starTotal += 1;
                 sizes[i] = -1;
@@ -246,7 +256,7 @@ public class DockSplitPanel : Panel
         }
         else
         {
-            // No star children — fill remaining with equal distribution
+            // No star children 閳?fill remaining with equal distribution
             int unresolved = 0;
             for (int i = 0; i < childCount; i++)
             {
@@ -431,14 +441,14 @@ public class DockSplitPanel : Panel
 
         if (Orientation == requiredOrientation)
         {
-            // Same orientation — insert adjacent to target
+            // Same orientation 閳?insert adjacent to target
             var insertIndex = insertBefore ? targetIndex : targetIndex + 1;
             SetSize(newPane, GridLength.Star);
             Children.Insert(insertIndex, newPane);
         }
         else
         {
-            // Different orientation — wrap target in a new nested DockSplitPanel
+            // Different orientation 閳?wrap target in a new nested DockSplitPanel
             Children.RemoveAt(targetIndex);
 
             var wrapper = new DockSplitPanel { Orientation = requiredOrientation };
