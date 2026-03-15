@@ -29,7 +29,7 @@ public sealed class ExecutedRoutedEventArgs : RoutedEventArgs
     /// <summary>
     /// Invokes the event handler in a type-specific way.
     /// </summary>
-    protected override void InvokeEventHandler(Delegate genericHandler, object genericTarget)
+    protected internal override void InvokeEventHandler(Delegate genericHandler, object genericTarget)
     {
         if (genericHandler is ExecutedRoutedEventHandler handler)
         {

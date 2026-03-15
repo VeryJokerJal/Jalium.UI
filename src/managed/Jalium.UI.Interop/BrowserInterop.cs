@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 
 namespace Jalium.UI.Interop;
 
@@ -96,5 +96,3 @@ internal static class BrowserInterop
 
     internal static int GetNotSupportedErrorCode() => NotSupported;
 }
-
-

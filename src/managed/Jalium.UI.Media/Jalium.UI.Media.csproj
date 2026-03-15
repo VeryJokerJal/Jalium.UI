@@ -6,7 +6,6 @@
     <Description>Media types for Jalium.UI framework including Brush, Pen, Geometry, and DrawingContext.</Description>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Media</PackageId>
-    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
   </PropertyGroup>
 
   <ItemGroup>

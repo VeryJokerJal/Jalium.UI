@@ -281,7 +281,7 @@ public abstract class Visual : DependencyObject
         object? clipGeometry = null;
         if (this is UIElement thisElement)
         {
-            clipGeometry = thisElement.GetLayoutClipInternal();
+            clipGeometry = thisElement.GetLayoutClip();
         }
 
         bool pushedClip = false;

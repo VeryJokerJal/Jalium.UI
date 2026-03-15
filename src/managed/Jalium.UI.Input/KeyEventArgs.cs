@@ -71,7 +71,7 @@ public sealed class KeyEventArgs : InputEventArgs
     }
 
     /// <inheritdoc />
-    protected override void InvokeEventHandler(Delegate handler, object target)
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is KeyEventHandler keyHandler)
         {
@@ -146,7 +146,7 @@ public sealed class TextCompositionEventArgs : InputEventArgs
     }
 
     /// <inheritdoc />
-    protected override void InvokeEventHandler(Delegate handler, object target)
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is TextCompositionEventHandler textHandler)
         {
