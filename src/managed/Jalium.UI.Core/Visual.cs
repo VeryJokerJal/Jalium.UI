@@ -121,13 +121,13 @@ public abstract class Visual : DependencyObject
     /// Internal method for VisualCollection to add a child.
     /// Calls AddVisualChild which is protected.
     /// </summary>
-    public void InternalAddVisualChild(Visual child) => AddVisualChild(child);
+    internal void InternalAddVisualChild(Visual child) => AddVisualChild(child);
 
     /// <summary>
     /// Internal method for VisualCollection to remove a child.
     /// Calls RemoveVisualChild which is protected.
     /// </summary>
-    public void InternalRemoveVisualChild(Visual child) => RemoveVisualChild(child);
+    internal void InternalRemoveVisualChild(Visual child) => RemoveVisualChild(child);
 
     /// <summary>
     /// Called when visual children change.

@@ -413,7 +413,7 @@ public class DependencyObject : DispatcherObject
     /// <param name="dp">The dependency property to animate.</param>
     /// <param name="value">The current animated value.</param>
     /// <param name="holdEndValue">Whether to hold the final value after animation ends (FillBehavior.HoldEnd).</param>
-    public void SetAnimatedValue(DependencyProperty dp, object? value, bool holdEndValue)
+    internal void SetAnimatedValue(DependencyProperty dp, object? value, bool holdEndValue)
     {
         ArgumentNullException.ThrowIfNull(dp);
 
@@ -450,7 +450,7 @@ public class DependencyObject : DispatcherObject
     /// Clears the animated value for a dependency property, restoring the base value if not holding.
     /// </summary>
     /// <param name="dp">The dependency property to clear animation from.</param>
-    public void ClearAnimatedValue(DependencyProperty dp)
+    internal void ClearAnimatedValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
 

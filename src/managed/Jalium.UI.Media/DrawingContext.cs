@@ -539,48 +539,48 @@ public sealed class FormattedText
     /// <summary>
     /// Gets the width of the text layout.
     /// </summary>
-    public double Width { get; set; }
+    public double Width { get; internal set; }
 
     /// <summary>
     /// Gets the height of the text layout.
     /// </summary>
-    public double Height { get; set; }
+    public double Height { get; internal set; }
 
     /// <summary>
     /// Gets the natural line height (ascent + descent + line gap).
     /// This is the WPF-style line height based on actual font metrics.
     /// </summary>
-    public double LineHeight { get; set; }
+    public double LineHeight { get; internal set; }
 
     /// <summary>
     /// Gets the font ascent (distance from baseline to top of the tallest glyph).
     /// </summary>
-    public double Ascent { get; set; }
+    public double Ascent { get; internal set; }
 
     /// <summary>
     /// Gets the font descent (distance from baseline to bottom of the lowest glyph).
     /// </summary>
-    public double Descent { get; set; }
+    public double Descent { get; internal set; }
 
     /// <summary>
     /// Gets the recommended line gap between lines.
     /// </summary>
-    public double LineGap { get; set; }
+    public double LineGap { get; internal set; }
 
     /// <summary>
     /// Gets the baseline offset from the top of the line.
     /// </summary>
-    public double Baseline { get; set; }
+    public double Baseline { get; internal set; }
 
     /// <summary>
     /// Gets the number of lines in the text layout.
     /// </summary>
-    public int LineCount { get; set; } = 1;
+    public int LineCount { get; internal set; } = 1;
 
     /// <summary>
     /// Gets whether this text has been measured using native text measurement.
     /// </summary>
-    public bool IsMeasured { get; set; }
+    public bool IsMeasured { get; internal set; }
 }
 
 /// <summary>

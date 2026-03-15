@@ -646,7 +646,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Updates the IsKeyboardFocused state. Called by the Keyboard class.
     /// </summary>
-    public void UpdateIsKeyboardFocused(bool isFocused)
+    internal void UpdateIsKeyboardFocused(bool isFocused)
     {
         if (IsKeyboardFocused != isFocused)
         {
@@ -657,7 +657,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Updates the IsKeyboardFocusWithin state. Called by the Keyboard class.
     /// </summary>
-    public void UpdateIsKeyboardFocusWithin(bool isFocusWithin)
+    internal void UpdateIsKeyboardFocusWithin(bool isFocusWithin)
     {
         if (IsKeyboardFocusWithin != isFocusWithin)
         {
@@ -1446,7 +1446,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Forces release of mouse capture from any element.
     /// </summary>
-    public static void ForceReleaseMouseCapture()
+    internal static void ForceReleaseMouseCapture()
     {
         var captured = _mouseCaptured;
         if (captured != null)
@@ -2864,7 +2864,7 @@ public interface IWindowHost
 /// <summary>
 /// Interface for elements that host a LayoutManager (typically the Window).
 /// </summary>
-public interface ILayoutManagerHost
+internal interface ILayoutManagerHost
 {
     /// <summary>
     /// Gets the layout manager for this host.
