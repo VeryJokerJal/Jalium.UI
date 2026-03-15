@@ -121,13 +121,13 @@ public abstract class Visual : DependencyObject
     /// Internal method for VisualCollection to add a child.
     /// Calls AddVisualChild which is protected.
     /// </summary>
-    internal void InternalAddVisualChild(Visual child) => AddVisualChild(child);
+    public void InternalAddVisualChild(Visual child) => AddVisualChild(child);
 
     /// <summary>
     /// Internal method for VisualCollection to remove a child.
     /// Calls RemoveVisualChild which is protected.
     /// </summary>
-    internal void InternalRemoveVisualChild(Visual child) => RemoveVisualChild(child);
+    public void InternalRemoveVisualChild(Visual child) => RemoveVisualChild(child);
 
     /// <summary>
     /// Called when visual children change.
@@ -281,7 +281,7 @@ public abstract class Visual : DependencyObject
         object? clipGeometry = null;
         if (this is UIElement thisElement)
         {
-            clipGeometry = thisElement.GetLayoutClip();
+            clipGeometry = thisElement.GetLayoutClipInternal();
         }
 
         bool pushedClip = false;

@@ -470,7 +470,7 @@ public readonly struct CornerRadius : IEquatable<CornerRadius>
     /// <summary>
     /// Scales corner radii down proportionally so adjacent corners always fit within the bounds.
     /// </summary>
-    internal CornerRadius Normalize(double width, double height)
+    public CornerRadius Normalize(double width, double height)
     {
         if (!double.IsFinite(width) || !double.IsFinite(height) || width <= 0 || height <= 0)
         {

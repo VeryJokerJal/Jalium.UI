@@ -1145,7 +1145,7 @@ public partial class ScrollViewer : Control
     /// Returns a clip geometry for the viewport area.
     /// Respects the ClipToBounds property - when false, no clipping is applied.
     /// </summary>
-    protected internal override object? GetLayoutClip()
+    protected override object? GetLayoutClip()
     {
         if (!ClipToBounds)
         {

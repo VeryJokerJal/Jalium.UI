@@ -101,7 +101,7 @@ public sealed class StreamGeometry : Geometry
     /// <summary>
     /// Gets the underlying PathGeometry.
     /// </summary>
-    internal PathGeometry? GetPathGeometry() => _pathGeometry;
+    public PathGeometry? GetPathGeometry() => _pathGeometry;
 
     /// <summary>
     /// Called by StreamGeometryContext when it is closed.

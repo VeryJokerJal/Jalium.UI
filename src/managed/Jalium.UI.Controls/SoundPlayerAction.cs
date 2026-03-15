@@ -20,7 +20,7 @@ public sealed class SoundPlayerAction : TriggerAction
     public Uri? Source { get; set; }
 
     /// <inheritdoc />
-    internal override void Invoke(FrameworkElement? element)
+    protected override void Invoke(FrameworkElement? element)
     {
         if (Source == null)
             return;

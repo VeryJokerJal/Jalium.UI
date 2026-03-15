@@ -71,7 +71,12 @@ public class RoutedEventArgs : EventArgs
     /// <summary>
     /// Invokes the event handler with the appropriate arguments.
     /// </summary>
-    protected internal virtual void InvokeEventHandler(Delegate handler, object target)
+    internal void InvokeEventHandlerInternal(Delegate handler, object target) => InvokeEventHandler(handler, target);
+
+    /// <summary>
+    /// Invokes the event handler with the appropriate arguments.
+    /// </summary>
+    protected virtual void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is RoutedEventHandler routedHandler)
         {

@@ -5,7 +5,7 @@ namespace Jalium.UI;
 /// Provides queue-based measure/arrange processing.
 /// Similar to WPF's LayoutManager.
 /// </summary>
-internal sealed class LayoutManager
+public sealed class LayoutManager
 {
     private readonly HashSet<UIElement> _measureQueue = new();
     private readonly HashSet<UIElement> _arrangeQueue = new();

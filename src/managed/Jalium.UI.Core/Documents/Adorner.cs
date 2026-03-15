@@ -61,7 +61,7 @@ public abstract class Adorner : FrameworkElement
     /// Gets the layout clip for this adorner.
     /// </summary>
     /// <returns>The clipping geometry, or null if clipping is not enabled.</returns>
-    protected internal override object? GetLayoutClip()
+    protected override object? GetLayoutClip()
     {
         if (IsClipEnabled)
         {
