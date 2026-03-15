@@ -404,7 +404,7 @@ public class Border : FrameworkElement
     }
 
     /// <inheritdoc />
-    protected override object? GetLayoutClip()
+    protected internal override object? GetLayoutClip()
     {
         if (!ClipToBounds)
             return null;
@@ -857,23 +857,16 @@ public class Border : FrameworkElement
         if (e is MouseEventArgs mouseArgs)
         {
             var pos = mouseArgs.GetPosition(this);
+            _lgLightLocal = pos;
+            _lgMouseOver = true;
 
-            // Only process if mouse is within this border's bounds or we're tracking a drag.
-            // Without this guard every liquid-glass Border calls InvalidateVisual() on
-            // every mouse move (O(N) renders per move), starving the GPU and causing
-            // intermittent drag failures on slower hardware.
-            bool withinBounds = IsWithinLiquidGlassTrackingBounds(pos);
-
+            // Track drag offset while pressed
+            // Power curve applied at input for diminishing returns during drag;
+            // spring and render use linear values so the snap-back animation is smooth.
             if (_lgPressed)
             {
-                // Always track drag offset while pressed (mouse can leave bounds during drag)
-                _lgLightLocal = pos;
-                _lgMouseOver = withinBounds;
-
                 double dx = pos.X - _lgPressPoint.X;
                 double dy = pos.Y - _lgPressPoint.Y;
-                // Power curve applied at input for diminishing returns during drag;
-                // spring and render use linear values so the snap-back animation is smooth.
                 double tx = Math.Sign(dx) * LgDragScale * Math.Pow(Math.Abs(dx), LgDragPower);
                 double ty = Math.Sign(dy) * LgDragScale * Math.Pow(Math.Abs(dy), LgDragPower);
                 _lgSpringOffX.Position = tx;
@@ -882,21 +875,9 @@ public class Border : FrameworkElement
                 _lgSpringOffY.Position = ty;
                 _lgSpringOffY.Target = ty;
                 _lgSpringOffY.Velocity = 0;
+            }
 
-                InvalidateVisual();
-            }
-            else if (withinBounds)
-            {
-                _lgLightLocal = pos;
-                _lgMouseOver = true;
-                InvalidateVisual();
-            }
-            else if (_lgMouseOver)
-            {
-                // Mouse left bounds — clear highlight
-                _lgMouseOver = false;
-                InvalidateVisual();
-            }
+            InvalidateVisual();
         }
     }
 
@@ -904,25 +885,6 @@ public class Border : FrameworkElement
     {
         _lgMouseOver = false;
         InvalidateVisual();
-    }
-
-    private bool IsWithinLiquidGlassTrackingBounds(Point position)
-    {
-        double margin = GetLiquidGlassTrackingMargin();
-        return position.X >= -margin &&
-               position.Y >= -margin &&
-               position.X <= RenderSize.Width + margin &&
-               position.Y <= RenderSize.Height + margin;
-    }
-
-    private double GetLiquidGlassTrackingMargin()
-    {
-        // Keep hover tracking aligned with the liquid-glass shader's visible influence:
-        // there is always an outer draw margin, and the point light can still affect the
-        // edge highlight when the cursor is slightly outside the panel.
-        double effectMargin = Math.Max(30.0, LiquidGlassFusionRadius);
-        double lightReach = Math.Max(RenderSize.Width, RenderSize.Height) * 0.75;
-        return Math.Max(effectMargin, lightReach);
     }
 
     private Window? FindAncestorWindow()
@@ -1001,8 +963,6 @@ public class Border : FrameworkElement
             StartLgSpringTimer();
             // Capture mouse to prevent child elements from stealing events mid-drag
             CaptureMouse();
-            // Mark handled so the Pointer pipeline doesn't fire and steal capture
-            e.Handled = true;
         }
     }
 
@@ -1022,13 +982,7 @@ public class Border : FrameworkElement
 
     private void OnLgLostMouseCapture(object sender, RoutedEventArgs e)
     {
-        // LostMouseCapture is a bubbling event — ignore if a child element lost
-        // capture (e.g. TextBlock releasing after Border stole it).  Only reset
-        // drag state when this Border itself no longer holds mouse capture.
-        if (IsMouseCaptured)
-            return;
-
-        // Mouse capture was stolen (e.g. window deactivation, another element captured) —
+        // Mouse capture was stolen (e.g. window deactivation, another element captured) 閳?
         // treat as release to prevent stuck drag state.
         if (_lgPressed)
         {
@@ -1078,12 +1032,6 @@ public class Border : FrameworkElement
         bool settledOffX = _lgSpringOffX.Step(dt, LgOffsetStiffness, LgOffsetDamping, 200);
         bool settledOffY = _lgSpringOffY.Step(dt, LgOffsetStiffness, LgOffsetDamping, 200);
 
-        // The spring transform (scale + offset via PushTransform) extends rendering
-        // beyond layout bounds, but GetScreenBounds() only knows about layout bounds.
-        // Request a full window repaint so the deformed region and its previous
-        // position are both cleared.  Spring animations are short-lived, so the
-        // extra cost is negligible.
-        (_lgTrackingWindow as IWindowHost)?.RequestFullInvalidation();
         InvalidateVisual();
 
         if (settledX && settledY && settledOffX && settledOffY && !_lgPressed)

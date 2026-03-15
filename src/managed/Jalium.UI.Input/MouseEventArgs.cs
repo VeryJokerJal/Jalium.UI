@@ -210,7 +210,7 @@ public class MouseEventArgs : InputEventArgs
     }
 
     /// <inheritdoc />
-    protected override void InvokeEventHandler(Delegate handler, object target)
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is MouseEventHandler mouseHandler)
         {
@@ -274,7 +274,7 @@ public sealed class MouseButtonEventArgs : MouseEventArgs
     }
 
     /// <inheritdoc />
-    protected override void InvokeEventHandler(Delegate handler, object target)
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is MouseButtonEventHandler buttonHandler)
         {
@@ -324,7 +324,7 @@ public sealed class MouseWheelEventArgs : MouseEventArgs
     }
 
     /// <inheritdoc />
-    protected override void InvokeEventHandler(Delegate handler, object target)
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is MouseWheelEventHandler wheelHandler)
         {

@@ -183,7 +183,7 @@ public abstract partial class UIElement : Visual, IInputElement
         {
             if (!e.Handled || classHandler.HandledEventsToo)
             {
-                e.InvokeEventHandlerInternal(classHandler.Handler, sender);
+                e.InvokeEventHandler(classHandler.Handler, sender);
             }
         }
 
@@ -195,7 +195,7 @@ public abstract partial class UIElement : Visual, IInputElement
             {
                 if (!e.Handled || handler.HandledEventsToo)
                 {
-                    e.InvokeEventHandlerInternal(handler.Handler, sender);
+                    e.InvokeEventHandler(handler.Handler, sender);
                 }
             }
         }
@@ -819,9 +819,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// When ClipToBounds is true, returns a Rect matching the element's RenderSize.
     /// </summary>
     /// <returns>The clipping geometry (Media.Geometry or Rect), or null if no clipping should be applied.</returns>
-    internal object? GetLayoutClipInternal() => GetLayoutClip();
-
-    protected virtual object? GetLayoutClip()
+    protected internal virtual object? GetLayoutClip()
     {
         // Explicit Clip geometry takes precedence
         var clip = Clip;

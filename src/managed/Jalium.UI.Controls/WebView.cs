@@ -567,7 +567,7 @@ public partial class WebView : FrameworkElement, IDisposable
     private static bool TryGetLayoutClipRect(UIElement element, out Rect clipRect)
     {
         clipRect = Rect.Empty;
-        var clip = element.GetLayoutClipInternal();
+        var clip = element.GetLayoutClip();
 
         if (clip is Rect rect && !rect.IsEmpty)
         {

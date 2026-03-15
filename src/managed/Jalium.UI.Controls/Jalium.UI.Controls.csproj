@@ -6,7 +6,6 @@
     <Description>Control library for Jalium.UI framework including Button, TextBox, Panel, and Window.</Description>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Controls</PackageId>
-    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
   </PropertyGroup>
 
   <ItemGroup>
