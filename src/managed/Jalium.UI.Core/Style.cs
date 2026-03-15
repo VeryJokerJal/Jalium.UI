@@ -1256,7 +1256,7 @@ public sealed class EventTrigger : Trigger
     {
         foreach (var action in Actions)
         {
-            action.Invoke(_attachedElement);
+            action.InvokeInternal(_attachedElement);
         }
     }
 }
@@ -1418,7 +1418,12 @@ public abstract class TriggerAction
     /// <summary>
     /// Invokes the action on the specified element.
     /// </summary>
-    internal abstract void Invoke(FrameworkElement? element);
+    internal void InvokeInternal(FrameworkElement? element) => Invoke(element);
+
+    /// <summary>
+    /// Invokes the action on the specified element.
+    /// </summary>
+    protected abstract void Invoke(FrameworkElement? element);
 }
 
 /// <summary>

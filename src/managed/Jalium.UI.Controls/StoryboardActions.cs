@@ -40,7 +40,7 @@ public sealed class BeginStoryboard : TriggerAction
     public string? Name { get; set; }
 
     /// <inheritdoc />
-    internal override void Invoke(FrameworkElement? element)
+    protected override void Invoke(FrameworkElement? element)
     {
         Storyboard?.Begin(element);
     }
@@ -57,7 +57,7 @@ public abstract class ControllableStoryboardAction : TriggerAction
     public string? BeginStoryboardName { get; set; }
 
     /// <inheritdoc />
-    internal override void Invoke(FrameworkElement? element)
+    protected override void Invoke(FrameworkElement? element)
     {
         // In a full implementation, this would resolve the BeginStoryboard by name
         // and get its Storyboard to perform the control action.

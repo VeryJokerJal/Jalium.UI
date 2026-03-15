@@ -18,7 +18,7 @@ public abstract partial class UIElement
     private int _transitionArmVersion;
     private bool _automaticTransitionsArmed;
 
-    internal static Func<DependencyProperty, object?, object?, TimeSpan, TransitionTimingFunction, IAnimationTimeline?>? AutomaticTransitionAnimationFactory { get; set; }
+    public static Func<DependencyProperty, object?, object?, TimeSpan, TransitionTimingFunction, IAnimationTimeline?>? AutomaticTransitionAnimationFactory { get; set; }
 
     /// <summary>
     /// Identifies the TransitionProperty dependency property.
