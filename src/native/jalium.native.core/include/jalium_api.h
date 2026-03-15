@@ -346,6 +346,15 @@ JALIUM_API void jalium_pop_transform(JaliumRenderTarget* rt);
 /// @param height The height.
 JALIUM_API void jalium_push_clip(JaliumRenderTarget* rt, float x, float y, float width, float height);
 
+/// Pushes a clip rectangle with ALIASED anti-aliasing (hard pixel boundary).
+/// Used for dirty region clips where semi-transparent edges cause artifacts.
+/// @param rt The render target.
+/// @param x The x coordinate.
+/// @param y The y coordinate.
+/// @param width The width.
+/// @param height The height.
+JALIUM_API void jalium_push_clip_aliased(JaliumRenderTarget* rt, float x, float y, float width, float height);
+
 /// Pushes a rounded rectangle clip onto the stack using a geometry mask layer.
 /// @param rt The render target.
 /// @param x The x coordinate.

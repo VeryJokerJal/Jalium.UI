@@ -351,12 +351,22 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
-    /// Pushes a clip rectangle.
+    /// Pushes a clip rectangle (PER_PRIMITIVE anti-aliasing).
     /// </summary>
     public void PushClip(float x, float y, float width, float height)
     {
         ThrowIfDisposed();
         NativeMethods.PushClip(_handle, x, y, width, height);
+    }
+
+    /// <summary>
+    /// Pushes a clip rectangle with ALIASED anti-aliasing (hard pixel boundary).
+    /// Used for dirty region clips where semi-transparent edges cause artifacts.
+    /// </summary>
+    public void PushClipAliased(float x, float y, float width, float height)
+    {
+        ThrowIfDisposed();
+        NativeMethods.PushClipAliased(_handle, x, y, width, height);
     }
 
     /// <summary>

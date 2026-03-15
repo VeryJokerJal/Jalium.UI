@@ -39,7 +39,7 @@
                         <Grid Margin="4,0">
                             <Grid.ColumnDefinitions>
                                 <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="8" />
+                                <ColumnDefinition Width="28" />
                             </Grid.ColumnDefinitions>
 
                             <Grid Grid.Column="0">
@@ -65,28 +65,46 @@
                                          PlaceholderText="{Binding PlaceholderText, RelativeSource={RelativeSource AncestorType=ComboBox}}"
                                          Background="Transparent"
                                          BorderThickness="0"
-                                         Padding="0"
+                                         MinHeight="0"
+                                         Padding="0,1,0,1"
                                          Visibility="Collapsed"
                                          HorizontalAlignment="Stretch"
-                                         VerticalAlignment="Center" />
+                                         VerticalAlignment="Stretch" />
                             </Grid>
 
-                            <ToggleButton Name="PART_ToggleButton"
-                                          Grid.Column="1"
-                                          Background="Transparent"
-                                          BorderThickness="0"
-                                          Padding="0"
-                                          IsChecked="{TemplateBinding IsDropDownOpen}">
-                                <ToggleButton.Template>
-                                    <ControlTemplate TargetType="ToggleButton">
-                                        <Path Data="F1 M 0,0 L 2.667,2.66665 L 5.3334,0 L 5.3334,-1.78168 L 2.6667,0.88501 L0,-1.78168 L0,0 Z"
-                                              Fill="{DynamicResource TextSecondary}"
-                                              Stretch="None"
-                                              HorizontalAlignment="Center"
-                                              VerticalAlignment="Center" />
-                                    </ControlTemplate>
-                                </ToggleButton.Template>
-                            </ToggleButton>
+                            <Grid Name="PART_DropDownArea"
+                                  Grid.Column="1"
+                                  Background="Transparent">
+                                <Border Name="PART_DropDownDivider"
+                                        Width="1"
+                                        Margin="0,1,0,1"
+                                        HorizontalAlignment="Left"
+                                        VerticalAlignment="Stretch"
+                                        Background="{DynamicResource DividerStrokeColorDefaultBrush}" />
+                                <ToggleButton Name="PART_ToggleButton"
+                                              Margin="1,0,0,0"
+                                              Background="Transparent"
+                                              BorderThickness="0"
+                                              Padding="0"
+                                              MinWidth="27"
+                                              HorizontalAlignment="Stretch"
+                                              VerticalAlignment="Stretch"
+                                              IsChecked="{TemplateBinding IsDropDownOpen}">
+                                    <ToggleButton.Template>
+                                        <ControlTemplate TargetType="ToggleButton">
+                                            <Grid Background="Transparent">
+                                                <Path Data="M 0,0 L 8,0 L 4,4 Z"
+                                                      Fill="{DynamicResource TextSecondary}"
+                                                      Width="8"
+                                                      Height="4"
+                                                      Stretch="Fill"
+                                                      HorizontalAlignment="Center"
+                                                      VerticalAlignment="Center" />
+                                            </Grid>
+                                        </ControlTemplate>
+                                    </ToggleButton.Template>
+                                </ToggleButton>
+                            </Grid>
                         </Grid>
                     </Border>
                     <Popup Name="PART_Popup"
@@ -112,10 +130,13 @@
         </Setter>
 
         <Style.Triggers>
+            <PropertyTrigger Property="IsEditable" Value="False">
+                <Setter TargetName="PART_DropDownDivider" Property="Opacity" Value="0" />
+            </PropertyTrigger>
             <PropertyTrigger Property="IsMouseOver" Value="True">
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
             </PropertyTrigger>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+            <PropertyTrigger Property="IsKeyboardFocusWithin" Value="True">
                 <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
                 <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />

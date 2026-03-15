@@ -22,7 +22,7 @@ public:
     ~D3D12Backend() override;
 
     /// Initializes the D3D12 backend.
-    bool Initialize();
+    bool Initialize(void* preferredWindow = nullptr);
 
     // IRenderBackend implementation
     JaliumBackend GetType() const override { return JALIUM_BACKEND_D3D12; }
@@ -56,7 +56,7 @@ public:
     IWICImagingFactory* GetWICFactory() const { return wicFactory_.Get(); }
 
 private:
-    bool CreateD3D12Device();
+    bool CreateD3D12Device(void* preferredWindow = nullptr);
     bool CreateD2DDevice();
     bool CreateDWriteFactory();
     bool CreateWICFactory();

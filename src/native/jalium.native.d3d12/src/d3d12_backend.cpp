@@ -39,6 +39,35 @@ bool IsGpuDebugEnabled() {
 }
 #endif
 
+namespace {
+
+bool AdapterDrivesMonitor(IDXGIAdapter1* adapter, HMONITOR monitor)
+{
+    if (!adapter || !monitor) {
+        return false;
+    }
+
+    for (UINT outputIndex = 0;; ++outputIndex) {
+        ComPtr<IDXGIOutput> output;
+        if (adapter->EnumOutputs(outputIndex, &output) == DXGI_ERROR_NOT_FOUND) {
+            break;
+        }
+
+        DXGI_OUTPUT_DESC outputDesc{};
+        if (FAILED(output->GetDesc(&outputDesc))) {
+            continue;
+        }
+
+        if (outputDesc.Monitor == monitor) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+} // namespace
+
 D3D12Backend::D3D12Backend() = default;
 
 D3D12Backend::~D3D12Backend() {
@@ -55,10 +84,10 @@ D3D12Backend::~D3D12Backend() {
     dxgiFactory_.Reset();
 }
 
-bool D3D12Backend::Initialize() {
+bool D3D12Backend::Initialize(void* preferredWindow) {
     if (initialized_) return true;
 
-    if (!CreateD3D12Device()) {
+    if (!CreateD3D12Device(preferredWindow)) {
         return false;
     }
 
@@ -78,7 +107,7 @@ bool D3D12Backend::Initialize() {
     return true;
 }
 
-bool D3D12Backend::CreateD3D12Device() {
+bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
     UINT dxgiFactoryFlags = 0;
 
 #if defined(_DEBUG)
@@ -118,9 +147,32 @@ bool D3D12Backend::CreateD3D12Device() {
             IID_PPV_ARGS(&device_)));
     };
 
+    HMONITOR preferredMonitor = nullptr;
+    if (preferredWindow != nullptr) {
+        preferredMonitor = MonitorFromWindow(static_cast<HWND>(preferredWindow), MONITOR_DEFAULTTONEAREST);
+    }
+
+    if (preferredMonitor) {
+        for (UINT adapterIndex = 0;; ++adapterIndex) {
+            ComPtr<IDXGIAdapter1> adapter;
+            HRESULT hrEnum = dxgiFactory_->EnumAdapters1(adapterIndex, &adapter);
+            if (FAILED(hrEnum)) {
+                break;
+            }
+
+            if (!AdapterDrivesMonitor(adapter.Get(), preferredMonitor)) {
+                continue;
+            }
+
+            if (tryCreateDeviceForAdapter(adapter.Get())) {
+                break;
+            }
+        }
+    }
+
     // Prefer OS GPU preference ordering (hybrid GPU aware), then fall back to legacy enumeration.
     ComPtr<IDXGIFactory6> factory6;
-    if (SUCCEEDED(dxgiFactory_.As(&factory6))) {
+    if (!device_ && SUCCEEDED(dxgiFactory_.As(&factory6))) {
         for (UINT adapterIndex = 0;; ++adapterIndex) {
             ComPtr<IDXGIAdapter1> adapter;
             HRESULT hrEnum = factory6->EnumAdapterByGpuPreference(
@@ -261,7 +313,7 @@ bool D3D12Backend::CreateWICFactory() {
 }
 
 RenderTarget* D3D12Backend::CreateRenderTarget(void* hwnd, int32_t width, int32_t height) {
-    if (!initialized_ && !Initialize()) {
+    if (!initialized_ && !Initialize(hwnd)) {
         return nullptr;
     }
 
@@ -274,7 +326,7 @@ RenderTarget* D3D12Backend::CreateRenderTarget(void* hwnd, int32_t width, int32_
 }
 
 RenderTarget* D3D12Backend::CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height) {
-    if (!initialized_ && !Initialize()) {
+    if (!initialized_ && !Initialize(hwnd)) {
         return nullptr;
     }
 
@@ -382,12 +434,7 @@ Bitmap* D3D12Backend::CreateBitmapFromMemory(const uint8_t* data, uint32_t dataS
 }
 
 IRenderBackend* CreateD3D12Backend() {
-    auto backend = new D3D12Backend();
-    if (!backend->Initialize()) {
-        delete backend;
-        return nullptr;
-    }
-    return backend;
+    return new D3D12Backend();
 }
 
 } // namespace jalium

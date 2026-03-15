@@ -1028,7 +1028,8 @@ public abstract partial class UIElement : Visual, IInputElement
 
     /// <summary>
     /// Gets the screen-space bounds of this element relative to its Window.
-    /// Uses cached screen offset when available (O(1) instead of O(depth)).
+    /// Uses cached layout offset (O(1)) plus current RenderOffset (not cached,
+    /// since RenderOffset changes during animations without triggering layout).
     /// </summary>
     internal Rect GetScreenBounds()
     {
@@ -1051,7 +1052,13 @@ public abstract partial class UIElement : Visual, IInputElement
             _cachedScreenOffset = new Point(x, y);
             _isScreenOffsetValid = true;
         }
-        return new Rect(_cachedScreenOffset.X, _cachedScreenOffset.Y,
+
+        // Include RenderOffset — animation systems (ProgressBar indeterminate,
+        // spring physics, etc.) move elements via RenderOffset without triggering
+        // layout. Without this, the dirty region wouldn't cover the actual
+        // rendered position, causing ghost images during animation.
+        var ro = RenderOffset;
+        return new Rect(_cachedScreenOffset.X + ro.X, _cachedScreenOffset.Y + ro.Y,
                         _renderSize.Width, _renderSize.Height);
     }
 

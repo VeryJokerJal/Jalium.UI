@@ -168,9 +168,7 @@ public class Track : FrameworkElement
                 if (_thumb != null)
                 {
                     RemoveVisualChild(_thumb);
-                    _thumb.DragStarted -= OnThumbDragStarted;
-                    _thumb.DragDelta -= OnThumbDragDelta;
-                    _thumb.DragCompleted -= OnThumbDragCompleted;
+                    DetachThumbDragHandlers(_thumb);
                 }
 
                 _thumb = value;
@@ -178,9 +176,7 @@ public class Track : FrameworkElement
                 if (_thumb != null)
                 {
                     AddVisualChild(_thumb);
-                    _thumb.DragStarted += OnThumbDragStarted;
-                    _thumb.DragDelta += OnThumbDragDelta;
-                    _thumb.DragCompleted += OnThumbDragCompleted;
+                    AttachThumbDragHandlers(_thumb);
                 }
 
                 InvalidateMeasure();
@@ -254,6 +250,31 @@ public class Track : FrameworkElement
     private double _thumbDragStartValue;
     private double _thumbDragAccumulatedHorizontal;
     private double _thumbDragAccumulatedVertical;
+    private bool _handlesThumbDragInternally = true;
+
+    #endregion
+
+    #region Internal Options
+
+    internal bool HandlesThumbDragInternally
+    {
+        get => _handlesThumbDragInternally;
+        set
+        {
+            if (_handlesThumbDragInternally == value)
+            {
+                return;
+            }
+
+            _handlesThumbDragInternally = value;
+            if (!value)
+            {
+                EndThumbDrag();
+            }
+
+            UpdateThumbDragSubscriptions();
+        }
+    }
 
     #endregion
 
@@ -599,6 +620,40 @@ public class Track : FrameworkElement
         }
 
         return change;
+    }
+
+    #endregion
+
+    #region Thumb Drag Wiring
+
+    private void AttachThumbDragHandlers(Thumb thumb)
+    {
+        if (!_handlesThumbDragInternally)
+        {
+            return;
+        }
+
+        thumb.DragStarted += OnThumbDragStarted;
+        thumb.DragDelta += OnThumbDragDelta;
+        thumb.DragCompleted += OnThumbDragCompleted;
+    }
+
+    private void DetachThumbDragHandlers(Thumb thumb)
+    {
+        thumb.DragStarted -= OnThumbDragStarted;
+        thumb.DragDelta -= OnThumbDragDelta;
+        thumb.DragCompleted -= OnThumbDragCompleted;
+    }
+
+    private void UpdateThumbDragSubscriptions()
+    {
+        if (_thumb == null)
+        {
+            return;
+        }
+
+        DetachThumbDragHandlers(_thumb);
+        AttachThumbDragHandlers(_thumb);
     }
 
     #endregion

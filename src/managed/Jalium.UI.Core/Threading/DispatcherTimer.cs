@@ -172,15 +172,17 @@ public sealed class DispatcherTimer
     }
 
     /// <summary>
-    /// Determines if this timer's interval is close enough to the frame interval
-    /// to piggyback on CompositionTarget.Rendering.
-    /// Matches 8ms (120Hz) and 16ms (60Hz) within ±2ms tolerance.
+    /// Determines if this timer's interval is short enough to piggyback on
+    /// CompositionTarget.Rendering instead of creating a dedicated timer.
+    /// Any interval at or below one display refresh period (e.g. 16ms at 60Hz)
+    /// is merged into the centralized frame timer. This eliminates timer
+    /// proliferation for frame-rate timers (animations, spring physics, etc.).
     /// </summary>
     private bool ShouldUseCompositionTarget()
     {
         int intervalMs = (int)_interval.TotalMilliseconds;
-        int frameMs = CompositionTarget.FrameIntervalMs;
-        return Math.Abs(intervalMs - frameMs) <= 2;
+        int frameMs = 1000 / Math.Max(CompositionTarget.RefreshRate, 30);
+        return intervalMs <= frameMs + 2;
     }
 
     private void StartTimer()

@@ -488,6 +488,13 @@ internal static partial class NativeMethods
     internal static partial void PushClip(nint renderTarget, float x, float y, float width, float height);
 
     /// <summary>
+    /// Pushes a clip rectangle with ALIASED anti-aliasing (hard pixel boundary).
+    /// Used for dirty region clips where semi-transparent edges cause artifacts.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_push_clip_aliased")]
+    internal static partial void PushClipAliased(nint renderTarget, float x, float y, float width, float height);
+
+    /// <summary>
     /// Pushes a rounded rectangle clip using a geometry mask layer.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_push_rounded_rect_clip")]

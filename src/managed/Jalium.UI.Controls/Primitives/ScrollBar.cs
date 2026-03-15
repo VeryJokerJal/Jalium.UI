@@ -15,7 +15,7 @@ public class ScrollBar : RangeBase
     private static readonly SolidColorBrush s_defaultThumbBrush = new(Color.FromRgb(170, 170, 170));
     private static readonly SolidColorBrush s_defaultArrowBrush = new(Color.FromRgb(210, 210, 210));
     private static readonly SolidColorBrush s_transparentBrush = new(Color.FromArgb(0, 0, 0, 0));
-    private static readonly BlurEffect s_defaultTrackBackdropEffect = new(16f, BackdropBlurType.Gaussian);
+    private static readonly BlurEffect s_defaultTrackBackdropEffect = new(0f, BackdropBlurType.Gaussian);
     private static readonly Style s_internalRepeatButtonStyle = new(typeof(RepeatButton));
     private static readonly Style s_internalThumbStyle = CreateInternalThumbStyle();
 
@@ -204,7 +204,12 @@ public class ScrollBar : RangeBase
         AddVisualChild(_lineUpButton);
 
         // Create track
-        _track = new Track();
+        _track = new Track
+        {
+            // ScrollBar owns thumb dragging so we do not pay for a second Track.Value update
+            // and Arrange invalidation on every pointer move.
+            HandlesThumbDragInternally = false
+        };
         _track.SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         _track.Thumb = new Thumb
         {
@@ -835,7 +840,10 @@ public class ScrollBar : RangeBase
     {
         if (d is ScrollBar scrollBar)
         {
-            scrollBar.StartAutoHideVisualTransition(scrollBar.IsThumbSlim ? 1.0 : 0.0);
+            var targetProgress = scrollBar.IsThumbSlim ? 1.0 : 0.0;
+            scrollBar._autoHideCollapseProgress = targetProgress;
+            scrollBar.StopAutoHideVisualTimer();
+            scrollBar.ApplyAutoHideVisualState(targetProgress);
         }
     }
 
@@ -1039,8 +1047,8 @@ public class ScrollBar : RangeBase
 
         dc.PushOpacity(chromeOpacity);
 
-        var backdropEffect = BackdropEffect ?? s_defaultTrackBackdropEffect;
-        if (backdropEffect.HasEffect)
+        var backdropEffect = BackdropEffect;
+        if ((backdropEffect ?? s_defaultTrackBackdropEffect).HasEffect && backdropEffect != null)
         {
             dc.DrawBackdropEffect(innerRect, backdropEffect, CornerRadius);
         }

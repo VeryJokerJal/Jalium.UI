@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
@@ -12,6 +13,9 @@ namespace Jalium.UI.Controls;
 [ContentProperty("Content")]
 public partial class ScrollViewer : Control
 {
+    private const string ScrollBarAutoHideEnvironmentVariable = "JALIUM_SCROLLBAR_AUTOHIDE";
+    private static readonly bool s_isScrollBarAutoHideEnabledByDefault = DetermineDefaultScrollBarAutoHide();
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -125,7 +129,7 @@ public partial class ScrollViewer : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsScrollBarAutoHideEnabledProperty =
         DependencyProperty.Register(nameof(IsScrollBarAutoHideEnabled), typeof(bool), typeof(ScrollViewer),
-            new PropertyMetadata(true, OnScrollBarAutoHideEnabledChanged));
+            new PropertyMetadata(s_isScrollBarAutoHideEnabledByDefault, OnScrollBarAutoHideEnabledChanged));
 
     #endregion
 
@@ -235,6 +239,43 @@ public partial class ScrollViewer : Control
     {
         get => (bool)GetValue(IsScrollBarAutoHideEnabledProperty)!;
         set => SetValue(IsScrollBarAutoHideEnabledProperty, value);
+    }
+
+    private static bool DetermineDefaultScrollBarAutoHide()
+    {
+        var environmentValue = Environment.GetEnvironmentVariable(ScrollBarAutoHideEnvironmentVariable);
+        if (!string.IsNullOrWhiteSpace(environmentValue))
+        {
+            switch (environmentValue.Trim().ToLowerInvariant())
+            {
+                case "1":
+                case "true":
+                case "yes":
+                case "on":
+                    return true;
+                case "0":
+                case "false":
+                case "no":
+                case "off":
+                    return false;
+            }
+        }
+
+        try
+        {
+            using var process = Process.GetCurrentProcess();
+            if (!string.IsNullOrWhiteSpace(process.ProcessName) &&
+                process.ProcessName.Contains("gallery", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+        catch
+        {
+            // Ignore and fall back to command line probing.
+        }
+
+        return !Environment.CommandLine.Contains("gallery", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -383,6 +424,7 @@ public partial class ScrollViewer : Control
     private long _lastSmoothTickTime;
     private const double DefaultScrollInertiaDurationMs = 300.0;
     private const double DefaultScrollBarAutoHideDelayMs = 3000.0;
+    private const int ScrollBarAutoHidePollIntervalMs = 100;
     private const double SmoothScrollDurationTailRatio = 0.05;
     private const double SmoothScrollSnapThreshold = 0.5;
     private const double SmoothScrollMinSpeedPixelsPerSecond = 60.0;
@@ -910,6 +952,31 @@ public partial class ScrollViewer : Control
         return base.HitTestCore(point);
     }
 
+    internal bool IsContentDescendant(UIElement element)
+    {
+        for (UIElement? current = element; current != null && !ReferenceEquals(current, this); current = current.VisualParent as UIElement)
+        {
+            var parent = current.VisualParent as UIElement;
+            if (ReferenceEquals(parent, this))
+            {
+                return ReferenceEquals(current, _content);
+            }
+        }
+
+        return false;
+    }
+
+    internal bool IsPointWithinContentViewport(Point point)
+    {
+        double viewportWidth = _viewportWidth > 0 ? _viewportWidth : RenderSize.Width;
+        double viewportHeight = _viewportHeight > 0 ? _viewportHeight : RenderSize.Height;
+
+        return point.X >= 0 &&
+               point.Y >= 0 &&
+               point.X <= viewportWidth &&
+               point.Y <= viewportHeight;
+    }
+
     /// <inheritdoc />
     protected override void OnLostMouseCapture()
     {
@@ -991,7 +1058,7 @@ public partial class ScrollViewer : Control
 
         _scrollBarAutoHideTimer ??= new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
+            Interval = TimeSpan.FromMilliseconds(ScrollBarAutoHidePollIntervalMs)
         };
         _scrollBarAutoHideTimer.Tick -= OnScrollBarAutoHideTimerTick;
         _scrollBarAutoHideTimer.Tick += OnScrollBarAutoHideTimerTick;
@@ -1745,7 +1812,6 @@ public partial class ScrollViewer : Control
     }
 
     #endregion
-
     #region Input Handling
 
     /// <summary>

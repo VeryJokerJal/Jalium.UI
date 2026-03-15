@@ -31,6 +31,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private bool _renderRecoveryInProgress;
     private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _fullInvalidation = true;  // First frame is always full
+    private Rect _previousDirtyRegion = Rect.Empty;  // Previous frame's dirty region (for clearing old positions)
+    private long _lastRenderTicks;          // Timestamp of last completed render (for rate-limiting)
+    private Timer? _renderThrottleTimer;    // Deferred render when rate-limited
     private long _suppressEscapeUntilTick;
     // Maps dirty element 鈫?pre-layout bounds (captured when AddDirtyElement is called).
     // After UpdateLayout, we also compute post-layout bounds.
@@ -3301,19 +3304,60 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         _renderScheduled = false;
         if (Handle == nint.Zero) return;
+
+        // Dispose any pending throttle timer from a previous rate-limit cycle.
+        var throttleTimer = _renderThrottleTimer;
+        _renderThrottleTimer = null;
+        throttleTimer?.Dispose();
+
+        // Rate-limit to display refresh rate when no animation timer is driving frames.
+        // During animations, CompositionTarget already controls frame pacing (re-arm after render).
+        // Without this, rapid input events (scrolling, mouse drag) can saturate the GPU
+        // with back-to-back full renders on integrated graphics.
+        if (!CompositionTarget.IsActive && _lastRenderTicks > 0)
+        {
+            long now = Environment.TickCount64;
+            long elapsed = now - _lastRenderTicks;
+            int minIntervalMs = 1000 / Math.Max(CompositionTarget.RefreshRate, 30);
+
+            if (elapsed < minIntervalMs)
+            {
+                // Too soon — defer this render. Dirty elements continue accumulating
+                // via AddDirtyElement and will all be rendered in the deferred frame.
+                _renderScheduled = true;
+                int delay = Math.Max(1, minIntervalMs - (int)elapsed);
+                _renderThrottleTimer = new Timer(_ =>
+                {
+                    _dispatcher?.BeginInvokeCritical(ProcessRender);
+                }, null, delay, Timeout.Infinite);
+                return;
+            }
+        }
+
         RenderFrame();
     }
 
     /// <summary>
     /// Core rendering logic shared by both Dispatcher-based and WM_PAINT paths.
     /// Performs layout, submits dirty rects, and renders the visual tree.
+    ///
+    /// Retained mode rendering:
+    /// - When nothing is dirty, skip the frame entirely (GPU idle).
+    /// - When dirty elements exist, push an ALIASED D2D clip to the dirty region
+    ///   and render only that area. ALIASED mode creates hard pixel boundaries
+    ///   with no semi-transparent edge artifacts (unlike PER_PRIMITIVE mode).
+    /// - Present1 dirty rects tell DWM which areas changed; FLIP_SEQUENTIAL
+    ///   copies non-dirty areas from the previously presented buffer automatically.
+    /// - Falls back to full render on first frame, resize, theme change, etc.
+    /// - ProcessRender rate-limits to display refresh rate when no animation is active,
+    ///   preventing GPU saturation from rapid input events (scrolling, mouse drag).
     /// </summary>
     private void RenderFrame()
     {
         if (_isRendering) return;
         _isRendering = true;
         _renderRequested = false;
-        long renderStarted = Environment.TickCount64;
+        _lastRenderTicks = Environment.TickCount64;
 
         try
         {
@@ -3327,63 +3371,136 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 return;
             }
 
-            // Perform layout before rendering (queue-based: only dirty elements)
+            // Perform layout before rendering (queue-based: only dirty elements).
+            // UpdateLayout may trigger further invalidations via AddDirtyElement.
             UpdateLayout();
 
-            // Dirty rendering strategy:
-            // - Dirty elements drive SCHEDULING (whether to render at all)
-            // - When idle, no render 鈫?GPU idle
-            // - When rendering, always full Clear + full tree render + full Present
-            //
-            // Present1 partial dirty rects are NOT used because with FLIP_SEQUENTIAL,
-            // we Clear the entire back buffer each frame, so telling DWM only partial
-            // rects changed causes cumulative stale content on screen.
-            // The GPU savings come from not rendering at all when idle, not from
-            // partial DWM compositing.
+            // ── Compute dirty region from accumulated dirty elements ──
+            // Check dirty AFTER UpdateLayout so layout-triggered invalidations are included.
+            bool fullInvalidation;
+            Rect dirtyRegion = Rect.Empty;
             lock (_dirtyLock)
             {
+                fullInvalidation = _fullInvalidation;
+
+                if (!fullInvalidation && _dirtyElements.Count == 0)
+                {
+                    // Nothing dirty after layout — GPU fully idle.
+                    _fullInvalidation = false;
+                    return;
+                }
+
+                if (!fullInvalidation)
+                {
+                    dirtyRegion = ComputeDirtyRegion();
+                }
+
                 _dirtyElements.Clear();
                 _fullInvalidation = false;
-            }
-            RenderTarget.SetFullInvalidation();
-
-            RenderTarget.BeginDraw();
-
-            // Always clear and render the full window.
-            // No D2D clip 鈥?the full back buffer is redrawn every dirty frame.
-            // Present1 dirty rects handle DWM-level optimization.
-            if (Background is SolidColorBrush solidBrush)
-            {
-                var color = solidBrush.Color;
-                RenderTarget.Clear(color.ScR, color.ScG, color.ScB, color.ScA);
-            }
-            else if (SystemBackdrop != WindowBackdropType.None)
-            {
-                // Match WPF's backdrop behavior: leave the window background transparent
-                // so DWM can draw the system material behind our content.
-                RenderTarget.Clear(0.0f, 0.0f, 0.0f, 0.0f);
-            }
-            else
-            {
-                RenderTarget.Clear(1.0f, 1.0f, 1.0f, 1.0f);
             }
 
             var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
             _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
-            _drawingContext.Offset = Point.Zero;
-            Render(_drawingContext);
 
+            if (fullInvalidation)
+            {
+                // ── Full render path (first frame, resize, theme change) ──
+                _previousDirtyRegion = Rect.Empty; // Reset — full render covers everything
+                RenderTarget.SetFullInvalidation();
+                RenderTarget.BeginDraw();
+                ClearBackground();
+                _drawingContext.Offset = Point.Zero;
+                Render(_drawingContext);
 #if DEBUG
-            // Draw DevTools highlight overlay if active
-            DevToolsOverlay?.DrawOverlay(_drawingContext);
+                DevToolsOverlay?.DrawOverlay(_drawingContext);
 #endif
+                OnRender(RenderTarget);
+                RenderTarget.EndDraw();
+            }
+            else if (dirtyRegion.IsEmpty)
+            {
+                // Dirty elements exist but their visible bounds are outside the window
+                // (e.g., ProgressBar animating off-screen). Nothing to render — GPU idle.
+                return;
+            }
+            else
+            {
+                // ── Retained mode partial render ──
+                // Union with previous frame's dirty region so moving elements have
+                // their old position cleared. Without this, DXGI copies stale content
+                // from the previous buffer at the old position → ghost images.
+                var rawDirtyRegion = dirtyRegion;
+                if (!_previousDirtyRegion.IsEmpty)
+                {
+                    dirtyRegion = dirtyRegion.Union(_previousDirtyRegion);
+                }
+                _previousDirtyRegion = rawDirtyRegion;
 
-            // Also call legacy OnRender for backwards compatibility
-            OnRender(RenderTarget);
+                // Expand by DirtyRectMargin (2px) for the D2D clip region.
+                // Native AddDirtyRect also expands by the same 2px, so passing the
+                // RAW dirty region to native makes the Present1 rect match our clip.
+                // Previously we passed the EXPANDED rect to native → native expanded
+                // AGAIN → Present1 was 2px larger than D2D clip → gap showed stale
+                // buffer content from 2 frames ago (visible on iGPU).
+                const double DirtyRectMargin = 2.0;
+                var clipRegion = new Rect(
+                    dirtyRegion.X - DirtyRectMargin,
+                    dirtyRegion.Y - DirtyRectMargin,
+                    dirtyRegion.Width + DirtyRectMargin * 2,
+                    dirtyRegion.Height + DirtyRectMargin * 2);
+                var windowBounds = new Rect(0, 0, ActualWidth, ActualHeight);
+                clipRegion = clipRegion.Intersect(windowBounds);
+                if (clipRegion.IsEmpty)
+                {
+                    return;
+                }
 
-            RenderTarget.EndDraw();
+                // If clip region > 50% of window, native AddDirtyRect upgrades to
+                // full invalidation (DirtyRectsCount=0). Must match in managed —
+                // otherwise D2D clip is partial but Present1 is full → stale pixels.
+                double windowArea = ActualWidth * ActualHeight;
+                if (windowArea > 0 &&
+                    clipRegion.Width * clipRegion.Height > windowArea * 0.5)
+                {
+                    _previousDirtyRegion = Rect.Empty;
+                    RenderTarget.SetFullInvalidation();
+                    RenderTarget.BeginDraw();
+                    ClearBackground();
+                    _drawingContext.Offset = Point.Zero;
+                    Render(_drawingContext);
+#if DEBUG
+                    DevToolsOverlay?.DrawOverlay(_drawingContext);
+#endif
+                    OnRender(RenderTarget);
+                    RenderTarget.EndDraw();
+                }
+                else
+                {
+                    // Pass RAW dirty region to native — native expands by 2px
+                    // to match our clipRegion exactly.
+                    RenderTarget.AddDirtyRect(
+                        (float)dirtyRegion.X, (float)dirtyRegion.Y,
+                        (float)dirtyRegion.Width, (float)dirtyRegion.Height);
 
-            // Trim caches to prevent memory from growing unbounded
+                    RenderTarget.BeginDraw();
+
+                    // Push ALIASED D2D clip — hard pixel boundary, no semi-transparent
+                    // edge artifacts. Matches the Present1 dirty rect exactly.
+                    _drawingContext.Offset = Point.Zero;
+                    _drawingContext.PushDirtyRegionClip(clipRegion);
+
+                    ClearBackground();
+                    Render(_drawingContext);
+
+                    _drawingContext.PopDirtyRegionClip();
+#if DEBUG
+                    DevToolsOverlay?.DrawOverlay(_drawingContext);
+#endif
+                    OnRender(RenderTarget);
+                    RenderTarget.EndDraw();
+                }
+            }
+
             _drawingContext?.TrimCacheIfNeeded();
         }
         catch (RenderPipelineException ex)
@@ -3421,9 +3538,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // If something requested a render during our rendering
         // (e.g., UpdateLayout triggered further invalidation),
         // schedule another render cycle.
-        // When CompositionTarget is active, clear the flag 鈥?the next frame will
-        // render all dirty elements. Don't call InvalidateWindow (it would be
-        // blocked by the IsActive check anyway).
         if (_renderRequested)
         {
             _renderRequested = false;
@@ -3431,6 +3545,57 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             {
                 InvalidateWindow();
             }
+        }
+    }
+
+    /// <summary>
+    /// Computes the union of all dirty element bounds (both pre-layout and post-layout),
+    /// clamped to the window client area. Must be called under <see cref="_dirtyLock"/>.
+    /// </summary>
+    private Rect ComputeDirtyRegion()
+    {
+        var union = Rect.Empty;
+        foreach (var (element, preLayoutBounds) in _dirtyElements)
+        {
+            // Pre-layout bounds: where the element WAS before UpdateLayout.
+            if (!preLayoutBounds.IsEmpty)
+            {
+                union = union.Union(preLayoutBounds);
+            }
+
+            // Post-layout bounds: where the element IS now.
+            var postLayoutBounds = element.GetScreenBounds();
+            if (!postLayoutBounds.IsEmpty)
+            {
+                union = union.Union(postLayoutBounds);
+            }
+        }
+
+        if (union.IsEmpty) return union;
+
+        // Clamp to window client area.
+        var windowBounds = new Rect(0, 0, ActualWidth, ActualHeight);
+        return union.Intersect(windowBounds);
+    }
+
+    /// <summary>
+    /// Clears the render target with the window background color.
+    /// When a D2D clip is active (retained mode), only the clipped area is cleared.
+    /// </summary>
+    private void ClearBackground()
+    {
+        if (Background is SolidColorBrush solidBrush)
+        {
+            var color = solidBrush.Color;
+            RenderTarget.Clear(color.ScR, color.ScG, color.ScB, color.ScA);
+        }
+        else if (SystemBackdrop != WindowBackdropType.None)
+        {
+            RenderTarget.Clear(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+        else
+        {
+            RenderTarget.Clear(1.0f, 1.0f, 1.0f, 1.0f);
         }
     }
 

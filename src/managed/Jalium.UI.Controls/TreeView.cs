@@ -572,6 +572,26 @@ public class TreeViewItem : HeaderedItemsControl
         }
     }
 
+    protected override HitTestResult? HitTestCore(Point point)
+    {
+        var result = base.HitTestCore(point);
+        if (result == null || result.VisualHit != this)
+        {
+            return result;
+        }
+
+        // TreeViewItem itself is a transparent wrapper around template parts.
+        // Avoid swallowing unrelated clicks when layout stretches the container
+        // beyond the actual header / realized child content.
+        if (IsPointWithinElementBounds(_headerBorder, point) ||
+            IsPointWithinElementBounds(_itemsHost, point))
+        {
+            return result;
+        }
+
+        return null;
+    }
+
     #endregion
 
     private void OnChildItemsChanged(object? sender, System.Collections.Specialized.NotifyCollectionChangedEventArgs e)
@@ -701,8 +721,6 @@ public class TreeViewItem : HeaderedItemsControl
     {
         if (e is MouseButtonEventArgs mouseArgs)
         {
-            Focus();
-
             // Check if clicked on expander area
             if (HasItems && _expanderBorder is { Visibility: Visibility.Visible } expander)
             {
@@ -715,6 +733,15 @@ public class TreeViewItem : HeaderedItemsControl
                     return;
                 }
             }
+
+            // Let focusable controls inside the header (for example buttons or text boxes)
+            // receive the click instead of treating the whole header as a selection surface.
+            if (e.OriginalSource is DependencyObject source && IsInsideInteractiveHeaderElement(source))
+            {
+                return;
+            }
+
+            Focus();
 
             // Select this item
             ParentTreeView?.SelectItem(this);
@@ -1209,6 +1236,34 @@ public class TreeViewItem : HeaderedItemsControl
         }
 
         return null;
+    }
+
+    private bool IsInsideInteractiveHeaderElement(DependencyObject element)
+    {
+        for (var current = element; current != null; current = (current as UIElement)?.VisualParent as DependencyObject)
+        {
+            if (ReferenceEquals(current, this))
+            {
+                break;
+            }
+
+            if (current is UIElement uiElement && uiElement.Focusable)
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsPointWithinElementBounds(FrameworkElement? element, Point point)
+    {
+        if (element == null || element.Visibility != Visibility.Visible)
+        {
+            return false;
+        }
+
+        return element.VisualBounds.Contains(point);
     }
 
     #endregion
