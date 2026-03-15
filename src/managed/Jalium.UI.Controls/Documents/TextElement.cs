@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
 
@@ -14,6 +14,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Identifies the FontFamily dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(string), typeof(TextElement),
             new PropertyMetadata("Segoe UI"));
@@ -21,6 +22,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Identifies the FontSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(TextElement),
             new PropertyMetadata(14.0));
@@ -28,6 +30,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Identifies the FontWeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontWeightProperty =
         DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(TextElement),
             new PropertyMetadata(FontWeights.Normal));
@@ -35,6 +38,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Identifies the FontStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontStyleProperty =
         DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(TextElement),
             new PropertyMetadata(FontStyles.Normal));
@@ -42,6 +46,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Identifies the Foreground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(TextElement),
             new PropertyMetadata(null));
@@ -49,6 +54,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(TextElement),
             new PropertyMetadata(null));
@@ -56,6 +62,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Identifies the TextDecorations dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextDecorationsProperty =
         DependencyProperty.Register(nameof(TextDecorations), typeof(TextDecorationCollection), typeof(TextElement),
             new PropertyMetadata(null));
@@ -67,6 +74,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Gets or sets the font family.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public string FontFamily
     {
         get => (string)(GetValue(FontFamilyProperty) ?? "Segoe UI");
@@ -76,6 +84,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Gets or sets the font size.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double FontSize
     {
         get => (double)GetValue(FontSizeProperty)!;
@@ -85,6 +94,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Gets or sets the font weight.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontWeight FontWeight
     {
         get => GetValue(FontWeightProperty) is FontWeight fw ? fw : FontWeights.Normal;
@@ -94,6 +104,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Gets or sets the font style.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontStyle FontStyle
     {
         get => GetValue(FontStyleProperty) is FontStyle fs ? fs : FontStyles.Normal;
@@ -103,6 +114,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Gets or sets the foreground brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Foreground
     {
         get => (Brush?)GetValue(ForegroundProperty);
@@ -112,6 +124,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Gets or sets the background brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -121,6 +134,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Gets or sets the text decorations.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextDecorationCollection? TextDecorations
     {
         get => (TextDecorationCollection?)GetValue(TextDecorationsProperty);

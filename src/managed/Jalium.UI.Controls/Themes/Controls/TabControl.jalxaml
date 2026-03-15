@@ -6,15 +6,21 @@
     <!-- TabControl Style -->
     <!-- ============================================== -->
     <Style TargetType="TabControl">
-        <Setter Property="Background" Value="{StaticResource TabContentBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource TabStripBorder}" />
+        <Setter Property="Background" Value="{DynamicResource TabContentBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource TabStripBorder}" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="TabStripBackground" Value="{StaticResource TabStripBackground}" />
-        <Setter Property="TabStripBorderBrush" Value="{StaticResource TabStripBorder}" />
+        <Setter Property="TabStripBackground" Value="{DynamicResource TabStripBackground}" />
+        <Setter Property="TabStripBorderBrush" Value="{DynamicResource TabStripBorder}" />
         <Setter Property="TabStripHeight" Value="36" />
         <Setter Property="FontSize" Value="13" />
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="TabStripBorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -22,21 +28,21 @@
     <!-- ============================================== -->
     <Style TargetType="TabItem">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="Padding" Value="16,10,16,10" />
         <Setter Property="FontSize" Value="13" />
-        <Setter Property="FontFamily" Value="Segoe UI" />
-        <Setter Property="IndicatorBrush" Value="{StaticResource TabItemIndicator}" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="IndicatorBrush" Value="{DynamicResource TabItemIndicator}" />
         <Setter Property="IndicatorHeight" Value="2" />
-        <Setter Property="SelectedBackground" Value="{StaticResource TabItemSelectedBackground}" />
-        <Setter Property="HoverBackground" Value="{StaticResource TabItemHoverBackground}" />
+        <Setter Property="SelectedBackground" Value="{DynamicResource TabItemSelectedBackground}" />
+        <Setter Property="HoverBackground" Value="{DynamicResource TabItemHoverBackground}" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -45,7 +51,7 @@
     <!-- TabPanel Style -->
     <!-- ============================================== -->
     <Style TargetType="TabPanel">
-        <Setter Property="Background" Value="{StaticResource TabStripBackground}" />
+        <Setter Property="Background" Value="{DynamicResource TabStripBackground}" />
     </Style>
 
 </ResourceDictionary>

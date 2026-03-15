@@ -89,52 +89,67 @@
             <ControlTemplate TargetType="NavigationViewItem">
                 <StackPanel>
                     <!-- Item Row -->
-                    <Border Name="PART_ItemBorder"
-                            Background="{TemplateBinding Background}"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Height="36">
-                        <Grid>
-                            <Grid.ColumnDefinitions>
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="Auto" />
-                                <ColumnDefinition Width="*" />
-                                <ColumnDefinition Width="Auto" />
-                            </Grid.ColumnDefinitions>
+                    <Grid>
+                        <Border Name="PART_ItemBorder"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                Height="36">
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
 
-                            <!-- Selection Indicator -->
-                            <Border Name="PART_SelectionIndicator"
-                                    Grid.Column="0"
-                                    Width="3"
-                                    Height="16"
-                                    CornerRadius="1.5"
-                                    Background="{DynamicResource AccentBrush}"
-                                    Margin="4,0,0,0"
-                                    VerticalAlignment="Center"
-                                    Visibility="Collapsed" />
+                                <!-- Selection Indicator -->
+                                <Border Name="PART_SelectionIndicator"
+                                        Grid.Column="0"
+                                        Width="3"
+                                        Height="16"
+                                        CornerRadius="1.5"
+                                        Background="{DynamicResource AccentBrush}"
+                                        Margin="4,0,0,0"
+                                        VerticalAlignment="Center"
+                                        Visibility="Collapsed" />
 
-                            <!-- Indent Spacer -->
-                            <Border Name="PART_IndentSpacer"
-                                    Grid.Column="1"
-                                    Width="12" />
+                                <!-- Indent Spacer -->
+                                <Border Name="PART_IndentSpacer"
+                                        Grid.Column="1"
+                                        Width="12" />
 
-                            <!-- Content -->
-                            <ContentPresenter Grid.Column="2"
-                                              VerticalAlignment="Center"
-                                              Margin="0,0,12,0" />
+                                <!-- Content -->
+                                <ContentPresenter Grid.Column="2"
+                                                  VerticalAlignment="Center"
+                                                  Margin="0,0,12,0" />
 
-                            <!-- Expand/Collapse Chevron -->
-                            <Path Name="PART_Chevron"
-                                  Grid.Column="3"
-                                  Data="M173.731 104.928 L173.731 919.072 c0 45.467 35.892 82.191 80.688 82.191 20.786 0 39.625-8.127 53.893-21.134 L841.126 574.011 c35.363-27.178 42.801-78.468 15.957-114.638 -4.581-6.334-9.956-11.867-15.957-16.209 L301.673 32.407 c-35.363-26.902-86.091-19.655-112.607 16.48 -11.171 14.836-16.279 31.857-16.279 48.953 Z"
-                                  Fill="{DynamicResource TextSecondary}"
-                                  Width="8"
-                                  Height="8"
-                                  Stretch="Uniform"
-                                  VerticalAlignment="Center"
-                                  Margin="0,0,12,0"
-                                  Visibility="Collapsed" />
-                        </Grid>
-                    </Border>
+                                <!-- Expand/Collapse Chevron -->
+                                <Path Name="PART_Chevron"
+                                      Grid.Column="3"
+                                      Data="M173.731 104.928 L173.731 919.072 c0 45.467 35.892 82.191 80.688 82.191 20.786 0 39.625-8.127 53.893-21.134 L841.126 574.011 c35.363-27.178 42.801-78.468 15.957-114.638 -4.581-6.334-9.956-11.867-15.957-16.209 L301.673 32.407 c-35.363-26.902-86.091-19.655-112.607 16.48 -11.171 14.836-16.279 31.857-16.279 48.953 Z"
+                                      Fill="{DynamicResource TextSecondary}"
+                                      Width="8"
+                                      Height="8"
+                                      Stretch="Uniform"
+                                      VerticalAlignment="Center"
+                                      Margin="0,0,12,0"
+                                      Visibility="Collapsed" />
+                            </Grid>
+                        </Border>
+                        <Border Name="FocusOuter"
+                                IsHitTestVisible="False"
+                                BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                                BorderThickness="1"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                Opacity="0" />
+                        <Border Name="FocusInner"
+                                IsHitTestVisible="False"
+                                BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                                BorderThickness="1"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                Margin="2"
+                                Opacity="0" />
+                    </Grid>
 
                     <!-- Children Panel -->
                     <StackPanel Name="PART_ChildrenPanel"
@@ -154,6 +169,10 @@
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
                 <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
             </PropertyTrigger>
             <MultiTrigger>
                 <MultiTrigger.Conditions>

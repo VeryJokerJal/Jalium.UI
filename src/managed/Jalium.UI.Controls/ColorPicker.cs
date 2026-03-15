@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -8,8 +8,14 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that allows the user to select a color.
 /// </summary>
-public sealed class ColorPicker : Control
+public class ColorPicker : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ColorPickerAutomationPeer(this);
+    }
+
     // Cached brushes and pens for OnRender
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_grayBorderBrush = new(Color.FromRgb(100, 100, 100));
@@ -21,6 +27,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Identifies the Color dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ColorProperty =
         DependencyProperty.Register(nameof(Color), typeof(Color), typeof(ColorPicker),
             new PropertyMetadata(Color.White, OnColorChanged));
@@ -28,6 +35,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Identifies the IsAlphaEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsAlphaEnabledProperty =
         DependencyProperty.Register(nameof(IsAlphaEnabled), typeof(bool), typeof(ColorPicker),
             new PropertyMetadata(true, OnLayoutPropertyChanged));
@@ -35,6 +43,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Identifies the IsColorSpectrumVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsColorSpectrumVisibleProperty =
         DependencyProperty.Register(nameof(IsColorSpectrumVisible), typeof(bool), typeof(ColorPicker),
             new PropertyMetadata(true, OnLayoutPropertyChanged));
@@ -42,6 +51,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Identifies the IsColorSliderVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsColorSliderVisibleProperty =
         DependencyProperty.Register(nameof(IsColorSliderVisible), typeof(bool), typeof(ColorPicker),
             new PropertyMetadata(true, OnLayoutPropertyChanged));
@@ -49,6 +59,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Identifies the IsColorPreviewVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsColorPreviewVisibleProperty =
         DependencyProperty.Register(nameof(IsColorPreviewVisible), typeof(bool), typeof(ColorPicker),
             new PropertyMetadata(true, OnLayoutPropertyChanged));
@@ -56,6 +67,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Identifies the IsHexInputVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsHexInputVisibleProperty =
         DependencyProperty.Register(nameof(IsHexInputVisible), typeof(bool), typeof(ColorPicker),
             new PropertyMetadata(true, OnLayoutPropertyChanged));
@@ -63,6 +75,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Identifies the ColorSpectrumShape dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ColorSpectrumShapeProperty =
         DependencyProperty.Register(nameof(ColorSpectrumShape), typeof(ColorSpectrumShape), typeof(ColorPicker),
             new PropertyMetadata(ColorSpectrumShape.Box, OnLayoutPropertyChanged));
@@ -70,6 +83,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Identifies the IsCompact dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsCompactProperty =
         DependencyProperty.Register(nameof(IsCompact), typeof(bool), typeof(ColorPicker),
             new PropertyMetadata(false, OnLayoutPropertyChanged));
@@ -101,6 +115,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Gets or sets the selected color.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Color Color
     {
         get => (Color)GetValue(ColorProperty)!;
@@ -110,6 +125,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Gets or sets whether the alpha channel can be edited.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsAlphaEnabled
     {
         get => (bool)GetValue(IsAlphaEnabledProperty)!;
@@ -119,6 +135,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Gets or sets whether the color spectrum is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsColorSpectrumVisible
     {
         get => (bool)GetValue(IsColorSpectrumVisibleProperty)!;
@@ -128,6 +145,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Gets or sets whether the color slider is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsColorSliderVisible
     {
         get => (bool)GetValue(IsColorSliderVisibleProperty)!;
@@ -137,6 +155,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Gets or sets whether the color preview is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsColorPreviewVisible
     {
         get => (bool)GetValue(IsColorPreviewVisibleProperty)!;
@@ -146,6 +165,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Gets or sets whether the hex input is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsHexInputVisible
     {
         get => (bool)GetValue(IsHexInputVisibleProperty)!;
@@ -155,6 +175,7 @@ public sealed class ColorPicker : Control
     /// <summary>
     /// Gets or sets the shape of the color spectrum.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public ColorSpectrumShape ColorSpectrumShape
     {
         get => (ColorSpectrumShape)(GetValue(ColorSpectrumShapeProperty) ?? ColorSpectrumShape.Box);
@@ -165,6 +186,7 @@ public sealed class ColorPicker : Control
     /// Gets or sets whether the color picker is displayed in compact mode.
     /// In compact mode, the spectrum is smaller and the preview/hex input are hidden.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsCompact
     {
         get => (bool)GetValue(IsCompactProperty)!;
@@ -208,6 +230,7 @@ public sealed class ColorPicker : Control
     public ColorPicker()
     {
         Focusable = true;
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
@@ -217,6 +240,17 @@ public sealed class ColorPicker : Control
     }
 
     #endregion
+
+    protected override bool ShouldSuppressAutomaticTransition(DependencyProperty dp)
+    {
+        if (ReferenceEquals(dp, ColorProperty) &&
+            (_isUpdatingColor || _isDraggingSpectrum || _isDraggingHue || _isDraggingAlpha))
+        {
+            return true;
+        }
+
+        return base.ShouldSuppressAutomaticTransition(dp);
+    }
 
     #region Color Conversion
 
@@ -654,7 +688,7 @@ public sealed class ColorPicker : Control
         {
             // Only update internal HSV state when the Color is set externally.
             // When set internally (via spectrum/hue/alpha drag), the HSV state is already correct
-            // and RGB→HSV conversion would lose hue information at low saturation/value.
+            // and RGB閳墲SV conversion would lose hue information at low saturation/value.
             if (!colorPicker._isUpdatingColor)
             {
                 colorPicker.UpdateFromColor((Color)e.NewValue);

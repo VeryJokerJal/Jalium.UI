@@ -416,15 +416,18 @@ public sealed class Setter
         }
 
         // If that fails, search the visual tree starting from the element
-        return SearchVisualTreeForName(element, TargetName);
+        int visitedNodes = 0;
+        var result = SearchVisualTreeForName(element, TargetName, ref visitedNodes);
+        return result;
     }
 
     /// <summary>
     /// Recursively searches the visual tree for an element with the specified name.
     /// </summary>
-    private static FrameworkElement? SearchVisualTreeForName(Visual? visual, string name)
+    private static FrameworkElement? SearchVisualTreeForName(Visual? visual, string name, ref int visitedNodes)
     {
         if (visual == null) return null;
+        visitedNodes++;
 
         // Check if this element has the name we're looking for
         if (visual is FrameworkElement fe && fe.Name == name)
@@ -437,7 +440,7 @@ public sealed class Setter
         for (int i = 0; i < childCount; i++)
         {
             var child = visual.GetVisualChild(i);
-            var result = SearchVisualTreeForName(child, name);
+            var result = SearchVisualTreeForName(child, name, ref visitedNodes);
             if (result != null)
             {
                 return result;
@@ -773,15 +776,18 @@ public abstract class Trigger
             return found;
 
         // If that fails, search the visual tree starting from the element
-        return SearchVisualTreeForName(element, targetName);
+        int visitedNodes = 0;
+        var result = SearchVisualTreeForName(element, targetName, ref visitedNodes);
+        return result;
     }
 
     /// <summary>
     /// Recursively searches the visual tree for an element with the specified name.
     /// </summary>
-    private static FrameworkElement? SearchVisualTreeForName(Visual? visual, string name)
+    private static FrameworkElement? SearchVisualTreeForName(Visual? visual, string name, ref int visitedNodes)
     {
         if (visual == null) return null;
+        visitedNodes++;
 
         // Check if this element has the name we're looking for
         if (visual is FrameworkElement fe && fe.Name == name)
@@ -792,7 +798,7 @@ public abstract class Trigger
         for (int i = 0; i < childCount; i++)
         {
             var child = visual.GetVisualChild(i);
-            var result = SearchVisualTreeForName(child, name);
+            var result = SearchVisualTreeForName(child, name, ref visitedNodes);
             if (result != null)
                 return result;
         }

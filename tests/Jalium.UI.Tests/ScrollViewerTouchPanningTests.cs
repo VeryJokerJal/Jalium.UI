@@ -78,6 +78,8 @@ public class ScrollViewerTouchPanningTests
     {
         var fastStop = CreateConfiguredViewer(verticalOffset: 100);
         var slowStop = CreateConfiguredViewer(verticalOffset: 100);
+        fastStop.IsScrollInertiaEnabled = true;
+        slowStop.IsScrollInertiaEnabled = true;
         fastStop.PanningMode = PanningMode.VerticalOnly;
         slowStop.PanningMode = PanningMode.VerticalOnly;
         fastStop.PanningDeceleration = 0.10;
@@ -96,6 +98,7 @@ public class ScrollViewerTouchPanningTests
     public void PointerCancel_ShouldStopPanningAndInertia()
     {
         var viewer = CreateConfiguredViewer(verticalOffset: 150);
+        viewer.IsScrollInertiaEnabled = true;
         viewer.PanningMode = PanningMode.VerticalOnly;
         viewer.PanningDeceleration = 0.01;
 
@@ -117,6 +120,7 @@ public class ScrollViewerTouchPanningTests
         double viewportHeight = 200)
     {
         var viewer = new ScrollViewer();
+        viewer.IsScrollInertiaEnabled = false;
         viewer.HorizontalScrollBarVisibility = ScrollBarVisibility.Visible;
         viewer.VerticalScrollBarVisibility = ScrollBarVisibility.Visible;
         viewer.Arrange(new Rect(0, 0, viewportWidth, viewportHeight));

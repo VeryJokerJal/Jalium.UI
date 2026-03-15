@@ -13,6 +13,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Identifies the Content dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentProperty =
         DependencyProperty.Register(nameof(Content), typeof(object), typeof(ContentPresenter),
             new PropertyMetadata(null, OnContentChanged));
@@ -20,6 +21,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Identifies the ContentTemplate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentTemplateProperty =
         DependencyProperty.Register(nameof(ContentTemplate), typeof(DataTemplate), typeof(ContentPresenter),
             new PropertyMetadata(null, OnContentTemplateChanged));
@@ -27,6 +29,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Identifies the ContentTemplateSelector dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentTemplateSelectorProperty =
         DependencyProperty.Register(nameof(ContentTemplateSelector), typeof(DataTemplateSelector), typeof(ContentPresenter),
             new PropertyMetadata(null, OnContentTemplateSelectorChanged));
@@ -34,6 +37,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Identifies the ContentSource dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentSourceProperty =
         DependencyProperty.Register(nameof(ContentSource), typeof(string), typeof(ContentPresenter),
             new PropertyMetadata("Content"));
@@ -45,6 +49,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Gets or sets the content to display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Content
     {
         get => GetValue(ContentProperty);
@@ -54,6 +59,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Gets or sets the template used to display the content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplate? ContentTemplate
     {
         get => (DataTemplate?)GetValue(ContentTemplateProperty);
@@ -63,6 +69,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Gets or sets the DataTemplateSelector used to choose a template for the content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public DataTemplateSelector? ContentTemplateSelector
     {
         get => (DataTemplateSelector?)GetValue(ContentTemplateSelectorProperty);
@@ -72,6 +79,7 @@ public class ContentPresenter : FrameworkElement
     /// <summary>
     /// Gets or sets the name of the property on the templated parent to use as content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string ContentSource
     {
         get => (string)(GetValue(ContentSourceProperty) ?? "Content");
@@ -209,15 +217,13 @@ public class ContentPresenter : FrameworkElement
         if (content is string text)
         {
             var tb = new TextBlock { Text = text };
-            if (foreground != null)
-                tb.Foreground = foreground;
+            ApplyTextBlockFormatting(tb, foreground);
             return tb;
         }
 
         // For other objects, use ToString()
         var otherTb = new TextBlock { Text = content.ToString() ?? string.Empty };
-        if (foreground != null)
-            otherTb.Foreground = foreground;
+        ApplyTextBlockFormatting(otherTb, foreground);
         return otherTb;
     }
 
@@ -268,14 +274,59 @@ public class ContentPresenter : FrameworkElement
         {
             ApplyTemplateBindings();
         }
+
+        if (_contentElement is TextBlock textBlock)
+        {
+            ApplyTextBlockFormatting(textBlock, FindForegroundBrush());
+        }
     }
 
     private void OnTemplatedParentPropertyChanged(DependencyProperty dp, object? oldValue, object? newValue)
     {
-        // Propagate Foreground changes to child TextBlock
-        if (dp == Control.ForegroundProperty && _contentElement is TextBlock tb)
+        if (_contentElement is not TextBlock tb)
         {
-            tb.Foreground = newValue as Brush;
+            return;
+        }
+
+        if (dp == Control.ForegroundProperty ||
+            dp == Control.FontFamilyProperty ||
+            dp == Control.FontSizeProperty ||
+            dp == Control.FontStyleProperty ||
+            dp == Control.FontWeightProperty)
+        {
+            ApplyTextBlockFormatting(tb, FindForegroundBrush());
+        }
+    }
+
+    private void ApplyTextBlockFormatting(TextBlock textBlock, Brush? foreground)
+    {
+        if (foreground != null)
+        {
+            textBlock.Foreground = foreground;
+        }
+
+        if (TemplatedParent is Control templatedControl)
+        {
+            textBlock.FontFamily = templatedControl.FontFamily;
+            textBlock.FontSize = templatedControl.FontSize;
+            textBlock.FontStyle = templatedControl.FontStyle;
+            textBlock.FontWeight = templatedControl.FontWeight;
+            return;
+        }
+
+        Visual? current = VisualParent;
+        while (current != null)
+        {
+            if (current is Control control)
+            {
+                textBlock.FontFamily = control.FontFamily;
+                textBlock.FontSize = control.FontSize;
+                textBlock.FontStyle = control.FontStyle;
+                textBlock.FontWeight = control.FontWeight;
+                return;
+            }
+
+            current = current.VisualParent;
         }
     }
 

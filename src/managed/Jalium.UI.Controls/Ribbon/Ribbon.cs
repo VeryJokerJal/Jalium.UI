@@ -6,13 +6,14 @@ namespace Jalium.UI.Controls.Ribbon;
 /// Displays a Ribbon user interface.
 /// </summary>
 [ContentProperty("Items")]
-public sealed class Ribbon : ItemsControl
+public class Ribbon : ItemsControl
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Title dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TitleProperty =
         DependencyProperty.Register(nameof(Title), typeof(string), typeof(Ribbon),
             new PropertyMetadata(string.Empty));
@@ -20,6 +21,7 @@ public sealed class Ribbon : ItemsControl
     /// <summary>
     /// Identifies the IsMinimized dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsMinimizedProperty =
         DependencyProperty.Register(nameof(IsMinimized), typeof(bool), typeof(Ribbon),
             new PropertyMetadata(false));
@@ -27,6 +29,7 @@ public sealed class Ribbon : ItemsControl
     /// <summary>
     /// Identifies the IsDropDownOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(Ribbon),
             new PropertyMetadata(false));
@@ -34,6 +37,7 @@ public sealed class Ribbon : ItemsControl
     /// <summary>
     /// Identifies the SelectedIndex dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedIndexProperty =
         DependencyProperty.Register(nameof(SelectedIndex), typeof(int), typeof(Ribbon),
             new PropertyMetadata(0));
@@ -43,6 +47,7 @@ public sealed class Ribbon : ItemsControl
     /// <summary>
     /// Gets or sets the title of the Ribbon.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Title
     {
         get => (string)GetValue(TitleProperty);
@@ -52,6 +57,7 @@ public sealed class Ribbon : ItemsControl
     /// <summary>
     /// Gets or sets whether the ribbon is minimized.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsMinimized
     {
         get => (bool)GetValue(IsMinimizedProperty);
@@ -61,6 +67,7 @@ public sealed class Ribbon : ItemsControl
     /// <summary>
     /// Gets or sets whether the drop-down is open when minimized.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDropDownOpen
     {
         get => (bool)GetValue(IsDropDownOpenProperty);
@@ -70,6 +77,7 @@ public sealed class Ribbon : ItemsControl
     /// <summary>
     /// Gets or sets the selected tab index.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public int SelectedIndex
     {
         get => (int)GetValue(SelectedIndexProperty);
@@ -96,11 +104,12 @@ public sealed class Ribbon : ItemsControl
 /// Represents a tab on a Ribbon control.
 /// </summary>
 [ContentProperty("Items")]
-public sealed class RibbonTab : ItemsControl
+public class RibbonTab : ItemsControl
 {
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(RibbonTab),
             new PropertyMetadata(null));
@@ -108,6 +117,7 @@ public sealed class RibbonTab : ItemsControl
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(RibbonTab),
             new PropertyMetadata(false));
@@ -115,6 +125,7 @@ public sealed class RibbonTab : ItemsControl
     /// <summary>
     /// Gets or sets the header of the tab.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
@@ -124,6 +135,7 @@ public sealed class RibbonTab : ItemsControl
     /// <summary>
     /// Gets or sets whether this tab is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty);
@@ -140,11 +152,12 @@ public sealed class RibbonTab : ItemsControl
 /// Represents a group of controls within a RibbonTab.
 /// </summary>
 [ContentProperty("Items")]
-public sealed class RibbonGroup : ItemsControl
+public class RibbonGroup : ItemsControl
 {
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(RibbonGroup),
             new PropertyMetadata(null));
@@ -152,6 +165,7 @@ public sealed class RibbonGroup : ItemsControl
     /// <summary>
     /// Gets or sets the header of the group.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);

@@ -29,7 +29,7 @@ public sealed class MarkdownLinkClickedEventArgs : EventArgs
 /// Displays Markdown content using a native parser and renderer.
 /// </summary>
 [ContentProperty(nameof(Text))]
-public sealed class Markdown : Control
+public class Markdown : Control
 {
     private static readonly HashSet<string> s_allowedSchemes = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -45,50 +45,62 @@ public sealed class Markdown : Control
     private StackPanel? _contentHost;
     private IReadOnlyList<MarkdownBlock> _blocks = Array.Empty<MarkdownBlock>();
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(Markdown),
             new PropertyMetadata(string.Empty, OnMarkdownStructureChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BaseUriProperty =
         DependencyProperty.Register(nameof(BaseUri), typeof(Uri), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownStructureChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OpenLinksExternallyProperty =
         DependencyProperty.Register(nameof(OpenLinksExternally), typeof(bool), typeof(Markdown),
             new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LinkForegroundProperty =
         DependencyProperty.Register(nameof(LinkForeground), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CodeBackgroundProperty =
         DependencyProperty.Register(nameof(CodeBackground), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CodeLineNumberForegroundProperty =
         DependencyProperty.Register(nameof(CodeLineNumberForeground), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CodeGutterBackgroundProperty =
         DependencyProperty.Register(nameof(CodeGutterBackground), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty QuoteBackgroundProperty =
         DependencyProperty.Register(nameof(QuoteBackground), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty QuoteBorderBrushProperty =
         DependencyProperty.Register(nameof(QuoteBorderBrush), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty HeadingSeparatorBrushProperty =
         DependencyProperty.Register(nameof(HeadingSeparatorBrush), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty TableBorderBrushProperty =
         DependencyProperty.Register(nameof(TableBorderBrush), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TableHeaderBackgroundProperty =
         DependencyProperty.Register(nameof(TableHeaderBackground), typeof(Brush), typeof(Markdown),
             new PropertyMetadata(null, OnMarkdownVisualChanged));
@@ -96,12 +108,14 @@ public sealed class Markdown : Control
     public Markdown()
     {
         Focusable = false;
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         ParseMarkdown();
     }
 
     /// <summary>
     /// Gets or sets the Markdown source text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
@@ -111,6 +125,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the base URI used to resolve relative links.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Uri? BaseUri
     {
         get => (Uri?)GetValue(BaseUriProperty);
@@ -120,6 +135,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets whether absolute safe links should open with the OS shell by default.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool OpenLinksExternally
     {
         get => (bool)GetValue(OpenLinksExternallyProperty)!;
@@ -129,6 +145,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the brush used for links.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? LinkForeground
     {
         get => (Brush?)GetValue(LinkForegroundProperty);
@@ -138,6 +155,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the brush used behind inline and fenced code.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? CodeBackground
     {
         get => (Brush?)GetValue(CodeBackgroundProperty);
@@ -147,6 +165,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the brush used for code block line numbers.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? CodeLineNumberForeground
     {
         get => (Brush?)GetValue(CodeLineNumberForegroundProperty);
@@ -156,6 +175,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the brush used behind the code block gutter.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? CodeGutterBackground
     {
         get => (Brush?)GetValue(CodeGutterBackgroundProperty);
@@ -165,6 +185,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the brush used behind block quotes.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? QuoteBackground
     {
         get => (Brush?)GetValue(QuoteBackgroundProperty);
@@ -174,6 +195,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the left border brush used for block quotes.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? QuoteBorderBrush
     {
         get => (Brush?)GetValue(QuoteBorderBrushProperty);
@@ -183,6 +205,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the brush used for heading underline separators.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? HeadingSeparatorBrush
     {
         get => (Brush?)GetValue(HeadingSeparatorBrushProperty);
@@ -192,6 +215,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the border brush used by Markdown tables.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? TableBorderBrush
     {
         get => (Brush?)GetValue(TableBorderBrushProperty);
@@ -201,6 +225,7 @@ public sealed class Markdown : Control
     /// <summary>
     /// Gets or sets the background brush used by Markdown table headers.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public Brush? TableHeaderBackground
     {
         get => (Brush?)GetValue(TableHeaderBackgroundProperty);
@@ -231,7 +256,8 @@ public sealed class Markdown : Control
 
         _contentHost = new StackPanel
         {
-            Orientation = Orientation.Vertical
+            Orientation = Orientation.Vertical,
+            TransitionProperty = "None"
         };
 
         _scrollViewer = new ScrollViewer
@@ -239,7 +265,10 @@ public sealed class Markdown : Control
             Content = _contentHost,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
-            CanContentScroll = false
+            CanContentScroll = false,
+            TransitionProperty = "None",
+            IsScrollInertiaEnabled = false,
+            IsScrollBarAutoHideEnabled = false
         };
 
         _container.Child = _scrollViewer;

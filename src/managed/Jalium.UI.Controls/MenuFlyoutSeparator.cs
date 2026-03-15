@@ -5,7 +5,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a horizontal line that separates items in a MenuFlyout.
 /// </summary>
-public sealed class MenuFlyoutSeparator : Control
+public class MenuFlyoutSeparator : Control
 {
     /// <summary>
     /// Initializes a new instance of the MenuFlyoutSeparator class.

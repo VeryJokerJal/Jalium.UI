@@ -7,8 +7,14 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a tooltip that displays information about an element.
 /// </summary>
-public sealed class ToolTip : ContentControl
+public class ToolTip : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ToolTipAutomationPeer(this);
+    }
+
     #region Static Brushes
 
     private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(45, 45, 48));
@@ -27,6 +33,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Identifies the IsOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOpenProperty =
         DependencyProperty.Register(nameof(IsOpen), typeof(bool), typeof(ToolTip),
             new PropertyMetadata(false, OnIsOpenChanged));
@@ -34,6 +41,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Identifies the Placement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementProperty =
         DependencyProperty.Register(nameof(Placement), typeof(PlacementMode), typeof(ToolTip),
             new PropertyMetadata(PlacementMode.Mouse));
@@ -41,6 +49,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Identifies the HorizontalOffset dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HorizontalOffsetProperty =
         DependencyProperty.Register(nameof(HorizontalOffset), typeof(double), typeof(ToolTip),
             new PropertyMetadata(0.0));
@@ -48,6 +57,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Identifies the VerticalOffset dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty VerticalOffsetProperty =
         DependencyProperty.Register(nameof(VerticalOffset), typeof(double), typeof(ToolTip),
             new PropertyMetadata(0.0));
@@ -55,6 +65,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Identifies the InitialShowDelay dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty InitialShowDelayProperty =
         DependencyProperty.Register(nameof(InitialShowDelay), typeof(int), typeof(ToolTip),
             new PropertyMetadata(400));
@@ -62,6 +73,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Identifies the ShowDuration dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowDurationProperty =
         DependencyProperty.Register(nameof(ShowDuration), typeof(int), typeof(ToolTip),
             new PropertyMetadata(int.MaxValue));
@@ -73,6 +85,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Gets or sets whether the tooltip is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOpen
     {
         get => (bool)GetValue(IsOpenProperty);
@@ -82,6 +95,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Gets or sets how the tooltip is positioned.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public PlacementMode Placement
     {
         get => (PlacementMode)GetValue(PlacementProperty);
@@ -91,6 +105,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Gets or sets the horizontal offset from the placement position.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double HorizontalOffset
     {
         get => (double)GetValue(HorizontalOffsetProperty);
@@ -100,6 +115,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Gets or sets the vertical offset from the placement position.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double VerticalOffset
     {
         get => (double)GetValue(VerticalOffsetProperty);
@@ -109,6 +125,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Gets or sets the time in milliseconds before the tooltip is shown.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public int InitialShowDelay
     {
         get => (int)GetValue(InitialShowDelayProperty);
@@ -118,6 +135,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Gets or sets the time in milliseconds the tooltip remains visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public int ShowDuration
     {
         get => (int)GetValue(ShowDurationProperty);
@@ -127,6 +145,7 @@ public sealed class ToolTip : ContentControl
     /// <summary>
     /// Gets or sets the element relative to which the tooltip is positioned.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public UIElement? PlacementTarget
     {
         get => _placementTarget;
@@ -153,7 +172,7 @@ public sealed class ToolTip : ContentControl
     {
         // Register show/hide delegates with FrameworkElement.
         // MouseEnter/MouseLeave subscriptions are already handled in Core (OnToolTipPropertyChanged),
-        // so there's no timing issue — even if this static constructor runs late,
+        // so there's no timing issue 闁?even if this static constructor runs late,
         // the delegates will be set before the user actually hovers.
         FrameworkElement.ToolTipShowRequested = OnToolTipShowRequested;
         FrameworkElement.ToolTipHideRequested = OnToolTipHideRequested;
@@ -185,7 +204,7 @@ public sealed class ToolTip : ContentControl
         // Without this, ContentControl.AddVisualChild(Content) conflicts with ContentPresenter.AddVisualChild(Content).
         UseTemplateContentManagement();
 
-        // Default styling — overridden by theme implicit style when available
+        // Default styling 闁?overridden by theme implicit style when available
     }
 
     private static void OnIsOpenChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -298,71 +317,85 @@ public static class ToolTipService
     #region Attached Properties
 
     /// <summary>Identifies the ToolTip attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ToolTipProperty =
         DependencyProperty.RegisterAttached("ToolTip", typeof(object), typeof(ToolTipService),
             new PropertyMetadata(null));
 
     /// <summary>Identifies the HorizontalOffset attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HorizontalOffsetProperty =
         DependencyProperty.RegisterAttached("HorizontalOffset", typeof(double), typeof(ToolTipService),
             new PropertyMetadata(0.0));
 
     /// <summary>Identifies the VerticalOffset attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty VerticalOffsetProperty =
         DependencyProperty.RegisterAttached("VerticalOffset", typeof(double), typeof(ToolTipService),
             new PropertyMetadata(0.0));
 
     /// <summary>Identifies the HasDropShadow attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty HasDropShadowProperty =
         DependencyProperty.RegisterAttached("HasDropShadow", typeof(bool), typeof(ToolTipService),
             new PropertyMetadata(false));
 
     /// <summary>Identifies the PlacementTarget attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementTargetProperty =
         DependencyProperty.RegisterAttached("PlacementTarget", typeof(UIElement), typeof(ToolTipService),
             new PropertyMetadata(null));
 
     /// <summary>Identifies the PlacementRectangle attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementRectangleProperty =
         DependencyProperty.RegisterAttached("PlacementRectangle", typeof(Rect), typeof(ToolTipService),
             new PropertyMetadata(Rect.Empty));
 
     /// <summary>Identifies the Placement attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PlacementProperty =
         DependencyProperty.RegisterAttached("Placement", typeof(PlacementMode), typeof(ToolTipService),
             new PropertyMetadata(PlacementMode.Mouse));
 
     /// <summary>Identifies the ShowOnDisabled attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowOnDisabledProperty =
         DependencyProperty.RegisterAttached("ShowOnDisabled", typeof(bool), typeof(ToolTipService),
             new PropertyMetadata(false));
 
     /// <summary>Identifies the IsEnabled attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsEnabledProperty =
         DependencyProperty.RegisterAttached("IsEnabled", typeof(bool), typeof(ToolTipService),
             new PropertyMetadata(true));
 
     /// <summary>Identifies the IsOpen attached dependency property (read-only).</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOpenProperty =
         DependencyProperty.RegisterAttached("IsOpen", typeof(bool), typeof(ToolTipService),
             new PropertyMetadata(false));
 
     /// <summary>Identifies the ShowDuration attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowDurationProperty =
         DependencyProperty.RegisterAttached("ShowDuration", typeof(int), typeof(ToolTipService),
             new PropertyMetadata(int.MaxValue));
 
     /// <summary>Identifies the InitialShowDelay attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty InitialShowDelayProperty =
         DependencyProperty.RegisterAttached("InitialShowDelay", typeof(int), typeof(ToolTipService),
             new PropertyMetadata(1000));
 
     /// <summary>Identifies the BetweenShowDelay attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty BetweenShowDelayProperty =
         DependencyProperty.RegisterAttached("BetweenShowDelay", typeof(int), typeof(ToolTipService),
             new PropertyMetadata(100));
 
     /// <summary>Identifies the ShowsToolTipOnKeyboardFocus attached dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty ShowsToolTipOnKeyboardFocusProperty =
         DependencyProperty.RegisterAttached("ShowsToolTipOnKeyboardFocus", typeof(bool?), typeof(ToolTipService),
             new PropertyMetadata(null));
@@ -383,30 +416,39 @@ public static class ToolTipService
 
     #region Get/Set Methods
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static object? GetToolTip(DependencyObject element) => element.GetValue(ToolTipProperty);
     public static void SetToolTip(DependencyObject element, object? value) => element.SetValue(ToolTipProperty, value);
     public static double GetHorizontalOffset(DependencyObject element) => (double)element.GetValue(HorizontalOffsetProperty)!;
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetHorizontalOffset(DependencyObject element, double value) => element.SetValue(HorizontalOffsetProperty, value);
     public static double GetVerticalOffset(DependencyObject element) => (double)element.GetValue(VerticalOffsetProperty)!;
     public static void SetVerticalOffset(DependencyObject element, double value) => element.SetValue(VerticalOffsetProperty, value);
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetHasDropShadow(DependencyObject element) => (bool)element.GetValue(HasDropShadowProperty)!;
     public static void SetHasDropShadow(DependencyObject element, bool value) => element.SetValue(HasDropShadowProperty, value);
     public static UIElement? GetPlacementTarget(DependencyObject element) => (UIElement?)element.GetValue(PlacementTargetProperty);
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetPlacementTarget(DependencyObject element, UIElement? value) => element.SetValue(PlacementTargetProperty, value);
     public static Rect GetPlacementRectangle(DependencyObject element) => (Rect)element.GetValue(PlacementRectangleProperty)!;
     public static void SetPlacementRectangle(DependencyObject element, Rect value) => element.SetValue(PlacementRectangleProperty, value);
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static PlacementMode GetPlacement(DependencyObject element) => (PlacementMode)element.GetValue(PlacementProperty)!;
     public static void SetPlacement(DependencyObject element, PlacementMode value) => element.SetValue(PlacementProperty, value);
     public static bool GetShowOnDisabled(DependencyObject element) => (bool)element.GetValue(ShowOnDisabledProperty)!;
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetShowOnDisabled(DependencyObject element, bool value) => element.SetValue(ShowOnDisabledProperty, value);
     public static bool GetIsEnabled(DependencyObject element) => (bool)element.GetValue(IsEnabledProperty)!;
     public static void SetIsEnabled(DependencyObject element, bool value) => element.SetValue(IsEnabledProperty, value);
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetIsOpen(DependencyObject element) => (bool)element.GetValue(IsOpenProperty)!;
     public static int GetShowDuration(DependencyObject element) => (int)element.GetValue(ShowDurationProperty)!;
     public static void SetShowDuration(DependencyObject element, int value) => element.SetValue(ShowDurationProperty, value);
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static int GetInitialShowDelay(DependencyObject element) => (int)element.GetValue(InitialShowDelayProperty)!;
     public static void SetInitialShowDelay(DependencyObject element, int value) => element.SetValue(InitialShowDelayProperty, value);
     public static int GetBetweenShowDelay(DependencyObject element) => (int)element.GetValue(BetweenShowDelayProperty)!;
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetBetweenShowDelay(DependencyObject element, int value) => element.SetValue(BetweenShowDelayProperty, value);
     public static bool? GetShowsToolTipOnKeyboardFocus(DependencyObject element) => (bool?)element.GetValue(ShowsToolTipOnKeyboardFocusProperty);
     public static void SetShowsToolTipOnKeyboardFocus(DependencyObject element, bool? value) => element.SetValue(ShowsToolTipOnKeyboardFocusProperty, value);

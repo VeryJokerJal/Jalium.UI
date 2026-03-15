@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Ink;
+using Jalium.UI.Controls.Ink;
 using Jalium.UI.Documents;
 using Jalium.UI.Media;
 
@@ -7,13 +7,14 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Renders ink on a surface. Used internally by InkCanvas to render strokes.
 /// </summary>
-public sealed class InkPresenter : Decorator
+public class InkPresenter : Decorator
 {
     private readonly List<Visual> _attachedVisuals = [];
 
     /// <summary>
     /// Identifies the Strokes dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StrokesProperty =
         DependencyProperty.Register(nameof(Strokes), typeof(StrokeCollection), typeof(InkPresenter),
             new PropertyMetadata(null, OnStrokesChanged));
@@ -21,6 +22,7 @@ public sealed class InkPresenter : Decorator
     /// <summary>
     /// Gets or sets the strokes that the InkPresenter displays.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StrokeCollection? Strokes
     {
         get => (StrokeCollection?)GetValue(StrokesProperty);

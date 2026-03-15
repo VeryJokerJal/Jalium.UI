@@ -71,7 +71,32 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
     /// </summary>
     public void HideSubMenu()
     {
+        CloseDescendantSubMenus();
         _subPopup?.IsOpen = false;
+    }
+
+    internal void FocusFirstSubMenuItem()
+    {
+        if (_items.Count == 0)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvokeCritical(() =>
+        {
+            foreach (var item in _items)
+            {
+                if (!item.IsEnabled || item.Visibility != Visibility.Visible)
+                {
+                    continue;
+                }
+
+                if (item.Focus())
+                {
+                    return;
+                }
+            }
+        });
     }
 
     /// <inheritdoc />
@@ -133,6 +158,7 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
 
     private void OnSubPopupClosed(object? sender, EventArgs e)
     {
+        CloseDescendantSubMenus();
         _subPopupScrollHost?.ItemsPanel.Children.Clear();
     }
 
@@ -144,6 +170,12 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
     private void OnSubItemMouseLeave(object sender, RoutedEventArgs e)
     {
         // Keep submenu open while pointer moves from item into submenu popup.
+    }
+
+    protected override void InvokeItem()
+    {
+        ShowSubMenu();
+        FocusFirstSubMenuItem();
     }
 
     private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)
@@ -166,6 +198,20 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
             {
                 sibling.HideSubMenu();
             }
+        }
+    }
+
+    private void CloseDescendantSubMenus()
+    {
+        foreach (var item in _items)
+        {
+            if (item is not MenuFlyoutSubItem childSubItem)
+            {
+                continue;
+            }
+
+            childSubItem.CloseDescendantSubMenus();
+            childSubItem._subPopup?.IsOpen = false;
         }
     }
 }

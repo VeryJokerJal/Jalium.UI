@@ -6,11 +6,12 @@ namespace Jalium.UI.Controls;
 /// Represents an icon that uses a vector path as its content.
 /// Mirrors WinUI's Microsoft.UI.Xaml.Controls.PathIcon.
 /// </summary>
-public sealed class PathIcon : IconElement
+public class PathIcon : IconElement
 {
     /// <summary>
     /// Identifies the Data dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty DataProperty =
         DependencyProperty.Register(nameof(Data), typeof(Geometry), typeof(PathIcon),
             new PropertyMetadata(null, OnDataChanged));
@@ -18,6 +19,7 @@ public sealed class PathIcon : IconElement
     /// <summary>
     /// Gets or sets the Geometry that specifies the shape to be drawn.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public Geometry? Data
     {
         get => (Geometry?)GetValue(DataProperty);

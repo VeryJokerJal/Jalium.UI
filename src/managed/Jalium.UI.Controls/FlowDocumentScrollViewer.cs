@@ -8,13 +8,14 @@ namespace Jalium.UI.Controls;
 /// Provides a control for viewing flow content in a continuous, scrolling mode.
 /// </summary>
 [ContentProperty("Document")]
-public sealed class FlowDocumentScrollViewer : Control
+public class FlowDocumentScrollViewer : Control
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Document dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DocumentProperty =
         DependencyProperty.Register(nameof(Document), typeof(FlowDocument), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(null, OnDocumentChanged));
@@ -22,6 +23,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Identifies the Zoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomProperty =
         DependencyProperty.Register(nameof(Zoom), typeof(double), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(100.0));
@@ -29,6 +31,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Identifies the MinZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinZoomProperty =
         DependencyProperty.Register(nameof(MinZoom), typeof(double), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(80.0));
@@ -36,6 +39,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Identifies the MaxZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxZoomProperty =
         DependencyProperty.Register(nameof(MaxZoom), typeof(double), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(200.0));
@@ -43,6 +47,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Identifies the ZoomIncrement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomIncrementProperty =
         DependencyProperty.Register(nameof(ZoomIncrement), typeof(double), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(10.0));
@@ -50,6 +55,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Identifies the IsToolBarVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsToolBarVisibleProperty =
         DependencyProperty.Register(nameof(IsToolBarVisible), typeof(bool), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(true));
@@ -57,6 +63,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Identifies the IsSelectionEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectionEnabledProperty =
         DependencyProperty.Register(nameof(IsSelectionEnabled), typeof(bool), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(true));
@@ -64,6 +71,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Identifies the HorizontalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(ScrollBarVisibility.Auto));
@@ -71,6 +79,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Identifies the VerticalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(FlowDocumentScrollViewer),
             new PropertyMetadata(ScrollBarVisibility.Visible));
@@ -82,6 +91,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Gets or sets the FlowDocument displayed by this viewer.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public FlowDocument? Document
     {
         get => (FlowDocument?)GetValue(DocumentProperty);
@@ -91,6 +101,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Gets or sets the current zoom level as a percentage.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double Zoom
     {
         get => (double)GetValue(ZoomProperty);
@@ -100,6 +111,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Gets or sets the minimum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinZoom
     {
         get => (double)GetValue(MinZoomProperty);
@@ -109,6 +121,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Gets or sets the maximum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxZoom
     {
         get => (double)GetValue(MaxZoomProperty);
@@ -118,6 +131,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Gets or sets the zoom increment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double ZoomIncrement
     {
         get => (double)GetValue(ZoomIncrementProperty);
@@ -127,6 +141,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Gets or sets whether the toolbar is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsToolBarVisible
     {
         get => (bool)GetValue(IsToolBarVisibleProperty);
@@ -136,6 +151,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Gets or sets whether text selection is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelectionEnabled
     {
         get => (bool)GetValue(IsSelectionEnabledProperty);
@@ -145,6 +161,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Gets or sets the horizontal scrollbar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility HorizontalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty);
@@ -154,6 +171,7 @@ public sealed class FlowDocumentScrollViewer : Control
     /// <summary>
     /// Gets or sets the vertical scrollbar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility VerticalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty);

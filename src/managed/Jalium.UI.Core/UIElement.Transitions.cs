@@ -1,3 +1,4 @@
+using System.Collections.Specialized;
 using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI;
@@ -6,10 +7,12 @@ public abstract partial class UIElement
 {
     private const string TransitionAllValue = "All";
     private const string TransitionNoneValue = "None";
+    private const string DefaultTransitionPropertyValue = TransitionNoneValue;
     private static readonly TimeSpan s_defaultTransitionDuration = TimeSpan.FromMilliseconds(180);
 
     private Dictionary<string, bool>? _transitionPropertyLookup;
     private string? _transitionPropertyLookupSource;
+    private TransitionPropertyCollection? _transitionPropertyCollectionSubscription;
     private bool _transitionAllProperties;
     private bool _transitionNoProperties;
     private int _transitionArmVersion;
@@ -20,13 +23,15 @@ public abstract partial class UIElement
     /// <summary>
     /// Identifies the TransitionProperty dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TransitionPropertyProperty =
-        DependencyProperty.Register(nameof(TransitionProperty), typeof(string), typeof(UIElement),
-            new PropertyMetadata(TransitionAllValue, OnTransitionConfigurationChanged));
+        DependencyProperty.Register(nameof(TransitionProperty), typeof(TransitionPropertyCollection), typeof(UIElement),
+            new PropertyMetadata(DefaultTransitionPropertyValue, OnTransitionConfigurationChanged));
 
     /// <summary>
     /// Identifies the TransitionDuration dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TransitionDurationProperty =
         DependencyProperty.Register(nameof(TransitionDuration), typeof(Duration), typeof(UIElement),
             new PropertyMetadata(new Duration(s_defaultTransitionDuration), OnTransitionConfigurationChanged));
@@ -34,22 +39,25 @@ public abstract partial class UIElement
     /// <summary>
     /// Identifies the TransitionTimingFunction dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TransitionTimingFunctionProperty =
         DependencyProperty.Register(nameof(TransitionTimingFunction), typeof(TransitionTimingFunction), typeof(UIElement),
             new PropertyMetadata(TransitionTimingFunction.Recommended, OnTransitionConfigurationChanged));
 
     /// <summary>
-    /// Gets or sets the list of properties that should participate in automatic transitions.
+    /// Gets or sets the collection of properties that should participate in automatic transitions.
     /// </summary>
-    public string TransitionProperty
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public TransitionPropertyCollection TransitionProperty
     {
-        get => (string)(GetValue(TransitionPropertyProperty) ?? TransitionAllValue);
-        set => SetValue(TransitionPropertyProperty, value);
+        get => TransitionPropertyCollection.FromRawValue(GetValue(TransitionPropertyProperty));
+        set => SetValue(TransitionPropertyProperty, value ?? TransitionPropertyCollection.None());
     }
 
     /// <summary>
     /// Gets or sets the duration used by automatic property transitions.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public Duration TransitionDuration
     {
         get => GetValue(TransitionDurationProperty) is Duration duration
@@ -61,12 +69,23 @@ public abstract partial class UIElement
     /// <summary>
     /// Gets or sets the timing function used by automatic property transitions.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public TransitionTimingFunction TransitionTimingFunction
     {
         get => GetValue(TransitionTimingFunctionProperty) is TransitionTimingFunction timingFunction
             ? timingFunction
             : TransitionTimingFunction.Recommended;
         set => SetValue(TransitionTimingFunctionProperty, value);
+    }
+
+    /// <summary>
+    /// Allows derived controls to suppress automatic transitions for specific properties.
+    /// </summary>
+    /// <param name="dp">The property being mutated.</param>
+    /// <returns><see langword="true"/> to bypass automatic transition handling for the property.</returns>
+    protected virtual bool ShouldSuppressAutomaticTransition(DependencyProperty dp)
+    {
+        return false;
     }
 
     protected override void OnVisualParentChanged(Visual? oldParent)
@@ -99,6 +118,9 @@ public abstract partial class UIElement
         {
             return false;
         }
+
+        if (ShouldSuppressAutomaticTransition(dp))
+            return false;
 
         var duration = GetTransitionDurationOrDefault();
         if (duration <= TimeSpan.Zero)
@@ -140,7 +162,10 @@ public abstract partial class UIElement
             HandoffBehavior.SnapshotAndReplace,
             ElementAnimationKind.AutomaticTransition,
             clearAnimatedValueOnReplace: false,
-            allowAutomaticToReplaceExplicit: false);
+            allowAutomaticToReplaceExplicit: false,
+            initialAnimatedValue: fromValue,
+            useInitialAnimatedValue: true,
+            deferClockBeginUntilRendering: true);
     }
 
     internal void StopAutomaticTransition(DependencyProperty dp, bool clearAnimatedValue)
@@ -166,6 +191,7 @@ public abstract partial class UIElement
         {
             if (ReferenceEquals(e.Property, TransitionPropertyProperty))
             {
+                element.UpdateTransitionPropertyCollectionSubscription(e.OldValue, e.NewValue);
                 element.InvalidateTransitionPropertyLookup();
             }
         }
@@ -182,33 +208,41 @@ public abstract partial class UIElement
 
     private void EnsureTransitionPropertyLookup()
     {
-        var raw = TransitionProperty;
-        if (raw == _transitionPropertyLookupSource)
+        var raw = GetValue(TransitionPropertyProperty);
+        var cacheKey = TransitionPropertyCollection.GetCacheKey(raw);
+        if (cacheKey == _transitionPropertyLookupSource)
             return;
 
-        _transitionPropertyLookupSource = raw;
+        _transitionPropertyLookupSource = cacheKey;
         _transitionPropertyLookup = null;
         _transitionAllProperties = false;
         _transitionNoProperties = false;
 
-        if (string.IsNullOrWhiteSpace(raw) ||
-            string.Equals(raw, TransitionAllValue, StringComparison.OrdinalIgnoreCase))
+        if (raw is TransitionPropertyCollection collection)
         {
-            _transitionAllProperties = true;
+            ApplyTransitionPropertyCollectionLookup(collection);
             return;
         }
 
-        if (string.Equals(raw, TransitionNoneValue, StringComparison.OrdinalIgnoreCase))
+        var rawText = raw as string;
+        if (string.IsNullOrWhiteSpace(rawText) ||
+            string.Equals(rawText, TransitionNoneValue, StringComparison.OrdinalIgnoreCase))
         {
             _transitionNoProperties = true;
             return;
         }
 
-        var lookup = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-        foreach (var name in raw.Split(','))
+        if (string.Equals(rawText, TransitionAllValue, StringComparison.OrdinalIgnoreCase))
         {
-            var trimmed = name.Trim();
-            if (trimmed.Length == 0)
+            _transitionAllProperties = true;
+            return;
+        }
+
+        var lookup = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var name in rawText.Split(','))
+        {
+            var trimmed = TransitionPropertyCollection.NormalizeName(name);
+            if (trimmed == null)
                 continue;
 
             lookup[trimmed] = true;
@@ -224,6 +258,56 @@ public abstract partial class UIElement
         _transitionPropertyLookup = null;
         _transitionAllProperties = false;
         _transitionNoProperties = false;
+    }
+
+    private void ApplyTransitionPropertyCollectionLookup(TransitionPropertyCollection collection)
+    {
+        if (collection.IsNone)
+        {
+            _transitionNoProperties = true;
+            return;
+        }
+
+        if (collection.IsAll)
+        {
+            _transitionAllProperties = true;
+            return;
+        }
+
+        var lookup = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
+        foreach (var propertyName in collection)
+        {
+            var normalized = TransitionPropertyCollection.NormalizeName(propertyName);
+            if (normalized == null)
+                continue;
+
+            lookup[normalized] = true;
+        }
+
+        _transitionPropertyLookup = lookup;
+        _transitionNoProperties = lookup.Count == 0;
+    }
+
+    private void UpdateTransitionPropertyCollectionSubscription(object? oldValue, object? newValue)
+    {
+        if (_transitionPropertyCollectionSubscription != null &&
+            ReferenceEquals(oldValue, _transitionPropertyCollectionSubscription))
+        {
+            _transitionPropertyCollectionSubscription.CollectionChanged -= OnTransitionPropertyCollectionChanged;
+            _transitionPropertyCollectionSubscription = null;
+        }
+
+        if (newValue is not TransitionPropertyCollection collection)
+            return;
+
+        collection.CollectionChanged -= OnTransitionPropertyCollectionChanged;
+        collection.CollectionChanged += OnTransitionPropertyCollectionChanged;
+        _transitionPropertyCollectionSubscription = collection;
+    }
+
+    private void OnTransitionPropertyCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)
+    {
+        InvalidateTransitionPropertyLookup();
     }
 
     private void ScheduleAutomaticTransitionArmRecursive(UIElement root)

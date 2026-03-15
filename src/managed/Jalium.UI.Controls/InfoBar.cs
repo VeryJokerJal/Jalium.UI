@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
@@ -8,8 +8,14 @@ namespace Jalium.UI.Controls;
 /// Represents a control that displays a message to the user with an optional close button.
 /// Used for showing informational, success, warning, or error messages.
 /// </summary>
-public sealed class InfoBar : ContentControl
+public class InfoBar : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.InfoBarAutomationPeer(this);
+    }
+
     // Cached brushes for OnRender (per-severity)
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_infoBgBrush = new(Color.FromRgb(45, 45, 55));
@@ -26,6 +32,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Identifies the Title dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TitleProperty =
         DependencyProperty.Register(nameof(Title), typeof(string), typeof(InfoBar),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
@@ -33,6 +40,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Identifies the Message dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty MessageProperty =
         DependencyProperty.Register(nameof(Message), typeof(string), typeof(InfoBar),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
@@ -40,6 +48,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Identifies the Severity dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SeverityProperty =
         DependencyProperty.Register(nameof(Severity), typeof(InfoBarSeverity), typeof(InfoBar),
             new PropertyMetadata(InfoBarSeverity.Informational, OnVisualPropertyChanged));
@@ -47,6 +56,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Identifies the IsOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOpenProperty =
         DependencyProperty.Register(nameof(IsOpen), typeof(bool), typeof(InfoBar),
             new PropertyMetadata(true, OnIsOpenChanged));
@@ -54,6 +64,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Identifies the IsClosable dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsClosableProperty =
         DependencyProperty.Register(nameof(IsClosable), typeof(bool), typeof(InfoBar),
             new PropertyMetadata(true, OnVisualPropertyChanged));
@@ -61,6 +72,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Identifies the IsIconVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsIconVisibleProperty =
         DependencyProperty.Register(nameof(IsIconVisible), typeof(bool), typeof(InfoBar),
             new PropertyMetadata(true, OnVisualPropertyChanged));
@@ -68,6 +80,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Identifies the ActionButton dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ActionButtonProperty =
         DependencyProperty.Register(nameof(ActionButton), typeof(ButtonBase), typeof(InfoBar),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
@@ -115,6 +128,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Gets or sets the title text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? Title
     {
         get => (string?)GetValue(TitleProperty);
@@ -124,6 +138,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Gets or sets the message text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string? Message
     {
         get => (string?)GetValue(MessageProperty);
@@ -133,6 +148,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Gets or sets the severity level of the InfoBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public InfoBarSeverity Severity
     {
         get => (InfoBarSeverity)GetValue(SeverityProperty)!;
@@ -142,6 +158,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether the InfoBar is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOpen
     {
         get => (bool)GetValue(IsOpenProperty)!;
@@ -151,6 +168,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether the InfoBar shows a close button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsClosable
     {
         get => (bool)GetValue(IsClosableProperty)!;
@@ -160,6 +178,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether the severity icon is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsIconVisible
     {
         get => (bool)GetValue(IsIconVisibleProperty)!;
@@ -169,6 +188,7 @@ public sealed class InfoBar : ContentControl
     /// <summary>
     /// Gets or sets an optional action button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ButtonBase? ActionButton
     {
         get => (ButtonBase?)GetValue(ActionButtonProperty);

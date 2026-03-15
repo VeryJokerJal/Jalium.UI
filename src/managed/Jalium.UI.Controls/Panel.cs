@@ -1,3 +1,5 @@
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Controls;
 
 /// <summary>
@@ -6,11 +8,42 @@ namespace Jalium.UI.Controls;
 [ContentProperty("Children")]
 public abstract class Panel : FrameworkElement
 {
+    #region Background Property
+
+    /// <summary>
+    /// Identifies the Background dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty BackgroundProperty =
+        DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(Panel),
+            new PropertyMetadata(null, OnBackgroundChanged));
+
+    /// <summary>
+    /// Gets or sets the brush used to fill the panel's bounds.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Brush? Background
+    {
+        get => (Brush?)GetValue(BackgroundProperty);
+        set => SetValue(BackgroundProperty, value);
+    }
+
+    private static void OnBackgroundChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Panel panel)
+        {
+            panel.InvalidateVisual();
+        }
+    }
+
+    #endregion
+
     #region ZIndex Attached Property
 
     /// <summary>
     /// Identifies the ZIndex attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ZIndexProperty =
         DependencyProperty.RegisterAttached("ZIndex", typeof(int), typeof(Panel),
             new PropertyMetadata(0, OnZIndexChanged));
@@ -18,12 +51,14 @@ public abstract class Panel : FrameworkElement
     /// <summary>
     /// Gets the ZIndex value for a UIElement.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static int GetZIndex(UIElement element) =>
         (int)(element.GetValue(ZIndexProperty) ?? 0);
 
     /// <summary>
     /// Sets the ZIndex value for a UIElement.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetZIndex(UIElement element, int value) =>
         element.SetValue(ZIndexProperty, value);
 
@@ -95,6 +130,37 @@ public abstract class Panel : FrameworkElement
     protected Panel()
     {
         Children = new UIElementCollection(this);
+    }
+
+    /// <inheritdoc />
+    protected override void OnRender(object drawingContext)
+    {
+        base.OnRender(drawingContext);
+
+        if (drawingContext is not DrawingContext dc || Background == null)
+        {
+            return;
+        }
+
+        var renderSize = RenderSize;
+        if (renderSize.Width <= 0 || renderSize.Height <= 0)
+        {
+            return;
+        }
+
+        dc.DrawRectangle(Background, null, new Rect(renderSize));
+    }
+
+    /// <inheritdoc />
+    protected override HitTestResult? HitTestCore(Point point)
+    {
+        var result = base.HitTestCore(point);
+        if (result?.VisualHit == this && Background == null)
+        {
+            return null;
+        }
+
+        return result;
     }
 
     /// <summary>

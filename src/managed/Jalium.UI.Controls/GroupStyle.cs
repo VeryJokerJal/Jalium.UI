@@ -56,6 +56,11 @@ public sealed class GroupStyle
 /// <summary>
 /// Represents a group item container in an ItemsControl.
 /// </summary>
-public sealed class GroupItem : ContentControl
+public class GroupItem : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.GroupItemAutomationPeer(this);
+    }
 }

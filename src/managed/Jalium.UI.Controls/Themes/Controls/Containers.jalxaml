@@ -6,14 +6,14 @@
     <!-- Border Style -->
     <!-- ============================================== -->
     <Style TargetType="Border">
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
     </Style>
 
     <!-- ============================================== -->
     <!-- InfoBar Style -->
     <!-- ============================================== -->
     <Style TargetType="InfoBar">
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Padding" Value="12,8,12,8" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="FontSize" Value="14" />
@@ -38,9 +38,9 @@
     <!-- ToolTip Style -->
     <!-- ============================================== -->
     <Style TargetType="ToolTip">
-        <Setter Property="Background" Value="{StaticResource TooltipBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource TooltipBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
@@ -64,8 +64,8 @@
     <!-- ============================================== -->
     <Style TargetType="GroupBox">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8" />
         <Setter Property="FontSize" Value="14" />
@@ -106,69 +106,90 @@
     <!-- Expander Style -->
     <!-- ============================================== -->
     <Style TargetType="Expander">
-        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="HeaderBackground" Value="{StaticResource ControlBackground}" />
+        <Setter Property="HeaderBackground" Value="{DynamicResource ControlBackground}" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Expander">
-                <Border Name="RootBorder"
-                        Background="{TemplateBinding Background}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="{TemplateBinding CornerRadius}"
-                        ClipToBounds="True">
-                    <StackPanel>
-                        <!-- Header -->
-                        <Border Name="PART_HeaderBorder"
-                                Background="{TemplateBinding HeaderBackground}"
-                                Padding="12,8,12,8">
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
+                <Grid>
+                    <Border Name="RootBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            ClipToBounds="True">
+                        <StackPanel>
+                            <!-- Header -->
+                            <Border Name="PART_HeaderBorder"
+                                    Background="{TemplateBinding HeaderBackground}"
+                                    Padding="12,8,12,8">
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
 
-                                <!-- Chevron (right arrow = collapsed) -->
-                                <Path Name="PART_Chevron"
-                                      Grid.Column="0"
-                                      Data="M173.731 104.928 L173.731 919.072 c0 45.467 35.892 82.191 80.688 82.191 20.786 0 39.625-8.127 53.893-21.134 L841.126 574.011 c35.363-27.178 42.801-78.468 15.957-114.638-4.581-6.334-9.956-11.867-15.957-16.209 L301.673 32.407 c-35.363-26.902-86.091-19.655-112.607 16.48-11.171 14.836-16.279 31.857-16.279 48.953 Z"
-                                      Fill="{TemplateBinding Foreground}"
-                                      Width="8"
-                                      Height="10"
-                                      Stretch="Uniform"
-                                      VerticalAlignment="Center"
-                                      Margin="0,0,8,0" />
+                                    <!-- Chevron (right arrow = collapsed) -->
+                                    <Path Name="PART_Chevron"
+                                          Grid.Column="0"
+                                          Data="M173.731 104.928 L173.731 919.072 c0 45.467 35.892 82.191 80.688 82.191 20.786 0 39.625-8.127 53.893-21.134 L841.126 574.011 c35.363-27.178 42.801-78.468 15.957-114.638-4.581-6.334-9.956-11.867-15.957-16.209 L301.673 32.407 c-35.363-26.902-86.091-19.655-112.607 16.48-11.171 14.836-16.279 31.857-16.279 48.953 Z"
+                                          Fill="{TemplateBinding Foreground}"
+                                          Width="8"
+                                          Height="10"
+                                          Stretch="Uniform"
+                                          VerticalAlignment="Center"
+                                          Margin="0,0,8,0" />
 
-                                <!-- Header Content -->
-                                <ContentPresenter Name="PART_HeaderContent"
-                                                  Grid.Column="1"
-                                                  Content="{TemplateBinding Header}"
-                                                  VerticalAlignment="Center" />
-                            </Grid>
-                        </Border>
+                                    <!-- Header Content -->
+                                    <ContentPresenter Name="PART_HeaderContent"
+                                                      Grid.Column="1"
+                                                      Content="{TemplateBinding Header}"
+                                                      VerticalAlignment="Center" />
+                                </Grid>
+                            </Border>
 
-                        <!-- Content -->
-                        <Border Name="PART_ContentBorder"
-                                Visibility="Collapsed"
-                                Padding="{TemplateBinding Padding}">
-                            <ContentPresenter />
-                        </Border>
-                    </StackPanel>
-                </Border>
+                            <!-- Content -->
+                            <Border Name="PART_ContentBorder"
+                                    Visibility="Collapsed"
+                                    Padding="{TemplateBinding Padding}">
+                                <ContentPresenter />
+                            </Border>
+                        </StackPanel>
+                    </Border>
+                    <Border Name="FocusOuter"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Opacity="0" />
+                    <Border Name="FocusInner"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Margin="2"
+                            Opacity="0" />
+                </Grid>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
             <!-- IsExpanded is handled by ExpandCollapseAnimator in code-behind (smooth animation) -->
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{StaticResource ControlBackgroundHover}" />
+                <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{StaticResource TextDisabled}" />
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -177,7 +198,7 @@
     <!-- GridSplitter Style -->
     <!-- ============================================== -->
     <Style TargetType="GridSplitter">
-        <Setter Property="Background" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource ControlBorder}" />
         <Setter Property="Template">
             <ControlTemplate TargetType="GridSplitter">
                 <Border Name="PART_Root"
@@ -187,7 +208,7 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+                <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

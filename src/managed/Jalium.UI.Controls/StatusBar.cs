@@ -5,13 +5,20 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a horizontal bar at the bottom of a window for displaying status information.
 /// </summary>
-public sealed class StatusBar : ItemsControl
+public class StatusBar : ItemsControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.StatusBarAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the SeparatorBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SeparatorBrushProperty =
         DependencyProperty.Register(nameof(SeparatorBrush), typeof(Brush), typeof(StatusBar),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -23,6 +30,7 @@ public sealed class StatusBar : ItemsControl
     /// <summary>
     /// Gets or sets the brush used for separators between items.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SeparatorBrush
     {
         get => (Brush?)GetValue(SeparatorBrushProperty);
@@ -116,9 +124,15 @@ public sealed class StatusBar : ItemsControl
 /// <summary>
 /// Represents an item in a StatusBar.
 /// </summary>
-public sealed class StatusBarItem : ContentControl
+public class StatusBarItem : ContentControl
 {
     private UIElement? _contentVisual;
+
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.StatusBarItemAutomationPeer(this);
+    }
 
     #region Constructor
 

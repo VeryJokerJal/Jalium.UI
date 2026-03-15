@@ -6,13 +6,14 @@ namespace Jalium.UI.Controls;
 /// Specifies that the text should be parsed for underscored access keys (mnemonics).
 /// The first character following an underscore is used as the access key.
 /// </summary>
-public sealed class AccessText : FrameworkElement
+public class AccessText : FrameworkElement
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(AccessText),
             new PropertyMetadata(string.Empty, OnTextChanged));
@@ -20,6 +21,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Identifies the FontFamily dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(FontFamily), typeof(AccessText),
             new PropertyMetadata(null));
@@ -27,6 +29,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Identifies the FontSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(AccessText),
             new PropertyMetadata(12.0));
@@ -34,6 +37,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Identifies the FontWeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontWeightProperty =
         DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(AccessText),
             new PropertyMetadata(FontWeights.Normal));
@@ -41,6 +45,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Identifies the FontStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontStyleProperty =
         DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(AccessText),
             new PropertyMetadata(FontStyles.Normal));
@@ -48,6 +53,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Identifies the Foreground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(AccessText),
             new PropertyMetadata(null));
@@ -55,6 +61,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Identifies the TextWrapping dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextWrappingProperty =
         DependencyProperty.Register(nameof(TextWrapping), typeof(TextWrapping), typeof(AccessText),
             new PropertyMetadata(TextWrapping.NoWrap));
@@ -62,6 +69,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Identifies the TextTrimming dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextTrimmingProperty =
         DependencyProperty.Register(nameof(TextTrimming), typeof(TextTrimming), typeof(AccessText),
             new PropertyMetadata(TextTrimming.None));
@@ -71,6 +79,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Gets or sets the text that is displayed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)GetValue(TextProperty);
@@ -80,6 +89,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Gets or sets the font family.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontFamily? FontFamily
     {
         get => (FontFamily?)GetValue(FontFamilyProperty);
@@ -89,6 +99,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Gets or sets the font size.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double FontSize
     {
         get => (double)GetValue(FontSizeProperty);
@@ -98,6 +109,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Gets or sets the font weight.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontWeight FontWeight
     {
         get => (FontWeight)GetValue(FontWeightProperty);
@@ -107,6 +119,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Gets or sets the font style.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public FontStyle FontStyle
     {
         get => (FontStyle)GetValue(FontStyleProperty);
@@ -116,6 +129,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Gets or sets the foreground brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Foreground
     {
         get => (Brush?)GetValue(ForegroundProperty);
@@ -125,6 +139,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Gets or sets the text wrapping.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextWrapping TextWrapping
     {
         get => (TextWrapping)GetValue(TextWrappingProperty);
@@ -134,6 +149,7 @@ public sealed class AccessText : FrameworkElement
     /// <summary>
     /// Gets or sets the text trimming.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextTrimming TextTrimming
     {
         get => (TextTrimming)GetValue(TextTrimmingProperty);

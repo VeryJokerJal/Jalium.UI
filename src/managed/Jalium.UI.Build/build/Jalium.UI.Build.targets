@@ -13,7 +13,12 @@
     <JalxamlCompilerPath Condition="'$(JalxamlCompilerPath)' == ''">$(MSBuildThisFileDirectory)..\tools\jalxamlc.exe</JalxamlCompilerPath>
     <EnableJalxamlOptimization Condition="'$(EnableJalxamlOptimization)' == ''">true</EnableJalxamlOptimization>
     <JalxamlDebugInfo Condition="'$(JalxamlDebugInfo)' == ''">false</JalxamlDebugInfo>
-    <JalxamlIntermediateOutputPath Condition="'$(JalxamlIntermediateOutputPath)' == ''">$(IntermediateOutputPath)Jalxaml\</JalxamlIntermediateOutputPath>
+    <_JalxamlResolvedOutputConfigurationSegment Condition="'$(Configuration)' != ''">$(Configuration)\</_JalxamlResolvedOutputConfigurationSegment>
+    <_JalxamlResolvedOutputTargetFrameworkSegment Condition="'$(TargetFramework)' != ''">$(TargetFramework)\</_JalxamlResolvedOutputTargetFrameworkSegment>
+    <_JalxamlResolvedOutputRuntimeIdentifierSegment Condition="'$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)\</_JalxamlResolvedOutputRuntimeIdentifierSegment>
+    <JalxamlIntermediateOutputPath Condition="'$(_JalxamlUsesDefaultIntermediateOutputPath)' == 'true'">$(MSBuildProjectExtensionsPath)$(_JalxamlResolvedOutputConfigurationSegment)$(_JalxamlResolvedOutputTargetFrameworkSegment)$(_JalxamlResolvedOutputRuntimeIdentifierSegment)Jalxaml\</JalxamlIntermediateOutputPath>
+    <JalxamlIntermediateOutputPath Condition="'$(JalxamlIntermediateOutputPath)' == ''">$(MSBuildProjectExtensionsPath)$(_JalxamlResolvedOutputConfigurationSegment)$(_JalxamlResolvedOutputTargetFrameworkSegment)$(_JalxamlResolvedOutputRuntimeIdentifierSegment)Jalxaml\</JalxamlIntermediateOutputPath>
+    <JalxamlRazorIntermediateOutputPath Condition="'$(_JalxamlUsesDefaultRazorIntermediateOutputPath)' == 'true'">$(JalxamlIntermediateOutputPath)Razor\</JalxamlRazorIntermediateOutputPath>
     <EnableJalxamlCodeGeneration Condition="'$(EnableJalxamlCodeGeneration)' == ''">true</EnableJalxamlCodeGeneration>
   </PropertyGroup>
 
@@ -50,6 +55,29 @@
     </ItemGroup>
   </Target>
 
+  <Target Name="FilterGeneratedJalxamlInputs"
+          BeforeTargets="PrepareJalxamlForSourceGenerator;TransformJalxamlRazor;GenerateJalxamlCodeBehind;CompileJalxaml;EmbedJalxamlSources"
+          Condition="'@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != ''">
+    <PropertyGroup>
+      <_JalxamlIntermediateOutputFullPath>$([System.IO.Path]::GetFullPath('$(JalxamlIntermediateOutputPath)'))</_JalxamlIntermediateOutputFullPath>
+      <_JalxamlRazorIntermediateOutputFullPath>$([System.IO.Path]::GetFullPath('$(JalxamlRazorIntermediateOutputPath)'))</_JalxamlRazorIntermediateOutputFullPath>
+      <_LegacyJalxamlRazorOutputFullPath>$([System.IO.Path]::GetFullPath('$(MSBuildProjectDirectory)\Razor\'))</_LegacyJalxamlRazorOutputFullPath>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <_GeneratedJalxamlPage Include="@(JalxamlPage)"
+                             Condition="'%(DefiningProjectName)' == 'Jalium.UI.Build' and ($([System.String]::new('%(FullPath)').StartsWith('$(_JalxamlIntermediateOutputFullPath)')) or $([System.String]::new('%(FullPath)').StartsWith('$(_JalxamlRazorIntermediateOutputFullPath)')) or $([System.String]::new('%(FullPath)').StartsWith('$(_LegacyJalxamlRazorOutputFullPath)')))" />
+      <_GeneratedJalxamlApplicationDefinition Include="@(JalxamlApplicationDefinition)"
+                                              Condition="'%(DefiningProjectName)' == 'Jalium.UI.Build' and ($([System.String]::new('%(FullPath)').StartsWith('$(_JalxamlIntermediateOutputFullPath)')) or $([System.String]::new('%(FullPath)').StartsWith('$(_JalxamlRazorIntermediateOutputFullPath)')) or $([System.String]::new('%(FullPath)').StartsWith('$(_LegacyJalxamlRazorOutputFullPath)')))" />
+      <JalxamlPage Remove="@(_GeneratedJalxamlPage)" />
+      <JalxamlApplicationDefinition Remove="@(_GeneratedJalxamlApplicationDefinition)" />
+    </ItemGroup>
+
+    <Message Condition="'@(_GeneratedJalxamlPage)' != '' or '@(_GeneratedJalxamlApplicationDefinition)' != ''"
+             Text="Ignored generated JALXAML inputs: @(_GeneratedJalxamlPage);@(_GeneratedJalxamlApplicationDefinition)"
+             Importance="low" />
+  </Target>
+
   <!-- Register source files for the source generator. -->
   <Target Name="PrepareJalxamlForSourceGenerator"
           BeforeTargets="CoreCompile"
@@ -57,7 +85,7 @@
     <ItemGroup>
       <AdditionalFiles Include="@(JalxamlPage)" />
       <AdditionalFiles Include="@(JalxamlApplicationDefinition)" />
-      <AdditionalFiles Include="$(IntermediateOutputPath)Jalxaml\*.uic.base64" />
+      <AdditionalFiles Include="$(JalxamlIntermediateOutputPath)*.uic.base64" />
     </ItemGroup>
     <Message Text="Added JALXAML files to AdditionalFiles for the source generator." Importance="low" />
   </Target>
@@ -99,7 +127,9 @@
       <_EffectiveJalxamlSources Include="@(_JalxamlRazorTransformedFiles)"
                                 Condition="'$(EnableJalxamlRazorTransform)' == 'true' and '@(_JalxamlRazorTransformedFiles)' != ''" />
       <_EffectiveJalxamlSources Include="@(JalxamlPage);@(JalxamlApplicationDefinition)"
-                                Condition="'@(_EffectiveJalxamlSources)' == ''" />
+                                Condition="'@(_EffectiveJalxamlSources)' == ''">
+        <RazorRelativeLogicalPath></RazorRelativeLogicalPath>
+      </_EffectiveJalxamlSources>
     </ItemGroup>
   </Target>
 
@@ -217,8 +247,8 @@
 
     <ItemGroup>
       <_JalxamlSourcesToEmbed Include="@(_EffectiveJalxamlSources)">
-        <JalxamlLogicalName Condition="'%(RazorRelativeLogicalPath)' != ''">$(RootNamespace).%(RazorRelativeLogicalPath).jalxaml</JalxamlLogicalName>
-        <JalxamlLogicalName Condition="'%(RazorRelativeLogicalPath)' == ''">$(RootNamespace).$([System.String]::Copy('%(RelativeDir)%(Filename)').Replace('\','.').Replace('/','.').TrimStart('.')).jalxaml</JalxamlLogicalName>
+        <JalxamlLogicalName Condition="'%(_EffectiveJalxamlSources.RazorRelativeLogicalPath)' != ''">$(RootNamespace).%(_EffectiveJalxamlSources.RazorRelativeLogicalPath).jalxaml</JalxamlLogicalName>
+        <JalxamlLogicalName Condition="'%(_EffectiveJalxamlSources.RazorRelativeLogicalPath)' == ''">$(RootNamespace).$([System.String]::Copy('%(_EffectiveJalxamlSources.RelativeDir)%(_EffectiveJalxamlSources.Filename)').Replace('\','.').Replace('/','.').TrimStart('.')).jalxaml</JalxamlLogicalName>
       </_JalxamlSourcesToEmbed>
       <EmbeddedResource Include="@(_JalxamlSourcesToEmbed)">
         <ManifestResourceName>%(_JalxamlSourcesToEmbed.JalxamlLogicalName)</ManifestResourceName>
@@ -313,6 +343,42 @@
     <RemoveDir Directories="$(JalxamlIntermediateOutputPath)" />
     <RemoveDir Directories="$(JalxamlRazorIntermediateOutputPath)" />
     <RemoveDir Directories="$(HlslShaderIntermediateOutputPath)" />
+  </Target>
+
+  <Target Name="ConfigureJaliumNativeAot"
+          BeforeTargets="SetupOSSpecificProps"
+          Condition="'$(UseJaliumNativeAot)' == 'true'">
+    <PropertyGroup>
+      <_JaliumNativeAotAssetDirectory>$([System.IO.Path]::GetFullPath('$(JaliumNativeAotAssetRoot)$(RuntimeIdentifier)\'))</_JaliumNativeAotAssetDirectory>
+    </PropertyGroup>
+
+    <Error Condition="'$(RuntimeIdentifier)' == ''"
+           Text="UseJaliumNativeAot requires a RuntimeIdentifier. Set RuntimeIdentifier to win-x64 before publishing." />
+    <Error Condition="'$(RuntimeIdentifier)' != 'win-x64'"
+           Text="UseJaliumNativeAot currently supports only the win-x64 runtime." />
+    <Error Condition="'$(PublishAot)' != 'true'"
+           Text="UseJaliumNativeAot requires PublishAot=true." />
+    <Error Condition="!Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.core.static.lib')"
+           Text="Jalium NativeAOT static assets were not found at '$(_JaliumNativeAotAssetDirectory)'. Restore or rebuild the Jalium.UI.Build package." />
+
+    <ItemGroup>
+      <DirectPInvoke Include="jalium.native.core" />
+      <DirectPInvoke Include="jalium.native.d3d12" />
+      <DirectPInvoke Include="jalium.native.browser" />
+
+      <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.core.static.lib" />
+      <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.d3d12.static.lib" />
+      <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.browser.static.lib" />
+
+      <LinkerArg Include="&quot;d3d12.lib&quot;" />
+      <LinkerArg Include="&quot;dxgi.lib&quot;" />
+      <LinkerArg Include="&quot;dxguid.lib&quot;" />
+      <LinkerArg Include="&quot;d3dcompiler.lib&quot;" />
+      <LinkerArg Include="&quot;dwrite.lib&quot;" />
+      <LinkerArg Include="&quot;d2d1.lib&quot;" />
+      <LinkerArg Include="&quot;d3d11.lib&quot;" />
+      <LinkerArg Include="&quot;dcomp.lib&quot;" />
+    </ItemGroup>
   </Target>
 
 </Project>

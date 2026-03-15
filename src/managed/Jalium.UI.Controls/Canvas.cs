@@ -11,6 +11,7 @@ public class Canvas : Panel
     /// <summary>
     /// Identifies the Left attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty LeftProperty =
         DependencyProperty.RegisterAttached("Left", typeof(double), typeof(Canvas),
             new PropertyMetadata(double.NaN, OnPositionChanged));
@@ -18,6 +19,7 @@ public class Canvas : Panel
     /// <summary>
     /// Identifies the Top attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty TopProperty =
         DependencyProperty.RegisterAttached("Top", typeof(double), typeof(Canvas),
             new PropertyMetadata(double.NaN, OnPositionChanged));
@@ -25,6 +27,7 @@ public class Canvas : Panel
     /// <summary>
     /// Identifies the Right attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RightProperty =
         DependencyProperty.RegisterAttached("Right", typeof(double), typeof(Canvas),
             new PropertyMetadata(double.NaN, OnPositionChanged));
@@ -32,6 +35,7 @@ public class Canvas : Panel
     /// <summary>
     /// Identifies the Bottom attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BottomProperty =
         DependencyProperty.RegisterAttached("Bottom", typeof(double), typeof(Canvas),
             new PropertyMetadata(double.NaN, OnPositionChanged));
@@ -39,48 +43,56 @@ public class Canvas : Panel
     /// <summary>
     /// Gets the value of the Left attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetLeft(UIElement element) =>
         (double)(element.GetValue(LeftProperty) ?? double.NaN);
 
     /// <summary>
     /// Sets the value of the Left attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetLeft(UIElement element, double value) =>
         element.SetValue(LeftProperty, value);
 
     /// <summary>
     /// Gets the value of the Top attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetTop(UIElement element) =>
         (double)(element.GetValue(TopProperty) ?? double.NaN);
 
     /// <summary>
     /// Sets the value of the Top attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetTop(UIElement element, double value) =>
         element.SetValue(TopProperty, value);
 
     /// <summary>
     /// Gets the value of the Right attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetRight(UIElement element) =>
         (double)(element.GetValue(RightProperty) ?? double.NaN);
 
     /// <summary>
     /// Sets the value of the Right attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetRight(UIElement element, double value) =>
         element.SetValue(RightProperty, value);
 
     /// <summary>
     /// Gets the value of the Bottom attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetBottom(UIElement element) =>
         (double)(element.GetValue(BottomProperty) ?? double.NaN);
 
     /// <summary>
     /// Sets the value of the Bottom attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetBottom(UIElement element, double value) =>
         element.SetValue(BottomProperty, value);
 
@@ -100,7 +112,7 @@ public class Canvas : Panel
     protected override Size MeasureOverride(Size availableSize)
     {
         // Canvas measures children with infinite space but returns Size(0,0)
-        // like WPF — it relies on parent layout to determine its actual size.
+        // like WPF 閳?it relies on parent layout to determine its actual size.
         foreach (var child in Children)
         {
             if (child is not FrameworkElement fe) continue;

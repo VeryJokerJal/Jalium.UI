@@ -1,6 +1,7 @@
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 
 namespace Jalium.UI.Tests;
@@ -8,9 +9,10 @@ namespace Jalium.UI.Tests;
 public class ScrollViewerInertiaTests
 {
     [Fact]
-    public void ScrollViewerInertia_DefaultDuration_ShouldBe300ms()
+    public void ScrollViewerInertia_DefaultSettings_ShouldBeEnabled()
     {
         var viewer = new ScrollViewer();
+        Assert.True(viewer.IsScrollInertiaEnabled);
         Assert.Equal(300.0, viewer.ScrollInertiaDurationMs);
     }
 
@@ -35,6 +37,7 @@ public class ScrollViewerInertiaTests
     public void ScrollViewerInertia_DurationZero_ShouldSnapToImmediateWheelPath()
     {
         var viewer = CreateConfiguredViewer();
+        viewer.IsScrollInertiaEnabled = true;
         viewer.ScrollInertiaDurationMs = 0;
 
         var wheel = CreateMouseWheel(new Point(8, 8), -120, ModifierKeys.None, timestamp: 1);
@@ -42,6 +45,43 @@ public class ScrollViewerInertiaTests
 
         Assert.False(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
         Assert.True(viewer.VerticalOffset > 0);
+    }
+
+    [Fact]
+    public void ScrollViewer_WheelOverScrollBarTrack_ShouldMatchContentWheelDistance()
+    {
+        var contentViewer = CreateConfiguredViewer(initialVerticalOffset: 100);
+        contentViewer.IsScrollInertiaEnabled = false;
+        InvokePrivateMethod(contentViewer, "UpdateScrollBarMetrics");
+
+        contentViewer.RaiseEvent(CreateMouseWheel(new Point(8, 8), -120, ModifierKeys.None, timestamp: 1));
+        double contentOffset = contentViewer.VerticalOffset;
+
+        var scrollBarViewer = CreateConfiguredViewer(initialVerticalOffset: 100);
+        scrollBarViewer.IsScrollInertiaEnabled = false;
+        InvokePrivateMethod(scrollBarViewer, "UpdateScrollBarMetrics");
+
+        var verticalBar = GetPrivateField<ScrollBar>(scrollBarViewer, "_verticalScrollBar");
+        verticalBar.RaiseEvent(CreateMouseWheel(new Point(6, 6), -120, ModifierKeys.None, timestamp: 2));
+
+        Assert.Equal(contentOffset, scrollBarViewer.VerticalOffset, precision: 3);
+    }
+
+    [Fact]
+    public void ScrollViewer_DisablingInertia_ShouldSnapPendingSmoothScrollImmediately()
+    {
+        var viewer = CreateConfiguredViewer(initialVerticalOffset: 100);
+        viewer.IsScrollInertiaEnabled = true;
+        viewer.ScrollInertiaDurationMs = 300;
+
+        SetPrivateField(viewer, "_smoothTargetY", 420.0);
+        SetPrivateField(viewer, "_smoothTargetX", 0.0);
+        SetPrivateField(viewer, "_isSmoothScrolling", true);
+
+        viewer.IsScrollInertiaEnabled = false;
+
+        Assert.False(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
+        Assert.Equal(420.0, viewer.VerticalOffset, precision: 3);
     }
 
     [Fact]
@@ -71,6 +111,7 @@ public class ScrollViewerInertiaTests
             width: 200,
             height: 120);
 
+        viewer.IsScrollInertiaEnabled = true;
         viewer.ScrollInertiaDurationMs = 3000;
         SetPrivateField(viewer, "_smoothTargetY", 800.0);
         SetPrivateField(viewer, "_isSmoothScrolling", true);
@@ -200,5 +241,12 @@ public class ScrollViewerInertiaTests
         var value = field!.GetValue(viewer);
         Assert.NotNull(value);
         return (T)value!;
+    }
+
+    private static void InvokePrivateMethod(ScrollViewer viewer, string methodName)
+    {
+        var method = typeof(ScrollViewer).GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        method!.Invoke(viewer, null);
     }
 }

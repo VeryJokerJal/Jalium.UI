@@ -5,11 +5,12 @@ namespace Jalium.UI.Controls.Shapes;
 /// <summary>
 /// Draws a polygon, which is a connected series of lines that form a closed shape.
 /// </summary>
-public sealed class Polygon : Shape
+public class Polygon : Shape
 {
     /// <summary>
     /// Identifies the Points dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PointsProperty =
         DependencyProperty.Register(nameof(Points), typeof(PointCollection), typeof(Polygon),
             new PropertyMetadata(null, OnGeometryPropertyChanged));
@@ -17,6 +18,7 @@ public sealed class Polygon : Shape
     /// <summary>
     /// Identifies the FillRule dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty FillRuleProperty =
         DependencyProperty.Register(nameof(FillRule), typeof(FillRule), typeof(Polygon),
             new PropertyMetadata(FillRule.EvenOdd, OnGeometryPropertyChanged));
@@ -24,6 +26,7 @@ public sealed class Polygon : Shape
     /// <summary>
     /// Gets or sets a collection that contains the vertex points of the polygon.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public PointCollection? Points
     {
         get => (PointCollection?)GetValue(PointsProperty);
@@ -33,6 +36,7 @@ public sealed class Polygon : Shape
     /// <summary>
     /// Gets or sets a value that specifies how the interior fill of the shape is determined.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public FillRule FillRule
     {
         get => (FillRule)(GetValue(FillRuleProperty) ?? FillRule.EvenOdd);

@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Shell;
 
@@ -12,6 +12,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Identifies the WindowChrome attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty WindowChromeProperty =
         DependencyProperty.RegisterAttached("WindowChrome", typeof(WindowChrome), typeof(WindowChrome),
             new PropertyMetadata(null, OnWindowChromeChanged));
@@ -19,6 +20,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Identifies the IsHitTestVisibleInChrome attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsHitTestVisibleInChromeProperty =
         DependencyProperty.RegisterAttached("IsHitTestVisibleInChrome", typeof(bool), typeof(WindowChrome),
             new PropertyMetadata(false));
@@ -26,6 +28,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Identifies the ResizeGripDirection attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ResizeGripDirectionProperty =
         DependencyProperty.RegisterAttached("ResizeGripDirection", typeof(ResizeGripDirection), typeof(WindowChrome),
             new PropertyMetadata(ResizeGripDirection.None));
@@ -33,6 +36,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Identifies the CaptionHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty CaptionHeightProperty =
         DependencyProperty.Register(nameof(CaptionHeight), typeof(double), typeof(WindowChrome),
             new PropertyMetadata(20.0, OnChromePropertyChanged));
@@ -40,6 +44,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Identifies the ResizeBorderThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ResizeBorderThicknessProperty =
         DependencyProperty.Register(nameof(ResizeBorderThickness), typeof(Thickness), typeof(WindowChrome),
             new PropertyMetadata(new Thickness(4), OnChromePropertyChanged));
@@ -47,6 +52,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Identifies the GlassFrameThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty GlassFrameThicknessProperty =
         DependencyProperty.Register(nameof(GlassFrameThickness), typeof(Thickness), typeof(WindowChrome),
             new PropertyMetadata(Thickness.Zero, OnChromePropertyChanged));
@@ -54,6 +60,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Identifies the CornerRadius dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CornerRadiusProperty =
         DependencyProperty.Register(nameof(CornerRadius), typeof(CornerRadius), typeof(WindowChrome),
             new PropertyMetadata(default(CornerRadius), OnChromePropertyChanged));
@@ -61,6 +68,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Identifies the UseAeroCaptionButtons dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty UseAeroCaptionButtonsProperty =
         DependencyProperty.Register(nameof(UseAeroCaptionButtons), typeof(bool), typeof(WindowChrome),
             new PropertyMetadata(true, OnChromePropertyChanged));
@@ -68,6 +76,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Identifies the NonClientFrameEdges dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty NonClientFrameEdgesProperty =
         DependencyProperty.Register(nameof(NonClientFrameEdges), typeof(NonClientFrameEdges), typeof(WindowChrome),
             new PropertyMetadata(NonClientFrameEdges.None, OnChromePropertyChanged));
@@ -79,6 +88,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Gets the WindowChrome attached to the specified window.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static WindowChrome? GetWindowChrome(Window window)
     {
         ArgumentNullException.ThrowIfNull(window);
@@ -88,6 +98,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Sets the WindowChrome attached to the specified window.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetWindowChrome(Window window, WindowChrome? chrome)
     {
         ArgumentNullException.ThrowIfNull(window);
@@ -97,6 +108,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Gets a value indicating whether the element is hit test visible in the non-client area.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetIsHitTestVisibleInChrome(IInputElement inputElement)
     {
         if (inputElement is not DependencyObject d)
@@ -107,6 +119,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Sets a value indicating whether the element is hit test visible in the non-client area.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static void SetIsHitTestVisibleInChrome(IInputElement inputElement, bool hitTestVisible)
     {
         if (inputElement is not DependencyObject d)
@@ -117,6 +130,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Gets the resize grip direction for the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static ResizeGripDirection GetResizeGripDirection(IInputElement inputElement)
     {
         if (inputElement is not DependencyObject d)
@@ -127,6 +141,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Sets the resize grip direction for the element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetResizeGripDirection(IInputElement inputElement, ResizeGripDirection direction)
     {
         if (inputElement is not DependencyObject d)
@@ -141,6 +156,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Gets or sets the height of the caption area at the top of the window.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double CaptionHeight
     {
         get => (double)GetValue(CaptionHeightProperty)!;
@@ -150,6 +166,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Gets or sets the width of the window's resize border.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness ResizeBorderThickness
     {
         get => (Thickness)GetValue(ResizeBorderThicknessProperty)!;
@@ -159,6 +176,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Gets or sets the thickness of the glass frame around the window.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness GlassFrameThickness
     {
         get => (Thickness)GetValue(GlassFrameThicknessProperty)!;
@@ -168,6 +186,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Gets or sets the corner radius for the window.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public CornerRadius CornerRadius
     {
         get => (CornerRadius)GetValue(CornerRadiusProperty)!;
@@ -177,6 +196,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Gets or sets a value indicating whether the Aero caption buttons are visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public bool UseAeroCaptionButtons
     {
         get => (bool)GetValue(UseAeroCaptionButtonsProperty)!;
@@ -186,6 +206,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Gets or sets the edges of the window that draw the system frame.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public NonClientFrameEdges NonClientFrameEdges
     {
         get => (NonClientFrameEdges)(GetValue(NonClientFrameEdgesProperty) ?? NonClientFrameEdges.None);

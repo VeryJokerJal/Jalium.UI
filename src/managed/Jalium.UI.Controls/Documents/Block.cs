@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls;
+using Jalium.UI.Controls;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
@@ -13,6 +13,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Identifies the Margin dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MarginProperty =
         DependencyProperty.Register(nameof(Margin), typeof(Thickness), typeof(Block),
             new PropertyMetadata(new Thickness(0)));
@@ -20,6 +21,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Identifies the Padding dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PaddingProperty =
         DependencyProperty.Register(nameof(Padding), typeof(Thickness), typeof(Block),
             new PropertyMetadata(new Thickness(0)));
@@ -27,6 +29,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Identifies the BorderThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BorderThicknessProperty =
         DependencyProperty.Register(nameof(BorderThickness), typeof(Thickness), typeof(Block),
             new PropertyMetadata(new Thickness(0)));
@@ -34,6 +37,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Identifies the BorderBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BorderBrushProperty =
         DependencyProperty.Register(nameof(BorderBrush), typeof(Brush), typeof(Block),
             new PropertyMetadata(null));
@@ -41,6 +45,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Identifies the TextAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextAlignmentProperty =
         DependencyProperty.Register(nameof(TextAlignment), typeof(TextAlignment), typeof(Block),
             new PropertyMetadata(TextAlignment.Left));
@@ -48,6 +53,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Identifies the LineHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty LineHeightProperty =
         DependencyProperty.Register(nameof(LineHeight), typeof(double), typeof(Block),
             new PropertyMetadata(double.NaN));
@@ -59,6 +65,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Gets or sets the margin.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness Margin
     {
         get => (Thickness)GetValue(MarginProperty)!;
@@ -68,6 +75,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Gets or sets the padding.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness Padding
     {
         get => (Thickness)GetValue(PaddingProperty)!;
@@ -77,6 +85,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Gets or sets the border thickness.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness BorderThickness
     {
         get => (Thickness)GetValue(BorderThicknessProperty)!;
@@ -86,6 +95,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Gets or sets the border brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? BorderBrush
     {
         get => (Brush?)GetValue(BorderBrushProperty);
@@ -95,6 +105,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Gets or sets the text alignment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextAlignment TextAlignment
     {
         get => (TextAlignment)GetValue(TextAlignmentProperty)!;
@@ -104,6 +115,7 @@ public abstract class Block : TextElement
     /// <summary>
     /// Gets or sets the line height.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double LineHeight
     {
         get => (double)GetValue(LineHeightProperty)!;
@@ -195,6 +207,7 @@ public sealed class Paragraph : Block
     /// <summary>
     /// Identifies the TextIndent dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextIndentProperty =
         DependencyProperty.Register(nameof(TextIndent), typeof(double), typeof(Paragraph),
             new PropertyMetadata(0.0));
@@ -207,6 +220,7 @@ public sealed class Paragraph : Block
     /// <summary>
     /// Gets or sets the text indentation for the first line.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double TextIndent
     {
         get => (double)GetValue(TextIndentProperty)!;
@@ -258,6 +272,7 @@ public class List : Block
     /// <summary>
     /// Identifies the MarkerStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty MarkerStyleProperty =
         DependencyProperty.Register(nameof(MarkerStyle), typeof(TextMarkerStyle), typeof(List),
             new PropertyMetadata(TextMarkerStyle.Disc));
@@ -265,6 +280,7 @@ public class List : Block
     /// <summary>
     /// Identifies the StartIndex dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StartIndexProperty =
         DependencyProperty.Register(nameof(StartIndex), typeof(int), typeof(List),
             new PropertyMetadata(1));
@@ -277,6 +293,7 @@ public class List : Block
     /// <summary>
     /// Gets or sets the marker style.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public TextMarkerStyle MarkerStyle
     {
         get => (TextMarkerStyle)(GetValue(MarkerStyleProperty) ?? TextMarkerStyle.Disc);
@@ -286,6 +303,7 @@ public class List : Block
     /// <summary>
     /// Gets or sets the starting index for numbered lists.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int StartIndex
     {
         get => (int)GetValue(StartIndexProperty)!;
@@ -395,6 +413,7 @@ public abstract class AnchoredBlock : Inline
     /// <summary>
     /// Identifies the Margin dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MarginProperty =
         DependencyProperty.Register(nameof(Margin), typeof(Thickness), typeof(AnchoredBlock),
             new PropertyMetadata(new Thickness(0)));
@@ -402,6 +421,7 @@ public abstract class AnchoredBlock : Inline
     /// <summary>
     /// Identifies the Padding dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PaddingProperty =
         DependencyProperty.Register(nameof(Padding), typeof(Thickness), typeof(AnchoredBlock),
             new PropertyMetadata(new Thickness(0)));
@@ -409,6 +429,7 @@ public abstract class AnchoredBlock : Inline
     /// <summary>
     /// Identifies the BorderThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BorderThicknessProperty =
         DependencyProperty.Register(nameof(BorderThickness), typeof(Thickness), typeof(AnchoredBlock),
             new PropertyMetadata(new Thickness(0)));
@@ -416,6 +437,7 @@ public abstract class AnchoredBlock : Inline
     /// <summary>
     /// Identifies the BorderBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BorderBrushProperty =
         DependencyProperty.Register(nameof(BorderBrush), typeof(Brush), typeof(AnchoredBlock),
             new PropertyMetadata(null));
@@ -423,6 +445,7 @@ public abstract class AnchoredBlock : Inline
     /// <summary>
     /// Gets or sets the margin.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness Margin
     {
         get => (Thickness)GetValue(MarginProperty)!;
@@ -432,6 +455,7 @@ public abstract class AnchoredBlock : Inline
     /// <summary>
     /// Gets or sets the padding.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness Padding
     {
         get => (Thickness)GetValue(PaddingProperty)!;
@@ -441,6 +465,7 @@ public abstract class AnchoredBlock : Inline
     /// <summary>
     /// Gets or sets the border thickness.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness BorderThickness
     {
         get => (Thickness)GetValue(BorderThicknessProperty)!;
@@ -450,6 +475,7 @@ public abstract class AnchoredBlock : Inline
     /// <summary>
     /// Gets or sets the border brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? BorderBrush
     {
         get => (Brush?)GetValue(BorderBrushProperty);
@@ -481,6 +507,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Identifies the HorizontalAnchor dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalAnchorProperty =
         DependencyProperty.Register(nameof(HorizontalAnchor), typeof(FigureHorizontalAnchor), typeof(Figure),
             new PropertyMetadata(FigureHorizontalAnchor.ColumnRight));
@@ -488,6 +515,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Identifies the VerticalAnchor dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalAnchorProperty =
         DependencyProperty.Register(nameof(VerticalAnchor), typeof(FigureVerticalAnchor), typeof(Figure),
             new PropertyMetadata(FigureVerticalAnchor.ParagraphTop));
@@ -495,6 +523,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Identifies the Width dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty WidthProperty =
         DependencyProperty.Register(nameof(Width), typeof(FigureLength), typeof(Figure),
             new PropertyMetadata(new FigureLength(1, FigureUnitType.Auto)));
@@ -502,6 +531,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Identifies the Height dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HeightProperty =
         DependencyProperty.Register(nameof(Height), typeof(FigureLength), typeof(Figure),
             new PropertyMetadata(new FigureLength(1, FigureUnitType.Auto)));
@@ -509,6 +539,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Identifies the HorizontalOffset dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HorizontalOffsetProperty =
         DependencyProperty.Register(nameof(HorizontalOffset), typeof(double), typeof(Figure),
             new PropertyMetadata(0.0));
@@ -516,6 +547,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Identifies the VerticalOffset dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty VerticalOffsetProperty =
         DependencyProperty.Register(nameof(VerticalOffset), typeof(double), typeof(Figure),
             new PropertyMetadata(0.0));
@@ -523,6 +555,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Identifies the WrapDirection dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty WrapDirectionProperty =
         DependencyProperty.Register(nameof(WrapDirection), typeof(WrapDirection), typeof(Figure),
             new PropertyMetadata(WrapDirection.Both));
@@ -530,6 +563,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Gets or sets the horizontal anchor position.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public FigureHorizontalAnchor HorizontalAnchor
     {
         get => (FigureHorizontalAnchor)(GetValue(HorizontalAnchorProperty) ?? FigureHorizontalAnchor.ColumnRight);
@@ -539,6 +573,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Gets or sets the vertical anchor position.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public FigureVerticalAnchor VerticalAnchor
     {
         get => (FigureVerticalAnchor)(GetValue(VerticalAnchorProperty) ?? FigureVerticalAnchor.ParagraphTop);
@@ -548,6 +583,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Gets or sets the width.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public FigureLength Width
     {
         get => (FigureLength)(GetValue(WidthProperty) ?? new FigureLength(1, FigureUnitType.Auto));
@@ -557,6 +593,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Gets or sets the height.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public FigureLength Height
     {
         get => (FigureLength)(GetValue(HeightProperty) ?? new FigureLength(1, FigureUnitType.Auto));
@@ -566,6 +603,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Gets or sets the horizontal offset.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double HorizontalOffset
     {
         get => (double)GetValue(HorizontalOffsetProperty)!;
@@ -575,6 +613,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Gets or sets the vertical offset.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double VerticalOffset
     {
         get => (double)GetValue(VerticalOffsetProperty)!;
@@ -584,6 +623,7 @@ public sealed class Figure : AnchoredBlock
     /// <summary>
     /// Gets or sets the wrap direction.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public WrapDirection WrapDirection
     {
         get => (WrapDirection)(GetValue(WrapDirectionProperty) ?? WrapDirection.Both);
@@ -613,6 +653,7 @@ public sealed class Floater : AnchoredBlock
     /// <summary>
     /// Identifies the HorizontalAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HorizontalAlignmentProperty =
         DependencyProperty.Register(nameof(HorizontalAlignment), typeof(HorizontalAlignment), typeof(Floater),
             new PropertyMetadata(HorizontalAlignment.Left));
@@ -620,6 +661,7 @@ public sealed class Floater : AnchoredBlock
     /// <summary>
     /// Identifies the Width dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty WidthProperty =
         DependencyProperty.Register(nameof(Width), typeof(double), typeof(Floater),
             new PropertyMetadata(double.NaN));
@@ -627,6 +669,7 @@ public sealed class Floater : AnchoredBlock
     /// <summary>
     /// Gets or sets the horizontal alignment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public HorizontalAlignment HorizontalAlignment
     {
         get => (HorizontalAlignment)GetValue(HorizontalAlignmentProperty)!;
@@ -636,6 +679,7 @@ public sealed class Floater : AnchoredBlock
     /// <summary>
     /// Gets or sets the width.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Width
     {
         get => (double)GetValue(WidthProperty)!;

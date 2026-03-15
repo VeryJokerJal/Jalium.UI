@@ -1,17 +1,18 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Shapes;
 
 /// <summary>
 /// Draws a rectangle.
 /// </summary>
-public sealed class Rectangle : Shape
+public class Rectangle : Shape
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the RadiusX dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty RadiusXProperty =
         DependencyProperty.Register(nameof(RadiusX), typeof(double), typeof(Rectangle),
             new PropertyMetadata(0.0, OnVisualPropertyChanged));
@@ -19,6 +20,7 @@ public sealed class Rectangle : Shape
     /// <summary>
     /// Identifies the RadiusY dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty RadiusYProperty =
         DependencyProperty.Register(nameof(RadiusY), typeof(double), typeof(Rectangle),
             new PropertyMetadata(0.0, OnVisualPropertyChanged));
@@ -30,6 +32,7 @@ public sealed class Rectangle : Shape
     /// <summary>
     /// Gets or sets the x-axis radius of the ellipse used to round the corners.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double RadiusX
     {
         get => (double)GetValue(RadiusXProperty)!;
@@ -39,6 +42,7 @@ public sealed class Rectangle : Shape
     /// <summary>
     /// Gets or sets the y-axis radius of the ellipse used to round the corners.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double RadiusY
     {
         get => (double)GetValue(RadiusYProperty)!;

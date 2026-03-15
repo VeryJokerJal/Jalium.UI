@@ -5,17 +5,26 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Indicates the progress of an operation.
 /// </summary>
-public sealed class ProgressBar : Control
+public class ProgressBar : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ProgressBarAutomationPeer(this);
+    }
+
     // Cached brushes for OnRender
     private static readonly SolidColorBrush s_trackBrush = new(Color.FromRgb(45, 45, 45));
     private static readonly SolidColorBrush s_accentBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_disabledAccentBrush = new(Color.FromRgb(90, 90, 90));
+    private static readonly CornerRadius s_defaultCornerRadius = new(4);
 
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Minimum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinimumProperty =
         DependencyProperty.Register(nameof(Minimum), typeof(double), typeof(ProgressBar),
             new PropertyMetadata(0.0, OnRangePropertyChanged));
@@ -23,6 +32,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Identifies the Maximum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaximumProperty =
         DependencyProperty.Register(nameof(Maximum), typeof(double), typeof(ProgressBar),
             new PropertyMetadata(100.0, OnRangePropertyChanged));
@@ -30,6 +40,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Identifies the Value dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ValueProperty =
         DependencyProperty.Register(nameof(Value), typeof(double), typeof(ProgressBar),
             new PropertyMetadata(0.0, OnValuePropertyChanged, CoerceValue));
@@ -37,6 +48,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Identifies the IsIndeterminate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsIndeterminateProperty =
         DependencyProperty.Register(nameof(IsIndeterminate), typeof(bool), typeof(ProgressBar),
             new PropertyMetadata(false, OnIsIndeterminateChanged));
@@ -44,6 +56,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(ProgressBar),
             new PropertyMetadata(Orientation.Horizontal, OnVisualPropertyChanged));
@@ -51,6 +64,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Identifies the ProgressBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ProgressBrushProperty =
         DependencyProperty.Register(nameof(ProgressBrush), typeof(Brush), typeof(ProgressBar),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -82,6 +96,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Gets or sets the minimum value of the ProgressBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Minimum
     {
         get => (double)GetValue(MinimumProperty)!;
@@ -91,6 +106,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Gets or sets the maximum value of the ProgressBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Maximum
     {
         get => (double)GetValue(MaximumProperty)!;
@@ -100,6 +116,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Gets or sets the current value of the ProgressBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Value
     {
         get => (double)GetValue(ValueProperty)!;
@@ -109,6 +126,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Gets or sets whether the ProgressBar shows indeterminate progress.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsIndeterminate
     {
         get => (bool)GetValue(IsIndeterminateProperty)!;
@@ -118,6 +136,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Gets or sets the orientation of the ProgressBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -127,6 +146,7 @@ public sealed class ProgressBar : Control
     /// <summary>
     /// Gets or sets the brush used for the progress indicator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? ProgressBrush
     {
         get => (Brush?)GetValue(ProgressBrushProperty);
@@ -171,8 +191,6 @@ public sealed class ProgressBar : Control
     /// </summary>
     public ProgressBar()
     {
-        // Default size
-        Height = 8;
         Loaded += OnLoaded;
         Unloaded += OnUnloaded;
     }
@@ -195,6 +213,9 @@ public sealed class ProgressBar : Control
     private void UpdateIndicator()
     {
         if (_indicatorBorder == null) return;
+
+        _indicatorBorder.Background = ResolveProgressBrush();
+        _indicatorBorder.CornerRadius = ResolveCornerRadius();
 
         var isVertical = Orientation == Orientation.Vertical;
 
@@ -398,7 +419,7 @@ public sealed class ProgressBar : Control
         // Template-based rendering: indicator is updated from property change callbacks
         // and animation ticks (NOT here). Modifying _indicatorBorder.Width during OnRender
         // triggers InvalidateMeasure, but UpdateLayout() already ran for this frame,
-        // so the new width wouldn't take effect until the NEXT frame â€?causing a 1-frame
+        // so the new width wouldn't take effect until the NEXT frame é—?causing a 1-frame
         // delay where the indicator renders at its old size (often 0).
         if (_indicatorBorder != null)
             return;
@@ -407,25 +428,91 @@ public sealed class ProgressBar : Control
             return;
 
         var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
+        var cornerRadius = ResolveCornerRadius();
 
         // Draw track background
-        var trackBrush = Background ?? s_trackBrush;
-        dc.DrawRoundedRectangle(trackBrush, null, bounds, 4, 4);
+        var trackBrush = ResolveTrackBrush();
+        dc.DrawRoundedRectangle(trackBrush, null, bounds, cornerRadius);
 
         // Draw progress
-        var progressBrush = ProgressBrush ?? s_accentBrush;
+        var progressBrush = ResolveProgressBrush();
 
         if (IsIndeterminate)
         {
-            DrawIndeterminateProgress(dc, bounds, progressBrush);
+            DrawIndeterminateProgress(dc, bounds, progressBrush, cornerRadius);
         }
         else
         {
-            DrawDeterminateProgress(dc, bounds, progressBrush);
+            DrawDeterminateProgress(dc, bounds, progressBrush, cornerRadius);
         }
     }
 
-    private void DrawDeterminateProgress(DrawingContext dc, Rect bounds, Brush progressBrush)
+    private Brush ResolveTrackBrush()
+    {
+        return Background
+            ?? ResolveThemeBrush("SliderTrack", s_trackBrush, "ControlBackground");
+    }
+
+    private Brush ResolveProgressBrush()
+    {
+        if (ProgressBrush != null)
+        {
+            return ProgressBrush;
+        }
+
+        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
+        {
+            return Foreground;
+        }
+
+        return IsEnabled
+            ? ResolveThemeBrush("AccentBrush", s_accentBrush, "AccentFillColorDefaultBrush")
+            : ResolveThemeBrush("AccentBrushDisabled", s_disabledAccentBrush, "AccentFillColorDisabledBrush");
+    }
+
+    private CornerRadius ResolveCornerRadius()
+    {
+        var radius = CornerRadius;
+        if (radius.TopLeft > 0 || radius.TopRight > 0 || radius.BottomRight > 0 || radius.BottomLeft > 0)
+        {
+            return radius;
+        }
+
+        return s_defaultCornerRadius;
+    }
+
+    private Brush ResolveThemeBrush(string resourceKey, Brush fallback, string? secondaryResourceKey = null)
+    {
+        if (TryFindResource(resourceKey) is Brush brush)
+        {
+            return brush;
+        }
+
+        if (secondaryResourceKey != null && TryFindResource(secondaryResourceKey) is Brush secondaryBrush)
+        {
+            return secondaryBrush;
+        }
+
+        var app = Jalium.UI.Application.Current;
+        if (app?.Resources != null)
+        {
+            if (app.Resources.TryGetValue(resourceKey, out var appResource) && appResource is Brush appBrush)
+            {
+                return appBrush;
+            }
+
+            if (secondaryResourceKey != null &&
+                app.Resources.TryGetValue(secondaryResourceKey, out var secondaryAppResource) &&
+                secondaryAppResource is Brush secondaryAppBrush)
+            {
+                return secondaryAppBrush;
+            }
+        }
+
+        return fallback;
+    }
+
+    private void DrawDeterminateProgress(DrawingContext dc, Rect bounds, Brush progressBrush, CornerRadius cornerRadius)
     {
         var percentage = Percentage;
         if (percentage <= 0) return;
@@ -442,10 +529,10 @@ public sealed class ProgressBar : Control
             progressRect = new Rect(0, bounds.Height - progressHeight, bounds.Width, progressHeight);
         }
 
-        dc.DrawRoundedRectangle(progressBrush, null, progressRect, 4, 4);
+        dc.DrawRoundedRectangle(progressBrush, null, progressRect, cornerRadius);
     }
 
-    private void DrawIndeterminateProgress(DrawingContext dc, Rect bounds, Brush progressBrush)
+    private void DrawIndeterminateProgress(DrawingContext dc, Rect bounds, Brush progressBrush, CornerRadius cornerRadius)
     {
         // Draw an animated block that moves across the track
         var blockSize = Orientation == Orientation.Horizontal
@@ -464,7 +551,7 @@ public sealed class ProgressBar : Control
             progressRect = new Rect(0, y, bounds.Width, blockSize);
         }
 
-        dc.DrawRoundedRectangle(progressBrush, null, progressRect, 4, 4);
+        dc.DrawRoundedRectangle(progressBrush, null, progressRect, cornerRadius);
     }
 
     /// <summary>

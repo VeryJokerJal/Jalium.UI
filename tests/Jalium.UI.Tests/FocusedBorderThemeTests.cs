@@ -30,6 +30,10 @@ public class FocusedBorderThemeTests
         {
             Assert.True(app.Resources.TryGetValue("ControlBorderFocused", out var focusedBrushObj));
             var focusedBrush = Assert.IsAssignableFrom<Brush>(focusedBrushObj);
+            Assert.True(app.Resources.TryGetValue("FocusStrokeColorOuterBrush", out var focusOuterObj));
+            Assert.True(app.Resources.TryGetValue("FocusStrokeColorInnerBrush", out var focusInnerObj));
+            Assert.IsAssignableFrom<Brush>(focusOuterObj);
+            Assert.IsAssignableFrom<Brush>(focusInnerObj);
 
             Assert.Same(focusedBrush, InvokeFocusedBrushResolver(new AutoCompleteBox()));
             Assert.Same(focusedBrush, InvokeFocusedBrushResolver(new DatePicker()));

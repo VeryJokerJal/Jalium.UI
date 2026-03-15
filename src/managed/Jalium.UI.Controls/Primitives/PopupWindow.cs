@@ -28,6 +28,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private bool _renderRecoveryInProgress;
     private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _disposed;
+    private int _screenX;
+    private int _screenY;
     private int _width;
     private int _height;
     private const int RenderRecoveryRetryDelayMs = 120;
@@ -86,6 +88,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     internal void Show(int screenX, int screenY, int width, int height)
     {
+        _screenX = screenX;
+        _screenY = screenY;
         _width = width;
         _height = height;
         UpdateRootBoundsForHitTest();
@@ -141,6 +145,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         if (_hwnd == nint.Zero) return;
 
+        _screenX = screenX;
+        _screenY = screenY;
         bool sizeChanged = width != _width || height != _height;
         _width = width;
         _height = height;
@@ -223,7 +229,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         _renderTarget?.Dispose();
         _renderTarget = null;
 
-        var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: forceReplaceContext);
+        var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceReplaceContext);
         _renderTarget = context.CreateRenderTargetForComposition(_hwnd, Math.Max(1, _width), Math.Max(1, _height));
 
         // Match D2D DPI to the parent monitor scale.
@@ -282,7 +288,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             // Clear with transparent background
             _renderTarget.Clear(0f, 0f, 0f, 0f);
 
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
             if (Child != null)
             {
                 _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
@@ -524,6 +530,12 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                     popupWindow.OnPaint();
                     return nint.Zero;
 
+                case WM_NCHITTEST:
+                    // Composition-backed popup HWNDs can otherwise be treated like
+                    // transparent surfaces by the OS, so force client hit testing
+                    // and let the managed visual tree decide which child is interactive.
+                    return HTCLIENT;
+
                 case WM_MOUSEACTIVATE:
                     return MA_NOACTIVATE;
 
@@ -707,7 +719,9 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         int timestamp = Environment.TickCount;
 
         var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTest(position)?.VisualHit as UIElement ?? (UIElement)this;
+        var hitElement = HitTest(position)?.VisualHit as UIElement;
+        UpdateMouseOverState(hitElement);
+        var target = captured ?? hitElement ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
@@ -758,7 +772,9 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         int timestamp = Environment.TickCount;
 
         var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTest(position)?.VisualHit as UIElement ?? (UIElement)this;
+        var hitElement = HitTest(position)?.VisualHit as UIElement;
+        UpdateMouseOverState(hitElement);
+        var target = captured ?? hitElement ?? (UIElement)this;
 
         // Raise tunnel event
         MouseButtonEventArgs tunnelArgs = new(
@@ -800,6 +816,26 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         }
 
         _activePointerTargets.Remove(MousePointerId);
+    }
+
+    private void UpdateMouseOverState(UIElement? newMouseOverElement)
+    {
+        if (newMouseOverElement == _lastMouseOverElement)
+        {
+            return;
+        }
+
+        if (_lastMouseOverElement != null)
+        {
+            RaiseMouseLeaveChain(_lastMouseOverElement, newMouseOverElement);
+        }
+
+        if (newMouseOverElement != null)
+        {
+            RaiseMouseEnterChain(newMouseOverElement, _lastMouseOverElement);
+        }
+
+        _lastMouseOverElement = newMouseOverElement;
     }
 
     private void OnMouseWheel(nint wParam, nint lParam)
@@ -1834,6 +1870,31 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         SetVisualBounds(new Rect(0, 0, _width / dpiScale, _height / dpiScale));
     }
 
+    internal Rect GetBoundsInParentWindowDips()
+    {
+        var dpiScale = _parentWindow.DpiScale <= 0 ? 1.0 : _parentWindow.DpiScale;
+
+        if (_hwnd == nint.Zero || _parentWindow.Handle == nint.Zero)
+        {
+            // In tests or before the native popup is shown, fall back to the tracked
+            // screen position as if it were already relative to the parent window.
+            return new Rect(_screenX / dpiScale, _screenY / dpiScale, _width / dpiScale, _height / dpiScale);
+        }
+
+        var parentClientPoint = new POINT
+        {
+            X = _screenX,
+            Y = _screenY
+        };
+        _ = ScreenToClient(_parentWindow.Handle, ref parentClientPoint);
+
+        return new Rect(
+            parentClientPoint.X / dpiScale,
+            parentClientPoint.Y / dpiScale,
+            _width / dpiScale,
+            _height / dpiScale);
+    }
+
     private Point GetMousePosition(nint lParam)
     {
         int x = (short)(lParam.ToInt64() & 0xFFFF);
@@ -1930,6 +1991,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private const uint WM_ERASEBKGND = 0x0014;
     private const uint WM_SETCURSOR = 0x0020;
     private const uint WM_MOUSEACTIVATE = 0x0021;
+    private const uint WM_NCHITTEST = 0x0084;
     private const uint WM_MOUSEMOVE = 0x0200;
     private const uint WM_LBUTTONDOWN = 0x0201;
     private const uint WM_LBUTTONUP = 0x0202;

@@ -1,7 +1,9 @@
 using System.Text;
 using Jalium.UI;
+using Jalium.UI.Controls;
 using Jalium.UI.Markup;
 using Jalium.UI.Media;
+using Jalium.UI.Tests.Resources;
 
 namespace Jalium.UI.Tests;
 
@@ -97,6 +99,41 @@ public class XamlResourceDictionarySourceCompatibilityTests
         var dictionary = ParseWithAssemblyContext(xaml);
         var accent = Assert.IsType<SolidColorBrush>(dictionary["TestAccentBrush"]);
         Assert.Equal(Color.FromArgb(0xFF, 0x1E, 0x88, 0xE5), accent.Color);
+    }
+
+    [Fact]
+    public void Source_WithXClassResourceDictionary_ShouldPreserveDerivedDictionaryInstance()
+    {
+        ThemeLoader.Initialize();
+
+        const string xaml = """
+            <ResourceDictionary xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                                xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+                <ResourceDictionary.MergedDictionaries>
+                    <ResourceDictionary Source="/Jalium.UI.Tests;component/TestAssets/CodeBehindDictionary.jalxaml" />
+                </ResourceDictionary.MergedDictionaries>
+            </ResourceDictionary>
+            """;
+
+        var dictionary = ParseWithAssemblyContext(xaml);
+        var merged = Assert.IsType<TestCodeBehindDictionary>(Assert.Single(dictionary.MergedDictionaries));
+
+        Assert.Equal("DictionaryCodeBehind", merged.Marker);
+        Assert.Equal(Color.FromArgb(0xFF, 0x5A, 0x7B, 0xEF), merged.AccentBrush.Color);
+        Assert.Equal(Color.FromArgb(0xFF, 0x5A, 0x7B, 0xEF), Assert.IsType<SolidColorBrush>(dictionary["CodeBehindAccentBrush"]).Color);
+    }
+
+    [Theory]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Containers.jalxaml")]
+    [InlineData("Jalium.UI.Controls.Themes.Controls.Primitives.jalxaml")]
+    public void ThemeControlDictionaries_ShouldParseStandalone(string resourceName)
+    {
+        var assembly = typeof(Button).Assembly;
+        using var stream = assembly.GetManifestResourceStream(resourceName);
+        Assert.NotNull(stream);
+
+        var dictionary = XamlReader.Load(stream!, resourceName, assembly);
+        Assert.IsType<ResourceDictionary>(dictionary);
     }
 
     private static ResourceDictionary ParseWithAssemblyContext(string xaml)

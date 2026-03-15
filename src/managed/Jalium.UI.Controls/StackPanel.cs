@@ -1,4 +1,4 @@
-﻿namespace Jalium.UI.Controls;
+namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Arranges child elements into a single line that can be oriented horizontally or vertically.
@@ -6,11 +6,15 @@
 /// </summary>
 public class StackPanel : Panel, IScrollInfo
 {
+    private static double SnapLayoutValue(double value) =>
+        Math.Round(value, MidpointRounding.AwayFromZero);
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(StackPanel),
             new PropertyMetadata(Orientation.Vertical, OnLayoutPropertyChanged));
@@ -22,6 +26,7 @@ public class StackPanel : Panel, IScrollInfo
     /// <summary>
     /// Gets or sets the dimension by which child elements are stacked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -205,15 +210,33 @@ public class StackPanel : Panel, IScrollInfo
             if (child.Visibility == Visibility.Collapsed)
                 continue;
 
-            // Give each child infinite space in the stack direction.
-            // When hosted by ScrollViewer and scrolling is enabled for the cross axis,
-            // measure unconstrained there too so extent reflects full content size.
-            var childAvailable = isVertical
-                ? new Size(_canHorizontallyScroll ? double.PositiveInfinity : availableSize.Width, double.PositiveInfinity)
-                : new Size(double.PositiveInfinity, _canVerticallyScroll ? double.PositiveInfinity : availableSize.Height);
+            // Measure with the constrained cross-axis first so stretch/layout-driven content
+            // (for example Grid with star columns) can establish its viewport-based layout.
+            // Only if the constrained pass already overflows on the scrollable cross axis do
+            // we remeasure unconstrained to compute the true scroll extent.
+            var finiteChildAvailable = isVertical
+                ? new Size(availableSize.Width, double.PositiveInfinity)
+                : new Size(double.PositiveInfinity, availableSize.Height);
 
-            child.Measure(childAvailable);
+            child.Measure(finiteChildAvailable);
             var childSize = child.DesiredSize;
+
+            if (isVertical &&
+                _canHorizontallyScroll &&
+                !double.IsPositiveInfinity(availableSize.Width) &&
+                childSize.Width > availableSize.Width + 0.5)
+            {
+                child.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                childSize = child.DesiredSize;
+            }
+            else if (!isVertical &&
+                     _canVerticallyScroll &&
+                     !double.IsPositiveInfinity(availableSize.Height) &&
+                     childSize.Height > availableSize.Height + 0.5)
+            {
+                child.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                childSize = child.DesiredSize;
+            }
 
             if (isVertical)
             {
@@ -268,12 +291,28 @@ public class StackPanel : Panel, IScrollInfo
             Rect childRect;
             if (isVertical)
             {
-                childRect = new Rect(scrollOffsetX, offset + scrollOffsetY, arrangeWidth, childSize.Height);
+                var startY = offset + scrollOffsetY;
+                var endY = startY + childSize.Height;
+                var snappedY = SnapLayoutValue(startY);
+                var snappedBottom = SnapLayoutValue(endY);
+                childRect = new Rect(
+                    SnapLayoutValue(scrollOffsetX),
+                    snappedY,
+                    SnapLayoutValue(arrangeWidth),
+                    Math.Max(0, snappedBottom - snappedY));
                 offset += childSize.Height;
             }
             else
             {
-                childRect = new Rect(offset + scrollOffsetX, scrollOffsetY, childSize.Width, arrangeHeight);
+                var startX = offset + scrollOffsetX;
+                var endX = startX + childSize.Width;
+                var snappedX = SnapLayoutValue(startX);
+                var snappedRight = SnapLayoutValue(endX);
+                childRect = new Rect(
+                    snappedX,
+                    SnapLayoutValue(scrollOffsetY),
+                    Math.Max(0, snappedRight - snappedX),
+                    SnapLayoutValue(arrangeHeight));
                 offset += childSize.Width;
             }
 

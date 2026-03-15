@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls.Editor;
+using Jalium.UI.Controls.Editor;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -81,6 +81,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     // Input state
     private bool _isDragging;
+    private bool _isWordSelecting;
+    private int _wordSelectionAnchorStart;
+    private int _wordSelectionAnchorEnd;
     private DateTime _lastClickTime;
     private Point _lastClickPosition;
     private int _clickCount;
@@ -188,82 +191,102 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(EditControl),
             new PropertyMetadata(string.Empty, OnTextChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LanguageProperty =
         DependencyProperty.Register(nameof(Language), typeof(string), typeof(EditControl),
             new PropertyMetadata("plaintext", OnLanguageChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DocumentFilePathProperty =
         DependencyProperty.Register(nameof(DocumentFilePath), typeof(string), typeof(EditControl),
             new PropertyMetadata(string.Empty, OnDocumentFilePathChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(EditControl),
             new PropertyMetadata(false));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowLineNumbersProperty =
         DependencyProperty.Register(nameof(ShowLineNumbers), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HighlightCurrentLineProperty =
         DependencyProperty.Register(nameof(HighlightCurrentLine), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty TabSizeProperty =
         DependencyProperty.Register(nameof(TabSize), typeof(int), typeof(EditControl),
             new PropertyMetadata(4));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ConvertTabsToSpacesProperty =
         DependencyProperty.Register(nameof(ConvertTabsToSpaces), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SyntaxHighlighterProperty =
         DependencyProperty.Register(nameof(SyntaxHighlighter), typeof(ISyntaxHighlighter), typeof(EditControl),
             new PropertyMetadata(null, OnSyntaxHighlighterChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
         DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(EditControl),
-            new PropertyMetadata(new SolidColorBrush(Color.FromArgb(100, 38, 79, 120)), OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CaretBrushProperty =
         DependencyProperty.Register(nameof(CaretBrush), typeof(Brush), typeof(EditControl),
-            new PropertyMetadata(new SolidColorBrush(Color.FromRgb(220, 220, 220)), OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LineNumberForegroundProperty =
         DependencyProperty.Register(nameof(LineNumberForeground), typeof(Brush), typeof(EditControl),
-            new PropertyMetadata(new SolidColorBrush(Color.FromRgb(133, 133, 133)), OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CurrentLineBackgroundProperty =
         DependencyProperty.Register(nameof(CurrentLineBackground), typeof(Brush), typeof(EditControl),
-            new PropertyMetadata(new SolidColorBrush(Color.FromArgb(20, 78, 114, 148)), OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty GutterBackgroundProperty =
         DependencyProperty.Register(nameof(GutterBackground), typeof(Brush), typeof(EditControl),
-            new PropertyMetadata(new SolidColorBrush(Color.FromRgb(30, 30, 30)), OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowMinimapProperty =
         DependencyProperty.Register(nameof(ShowMinimap), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AdornmentMinLineHeightProperty =
         DependencyProperty.Register(nameof(AdornmentMinLineHeight), typeof(double), typeof(EditControl),
             new PropertyMetadata(30.0, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LeadingGutterInsetProperty =
         DependencyProperty.Register(nameof(LeadingGutterInset), typeof(double), typeof(EditControl),
             new PropertyMetadata(0.0, OnLeadingGutterInsetChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsScrollInertiaEnabledProperty =
         DependencyProperty.Register(nameof(IsScrollInertiaEnabled), typeof(bool), typeof(EditControl),
             new PropertyMetadata(true, OnScrollInertiaSettingsChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ScrollInertiaDurationMsProperty =
         DependencyProperty.Register(nameof(ScrollInertiaDurationMs), typeof(double), typeof(EditControl),
             new PropertyMetadata(DefaultScrollInertiaDurationMs, OnScrollInertiaSettingsChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty AutoFollowBottomProperty =
         DependencyProperty.Register(nameof(AutoFollowBottom), typeof(bool), typeof(EditControl),
             new PropertyMetadata(false, OnAutoFollowBottomChanged));
@@ -272,96 +295,112 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     #region CLR Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
         set => SetValue(TextProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string Language
     {
         get => (string)(GetValue(LanguageProperty) ?? "plaintext");
         set => SetValue(LanguageProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string DocumentFilePath
     {
         get => (string)(GetValue(DocumentFilePathProperty) ?? string.Empty);
         set => SetValue(DocumentFilePathProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsReadOnly
     {
         get => (bool)GetValue(IsReadOnlyProperty)!;
         set => SetValue(IsReadOnlyProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowLineNumbers
     {
         get => (bool)GetValue(ShowLineNumbersProperty)!;
         set => SetValue(ShowLineNumbersProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool HighlightCurrentLine
     {
         get => (bool)GetValue(HighlightCurrentLineProperty)!;
         set => SetValue(HighlightCurrentLineProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public int TabSize
     {
         get => (int)GetValue(TabSizeProperty)!;
         set => SetValue(TabSizeProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool ConvertTabsToSpaces
     {
         get => (bool)GetValue(ConvertTabsToSpacesProperty)!;
         set => SetValue(ConvertTabsToSpacesProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ISyntaxHighlighter? SyntaxHighlighter
     {
         get => (ISyntaxHighlighter?)GetValue(SyntaxHighlighterProperty);
         set => SetValue(SyntaxHighlighterProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SelectionBrush
     {
         get => (Brush?)GetValue(SelectionBrushProperty);
         set => SetValue(SelectionBrushProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? CaretBrush
     {
         get => (Brush?)GetValue(CaretBrushProperty);
         set => SetValue(CaretBrushProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? LineNumberForeground
     {
         get => (Brush?)GetValue(LineNumberForegroundProperty);
         set => SetValue(LineNumberForegroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? CurrentLineBackground
     {
         get => (Brush?)GetValue(CurrentLineBackgroundProperty);
         set => SetValue(CurrentLineBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? GutterBackground
     {
         get => (Brush?)GetValue(GutterBackgroundProperty);
         set => SetValue(GutterBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowMinimap
     {
         get => (bool)GetValue(ShowMinimapProperty)!;
         set => SetValue(ShowMinimapProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double AdornmentMinLineHeight
     {
         get => (double)GetValue(AdornmentMinLineHeightProperty)!;
@@ -372,24 +411,28 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     /// Reserves horizontal space before line numbers (inside the editor bounds).
     /// Useful for custom gutters such as breakpoint toggles.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double LeadingGutterInset
     {
         get => (double)GetValue(LeadingGutterInsetProperty)!;
         set => SetValue(LeadingGutterInsetProperty, Math.Max(0, value));
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsScrollInertiaEnabled
     {
         get => (bool)GetValue(IsScrollInertiaEnabledProperty)!;
         set => SetValue(IsScrollInertiaEnabledProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double ScrollInertiaDurationMs
     {
         get => (double)GetValue(ScrollInertiaDurationMsProperty)!;
         set => SetValue(ScrollInertiaDurationMsProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool AutoFollowBottom
     {
         get => (bool)GetValue(AutoFollowBottomProperty)!;
@@ -648,6 +691,19 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 dc.DrawRectangle(Background, null, new Rect(0, 0, RenderSize.Width, RenderSize.Height));
             }
 
+            var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
+            var borderThickness = BorderThickness.Left;
+            if (BorderBrush != null && borderThickness > 0)
+            {
+                var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, borderThickness);
+                dc.DrawRectangle(null, new Pen(BorderBrush, borderThickness), borderRect);
+            }
+
+            if (IsKeyboardFocused)
+            {
+                ControlFocusVisual.Draw(dc, this, bounds, CornerRadius);
+            }
+
             bool hasContentClip = contentBackdropWidth > 0 && contentHeight > 0;
             if (hasContentClip)
                 dc.PushClip(new RectangleGeometry(new Rect(0, 0, contentBackdropWidth, contentHeight)));
@@ -668,12 +724,12 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
                 _view.Render(dc, contentSize, _caret, _selection,
                     ShowLineNumbers, HighlightCurrentLine,
-                    Foreground ?? s_defaultForegroundBrush,
-                    SelectionBrush ?? s_defaultSelectionBrush,
-                    CaretBrush ?? s_defaultCaretBrush,
-                    LineNumberForeground ?? s_defaultLineNumberBrush,
-                    CurrentLineBackground ?? s_defaultCurrentLineBrush,
-                    GutterBackground ?? s_defaultGutterBrush,
+                    ResolveForegroundBrush(),
+                    ResolveSelectionBrush(),
+                    ResolveCaretBrush(),
+                    ResolveLineNumberForegroundBrush(),
+                    ResolveCurrentLineBackgroundBrush(),
+                    ResolveGutterBackgroundBrush(),
                     fontFamily, fontSize, FontWeight, FontStyle,
                     renderLineNumbers: !applyGutterOverflowShield,
                     suppressCaret: _isImeComposing);
@@ -1051,12 +1107,18 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             var line = _document.GetLineByOffset(offset);
             _selection.SetSelection(line.Offset, line.Length);
             _caret.Offset = line.Offset + line.Length;
+            _isWordSelecting = false;
             _clickCount = 0;
         }
         else if (_clickCount == 2)
         {
             // Double-click: select word
             SelectWordAt(offset);
+            _wordSelectionAnchorStart = _selection.StartOffset;
+            _wordSelectionAnchorEnd = _selection.EndOffset;
+            _isWordSelecting = _selection.Length > 0;
+            _isDragging = true;
+            CaptureMouse();
         }
         else
         {
@@ -1071,6 +1133,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 _caret.Offset = offset;
                 _selection.ClearSelection(offset);
             }
+            _isWordSelecting = false;
             _isDragging = true;
             CaptureMouse();
         }
@@ -1132,6 +1195,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         if (_isDragging)
         {
             _isDragging = false;
+            _isWordSelecting = false;
             ReleaseMouseCapture();
         }
 
@@ -1202,8 +1266,15 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         int oldCaret = _caret.Offset;
         int offset = _view.GetOffsetFromPoint(position, ShowLineNumbers);
 
-        _selection.ExtendTo(offset);
-        _caret.Offset = offset;
+        if (_isWordSelecting)
+        {
+            ExtendWordSelectionToOffset(offset);
+        }
+        else
+        {
+            _selection.ExtendTo(offset);
+            _caret.Offset = offset;
+        }
         _caret.DesiredColumn = -1;
         _caret.ResetBlink();
         EnsureCaretVisible();
@@ -1672,6 +1743,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         _isMinimapViewportPressPending = false;
         ClearMinimapHover();
         _isDragging = false;
+        _isWordSelecting = false;
         CancelScrollAnimation();
         ReleaseMouseCapture();
         ClearChordState();
@@ -2299,6 +2371,38 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             OnSelectionChanged();
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
+    }
+
+    private void ExtendWordSelectionToOffset(int offset)
+    {
+        if (_document.TextLength == 0)
+        {
+            _selection.ClearSelection(0);
+            _caret.Offset = 0;
+            return;
+        }
+
+        var (currentStart, currentLength) = GetWordRangeAtOffset(Math.Clamp(offset, 0, _document.TextLength - 1));
+        int currentEnd = currentStart + currentLength;
+
+        if (currentEnd <= _wordSelectionAnchorStart)
+        {
+            _selection.AnchorOffset = _wordSelectionAnchorEnd;
+            _selection.ActiveOffset = currentStart;
+            _caret.Offset = currentStart;
+        }
+        else if (currentStart >= _wordSelectionAnchorEnd)
+        {
+            _selection.AnchorOffset = _wordSelectionAnchorStart;
+            _selection.ActiveOffset = currentEnd;
+            _caret.Offset = currentEnd;
+        }
+        else
+        {
+            _selection.AnchorOffset = _wordSelectionAnchorStart;
+            _selection.ActiveOffset = _wordSelectionAnchorEnd;
+            _caret.Offset = _wordSelectionAnchorEnd;
+        }
     }
 
     #endregion
@@ -3442,7 +3546,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             if (match.Offset == selectionStart && match.Length == selectionLength)
                 continue;
 
-            DrawDocumentRangeHighlight(dc, match.Offset, match.Length, s_selectedTextOccurrenceBrush);
+            DrawDocumentRangeHighlight(dc, match.Offset, match.Length, ResolveSelectedTextOccurrenceBrush());
         }
     }
 
@@ -3464,7 +3568,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         for (int i = 0; i < matches.Count; i++)
         {
             var match = matches[i];
-            DrawDocumentRangeHighlight(dc, match.Offset, match.Length, s_symbolOccurrenceBrush);
+            DrawDocumentRangeHighlight(dc, match.Offset, match.Length, ResolveSymbolOccurrenceBrush());
         }
     }
 
@@ -3614,6 +3718,92 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         if (!string.IsNullOrWhiteSpace(secondaryKey) && TryFindResource(secondaryKey) is Brush secondary)
             return secondary;
         return fallback;
+    }
+
+    private Brush ResolveForegroundBrush()
+    {
+        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
+            return Foreground;
+
+        return ResolveThemeBrush("EditorSyntaxPlainText", s_defaultForegroundBrush, "TextPrimary");
+    }
+
+    private Brush ResolveSelectionBrush()
+    {
+        return SelectionBrush
+            ?? ResolveThemeBrush("SelectionBackground", s_defaultSelectionBrush, "AccentFillColorSelectedTextBackgroundBrush");
+    }
+
+    private Brush ResolveCaretBrush()
+    {
+        return CaretBrush
+            ?? ((HasLocalValue(Control.ForegroundProperty) && Foreground != null) ? Foreground : null)
+            ?? ResolveThemeBrush("TextPrimary", s_defaultCaretBrush, "TextFillColorPrimaryBrush");
+    }
+
+    private Brush ResolveLineNumberForegroundBrush()
+    {
+        return LineNumberForeground
+            ?? ResolveThemeBrush("TextSecondary", s_defaultLineNumberBrush, "TextFillColorSecondaryBrush");
+    }
+
+    private Brush ResolveCurrentLineBackgroundBrush()
+    {
+        return CurrentLineBackground
+            ?? ResolveThemeBrush("HighlightBackground", s_defaultCurrentLineBrush, "ControlFillColorTertiaryBrush");
+    }
+
+    private Brush ResolveGutterBackgroundBrush()
+    {
+        return GutterBackground
+            ?? ResolveThemeBrush("ControlBackground", s_defaultGutterBrush, "ControlFillColorDefaultBrush");
+    }
+
+    private Brush ResolveSelectedTextOccurrenceBrush()
+    {
+        return ResolveThemeBrush("HighlightBackground", s_selectedTextOccurrenceBrush, "SelectionBackground");
+    }
+
+    private Brush ResolveSymbolOccurrenceBrush()
+    {
+        return ResolveThemeBrush("OneAccentSubtle", s_symbolOccurrenceBrush, "SelectionBackground");
+    }
+
+    private Brush ResolveImeCompositionBackgroundBrush()
+    {
+        return ResolveThemeBrush("SelectionBackground", s_imeCompositionBackgroundBrush, "AccentFillColorSelectedTextBackgroundBrush");
+    }
+
+    private Brush ResolveImeCompositionTextBrush()
+    {
+        return ResolveThemeBrush("TextPrimary", s_imeCompositionTextBrush, "TextFillColorPrimaryBrush");
+    }
+
+    private Pen ResolveImeCompositionUnderlinePen()
+    {
+        return ResolveThemePen("AccentBrush", s_imeCompositionUnderlinePen, "ControlBorderFocused");
+    }
+
+    private Brush ResolveGutterOverflowOverlayBrush()
+    {
+        return ResolveThemeBrush("TooltipBackground", s_gutterOverflowOverlayBrush, "ControlBackground");
+    }
+
+    private Brush ResolveFoldingMarkerSelectedBackgroundBrush()
+    {
+        return ResolveThemeBrush("HighlightBackground", s_foldingMarkerSelectedBackgroundBrush, "SelectionBackground");
+    }
+
+    private Pen ResolveFoldingGuidePen()
+    {
+        return ResolveThemePen("OneEditorIndentGuide", s_foldingGuidePen, "ControlBorder");
+    }
+
+    private Pen ResolveFoldingChevronPen(bool selected)
+    {
+        return selected
+            ? ResolveThemePen("OneBorderFocused", s_foldingChevronSelectedPen, "AccentBrush")
+            : ResolveThemePen("TextSecondary", s_foldingChevronPen, "OneEditorIndentGuide");
     }
 
     private Pen ResolveThemePen(string primaryKey, Pen fallback, string? secondaryKey = null, double? thickness = null)
@@ -4368,7 +4558,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         double x = Math.Max(textAreaLeft, point.X);
         var text = new FormattedText(_imeCompositionString, fontFamily, fontSize)
         {
-            Foreground = s_imeCompositionTextBrush
+            Foreground = ResolveImeCompositionTextBrush()
         };
         TextMeasurement.MeasureText(text);
         double measuredWidth = text.Width > 0
@@ -4376,9 +4566,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             : _imeCompositionString.Length * Math.Max(1, _view.CharWidth);
         double width = Math.Max(1, measuredWidth);
 
-        dc.DrawRectangle(s_imeCompositionBackgroundBrush, null, new Rect(x, y, width, _view.LineHeight));
+        dc.DrawRectangle(ResolveImeCompositionBackgroundBrush(), null, new Rect(x, y, width, _view.LineHeight));
         dc.DrawText(text, new Point(x, y));
-        dc.DrawLine(s_imeCompositionUnderlinePen, new Point(x, y + _view.LineHeight - 1), new Point(x + width, y + _view.LineHeight - 1));
+        dc.DrawLine(ResolveImeCompositionUnderlinePen(), new Point(x, y + _view.LineHeight - 1), new Point(x + width, y + _view.LineHeight - 1));
     }
 
     private bool ShouldApplyGutterOverflowShield(double contentHeight)
@@ -4399,12 +4589,12 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         if (s_gutterOverflowBlurEffect.HasEffect)
             dc.DrawBackdropEffect(shieldRect, s_gutterOverflowBlurEffect, new CornerRadius(0));
 
-        dc.DrawRectangle(s_gutterOverflowOverlayBrush, null, shieldRect);
+        dc.DrawRectangle(ResolveGutterOverflowOverlayBrush(), null, shieldRect);
         _view.RenderLineNumbers(
             dc,
             _caret,
-            Foreground ?? s_defaultForegroundBrush,
-            LineNumberForeground ?? s_defaultLineNumberBrush,
+            ResolveForegroundBrush(),
+            ResolveLineNumberForegroundBrush(),
             fontFamily,
             fontSize);
     }
@@ -4457,10 +4647,11 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
                 bool isSelected = IsFoldingSectionSelected(section);
                 if (isSelected)
-                    dc.DrawRoundedRectangle(s_foldingMarkerSelectedBackgroundBrush, null, markerRect, 2, 2);
+                    dc.DrawRoundedRectangle(ResolveFoldingMarkerSelectedBackgroundBrush(), null, markerRect, 2, 2);
 
                 double centerX = markerRect.X + markerRect.Width * 0.5;
                 double centerY = markerRect.Y + markerRect.Height * 0.5;
+                var foldingGuidePen = ResolveFoldingGuidePen();
 
                 if (!section.IsFolded)
                 {
@@ -4474,12 +4665,12 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                         if (guideEndY > guideStartY + 0.5)
                         {
                             dc.DrawLine(
-                                s_foldingGuidePen,
+                                foldingGuidePen,
                                 new Point(centerX, guideStartY),
                                 new Point(centerX, guideEndY));
 
                             dc.DrawLine(
-                                s_foldingGuidePen,
+                                foldingGuidePen,
                                 new Point(centerX, guideEndY),
                                 new Point(centerX + Math.Max(4, markerRect.Width * 0.45), guideEndY));
                         }
@@ -4488,7 +4679,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 else if (section.IsFolded)
                 {
                     dc.DrawLine(
-                        s_foldingGuidePen,
+                        foldingGuidePen,
                         new Point(centerX, centerY),
                         new Point(centerX + Math.Max(3, markerRect.Width * 0.4), centerY));
                 }
@@ -4504,7 +4695,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     private void DrawFoldingChevron(DrawingContext dc, Rect markerRect, bool folded, bool selected)
     {
-        var chevronPen = selected ? s_foldingChevronSelectedPen : s_foldingChevronPen;
+        var chevronPen = ResolveFoldingChevronPen(selected);
         double centerX = markerRect.X + markerRect.Width * 0.5;
         double centerY = markerRect.Y + markerRect.Height * 0.5;
         double glyph = Math.Max(2.4, markerRect.Width * 0.26);
@@ -4577,9 +4768,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             return;
 
         var minimapBackgroundBrush = ResolveThemeBrush("OneMinimapBackground", s_minimapBackgroundBrush, "WindowBackground");
-        var minimapForegroundBrush = ResolveThemeBrush("OneMinimapSlider", s_minimapForegroundBrush, "AccentBrush");
-        var minimapViewportBrush = ResolveThemeBrush("OneScrollbarThumbHover", s_minimapViewportBrush, "SelectionBackground");
-        var minimapViewportBorderPen = ResolveThemePen("OneBorderDefault", s_minimapViewportBorderPen, "ControlBorder");
+        var minimapForegroundBrush = ResolveThemeBrush("OneMinimapContent", s_minimapForegroundBrush);
+        var minimapViewportBrush = ResolveThemeBrush("OneMinimapSlider", s_minimapViewportBrush);
+        var minimapViewportBorderPen = ResolveThemePen("OnePaneChromeBorder", s_minimapViewportBorderPen, "OneBorderDefault");
 
         _minimapRenderer.Render(
             dc,
@@ -4686,8 +4877,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     private void DrawScrollBars(DrawingContext dc)
     {
         var scrollBarTrackBrush = ResolveThemeBrush("OneScrollbarBackground", s_scrollBarTrackBrush, "ControlBackground");
-        var scrollBarThumbBrush = ResolveThemeBrush("OneScrollbarThumb", s_scrollBarThumbBrush, "AccentBrush");
-        var scrollBarActiveThumbBrush = ResolveThemeBrush("OneScrollbarThumbActive", s_scrollBarActiveThumbBrush, "AccentBrushPressed");
+        var scrollBarThumbBrush = ResolveThemeBrush("OneScrollbarThumb", s_scrollBarThumbBrush);
+        var scrollBarActiveThumbBrush = ResolveThemeBrush("OneScrollbarThumbActive", s_scrollBarActiveThumbBrush);
 
         static Rect InsetRect(Rect rect, double inset)
         {

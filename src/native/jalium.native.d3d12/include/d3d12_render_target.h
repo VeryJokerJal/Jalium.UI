@@ -60,6 +60,7 @@ public:
     void PushTransform(const float* matrix) override;
     void PopTransform() override;
     void PushClip(float x, float y, float w, float h) override;
+    void PushClipAliased(float x, float y, float w, float h) override;
     void PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry) override;
     void PopClip() override;
     void PunchTransparentRect(float x, float y, float w, float h) override;
@@ -190,6 +191,7 @@ private:
     std::stack<D2D1_MATRIX_3X2_F> transformStack_;
     std::stack<float> opacityStack_;
     std::stack<ClipType> clipStack_;
+    std::stack<D2D1_RECT_F> clipBoundsStack_;
 
     bool isDrawing_ = false;
     bool tearingSupported_ = false;
@@ -278,6 +280,8 @@ private:
     std::vector<ActiveEffectCapture> effectCaptureStack_;
     ComPtr<ID2D1Bitmap1> lastCapturedEffectBitmap_;
     float lastEffectCaptureX_ = 0;
+
+    bool IntersectsActiveClip(const D2D1_RECT_F& rect) const;
     float lastEffectCaptureY_ = 0;
     float lastEffectCaptureW_ = 0;
     float lastEffectCaptureH_ = 0;

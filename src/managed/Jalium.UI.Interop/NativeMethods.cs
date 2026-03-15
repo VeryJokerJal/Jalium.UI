@@ -54,28 +54,42 @@ internal static partial class NativeMethods
 {
     private const string CoreLib = "jalium.native.core";
     private const string D3D12Lib = "jalium.native.d3d12";
-
-    private static nint _d3d12Module;
+    private const string VulkanLib = "jalium.native.vulkan";
+    private const string MetalLib = "jalium.native.metal";
 
     /// <summary>
-    /// Static constructor to load backend DLLs.
+    /// Static constructor to register the D3D12 backend once the native library is available.
     /// </summary>
     static NativeMethods()
     {
-        // Load the D3D12 backend DLL
-        _d3d12Module = NativeLibrary.Load(D3D12Lib, typeof(NativeMethods).Assembly, null);
+        TryInitializeBackend(D3D12Init);
+        TryInitializeBackend(VulkanInit);
+        TryInitializeBackend(MetalInit);
+    }
 
-        // Call the explicit init function to register the backend
-        // This is done outside DllMain to avoid loader lock issues with mutex operations
-        if (_d3d12Module != nint.Zero)
+    [LibraryImport(D3D12Lib, EntryPoint = "jalium_d3d12_init")]
+    private static partial void D3D12Init();
+
+    [LibraryImport(VulkanLib, EntryPoint = "jalium_vulkan_init")]
+    private static partial void VulkanInit();
+
+    [LibraryImport(MetalLib, EntryPoint = "jalium_metal_init")]
+    private static partial void MetalInit();
+
+    private static void TryInitializeBackend(Action init)
+    {
+        try
         {
-            // Try to find and call the init function
-            // If it doesn't exist (old DLL version), the DLL might still work via DllMain registration
-            if (NativeLibrary.TryGetExport(_d3d12Module, "jalium_d3d12_init", out var initFunc) && initFunc != nint.Zero)
-            {
-                var init = Marshal.GetDelegateForFunctionPointer<Action>(initFunc);
-                init();
-            }
+            init();
+        }
+        catch (DllNotFoundException)
+        {
+        }
+        catch (EntryPointNotFoundException)
+        {
+        }
+        catch (BadImageFormatException)
+        {
         }
     }
 
@@ -122,6 +136,18 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_create_for_composition")]
     internal static partial nint RenderTargetCreateForComposition(nint context, nint hwnd, int width, int height);
+
+    /// <summary>
+    /// Creates a render target from a platform-neutral surface descriptor.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_create_for_surface")]
+    internal static partial nint RenderTargetCreateForSurface(nint context, in NativeSurfaceDescriptor surface, int width, int height);
+
+    /// <summary>
+    /// Creates a composition-capable render target from a platform-neutral surface descriptor.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_create_for_composition_surface")]
+    internal static partial nint RenderTargetCreateForCompositionSurface(nint context, in NativeSurfaceDescriptor surface, int width, int height);
 
     /// <summary>
     /// Destroys a render target.
@@ -462,6 +488,13 @@ internal static partial class NativeMethods
     internal static partial void PushClip(nint renderTarget, float x, float y, float width, float height);
 
     /// <summary>
+    /// Pushes a clip rectangle with ALIASED anti-aliasing (hard pixel boundary).
+    /// Used for dirty region clips where semi-transparent edges cause artifacts.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_push_clip_aliased")]
+    internal static partial void PushClipAliased(nint renderTarget, float x, float y, float width, float height);
+
+    /// <summary>
     /// Pushes a rounded rectangle clip using a geometry mask layer.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_push_rounded_rect_clip")]
@@ -581,6 +614,12 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_bitmap_create_from_memory")]
     internal static partial nint BitmapCreateFromMemory(nint context, [In] byte[] data, uint dataSize);
+
+    /// <summary>
+    /// Creates a bitmap from raw BGRA8 pixel data.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_bitmap_create_from_pixels")]
+    internal static partial nint BitmapCreateFromPixels(nint context, [In] byte[] pixels, uint width, uint height, uint stride);
 
     /// <summary>
     /// Gets the width of a bitmap.

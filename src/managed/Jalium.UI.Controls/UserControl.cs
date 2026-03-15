@@ -5,6 +5,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class UserControl : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.UserControlAutomationPeer(this);
+    }
+
     /// <summary>
     /// Initializes a new instance of the <see cref="UserControl"/> class.
     /// </summary>

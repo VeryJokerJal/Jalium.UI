@@ -14,10 +14,8 @@
     <Project Path="src/packaging/Jalium.UI.csproj" />
   </Folder>
   <Folder Name="/src/tools/">
-    <Project Path="src/managed/Jalium.UI.Build/Jalium.UI.Build.csproj" />
     <Project Path="src/managed/Jalium.UI.Compiler/Jalium.UI.Compiler.csproj" />
   </Folder>
-  <Folder Name="/samples/" />
   <Folder Name="/tests/">
     <Project Path="tests/Jalium.UI.Tests/Jalium.UI.Tests.csproj" />
   </Folder>

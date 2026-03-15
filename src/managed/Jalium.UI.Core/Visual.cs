@@ -166,7 +166,9 @@ public abstract class Visual : DependencyObject
         while (current != null)
         {
             if (current._isSubtreeDirty)
+            {
                 break; // Already marked, ancestors also marked
+            }
             current._isSubtreeDirty = true;
             current = current._parent;
         }
@@ -211,9 +213,23 @@ public abstract class Visual : DependencyObject
         }
 
         _renderDepth++;
-
         try
         {
+            RenderDirect(drawingContext);
+        }
+        finally
+        {
+            _renderDepth--;
+            _renderPath.Remove(this);
+            if (_renderDepth == 0 && _renderPath.Count > 0)
+            {
+                _renderPath.Clear();
+            }
+        }
+    }
+
+    private void RenderDirect(object drawingContext)
+    {
         // Respect UIElement visibility at render entry.
         // Hidden and Collapsed should not render.
         if (this is UIElement thisElementVisibility &&
@@ -262,14 +278,12 @@ public abstract class Visual : DependencyObject
 
         OnRender(drawingContext);
 
-        // Check if clipping should be applied before rendering children
         object? clipGeometry = null;
         if (this is UIElement thisElement)
         {
             clipGeometry = thisElement.GetLayoutClip();
         }
 
-        // Push clip if available (clipGeometry should be Media.Geometry)
         bool pushedClip = false;
         if (clipGeometry != null && drawingContext is IClipDrawingContext clipContext)
         {
@@ -283,23 +297,29 @@ public abstract class Visual : DependencyObject
             var child = GetVisualChild(i);
             if (child == null) continue;
 
-            // Skip non-visible children
             if (child is UIElement uiElement && uiElement.Visibility != Visibility.Visible)
+            {
                 continue;
+            }
 
-            // Get child's visual bounds and update drawing context offset
             if (child is UIElement uiChild && drawingContext is IOffsetDrawingContext offsetContext)
             {
                 var bounds = uiChild.VisualBounds;
                 var savedOffset = offsetContext.Offset;
-
-                // Apply RenderOffset (visual-only translation, does not affect layout)
                 var ro = uiChild.RenderOffset;
-                offsetContext.Offset = new Point(
+                var childOffset = new Point(
                     savedOffset.X + bounds.X + ro.X,
                     savedOffset.Y + bounds.Y + ro.Y);
 
-                // Handle opacity for child elements
+                if (!ShouldRenderChild(drawingContext, uiChild, childOffset))
+                {
+                    continue;
+                }
+
+                offsetContext.Offset = new Point(
+                    childOffset.X,
+                    childOffset.Y);
+
                 var childOpacity = uiChild.Opacity;
                 var pushedOpacity = false;
                 if (childOpacity < 1.0 && drawingContext is IOpacityDrawingContext opacityContext)
@@ -310,7 +330,6 @@ public abstract class Visual : DependencyObject
 
                 child.Render(drawingContext);
 
-                // Pop opacity if it was pushed
                 if (pushedOpacity && drawingContext is IOpacityDrawingContext opacityContext2)
                 {
                     opacityContext2.PopOpacity();
@@ -324,35 +343,41 @@ public abstract class Visual : DependencyObject
             }
         }
 
-        // Pop clip if it was pushed
         if (pushedClip && drawingContext is IClipDrawingContext clipContext2)
         {
             clipContext2.Pop();
         }
 
-        // Call post-render for overlays (like scrollbars)
         OnPostRender(drawingContext);
 
-        // End effect capture and apply the effect to the captured content
         if (activeEffect != null && effectDc != null)
         {
             effectDc.EndEffectCapture();
             effectDc.ApplyElementEffect(activeEffect, captureX, captureY, captureW, captureH);
         }
-
-        // Clear dirty flags after this element has rendered
         _isRenderDirty = false;
         _isSubtreeDirty = false;
-        }
-        finally
+    }
+
+    private static bool ShouldRenderChild(object drawingContext, UIElement child, Point childOffset)
+    {
+        if (drawingContext is not IClipBoundsDrawingContext { CurrentClipBounds: Rect clipBounds })
         {
-            _renderDepth--;
-            _renderPath.Remove(this);
-            if (_renderDepth == 0 && _renderPath.Count > 0)
-            {
-                _renderPath.Clear();
-            }
+            return true;
         }
+
+        var childBounds = new Rect(childOffset.X, childOffset.Y, child.VisualBounds.Width, child.VisualBounds.Height);
+        if (child.Effect is IEffect effect && effect.HasEffect)
+        {
+            var padding = effect.EffectPadding;
+            childBounds = new Rect(
+                childBounds.X - padding.Left,
+                childBounds.Y - padding.Top,
+                childBounds.Width + padding.Left + padding.Right,
+                childBounds.Height + padding.Top + padding.Bottom);
+        }
+
+        return clipBounds.IntersectsWith(childBounds);
     }
 
     /// <summary>

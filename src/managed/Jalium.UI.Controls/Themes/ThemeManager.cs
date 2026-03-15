@@ -101,6 +101,7 @@ public static class ThemeManager
         ArgumentNullException.ThrowIfNull(app);
 
         _application = app;
+        SyncThemeFromCurrentThemeKey();
         ResourceDictionary.CurrentThemeKey = CurrentTheme.ToString();
 
         if (_initialized)
@@ -467,6 +468,17 @@ public static class ThemeManager
         catch (Exception)
         {
         }
+    }
+
+    private static void SyncThemeFromCurrentThemeKey()
+    {
+        if (ResourceDictionary.CurrentThemeKey is not string themeKey)
+            return;
+
+        if (!Enum.TryParse<ThemeVariant>(themeKey, ignoreCase: true, out var variant))
+            return;
+
+        CurrentTheme = variant;
     }
 
     private static void TryRegisterTypeResolver(Assembly xamlAssembly)

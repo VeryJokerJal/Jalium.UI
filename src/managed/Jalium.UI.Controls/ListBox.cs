@@ -1,6 +1,7 @@
-﻿using System.Collections;
+using System.Collections;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -9,11 +10,18 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ListBox : Selector
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ListBoxAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the SelectionMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectionModeProperty =
         DependencyProperty.Register(nameof(SelectionMode), typeof(SelectionMode), typeof(ListBox),
             new PropertyMetadata(SelectionMode.Single, OnSelectionModeChanged));
@@ -42,6 +50,7 @@ public class ListBox : Selector
     /// <summary>
     /// Gets or sets the selection mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public SelectionMode SelectionMode
     {
         get => (SelectionMode)GetValue(SelectionModeProperty)!;
@@ -64,6 +73,8 @@ public class ListBox : Selector
     /// </summary>
     public ListBox()
     {
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
+
         if (ItemsPanel == null)
         {
             ItemsPanel = CreateItemsPanelTemplate(typeof(VirtualizingStackPanel));
@@ -844,11 +855,21 @@ public class ListBox : Selector
 /// </summary>
 public class ListBoxItem : ContentControl
 {
+    private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Themes.ThemeColors.HighlightBackground);
+    private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Themes.ThemeColors.SelectionBackground);
+
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ListBoxItemAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(ListBoxItem),
             new PropertyMetadata(false, OnIsSelectedChanged));
@@ -860,6 +881,7 @@ public class ListBoxItem : ContentControl
     /// <summary>
     /// Gets or sets whether the item is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty)!;
@@ -870,6 +892,9 @@ public class ListBoxItem : ContentControl
     /// Gets or sets the parent ListBox.
     /// </summary>
     internal ListBox? ParentListBox { get; set; }
+
+    private Border? _backgroundBorder;
+    private bool _isItemMouseOver;
 
     #endregion
 
@@ -884,14 +909,25 @@ public class ListBoxItem : ContentControl
         // ContentPresenter handles displaying string/object content
         UseTemplateContentManagement();
 
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         Focusable = true;
+        ResourcesChanged += OnResourcesChangedHandler;
 
         // Register input event handlers
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
+        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
     }
 
     #endregion
+
+    protected override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+
+        _backgroundBorder = GetTemplateChild("PART_BackgroundBorder") as Border;
+        UpdateContainerVisualState();
+    }
 
     #region Input Handling
 
@@ -914,10 +950,25 @@ public class ListBoxItem : ContentControl
 
     private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
     {
+        if (!_isItemMouseOver)
+        {
+            _isItemMouseOver = true;
+            UpdateContainerVisualState();
+        }
+
         // If left mouse button is down while entering, perform drag selection
         if (e is MouseEventArgs mouseArgs && mouseArgs.LeftButton == MouseButtonState.Pressed)
         {
             ParentListBox?.HandleDragSelect(this);
+        }
+    }
+
+    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    {
+        if (_isItemMouseOver)
+        {
+            _isItemMouseOver = false;
+            UpdateContainerVisualState();
         }
     }
 
@@ -927,8 +978,44 @@ public class ListBoxItem : ContentControl
 
     private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        // Triggers handle visual changes now
+        if (d is ListBoxItem item)
+        {
+            item.UpdateContainerVisualState();
+        }
     }
 
     #endregion
+
+    private void UpdateContainerVisualState()
+    {
+        if (_backgroundBorder == null)
+        {
+            return;
+        }
+
+        if (IsSelected)
+        {
+            _backgroundBorder.Background = ResolveSelectedBackgroundBrush();
+            return;
+        }
+
+        if (_isItemMouseOver)
+        {
+            _backgroundBorder.Background = ResolveHoverBackgroundBrush();
+            return;
+        }
+
+        _backgroundBorder.ClearValue(Border.BackgroundProperty);
+    }
+
+    private Brush ResolveHoverBackgroundBrush()
+        => TryFindResource("HighlightBackground") as Brush ?? s_fallbackHoverBackgroundBrush;
+
+    private Brush ResolveSelectedBackgroundBrush()
+        => TryFindResource("SelectionBackground") as Brush ?? s_fallbackSelectedBackgroundBrush;
+
+    private void OnResourcesChangedHandler(object? sender, EventArgs e)
+    {
+        UpdateContainerVisualState();
+    }
 }

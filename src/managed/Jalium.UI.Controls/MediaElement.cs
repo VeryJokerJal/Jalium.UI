@@ -36,7 +36,7 @@ public enum MediaState
 /// <summary>
 /// Represents a control that contains audio and/or video.
 /// </summary>
-public sealed class MediaElement : FrameworkElement
+public class MediaElement : FrameworkElement
 {
     private Uri? _currentSource;
     private TimeSpan _position;
@@ -52,6 +52,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the Source dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(MediaElement),
             new PropertyMetadata(null, OnSourceChanged));
@@ -59,6 +60,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the Volume dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VolumeProperty =
         DependencyProperty.Register(nameof(Volume), typeof(double), typeof(MediaElement),
             new PropertyMetadata(0.5, OnVolumeChanged, CoerceVolume));
@@ -66,6 +68,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the Balance dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BalanceProperty =
         DependencyProperty.Register(nameof(Balance), typeof(double), typeof(MediaElement),
             new PropertyMetadata(0.0, OnBalanceChanged, CoerceBalance));
@@ -73,6 +76,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the IsMuted dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsMutedProperty =
         DependencyProperty.Register(nameof(IsMuted), typeof(bool), typeof(MediaElement),
             new PropertyMetadata(false, OnIsMutedChanged));
@@ -80,6 +84,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the ScrubbingEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ScrubbingEnabledProperty =
         DependencyProperty.Register(nameof(ScrubbingEnabled), typeof(bool), typeof(MediaElement),
             new PropertyMetadata(false));
@@ -87,6 +92,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the Stretch dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchProperty =
         DependencyProperty.Register(nameof(Stretch), typeof(Stretch), typeof(MediaElement),
             new PropertyMetadata(Stretch.Uniform, OnStretchChanged));
@@ -94,6 +100,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the StretchDirection dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchDirectionProperty =
         DependencyProperty.Register(nameof(StretchDirection), typeof(StretchDirection), typeof(MediaElement),
             new PropertyMetadata(StretchDirection.Both, OnStretchChanged));
@@ -101,6 +108,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the LoadedBehavior dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LoadedBehaviorProperty =
         DependencyProperty.Register(nameof(LoadedBehavior), typeof(MediaState), typeof(MediaElement),
             new PropertyMetadata(MediaState.Play, OnLoadedBehaviorChanged));
@@ -108,6 +116,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the UnloadedBehavior dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UnloadedBehaviorProperty =
         DependencyProperty.Register(nameof(UnloadedBehavior), typeof(MediaState), typeof(MediaElement),
             new PropertyMetadata(MediaState.Close));
@@ -115,6 +124,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Identifies the SpeedRatio dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SpeedRatioProperty =
         DependencyProperty.Register(nameof(SpeedRatio), typeof(double), typeof(MediaElement),
             new PropertyMetadata(1.0, OnSpeedRatioChanged, CoerceSpeedRatio));
@@ -160,6 +170,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Gets or sets a media source on the MediaElement.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? Source
     {
         get => (Uri?)GetValue(SourceProperty);
@@ -169,6 +180,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Gets or sets the media's volume.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Volume
     {
         get => (double)GetValue(VolumeProperty)!;
@@ -178,6 +190,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Gets or sets a ratio of volume across speakers.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Balance
     {
         get => (double)GetValue(BalanceProperty)!;
@@ -187,6 +200,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Gets or sets a value indicating whether the audio is muted.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsMuted
     {
         get => (bool)GetValue(IsMutedProperty)!;
@@ -197,6 +211,7 @@ public sealed class MediaElement : FrameworkElement
     /// Gets or sets a value that indicates whether the MediaElement will update frames
     /// for seek operations while paused.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool ScrubbingEnabled
     {
         get => (bool)GetValue(ScrubbingEnabledProperty)!;
@@ -206,6 +221,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Gets or sets a Stretch value that describes how the media fills the destination rectangle.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Stretch Stretch
     {
         get => (Stretch)GetValue(StretchProperty)!;
@@ -215,6 +231,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Gets or sets a value that determines the restrictions on scaling that are applied to the video.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StretchDirection StretchDirection
     {
         get => (StretchDirection)GetValue(StretchDirectionProperty)!;
@@ -224,6 +241,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Gets or sets the load behavior MediaState for the media.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public MediaState LoadedBehavior
     {
         get => (MediaState)GetValue(LoadedBehaviorProperty)!;
@@ -233,6 +251,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Gets or sets the unload behavior MediaState for the media.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public MediaState UnloadedBehavior
     {
         get => (MediaState)GetValue(UnloadedBehaviorProperty)!;
@@ -242,6 +261,7 @@ public sealed class MediaElement : FrameworkElement
     /// <summary>
     /// Gets or sets the speed ratio of the media.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SpeedRatio
     {
         get => (double)GetValue(SpeedRatioProperty)!;

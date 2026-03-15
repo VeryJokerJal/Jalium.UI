@@ -1,4 +1,4 @@
-﻿using Jalium.UI;
+using Jalium.UI;
 
 namespace Jalium.UI.Input;
 
@@ -135,19 +135,31 @@ public static class Stylus
     public static readonly RoutedEvent StylusButtonDownEvent = UIElement.StylusButtonDownEvent.AddOwner(typeof(UIElement));
     public static readonly RoutedEvent StylusButtonUpEvent = UIElement.StylusButtonUpEvent.AddOwner(typeof(UIElement));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsFlicksEnabledProperty =
         DependencyProperty.RegisterAttached("IsFlicksEnabled", typeof(bool), typeof(Stylus), new PropertyMetadata(true));
     public static readonly DependencyProperty IsPressAndHoldEnabledProperty =
         DependencyProperty.RegisterAttached("IsPressAndHoldEnabled", typeof(bool), typeof(Stylus), new PropertyMetadata(true));
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsTapFeedbackEnabledProperty =
         DependencyProperty.RegisterAttached("IsTapFeedbackEnabled", typeof(bool), typeof(Stylus), new PropertyMetadata(true));
     public static readonly DependencyProperty IsTouchFeedbackEnabledProperty =
         DependencyProperty.RegisterAttached("IsTouchFeedbackEnabled", typeof(bool), typeof(Stylus), new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static bool GetIsFlicksEnabled(DependencyObject element) => element.GetValue(IsFlicksEnabledProperty) is true;
     public static void SetIsFlicksEnabled(DependencyObject element, bool value) => element.SetValue(IsFlicksEnabledProperty, value);
     public static bool GetIsPressAndHoldEnabled(DependencyObject element) => element.GetValue(IsPressAndHoldEnabledProperty) is true;
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static void SetIsPressAndHoldEnabled(DependencyObject element, bool value) => element.SetValue(IsPressAndHoldEnabledProperty, value);
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
+    public static bool GetIsTapFeedbackEnabled(DependencyObject element) => element.GetValue(IsTapFeedbackEnabledProperty) is true;
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
+    public static void SetIsTapFeedbackEnabled(DependencyObject element, bool value) => element.SetValue(IsTapFeedbackEnabledProperty, value);
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
+    public static bool GetIsTouchFeedbackEnabled(DependencyObject element) => element.GetValue(IsTouchFeedbackEnabledProperty) is true;
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
+    public static void SetIsTouchFeedbackEnabled(DependencyObject element, bool value) => element.SetValue(IsTouchFeedbackEnabledProperty, value);
 
     public static StylusDevice? CurrentStylusDevice => Tablet.CurrentStylusDevice;
 }

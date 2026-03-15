@@ -1,4 +1,4 @@
-﻿namespace Jalium.UI.Controls.Primitives;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents an element that has a value within a specific range.
@@ -11,6 +11,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Identifies the Minimum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinimumProperty =
         DependencyProperty.Register(nameof(Minimum), typeof(double), typeof(RangeBase),
             new PropertyMetadata(0.0, OnMinimumChanged));
@@ -18,6 +19,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Identifies the Maximum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaximumProperty =
         DependencyProperty.Register(nameof(Maximum), typeof(double), typeof(RangeBase),
             new PropertyMetadata(1.0, OnMaximumChanged));
@@ -25,6 +27,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Identifies the Value dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ValueProperty =
         DependencyProperty.Register(nameof(Value), typeof(double), typeof(RangeBase),
             new PropertyMetadata(0.0, OnValuePropertyChanged, CoerceValue));
@@ -32,6 +35,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Identifies the SmallChange dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SmallChangeProperty =
         DependencyProperty.Register(nameof(SmallChange), typeof(double), typeof(RangeBase),
             new PropertyMetadata(0.1));
@@ -39,6 +43,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Identifies the LargeChange dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LargeChangeProperty =
         DependencyProperty.Register(nameof(LargeChange), typeof(double), typeof(RangeBase),
             new PropertyMetadata(1.0));
@@ -70,6 +75,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Gets or sets the minimum value of the range.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Minimum
     {
         get => (double)GetValue(MinimumProperty)!;
@@ -79,6 +85,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Gets or sets the maximum value of the range.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Maximum
     {
         get => (double)GetValue(MaximumProperty)!;
@@ -88,6 +95,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Gets or sets the current value of the range.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Value
     {
         get => (double)GetValue(ValueProperty)!;
@@ -97,6 +105,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Gets or sets the value to add or subtract when the user moves the control a small amount.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SmallChange
     {
         get => (double)GetValue(SmallChangeProperty)!;
@@ -106,6 +115,7 @@ public abstract class RangeBase : Control
     /// <summary>
     /// Gets or sets the value to add or subtract when the user moves the control a large amount.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double LargeChange
     {
         get => (double)GetValue(LargeChangeProperty)!;

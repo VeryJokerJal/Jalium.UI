@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -9,7 +10,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a top-level menu in a MenuBar control.
 /// </summary>
-public sealed class MenuBarItem : Control
+public class MenuBarItem : Control
 {
     private static readonly SolidColorBrush s_fallbackHoverBrush = new(Color.FromRgb(61, 61, 61));
     private static readonly SolidColorBrush s_fallbackTextBrush = new(Color.FromRgb(255, 255, 255));
@@ -22,6 +23,7 @@ public sealed class MenuBarItem : Control
     /// <summary>
     /// Identifies the Title dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TitleProperty =
         DependencyProperty.Register(nameof(Title), typeof(string), typeof(MenuBarItem),
             new PropertyMetadata(string.Empty));
@@ -33,6 +35,7 @@ public sealed class MenuBarItem : Control
     /// <summary>
     /// Gets or sets the title of the menu bar item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Title
     {
         get => (string?)GetValue(TitleProperty) ?? string.Empty;
@@ -68,6 +71,7 @@ public sealed class MenuBarItem : Control
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
         AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
+        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
     }
 
     /// <inheritdoc />
@@ -94,10 +98,15 @@ public sealed class MenuBarItem : Control
         base.OnRender(drawingContext);
 
         // Background
-        if (IsMouseOver || IsMenuOpen)
+        if (IsMouseOver || IsMenuOpen || IsKeyboardFocused)
         {
             var hoverBrush = ResolveBrush("OneSurfaceHover", "MenuBarItemBackgroundHover", s_fallbackHoverBrush);
             dc.DrawRoundedRectangle(hoverBrush, null, new Rect(RenderSize), 4, 4);
+        }
+
+        if (IsKeyboardFocused)
+        {
+            ControlFocusVisual.Draw(dc, this, new Rect(RenderSize), new CornerRadius(4));
         }
 
         // Title text
@@ -150,6 +159,12 @@ public sealed class MenuBarItem : Control
         InvalidateVisual();
     }
 
+    internal void OpenMenuAndFocusFirstItem()
+    {
+        OpenMenu();
+        FocusFirstMenuItem();
+    }
+
     /// <summary>
     /// Closes the drop-down menu.
     /// </summary>
@@ -177,6 +192,73 @@ public sealed class MenuBarItem : Control
     private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
     {
         InvalidateVisual();
+    }
+
+    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not KeyEventArgs keyArgs)
+        {
+            return;
+        }
+
+        var menuModeActive = ParentMenuBar?.IsAnyMenuOpen() == true;
+        var handled = keyArgs.Key switch
+        {
+            Key.Enter or Key.Space or Key.Down => OpenFromKeyboard(),
+            Key.Escape => CloseFromKeyboard(),
+            Key.Left => ParentMenuBar?.FocusSibling(this, -1, menuModeActive) == true,
+            Key.Right => ParentMenuBar?.FocusSibling(this, 1, menuModeActive) == true,
+            Key.Home => ParentMenuBar?.FocusBoundaryItem(last: false, openMenu: menuModeActive) == true,
+            Key.End => ParentMenuBar?.FocusBoundaryItem(last: true, openMenu: menuModeActive) == true,
+            _ => false
+        };
+
+        if (handled)
+        {
+            keyArgs.Handled = true;
+        }
+    }
+
+    private bool OpenFromKeyboard()
+    {
+        OpenMenuAndFocusFirstItem();
+        return true;
+    }
+
+    private bool CloseFromKeyboard()
+    {
+        if (!IsMenuOpen)
+        {
+            return false;
+        }
+
+        CloseMenu();
+        Focus();
+        return true;
+    }
+
+    private void FocusFirstMenuItem()
+    {
+        if (_items.Count == 0)
+        {
+            return;
+        }
+
+        Dispatcher.BeginInvokeCritical(() =>
+        {
+            foreach (var item in _items)
+            {
+                if (!item.IsEnabled || item.Visibility != Visibility.Visible)
+                {
+                    continue;
+                }
+
+                if (item.Focus())
+                {
+                    return;
+                }
+            }
+        });
     }
 
     private void OnItemsCollectionChanged(object? sender, NotifyCollectionChangedEventArgs e)

@@ -1,7 +1,12 @@
+using System.Collections.Concurrent;
+using System.ComponentModel;
+using System.Globalization;
+using System.Reflection;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls.DevTools;
 
@@ -11,14 +16,20 @@ namespace Jalium.UI.Controls.DevTools;
 /// Features: syntax-highlighted values, color swatches, inline editing, font preview,
 /// toolbar, element picker, search, breadcrumb, box model, grid/style/resource/binding inspectors.
 /// </summary>
-public sealed class DevToolsWindow : Window
+public class DevToolsWindow : Window
 {
+    private const int SearchRefreshDelayMilliseconds = 150;
+    private const int TreeBuildNodeBatchSize = 8;
+    private const int TreeBuildChildBatchSize = 48;
+
     private readonly Window _targetWindow;
     private readonly Grid _mainGrid;
     private readonly TreeView _visualTreeView;
     private readonly StackPanel _propertiesPanel;
     private readonly UIElement _propertiesScrollViewer;
     private readonly TextBox _searchTextBox;
+    private readonly DispatcherTimer _searchRefreshTimer;
+    private readonly DispatcherTimer _treeBuildTimer;
     private Visual? _selectedVisual;
     private DevToolsOverlay? _overlay;
     private int _rowIndex;
@@ -29,8 +40,9 @@ public sealed class DevToolsWindow : Window
 
     // All tree items for search/expand/collapse
     private readonly List<DevToolsTreeViewItem> _allTreeItems = new();
+    private readonly Queue<PendingTreeBuildNode> _pendingTreeBuild = new();
 
-    // ── Syntax highlighting palette (VS Code Dark+ inspired) ──────────
+    // 鈹€鈹€ Syntax highlighting palette (VS Code Dark+ inspired) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     private static readonly SolidColorBrush BrushString = new(Color.FromRgb(206, 145, 120));     // #CE9178
     private static readonly SolidColorBrush BrushNumber = new(Color.FromRgb(181, 206, 168));     // #B5CEA8
     private static readonly SolidColorBrush BrushBool = new(Color.FromRgb(86, 156, 214));        // #569CD6
@@ -54,7 +66,21 @@ public sealed class DevToolsWindow : Window
     private static readonly SolidColorBrush BrushBoxPadding = new(Color.FromArgb(180, 140, 200, 140));
     private static readonly SolidColorBrush BrushBoxContent = new(Color.FromArgb(180, 100, 160, 220));
     private static readonly SolidColorBrush BrushBoxLabel = new(Color.FromRgb(200, 200, 200));
+    private static readonly SolidColorBrush BrushCategoryFramework = new(Color.FromRgb(94, 196, 255));
+    private static readonly SolidColorBrush BrushCategoryLayout = new(Color.FromRgb(152, 195, 121));
+    private static readonly SolidColorBrush BrushCategoryAppearance = new(Color.FromRgb(255, 178, 102));
+    private static readonly SolidColorBrush BrushCategoryTypography = new(Color.FromRgb(244, 166, 232));
+    private static readonly SolidColorBrush BrushCategoryContent = new(Color.FromRgb(97, 175, 239));
+    private static readonly SolidColorBrush BrushCategoryItems = new(Color.FromRgb(86, 182, 194));
+    private static readonly SolidColorBrush BrushCategoryData = new(Color.FromRgb(229, 192, 123));
+    private static readonly SolidColorBrush BrushCategoryInput = new(Color.FromRgb(224, 108, 117));
+    private static readonly SolidColorBrush BrushCategoryBehavior = new(Color.FromRgb(198, 120, 221));
+    private static readonly SolidColorBrush BrushCategoryState = new(Color.FromRgb(163, 190, 140));
+    private static readonly SolidColorBrush BrushCategoryOther = new(Color.FromRgb(171, 178, 191));
     private const double NameWidth = 145;
+    private static readonly ConcurrentDictionary<Type, IReadOnlyList<DependencyPropertyInspectorEntry>> s_dependencyPropertyCache = new();
+
+    private sealed record DependencyPropertyInspectorEntry(DependencyProperty Property, DevToolsPropertyCategory Category);
 
     protected override bool CanOpenDevTools => false;
 
@@ -74,12 +100,12 @@ public sealed class DevToolsWindow : Window
         _mainGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                      // row 0: toolbar
         _mainGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // row 1: content
 
-        // ── Toolbar ───────────────────────────────────────────────────
+        // 鈹€鈹€ Toolbar 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         var toolbar = CreateToolbar();
         Grid.SetRow(toolbar, 0);
         _mainGrid.Children.Add(toolbar);
 
-        // ── Content grid (3 columns) ──────────────────────────────────
+        // 鈹€鈹€ Content grid (3 columns) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         var contentGrid = new Grid();
         contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         contentGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -87,7 +113,7 @@ public sealed class DevToolsWindow : Window
         Grid.SetRow(contentGrid, 1);
         _mainGrid.Children.Add(contentGrid);
 
-        // ── Left column: search + tree (stacked vertically) ──────────
+        // 鈹€鈹€ Left column: search + tree (stacked vertically) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         var leftGrid = new Grid();
         leftGrid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });                      // search
         leftGrid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) }); // tree
@@ -126,7 +152,7 @@ public sealed class DevToolsWindow : Window
         };
         Grid.SetColumn(splitter, 1);
         contentGrid.Children.Add(splitter);
-        // ── Right column: properties panel ────────────────────────────
+        // 鈹€鈹€ Right column: properties panel 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         var propertiesPanel = new StackPanel
         {
             Margin = new Thickness(4)
@@ -160,18 +186,31 @@ public sealed class DevToolsWindow : Window
             Margin = new Thickness(8, 16, 8, 8)
         });
 
+        _searchRefreshTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(SearchRefreshDelayMilliseconds)
+        };
+        _searchRefreshTimer.Tick += OnSearchRefreshTimerTick;
+
+        _treeBuildTimer = new DispatcherTimer
+        {
+            Interval = TimeSpan.FromMilliseconds(16)
+        };
+        _treeBuildTimer.Tick += OnTreeBuildTimerTick;
+
         RefreshVisualTree();
 
         _overlay = new DevToolsOverlay(_targetWindow);
         _targetWindow.DevToolsOverlay = _overlay;
 
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        Loaded += OnDevToolsLoaded;
         Closing += OnDevToolsClosing;
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Toolbar
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private Border CreateToolbar()
     {
@@ -243,9 +282,9 @@ public sealed class DevToolsWindow : Window
 
     private void OnCopyClick(object sender, RoutedEventArgs e) => CopyElementInfo();
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Element Picker Mode
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     internal void ActivatePicker()
     {
@@ -317,7 +356,7 @@ public sealed class DevToolsWindow : Window
 
             if (uiChild.Visibility != Visibility.Visible) continue;
 
-            // Skip OverlayLayer — it covers the entire window and would always be hit
+            // Skip OverlayLayer 鈥?it covers the entire window and would always be hit
             if (uiChild is OverlayLayer) continue;
 
             var bounds = uiChild.VisualBounds;
@@ -367,30 +406,22 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Search / Filter
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void OnSearchTextChanged(object? sender, EventArgs e)
     {
         var filter = _searchTextBox.Text?.Trim() ?? "";
         if (string.IsNullOrEmpty(filter))
         {
-            // Show full tree
             RefreshVisualTree();
         }
         else
         {
-            // Rebuild tree with filter
-            _visualTreeView.Items.Clear();
-            _allTreeItems.Clear();
-            var rootItem = CreateFilteredTreeViewItem(_targetWindow, filter);
-            if (rootItem != null)
-            {
-                AttachTreeItemToView(rootItem, 0);
-                _visualTreeView.Items.Add(rootItem);
-                rootItem.IsExpanded = true;
-            }
+            _treeBuildTimer.Stop();
+            _pendingTreeBuild.Clear();
+            RestartSearchRefreshTimer();
         }
     }
 
@@ -445,9 +476,9 @@ public sealed class DevToolsWindow : Window
         return false;
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Expand / Collapse All
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void ExpandAll()
     {
@@ -461,9 +492,9 @@ public sealed class DevToolsWindow : Window
             item.IsExpanded = false;
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Copy Element Info
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void CopyElementInfo()
     {
@@ -496,14 +527,18 @@ public sealed class DevToolsWindow : Window
         Clipboard.SetText(sb.ToString());
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Keyboard Shortcuts
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private bool _isClosing;
 
     private void OnDevToolsClosing(object? sender, EventArgs e)
     {
+        _searchRefreshTimer.Stop();
+        _treeBuildTimer.Stop();
+        _pendingTreeBuild.Clear();
+
         if (_isPickerActive)
             DeactivatePicker();
         _targetWindow.DevToolsOverlay = null;
@@ -566,38 +601,39 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Visual Tree
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void RefreshVisualTree()
     {
+        _searchRefreshTimer.Stop();
+        _treeBuildTimer.Stop();
+        _pendingTreeBuild.Clear();
         _visualTreeView.Items.Clear();
         _allTreeItems.Clear();
 
-        var rootItem = CreateTreeViewItem(_targetWindow);
-        AttachTreeItemToView(rootItem, 0);
-        _visualTreeView.Items.Add(rootItem);
-        rootItem.IsExpanded = true;
-    }
-
-    private DevToolsTreeViewItem CreateTreeViewItem(Visual visual)
-    {
-        var item = new DevToolsTreeViewItem(visual);
-        _allTreeItems.Add(item);
-
-        var childCount = visual.VisualChildrenCount;
-        for (int i = 0; i < childCount; i++)
+        var filter = _searchTextBox.Text?.Trim() ?? "";
+        if (!string.IsNullOrEmpty(filter))
         {
-            var child = visual.GetVisualChild(i);
-            if (child != null)
+            var rootItem = CreateFilteredTreeViewItem(_targetWindow, filter);
+            if (rootItem != null)
             {
-                var childItem = CreateTreeViewItem(child);
-                item.Items.Add(childItem);
+                AttachTreeItemToView(rootItem, 0);
+                _visualTreeView.Items.Add(rootItem);
+                rootItem.IsExpanded = true;
             }
+
+            return;
         }
 
-        return item;
+        var root = new DevToolsTreeViewItem(_targetWindow);
+        PrepareTreeItem(root, 0);
+        _allTreeItems.Add(root);
+        _visualTreeView.Items.Add(root);
+        root.IsExpanded = true;
+        _pendingTreeBuild.Enqueue(new PendingTreeBuildNode(root, _targetWindow, 0));
+        ScheduleTreeBuild();
     }
 
     private void OnVisualTreeSelectionChanged(object? sender, RoutedPropertyChangedEventArgs<object?> e)
@@ -615,8 +651,7 @@ public sealed class DevToolsWindow : Window
     /// </summary>
     private void AttachTreeItemToView(TreeViewItem item, int level)
     {
-        item.ParentTreeView = _visualTreeView;
-        item.Level = level;
+        PrepareTreeItem(item, level);
 
         foreach (var child in item.Items)
         {
@@ -627,9 +662,115 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    //  Properties Panel — syntax-highlighted, editable, color swatches
-    // ══════════════════════════════════════════════════════════════════
+    private void PrepareTreeItem(TreeViewItem item, int level)
+    {
+        item.ParentTreeView = _visualTreeView;
+        item.Level = level;
+    }
+
+    private void RestartSearchRefreshTimer()
+    {
+        _searchRefreshTimer.Stop();
+        _searchRefreshTimer.Start();
+    }
+
+    private void OnSearchRefreshTimerTick(object? sender, EventArgs e)
+    {
+        _searchRefreshTimer.Stop();
+        RefreshVisualTree();
+    }
+
+    private void OnDevToolsLoaded(object? sender, EventArgs e)
+    {
+        ScheduleTreeBuild(deferToDispatcher: true);
+    }
+
+    private void ScheduleTreeBuild(bool deferToDispatcher = false)
+    {
+        if (_isClosing || _pendingTreeBuild.Count == 0 || Handle == nint.Zero)
+        {
+            return;
+        }
+
+        void StartTimer()
+        {
+            if (!_isClosing && _pendingTreeBuild.Count > 0 && !_treeBuildTimer.IsEnabled)
+            {
+                _treeBuildTimer.Start();
+            }
+        }
+
+        if (deferToDispatcher)
+        {
+            Dispatcher.BeginInvoke(StartTimer);
+        }
+        else
+        {
+            StartTimer();
+        }
+    }
+
+    private void OnTreeBuildTimerTick(object? sender, EventArgs e)
+    {
+        _treeBuildTimer.Stop();
+
+        if (_isClosing)
+        {
+            _pendingTreeBuild.Clear();
+            return;
+        }
+
+        int processedNodes = 0;
+        int processedChildren = 0;
+        while (processedNodes < TreeBuildNodeBatchSize &&
+               processedChildren < TreeBuildChildBatchSize &&
+               _pendingTreeBuild.Count > 0)
+        {
+            var pendingNode = _pendingTreeBuild.Dequeue();
+            var childCount = pendingNode.Visual.VisualChildrenCount;
+            if (pendingNode.NextChildIndex >= childCount)
+            {
+                processedNodes++;
+                continue;
+            }
+
+            var childItems = new List<TreeViewItem>(Math.Min(childCount - pendingNode.NextChildIndex, TreeBuildChildBatchSize));
+            while (pendingNode.NextChildIndex < childCount &&
+                   processedChildren < TreeBuildChildBatchSize)
+            {
+                var child = pendingNode.Visual.GetVisualChild(pendingNode.NextChildIndex);
+                pendingNode.NextChildIndex++;
+                if (child == null)
+                {
+                    continue;
+                }
+
+                var childItem = new DevToolsTreeViewItem(child);
+                PrepareTreeItem(childItem, pendingNode.Level + 1);
+                childItems.Add(childItem);
+                _allTreeItems.Add(childItem);
+                _pendingTreeBuild.Enqueue(new PendingTreeBuildNode(childItem, child, pendingNode.Level + 1));
+                processedChildren++;
+            }
+
+            pendingNode.Item.AddChildItems(childItems);
+            if (pendingNode.NextChildIndex < childCount)
+            {
+                _pendingTreeBuild.Enqueue(pendingNode);
+            }
+
+            processedNodes++;
+        }
+
+        if (_pendingTreeBuild.Count > 0)
+        {
+            ScheduleTreeBuild();
+        }
+    }
+
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+    //  Properties Panel 鈥?syntax-highlighted, editable, color swatches
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void UpdatePropertiesPanel(Visual? visual)
     {
@@ -677,22 +818,27 @@ public sealed class DevToolsWindow : Window
         var type = visual.GetType();
         AddTypeHeader(type);
 
-        // ── Element Statistics ──────────────────────────────────────
+        // 鈹€鈹€ Element Statistics 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         if (visual is UIElement)
         {
             AddElementStats(visual);
         }
 
-        // ── Breadcrumb path ────────────────────────────────────────
+        // 鈹€鈹€ Breadcrumb path 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         AddBreadcrumb(visual);
 
-        // ── Box model diagram ──────────────────────────────────────
+        // 鈹€鈹€ Box model diagram 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         if (visual is FrameworkElement boxFe)
         {
             AddBoxModel(boxFe);
         }
 
-        // ── UIElement ──────────────────────────────────────────────
+        if (visual is DependencyObject dependencyObject)
+        {
+            AddCategorizedDependencyPropertyInspector(dependencyObject);
+        }
+
+        // 鈹€鈹€ UIElement 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         if (visual is UIElement uiElement)
         {
             AddSection("UIElement");
@@ -706,7 +852,7 @@ public sealed class DevToolsWindow : Window
             AddBool("IsMouseOver", uiElement.IsMouseOver);
             AddBool("IsKeyboardFocused", uiElement.IsKeyboardFocused);
 
-            // ── FrameworkElement ────────────────────────────────────
+            // 鈹€鈹€ FrameworkElement 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             if (uiElement is FrameworkElement fe)
             {
                 AddSection("Layout");
@@ -726,7 +872,7 @@ public sealed class DevToolsWindow : Window
                 if (fe.DataContext != null)
                     AddStr("DataContext", fe.DataContext.GetType().Name);
 
-                // ── Grid attached ──────────────────────────────────
+                // 鈹€鈹€ Grid attached 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe.VisualParent is Grid)
                 {
                     AddSection("Grid Attached");
@@ -738,7 +884,7 @@ public sealed class DevToolsWindow : Window
                         AddNum("Grid.ColumnSpan", Grid.GetColumnSpan(fe), "F0", v => Grid.SetColumnSpan(fe, (int)v));
                 }
 
-                // ── Canvas attached ────────────────────────────────
+                // 鈹€鈹€ Canvas attached 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe.VisualParent is Canvas)
                 {
                     AddSection("Canvas Position");
@@ -746,7 +892,7 @@ public sealed class DevToolsWindow : Window
                     AddNum("Canvas.Top", Canvas.GetTop(fe), "F1", v => Canvas.SetTop(fe, v));
                 }
 
-                // ── Control ────────────────────────────────────────
+                // 鈹€鈹€ Control 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is Control control)
                 {
                     AddSection("Appearance");
@@ -765,7 +911,7 @@ public sealed class DevToolsWindow : Window
                     AddEnum("VertContentAlign", control.VerticalContentAlignment);
                 }
 
-                // ── TextBlock ──────────────────────────────────────
+                // 鈹€鈹€ TextBlock 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is TextBlock tb)
                 {
                     AddSection("TextBlock");
@@ -781,7 +927,7 @@ public sealed class DevToolsWindow : Window
                     AddFontWeight("FontWeight", tb.FontWeight);
                 }
 
-                // ── Border ─────────────────────────────────────────
+                // 鈹€鈹€ Border 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is Border border)
                 {
                     AddSection("Border");
@@ -796,7 +942,7 @@ public sealed class DevToolsWindow : Window
                         AddNull("Child");
                 }
 
-                // ── ContentControl ─────────────────────────────────
+                // 鈹€鈹€ ContentControl 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is ContentControl cc && fe is not NavigationView)
                 {
                     AddSection("Content");
@@ -809,7 +955,7 @@ public sealed class DevToolsWindow : Window
                         AddNull("Content");
                 }
 
-                // ── StackPanel ─────────────────────────────────────
+                // 鈹€鈹€ StackPanel 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is StackPanel sp)
                 {
                     AddSection("StackPanel");
@@ -817,7 +963,7 @@ public sealed class DevToolsWindow : Window
                     AddNum("Children", sp.Children.Count, "F0");
                 }
 
-                // ── Grid (with definitions inspector) ──────────────
+                // 鈹€鈹€ Grid (with definitions inspector) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is Grid grid)
                 {
                     AddSection("Grid");
@@ -827,7 +973,7 @@ public sealed class DevToolsWindow : Window
                     AddGridDefinitions(grid);
                 }
 
-                // ── Image ──────────────────────────────────────────
+                // 鈹€鈹€ Image 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is Image img)
                 {
                     AddSection("Image");
@@ -838,7 +984,7 @@ public sealed class DevToolsWindow : Window
                     AddEnum("Stretch", img.Stretch);
                 }
 
-                // ── ToggleSwitch ───────────────────────────────────
+                // 鈹€鈹€ ToggleSwitch 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is ToggleSwitch ts)
                 {
                     AddSection("ToggleSwitch");
@@ -850,7 +996,7 @@ public sealed class DevToolsWindow : Window
                     AddBrush("OffBackground", ts.OffBackground);
                 }
 
-                // ── NavigationView ─────────────────────────────────
+                // 鈹€鈹€ NavigationView 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is NavigationView nv)
                 {
                     AddSection("NavigationView");
@@ -865,7 +1011,7 @@ public sealed class DevToolsWindow : Window
                         AddStr("Header", nv.Header.ToString() ?? "");
                 }
 
-                // ── Popup ──────────────────────────────────────────
+                // 鈹€鈹€ Popup 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is Popup popup)
                 {
                     AddSection("Popup");
@@ -876,7 +1022,7 @@ public sealed class DevToolsWindow : Window
                     AddBool("StaysOpen", popup.StaysOpen, v => popup.StaysOpen = v);
                 }
 
-                // ── ScrollViewer ───────────────────────────────────
+                // 鈹€鈹€ ScrollViewer 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is ScrollViewer sv)
                 {
                     AddSection("ScrollViewer");
@@ -888,14 +1034,14 @@ public sealed class DevToolsWindow : Window
                     AddNum("ViewportHeight", sv.ViewportHeight, "F1");
                 }
 
-                // ── ItemsControl ───────────────────────────────────
+                // 鈹€鈹€ ItemsControl 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is ItemsControl ic && fe is not ComboBox && fe is not ListBox)
                 {
                     AddSection("ItemsControl");
                     AddNum("Items.Count", ic.Items.Count, "F0");
                 }
 
-                // ── ComboBox ───────────────────────────────────────
+                // 鈹€鈹€ ComboBox 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is ComboBox cb)
                 {
                     AddSection("ComboBox");
@@ -908,7 +1054,7 @@ public sealed class DevToolsWindow : Window
                     AddNum("Items.Count", cb.Items.Count, "F0");
                 }
 
-                // ── ListBox ────────────────────────────────────────
+                // 鈹€鈹€ ListBox 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 if (fe is ListBox lb)
                 {
                     AddSection("ListBox");
@@ -920,7 +1066,7 @@ public sealed class DevToolsWindow : Window
                     AddNum("Items.Count", lb.Items.Count, "F0");
                 }
 
-                // ── Style Inspector (safe) ─────────────────────────
+                // 鈹€鈹€ Style Inspector (safe) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 try
                 {
                     if (fe.Style != null)
@@ -928,7 +1074,7 @@ public sealed class DevToolsWindow : Window
                 }
                 catch { }
 
-                // ── Resource Inspector (safe) ──────────────────────
+                // 鈹€鈹€ Resource Inspector (safe) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 try
                 {
                     if (fe.Resources is { Count: > 0 } res)
@@ -936,7 +1082,7 @@ public sealed class DevToolsWindow : Window
                 }
                 catch { }
 
-                // ── Binding Inspector (safe) ───────────────────────
+                // 鈹€鈹€ Binding Inspector (safe) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
                 try
                 {
                     AddBindingInspector(fe);
@@ -946,9 +1092,394 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Element Statistics
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+
+    private void AddCategorizedDependencyPropertyInspector(DependencyObject dependencyObject)
+    {
+        var entries = GetCategorizedDependencyProperties(dependencyObject.GetType());
+        if (entries.Count == 0)
+        {
+            return;
+        }
+
+        AddSection($"Properties by Category ({entries.Count})");
+
+        foreach (var group in entries
+                     .GroupBy(static entry => entry.Category)
+                     .OrderBy(static group => GetCategorySortOrder(group.Key)))
+        {
+            var categoryEntries = group.ToList();
+            AddCategoryHeader(group.Key, categoryEntries.Count);
+
+            foreach (var entry in categoryEntries.OrderBy(static entry => entry.Property.Name, StringComparer.Ordinal))
+            {
+                AddCategorizedDependencyProperty(dependencyObject, entry);
+            }
+        }
+    }
+
+    private static IReadOnlyList<DependencyPropertyInspectorEntry> GetCategorizedDependencyProperties(Type targetType)
+    {
+        return s_dependencyPropertyCache.GetOrAdd(targetType, static type =>
+        {
+            var entries = new Dictionary<int, DependencyPropertyInspectorEntry>();
+            var fields = type.GetFields(BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+            foreach (var field in fields)
+            {
+                if (field.FieldType != typeof(DependencyProperty))
+                {
+                    continue;
+                }
+
+                if (field.GetValue(null) is not DependencyProperty dependencyProperty)
+                {
+                    continue;
+                }
+
+                entries.TryAdd(
+                    dependencyProperty.GlobalIndex,
+                    new DependencyPropertyInspectorEntry(
+                        dependencyProperty,
+                        ResolveDependencyPropertyCategory(dependencyProperty, type)));
+            }
+
+            return entries.Values
+                .OrderBy(static entry => GetCategorySortOrder(entry.Category))
+                .ThenBy(static entry => entry.Property.Name, StringComparer.Ordinal)
+                .ToArray();
+        });
+    }
+
+    private static DevToolsPropertyCategory ResolveDependencyPropertyCategory(DependencyProperty dependencyProperty, Type targetType)
+    {
+        if (TryGetPropertyCategory(targetType, dependencyProperty.Name, out var category))
+        {
+            return category;
+        }
+
+        if (TryGetPropertyCategory(dependencyProperty.OwnerType, dependencyProperty.Name, out category))
+        {
+            return category;
+        }
+
+        var field = dependencyProperty.OwnerType.GetField(
+            dependencyProperty.Name + "Property",
+            BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+        if (TryGetDeclaredCategory(field, out category))
+        {
+            return category;
+        }
+
+        var getter = dependencyProperty.OwnerType.GetMethod(
+            "Get" + dependencyProperty.Name,
+            BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+        if (TryGetDeclaredCategory(getter, out category))
+        {
+            return category;
+        }
+
+        var setter = dependencyProperty.OwnerType.GetMethod(
+            "Set" + dependencyProperty.Name,
+            BindingFlags.Public | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+        if (TryGetDeclaredCategory(setter, out category))
+        {
+            return category;
+        }
+
+        return DevToolsPropertyCategory.Other;
+    }
+
+    private static bool TryGetPropertyCategory(Type type, string propertyName, out DevToolsPropertyCategory category)
+    {
+        var property = type.GetProperty(
+            propertyName,
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static | BindingFlags.FlattenHierarchy);
+
+        return TryGetDeclaredCategory(property, out category);
+    }
+
+    private static bool TryGetDeclaredCategory(MemberInfo? member, out DevToolsPropertyCategory category)
+    {
+        if (member == null)
+        {
+            category = DevToolsPropertyCategory.Other;
+            return false;
+        }
+
+        if (member.GetCustomAttribute<DevToolsPropertyCategoryAttribute>(inherit: true) is { } attribute)
+        {
+            category = attribute.Category;
+            return true;
+        }
+
+        if (member.GetCustomAttribute<CategoryAttribute>(inherit: true) is { } categoryAttribute &&
+            TryParseCategory(categoryAttribute.Category, out category))
+        {
+            return true;
+        }
+
+        category = DevToolsPropertyCategory.Other;
+        return false;
+    }
+
+    private static bool TryParseCategory(string categoryName, out DevToolsPropertyCategory category)
+    {
+        return Enum.TryParse(categoryName, ignoreCase: true, out category);
+    }
+
+    private static int GetCategorySortOrder(DevToolsPropertyCategory category)
+    {
+        return category switch
+        {
+            DevToolsPropertyCategory.Framework => 0,
+            DevToolsPropertyCategory.Layout => 1,
+            DevToolsPropertyCategory.Appearance => 2,
+            DevToolsPropertyCategory.Typography => 3,
+            DevToolsPropertyCategory.Content => 4,
+            DevToolsPropertyCategory.Items => 5,
+            DevToolsPropertyCategory.Data => 6,
+            DevToolsPropertyCategory.Input => 7,
+            DevToolsPropertyCategory.Behavior => 8,
+            DevToolsPropertyCategory.State => 9,
+            _ => 10
+        };
+    }
+
+    private static SolidColorBrush GetCategoryBrush(DevToolsPropertyCategory category)
+    {
+        return category switch
+        {
+            DevToolsPropertyCategory.Framework => BrushCategoryFramework,
+            DevToolsPropertyCategory.Layout => BrushCategoryLayout,
+            DevToolsPropertyCategory.Appearance => BrushCategoryAppearance,
+            DevToolsPropertyCategory.Typography => BrushCategoryTypography,
+            DevToolsPropertyCategory.Content => BrushCategoryContent,
+            DevToolsPropertyCategory.Items => BrushCategoryItems,
+            DevToolsPropertyCategory.Data => BrushCategoryData,
+            DevToolsPropertyCategory.Input => BrushCategoryInput,
+            DevToolsPropertyCategory.Behavior => BrushCategoryBehavior,
+            DevToolsPropertyCategory.State => BrushCategoryState,
+            _ => BrushCategoryOther
+        };
+    }
+
+    private void AddCategoryHeader(DevToolsPropertyCategory category, int count)
+    {
+        _propertiesPanel.Children.Add(new TextBlock
+        {
+            Text = $"\u25cf {category} ({count})",
+            Foreground = GetCategoryBrush(category),
+            FontSize = 10,
+            FontWeight = FontWeights.SemiBold,
+            Margin = new Thickness(8, 8, 4, 1)
+        });
+    }
+
+    private void AddCategorizedDependencyProperty(DependencyObject target, DependencyPropertyInspectorEntry entry)
+    {
+        var property = entry.Property;
+        var value = GetInspectablePropertyValue(target, property);
+        var nameBrush = GetCategoryBrush(entry.Category);
+
+        switch (value)
+        {
+            case null:
+                AddNull(property.Name, nameBrush);
+                break;
+
+            case string text when property.PropertyType == typeof(string):
+                if (property.ReadOnly)
+                {
+                    AddStr(property.Name, text, nameBrush);
+                }
+                else
+                {
+                    AddEditable(property.Name, text, v => TrySetDependencyPropertyValue(target, property, v), nameBrush);
+                }
+                break;
+
+            case bool boolValue when property.PropertyType == typeof(bool):
+                AddBool(
+                    property.Name,
+                    boolValue,
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case double numberValue when property.PropertyType == typeof(double):
+                AddNum(
+                    property.Name,
+                    numberValue,
+                    "F1",
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case float floatValue when property.PropertyType == typeof(float):
+                AddNum(
+                    property.Name,
+                    floatValue,
+                    "F1",
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, (float)v),
+                    nameBrush);
+                break;
+
+            case Enum enumValue:
+                AddEnum(
+                    property.Name,
+                    enumValue,
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case Brush brushValue:
+                AddBrush(
+                    property.Name,
+                    brushValue,
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case Thickness thicknessValue:
+                AddThickness(
+                    property.Name,
+                    thicknessValue,
+                    property.ReadOnly ? null : v => TrySetDependencyPropertyValue(target, property, v),
+                    nameBrush);
+                break;
+
+            case Size sizeValue:
+                AddSize(property.Name, sizeValue, nameBrush);
+                break;
+
+            case Rect rectValue:
+                AddRect(property.Name, rectValue, nameBrush);
+                break;
+
+            default:
+                AddFormattedDependencyPropertyValue(property.Name, value, nameBrush);
+                break;
+        }
+    }
+
+    private static object? GetInspectablePropertyValue(DependencyObject target, DependencyProperty property)
+    {
+        var clrProperty = target.GetType().GetProperty(
+            property.Name,
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.FlattenHierarchy);
+
+        if (clrProperty != null && clrProperty.GetIndexParameters().Length == 0)
+        {
+            try
+            {
+                return clrProperty.GetValue(target);
+            }
+            catch
+            {
+                // Fall back to the raw dependency property value when a CLR wrapper throws.
+            }
+        }
+
+        return target.GetValue(property);
+    }
+
+    private static void TrySetDependencyPropertyValue(DependencyObject target, DependencyProperty property, object? value)
+    {
+        try
+        {
+            if (value == null || property.PropertyType.IsInstanceOfType(value))
+            {
+                target.SetValue(property, value);
+                return;
+            }
+
+            if (TryChangeType(value, property.PropertyType, out var converted))
+            {
+                target.SetValue(property, converted);
+            }
+        }
+        catch
+        {
+            // DevTools editors should stay resilient when a conversion fails.
+        }
+    }
+
+    private static bool TryChangeType(object value, Type targetType, out object? convertedValue)
+    {
+        try
+        {
+            if (targetType.IsEnum)
+            {
+                convertedValue = value is string text
+                    ? Enum.Parse(targetType, text, ignoreCase: true)
+                    : Enum.ToObject(targetType, value);
+                return true;
+            }
+
+            if (value is IConvertible && typeof(IConvertible).IsAssignableFrom(targetType))
+            {
+                convertedValue = Convert.ChangeType(value, targetType, CultureInfo.InvariantCulture);
+                return true;
+            }
+        }
+        catch
+        {
+            // Ignored on purpose; the caller treats failed conversion as a no-op.
+        }
+
+        convertedValue = null;
+        return false;
+    }
+
+    private void AddFormattedDependencyPropertyValue(string name, object? value, Brush? nameBrush = null)
+    {
+        if (value == null)
+        {
+            AddNull(name, nameBrush);
+            return;
+        }
+
+        var row = Row(name, nameBrush);
+        row.Children.Add(new TextBlock
+        {
+            Text = FormatDependencyPropertyValue(value),
+            Foreground = GetDependencyPropertyValueBrush(value),
+            FontSize = 11
+        });
+    }
+
+    private static string FormatDependencyPropertyValue(object value)
+    {
+        return value switch
+        {
+            DependencyObject dependencyObject => dependencyObject.GetType().Name,
+            Type type => type.Name,
+            System.Collections.IEnumerable enumerable when value is not string =>
+                enumerable is System.Collections.ICollection collection
+                    ? $"{value.GetType().Name} ({collection.Count})"
+                    : value.GetType().Name,
+            _ => value.ToString() ?? value.GetType().Name
+        };
+    }
+
+    private static SolidColorBrush GetDependencyPropertyValueBrush(object value)
+    {
+        return value switch
+        {
+            bool => BrushBool,
+            Enum => BrushEnum,
+            string => BrushString,
+            byte or sbyte or short or ushort or int or uint or long or ulong or float or double or decimal => BrushNumber,
+            Thickness => BrushThickness,
+            _ => BrushType
+        };
+    }
 
     private void AddElementStats(Visual visual)
     {
@@ -999,9 +1530,9 @@ public sealed class DevToolsWindow : Window
         return count;
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Breadcrumb Path
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void AddBreadcrumb(Visual visual)
     {
@@ -1070,9 +1601,9 @@ public sealed class DevToolsWindow : Window
         _propertiesPanel.Children.Add(row);
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Box Model Diagram (Margin > Border > Padding > Content)
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void AddBoxModel(FrameworkElement fe)
     {
@@ -1285,9 +1816,9 @@ public sealed class DevToolsWindow : Window
         return $"{t.Left:F0},{t.Top:F0},{t.Right:F0},{t.Bottom:F0}";
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Grid Definition Inspector
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void AddGridDefinitions(Grid grid)
     {
@@ -1338,9 +1869,9 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Style Inspector
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void AddStyleInspector(Style style)
     {
@@ -1445,9 +1976,9 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Resource Inspector
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void AddResourceInspector(IDictionary<object, object?> resources)
     {
@@ -1508,9 +2039,9 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Binding Inspector
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void AddBindingInspector(FrameworkElement fe)
     {
@@ -1565,9 +2096,9 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ══════════════════════════════════════════════════════════════════
-    //  Row helpers — each creates one property row with correct styling
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+    //  Row helpers 鈥?each creates one property row with correct styling
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private void AddTypeHeader(Type type)
     {
@@ -1617,7 +2148,7 @@ public sealed class DevToolsWindow : Window
     }
 
     /// <summary>Creates a horizontal row with the property name already added.</summary>
-    private StackPanel Row(string name)
+    private StackPanel Row(string name, Brush? nameBrush = null)
     {
         var isAlt = _rowIndex % 2 == 1;
         _rowIndex++;
@@ -1631,7 +2162,7 @@ public sealed class DevToolsWindow : Window
         row.Children.Add(new TextBlock
         {
             Text = name,
-            Foreground = BrushPropName,
+            Foreground = nameBrush ?? BrushPropName,
             FontSize = 11,
             Width = NameWidth
         });
@@ -1654,10 +2185,10 @@ public sealed class DevToolsWindow : Window
         return row;
     }
 
-    // ── 1. String value (orange) ─────────────────────────────────────
-    private void AddStr(string name, string value)
+    // 鈹€鈹€ 1. String value (orange) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private void AddStr(string name, string value, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         row.Children.Add(new TextBlock
         {
             Text = $"\"{value}\"",
@@ -1666,10 +2197,10 @@ public sealed class DevToolsWindow : Window
         });
     }
 
-    // ── 2. Editable string (orange + TextBox) ────────────────────────
-    private void AddEditable(string name, string value, Action<string> setter)
+    // 鈹€鈹€ 2. Editable string (orange + TextBox) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private void AddEditable(string name, string value, Action<string> setter, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         var tb = new TextBox
         {
             Text = value,
@@ -1688,10 +2219,10 @@ public sealed class DevToolsWindow : Window
         row.Children.Add(tb);
     }
 
-    // ── 3. Number value (green), optionally editable ─────────────────
-    private void AddNum(string name, double value, string fmt = "F1", Action<double>? setter = null)
+    // 鈹€鈹€ 3. Number value (green), optionally editable 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private void AddNum(string name, double value, string fmt = "F1", Action<double>? setter = null, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         var text = double.IsNaN(value) ? "NaN"
                  : double.IsInfinity(value) ? "\u221e"
                  : value.ToString(fmt);
@@ -1729,10 +2260,10 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ── 4. Boolean value (blue, click-to-toggle) ─────────────────────
-    private void AddBool(string name, bool value, Action<bool>? setter = null)
+    // 鈹€鈹€ 4. Boolean value (blue, click-to-toggle) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private void AddBool(string name, bool value, Action<bool>? setter = null, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
 
         var indicator = new TextBlock
         {
@@ -1779,10 +2310,15 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ── 5. Enum value (gold, click-to-cycle) ─────────────────────────
+    // 鈹€鈹€ 5. Enum value (gold, click-to-cycle) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     private void AddEnum<T>(string name, T value, Action<object>? setter = null) where T : struct, Enum
     {
-        var row = Row(name);
+        AddEnum(name, (Enum)(object)value, setter);
+    }
+
+    private void AddEnum(string name, Enum value, Action<object>? setter = null, Brush? nameBrush = null)
+    {
+        var row = Row(name, nameBrush);
 
         if (setter != null)
         {
@@ -1811,9 +2347,9 @@ public sealed class DevToolsWindow : Window
             {
                 try
                 {
-                    var vals = Enum.GetValues<T>();
-                    int idx = Array.IndexOf(vals, value);
-                    setter(vals[(idx + 1) % vals.Length]);
+                    var values = Enum.GetValues(value.GetType());
+                    int index = Array.IndexOf(values, value);
+                    setter(values.GetValue((index + 1) % values.Length)!);
                     if (_selectedVisual != null) UpdatePropertiesPanel(_selectedVisual);
                 }
                 catch { }
@@ -1831,10 +2367,10 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ── 6. Null value (gray) ─────────────────────────────────────────
-    private void AddNull(string name)
+    // 鈹€鈹€ 6. Null value (gray) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private void AddNull(string name, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         row.Children.Add(new TextBlock
         {
             Text = "null",
@@ -1843,10 +2379,10 @@ public sealed class DevToolsWindow : Window
         });
     }
 
-    // ── 7. Brush/Color with swatch rectangle ─────────────────────────
-    private void AddBrush(string name, Brush? brush, Action<Brush>? setter = null)
+    // 鈹€鈹€ 7. Brush/Color with swatch rectangle 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private void AddBrush(string name, Brush? brush, Action<Brush>? setter = null, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
 
         if (brush is SolidColorBrush scb)
         {
@@ -1926,10 +2462,10 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ── 8. Thickness value (teal, editable) ──────────────────────────
-    private void AddThickness(string name, Thickness t, Action<Thickness>? setter = null)
+    // 鈹€鈹€ 8. Thickness value (teal, editable) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private void AddThickness(string name, Thickness t, Action<Thickness>? setter = null, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
 
         string text = t.Left == t.Right && t.Top == t.Bottom && t.Left == t.Top
             ? $"{t.Left:F0}"
@@ -1970,10 +2506,10 @@ public sealed class DevToolsWindow : Window
         }
     }
 
-    // ── 9. Size value (green) ────────────────────────────────────────
-    private void AddSize(string name, Size size)
+    // 鈹€鈹€ 9. Size value (green) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private void AddSize(string name, Size size, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         row.Children.Add(new TextBlock
         {
             Text = $"{size.Width:F1} \u00d7 {size.Height:F1}",
@@ -1982,10 +2518,10 @@ public sealed class DevToolsWindow : Window
         });
     }
 
-    // ── 10. Rect value (green) ───────────────────────────────────────
-    private void AddRect(string name, Rect rect)
+    // 鈹€鈹€ 10. Rect value (green) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
+    private void AddRect(string name, Rect rect, Brush? nameBrush = null)
     {
-        var row = Row(name);
+        var row = Row(name, nameBrush);
         row.Children.Add(new TextBlock
         {
             Text = $"{rect.X:F1}, {rect.Y:F1}  {rect.Width:F1} \u00d7 {rect.Height:F1}",
@@ -1994,7 +2530,7 @@ public sealed class DevToolsWindow : Window
         });
     }
 
-    // ── 11. Font family (rendered in that font) ──────────────────────
+    // 鈹€鈹€ 11. Font family (rendered in that font) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     private void AddFontFamily(string name, string? fontFamily)
     {
         var row = Row(name);
@@ -2008,7 +2544,7 @@ public sealed class DevToolsWindow : Window
         });
     }
 
-    // ── 12. Font weight (rendered with that weight) ──────────────────
+    // 鈹€鈹€ 12. Font weight (rendered with that weight) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     private void AddFontWeight(string name, FontWeight weight)
     {
         var row = Row(name);
@@ -2021,9 +2557,9 @@ public sealed class DevToolsWindow : Window
         });
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Parsing utilities
-    // ══════════════════════════════════════════════════════════════════
+    // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
     private static bool TryParseHexColor(string hex, out Color color)
     {
@@ -2156,5 +2692,23 @@ internal sealed class DevToolsTreeViewItem : TreeViewItem
 
         return $"{typeName}{suffix}";
     }
+}
+
+internal sealed class PendingTreeBuildNode
+{
+    public PendingTreeBuildNode(DevToolsTreeViewItem item, Visual visual, int level)
+    {
+        Item = item;
+        Visual = visual;
+        Level = level;
+    }
+
+    public DevToolsTreeViewItem Item { get; }
+
+    public Visual Visual { get; }
+
+    public int Level { get; }
+
+    public int NextChildIndex { get; set; }
 }
 #endif

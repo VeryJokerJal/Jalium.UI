@@ -3,13 +3,14 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a control that displays a row of cells in a DataGrid.
 /// </summary>
-public sealed class DataGridCellsPresenter : Panel
+public class DataGridCellsPresenter : Panel
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Item dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ItemProperty =
         DependencyProperty.Register(nameof(Item), typeof(object), typeof(DataGridCellsPresenter),
             new PropertyMetadata(null, OnItemChanged));
@@ -21,6 +22,7 @@ public sealed class DataGridCellsPresenter : Panel
     /// <summary>
     /// Gets or sets the data item for this row.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? Item
     {
         get => GetValue(ItemProperty);

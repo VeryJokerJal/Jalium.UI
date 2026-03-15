@@ -30,6 +30,34 @@ public:
     /// Creates a render target with composition swap chain for per-pixel alpha transparency.
     virtual RenderTarget* CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height) = 0;
 
+    /// Creates a render target from a platform-neutral surface descriptor.
+    /// Default implementation preserves the legacy HWND-style path by forwarding
+    /// handle0 as the native window handle.
+    virtual RenderTarget* CreateRenderTargetForSurface(
+        const JaliumSurfaceDescriptor* surface,
+        int32_t width,
+        int32_t height)
+    {
+        if (!surface || surface->handle0 == 0) {
+            return nullptr;
+        }
+
+        return CreateRenderTarget(reinterpret_cast<void*>(surface->handle0), width, height);
+    }
+
+    /// Creates a composition-capable render target from a platform-neutral surface descriptor.
+    virtual RenderTarget* CreateRenderTargetForCompositionSurface(
+        const JaliumSurfaceDescriptor* surface,
+        int32_t width,
+        int32_t height)
+    {
+        if (!surface || surface->handle0 == 0) {
+            return nullptr;
+        }
+
+        return CreateRenderTargetForComposition(reinterpret_cast<void*>(surface->handle0), width, height);
+    }
+
     /// Creates a solid color brush.
     virtual Brush* CreateSolidBrush(float r, float g, float b, float a) = 0;
 
@@ -53,6 +81,20 @@ public:
 
     /// Creates a bitmap from encoded image data (PNG, JPEG, etc.).
     virtual Bitmap* CreateBitmapFromMemory(const uint8_t* data, uint32_t dataSize) = 0;
+
+    /// Creates a bitmap from raw BGRA8 pixel data.
+    virtual Bitmap* CreateBitmapFromPixels(
+        const uint8_t* pixels,
+        uint32_t width,
+        uint32_t height,
+        uint32_t stride)
+    {
+        (void)pixels;
+        (void)width;
+        (void)height;
+        (void)stride;
+        return nullptr;
+    }
 };
 
 /// Abstract base class for render targets.
@@ -179,8 +221,12 @@ public:
     /// Pops a transform.
     virtual void PopTransform() = 0;
 
-    /// Pushes a clip rectangle.
+    /// Pushes a clip rectangle (PER_PRIMITIVE anti-aliasing — smooth edges).
     virtual void PushClip(float x, float y, float w, float h) = 0;
+
+    /// Pushes a clip rectangle with ALIASED anti-aliasing (hard pixel boundary).
+    /// Used for dirty region clips where semi-transparent edges would cause artifacts.
+    virtual void PushClipAliased(float x, float y, float w, float h) { PushClip(x, y, w, h); }
 
     /// Pushes a rounded rectangle clip using a geometry mask layer.
     virtual void PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry) = 0;

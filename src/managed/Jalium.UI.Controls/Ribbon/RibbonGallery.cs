@@ -4,11 +4,12 @@ namespace Jalium.UI.Controls.Ribbon;
 /// Displays a set of related items in a Ribbon control.
 /// </summary>
 [ContentProperty("Items")]
-public sealed class RibbonGallery : ItemsControl
+public class RibbonGallery : ItemsControl
 {
     /// <summary>
     /// Identifies the SelectedItem dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedItemProperty =
         DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(RibbonGallery),
             new PropertyMetadata(null));
@@ -16,6 +17,7 @@ public sealed class RibbonGallery : ItemsControl
     /// <summary>
     /// Identifies the SelectedValue dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedValueProperty =
         DependencyProperty.Register(nameof(SelectedValue), typeof(object), typeof(RibbonGallery),
             new PropertyMetadata(null));
@@ -23,6 +25,7 @@ public sealed class RibbonGallery : ItemsControl
     /// <summary>
     /// Gets or sets the selected item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedItem
     {
         get => GetValue(SelectedItemProperty);
@@ -32,6 +35,7 @@ public sealed class RibbonGallery : ItemsControl
     /// <summary>
     /// Gets or sets the selected value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedValue
     {
         get => GetValue(SelectedValueProperty);
@@ -71,7 +75,7 @@ public sealed class RibbonGallery : ItemsControl
 /// Represents a category within a RibbonGallery.
 /// </summary>
 [ContentProperty("Items")]
-public sealed class RibbonGalleryCategory : ItemsControl
+public class RibbonGalleryCategory : ItemsControl
 {
     /// <summary>
     /// Gets or sets the header of the category.
@@ -92,11 +96,12 @@ public sealed class RibbonGalleryCategory : ItemsControl
 /// <summary>
 /// Represents an item within a RibbonGalleryCategory.
 /// </summary>
-public sealed class RibbonGalleryItem : ContentControl
+public class RibbonGalleryItem : ContentControl
 {
     /// <summary>
     /// Identifies the IsSelected dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(RibbonGalleryItem),
             new PropertyMetadata(false));
@@ -104,6 +109,7 @@ public sealed class RibbonGalleryItem : ContentControl
     /// <summary>
     /// Gets or sets whether this item is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty);

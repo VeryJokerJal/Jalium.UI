@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls;
+using Jalium.UI.Controls;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
@@ -11,6 +11,7 @@ public sealed class Table : Block
     /// <summary>
     /// Identifies the CellSpacing dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty CellSpacingProperty =
         DependencyProperty.Register(nameof(CellSpacing), typeof(double), typeof(Table),
             new PropertyMetadata(2.0));
@@ -28,6 +29,7 @@ public sealed class Table : Block
     /// <summary>
     /// Gets or sets the spacing between cells.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double CellSpacing
     {
         get => (double)GetValue(CellSpacingProperty)!;
@@ -52,6 +54,7 @@ public sealed class TableColumn : DependencyObject
     /// <summary>
     /// Identifies the Width dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty WidthProperty =
         DependencyProperty.Register(nameof(Width), typeof(GridLength), typeof(TableColumn),
             new PropertyMetadata(new GridLength(1, GridUnitType.Star)));
@@ -59,6 +62,7 @@ public sealed class TableColumn : DependencyObject
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(TableColumn),
             new PropertyMetadata(null));
@@ -66,6 +70,7 @@ public sealed class TableColumn : DependencyObject
     /// <summary>
     /// Gets or sets the width of the column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public GridLength Width
     {
         get => (GridLength)GetValue(WidthProperty)!;
@@ -75,6 +80,7 @@ public sealed class TableColumn : DependencyObject
     /// <summary>
     /// Gets or sets the background brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -194,6 +200,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Identifies the ColumnSpan dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnSpanProperty =
         DependencyProperty.Register(nameof(ColumnSpan), typeof(int), typeof(TableCell),
             new PropertyMetadata(1));
@@ -201,6 +208,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Identifies the RowSpan dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowSpanProperty =
         DependencyProperty.Register(nameof(RowSpan), typeof(int), typeof(TableCell),
             new PropertyMetadata(1));
@@ -208,6 +216,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Identifies the BorderThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BorderThicknessProperty =
         DependencyProperty.Register(nameof(BorderThickness), typeof(Thickness), typeof(TableCell),
             new PropertyMetadata(new Thickness(1)));
@@ -215,6 +224,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Identifies the BorderBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BorderBrushProperty =
         DependencyProperty.Register(nameof(BorderBrush), typeof(Brush), typeof(TableCell),
             new PropertyMetadata(null));
@@ -222,6 +232,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Identifies the Padding dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PaddingProperty =
         DependencyProperty.Register(nameof(Padding), typeof(Thickness), typeof(TableCell),
             new PropertyMetadata(new Thickness(5)));
@@ -234,6 +245,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Gets or sets the number of columns spanned.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int ColumnSpan
     {
         get => (int)GetValue(ColumnSpanProperty)!;
@@ -243,6 +255,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Gets or sets the number of rows spanned.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int RowSpan
     {
         get => (int)GetValue(RowSpanProperty)!;
@@ -252,6 +265,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Gets or sets the border thickness.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness BorderThickness
     {
         get => (Thickness)GetValue(BorderThicknessProperty)!;
@@ -261,6 +275,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Gets or sets the border brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? BorderBrush
     {
         get => (Brush?)GetValue(BorderBrushProperty);
@@ -270,6 +285,7 @@ public sealed class TableCell : TextElement
     /// <summary>
     /// Gets or sets the padding.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Thickness Padding
     {
         get => (Thickness)GetValue(PaddingProperty)!;

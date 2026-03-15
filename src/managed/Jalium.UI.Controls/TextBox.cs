@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
 using Jalium.UI.Controls.Primitives;
@@ -72,6 +72,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(TextBox),
             new PropertyMetadata(string.Empty, OnTextChanged));
@@ -79,6 +80,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the MaxLength dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxLengthProperty =
         DependencyProperty.Register(nameof(MaxLength), typeof(int), typeof(TextBox),
             new PropertyMetadata(0));
@@ -86,6 +88,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the TextWrapping dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextWrappingProperty =
         DependencyProperty.Register(nameof(TextWrapping), typeof(TextWrapping), typeof(TextBox),
             new PropertyMetadata(TextWrapping.NoWrap, OnLayoutPropertyChanged));
@@ -93,6 +96,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the TextAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextAlignmentProperty =
         DependencyProperty.Register(nameof(TextAlignment), typeof(TextAlignment), typeof(TextBox),
             new PropertyMetadata(TextAlignment.Left, OnVisualPropertyChanged));
@@ -100,6 +104,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the PlaceholderText dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(TextBox),
             new PropertyMetadata(string.Empty, OnVisualPropertyChanged));
@@ -107,6 +112,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the IsSpellCheckEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSpellCheckEnabledProperty =
         DependencyProperty.Register(nameof(IsSpellCheckEnabled), typeof(bool), typeof(TextBox),
             new PropertyMetadata(false, OnSpellCheckEnabledChanged));
@@ -114,6 +120,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the SpellCheckLanguage dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SpellCheckLanguageProperty =
         DependencyProperty.Register(nameof(SpellCheckLanguage), typeof(string), typeof(TextBox),
             new PropertyMetadata("en-US"));
@@ -121,6 +128,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the IsAutoCorrectEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsAutoCorrectEnabledProperty =
         DependencyProperty.Register(nameof(IsAutoCorrectEnabled), typeof(bool), typeof(TextBox),
             new PropertyMetadata(false));
@@ -128,6 +136,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the IsAutoCapitalizationEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsAutoCapitalizationEnabledProperty =
         DependencyProperty.Register(nameof(IsAutoCapitalizationEnabled), typeof(bool), typeof(TextBox),
             new PropertyMetadata(false));
@@ -135,6 +144,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the DetectUrls dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DetectUrlsProperty =
         DependencyProperty.Register(nameof(DetectUrls), typeof(bool), typeof(TextBox),
             new PropertyMetadata(false, OnFormatDetectionChanged));
@@ -146,6 +156,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the text content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
@@ -155,6 +166,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the maximum number of characters (0 = unlimited).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int MaxLength
     {
         get => (int)GetValue(MaxLengthProperty)!;
@@ -164,6 +176,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the text wrapping mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextWrapping TextWrapping
     {
         get => (TextWrapping)GetValue(TextWrappingProperty)!;
@@ -173,6 +186,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the text alignment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextAlignment TextAlignment
     {
         get => (TextAlignment)GetValue(TextAlignmentProperty)!;
@@ -182,6 +196,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the placeholder text shown when the text box is empty.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string PlaceholderText
     {
         get => (string)(GetValue(PlaceholderTextProperty) ?? string.Empty);
@@ -191,6 +206,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether spell checking is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSpellCheckEnabled
     {
         get => (bool)GetValue(IsSpellCheckEnabledProperty)!;
@@ -200,6 +216,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the spell check language (e.g., "en-US", "zh-CN").
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string SpellCheckLanguage
     {
         get => (string)(GetValue(SpellCheckLanguageProperty) ?? "en-US");
@@ -214,6 +231,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether auto-correction is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsAutoCorrectEnabled
     {
         get => (bool)GetValue(IsAutoCorrectEnabledProperty)!;
@@ -223,6 +241,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether auto-capitalization is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsAutoCapitalizationEnabled
     {
         get => (bool)GetValue(IsAutoCapitalizationEnabledProperty)!;
@@ -232,6 +251,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether URL detection is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool DetectUrls
     {
         get => (bool)GetValue(DetectUrlsProperty)!;
@@ -785,15 +805,18 @@ public class TextBox : TextBoxBase, IImeSupport
 
         // Draw background and border (no template = direct rendering)
         var cornerRadius = CornerRadius;
+        var strokeThickness = border.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
         if (Background != null)
         {
-            dc.DrawRoundedRectangle(Background, null, bounds, cornerRadius);
+            dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
         }
 
-        if (BorderBrush != null && border.Left > 0)
+        if (BorderBrush != null && strokeThickness > 0)
         {
-            var borderPen = new Pen(BorderBrush, border.Left);
-            dc.DrawRoundedRectangle(null, borderPen, bounds, cornerRadius);
+            var borderPen = new Pen(BorderBrush, strokeThickness);
+            dc.DrawRoundedRectangle(null, borderPen, borderRect, borderRadius);
         }
 
         // Content area
@@ -809,8 +832,7 @@ public class TextBox : TextBoxBase, IImeSupport
         // Draw focus indicator
         if (IsKeyboardFocused)
         {
-            var focusPen = new Pen(ResolveFocusedBorderBrush(), 1);
-            dc.DrawRoundedRectangle(null, focusPen, bounds, cornerRadius);
+            ControlFocusVisual.Draw(dc, this, bounds, cornerRadius);
         }
     }
 
@@ -901,7 +923,7 @@ public class TextBox : TextBoxBase, IImeSupport
     private void DrawText(DrawingContext dc, Rect contentRect, double lineHeight)
     {
         var text = Text;
-        var textBrush = Foreground ?? s_whiteBrush;
+        var textBrush = ResolveTextForegroundBrush();
         // Round scroll offsets to prevent sub-pixel jittering
         var roundedVerticalOffset = Math.Round(_verticalOffset);
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
@@ -1018,7 +1040,8 @@ public class TextBox : TextBoxBase, IImeSupport
 
     private void DrawSelection(DrawingContext dc, Rect contentRect, double lineHeight)
     {
-        if (SelectionBrush == null)
+        var selectionBrush = ResolveSelectionBrush();
+        if (selectionBrush == null)
             return;
 
         var text = Text;
@@ -1057,7 +1080,7 @@ public class TextBox : TextBoxBase, IImeSupport
                     width = Math.Max(Math.Round(width), 1);
 
                     var selRect = new Rect(startX, y, width, lineHeight);
-                    dc.DrawRectangle(SelectionBrush, null, selRect);
+                    dc.DrawRectangle(selectionBrush, null, selRect);
                 }
 
                 // Selection extends past line end (include newline in selection visual)
@@ -1066,7 +1089,7 @@ public class TextBox : TextBoxBase, IImeSupport
                     var lineText = text.Substring(line.StartIndex, line.Length);
                     var startX = Math.Round(contentRect.X + MeasureTextWidth(lineText) - roundedHorizontalOffset);
                     var selRect = new Rect(startX, y, Math.Round(FontSize * 0.3), lineHeight);
-                    dc.DrawRectangle(SelectionBrush, null, selRect);
+                    dc.DrawRectangle(selectionBrush, null, selRect);
                 }
             }
         }
@@ -1131,7 +1154,8 @@ public class TextBox : TextBoxBase, IImeSupport
         // Note: Caret animation is handled by the timer in TextBoxBase.StartCaretTimer()
         // which calls InvalidateVisual() at regular intervals. No fallback needed here.
 
-        if (CaretBrush == null)
+        var caretBrush = ResolveCaretBrush();
+        if (caretBrush == null)
             return;
 
         // During IME composition, don't draw regular caret
@@ -1161,7 +1185,7 @@ public class TextBox : TextBoxBase, IImeSupport
 
         // Create a brush with the animated opacity
         Brush caretBrushWithOpacity;
-        if (CaretBrush is SolidColorBrush solidBrush)
+        if (caretBrush is SolidColorBrush solidBrush)
         {
             var color = solidBrush.Color;
             var alpha = (byte)(color.A * caretOpacity);
@@ -1169,7 +1193,7 @@ public class TextBox : TextBoxBase, IImeSupport
         }
         else
         {
-            caretBrushWithOpacity = CaretBrush;
+            caretBrushWithOpacity = caretBrush;
         }
 
         var caretPen = new Pen(caretBrushWithOpacity, 1.5);

@@ -14,24 +14,39 @@
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="Template">
             <ControlTemplate TargetType="AppBarButton">
-                <Border Name="Root"
-                        Background="{TemplateBinding Background}"
-                        CornerRadius="{TemplateBinding CornerRadius}"
-                        Padding="{TemplateBinding Padding}">
-                    <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                        <ContentPresenter Name="IconPresenter"
-                                          Content="{TemplateBinding Icon}"
-                                          HorizontalAlignment="Center"
-                                          Width="20" Height="20"
-                                          Margin="0,4,0,0" />
-                        <TextBlock Name="LabelText"
-                                   Text="{TemplateBinding Label}"
-                                   FontSize="10"
-                                   Foreground="{TemplateBinding Foreground}"
-                                   HorizontalAlignment="Center"
-                                   Margin="0,2,0,2" />
-                    </StackPanel>
-                </Border>
+                <Grid>
+                    <Border Name="Root"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Padding="{TemplateBinding Padding}">
+                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                            <ContentPresenter Name="IconPresenter"
+                                              Content="{TemplateBinding Icon}"
+                                              HorizontalAlignment="Center"
+                                              Width="20" Height="20"
+                                              Margin="0,4,0,0" />
+                            <TextBlock Name="LabelText"
+                                       Text="{TemplateBinding Label}"
+                                       FontSize="10"
+                                       Foreground="{TemplateBinding Foreground}"
+                                       HorizontalAlignment="Center"
+                                       Margin="0,2,0,2" />
+                        </StackPanel>
+                    </Border>
+                    <Border Name="FocusOuter"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Opacity="0" />
+                    <Border Name="FocusInner"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Margin="2"
+                            Opacity="0" />
+                </Grid>
             </ControlTemplate>
         </Setter>
         <Style.Triggers>
@@ -41,7 +56,13 @@
             <PropertyTrigger Property="IsPressed" Value="True">
                 <Setter Property="Background" Value="{DynamicResource AppBarButtonBackgroundPressed}" />
             </PropertyTrigger>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
                 <Setter Property="Foreground" Value="{DynamicResource AppBarButtonForegroundDisabled}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsCompact" Value="True">
@@ -72,34 +93,49 @@
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="Template">
             <ControlTemplate TargetType="AppBarToggleButton">
-                <Border Name="Root"
-                        Background="{TemplateBinding Background}"
-                        CornerRadius="{TemplateBinding CornerRadius}"
-                        Padding="{TemplateBinding Padding}">
-                    <Grid>
-                        <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
-                            <ContentPresenter Name="IconPresenter"
-                                              Content="{TemplateBinding Icon}"
-                                              HorizontalAlignment="Center"
-                                              Width="20" Height="20"
-                                              Margin="0,4,0,0" />
-                            <TextBlock Name="LabelText"
-                                       Text="{TemplateBinding Label}"
-                                       FontSize="10"
-                                       Foreground="{TemplateBinding Foreground}"
-                                       HorizontalAlignment="Center"
-                                       Margin="0,2,0,2" />
-                        </StackPanel>
-                        <!-- Checked indicator bar at bottom -->
-                        <Border Name="CheckedIndicator"
-                                Height="3"
-                                CornerRadius="1.5"
-                                Background="{DynamicResource AccentBrush}"
-                                VerticalAlignment="Bottom"
-                                Margin="4,0,4,0"
-                                Visibility="Collapsed" />
-                    </Grid>
-                </Border>
+                <Grid>
+                    <Border Name="Root"
+                            Background="{TemplateBinding Background}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Padding="{TemplateBinding Padding}">
+                        <Grid>
+                            <StackPanel Orientation="Vertical" HorizontalAlignment="Center">
+                                <ContentPresenter Name="IconPresenter"
+                                                  Content="{TemplateBinding Icon}"
+                                                  HorizontalAlignment="Center"
+                                                  Width="20" Height="20"
+                                                  Margin="0,4,0,0" />
+                                <TextBlock Name="LabelText"
+                                           Text="{TemplateBinding Label}"
+                                           FontSize="10"
+                                           Foreground="{TemplateBinding Foreground}"
+                                           HorizontalAlignment="Center"
+                                           Margin="0,2,0,2" />
+                            </StackPanel>
+                            <!-- Checked indicator bar at bottom -->
+                            <Border Name="CheckedIndicator"
+                                    Height="3"
+                                    CornerRadius="1.5"
+                                    Background="{DynamicResource AccentBrush}"
+                                    VerticalAlignment="Bottom"
+                                    Margin="4,0,4,0"
+                                    Visibility="Collapsed" />
+                        </Grid>
+                    </Border>
+                    <Border Name="FocusOuter"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Opacity="0" />
+                    <Border Name="FocusInner"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Margin="2"
+                            Opacity="0" />
+                </Grid>
             </ControlTemplate>
         </Setter>
         <Style.Triggers>
@@ -112,7 +148,13 @@
             <PropertyTrigger Property="IsChecked" Value="True">
                 <Setter TargetName="CheckedIndicator" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
                 <Setter Property="Foreground" Value="{DynamicResource AppBarButtonForegroundDisabled}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsCompact" Value="True">
@@ -130,6 +172,12 @@
         <Setter Property="BorderBrush" Value="{DynamicResource CommandBarBorderBrush}" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="MinHeight" Value="48" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -185,6 +233,36 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Height" Value="28" />
         <Setter Property="Padding" Value="8,0,8,0" />
+        <Style.Triggers>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="Role" Value="TopLevelItem" />
+                    <Condition Property="IsSelected" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource MenuBarItemBackgroundHover}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="Role" Value="TopLevelHeader" />
+                    <Condition Property="IsSelected" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource MenuBarItemBackgroundHover}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="Role" Value="SubmenuItem" />
+                    <Condition Property="IsSelected" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource MenuFlyoutItemBackgroundHover}" />
+            </MultiTrigger>
+            <MultiTrigger>
+                <MultiTrigger.Conditions>
+                    <Condition Property="Role" Value="SubmenuHeader" />
+                    <Condition Property="IsSelected" Value="True" />
+                </MultiTrigger.Conditions>
+                <Setter Property="Background" Value="{DynamicResource MenuFlyoutItemBackgroundHover}" />
+            </MultiTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->

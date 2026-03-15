@@ -392,6 +392,20 @@ public class AnimationTests
     }
 
     [Fact]
+    public void CreateTransitionAnimation_RecommendedUsesEaseOutCubic()
+    {
+        var animation = Assert.IsType<DoubleAnimation>(AnimationFactory.CreateTransitionAnimation(
+            typeof(double),
+            0.0,
+            1.0,
+            TimeSpan.FromSeconds(1),
+            TransitionTimingFunction.Recommended));
+
+        var easing = Assert.IsType<CubicEase>(animation.EasingFunction);
+        Assert.Equal(EasingMode.EaseOut, easing.EasingMode);
+    }
+
+    [Fact]
     public void AnimationFactory_ReturnsNull_ForUnsupportedType()
     {
         // Act

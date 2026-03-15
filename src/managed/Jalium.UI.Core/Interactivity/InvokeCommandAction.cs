@@ -10,6 +10,7 @@ public sealed class InvokeCommandAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Identifies the Command dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
         DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(InvokeCommandAction),
             new PropertyMetadata(null));
@@ -17,6 +18,7 @@ public sealed class InvokeCommandAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Identifies the CommandParameter dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandParameterProperty =
         DependencyProperty.Register(nameof(CommandParameter), typeof(object), typeof(InvokeCommandAction),
             new PropertyMetadata(null));
@@ -24,6 +26,7 @@ public sealed class InvokeCommandAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Identifies the TriggerParameterPath dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty TriggerParameterPathProperty =
         DependencyProperty.Register(nameof(TriggerParameterPath), typeof(string), typeof(InvokeCommandAction),
             new PropertyMetadata(null));
@@ -31,6 +34,7 @@ public sealed class InvokeCommandAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Gets or sets the command to execute when invoked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public ICommand? Command
     {
         get => (ICommand?)GetValue(CommandProperty);
@@ -40,6 +44,7 @@ public sealed class InvokeCommandAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Gets or sets the command parameter.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public object? CommandParameter
     {
         get => GetValue(CommandParameterProperty);
@@ -49,6 +54,7 @@ public sealed class InvokeCommandAction : TriggerAction<DependencyObject>
     /// <summary>
     /// Gets or sets a property path on the trigger's parameter to use as the command parameter.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public string? TriggerParameterPath
     {
         get => (string?)GetValue(TriggerParameterPathProperty);

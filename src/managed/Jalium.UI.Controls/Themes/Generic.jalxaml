@@ -32,6 +32,7 @@
         <ResourceDictionary Source="Controls/DataGrid.jalxaml" />
         <ResourceDictionary Source="Controls/ScrollBar.jalxaml" />
         <ResourceDictionary Source="Controls/Calendar.jalxaml" />
+        <ResourceDictionary Source="Controls/Dialogs.jalxaml" />
         <ResourceDictionary Source="Controls/Primitives.jalxaml" />
         <ResourceDictionary Source="Controls/Media.jalxaml" />
         <ResourceDictionary Source="Controls/DockLayout.jalxaml" />

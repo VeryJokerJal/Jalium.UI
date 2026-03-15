@@ -69,8 +69,8 @@
     <!-- QRCode Style                                    -->
     <!-- ============================================== -->
     <Style TargetType="QRCode">
-        <Setter Property="Background" Value="White" />
-        <Setter Property="Foreground" Value="Black" />
+        <Setter Property="Background" Value="{DynamicResource QRCodeBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource QRCodeForeground}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12" />

@@ -1,17 +1,18 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Represents a layout control that aligns a bullet and content.
 /// </summary>
-public sealed class BulletDecorator : FrameworkElement
+public class BulletDecorator : FrameworkElement
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Bullet dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BulletProperty =
         DependencyProperty.Register(nameof(Bullet), typeof(UIElement), typeof(BulletDecorator),
             new PropertyMetadata(null, OnBulletChanged));
@@ -19,6 +20,7 @@ public sealed class BulletDecorator : FrameworkElement
     /// <summary>
     /// Identifies the Child dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ChildProperty =
         DependencyProperty.Register(nameof(Child), typeof(UIElement), typeof(BulletDecorator),
             new PropertyMetadata(null, OnChildChanged));
@@ -26,6 +28,7 @@ public sealed class BulletDecorator : FrameworkElement
     /// <summary>
     /// Identifies the BulletAlignment dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BulletAlignmentProperty =
         DependencyProperty.Register(nameof(BulletAlignment), typeof(VerticalAlignment), typeof(BulletDecorator),
             new PropertyMetadata(VerticalAlignment.Top, OnLayoutPropertyChanged));
@@ -37,6 +40,7 @@ public sealed class BulletDecorator : FrameworkElement
     /// <summary>
     /// Gets or sets the bullet element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public UIElement? Bullet
     {
         get => (UIElement?)GetValue(BulletProperty);
@@ -46,6 +50,7 @@ public sealed class BulletDecorator : FrameworkElement
     /// <summary>
     /// Gets or sets the child element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public UIElement? Child
     {
         get => (UIElement?)GetValue(ChildProperty);
@@ -55,6 +60,7 @@ public sealed class BulletDecorator : FrameworkElement
     /// <summary>
     /// Gets or sets the vertical alignment of the bullet relative to the child.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public VerticalAlignment BulletAlignment
     {
         get => (VerticalAlignment)GetValue(BulletAlignmentProperty)!;

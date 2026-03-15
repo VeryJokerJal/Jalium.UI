@@ -37,6 +37,7 @@ public sealed class StandardUICommand : XamlUICommand
     /// <summary>
     /// Identifies the Kind dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty KindProperty =
         DependencyProperty.Register(nameof(Kind), typeof(StandardUICommandKind), typeof(StandardUICommand),
             new PropertyMetadata(StandardUICommandKind.None, OnKindChanged));
@@ -48,6 +49,7 @@ public sealed class StandardUICommand : XamlUICommand
     /// <summary>
     /// Gets or sets the platform command (with pre-defined properties) that this StandardUICommand represents.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public StandardUICommandKind Kind
     {
         get => (StandardUICommandKind)(GetValue(KindProperty) ?? StandardUICommandKind.None);

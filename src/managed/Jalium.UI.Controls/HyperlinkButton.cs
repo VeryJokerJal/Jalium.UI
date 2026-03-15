@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
@@ -11,8 +11,14 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a button that displays as a hyperlink and can navigate to a URI.
 /// </summary>
-public sealed class HyperlinkButton : ButtonBase
+public class HyperlinkButton : ButtonBase
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.HyperlinkButtonAutomationPeer(this);
+    }
+
     // Cached brushes for OnRender
     private static readonly SolidColorBrush s_defaultBrush = new(Color.FromRgb(0, 102, 204));
     private static readonly SolidColorBrush s_hoverBrush = new(Color.FromRgb(0, 51, 153));
@@ -22,6 +28,7 @@ public sealed class HyperlinkButton : ButtonBase
     /// <summary>
     /// Identifies the NavigateUri dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty NavigateUriProperty =
         DependencyProperty.Register(nameof(NavigateUri), typeof(Uri), typeof(HyperlinkButton),
             new PropertyMetadata(null));
@@ -29,6 +36,7 @@ public sealed class HyperlinkButton : ButtonBase
     /// <summary>
     /// Identifies the IsUnderlined dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsUnderlinedProperty =
         DependencyProperty.Register(nameof(IsUnderlined), typeof(bool), typeof(HyperlinkButton),
             new PropertyMetadata(true, OnVisualPropertyChanged));
@@ -40,6 +48,7 @@ public sealed class HyperlinkButton : ButtonBase
     /// <summary>
     /// Gets or sets the URI to navigate to when the hyperlink is clicked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? NavigateUri
     {
         get => (Uri?)GetValue(NavigateUriProperty);
@@ -49,6 +58,7 @@ public sealed class HyperlinkButton : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether the hyperlink text is underlined.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsUnderlined
     {
         get => (bool)GetValue(IsUnderlinedProperty)!;

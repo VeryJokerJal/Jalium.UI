@@ -1,51 +1,64 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
-using Jalium.UI.Media.Animation;
-using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a control that allows the user to select a date.
 /// </summary>
-public sealed class DatePicker : Control
+public class DatePicker : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.DatePickerAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedDateProperty =
         DependencyProperty.Register(nameof(SelectedDate), typeof(DateTime?), typeof(DatePicker),
             new PropertyMetadata(null, OnSelectedDateChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateProperty =
         DependencyProperty.Register(nameof(DisplayDate), typeof(DateTime), typeof(DatePicker),
             new PropertyMetadata(DateTime.Today));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateStartProperty =
         DependencyProperty.Register(nameof(DisplayDateStart), typeof(DateTime?), typeof(DatePicker),
             new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayDateEndProperty =
         DependencyProperty.Register(nameof(DisplayDateEnd), typeof(DateTime?), typeof(DatePicker),
             new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(DatePicker),
             new PropertyMetadata(false, OnIsDropDownOpenChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(DatePicker),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(DatePicker),
             new PropertyMetadata("Select a date", OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DateFormatProperty =
         DependencyProperty.Register(nameof(DateFormat), typeof(string), typeof(DatePicker),
             new PropertyMetadata("d", OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedDateFormatProperty =
         DependencyProperty.Register(nameof(SelectedDateFormat), typeof(DatePickerFormat), typeof(DatePicker),
             new PropertyMetadata(DatePickerFormat.Short, OnVisualPropertyChanged));
@@ -88,54 +101,63 @@ public sealed class DatePicker : Control
 
     #region CLR Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public DateTime? SelectedDate
     {
         get => (DateTime?)GetValue(SelectedDateProperty);
         set => SetValue(SelectedDateProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DateTime DisplayDate
     {
         get => (DateTime)GetValue(DisplayDateProperty)!;
         set => SetValue(DisplayDateProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DateTime? DisplayDateStart
     {
         get => (DateTime?)GetValue(DisplayDateStartProperty);
         set => SetValue(DisplayDateStartProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DateTime? DisplayDateEnd
     {
         get => (DateTime?)GetValue(DisplayDateEndProperty);
         set => SetValue(DisplayDateEndProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDropDownOpen
     {
         get => (bool)GetValue(IsDropDownOpenProperty)!;
         set => SetValue(IsDropDownOpenProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
         set => SetValue(HeaderProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? PlaceholderText
     {
         get => (string?)GetValue(PlaceholderTextProperty);
         set => SetValue(PlaceholderTextProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string DateFormat
     {
         get => (string)(GetValue(DateFormatProperty) ?? "d");
         set => SetValue(DateFormatProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public DatePickerFormat SelectedDateFormat
     {
         get => (DatePickerFormat)GetValue(SelectedDateFormatProperty)!;
@@ -163,14 +185,8 @@ public sealed class DatePicker : Control
     private Popup? _popup;
     private Calendar? _calendar;
     private Border? _calendarBorder;
-    private DispatcherTimer? _animationTimer;
     private bool _isCloseAnimating;
     private bool _isOpen;
-
-    private const double OpenDurationMs = 250;
-    private const double CloseDurationMs = 180;
-    private static readonly CubicEase OpenEase = new() { EasingMode = EasingMode.EaseOut };
-    private static readonly CubicEase CloseEase = new() { EasingMode = EasingMode.EaseIn };
 
     #endregion
 
@@ -179,6 +195,7 @@ public sealed class DatePicker : Control
     public DatePicker()
     {
         Focusable = true;
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
@@ -230,11 +247,7 @@ public sealed class DatePicker : Control
     {
         if (_isOpen) return;
 
-        if (_isCloseAnimating)
-        {
-            _animationTimer?.Stop();
-            _isCloseAnimating = false;
-        }
+        _isCloseAnimating = false;
 
         EnsurePopup();
 
@@ -269,7 +282,7 @@ public sealed class DatePicker : Control
 
     private void OnCalendarSelectedDateChanged(object? sender, SelectionChangedEventArgs e)
     {
-        // Sync but don't close — DateClicked will close
+        // Sync but don't close 閳?DateClicked will close
     }
 
     private void OnCalendarDateClicked(object? sender, DateTime date)
@@ -282,8 +295,12 @@ public sealed class DatePicker : Control
     {
         if (_isCloseAnimating) return;
 
-        _animationTimer?.Stop();
         _isOpen = false;
+        if (_calendarBorder != null)
+        {
+            _calendarBorder.Opacity = 1;
+            _calendarBorder.RenderOffset = default;
+        }
         SetValue(IsDropDownOpenProperty, false);
     }
 
@@ -293,82 +310,28 @@ public sealed class DatePicker : Control
 
     private void AnimateOpen()
     {
-        _animationTimer?.Stop();
-
         if (_calendarBorder != null)
         {
-            _calendarBorder.Opacity = 0;
-            _calendarBorder.RenderOffset = new Point(0, -8);
+            _calendarBorder.Opacity = 1;
+            _calendarBorder.RenderOffset = default;
         }
-
-        var startTime = Environment.TickCount64;
-
-        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        _animationTimer.Tick += (s, e) =>
-        {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = Math.Min(1.0, elapsed / OpenDurationMs);
-            var eased = OpenEase.Ease(progress);
-
-            if (_calendarBorder != null)
-            {
-                _calendarBorder.Opacity = eased;
-                _calendarBorder.RenderOffset = new Point(0, -8 * (1.0 - eased));
-            }
-
-            if (progress >= 1.0)
-            {
-                _animationTimer!.Stop();
-                if (_calendarBorder != null)
-                {
-                    _calendarBorder.Opacity = 1;
-                    _calendarBorder.RenderOffset = default;
-                }
-            }
-        };
-        _animationTimer.Start();
     }
 
     private void AnimateClose()
     {
-        _animationTimer?.Stop();
-
-        var startOpacity = _calendarBorder?.Opacity ?? 1.0;
-        var startOffsetY = _calendarBorder?.RenderOffset.Y ?? 0;
-        var startTime = Environment.TickCount64;
-
         _isCloseAnimating = true;
-
-        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        _animationTimer.Tick += (s, e) =>
+        if (_popup != null)
         {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = Math.Min(1.0, elapsed / CloseDurationMs);
-            var eased = CloseEase.Ease(progress);
+            _popup.IsOpen = false;
+        }
 
-            if (_calendarBorder != null)
-            {
-                _calendarBorder.Opacity = startOpacity * (1.0 - eased);
-                _calendarBorder.RenderOffset = new Point(0, startOffsetY + (-8 - startOffsetY) * eased);
-            }
+        if (_calendarBorder != null)
+        {
+            _calendarBorder.Opacity = 1;
+            _calendarBorder.RenderOffset = default;
+        }
 
-            if (progress >= 1.0)
-            {
-                _animationTimer!.Stop();
-
-                if (_popup != null)
-                    _popup.IsOpen = false;
-
-                _isCloseAnimating = false;
-
-                if (_calendarBorder != null)
-                {
-                    _calendarBorder.Opacity = 1;
-                    _calendarBorder.RenderOffset = default;
-                }
-            }
-        };
-        _animationTimer.Start();
+        _isCloseAnimating = false;
     }
 
     #endregion
@@ -460,19 +423,27 @@ public sealed class DatePicker : Control
         }
 
         var inputRect = new Rect(0, headerHeight, rect.Width, rect.Height - headerHeight);
+        var strokeThickness = BorderThickness.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background
         if (Background != null)
         {
-            dc.DrawRoundedRectangle(Background, null, inputRect, cornerRadius);
+            dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
         }
 
         // Draw border
-        var borderBrush = IsFocused ? ResolveFocusedBorderBrush() : BorderBrush;
+        var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
-            var pen = new Pen(borderBrush, BorderThickness.Left);
-            dc.DrawRoundedRectangle(null, pen, inputRect, cornerRadius);
+            var pen = new Pen(borderBrush, strokeThickness);
+            dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
+        }
+
+        if (IsKeyboardFocused)
+        {
+            ControlFocusVisual.Draw(dc, this, inputRect, cornerRadius);
         }
 
         // Draw date text or placeholder

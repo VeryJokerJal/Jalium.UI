@@ -76,6 +76,8 @@ internal sealed class LayoutManager
 
         _isUpdating = true;
         _layoutIterations = 0;
+        int measuredItems = 0;
+        int arrangedItems = 0;
 
         try
         {
@@ -111,6 +113,7 @@ internal sealed class LayoutManager
                                 : element.PreviousAvailableSize;
 
                             element.Measure(measureSize);
+                            measuredItems++;
                         }
                     }
                 }
@@ -132,6 +135,7 @@ internal sealed class LayoutManager
                                 : element.PreviousFinalRect;
 
                             element.Arrange(rect);
+                            arrangedItems++;
                         }
                     }
                 }

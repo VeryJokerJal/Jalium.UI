@@ -234,11 +234,15 @@
             <SolidColorBrush x:Key="ControlBackground" Color="#454545" />
             <SolidColorBrush x:Key="ControlBackgroundHover" Color="#15FFFFFF" />
             <SolidColorBrush x:Key="ControlBackgroundPressed" Color="#08FFFFFF" />
+            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#19000000" />
             <SolidColorBrush x:Key="ControlBackgroundDisabled" Color="#0BFFFFFF" />
             <SolidColorBrush x:Key="ControlBorder" Color="#12FFFFFF" />
             <SolidColorBrush x:Key="ControlBorderHover" Color="#18FFFFFF" />
             <SolidColorBrush x:Key="ControlBorderFocused" Color="#FFFFFF" />
             <SolidColorBrush x:Key="ControlBorderDisabled" Color="#28FFFFFF" />
+            <SolidColorBrush x:Key="Background" Color="#454545" />
+            <SolidColorBrush x:Key="Foreground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="BorderBrush" Color="#12FFFFFF" />
 
             <SolidColorBrush x:Key="WindowBackground" Color="#202020" />
             <SolidColorBrush x:Key="SurfaceBackground" Color="#1C1C1C" />
@@ -253,6 +257,10 @@
             <SolidColorBrush x:Key="ToggleUncheckedBorderHover" Color="#8BFFFFFF" />
             <SolidColorBrush x:Key="ToggleDisabledBackground" Color="#0BFFFFFF" />
             <SolidColorBrush x:Key="ToggleDisabledBorder" Color="#28FFFFFF" />
+            <SolidColorBrush x:Key="ToggleCheckedBackground" Color="#7C4DFF" />
+            <SolidColorBrush x:Key="ToggleCheckedBackgroundHover" Color="#956EFF" />
+            <SolidColorBrush x:Key="ToggleCheckedBorder" Color="#7C4DFF" />
+            <SolidColorBrush x:Key="ToggleCheckedBorderHover" Color="#956EFF" />
             <SolidColorBrush x:Key="CheckMark" Color="#FFFFFF" />
 
             <SolidColorBrush x:Key="TabStripBackground" Color="#4C3A3A3A" />
@@ -281,6 +289,8 @@
 
             <SolidColorBrush x:Key="SliderTrack" Color="#28FFFFFF" />
             <SolidColorBrush x:Key="SliderThumb" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="QRCodeBackground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="QRCodeForeground" Color="#000000" />
 
             <SolidColorBrush x:Key="SelectionBackground" Color="#993A76F0" />
             <SolidColorBrush x:Key="HyperlinkForeground" Color="#87FFFFFF" />
@@ -562,11 +572,15 @@
             <SolidColorBrush x:Key="ControlBackground" Color="#FFFFFF" />
             <SolidColorBrush x:Key="ControlBackgroundHover" Color="#80F9F9F9" />
             <SolidColorBrush x:Key="ControlBackgroundPressed" Color="#4DF9F9F9" />
+            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#06000000" />
             <SolidColorBrush x:Key="ControlBackgroundDisabled" Color="#4DF9F9F9" />
             <SolidColorBrush x:Key="ControlBorder" Color="#0F000000" />
             <SolidColorBrush x:Key="ControlBorderHover" Color="#29000000" />
             <SolidColorBrush x:Key="ControlBorderFocused" Color="#E4000000" />
             <SolidColorBrush x:Key="ControlBorderDisabled" Color="#37000000" />
+            <SolidColorBrush x:Key="Background" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="Foreground" Color="#E4000000" />
+            <SolidColorBrush x:Key="BorderBrush" Color="#0F000000" />
 
             <SolidColorBrush x:Key="WindowBackground" Color="#F3F3F3" />
             <SolidColorBrush x:Key="SurfaceBackground" Color="#EEEEEE" />
@@ -581,6 +595,10 @@
             <SolidColorBrush x:Key="ToggleUncheckedBorderHover" Color="#72000000" />
             <SolidColorBrush x:Key="ToggleDisabledBackground" Color="#4DF9F9F9" />
             <SolidColorBrush x:Key="ToggleDisabledBorder" Color="#37000000" />
+            <SolidColorBrush x:Key="ToggleCheckedBackground" Color="#7C4DFF" />
+            <SolidColorBrush x:Key="ToggleCheckedBackgroundHover" Color="#8C61FF" />
+            <SolidColorBrush x:Key="ToggleCheckedBorder" Color="#7C4DFF" />
+            <SolidColorBrush x:Key="ToggleCheckedBorderHover" Color="#8C61FF" />
             <SolidColorBrush x:Key="CheckMark" Color="#FFFFFF" />
 
             <SolidColorBrush x:Key="TabStripBackground" Color="#80FFFFFF" />
@@ -609,6 +627,8 @@
 
             <SolidColorBrush x:Key="SliderTrack" Color="#37000000" />
             <SolidColorBrush x:Key="SliderThumb" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="QRCodeBackground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="QRCodeForeground" Color="#000000" />
 
             <SolidColorBrush x:Key="SelectionBackground" Color="#993A76F0" />
             <SolidColorBrush x:Key="HyperlinkForeground" Color="#9E000000" />
@@ -664,6 +684,8 @@
             <Color x:Key="TextOnAccentFillColorPrimary">#FFFFFFFF</Color>
             <Color x:Key="ControlFillColorDefault">#FF000000</Color>
             <Color x:Key="ControlStrokeColorDefault">#FFFFFFFF</Color>
+            <Color x:Key="FocusStrokeColorOuter">#FFFFFF00</Color>
+            <Color x:Key="FocusStrokeColorInner">#FF000000</Color>
             <Color x:Key="SolidBackgroundFillColorBase">#FF000000</Color>
             <Color x:Key="ControlOnImageFillColorDefault">#FF000000</Color>
             <Color x:Key="ControlOnImageFillColorSecondary">#FF000000</Color>
@@ -684,6 +706,8 @@
             <SolidColorBrush x:Key="TextOnAccentFillColorPrimaryBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="ControlFillColorDefaultBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="ControlStrokeColorDefaultBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="FocusStrokeColorOuterBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="FocusStrokeColorInnerBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="SolidBackgroundFillColorBaseBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="ControlOnImageFillColorDefaultBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="ControlOnImageFillColorSecondaryBrush" Color="#FF000000" />
@@ -693,9 +717,20 @@
             <SolidColorBrush x:Key="TextSecondary" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="TextDisabled" Color="#FF7F7F7F" />
             <SolidColorBrush x:Key="ControlBackground" Color="#FF000000" />
+            <SolidColorBrush x:Key="ButtonBackgroundPressed" Color="#FF7F7F7F" />
             <SolidColorBrush x:Key="ControlBorder" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="ControlBorderFocused" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="Background" Color="#FF000000" />
+            <SolidColorBrush x:Key="Foreground" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="BorderBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="WindowBackground" Color="#FF000000" />
             <SolidColorBrush x:Key="SurfaceBackground" Color="#FF000000" />
+            <SolidColorBrush x:Key="ToggleCheckedBackground" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="ToggleCheckedBackgroundHover" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="ToggleCheckedBorder" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="ToggleCheckedBorderHover" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="QRCodeBackground" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="QRCodeForeground" Color="#FF000000" />
             <SolidColorBrush x:Key="SystemColorWindowTextColorBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="SystemColorWindowColorBrush" Color="#FF000000" />
             <SolidColorBrush x:Key="SystemColorButtonFaceColorBrush" Color="#FF000000" />

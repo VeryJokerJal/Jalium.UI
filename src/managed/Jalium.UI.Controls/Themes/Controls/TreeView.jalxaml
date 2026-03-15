@@ -6,22 +6,43 @@
     <!-- TreeView Style -->
     <!-- ============================================== -->
     <Style TargetType="TreeView">
-        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Template">
             <ControlTemplate TargetType="TreeView">
-                <Border Background="{TemplateBinding Background}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}">
-                    <ScrollViewer HorizontalScrollBarVisibility="Auto"
-                                  VerticalScrollBarVisibility="Auto">
-                        <ItemsPresenter />
-                    </ScrollViewer>
-                </Border>
+                <Grid>
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}">
+                        <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                                      VerticalScrollBarVisibility="Auto">
+                            <ItemsPresenter />
+                        </ScrollViewer>
+                    </Border>
+                    <Border Name="FocusOuter"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                            BorderThickness="1"
+                            Opacity="0" />
+                    <Border Name="FocusInner"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                            BorderThickness="1"
+                            Margin="2"
+                            Opacity="0" />
+                </Grid>
             </ControlTemplate>
         </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -29,7 +50,7 @@
     <!-- ============================================== -->
     <Style TargetType="TreeViewItem">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Padding" Value="4,2,4,2" />
         <Setter Property="HorizontalAlignment" Value="Stretch" />
         <Setter Property="Template">
@@ -84,23 +105,6 @@
             </ControlTemplate>
         </Setter>
 
-        <Style.Triggers>
-            <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{StaticResource ControlBackgroundHover}" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{StaticResource SelectionBackground}" />
-            </PropertyTrigger>
-            <!-- Selected + Hover: deeper blue instead of hover gray -->
-            <MultiTrigger>
-                <MultiTrigger.Conditions>
-                    <Condition Property="IsSelected" Value="True" />
-                    <Condition Property="IsMouseOver" Value="True" />
-                </MultiTrigger.Conditions>
-                <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{StaticResource AccentBrushPressed}" />
-            </MultiTrigger>
-            <!-- Arrow rotation is animated by code-behind via ExpandCollapseAnimator -->
-        </Style.Triggers>
     </Style>
 
 </ResourceDictionary>

@@ -1,13 +1,11 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
-#if DEBUG
 using Jalium.UI.Controls.DevTools;
-#endif
 
 namespace Jalium.UI.Controls;
 
@@ -16,6 +14,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.WindowAutomationPeer(this);
+    }
+
     private readonly LayoutManager _layoutManager = new();
     private double _dpiScale = 1.0;
     private Dispatcher? _dispatcher; // UI thread Dispatcher, captured in Show()
@@ -27,7 +31,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private bool _renderRecoveryInProgress;
     private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _fullInvalidation = true;  // First frame is always full
-    // Maps dirty element → pre-layout bounds (captured when AddDirtyElement is called).
+    private Rect _previousDirtyRegion = Rect.Empty;  // Previous frame's dirty region (for clearing old positions)
+    private long _lastRenderTicks;          // Timestamp of last completed render (for rate-limiting)
+    private Timer? _renderThrottleTimer;    // Deferred render when rate-limited
+    private long _suppressEscapeUntilTick;
+    // Maps dirty element 鈫?pre-layout bounds (captured when AddDirtyElement is called).
     // After UpdateLayout, we also compute post-layout bounds.
     // Both are submitted as dirty rects so vacated areas (FLIP_SEQUENTIAL) are repainted.
     private readonly Dictionary<UIElement, Rect> _dirtyElements = new();
@@ -47,6 +55,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the Title dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TitleProperty =
         DependencyProperty.Register(nameof(Title), typeof(string), typeof(Window),
             new PropertyMetadata("Window", OnTitleChanged));
@@ -54,6 +63,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the WindowState dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty WindowStateProperty =
         DependencyProperty.Register(nameof(WindowState), typeof(WindowState), typeof(Window),
             new PropertyMetadata(WindowState.Normal, OnWindowStateChanged));
@@ -61,6 +71,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the TitleBarStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty TitleBarStyleProperty =
         DependencyProperty.Register(nameof(TitleBarStyle), typeof(WindowTitleBarStyle), typeof(Window),
             new PropertyMetadata(WindowTitleBarStyle.Custom, OnTitleBarStyleChanged));
@@ -68,6 +79,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the SystemBackdrop dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SystemBackdropProperty =
         DependencyProperty.Register(nameof(SystemBackdrop), typeof(WindowBackdropType), typeof(Window),
             new PropertyMetadata(WindowBackdropType.None, OnSystemBackdropChanged));
@@ -75,6 +87,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the Topmost dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty TopmostProperty =
         DependencyProperty.Register(nameof(Topmost), typeof(bool), typeof(Window),
             new PropertyMetadata(false, OnTopmostChanged));
@@ -82,6 +95,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the SizeToContent dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty SizeToContentProperty =
         DependencyProperty.Register(nameof(SizeToContent), typeof(SizeToContent), typeof(Window),
             new PropertyMetadata(SizeToContent.Manual));
@@ -89,6 +103,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the ResizeMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ResizeModeProperty =
         DependencyProperty.Register(nameof(ResizeMode), typeof(ResizeMode), typeof(Window),
             new PropertyMetadata(ResizeMode.CanResize));
@@ -96,6 +111,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the WindowStyle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty WindowStyleProperty =
         DependencyProperty.Register(nameof(WindowStyle), typeof(WindowStyle), typeof(Window),
             new PropertyMetadata(WindowStyle.SingleBorderWindow));
@@ -103,6 +119,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the LeftWindowCommands dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty LeftWindowCommandsProperty =
         DependencyProperty.Register(nameof(LeftWindowCommands), typeof(FrameworkElement), typeof(Window),
             new PropertyMetadata(null, OnWindowTitleBarPresentationChanged));
@@ -110,6 +127,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the RightWindowCommands dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RightWindowCommandsProperty =
         DependencyProperty.Register(nameof(RightWindowCommands), typeof(FrameworkElement), typeof(Window),
             new PropertyMetadata(null, OnWindowTitleBarPresentationChanged));
@@ -117,6 +135,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the IsShowIcon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsShowIconProperty =
         DependencyProperty.Register(nameof(IsShowIcon), typeof(bool), typeof(Window),
             new PropertyMetadata(true, OnWindowTitleBarPresentationChanged));
@@ -124,6 +143,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the IsShowTitle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsShowTitleProperty =
         DependencyProperty.Register(nameof(IsShowTitle), typeof(bool), typeof(Window),
             new PropertyMetadata(true, OnWindowTitleBarPresentationChanged));
@@ -131,6 +151,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the IsShowTitleBar dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsShowTitleBarProperty =
         DependencyProperty.Register(nameof(IsShowTitleBar), typeof(bool), typeof(Window),
             new PropertyMetadata(true, OnWindowTitleBarPresentationChanged));
@@ -138,6 +159,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the IsShowMinimizeButton dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsShowMinimizeButtonProperty =
         DependencyProperty.Register(nameof(IsShowMinimizeButton), typeof(bool), typeof(Window),
             new PropertyMetadata(true, OnWindowTitleBarPresentationChanged));
@@ -145,6 +167,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the IsShowMaximizeButton dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsShowMaximizeButtonProperty =
         DependencyProperty.Register(nameof(IsShowMaximizeButton), typeof(bool), typeof(Window),
             new PropertyMetadata(true, OnWindowTitleBarPresentationChanged));
@@ -152,6 +175,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the IsShowCloseButton dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsShowCloseButtonProperty =
         DependencyProperty.Register(nameof(IsShowCloseButton), typeof(bool), typeof(Window),
             new PropertyMetadata(true, OnWindowTitleBarPresentationChanged));
@@ -159,6 +183,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the TitleBarHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty TitleBarHeightProperty =
         DependencyProperty.Register(nameof(TitleBarHeight), typeof(double), typeof(Window),
             new PropertyMetadata(DefaultTitleBarHeightDip, OnWindowTitleBarPresentationChanged));
@@ -166,6 +191,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Identifies the WindowIcon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty WindowIconProperty =
         DependencyProperty.Register(nameof(WindowIcon), typeof(ImageSource), typeof(Window),
             new PropertyMetadata(null, OnWindowTitleBarPresentationChanged));
@@ -177,6 +203,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets the window title.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Title
     {
         get => (string)(GetValue(TitleProperty) ?? "Window");
@@ -186,6 +213,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets the window state.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public WindowState WindowState
     {
         get => (WindowState)GetValue(WindowStateProperty)!;
@@ -195,6 +223,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets the title bar style.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public WindowTitleBarStyle TitleBarStyle
     {
         get => (WindowTitleBarStyle)(GetValue(TitleBarStyleProperty) ?? WindowTitleBarStyle.Custom);
@@ -206,6 +235,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// This blurs content behind the window (desktop, other applications) using Windows DWM APIs.
     /// Requires Windows 11 22H2+ for Mica and Acrylic effects.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public WindowBackdropType SystemBackdrop
     {
         get => (WindowBackdropType)(GetValue(SystemBackdropProperty) ?? WindowBackdropType.None);
@@ -240,6 +270,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets a value indicating whether this window appears on top of all other windows.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool Topmost
     {
         get => (bool)GetValue(TopmostProperty)!;
@@ -249,6 +280,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets a value that indicates whether a window automatically sizes itself to fit the size of its content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public SizeToContent SizeToContent
     {
         get => (SizeToContent)GetValue(SizeToContentProperty)!;
@@ -258,6 +290,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets a value that indicates whether a window can be resized.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public ResizeMode ResizeMode
     {
         get => (ResizeMode)GetValue(ResizeModeProperty)!;
@@ -267,6 +300,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets a window's border style.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public WindowStyle WindowStyle
     {
         get => (WindowStyle)GetValue(WindowStyleProperty)!;
@@ -276,6 +310,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets the content rendered on the left side of the title bar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public FrameworkElement? LeftWindowCommands
     {
         get => (FrameworkElement?)GetValue(LeftWindowCommandsProperty);
@@ -285,6 +320,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets the content rendered on the right side of the title bar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public FrameworkElement? RightWindowCommands
     {
         get => (FrameworkElement?)GetValue(RightWindowCommandsProperty);
@@ -294,6 +330,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets whether the title bar icon is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsShowIcon
     {
         get => (bool)GetValue(IsShowIconProperty)!;
@@ -303,6 +340,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets whether the title text is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsShowTitle
     {
         get => (bool)GetValue(IsShowTitleProperty)!;
@@ -312,6 +350,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets whether the custom title bar is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsShowTitleBar
     {
         get => (bool)GetValue(IsShowTitleBarProperty)!;
@@ -321,6 +360,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets whether the minimize button is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsShowMinimizeButton
     {
         get => (bool)GetValue(IsShowMinimizeButtonProperty)!;
@@ -330,6 +370,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets whether the maximize button is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsShowMaximizeButton
     {
         get => (bool)GetValue(IsShowMaximizeButtonProperty)!;
@@ -339,6 +380,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets whether the close button is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsShowCloseButton
     {
         get => (bool)GetValue(IsShowCloseButtonProperty)!;
@@ -348,6 +390,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets the height, in DIPs, of the custom title bar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double TitleBarHeight
     {
         get => (double)GetValue(TitleBarHeightProperty)!;
@@ -357,6 +400,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Gets or sets the icon displayed in the custom title bar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public ImageSource? WindowIcon
     {
         get => (ImageSource?)GetValue(WindowIconProperty);
@@ -419,6 +463,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     internal List<Popup> ActiveExternalPopups { get; } = [];
 
+    /// <summary>
+    /// Gets or sets the active modal content dialog hosted by this window.
+    /// </summary>
+    internal ContentDialog? ActiveContentDialog { get; set; }
+
     public Window()
     {
         Width = 800;
@@ -429,6 +478,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         AddVisualChild(OverlayLayer);
 
         _realTimeStylus = new RealTimeStylus(this);
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnWindowKeyboardFocusChanged), handledEventsToo: true);
+        AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnWindowKeyboardFocusChanged), handledEventsToo: true);
 
         CreateTitleBar();
     }
@@ -1169,7 +1220,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
 
         _pressedTitleBarButton = button;
-        button.SetIsPressed(true);  // triggers InvalidateVisual() → dirty rect
+        button.SetIsPressed(true);  // triggers InvalidateVisual() 鈫?dirty rect
         return true;
     }
 
@@ -1180,7 +1231,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return false;
         }
 
-        // Get cursor position (physical pixels) → client → DIPs
+        // Get cursor position (physical pixels) 鈫?client 鈫?DIPs
         int x = (short)(lParam.ToInt64() & 0xFFFF);
         int y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
         POINT pt = new() { X = x, Y = y };
@@ -1215,7 +1266,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             }
 
             _pressedTitleBarButton = null;
-            // SetIsPressed(false) above already triggers InvalidateVisual() → dirty rect
+            // SetIsPressed(false) above already triggers InvalidateVisual() 鈫?dirty rect
             return true;
         }
 
@@ -1231,7 +1282,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         int hitTest = (int)wParam.ToInt64();
 
-        // Get cursor position (physical pixels) → client → DIPs
+        // Get cursor position (physical pixels) 鈫?client 鈫?DIPs
         int x = (short)(lParam.ToInt64() & 0xFFFF);
         int y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
         POINT pt = new() { X = x, Y = y };
@@ -1266,11 +1317,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
-        _hoveredTitleBarButton?.SetIsMouseOver(false);  // triggers InvalidateVisual() → dirty rect
+        _hoveredTitleBarButton?.SetIsMouseOver(false);  // triggers InvalidateVisual() 鈫?dirty rect
 
         _hoveredTitleBarButton = newHoveredButton;
 
-        _hoveredTitleBarButton?.SetIsMouseOver(true);  // triggers InvalidateVisual() → dirty rect
+        _hoveredTitleBarButton?.SetIsMouseOver(true);  // triggers InvalidateVisual() 鈫?dirty rect
     }
 
     #region Visual Children
@@ -1290,7 +1341,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <inheritdoc />
     public override Visual? GetVisualChild(int index)
     {
-        // Order: ContentElement(s) → TitleBar → OverlayLayer (last = rendered on top, hit-tested first)
+        // Order: ContentElement(s) 鈫?TitleBar 鈫?OverlayLayer (last = rendered on top, hit-tested first)
         int baseCount = base.VisualChildrenCount;
 
         if (index < baseCount)
@@ -1524,6 +1575,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         StopRenderRecoveryRetry();
 
+        if (ActiveContentDialog != null)
+        {
+            ActiveContentDialog.OnHostWindowClosed();
+            ActiveContentDialog = null;
+        }
+
         // Close all external popup windows
         foreach (var popup in ActiveExternalPopups.ToList())
             popup.IsOpen = false;
@@ -1554,7 +1611,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             }
             else if (_windows.Count == 0)
             {
-                // No Application instance — fall back to quit when no windows remain
+                // No Application instance 鈥?fall back to quit when no windows remain
                 PostQuitMessage(0);
             }
         }
@@ -1580,21 +1637,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             ? WS_EX_APPWINDOW
             : 0;
 
-        // WS_EX_NOREDIRECTIONBITMAP enables DWM system backdrop (Mica/Acrylic).
-        // The window visual is provided via DirectComposition composition swap chain.
-        if (SystemBackdrop != WindowBackdropType.None)
-        {
-            dwExStyle |= WS_EX_NOREDIRECTIONBITMAP;
-        }
-
         // Query system DPI for initial window sizing (before HWND exists)
         uint systemDpi = GetDpiForSystem();
         _dpiScale = systemDpi / 96.0;
 
         // CreateWindowEx takes physical pixel dimensions.
-        // Width/Height are in DIPs — scale to physical pixels.
+        // Width/Height are in DIPs 鈥?scale to physical pixels.
         int physicalWidth = (int)(Width * _dpiScale);
         int physicalHeight = (int)(Height * _dpiScale);
+
+        PrepareTaskbarRelaunchIdentity();
 
         // Create the window
         Handle = CreateWindowEx(
@@ -1613,6 +1665,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             throw new InvalidOperationException("Failed to create window.");
         }
+
+        ApplyTaskbarRelaunchProperties();
 
         // Store reference for message handling
         _windows[Handle] = this;
@@ -1654,6 +1708,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             ApplySystemBackdrop(SystemBackdrop);
         }
+
+        UpdateInputMethodAssociation();
     }
 
     private void EnableRoundedCorners()
@@ -1761,10 +1817,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
 
         // DwmExtendFrameIntoClientArea is already called by EnableRoundedCorners()
-        // with title-bar-height margins. We do NOT use {-1,-1,-1,-1} because that
-        // causes DWM to draw its own system caption buttons on top of our custom
-        // title bar. With WS_EX_NOREDIRECTIONBITMAP + composition swap chain, the
-        // DWM system backdrop covers the entire window regardless of the margins.
+        // with title-bar-height margins. We intentionally avoid {-1,-1,-1,-1} here
+        // because that makes DWM draw its own caption visuals over a custom title bar.
 
         // Step 1: Set dark mode for proper Mica tint (dark theme)
         int useDarkMode = 1;
@@ -1877,6 +1931,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         return WS_OVERLAPPEDWINDOW;
     }
 
+    private bool ShouldUseCompositionRenderTarget()
+    {
+        if (Handle == nint.Zero)
+        {
+            return false;
+        }
+
+        long exStyle = GetWindowLong(Handle, GWL_EXSTYLE);
+        return (exStyle & WS_EX_NOREDIRECTIONBITMAP) != 0;
+    }
+
     private void EnsureRenderTarget(bool forceNewContext = false)
     {
         if (RenderTarget != null)
@@ -1886,15 +1951,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         try
         {
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12, forceReplace: forceNewContext);
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceNewContext);
 
             // Swap chain uses physical pixel dimensions
             int physicalWidth = (int)(Width * _dpiScale);
             int physicalHeight = (int)(Height * _dpiScale);
 
-            if (SystemBackdrop != WindowBackdropType.None)
+            if (ShouldUseCompositionRenderTarget())
             {
-                // Composition swap chain with premultiplied alpha for DWM backdrop transparency.
+                // Composition swap chains are reserved for scenarios that need child composition visuals
+                // (for example WebView composition controller hosting).
                 RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
             }
             else
@@ -1934,7 +2000,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         try
         {
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
 
             // Ensure composition-compatible window style for composition swap chain hosting.
             long exStyle = GetWindowLong(Handle, GWL_EXSTYLE);
@@ -2089,6 +2155,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     // Cursor cache - stores loaded cursor handles to avoid repeated LoadCursor calls
     private static readonly Dictionary<CursorType, nint> _cursorCache = [];
 
+    internal static Window? TryGetOpenWindow(nint handle)
+    {
+        return handle != nint.Zero && _windows.TryGetValue(handle, out var window)
+            ? window
+            : null;
+    }
+
     /// <summary>
     /// Gets the Windows cursor handle for a CursorType.
     /// </summary>
@@ -2146,21 +2219,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // Convert physical client pixels to DIPs
         Point clientPos = new(screenPt.X / _dpiScale, screenPt.Y / _dpiScale);
 
-        // Find the element under the cursor
-        var hitResult = HitTest(clientPos);
-        var element = hitResult?.VisualHit;
+        var hitResult = HitTestWithCache(clientPos);
+        var element = hitResult?.VisualHit as UIElement;
 
         // Walk up the visual tree to find the first element with a non-null Cursor
-        Cursor? cursor = null;
-        while (element != null)
-        {
-            if (element is FrameworkElement fe && fe.Cursor != null)
-            {
-                cursor = fe.Cursor;
-                break;
-            }
-            element = element.VisualParent;
-        }
+        var cursor = ResolveCursor(element);
 
         // Set the cursor
         nint cursorHandle;
@@ -2180,6 +2243,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
 
         return false;
+    }
+
+    private static Cursor? ResolveCursor(UIElement? element)
+    {
+        while (element != null)
+        {
+            if (element is FrameworkElement fe && fe.Cursor != null)
+            {
+                return fe.Cursor;
+            }
+
+            element = element.VisualParent as UIElement;
+        }
+
+        return null;
     }
 
 #if DEBUG
@@ -2397,7 +2475,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
-        _wndProcDelegate = WndProc;
+        _wndProcDelegate = StaticWndProc;
 
         WNDCLASSEX wc = new()
         {
@@ -2419,7 +2497,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         _classRegistered = true;
     }
 
+    private static nint StaticWndProc(nint hWnd, uint msg, nint wParam, nint lParam)
+    {
+        if (_windows.TryGetValue(hWnd, out var window))
+        {
+            return window.WndProc(hWnd, msg, wParam, lParam);
+        }
+
+        return DefWindowProc(hWnd, msg, wParam, lParam);
+    }
+
     protected virtual nint WndProc(nint hWnd, uint msg, nint wParam, nint lParam)
+    {
+        try
+        {
+            return WndProcCore(hWnd, msg, wParam, lParam);
+        }
+        catch (Exception ex)
+        {
+            // Never allow managed exceptions to escape the native window procedure.
+            // If they do, the OS callback chain can become unstable and future
+            // messages may appear to stop reaching the window entirely.
+            return hWnd == nint.Zero
+                ? nint.Zero
+                : DefWindowProc(hWnd, msg, wParam, lParam);
+        }
+    }
+
+    private nint WndProcCore(nint hWnd, uint msg, nint wParam, nint lParam)
     {
         Window? window = null;
         if (!_windows.TryGetValue(hWnd, out window))
@@ -2447,8 +2552,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
                 case WM_DESTROY:
                     // Just clean up the window map; quit logic is handled by
-                    // Close() → Application.OnWindowClosed() based on ShutdownMode.
-                    // Do NOT call PostQuitMessage here — it would kill the app
+                    // Close() 鈫?Application.OnWindowClosed() based on ShutdownMode.
+                    // Do NOT call PostQuitMessage here 鈥?it would kill the app
                     // when closing any window in a multi-window scenario.
                     _ = _windows.Remove(hWnd);
                     return nint.Zero;
@@ -2687,7 +2792,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     window._dpiScale = newDpi / 96.0;
 
                     // Update DPI BEFORE SetWindowPos: SetWindowPos triggers WM_SIZE
-                    // synchronously, which calls Resize() → CreateSnapshotResources().
+                    // synchronously, which calls Resize() 鈫?CreateSnapshotResources().
                     // Snapshot bitmaps bake DPI into their D2D1_BITMAP_PROPERTIES1,
                     // so dpiX_/dpiY_ must already reflect the new DPI at that point.
                     window.RenderTarget?.SetDpi((float)newDpi, (float)newDpi);
@@ -2755,14 +2860,46 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
                 // Keyboard input
                 case WM_KEYDOWN:
-                case WM_SYSKEYDOWN:
-                    window.OnKeyDown(wParam, lParam);
-                    return nint.Zero;
+                    if (IsShellReservedVirtualKey(wParam))
+                    {
+                        break;
+                    }
+
+                    bool keyDownHandled = window.OnKeyDown(wParam, lParam);
+                    if (keyDownHandled || hWnd == nint.Zero)
+                    {
+                        return nint.Zero;
+                    }
+                    break;
 
                 case WM_KEYUP:
+                    if (IsShellReservedVirtualKey(wParam))
+                    {
+                        break;
+                    }
+
+                    bool keyUpHandled = window.OnKeyUp(wParam, lParam);
+                    if (keyUpHandled || hWnd == nint.Zero)
+                    {
+                        return nint.Zero;
+                    }
+                    break;
+
+                case WM_SYSKEYDOWN:
+                    bool sysKeyDownHandled = window.OnKeyDown(wParam, lParam);
+                    if (sysKeyDownHandled || hWnd == nint.Zero)
+                    {
+                        return nint.Zero;
+                    }
+                    break;
+
                 case WM_SYSKEYUP:
-                    window.OnKeyUp(wParam, lParam);
-                    return nint.Zero;
+                    bool sysKeyUpHandled = window.OnKeyUp(wParam, lParam);
+                    if (sysKeyUpHandled || hWnd == nint.Zero)
+                    {
+                        return nint.Zero;
+                    }
+                    break;
 
                 case WM_CHAR:
                     window.OnChar(wParam, lParam);
@@ -2770,15 +2907,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
                 // IME input
                 case WM_IME_STARTCOMPOSITION:
-                    window.OnImeStartComposition();
-                    return nint.Zero;
+                    if (window.CanHandleImeMessages())
+                    {
+                        window.OnImeStartComposition();
+                        return nint.Zero;
+                    }
+
+                    break;
 
                 case WM_IME_ENDCOMPOSITION:
-                    window.OnImeEndComposition();
-                    return nint.Zero;
+                    if (window.CanHandleImeMessages() || InputMethod.IsComposing)
+                    {
+                        window.OnImeEndComposition();
+                        return nint.Zero;
+                    }
+
+                    break;
 
                 case WM_IME_COMPOSITION:
-                    if (window.OnImeComposition(lParam))
+                    if (window.CanHandleImeMessages() && window.OnImeComposition(lParam))
                     {
                         return nint.Zero;
                     }
@@ -2816,13 +2963,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
                 case WM_MOUSEMOVE:
                     if (Win32PointerInterop.IsPromotedMouseMessage())
+                    {
                         return nint.Zero;
+                    }
                     window.OnMouseMove(wParam, lParam);
                     return nint.Zero;
 
                 case WM_LBUTTONDOWN:
                     if (Win32PointerInterop.IsPromotedMouseMessage())
+                    {
                         return nint.Zero;
+                    }
                     window.OnMouseButtonDown(MouseButton.Left, wParam, lParam, clickCount: 1);
                     return nint.Zero;
 
@@ -2834,7 +2985,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
                 case WM_LBUTTONUP:
                     if (Win32PointerInterop.IsPromotedMouseMessage())
+                    {
                         return nint.Zero;
+                    }
                     window.OnMouseButtonUp(MouseButton.Left, wParam, lParam);
                     return nint.Zero;
 
@@ -2886,30 +3039,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
                 case WM_CAPTURECHANGED:
                     // Native capture was lost (another window took it, or system released it).
-                    // Sync managed state — don't call ReleaseCapture again since it's already gone.
+                    // Sync managed state 鈥?don't call ReleaseCapture again since it's already gone.
                     UIElement.OnNativeCaptureChanged();
                     window.ClearMousePressedChain();
                     return nint.Zero;
 
+                case WM_CANCELMODE:
+                    window.OnCancelMode();
+                    return nint.Zero;
+
                 case WM_ACTIVATE:
-                    // When parent window is deactivated, close light-dismiss external popups
-                    // unless the new foreground window is one of our popup windows
                     int activateState = (int)(wParam.ToInt64() & 0xFFFF);
-                    if (activateState == WA_INACTIVE && window.ActiveExternalPopups.Count > 0)
-                    {
-                        nint newForeground = lParam; // lParam = handle of window being activated
-                        if (!PopupWindow.IsPopupWindow(newForeground))
-                        {
-                            var popupsToClose = window.ActiveExternalPopups
-                                .Where(p => !p.StaysOpen).ToList();
-                            foreach (var popup in popupsToClose)
-                                popup.IsOpen = false;
-                        }
-                    }
-                    if (activateState == WA_INACTIVE)
-                    {
-                        window.ClearPressedChains();
-                    }
+                    window.OnActivateChanged(activateState, lParam);
+                    break;
+
+                case WM_SETFOCUS:
+                    window.OnSetFocus();
+                    break;
+
+                case WM_KILLFOCUS:
+                    window.OnKillFocus(wParam);
                     break;
             }
         }
@@ -2938,6 +3087,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             RaiseMouseLeaveChain(_lastMouseOverElement, null, Environment.TickCount);
             _lastMouseOverElement = null;
         }
+
+        _lastHitTestElement = null;
     }
 
     /// <summary>
@@ -3118,9 +3269,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private RenderTargetDrawingContext? _drawingContext;
     private UIElement? _lastMouseOverElement;
+    private UIElement? _lastHitTestElement;
     private readonly List<UIElement> _mousePressedChain = [];
     private readonly List<UIElement> _keyboardPressedChain = [];
+    private nint _detachedImeContext;
+    private bool _imeContextDetached;
     private bool _keyboardPressActive;
+    private const int EscapeReactivateSuppressionMs = 250;
 
     /// <summary>
     /// WM_PAINT handler. Used for OS-initiated repaints (window uncovered, initial show, resize).
@@ -3136,31 +3291,73 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     /// <summary>
     /// Processes a scheduled render from the Dispatcher queue.
-    /// This is the primary render path — called via Dispatcher.BeginInvokeCritical
+    /// This is the primary render path 鈥?called via Dispatcher.BeginInvokeCritical
     /// after InvalidateMeasure/InvalidateArrange/InvalidateVisual.
     ///
     /// WPF-style: rendering is a Dispatcher operation, not WM_PAINT.
     /// When DispatcherTimer ticks (animations) call BeginInvoke(RaiseTick),
     /// the tick handler invalidates elements which calls BeginInvokeCritical(ProcessRender).
     /// ProcessQueue drains all items in FIFO order, so ProcessRender runs
-    /// immediately after all ticks in the same batch — no WM_PAINT starvation.
+    /// immediately after all ticks in the same batch 鈥?no WM_PAINT starvation.
     /// </summary>
     private void ProcessRender()
     {
         _renderScheduled = false;
         if (Handle == nint.Zero) return;
+
+        // Dispose any pending throttle timer from a previous rate-limit cycle.
+        var throttleTimer = _renderThrottleTimer;
+        _renderThrottleTimer = null;
+        throttleTimer?.Dispose();
+
+        // Rate-limit to display refresh rate when no animation timer is driving frames.
+        // During animations, CompositionTarget already controls frame pacing (re-arm after render).
+        // Without this, rapid input events (scrolling, mouse drag) can saturate the GPU
+        // with back-to-back full renders on integrated graphics.
+        if (!CompositionTarget.IsActive && _lastRenderTicks > 0)
+        {
+            long now = Environment.TickCount64;
+            long elapsed = now - _lastRenderTicks;
+            int minIntervalMs = 1000 / Math.Max(CompositionTarget.RefreshRate, 30);
+
+            if (elapsed < minIntervalMs)
+            {
+                // Too soon — defer this render. Dirty elements continue accumulating
+                // via AddDirtyElement and will all be rendered in the deferred frame.
+                _renderScheduled = true;
+                int delay = Math.Max(1, minIntervalMs - (int)elapsed);
+                _renderThrottleTimer = new Timer(_ =>
+                {
+                    _dispatcher?.BeginInvokeCritical(ProcessRender);
+                }, null, delay, Timeout.Infinite);
+                return;
+            }
+        }
+
         RenderFrame();
     }
 
     /// <summary>
     /// Core rendering logic shared by both Dispatcher-based and WM_PAINT paths.
     /// Performs layout, submits dirty rects, and renders the visual tree.
+    ///
+    /// Retained mode rendering:
+    /// - When nothing is dirty, skip the frame entirely (GPU idle).
+    /// - When dirty elements exist, push an ALIASED D2D clip to the dirty region
+    ///   and render only that area. ALIASED mode creates hard pixel boundaries
+    ///   with no semi-transparent edge artifacts (unlike PER_PRIMITIVE mode).
+    /// - Present1 dirty rects tell DWM which areas changed; FLIP_SEQUENTIAL
+    ///   copies non-dirty areas from the previously presented buffer automatically.
+    /// - Falls back to full render on first frame, resize, theme change, etc.
+    /// - ProcessRender rate-limits to display refresh rate when no animation is active,
+    ///   preventing GPU saturation from rapid input events (scrolling, mouse drag).
     /// </summary>
     private void RenderFrame()
     {
         if (_isRendering) return;
         _isRendering = true;
         _renderRequested = false;
+        _lastRenderTicks = Environment.TickCount64;
 
         try
         {
@@ -3174,57 +3371,136 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 return;
             }
 
-            // Perform layout before rendering (queue-based: only dirty elements)
+            // Perform layout before rendering (queue-based: only dirty elements).
+            // UpdateLayout may trigger further invalidations via AddDirtyElement.
             UpdateLayout();
 
-            // Dirty rendering strategy:
-            // - Dirty elements drive SCHEDULING (whether to render at all)
-            // - When idle, no render → GPU idle
-            // - When rendering, always full Clear + full tree render + full Present
-            //
-            // Present1 partial dirty rects are NOT used because with FLIP_SEQUENTIAL,
-            // we Clear the entire back buffer each frame, so telling DWM only partial
-            // rects changed causes cumulative stale content on screen.
-            // The GPU savings come from not rendering at all when idle, not from
-            // partial DWM compositing.
+            // ── Compute dirty region from accumulated dirty elements ──
+            // Check dirty AFTER UpdateLayout so layout-triggered invalidations are included.
+            bool fullInvalidation;
+            Rect dirtyRegion = Rect.Empty;
             lock (_dirtyLock)
             {
+                fullInvalidation = _fullInvalidation;
+
+                if (!fullInvalidation && _dirtyElements.Count == 0)
+                {
+                    // Nothing dirty after layout — GPU fully idle.
+                    _fullInvalidation = false;
+                    return;
+                }
+
+                if (!fullInvalidation)
+                {
+                    dirtyRegion = ComputeDirtyRegion();
+                }
+
                 _dirtyElements.Clear();
                 _fullInvalidation = false;
             }
-            RenderTarget.SetFullInvalidation();
 
-            RenderTarget.BeginDraw();
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+            _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
 
-            // Always clear and render the full window.
-            // No D2D clip — the full back buffer is redrawn every dirty frame.
-            // Present1 dirty rects handle DWM-level optimization.
-            if (Background is SolidColorBrush solidBrush)
+            if (fullInvalidation)
             {
-                var color = solidBrush.Color;
-                RenderTarget.Clear(color.ScR, color.ScG, color.ScB, color.ScA);
+                // ── Full render path (first frame, resize, theme change) ──
+                _previousDirtyRegion = Rect.Empty; // Reset — full render covers everything
+                RenderTarget.SetFullInvalidation();
+                RenderTarget.BeginDraw();
+                ClearBackground();
+                _drawingContext.Offset = Point.Zero;
+                Render(_drawingContext);
+#if DEBUG
+                DevToolsOverlay?.DrawOverlay(_drawingContext);
+#endif
+                OnRender(RenderTarget);
+                RenderTarget.EndDraw();
+            }
+            else if (dirtyRegion.IsEmpty)
+            {
+                // Dirty elements exist but their visible bounds are outside the window
+                // (e.g., ProgressBar animating off-screen). Nothing to render — GPU idle.
+                return;
             }
             else
             {
-                RenderTarget.Clear(1.0f, 1.0f, 1.0f, 1.0f);
+                // ── Retained mode partial render ──
+                // Union with previous frame's dirty region so moving elements have
+                // their old position cleared. Without this, DXGI copies stale content
+                // from the previous buffer at the old position → ghost images.
+                var rawDirtyRegion = dirtyRegion;
+                if (!_previousDirtyRegion.IsEmpty)
+                {
+                    dirtyRegion = dirtyRegion.Union(_previousDirtyRegion);
+                }
+                _previousDirtyRegion = rawDirtyRegion;
+
+                // Expand by DirtyRectMargin (2px) for the D2D clip region.
+                // Native AddDirtyRect also expands by the same 2px, so passing the
+                // RAW dirty region to native makes the Present1 rect match our clip.
+                // Previously we passed the EXPANDED rect to native → native expanded
+                // AGAIN → Present1 was 2px larger than D2D clip → gap showed stale
+                // buffer content from 2 frames ago (visible on iGPU).
+                const double DirtyRectMargin = 2.0;
+                var clipRegion = new Rect(
+                    dirtyRegion.X - DirtyRectMargin,
+                    dirtyRegion.Y - DirtyRectMargin,
+                    dirtyRegion.Width + DirtyRectMargin * 2,
+                    dirtyRegion.Height + DirtyRectMargin * 2);
+                var windowBounds = new Rect(0, 0, ActualWidth, ActualHeight);
+                clipRegion = clipRegion.Intersect(windowBounds);
+                if (clipRegion.IsEmpty)
+                {
+                    return;
+                }
+
+                // If clip region > 50% of window, native AddDirtyRect upgrades to
+                // full invalidation (DirtyRectsCount=0). Must match in managed —
+                // otherwise D2D clip is partial but Present1 is full → stale pixels.
+                double windowArea = ActualWidth * ActualHeight;
+                if (windowArea > 0 &&
+                    clipRegion.Width * clipRegion.Height > windowArea * 0.5)
+                {
+                    _previousDirtyRegion = Rect.Empty;
+                    RenderTarget.SetFullInvalidation();
+                    RenderTarget.BeginDraw();
+                    ClearBackground();
+                    _drawingContext.Offset = Point.Zero;
+                    Render(_drawingContext);
+#if DEBUG
+                    DevToolsOverlay?.DrawOverlay(_drawingContext);
+#endif
+                    OnRender(RenderTarget);
+                    RenderTarget.EndDraw();
+                }
+                else
+                {
+                    // Pass RAW dirty region to native — native expands by 2px
+                    // to match our clipRegion exactly.
+                    RenderTarget.AddDirtyRect(
+                        (float)dirtyRegion.X, (float)dirtyRegion.Y,
+                        (float)dirtyRegion.Width, (float)dirtyRegion.Height);
+
+                    RenderTarget.BeginDraw();
+
+                    // Push ALIASED D2D clip — hard pixel boundary, no semi-transparent
+                    // edge artifacts. Matches the Present1 dirty rect exactly.
+                    _drawingContext.Offset = Point.Zero;
+                    _drawingContext.PushDirtyRegionClip(clipRegion);
+
+                    ClearBackground();
+                    Render(_drawingContext);
+
+                    _drawingContext.PopDirtyRegionClip();
+#if DEBUG
+                    DevToolsOverlay?.DrawOverlay(_drawingContext);
+#endif
+                    OnRender(RenderTarget);
+                    RenderTarget.EndDraw();
+                }
             }
 
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.D3D12);
-            _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
-            _drawingContext.Offset = Point.Zero;
-            Render(_drawingContext);
-
-#if DEBUG
-            // Draw DevTools highlight overlay if active
-            DevToolsOverlay?.DrawOverlay(_drawingContext);
-#endif
-
-            // Also call legacy OnRender for backwards compatibility
-            OnRender(RenderTarget);
-
-            RenderTarget.EndDraw();
-
-            // Trim caches to prevent memory from growing unbounded
             _drawingContext?.TrimCacheIfNeeded();
         }
         catch (RenderPipelineException ex)
@@ -3262,9 +3538,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // If something requested a render during our rendering
         // (e.g., UpdateLayout triggered further invalidation),
         // schedule another render cycle.
-        // When CompositionTarget is active, clear the flag — the next frame will
-        // render all dirty elements. Don't call InvalidateWindow (it would be
-        // blocked by the IsActive check anyway).
         if (_renderRequested)
         {
             _renderRequested = false;
@@ -3272,6 +3545,57 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             {
                 InvalidateWindow();
             }
+        }
+    }
+
+    /// <summary>
+    /// Computes the union of all dirty element bounds (both pre-layout and post-layout),
+    /// clamped to the window client area. Must be called under <see cref="_dirtyLock"/>.
+    /// </summary>
+    private Rect ComputeDirtyRegion()
+    {
+        var union = Rect.Empty;
+        foreach (var (element, preLayoutBounds) in _dirtyElements)
+        {
+            // Pre-layout bounds: where the element WAS before UpdateLayout.
+            if (!preLayoutBounds.IsEmpty)
+            {
+                union = union.Union(preLayoutBounds);
+            }
+
+            // Post-layout bounds: where the element IS now.
+            var postLayoutBounds = element.GetScreenBounds();
+            if (!postLayoutBounds.IsEmpty)
+            {
+                union = union.Union(postLayoutBounds);
+            }
+        }
+
+        if (union.IsEmpty) return union;
+
+        // Clamp to window client area.
+        var windowBounds = new Rect(0, 0, ActualWidth, ActualHeight);
+        return union.Intersect(windowBounds);
+    }
+
+    /// <summary>
+    /// Clears the render target with the window background color.
+    /// When a D2D clip is active (retained mode), only the clipped area is cleared.
+    /// </summary>
+    private void ClearBackground()
+    {
+        if (Background is SolidColorBrush solidBrush)
+        {
+            var color = solidBrush.Color;
+            RenderTarget.Clear(color.ScR, color.ScG, color.ScB, color.ScA);
+        }
+        else if (SystemBackdrop != WindowBackdropType.None)
+        {
+            RenderTarget.Clear(0.0f, 0.0f, 0.0f, 0.0f);
+        }
+        else
+        {
+            RenderTarget.Clear(1.0f, 1.0f, 1.0f, 1.0f);
         }
     }
 
@@ -3367,14 +3691,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// Schedules a render via Dispatcher.BeginInvokeCritical (WPF-style).
     /// Implements IWindowHost.InvalidateWindow.
     ///
-    /// Unlike InvalidateRect → WM_PAINT (which is low-priority and gets starved
+    /// Unlike InvalidateRect 鈫?WM_PAINT (which is low-priority and gets starved
     /// by posted messages from DispatcherTimer), this enqueues a render directly
     /// in the Dispatcher queue. ProcessQueue drains all items, so the render
     /// runs right after animation ticks in the same batch.
     ///
     /// iGPU optimization: when CompositionTarget is active (animations running),
     /// only allow renders triggered during the Rendering event phase.
-    /// Mouse/interaction-triggered renders between frames are suppressed —
+    /// Mouse/interaction-triggered renders between frames are suppressed 鈥?
     /// dirty elements are batched into the next CompositionTarget frame.
     /// This prevents render storms on slow GPUs (200ms render + immediate
     /// mouse render + immediate timer render = frozen UI).
@@ -3383,7 +3707,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         if (Handle == nint.Zero) return;
 
-        // During rendering, don't schedule — just flag for re-render after current frame
+        // During rendering, don't schedule 鈥?just flag for re-render after current frame
         if (_isRendering)
         {
             _renderRequested = true;
@@ -3392,7 +3716,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         // When the centralized frame timer is active, only allow renders triggered
         // during CompositionTarget.Rendering (animation handlers). Between frames,
-        // mouse drags / property changes just mark elements dirty via AddDirtyElement —
+        // mouse drags / property changes just mark elements dirty via AddDirtyElement 鈥?
         // they'll be rendered in the next animation frame via FrameStarting.
         // This ensures exactly ONE render per frame interval, leaving gaps for
         // the message pump to process input.
@@ -3405,7 +3729,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         if (!_renderScheduled)
         {
             _renderScheduled = true;
-            // Use stored UI thread Dispatcher — NOT Dispatcher.CurrentDispatcher,
+            // Use stored UI thread Dispatcher 鈥?NOT Dispatcher.CurrentDispatcher,
             // which returns null on thread-pool threads (System.Threading.Timer callbacks,
             // Storyboard ticks, etc.) and would silently drop the render request.
             _dispatcher?.BeginInvokeCritical(ProcessRender);
@@ -3418,7 +3742,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     public void AddDirtyElement(UIElement element)
     {
         // Thread-safe: background threads (System.Threading.Timer callbacks from
-        // ProgressBar, Storyboard, caret timers) call InvalidateVisual → AddDirtyElement.
+        // ProgressBar, Storyboard, caret timers) call InvalidateVisual 鈫?AddDirtyElement.
         lock (_dirtyLock)
         {
             // Only capture pre-layout bounds on first registration per frame.
@@ -3479,9 +3803,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     #region Input Handling
 
-    private void OnKeyDown(nint wParam, nint lParam)
+    private static bool IsShellReservedVirtualKey(nint wParam)
+    {
+        int virtualKey = (int)wParam;
+        return virtualKey is VK_LWIN or VK_RWIN;
+    }
+
+    private bool OnKeyDown(nint wParam, nint lParam)
     {
         Key key = (Key)(int)wParam;
+        if (ShouldSuppressReactivatedEscape(key, isKeyDown: true))
+        {
+            return true;
+        }
+
         var modifiers = GetModifierKeys();
         bool isRepeat = ((lParam.ToInt64() >> 30) & 1) != 0;
         int timestamp = Environment.TickCount;
@@ -3492,7 +3827,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         if (key == Key.F12 && !isRepeat && CanOpenDevTools)
         {
             ToggleDevTools();
-            return;
+            return true;
         }
 
         // Ctrl+Shift+C activates element picker (opens DevTools if not open)
@@ -3501,12 +3836,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             OpenDevTools();
             _devToolsWindow?.ActivatePicker();
-            return;
+            return true;
         }
 #endif
 
-        // Route keyboard events to the focused element, or the window if no element has focus
-        var target = Keyboard.FocusedElement as UIElement ?? this;
+        var target = GetKeyboardEventTarget();
 
         if (!isRepeat && (key == Key.Space || key == Key.Enter))
         {
@@ -3527,9 +3861,30 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             if (!bubbleArgs.Handled && key == Key.Tab)
             {
                 var reverse = (modifiers & ModifierKeys.Shift) != 0;
-                if (target is UIElement focusedElement)
+                if (target is UIElement targetElement)
                 {
-                    KeyboardNavigation.MoveFocus(focusedElement, reverse);
+                    KeyboardNavigation.MoveFocus(targetElement, reverse);
+                    bubbleArgs.Handled = true;
+                }
+            }
+
+            // Auto arrow-key focus navigation when the focused control did not consume the key.
+            if (!bubbleArgs.Handled &&
+                modifiers == ModifierKeys.None &&
+                target is UIElement directionalTarget)
+            {
+                var direction = key switch
+                {
+                    Key.Left => FocusNavigationDirection.Left,
+                    Key.Right => FocusNavigationDirection.Right,
+                    Key.Up => FocusNavigationDirection.Up,
+                    Key.Down => FocusNavigationDirection.Down,
+                    _ => (FocusNavigationDirection?)null
+                };
+
+                if (direction.HasValue && KeyboardNavigation.MoveFocus(directionalTarget, direction.Value))
+                {
+                    bubbleArgs.Handled = true;
                 }
             }
 
@@ -3538,16 +3893,70 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             {
                 if (key == Key.Enter)
                 {
-                    var defaultButton = FindButton(this, b => b.IsDefault);
-                    defaultButton?.PerformClick();
+                    var buttonSearchRoot = (UIElement?)ActiveContentDialog ?? this;
+                    var defaultButton = FindButton(buttonSearchRoot, b => b.IsDefault);
+                    if (defaultButton != null)
+                    {
+                        defaultButton.PerformClick();
+                        bubbleArgs.Handled = true;
+                    }
                 }
                 else if (key == Key.Escape)
                 {
-                    var cancelButton = FindButton(this, b => b.IsCancel);
-                    cancelButton?.PerformClick();
+                    var buttonSearchRoot = (UIElement?)ActiveContentDialog ?? this;
+                    var cancelButton = FindButton(buttonSearchRoot, b => b.IsCancel);
+                    if (cancelButton != null)
+                    {
+                        cancelButton.PerformClick();
+                        bubbleArgs.Handled = true;
+                    }
                 }
             }
+
+            return bubbleArgs.Handled;
         }
+
+        return true;
+    }
+
+    private UIElement GetKeyboardEventTarget()
+    {
+        var focusedElement = Keyboard.FocusedElement as UIElement;
+        var dialogRoot = ActiveContentDialog;
+
+        // Keep keyboard routing inside the active modal dialog whenever focus escaped it.
+        return dialogRoot != null && (focusedElement == null || !IsDescendantOf(focusedElement, dialogRoot))
+            ? dialogRoot
+            : focusedElement ?? this;
+    }
+
+    private UIElement? GetTextInputTarget()
+    {
+        var focusedElement = Keyboard.FocusedElement as UIElement;
+        var dialogRoot = ActiveContentDialog;
+
+        if (dialogRoot != null)
+        {
+            return focusedElement != null && IsDescendantOf(focusedElement, dialogRoot)
+                ? focusedElement
+                : dialogRoot;
+        }
+
+        return focusedElement;
+    }
+
+    private static bool IsDescendantOf(UIElement descendant, UIElement ancestor)
+    {
+        int depthGuard = 0;
+        for (Visual? current = descendant; current != null && depthGuard++ < 4096; current = current.VisualParent)
+        {
+            if (ReferenceEquals(current, ancestor))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static Button? FindButton(UIElement root, Func<Button, bool> predicate)
@@ -3619,9 +4028,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     }
 #endif
 
-    private void OnKeyUp(nint wParam, nint lParam)
+    private bool OnKeyUp(nint wParam, nint lParam)
     {
         Key key = (Key)(int)wParam;
+        if (ShouldSuppressReactivatedEscape(key, isKeyDown: false))
+        {
+            return true;
+        }
+
         var modifiers = GetModifierKeys();
         int timestamp = Environment.TickCount;
 
@@ -3631,18 +4045,157 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // Raise tunnel event (PreviewKeyUp)
         KeyEventArgs tunnelArgs = new(PreviewKeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp);
         target.RaiseEvent(tunnelArgs);
+        bool handled = tunnelArgs.Handled;
 
         // Raise bubble event (KeyUp) if not handled
-        if (!tunnelArgs.Handled)
+        if (!handled)
         {
             KeyEventArgs bubbleArgs = new(KeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp);
             target.RaiseEvent(bubbleArgs);
+            handled = bubbleArgs.Handled;
         }
 
         if (key == Key.Space || key == Key.Enter)
         {
             ClearKeyboardPressedChain();
         }
+
+        return handled;
+    }
+
+    private void OnActivateChanged(int activateState, nint newForegroundWindow)
+    {
+        if (activateState == WA_INACTIVE)
+        {
+            HandleWindowDeactivated(newForegroundWindow, clearKeyboardFocus: true);
+            _suppressEscapeUntilTick = 0;
+            return;
+        }
+
+        ArmEscapeSuppressionIfNeeded();
+        WakeRenderPipeline();
+    }
+
+    private void OnCancelMode()
+    {
+        HandleWindowDeactivated(nint.Zero, clearKeyboardFocus: false);
+    }
+
+    private void OnKillFocus(nint newFocusWindow)
+    {
+        HandleWindowDeactivated(newFocusWindow, clearKeyboardFocus: true);
+    }
+
+    private void OnSetFocus()
+    {
+        UpdateInputMethodAssociation();
+        WakeRenderPipeline();
+    }
+
+    private void HandleWindowDeactivated(nint newForegroundWindow, bool clearKeyboardFocus)
+    {
+        CloseLightDismissPopupsOnDeactivate(newForegroundWindow);
+        ResetTransientInputStateOnDeactivate();
+
+        if (clearKeyboardFocus)
+        {
+            Keyboard.ClearFocus();
+        }
+
+        UpdateInputMethodAssociation();
+        WakeRenderPipeline();
+    }
+
+    private void CloseLightDismissPopupsOnDeactivate(nint newForegroundWindow)
+    {
+        if (PopupWindow.IsPopupWindow(newForegroundWindow))
+        {
+            return;
+        }
+
+        _ = OverlayLayer.CloseLightDismissPopups();
+
+        if (ActiveExternalPopups.Count == 0)
+        {
+            return;
+        }
+
+        var popupsToClose = ActiveExternalPopups
+            .Where(p => !p.StaysOpen)
+            .ToList();
+        foreach (var popup in popupsToClose)
+        {
+            popup.IsOpen = false;
+        }
+    }
+
+    private void ResetTransientInputStateOnDeactivate()
+    {
+        UIElement.ForceReleaseMouseCapture();
+        ClearPressedChains();
+        _suppressMouseUpButton = null;
+        _lastHitTestElement = null;
+
+        if (TitleBarStyle == WindowTitleBarStyle.Custom)
+        {
+            ClearTitleBarInteractionState();
+        }
+    }
+
+    private void ArmEscapeSuppressionIfNeeded()
+    {
+        _suppressEscapeUntilTick = IsVirtualKeyDown(VK_ESCAPE)
+            ? Environment.TickCount64 + EscapeReactivateSuppressionMs
+            : 0;
+    }
+
+    private void WakeRenderPipeline()
+    {
+        RequestFullInvalidation();
+
+        if (Handle == nint.Zero || _dispatcher == null || _isClosing)
+        {
+            return;
+        }
+
+        if (_isRendering)
+        {
+            _renderRequested = true;
+            return;
+        }
+
+        if (!_renderScheduled)
+        {
+            _renderScheduled = true;
+            _dispatcher.BeginInvokeCritical(ProcessRender);
+        }
+    }
+
+    private bool ShouldSuppressReactivatedEscape(Key key, bool isKeyDown)
+    {
+        if (key != Key.Escape)
+        {
+            return false;
+        }
+
+        long suppressUntilTick = _suppressEscapeUntilTick;
+        if (suppressUntilTick == 0)
+        {
+            return false;
+        }
+
+        if (Environment.TickCount64 > suppressUntilTick)
+        {
+            _suppressEscapeUntilTick = 0;
+            return false;
+        }
+
+        if (!isKeyDown)
+        {
+            _suppressEscapeUntilTick = 0;
+        }
+
+        return true;
     }
 
     private void OnChar(nint wParam, nint lParam)
@@ -3656,8 +4209,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         string text = c.ToString();
         int timestamp = Environment.TickCount;
 
-        // Route text input to the focused element, or the window if no element has focus
-        var target = Keyboard.FocusedElement as UIElement ?? this;
+        var target = GetTextInputTarget();
+        if (target == null)
+        {
+            return;
+        }
 
         // Raise tunnel event (PreviewTextInput)
         TextCompositionEventArgs tunnelArgs = new(PreviewTextInputEvent, text, timestamp);
@@ -3675,6 +4231,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void OnImeStartComposition()
     {
+        if (!TryGetImeTarget(out _, out _))
+        {
+            return;
+        }
+
         InputMethod.StartComposition();
 
         // Position the IME composition window near the caret
@@ -3684,6 +4245,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnImeEndComposition()
     {
         InputMethod.EndComposition();
+        UpdateInputMethodAssociation();
     }
 
     private bool OnImeComposition(nint lParam)
@@ -3704,10 +4266,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 string resultStr = GetCompositionString(hImc, ImmNativeMethods.GCS_RESULTSTR);
                 if (!string.IsNullOrEmpty(resultStr))
                 {
-                    // Send the committed text as TextInput
-                    var target = Keyboard.FocusedElement as UIElement ?? this;
-                    TextCompositionEventArgs args = new(TextInputEvent, resultStr, Environment.TickCount);
-                    target.RaiseEvent(args);
+                    var target = GetTextInputTarget();
+                    if (target != null)
+                    {
+                        TextCompositionEventArgs args = new(TextInputEvent, resultStr, Environment.TickCount);
+                        target.RaiseEvent(args);
+                    }
                     InputMethod.EndComposition(resultStr);
                 }
             }
@@ -3747,6 +4311,76 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         // IME returns UTF-16LE encoded string
         return System.Text.Encoding.Unicode.GetString(buffer);
+    }
+
+    private void OnWindowKeyboardFocusChanged(object? sender, KeyboardFocusChangedEventArgs e)
+    {
+        UpdateInputMethodAssociation();
+    }
+
+    private bool CanHandleImeMessages()
+        => TryGetImeTarget(out _, out _);
+
+    private bool TryGetImeTarget(out UIElement? target, out IImeSupport? imeSupport)
+    {
+        target = Keyboard.FocusedElement as UIElement;
+        if (target is not IImeSupport support)
+        {
+            imeSupport = null;
+            return false;
+        }
+
+        if (!InputMethod.GetIsInputMethodEnabled(target))
+        {
+            imeSupport = null;
+            return false;
+        }
+
+        imeSupport = support;
+        return true;
+    }
+
+    private void UpdateInputMethodAssociation()
+    {
+        if (Handle == nint.Zero)
+        {
+            return;
+        }
+
+        bool shouldEnableIme = CanHandleImeMessages();
+        if (!shouldEnableIme && InputMethod.IsComposing)
+        {
+            InputMethod.CancelComposition();
+        }
+
+        if (shouldEnableIme)
+        {
+            if (!_imeContextDetached)
+            {
+                return;
+            }
+
+            if (_detachedImeContext != nint.Zero)
+            {
+                _ = ImmNativeMethods.ImmAssociateContext(Handle, _detachedImeContext);
+            }
+            else
+            {
+                _ = ImmNativeMethods.ImmAssociateContextEx(Handle, nint.Zero, IACE_DEFAULT);
+            }
+
+            _detachedImeContext = nint.Zero;
+            _imeContextDetached = false;
+            return;
+        }
+
+        if (_imeContextDetached)
+        {
+            return;
+        }
+
+        _detachedImeContext = ImmNativeMethods.ImmAssociateContext(Handle, nint.Zero);
+        _imeContextDetached = true;
     }
 
     /// <summary>
@@ -3832,7 +4466,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
-        UIElement? hitElement = HitTest(position)?.VisualHit as UIElement;
+        UIElement? hitElement = HitTestElement(position, "mouse-move");
         if (captured == null && hitElement == OverlayLayer && OverlayLayer.HasLightDismissPopups)
         {
             // Keep WPF-like menu mode:
@@ -4053,7 +4687,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             ? HitTopLevelMenuItemBehindOverlay(position)
             : null;
 
-        // Check light dismiss via OverlayLayer — clicks outside popups close them
+        // Check light dismiss via OverlayLayer 鈥?clicks outside popups close them
         if (topLevelMenuItemBehindOverlay == null && OverlayLayer.TryHandleLightDismiss(position))
         {
             _suppressMouseUpButton = button;
@@ -4085,7 +4719,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             {
                 ClearMousePressedChain();
                 _pressedTitleBarButton = titleBarButton;
-                titleBarButton.SetIsPressed(true);  // triggers InvalidateVisual() → dirty rect
+                titleBarButton.SetIsPressed(true);  // triggers InvalidateVisual() 鈫?dirty rect
                 return; // Handled
             }
         }
@@ -4093,9 +4727,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
+        var hitElement = topLevelMenuItemBehindOverlay ?? HitTestElement(position, "mouse-down");
+        UpdateMouseOverState(hitElement, timestamp);
         var target = captured
-            ?? topLevelMenuItemBehindOverlay
-            ?? HitTest(position)?.VisualHit as UIElement
+            ?? hitElement
             ?? this;
 
         if (button == MouseButton.Left)
@@ -4189,7 +4824,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             }
 
             _pressedTitleBarButton = null;
-            // SetIsPressed(false) above already triggers InvalidateVisual() → dirty rect
+            // SetIsPressed(false) above already triggers InvalidateVisual() 鈫?dirty rect
             ClearMousePressedChain();
             return; // Handled
         }
@@ -4197,7 +4832,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTest(position)?.VisualHit as UIElement ?? this;
+        var hitElement = HitTestElement(position, "mouse-up");
+        UpdateMouseOverState(hitElement, timestamp);
+        var target = captured ?? hitElement ?? this;
 
         var currentState = MouseButtonState.Released;
 
@@ -4248,6 +4885,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         _activePointerTargets.Remove(MousePointerId);
     }
 
+    private void UpdateMouseOverState(UIElement? newMouseOverElement, int timestamp)
+    {
+        if (newMouseOverElement == _lastMouseOverElement)
+        {
+            return;
+        }
+
+        if (_lastMouseOverElement != null)
+        {
+            RaiseMouseLeaveChain(_lastMouseOverElement, newMouseOverElement, timestamp);
+        }
+
+        if (newMouseOverElement != null)
+        {
+            RaiseMouseEnterChain(newMouseOverElement, _lastMouseOverElement, timestamp);
+        }
+
+        _lastMouseOverElement = newMouseOverElement;
+    }
+
     private MenuItem? HitTopLevelMenuItemBehindOverlay(Point windowPosition)
     {
         var hitElement = HitIgnoringOverlay(windowPosition)?.VisualHit as UIElement;
@@ -4274,6 +4931,85 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         return null;
     }
 
+    private UIElement? HitTestElement(Point windowPosition, string source = "hit-test")
+    {
+        var hitElement = HitTestWithCache(windowPosition)?.VisualHit as UIElement;
+        _lastHitTestElement = hitElement;
+        return hitElement;
+    }
+
+    private HitTestResult? HitTestWithCache(Point windowPosition)
+    {
+        if (ActiveContentDialog != null || OverlayLayer.HasModalRoots || OverlayLayer.HasLightDismissPopups || OverlayLayer.HasPopupRoots)
+        {
+            return HitTest(windowPosition);
+        }
+
+        var cachedHit = TryHitTestCachedSubtree(windowPosition);
+        if (cachedHit != null)
+        {
+            return cachedHit;
+        }
+
+        return HitTest(windowPosition);
+    }
+
+    private HitTestResult? TryHitTestCachedSubtree(Point windowPosition)
+    {
+        var current = _lastHitTestElement;
+        while (current != null)
+        {
+            if (!IsElementAttachedToThisWindow(current))
+            {
+                if (ReferenceEquals(current, _lastHitTestElement))
+                {
+                    _lastHitTestElement = null;
+                }
+
+                return null;
+            }
+
+            if (current is FrameworkElement frameworkElement
+                && frameworkElement.IsHitTestVisible
+                && frameworkElement.Visibility == Visibility.Visible
+                && frameworkElement.GetScreenBounds().Contains(windowPosition))
+            {
+                var parent = frameworkElement.VisualParent as UIElement;
+                var pointInParent = parent == null
+                    ? windowPosition
+                    : new Point(
+                        windowPosition.X - parent.GetScreenBounds().X,
+                        windowPosition.Y - parent.GetScreenBounds().Y);
+
+                var subtreeHit = frameworkElement.HitTest(pointInParent);
+                if (subtreeHit != null)
+                {
+                    return subtreeHit;
+                }
+            }
+
+            current = current.VisualParent as UIElement;
+        }
+
+        return null;
+    }
+
+    private bool IsElementAttachedToThisWindow(UIElement element)
+    {
+        Visual? current = element;
+        while (current != null)
+        {
+            if (ReferenceEquals(current, this))
+            {
+                return true;
+            }
+
+            current = current.VisualParent;
+        }
+
+        return false;
+    }
+
     private static MenuItem? FindTopLevelMenuItemAncestor(UIElement? element)
     {
         var current = element;
@@ -4297,12 +5033,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnMouseWheel(nint wParam, nint lParam)
     {
         // WM_MOUSEWHEEL lParam contains SCREEN coordinates (physical pixels).
-        // Extract raw physical coords → ScreenToClient → convert to DIPs.
+        // Extract raw physical coords 鈫?ScreenToClient 鈫?convert to DIPs.
         int screenX = (short)(lParam.ToInt64() & 0xFFFF);
         int screenY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
         POINT pt = new() { X = screenX, Y = screenY };
         _ = ScreenToClient(Handle, ref pt);
-        // ScreenToClient returns physical client pixels → convert to DIPs
+        // ScreenToClient returns physical client pixels 鈫?convert to DIPs
         Point position = new(pt.X / _dpiScale, pt.Y / _dpiScale);
 
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
@@ -4313,7 +5049,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // If an element has captured the mouse, it receives all mouse events
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTest(position)?.VisualHit as UIElement ?? this;
+        var target = captured ?? HitTestElement(position, "mouse-wheel") ?? this;
 
         // Raise tunnel event (PreviewMouseWheel)
         MouseWheelEventArgs tunnelArgs = new(
@@ -4359,18 +5095,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnPointerMessage(uint msg, nint wParam, nint lParam)
     {
         if (!Win32PointerInterop.TryGetPointerData(Handle, wParam, _dpiScale, out var pointerData))
+        {
             return;
+        }
 
         // Mouse pointer goes through the existing WM_MOUSE promotion path.
         if (pointerData.Kind == Win32PointerKind.Mouse)
+        {
             return;
+        }
 
         bool isDown = msg == Win32PointerInterop.WM_POINTERDOWN;
         bool isUp = msg == Win32PointerInterop.WM_POINTERUP;
         int timestamp = Environment.TickCount;
 
         var captured = UIElement.MouseCapturedElement;
-        var hitTarget = HitTest(pointerData.Position)?.VisualHit as UIElement;
+        var hitTarget = HitTestElement(pointerData.Position, "pointer-route");
         var fallbackTarget = captured ?? hitTarget ?? this;
         var target = isDown
             ? fallbackTarget
@@ -4435,7 +5175,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         int timestamp = Environment.TickCount;
         var target = _activePointerTargets.TryGetValue(pointerData.PointerId, out var existingTarget)
             ? existingTarget ?? this
-            : (HitTest(pointerData.Position)?.VisualHit as UIElement ?? this);
+            : (HitTestElement(pointerData.Position, "pointer-wheel") ?? this);
 
         if (pointerData.IsCanceled)
         {
@@ -5217,22 +5957,32 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private static ModifierKeys GetModifierKeys()
     {
         ModifierKeys modifiers = ModifierKeys.None;
-        if ((GetKeyState(VK_SHIFT) & 0x8000) != 0)
+        if (IsVirtualKeyDown(VK_SHIFT))
         {
             modifiers |= ModifierKeys.Shift;
         }
 
-        if ((GetKeyState(VK_CONTROL) & 0x8000) != 0)
+        if (IsVirtualKeyDown(VK_CONTROL))
         {
             modifiers |= ModifierKeys.Control;
         }
 
-        if ((GetKeyState(VK_MENU) & 0x8000) != 0)
+        if (IsVirtualKeyDown(VK_MENU))
         {
             modifiers |= ModifierKeys.Alt;
         }
 
         return modifiers;
+    }
+
+    internal static void SetKeyStateProviderForTesting(Func<int, short>? provider)
+    {
+        s_getKeyStateProvider = provider ?? GetKeyState;
+    }
+
+    private static bool IsVirtualKeyDown(int nVirtKey)
+    {
+        return (s_getKeyStateProvider(nVirtKey) & 0x8000) != 0;
     }
 
     [LibraryImport("user32.dll")]
@@ -5387,6 +6137,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private const uint WM_XBUTTONUP = 0x020C;
     private const uint WM_MOUSELEAVE = 0x02A3;
     private const uint WM_CAPTURECHANGED = 0x0215;
+    private const uint WM_CANCELMODE = 0x001F;
     private const uint WM_ACTIVATE = 0x0006;
     private const uint WM_SETFOCUS = 0x0007;
     private const uint WM_KILLFOCUS = 0x0008;
@@ -5419,8 +6170,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private const uint WM_IME_SETCONTEXT = 0x0281;
     private const uint WM_IME_NOTIFY = 0x0282;
     private const uint WM_IME_CHAR = 0x0286;
+    private const int IACE_DEFAULT = 0x0010;
 
     // Virtual key codes
+    private static Func<int, short> s_getKeyStateProvider = GetKeyState;
+    private const int VK_ESCAPE = 0x1B;
+    private const int VK_LWIN = 0x5B;
+    private const int VK_RWIN = 0x5C;
     private const int VK_SHIFT = 0x10;
     private const int VK_CONTROL = 0x11;
     private const int VK_MENU = 0x12;  // Alt key
@@ -5825,7 +6581,7 @@ public enum ResizeMode
 public enum WindowStyle
 {
     /// <summary>
-    /// Only the client area is visible — the title bar and border are not shown.
+    /// Only the client area is visible 鈥?the title bar and border are not shown.
     /// </summary>
     None,
 

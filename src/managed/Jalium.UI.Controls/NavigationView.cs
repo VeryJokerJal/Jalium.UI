@@ -9,8 +9,14 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a container that enables navigation of app content with WinUI-style appearance.
 /// </summary>
-public sealed class NavigationView : ContentControl
+public class NavigationView : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.NavigationViewAutomationPeer(this);
+    }
+
     #region Fields
 
     private NavigationViewItem? _selectedItem;
@@ -32,6 +38,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the PaneBackground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PaneBackgroundProperty =
         DependencyProperty.Register(nameof(PaneBackground), typeof(Brush), typeof(NavigationView),
             new PropertyMetadata(new SolidColorBrush(Color.FromRgb(32, 32, 32)), OnPaneBackgroundChanged));
@@ -39,6 +46,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the ContentBackground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentBackgroundProperty =
         DependencyProperty.Register(nameof(ContentBackground), typeof(Brush), typeof(NavigationView),
             new PropertyMetadata(new SolidColorBrush(Color.FromRgb(40, 40, 40)), OnContentBackgroundChanged));
@@ -46,6 +54,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the PaneHeader dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PaneHeaderProperty =
         DependencyProperty.Register(nameof(PaneHeader), typeof(UIElement), typeof(NavigationView),
             new PropertyMetadata(null, OnPaneHeaderChanged));
@@ -53,6 +62,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the PaneFooter dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PaneFooterProperty =
         DependencyProperty.Register(nameof(PaneFooter), typeof(UIElement), typeof(NavigationView),
             new PropertyMetadata(null, OnPaneFooterChanged));
@@ -60,6 +70,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the IsPaneOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsPaneOpenProperty =
         DependencyProperty.Register(nameof(IsPaneOpen), typeof(bool), typeof(NavigationView),
             new PropertyMetadata(true, OnIsPaneOpenChanged));
@@ -67,6 +78,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the PaneDisplayMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty PaneDisplayModeProperty =
         DependencyProperty.Register(nameof(PaneDisplayMode), typeof(NavigationViewPaneDisplayMode), typeof(NavigationView),
             new PropertyMetadata(NavigationViewPaneDisplayMode.Left, OnPaneDisplayModeChanged));
@@ -74,6 +86,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the OpenPaneLength dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OpenPaneLengthProperty =
         DependencyProperty.Register(nameof(OpenPaneLength), typeof(double), typeof(NavigationView),
             new PropertyMetadata(280.0, OnOpenPaneLengthChanged));
@@ -81,6 +94,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the CompactPaneLength dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty CompactPaneLengthProperty =
         DependencyProperty.Register(nameof(CompactPaneLength), typeof(double), typeof(NavigationView),
             new PropertyMetadata(48.0));
@@ -88,6 +102,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the PaneTitle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PaneTitleProperty =
         DependencyProperty.Register(nameof(PaneTitle), typeof(string), typeof(NavigationView),
             new PropertyMetadata(string.Empty));
@@ -95,6 +110,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(NavigationView),
             new PropertyMetadata(null));
@@ -102,6 +118,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the IsSettingsVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSettingsVisibleProperty =
         DependencyProperty.Register(nameof(IsSettingsVisible), typeof(bool), typeof(NavigationView),
             new PropertyMetadata(true));
@@ -109,6 +126,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the IsBackButtonVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsBackButtonVisibleProperty =
         DependencyProperty.Register(nameof(IsBackButtonVisible), typeof(NavigationViewBackButtonVisible), typeof(NavigationView),
             new PropertyMetadata(NavigationViewBackButtonVisible.Auto));
@@ -116,6 +134,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the IsBackEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsBackEnabledProperty =
         DependencyProperty.Register(nameof(IsBackEnabled), typeof(bool), typeof(NavigationView),
             new PropertyMetadata(false));
@@ -123,6 +142,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Identifies the SelectedItem dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedItemProperty =
         DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(NavigationView),
             new PropertyMetadata(null, OnSelectedItemChanged));
@@ -134,6 +154,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the pane background brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? PaneBackground
     {
         get => (Brush?)GetValue(PaneBackgroundProperty);
@@ -143,6 +164,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the content area background brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Brush? ContentBackground
     {
         get => (Brush?)GetValue(ContentBackgroundProperty);
@@ -152,6 +174,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether the navigation pane is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsPaneOpen
     {
         get => (bool)GetValue(IsPaneOpenProperty)!;
@@ -161,6 +184,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the display mode of the navigation pane.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public NavigationViewPaneDisplayMode PaneDisplayMode
     {
         get => (NavigationViewPaneDisplayMode)GetValue(PaneDisplayModeProperty)!;
@@ -170,6 +194,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the width of the navigation pane when open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double OpenPaneLength
     {
         get => (double)GetValue(OpenPaneLengthProperty)!;
@@ -179,6 +204,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the width of the navigation pane when in compact mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double CompactPaneLength
     {
         get => (double)GetValue(CompactPaneLengthProperty)!;
@@ -188,6 +214,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the title of the navigation pane.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string PaneTitle
     {
         get => (string)(GetValue(PaneTitleProperty) ?? string.Empty);
@@ -197,6 +224,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the header content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
@@ -206,6 +234,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether the settings button is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSettingsVisible
     {
         get => (bool)GetValue(IsSettingsVisibleProperty)!;
@@ -215,6 +244,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the visibility of the back button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public NavigationViewBackButtonVisible IsBackButtonVisible
     {
         get => (NavigationViewBackButtonVisible)(GetValue(IsBackButtonVisibleProperty) ?? NavigationViewBackButtonVisible.Auto);
@@ -224,6 +254,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether the back button is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsBackEnabled
     {
         get => (bool)GetValue(IsBackEnabledProperty)!;
@@ -233,6 +264,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the selected navigation item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedItem
     {
         get => GetValue(SelectedItemProperty);
@@ -252,6 +284,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the custom pane header content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public UIElement? PaneHeader
     {
         get => (UIElement?)GetValue(PaneHeaderProperty);
@@ -261,6 +294,7 @@ public sealed class NavigationView : ContentControl
     /// <summary>
     /// Gets or sets the custom pane footer content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public UIElement? PaneFooter
     {
         get => (UIElement?)GetValue(PaneFooterProperty);
@@ -874,6 +908,7 @@ public sealed class NavigationViewSelectionChangedEventArgs : EventArgs
     /// <summary>
     /// Gets the selected item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public NavigationViewItem? SelectedItem { get; }
 
     /// <summary>

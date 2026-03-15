@@ -1,19 +1,32 @@
-using System.Timers;
 using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// A control that displays and allows editing of rich text content using a FlowDocument.
 /// </summary>
-public sealed class RichTextBox : Control
+public class RichTextBox : Control, IImeSupport
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.RichTextBoxAutomationPeer(this);
+    }
+
     #region Static Brushes
 
-    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_defaultForegroundBrush = new(Color.White);
+    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0, 120, 212));
+    private static readonly SolidColorBrush s_defaultCaretBrush = new(Color.White);
+    private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
+    private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
+    private static readonly SolidColorBrush s_compositionUnderlineBrush = new(Color.FromRgb(200, 200, 100));
+    private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
+    private static readonly Pen s_compositionCursorPen = new(s_defaultCaretBrush, 1);
 
     #endregion
 
@@ -51,7 +64,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Timer for caret animation.
     /// </summary>
-    private System.Timers.Timer? _caretTimer;
+    private DispatcherTimer? _caretTimer;
 
     /// <summary>
     /// Interval for caret animation timer in milliseconds.
@@ -67,6 +80,21 @@ public sealed class RichTextBox : Control
     /// The anchor point for selection extension.
     /// </summary>
     private TextPointer? _selectionAnchor;
+
+    /// <summary>
+    /// Whether the current drag gesture should extend selection by whole words.
+    /// </summary>
+    private bool _isWordSelecting;
+
+    /// <summary>
+    /// The starting document offset of the word selected by the double-click anchor.
+    /// </summary>
+    private int _wordSelectionAnchorStartOffset;
+
+    /// <summary>
+    /// The ending document offset of the word selected by the double-click anchor.
+    /// </summary>
+    private int _wordSelectionAnchorEndOffset;
 
     /// <summary>
     /// The horizontal scroll offset.
@@ -104,6 +132,12 @@ public sealed class RichTextBox : Control
     private FlowDocumentLayoutInfo? _layoutCache;
     private bool _layoutDirty = true;
 
+    // IME composition state
+    private bool _isImeComposing;
+    private string _imeCompositionString = string.Empty;
+    private int _imeCompositionCursor;
+    private int _imeCompositionStart;
+
     #endregion
 
     #region Dependency Properties
@@ -111,6 +145,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Identifies the IsReadOnly dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(RichTextBox),
             new PropertyMetadata(false));
@@ -118,6 +153,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Identifies the AcceptsTab dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty AcceptsTabProperty =
         DependencyProperty.Register(nameof(AcceptsTab), typeof(bool), typeof(RichTextBox),
             new PropertyMetadata(false));
@@ -125,20 +161,23 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Identifies the SelectionBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
         DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(RichTextBox),
-            new PropertyMetadata(new SolidColorBrush(Color.FromArgb(180, 0, 120, 212)), OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
     /// <summary>
     /// Identifies the CaretBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CaretBrushProperty =
         DependencyProperty.Register(nameof(CaretBrush), typeof(Brush), typeof(RichTextBox),
-            new PropertyMetadata(new SolidColorBrush(Color.White), OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
     /// <summary>
     /// Identifies the IsUndoEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsUndoEnabledProperty =
         DependencyProperty.Register(nameof(IsUndoEnabled), typeof(bool), typeof(RichTextBox),
             new PropertyMetadata(true));
@@ -146,6 +185,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Identifies the UndoLimit dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UndoLimitProperty =
         DependencyProperty.Register(nameof(UndoLimit), typeof(int), typeof(RichTextBox),
             new PropertyMetadata(100));
@@ -153,6 +193,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Identifies the HorizontalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(RichTextBox),
             new PropertyMetadata(ScrollBarVisibility.Auto));
@@ -160,6 +201,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Identifies the VerticalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(RichTextBox),
             new PropertyMetadata(ScrollBarVisibility.Auto));
@@ -167,6 +209,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Identifies the IsSpellCheckEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSpellCheckEnabledProperty =
         DependencyProperty.Register(nameof(IsSpellCheckEnabled), typeof(bool), typeof(RichTextBox),
             new PropertyMetadata(false));
@@ -178,6 +221,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Gets or sets whether the control is read-only.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsReadOnly
     {
         get => (bool)GetValue(IsReadOnlyProperty)!;
@@ -187,6 +231,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Gets or sets whether the control accepts Tab key for tab characters.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool AcceptsTab
     {
         get => (bool)GetValue(AcceptsTabProperty)!;
@@ -196,6 +241,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Gets or sets the brush for text selection highlighting.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SelectionBrush
     {
         get => (Brush?)GetValue(SelectionBrushProperty);
@@ -205,6 +251,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Gets or sets the brush for the caret.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? CaretBrush
     {
         get => (Brush?)GetValue(CaretBrushProperty);
@@ -214,6 +261,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Gets or sets whether undo is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsUndoEnabled
     {
         get => (bool)GetValue(IsUndoEnabledProperty)!;
@@ -223,6 +271,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Gets or sets the maximum number of undo entries.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int UndoLimit
     {
         get => (int)GetValue(UndoLimitProperty)!;
@@ -232,6 +281,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Gets or sets the horizontal scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility HorizontalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty)!;
@@ -241,6 +291,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Gets or sets the vertical scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility VerticalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty)!;
@@ -250,6 +301,7 @@ public sealed class RichTextBox : Control
     /// <summary>
     /// Gets or sets whether spell checking is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSpellCheckEnabled
     {
         get => (bool)GetValue(IsSpellCheckEnabledProperty)!;
@@ -288,6 +340,7 @@ public sealed class RichTextBox : Control
                 _caretPosition = value;
                 ResetCaretBlink();
                 EnsureCaretVisible();
+                UpdateImeWindowIfComposing();
                 InvalidateVisual();
             }
         }
@@ -327,6 +380,7 @@ public sealed class RichTextBox : Control
             if (Math.Abs(_horizontalOffset - newValue) > 0.001)
             {
                 _horizontalOffset = newValue;
+                UpdateImeWindowIfComposing();
                 InvalidateVisual();
             }
         }
@@ -344,10 +398,16 @@ public sealed class RichTextBox : Control
             if (Math.Abs(_verticalOffset - newValue) > 0.001)
             {
                 _verticalOffset = newValue;
+                UpdateImeWindowIfComposing();
                 InvalidateVisual();
             }
         }
     }
+
+    /// <summary>
+    /// Gets whether IME composition is currently active.
+    /// </summary>
+    public bool IsImeComposing => _isImeComposing;
 
     #endregion
 
@@ -365,6 +425,10 @@ public sealed class RichTextBox : Control
         Focusable = true;
         _lastCaretBlink = DateTime.Now;
         _lastClickTime = DateTime.MinValue;
+
+        InputMethod.CompositionStarted += OnImeCompositionStarted;
+        InputMethod.CompositionUpdated += OnImeCompositionUpdated;
+        InputMethod.CompositionEnded += OnImeCompositionEnded;
 
         // Register input event handlers
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
@@ -395,6 +459,7 @@ public sealed class RichTextBox : Control
     {
         _selection = new TextRange(_document.ContentStart, _document.ContentEnd);
         _caretPosition = _document.ContentEnd;
+        UpdateImeWindowIfComposing();
         InvalidateVisual();
         OnSelectionChanged();
     }
@@ -407,6 +472,7 @@ public sealed class RichTextBox : Control
         if (_caretPosition != null)
         {
             _selection = new TextRange(_caretPosition, _caretPosition);
+            UpdateImeWindowIfComposing();
             InvalidateVisual();
             OnSelectionChanged();
         }
@@ -473,6 +539,7 @@ public sealed class RichTextBox : Control
         }
 
         InvalidateLayout();
+        UpdateImeWindowIfComposing();
         InvalidateVisual();
     }
 
@@ -499,6 +566,7 @@ public sealed class RichTextBox : Control
         }
 
         InvalidateLayout();
+        UpdateImeWindowIfComposing();
         InvalidateVisual();
     }
 
@@ -530,6 +598,7 @@ public sealed class RichTextBox : Control
         _caretPosition = _document.ContentEnd;
         _selection = new TextRange(_document.ContentStart, _document.ContentStart);
         InvalidateLayout();
+        UpdateImeWindowIfComposing();
         InvalidateVisual();
     }
 
@@ -686,6 +755,7 @@ public sealed class RichTextBox : Control
         }
 
         ResetCaretBlink();
+        EnsureCaretVisible();
         InvalidateLayout();
         InvalidateVisual();
     }
@@ -760,6 +830,7 @@ public sealed class RichTextBox : Control
         _caretPosition = _selection.Start;
         _selection = new TextRange(_caretPosition, _caretPosition);
 
+        UpdateImeWindowIfComposing();
         OnSelectionChanged();
     }
 
@@ -827,7 +898,7 @@ public sealed class RichTextBox : Control
     /// </summary>
     protected void EnsureCaretVisible()
     {
-        // This will be implemented when layout is complete
+        UpdateImeWindowIfComposing();
     }
 
     /// <summary>
@@ -835,6 +906,7 @@ public sealed class RichTextBox : Control
     /// </summary>
     protected void OnSelectionChanged()
     {
+        UpdateImeWindowIfComposing();
         // Raise selection changed event if needed
     }
 
@@ -873,6 +945,11 @@ public sealed class RichTextBox : Control
             dc.DrawRectangle(null, new Pen(BorderBrush, BorderThickness.Left), bounds);
         }
 
+        if (IsKeyboardFocused)
+        {
+            ControlFocusVisual.Draw(dc, this, bounds, CornerRadius);
+        }
+
         // Calculate content area
         var contentBounds = new Rect(
             BorderThickness.Left + Padding.Left,
@@ -890,6 +967,11 @@ public sealed class RichTextBox : Control
         {
             // Render document content
             RenderDocument(dc, contentBounds);
+
+            if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
+            {
+                RenderImeComposition(dc, contentBounds);
+            }
 
             // Render selection
             if (_selection != null && !_selection.IsEmpty)
@@ -964,7 +1046,7 @@ public sealed class RichTextBox : Control
                 var text = runLayout.Run.Text;
                 var foreground = runLayout.Run.Foreground
                     ?? _document.Foreground
-                    ?? s_whiteBrush;
+                    ?? ResolveDocumentForegroundBrush();
                 var fontFamily = runLayout.Run.FontFamily
                     ?? _document.FontFamily
                     ?? "Segoe UI";
@@ -988,7 +1070,7 @@ public sealed class RichTextBox : Control
 
     private void RenderSelection(DrawingContext dc, Rect contentBounds)
     {
-        if (SelectionBrush == null)
+        if (ResolveSelectionBrush() == null)
             return;
 
         // Simplified selection rendering - just highlight the text area
@@ -997,6 +1079,9 @@ public sealed class RichTextBox : Control
 
     private void RenderCaret(DrawingContext dc, Rect contentBounds)
     {
+        if (_isImeComposing)
+            return;
+
         UpdateCaretAnimation();
 
         if (_caretOpacity < 0.01)
@@ -1007,7 +1092,9 @@ public sealed class RichTextBox : Control
             return;
 
         var lineHeight = GetDefaultLineHeight();
-        var caretBrush = CaretBrush ?? s_whiteBrush;
+        var caretBrush = ResolveCaretBrush();
+        if (caretBrush == null)
+            return;
 
         // Apply opacity for animation
         if (_caretOpacity < 1.0 && caretBrush is SolidColorBrush solidBrush)
@@ -1021,9 +1108,59 @@ public sealed class RichTextBox : Control
             new Rect(caretPos.Value.X, caretPos.Value.Y, 2, lineHeight));
     }
 
+    private void RenderImeComposition(DrawingContext dc, Rect contentBounds)
+    {
+        if (!_isImeComposing || string.IsNullOrEmpty(_imeCompositionString))
+            return;
+
+        int startOffset = GetImeAnchorOffset();
+        var anchorPosition = _document.GetPositionAtOffset(startOffset, LogicalDirection.Forward) ?? _document.ContentStart;
+        var anchorPoint = GetCaretScreenPosition(contentBounds, anchorPosition) ?? new Point(contentBounds.Left, contentBounds.Top);
+        var formatting = GetImeFormatting(anchorPosition);
+        var text = new FormattedText(_imeCompositionString, formatting.FontFamily, formatting.FontSize)
+        {
+            Foreground = s_compositionTextBrush,
+            FontWeight = formatting.FontWeight.ToOpenTypeWeight(),
+            FontStyle = formatting.FontStyle.ToOpenTypeStyle()
+        };
+        TextMeasurement.MeasureText(text);
+
+        double lineHeight = GetLineHeightForFormatting(formatting.FontSize);
+        double width = Math.Max(1, text.Width);
+
+        dc.DrawRectangle(s_compositionBgBrush, null, new Rect(anchorPoint.X, anchorPoint.Y, width, lineHeight));
+        dc.DrawText(text, anchorPoint);
+        dc.DrawLine(
+            s_compositionUnderlinePen,
+            new Point(anchorPoint.X, anchorPoint.Y + lineHeight - 1),
+            new Point(anchorPoint.X + width, anchorPoint.Y + lineHeight - 1));
+
+        if (_imeCompositionCursor >= 0 && _imeCompositionCursor <= _imeCompositionString.Length)
+        {
+            string beforeCursor = _imeCompositionString.Substring(0, _imeCompositionCursor);
+            var cursorText = new FormattedText(beforeCursor, formatting.FontFamily, formatting.FontSize)
+            {
+                FontWeight = formatting.FontWeight.ToOpenTypeWeight(),
+                FontStyle = formatting.FontStyle.ToOpenTypeStyle()
+            };
+            TextMeasurement.MeasureText(cursorText);
+            double cursorX = anchorPoint.X + cursorText.Width;
+
+            dc.DrawLine(
+                s_compositionCursorPen,
+                new Point(cursorX, anchorPoint.Y + 2),
+                new Point(cursorX, anchorPoint.Y + lineHeight - 2));
+        }
+    }
+
     private Point? GetCaretScreenPosition(Rect contentBounds)
     {
-        if (_caretPosition == null)
+        return GetCaretScreenPosition(contentBounds, _caretPosition);
+    }
+
+    private Point? GetCaretScreenPosition(Rect contentBounds, TextPointer? position)
+    {
+        if (position == null)
             return null;
 
         var layout = EnsureLayout(contentBounds.Width);
@@ -1031,7 +1168,7 @@ public sealed class RichTextBox : Control
             return null;
 
         // Find the caret position in the layout
-        var offset = _caretPosition.DocumentOffset;
+        var offset = position.DocumentOffset;
         var y = contentBounds.Top - _verticalOffset;
         var x = contentBounds.Left - _horizontalOffset;
 
@@ -1163,6 +1300,42 @@ public sealed class RichTextBox : Control
         {
             return 1.0 - Math.Pow(-2.0 * t + 2.0, 2) / 2.0;
         }
+    }
+
+    private Brush ResolveDocumentForegroundBrush()
+    {
+        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
+            return Foreground;
+
+        return ResolveThemeBrush("TextPrimary", s_defaultForegroundBrush, "TextFillColorPrimaryBrush");
+    }
+
+    private Brush? ResolveSelectionBrush()
+    {
+        if (HasLocalValue(SelectionBrushProperty))
+            return SelectionBrush;
+
+        return SelectionBrush
+            ?? ResolveThemeBrush("SelectionBackground", s_defaultSelectionBrush, "AccentFillColorSelectedTextBackgroundBrush");
+    }
+
+    private Brush? ResolveCaretBrush()
+    {
+        if (HasLocalValue(CaretBrushProperty))
+            return CaretBrush;
+
+        return CaretBrush
+            ?? ((HasLocalValue(Control.ForegroundProperty) && Foreground != null) ? Foreground : null)
+            ?? ResolveThemeBrush("TextPrimary", s_defaultCaretBrush, "TextFillColorPrimaryBrush");
+    }
+
+    private Brush ResolveThemeBrush(string primaryKey, Brush fallback, string? secondaryKey = null)
+    {
+        if (TryFindResource(primaryKey) is Brush primary)
+            return primary;
+        if (!string.IsNullOrWhiteSpace(secondaryKey) && TryFindResource(secondaryKey) is Brush secondary)
+            return secondary;
+        return fallback;
     }
 
     #endregion
@@ -1349,6 +1522,11 @@ public sealed class RichTextBox : Control
         var shift = e.IsShiftDown;
         var ctrl = e.IsControlDown;
 
+        if (_isImeComposing && ShouldDeferKeyToIme(e.Key, ctrl))
+        {
+            return;
+        }
+
         switch (e.Key)
         {
             case Key.Left:
@@ -1481,6 +1659,16 @@ public sealed class RichTextBox : Control
         }
     }
 
+    private static bool ShouldDeferKeyToIme(Key key, bool ctrl)
+    {
+        return key switch
+        {
+            Key.Left or Key.Right or Key.Up or Key.Down or Key.Home or Key.End or Key.Back or Key.Delete or Key.Enter or Key.Tab => true,
+            Key.A or Key.B or Key.C or Key.I or Key.U or Key.V or Key.X or Key.Y or Key.Z when ctrl => true,
+            _ => false
+        };
+    }
+
     private void OnTextInputHandler(object sender, RoutedEventArgs e)
     {
         if (e is not TextCompositionEventArgs textArgs || textArgs.Handled || IsReadOnly)
@@ -1494,6 +1682,30 @@ public sealed class RichTextBox : Control
 
             InsertText(text);
             textArgs.Handled = true;
+        }
+    }
+
+    private void OnImeCompositionStarted(object? sender, EventArgs e)
+    {
+        if (InputMethod.Current == this)
+        {
+            OnImeCompositionStart();
+        }
+    }
+
+    private void OnImeCompositionUpdated(object? sender, CompositionEventArgs e)
+    {
+        if (InputMethod.Current == this)
+        {
+            OnImeCompositionUpdate(e.Text, e.CursorPosition);
+        }
+    }
+
+    private void OnImeCompositionEnded(object? sender, CompositionResultEventArgs e)
+    {
+        if (InputMethod.Current == this)
+        {
+            OnImeCompositionEnd(e.Result);
         }
     }
 
@@ -1522,21 +1734,29 @@ public sealed class RichTextBox : Control
 
             _lastClickTime = now;
             _lastClickPosition = position;
+            var newCaretPosition = GetTextPositionFromPoint(position);
 
             if (_clickCount == 3)
             {
                 SelectAll();
+                _isWordSelecting = false;
                 _clickCount = 0;
             }
             else if (_clickCount == 2)
             {
-                // Double-click: select word (simplified)
-                SelectAll();
+                if (newCaretPosition != null)
+                {
+                    SelectWordAt(newCaretPosition);
+                    _wordSelectionAnchorStartOffset = _selection?.Start.DocumentOffset ?? 0;
+                    _wordSelectionAnchorEndOffset = _selection?.End.DocumentOffset ?? _wordSelectionAnchorStartOffset;
+                    _isWordSelecting = _selection is { IsEmpty: false };
+                    _isSelecting = true;
+                    CaptureMouse();
+                }
             }
             else
             {
                 CaptureMouse();
-                var newCaretPosition = GetTextPositionFromPoint(position);
 
                 if ((mouseArgs.KeyboardModifiers & ModifierKeys.Shift) != 0 && _caretPosition != null && newCaretPosition != null)
                 {
@@ -1550,11 +1770,13 @@ public sealed class RichTextBox : Control
                     {
                         _selection = new TextRange(newCaretPosition, newCaretPosition);
                     }
+                    _isWordSelecting = false;
                     _isSelecting = true;
                     OnSelectionChanged();
                 }
 
                 ResetCaretBlink();
+                UpdateImeWindowIfComposing();
             }
 
             InvalidateVisual();
@@ -1571,6 +1793,7 @@ public sealed class RichTextBox : Control
             if (_isSelecting)
             {
                 _isSelecting = false;
+                _isWordSelecting = false;
                 ReleaseMouseCapture();
             }
 
@@ -1587,10 +1810,17 @@ public sealed class RichTextBox : Control
             var position = mouseArgs.GetPosition(this);
             var newCaretPosition = GetTextPositionFromPoint(position);
 
-            if (newCaretPosition != null && _selectionAnchor != null)
+            if (newCaretPosition != null)
             {
-                _selection = new TextRange(_selectionAnchor, newCaretPosition);
-                _caretPosition = newCaretPosition;
+                if (_isWordSelecting)
+                {
+                    ExtendWordSelection(newCaretPosition);
+                }
+                else if (_selectionAnchor != null)
+                {
+                    _selection = new TextRange(_selectionAnchor, newCaretPosition);
+                    _caretPosition = newCaretPosition;
+                }
             }
 
             EnsureCaretVisible();
@@ -1715,6 +1945,8 @@ public sealed class RichTextBox : Control
         {
             _isSelecting = false;
         }
+
+        _isWordSelecting = false;
     }
 
     /// <inheritdoc />
@@ -1724,12 +1956,17 @@ public sealed class RichTextBox : Control
 
         if (isFocused)
         {
+            InputMethod.SetTarget(this);
             ResetCaretBlink();
             StartCaretTimer();
         }
         else
         {
             StopCaretTimer();
+            if (InputMethod.Current == this)
+            {
+                InputMethod.SetTarget(null);
+            }
         }
 
         InvalidateVisual();
@@ -1742,8 +1979,9 @@ public sealed class RichTextBox : Control
 
         if (_caretTimer == null)
         {
-            _caretTimer = new System.Timers.Timer(CaretTimerInterval);
-            _caretTimer.Elapsed += OnCaretTimerElapsed;
+            _caretTimer = new DispatcherTimer(DispatcherPriority.Background);
+            _caretTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, CaretTimerInterval));
+            _caretTimer.Tick += OnCaretTimerTick;
         }
 
         _caretTimer.Start();
@@ -1754,7 +1992,7 @@ public sealed class RichTextBox : Control
         _caretTimer?.Stop();
     }
 
-    private void OnCaretTimerElapsed(object? sender, ElapsedEventArgs e)
+    private void OnCaretTimerTick(object? sender, EventArgs e)
     {
         if (IsKeyboardFocused && !IsReadOnly)
         {
@@ -2060,6 +2298,219 @@ public sealed class RichTextBox : Control
         _caretPosition = newPosition;
 
         OnSelectionChanged();
+    }
+
+    private void SelectWordAt(TextPointer position)
+    {
+        var (start, end) = GetWordRangeAtOffset(position.DocumentOffset);
+        var startPosition = _document.GetPositionAtOffset(start, LogicalDirection.Forward) ?? _document.ContentStart;
+        var endPosition = _document.GetPositionAtOffset(end, LogicalDirection.Forward) ?? _document.ContentEnd;
+        _selection = new TextRange(startPosition, endPosition);
+        _caretPosition = endPosition;
+        _selectionAnchor = startPosition;
+        UpdateImeWindowIfComposing();
+        OnSelectionChanged();
+    }
+
+    private void ExtendWordSelection(TextPointer position)
+    {
+        var (currentStart, currentEnd) = GetWordRangeAtOffset(position.DocumentOffset);
+        int selectionStart;
+        int selectionEnd;
+        int caretOffset;
+
+        if (currentEnd <= _wordSelectionAnchorStartOffset)
+        {
+            selectionStart = currentStart;
+            selectionEnd = _wordSelectionAnchorEndOffset;
+            caretOffset = selectionStart;
+        }
+        else if (currentStart >= _wordSelectionAnchorEndOffset)
+        {
+            selectionStart = _wordSelectionAnchorStartOffset;
+            selectionEnd = currentEnd;
+            caretOffset = selectionEnd;
+        }
+        else
+        {
+            selectionStart = _wordSelectionAnchorStartOffset;
+            selectionEnd = _wordSelectionAnchorEndOffset;
+            caretOffset = selectionEnd;
+        }
+
+        var startPosition = _document.GetPositionAtOffset(selectionStart, LogicalDirection.Forward) ?? _document.ContentStart;
+        var endPosition = _document.GetPositionAtOffset(selectionEnd, LogicalDirection.Forward) ?? _document.ContentEnd;
+        _selection = new TextRange(startPosition, endPosition);
+        _caretPosition = _document.GetPositionAtOffset(caretOffset, LogicalDirection.Forward) ?? _document.ContentEnd;
+        UpdateImeWindowIfComposing();
+        OnSelectionChanged();
+    }
+
+    private (int start, int end) GetWordRangeAtOffset(int offset)
+    {
+        var text = _document.GetText();
+        if (string.IsNullOrEmpty(text))
+        {
+            return (0, 0);
+        }
+
+        var clampedOffset = Math.Clamp(offset, 0, text.Length);
+        if (clampedOffset == text.Length && clampedOffset > 0 && !IsWordBoundary(text[clampedOffset - 1]))
+        {
+            clampedOffset--;
+        }
+
+        if (clampedOffset < text.Length && IsWordBoundary(text[clampedOffset]))
+        {
+            if (clampedOffset > 0 && !IsWordBoundary(text[clampedOffset - 1]))
+            {
+                clampedOffset--;
+            }
+            else
+            {
+                while (clampedOffset < text.Length && IsWordBoundary(text[clampedOffset]))
+                {
+                    clampedOffset++;
+                }
+
+                if (clampedOffset >= text.Length)
+                {
+                    return (text.Length, text.Length);
+                }
+            }
+        }
+
+        var start = clampedOffset;
+        while (start > 0 && !IsWordBoundary(text[start - 1]))
+        {
+            start--;
+        }
+
+        var end = clampedOffset;
+        while (end < text.Length && !IsWordBoundary(text[end]))
+        {
+            end++;
+        }
+
+        return (start, end);
+    }
+
+    private static bool IsWordBoundary(char c)
+    {
+        return char.IsWhiteSpace(c) || char.IsPunctuation(c);
+    }
+
+    #endregion
+
+    #region IME Support
+
+    /// <inheritdoc />
+    public Point GetImeCaretPosition()
+    {
+        var contentBounds = GetContentBounds();
+        double lineHeight = GetDefaultLineHeight();
+        int anchorOffset = _isImeComposing ? GetImeAnchorOffset() : (_caretPosition?.DocumentOffset ?? 0);
+        var anchorPosition = _document.GetPositionAtOffset(anchorOffset, LogicalDirection.Forward) ?? _document.ContentStart;
+        var caretPoint = GetCaretScreenPosition(contentBounds, anchorPosition) ?? new Point(contentBounds.Left, contentBounds.Top);
+
+        if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString) && _imeCompositionCursor > 0)
+        {
+            var formatting = GetImeFormatting(anchorPosition);
+            string beforeCursor = _imeCompositionString.Substring(0, Math.Min(_imeCompositionCursor, _imeCompositionString.Length));
+            var text = new FormattedText(beforeCursor, formatting.FontFamily, formatting.FontSize)
+            {
+                FontWeight = formatting.FontWeight.ToOpenTypeWeight(),
+                FontStyle = formatting.FontStyle.ToOpenTypeStyle()
+            };
+            TextMeasurement.MeasureText(text);
+            caretPoint = new Point(caretPoint.X + text.Width, caretPoint.Y);
+            lineHeight = GetLineHeightForFormatting(formatting.FontSize);
+        }
+
+        return new Point(caretPoint.X, caretPoint.Y + lineHeight);
+    }
+
+    /// <inheritdoc />
+    public void OnImeCompositionStart()
+    {
+        _isImeComposing = true;
+        _imeCompositionStart = _caretPosition?.DocumentOffset ?? 0;
+        _imeCompositionString = string.Empty;
+        _imeCompositionCursor = 0;
+
+        if (_selection != null && !_selection.IsEmpty)
+        {
+            DeleteSelection();
+            _imeCompositionStart = _caretPosition?.DocumentOffset ?? _imeCompositionStart;
+        }
+
+        UpdateImeWindowIfComposing();
+        InvalidateVisual();
+    }
+
+    /// <inheritdoc />
+    public void OnImeCompositionUpdate(string compositionString, int cursorPosition)
+    {
+        _imeCompositionString = compositionString ?? string.Empty;
+        _imeCompositionCursor = Math.Clamp(cursorPosition, 0, _imeCompositionString.Length);
+        UpdateImeWindowIfComposing();
+        InvalidateVisual();
+    }
+
+    /// <inheritdoc />
+    public void OnImeCompositionEnd(string? resultString)
+    {
+        _isImeComposing = false;
+        _imeCompositionString = string.Empty;
+        _imeCompositionCursor = 0;
+        _imeCompositionStart = _caretPosition?.DocumentOffset ?? 0;
+        InvalidateVisual();
+    }
+
+    private void UpdateImeWindowIfComposing()
+    {
+        if (!_isImeComposing)
+            return;
+
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window window)
+            {
+                window.UpdateImeCompositionWindow();
+                break;
+            }
+        }
+    }
+
+    private Rect GetContentBounds()
+    {
+        return new Rect(
+            BorderThickness.Left + Padding.Left,
+            BorderThickness.Top + Padding.Top,
+            Math.Max(0, RenderSize.Width - BorderThickness.Left - BorderThickness.Right - Padding.Left - Padding.Right),
+            Math.Max(0, RenderSize.Height - BorderThickness.Top - BorderThickness.Bottom - Padding.Top - Padding.Bottom));
+    }
+
+    private int GetImeAnchorOffset()
+    {
+        return Math.Clamp(_imeCompositionStart, 0, Math.Max(0, _document.GetText().Length));
+    }
+
+    private (string FontFamily, double FontSize, FontWeight FontWeight, FontStyle FontStyle) GetImeFormatting(TextPointer? position)
+    {
+        if (position?.Parent is Run run)
+        {
+            string fontFamily = !string.IsNullOrWhiteSpace(run.FontFamily) ? run.FontFamily : (_document.FontFamily ?? "Segoe UI");
+            double fontSize = run.FontSize > 0 ? run.FontSize : _document.FontSize;
+            return (fontFamily, fontSize, run.FontWeight, run.FontStyle);
+        }
+
+        return (_document.FontFamily ?? "Segoe UI", _document.FontSize, FontWeights.Normal, FontStyles.Normal);
+    }
+
+    private double GetLineHeightForFormatting(double fontSize)
+    {
+        return Math.Max(1, fontSize * 1.5);
     }
 
     private TextPointer? FindPreviousWordBoundary(TextPointer position)

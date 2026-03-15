@@ -7,13 +7,14 @@ namespace Jalium.UI.Controls;
 /// Provides a control for viewing flow content with built-in support for multiple viewing modes.
 /// </summary>
 [ContentProperty("Document")]
-public sealed class FlowDocumentReader : Control
+public class FlowDocumentReader : Control
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Document dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DocumentProperty =
         DependencyProperty.Register(nameof(Document), typeof(FlowDocument), typeof(FlowDocumentReader),
             new PropertyMetadata(null, OnDocumentChanged));
@@ -21,6 +22,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the ViewingMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty ViewingModeProperty =
         DependencyProperty.Register(nameof(ViewingMode), typeof(FlowDocumentReaderViewingMode), typeof(FlowDocumentReader),
             new PropertyMetadata(FlowDocumentReaderViewingMode.Page));
@@ -28,6 +30,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the Zoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomProperty =
         DependencyProperty.Register(nameof(Zoom), typeof(double), typeof(FlowDocumentReader),
             new PropertyMetadata(100.0));
@@ -35,6 +38,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the MinZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinZoomProperty =
         DependencyProperty.Register(nameof(MinZoom), typeof(double), typeof(FlowDocumentReader),
             new PropertyMetadata(80.0));
@@ -42,6 +46,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the MaxZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxZoomProperty =
         DependencyProperty.Register(nameof(MaxZoom), typeof(double), typeof(FlowDocumentReader),
             new PropertyMetadata(200.0));
@@ -49,6 +54,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the ZoomIncrement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomIncrementProperty =
         DependencyProperty.Register(nameof(ZoomIncrement), typeof(double), typeof(FlowDocumentReader),
             new PropertyMetadata(10.0));
@@ -56,6 +62,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the IsPageViewEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsPageViewEnabledProperty =
         DependencyProperty.Register(nameof(IsPageViewEnabled), typeof(bool), typeof(FlowDocumentReader),
             new PropertyMetadata(true));
@@ -63,6 +70,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the IsTwoPageViewEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsTwoPageViewEnabledProperty =
         DependencyProperty.Register(nameof(IsTwoPageViewEnabled), typeof(bool), typeof(FlowDocumentReader),
             new PropertyMetadata(true));
@@ -70,6 +78,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the IsScrollViewEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsScrollViewEnabledProperty =
         DependencyProperty.Register(nameof(IsScrollViewEnabled), typeof(bool), typeof(FlowDocumentReader),
             new PropertyMetadata(true));
@@ -77,6 +86,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the IsFindEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsFindEnabledProperty =
         DependencyProperty.Register(nameof(IsFindEnabled), typeof(bool), typeof(FlowDocumentReader),
             new PropertyMetadata(true));
@@ -84,6 +94,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the IsPrintEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsPrintEnabledProperty =
         DependencyProperty.Register(nameof(IsPrintEnabled), typeof(bool), typeof(FlowDocumentReader),
             new PropertyMetadata(true));
@@ -95,6 +106,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the PageCount dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PageCountProperty = PageCountPropertyKey.DependencyProperty;
 
     private static readonly DependencyPropertyKey PageNumberPropertyKey =
@@ -104,6 +116,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Identifies the PageNumber dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PageNumberProperty = PageNumberPropertyKey.DependencyProperty;
 
     #endregion
@@ -113,6 +126,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets the FlowDocument displayed by this reader.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public FlowDocument? Document
     {
         get => (FlowDocument?)GetValue(DocumentProperty);
@@ -122,6 +136,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets the current viewing mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public FlowDocumentReaderViewingMode ViewingMode
     {
         get => (FlowDocumentReaderViewingMode)GetValue(ViewingModeProperty);
@@ -131,6 +146,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets the current zoom level as a percentage.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double Zoom
     {
         get => (double)GetValue(ZoomProperty);
@@ -140,6 +156,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets the minimum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinZoom
     {
         get => (double)GetValue(MinZoomProperty);
@@ -149,6 +166,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets the maximum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxZoom
     {
         get => (double)GetValue(MaxZoomProperty);
@@ -158,6 +176,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets the zoom increment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double ZoomIncrement
     {
         get => (double)GetValue(ZoomIncrementProperty);
@@ -167,6 +186,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets whether page view mode is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsPageViewEnabled
     {
         get => (bool)GetValue(IsPageViewEnabledProperty);
@@ -176,6 +196,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets whether two-page view mode is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsTwoPageViewEnabled
     {
         get => (bool)GetValue(IsTwoPageViewEnabledProperty);
@@ -185,6 +206,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets whether scroll view mode is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsScrollViewEnabled
     {
         get => (bool)GetValue(IsScrollViewEnabledProperty);
@@ -194,6 +216,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets whether the find feature is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsFindEnabled
     {
         get => (bool)GetValue(IsFindEnabledProperty);
@@ -203,6 +226,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets or sets whether the print feature is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsPrintEnabled
     {
         get => (bool)GetValue(IsPrintEnabledProperty);
@@ -212,6 +236,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets the page count of the document.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int PageCount
     {
         get => (int)GetValue(PageCountProperty);
@@ -221,6 +246,7 @@ public sealed class FlowDocumentReader : Control
     /// <summary>
     /// Gets the current page number.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int PageNumber
     {
         get => (int)GetValue(PageNumberProperty);

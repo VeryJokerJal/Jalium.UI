@@ -277,6 +277,8 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
 
         var generatedItems = new List<ITaskItem>();
         var discoveredClassNames = new List<string>();
+        var seenSourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var seenGeneratedPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var hasErrors = false;
 
         foreach (var sourceFile in SourceFiles)
@@ -285,6 +287,13 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
             if (string.IsNullOrEmpty(sourcePath))
             {
                 sourcePath = sourceFile.ItemSpec;
+            }
+
+            sourcePath = Path.GetFullPath(sourcePath);
+
+            if (!seenSourcePaths.Add(sourcePath))
+            {
+                continue;
             }
 
             try
@@ -298,6 +307,12 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
                 var outputFile = GenerateCodeBehind(sourcePath);
                 if (outputFile != null)
                 {
+                    var outputFullPath = Path.GetFullPath(outputFile);
+                    if (!seenGeneratedPaths.Add(outputFullPath))
+                    {
+                        continue;
+                    }
+
                     var item = new TaskItem(outputFile);
                     item.SetMetadata("SourceFile", sourcePath);
                     generatedItems.Add(item);
@@ -313,9 +328,13 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
         try
         {
             var aliasFile = GenerateViewAliasFile(discoveredClassNames);
-            var aliasItem = new TaskItem(aliasFile);
-            aliasItem.SetMetadata("SourceFile", string.Empty);
-            generatedItems.Add(aliasItem);
+            var aliasFullPath = Path.GetFullPath(aliasFile);
+            if (seenGeneratedPaths.Add(aliasFullPath))
+            {
+                var aliasItem = new TaskItem(aliasFile);
+                aliasItem.SetMetadata("SourceFile", string.Empty);
+                generatedItems.Add(aliasItem);
+            }
         }
         catch (Exception ex)
         {

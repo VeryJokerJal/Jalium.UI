@@ -1,15 +1,16 @@
-﻿namespace Jalium.UI.Controls.Primitives;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Provides a panel that displays overflow items from a ToolBar.
 /// </summary>
-public sealed class ToolBarOverflowPanel : Panel
+public class ToolBarOverflowPanel : Panel
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the WrapWidth dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty WrapWidthProperty =
         DependencyProperty.Register(nameof(WrapWidth), typeof(double), typeof(ToolBarOverflowPanel),
             new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
@@ -21,6 +22,7 @@ public sealed class ToolBarOverflowPanel : Panel
     /// <summary>
     /// Gets or sets the width at which to wrap items.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double WrapWidth
     {
         get => (double)GetValue(WrapWidthProperty)!;

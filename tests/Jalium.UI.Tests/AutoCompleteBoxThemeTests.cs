@@ -1,7 +1,9 @@
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
@@ -45,6 +47,8 @@ public class AutoCompleteBoxThemeTests
             Assert.NotNull(autoCompleteBox.Background);
             Assert.NotNull(autoCompleteBox.Foreground);
             Assert.NotNull(autoCompleteBox.BorderBrush);
+            Assert.NotNull(autoCompleteBox.SelectionBrush);
+            Assert.NotNull(autoCompleteBox.CaretBrush);
             Assert.Equal(32, autoCompleteBox.MinHeight);
             Assert.True(autoCompleteBox.RenderSize.Height >= 32);
         }
@@ -65,6 +69,8 @@ public class AutoCompleteBoxThemeTests
             Assert.True(app.Resources.TryGetValue("TextPlaceholder", out var placeholderObj));
             Assert.True(app.Resources.TryGetValue("AccentBrush", out var accentObj));
             Assert.True(app.Resources.TryGetValue("ControlBorderFocused", out var focusedObj));
+            var selectionBrush = Assert.IsAssignableFrom<Brush>(app.Resources["SelectionBackground"]);
+            var caretBrush = Assert.IsAssignableFrom<Brush>(app.Resources["TextPrimary"]);
 
             var autoCompleteBox = new AutoCompleteBox();
 
@@ -74,14 +80,22 @@ public class AutoCompleteBoxThemeTests
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var focusedMethod = typeof(AutoCompleteBox).GetMethod("ResolveFocusedBorderBrush",
                 BindingFlags.Instance | BindingFlags.NonPublic);
+            var selectionMethod = typeof(TextBoxBase).GetMethod("ResolveSelectionBrush",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var caretMethod = typeof(TextBoxBase).GetMethod("ResolveCaretBrush",
+                BindingFlags.Instance | BindingFlags.NonPublic);
 
             Assert.NotNull(placeholderMethod);
             Assert.NotNull(selectedMethod);
             Assert.NotNull(focusedMethod);
+            Assert.NotNull(selectionMethod);
+            Assert.NotNull(caretMethod);
 
             Assert.Same(placeholderObj, placeholderMethod!.Invoke(autoCompleteBox, null));
             Assert.Same(accentObj, selectedMethod!.Invoke(autoCompleteBox, null));
             Assert.Same(focusedObj, focusedMethod!.Invoke(autoCompleteBox, null));
+            Assert.Same(selectionBrush, selectionMethod!.Invoke(autoCompleteBox, null));
+            Assert.Same(caretBrush, caretMethod!.Invoke(autoCompleteBox, null));
         }
         finally
         {

@@ -6,8 +6,14 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that lets the user select from a range of values by moving a thumb.
 /// </summary>
-public sealed class Slider : Control
+public class Slider : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.SliderAutomationPeer(this);
+    }
+
     // Cached brushes and pens for OnRender
     private static readonly SolidColorBrush s_trackBrush = new(Color.FromRgb(60, 60, 60));
     private static readonly SolidColorBrush s_accentBrush = new(Color.FromRgb(0, 120, 212));
@@ -22,6 +28,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the Minimum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinimumProperty =
         DependencyProperty.Register(nameof(Minimum), typeof(double), typeof(Slider),
             new PropertyMetadata(0.0, OnRangePropertyChanged));
@@ -29,6 +36,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the Maximum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaximumProperty =
         DependencyProperty.Register(nameof(Maximum), typeof(double), typeof(Slider),
             new PropertyMetadata(100.0, OnRangePropertyChanged));
@@ -36,6 +44,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the Value dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ValueProperty =
         DependencyProperty.Register(nameof(Value), typeof(double), typeof(Slider),
             new PropertyMetadata(0.0, OnValuePropertyChanged, CoerceValue));
@@ -43,6 +52,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the SmallChange dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SmallChangeProperty =
         DependencyProperty.Register(nameof(SmallChange), typeof(double), typeof(Slider),
             new PropertyMetadata(1.0));
@@ -50,6 +60,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the LargeChange dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LargeChangeProperty =
         DependencyProperty.Register(nameof(LargeChange), typeof(double), typeof(Slider),
             new PropertyMetadata(10.0));
@@ -57,6 +68,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(Slider),
             new PropertyMetadata(Orientation.Horizontal, OnLayoutPropertyChanged));
@@ -64,6 +76,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the TickFrequency dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty TickFrequencyProperty =
         DependencyProperty.Register(nameof(TickFrequency), typeof(double), typeof(Slider),
             new PropertyMetadata(0.0, OnVisualPropertyChanged));
@@ -71,6 +84,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the IsSnapToTickEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSnapToTickEnabledProperty =
         DependencyProperty.Register(nameof(IsSnapToTickEnabled), typeof(bool), typeof(Slider),
             new PropertyMetadata(false));
@@ -78,6 +92,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the TrackBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty TrackBrushProperty =
         DependencyProperty.Register(nameof(TrackBrush), typeof(Brush), typeof(Slider),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -85,6 +100,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Identifies the ThumbBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ThumbBrushProperty =
         DependencyProperty.Register(nameof(ThumbBrush), typeof(Brush), typeof(Slider),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -116,6 +132,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets the minimum value of the Slider.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Minimum
     {
         get => (double)GetValue(MinimumProperty)!;
@@ -125,6 +142,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets the maximum value of the Slider.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Maximum
     {
         get => (double)GetValue(MaximumProperty)!;
@@ -134,6 +152,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets the current value of the Slider.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Value
     {
         get => (double)GetValue(ValueProperty)!;
@@ -143,6 +162,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets the value to add or subtract when the user moves the thumb a small amount.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SmallChange
     {
         get => (double)GetValue(SmallChangeProperty)!;
@@ -152,6 +172,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets the value to add or subtract when the user moves the thumb a large amount.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double LargeChange
     {
         get => (double)GetValue(LargeChangeProperty)!;
@@ -161,6 +182,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets the orientation of the Slider.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -170,6 +192,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets the interval between tick marks.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double TickFrequency
     {
         get => (double)GetValue(TickFrequencyProperty)!;
@@ -179,6 +202,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets whether the Slider snaps to tick marks.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSnapToTickEnabled
     {
         get => (bool)GetValue(IsSnapToTickEnabledProperty)!;
@@ -188,6 +212,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets the brush used for the track.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? TrackBrush
     {
         get => (Brush?)GetValue(TrackBrushProperty);
@@ -197,6 +222,7 @@ public sealed class Slider : Control
     /// <summary>
     /// Gets or sets the brush used for the thumb.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? ThumbBrush
     {
         get => (Brush?)GetValue(ThumbBrushProperty);
@@ -231,6 +257,7 @@ public sealed class Slider : Control
     public Slider()
     {
         Focusable = true;
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
         // Register input event handlers
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
@@ -240,6 +267,12 @@ public sealed class Slider : Control
     }
 
     #endregion
+
+    /// <inheritdoc />
+    protected override bool ShouldSuppressAutomaticTransition(DependencyProperty dp)
+    {
+        return ReferenceEquals(dp, ValueProperty) && _isDragging;
+    }
 
     #region Template
 

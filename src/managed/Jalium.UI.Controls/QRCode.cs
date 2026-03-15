@@ -17,7 +17,7 @@ public enum QRCodeErrorCorrectionLevel
 /// <summary>
 /// Displays a QR code generated from text content.
 /// </summary>
-public sealed class QRCode : Control
+public class QRCode : Control
 {
     private bool[,]? _modules;
     private string? _generationError;
@@ -25,6 +25,7 @@ public sealed class QRCode : Control
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(QRCode),
             new PropertyMetadata(string.Empty, OnQrCodeDataChanged));
@@ -32,6 +33,7 @@ public sealed class QRCode : Control
     /// <summary>
     /// Identifies the QuietZoneModules dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty QuietZoneModulesProperty =
         DependencyProperty.Register(nameof(QuietZoneModules), typeof(int), typeof(QRCode),
             new PropertyMetadata(4, OnQrCodeDataChanged, CoerceQuietZoneModules));
@@ -39,6 +41,7 @@ public sealed class QRCode : Control
     /// <summary>
     /// Identifies the ErrorCorrectionLevel dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ErrorCorrectionLevelProperty =
         DependencyProperty.Register(nameof(ErrorCorrectionLevel), typeof(QRCodeErrorCorrectionLevel), typeof(QRCode),
             new PropertyMetadata(QRCodeErrorCorrectionLevel.Q, OnQrCodeDataChanged));
@@ -46,6 +49,7 @@ public sealed class QRCode : Control
     /// <summary>
     /// Gets or sets the text encoded by the QR code.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
@@ -55,6 +59,7 @@ public sealed class QRCode : Control
     /// <summary>
     /// Gets or sets the size of the quiet zone in modules.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int QuietZoneModules
     {
         get => (int)GetValue(QuietZoneModulesProperty)!;
@@ -64,6 +69,7 @@ public sealed class QRCode : Control
     /// <summary>
     /// Gets or sets the QR code error correction level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public QRCodeErrorCorrectionLevel ErrorCorrectionLevel
     {
         get => (QRCodeErrorCorrectionLevel)(GetValue(ErrorCorrectionLevelProperty) ?? QRCodeErrorCorrectionLevel.Q);

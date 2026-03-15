@@ -7,7 +7,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a control that provides a scroll bar for scrolling content.
 /// </summary>
-public sealed class ScrollBar : RangeBase
+public class ScrollBar : RangeBase
 {
     #region Static Brushes
 
@@ -15,7 +15,7 @@ public sealed class ScrollBar : RangeBase
     private static readonly SolidColorBrush s_defaultThumbBrush = new(Color.FromRgb(170, 170, 170));
     private static readonly SolidColorBrush s_defaultArrowBrush = new(Color.FromRgb(210, 210, 210));
     private static readonly SolidColorBrush s_transparentBrush = new(Color.FromArgb(0, 0, 0, 0));
-    private static readonly BlurEffect s_defaultTrackBackdropEffect = new(16f, BackdropBlurType.Gaussian);
+    private static readonly BlurEffect s_defaultTrackBackdropEffect = new(0f, BackdropBlurType.Gaussian);
     private static readonly Style s_internalRepeatButtonStyle = new(typeof(RepeatButton));
     private static readonly Style s_internalThumbStyle = CreateInternalThumbStyle();
 
@@ -26,6 +26,7 @@ public sealed class ScrollBar : RangeBase
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(ScrollBar),
             new PropertyMetadata(Orientation.Vertical, OnLayoutPropertyChanged));
@@ -33,6 +34,7 @@ public sealed class ScrollBar : RangeBase
     /// <summary>
     /// Identifies the ViewportSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ViewportSizeProperty =
         DependencyProperty.Register(nameof(ViewportSize), typeof(double), typeof(ScrollBar),
             new PropertyMetadata(0.0, OnLayoutPropertyChanged));
@@ -41,6 +43,7 @@ public sealed class ScrollBar : RangeBase
     /// Identifies the ThumbStyle dependency property.
     /// Allows ScrollBar themes to directly inject a keyed thumb style.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ThumbStyleProperty =
         DependencyProperty.Register(nameof(ThumbStyle), typeof(Style), typeof(ScrollBar),
             new PropertyMetadata(null, OnPartStylePropertyChanged));
@@ -49,6 +52,7 @@ public sealed class ScrollBar : RangeBase
     /// Identifies the IsThumbSlim dependency property.
     /// When true, the Track renders the thumb as a thin line centered in the track.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsThumbSlimProperty =
         DependencyProperty.Register(nameof(IsThumbSlim), typeof(bool), typeof(ScrollBar),
             new PropertyMetadata(false, OnThumbPresentationPropertyChanged));
@@ -80,6 +84,7 @@ public sealed class ScrollBar : RangeBase
     /// <summary>
     /// Gets or sets the orientation of the ScrollBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -89,6 +94,7 @@ public sealed class ScrollBar : RangeBase
     /// <summary>
     /// Gets or sets the size of the viewport, which determines the thumb size.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ViewportSize
     {
         get => (double)GetValue(ViewportSizeProperty)!;
@@ -98,6 +104,7 @@ public sealed class ScrollBar : RangeBase
     /// <summary>
     /// Gets or sets the style applied to the internal Track thumb.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Style? ThumbStyle
     {
         get => (Style?)GetValue(ThumbStyleProperty);
@@ -107,6 +114,7 @@ public sealed class ScrollBar : RangeBase
     /// <summary>
     /// Gets or sets whether the thumb should render in slim mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsThumbSlim
     {
         get => (bool)GetValue(IsThumbSlimProperty)!;
@@ -123,6 +131,9 @@ public sealed class ScrollBar : RangeBase
     private const double DefaultThickness = 16;
     private const double MinThumbLength = 20;
     private bool _isDragging;
+    private double _thumbDragStartValue;
+    private double _thumbDragAccumulatedHorizontal;
+    private double _thumbDragAccumulatedVertical;
     private bool _hasCustomLineButtonStyle;
     private DispatcherTimer? _autoHideVisualTimer;
     private long _autoHideVisualAnimStartTick;
@@ -135,7 +146,9 @@ public sealed class ScrollBar : RangeBase
     private const string LineButtonStyleKey = "ScrollBarLineButtonStyle";
     private const string PageButtonStyleKey = "ScrollBarPageButtonStyle";
     private const string ThumbStyleKey = "ScrollBarThumbStyle";
+    private const string TrackBrushKey = "ScrollBarTrack";
     private const string ThumbBrushKey = "ScrollBarThumb";
+    private const string ArrowBrushKey = "ScrollBarArrow";
     private const double SlimThumbThickness = 2.0;
     private const double ExpandedThumbInset = 4.0;
     private const double AutoHideVisualTransitionDurationMs = 160.0;
@@ -150,10 +163,10 @@ public sealed class ScrollBar : RangeBase
     public ScrollBar()
     {
         // Set default values for range base
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         Maximum = 100;
         SmallChange = 1;
         LargeChange = 10;
-        Background = s_defaultTrackBrush;
         BorderBrush = s_transparentBrush;
         BorderThickness = new Thickness(0);
         Padding = new Thickness(2);
@@ -181,8 +194,6 @@ public sealed class ScrollBar : RangeBase
             Background = s_transparentBrush,
             BorderBrush = s_transparentBrush,
             BorderThickness = new Thickness(0),
-            Foreground = s_defaultArrowBrush,
-            UseScrollBarArrowAnimation = true,
             Padding = new Thickness(0),
             CornerRadius = new CornerRadius(0),
             MinWidth = 0,
@@ -193,11 +204,16 @@ public sealed class ScrollBar : RangeBase
         AddVisualChild(_lineUpButton);
 
         // Create track
-        _track = new Track();
+        _track = new Track
+        {
+            // ScrollBar owns thumb dragging so we do not pay for a second Track.Value update
+            // and Arrange invalidation on every pointer move.
+            HandlesThumbDragInternally = false
+        };
+        _track.SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         _track.Thumb = new Thumb
         {
             Style = s_internalThumbStyle,
-            Background = s_defaultThumbBrush,
             BorderBrush = s_transparentBrush,
             BorderThickness = new Thickness(0),
             // Keep scrollbar thumb length controlled by Track.ArrangeOverride.
@@ -206,6 +222,7 @@ public sealed class ScrollBar : RangeBase
             Width = double.NaN,
             Height = double.NaN
         };
+        _track.Thumb.SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         _track.Thumb.Cursor = Jalium.UI.Cursors.Arrow;
         _track.Thumb.DragStarted += OnThumbDragStarted;
         _track.Thumb.DragDelta += OnThumbDragDelta;
@@ -256,8 +273,6 @@ public sealed class ScrollBar : RangeBase
             Background = s_transparentBrush,
             BorderBrush = s_transparentBrush,
             BorderThickness = new Thickness(0),
-            Foreground = s_defaultArrowBrush,
-            UseScrollBarArrowAnimation = true,
             Padding = new Thickness(0),
             CornerRadius = new CornerRadius(0),
             MinWidth = 0,
@@ -453,27 +468,44 @@ public sealed class ScrollBar : RangeBase
         return null;
     }
 
+    private Brush ResolveTrackBrush()
+    {
+        return ResolveBrushResource(TrackBrushKey) ?? s_defaultTrackBrush;
+    }
+
+    private Brush ResolveThumbBrush()
+    {
+        return ResolveBrushResource(ThumbBrushKey) ?? s_defaultThumbBrush;
+    }
+
+    private Brush ResolveArrowBrush()
+    {
+        return ResolveBrushResource(ArrowBrushKey) ?? s_defaultArrowBrush;
+    }
+
     private void EnsureThumbVisibilityFallback(Thumb thumb)
     {
         if (thumb.Background == null)
         {
-            thumb.Background = ResolveBrushResource(ThumbBrushKey) ?? s_defaultThumbBrush;
+            thumb.Background = ResolveThumbBrush();
         }
     }
 
     private void ClearScrollBarDefaultsIfNeededForStyle()
     {
+        ClearLocalIfReferenceEquals(this, BackgroundProperty, ResolveTrackBrush());
         ClearLocalIfReferenceEquals(this, BackgroundProperty, s_defaultTrackBrush);
         ClearLocalIfReferenceEquals(this, BorderBrushProperty, s_transparentBrush);
         ClearLocalIfValueEquals(this, BorderThicknessProperty, new Thickness(0));
         ClearLocalIfValueEquals(this, PaddingProperty, new Thickness(2));
     }
 
-    private static void ClearLineButtonDefaultsIfNeededForStyle(RepeatButton button)
+    private void ClearLineButtonDefaultsIfNeededForStyle(RepeatButton button)
     {
         ClearLocalIfReferenceEquals(button, BackgroundProperty, s_transparentBrush);
         ClearLocalIfReferenceEquals(button, BorderBrushProperty, s_transparentBrush);
         ClearLocalIfValueEquals(button, BorderThicknessProperty, new Thickness(0));
+        ClearLocalIfReferenceEquals(button, ForegroundProperty, ResolveArrowBrush());
         ClearLocalIfReferenceEquals(button, ForegroundProperty, s_defaultArrowBrush);
         ClearLocalIfValueEquals(button, PaddingProperty, new Thickness(0));
         ClearLocalIfValueEquals(button, CornerRadiusProperty, new CornerRadius(0));
@@ -493,8 +525,9 @@ public sealed class ScrollBar : RangeBase
         ClearLocalIfValueEquals(button, MinHeightProperty, 0.0);
     }
 
-    private static void ClearThumbDefaultsIfNeededForStyle(Thumb thumb)
+    private void ClearThumbDefaultsIfNeededForStyle(Thumb thumb)
     {
+        ClearLocalIfReferenceEquals(thumb, BackgroundProperty, ResolveThumbBrush());
         ClearLocalIfReferenceEquals(thumb, BackgroundProperty, s_defaultThumbBrush);
         ClearLocalIfReferenceEquals(thumb, BorderBrushProperty, s_transparentBrush);
         ClearLocalIfValueEquals(thumb, BorderThicknessProperty, new Thickness(0));
@@ -519,7 +552,6 @@ public sealed class ScrollBar : RangeBase
         });
 
         var style = new Style(typeof(Thumb));
-        style.Setters.Add(new Setter(BackgroundProperty, s_defaultThumbBrush));
         style.Setters.Add(new Setter(BorderBrushProperty, s_transparentBrush));
         style.Setters.Add(new Setter(BorderThicknessProperty, new Thickness(0)));
         style.Setters.Add(new Setter(CornerRadiusProperty, new CornerRadius(999)));
@@ -708,15 +740,23 @@ public sealed class ScrollBar : RangeBase
 
     private void OnThumbDragStarted(object sender, DragStartedEventArgs e)
     {
-        _isDragging = true;
+        BeginThumbDrag();
     }
 
     private void OnThumbDragDelta(object sender, DragDeltaEventArgs e)
     {
         if (_track != null)
         {
-            var valueDelta = _track.ValueFromDistance(e.HorizontalChange, e.VerticalChange);
-            var newValue = Math.Clamp(Value + valueDelta, Minimum, Maximum);
+            if (!_isDragging)
+            {
+                BeginThumbDrag();
+            }
+
+            _thumbDragAccumulatedHorizontal += e.HorizontalChange;
+            _thumbDragAccumulatedVertical += e.VerticalChange;
+
+            var newValue = _thumbDragStartValue + _track.ValueFromDistance(_thumbDragAccumulatedHorizontal, _thumbDragAccumulatedVertical);
+            newValue = Math.Clamp(newValue, Minimum, Maximum);
 
             if (Math.Abs(newValue - Value) > double.Epsilon)
             {
@@ -728,7 +768,7 @@ public sealed class ScrollBar : RangeBase
 
     private void OnThumbDragCompleted(object sender, DragCompletedEventArgs e)
     {
-        _isDragging = false;
+        EndThumbDrag();
         RaiseScrollEvent(ScrollEventType.EndScroll);
     }
 
@@ -744,7 +784,10 @@ public sealed class ScrollBar : RangeBase
     {
         if (e is MouseWheelEventArgs wheelArgs)
         {
-            var delta = wheelArgs.Delta > 0 ? -SmallChange * 3 : SmallChange * 3;
+            double pageStep = double.IsFinite(LargeChange) && LargeChange > 0
+                ? LargeChange
+                : SmallChange;
+            var delta = ScrollViewer.ComputeMouseWheelDelta(wheelArgs.Delta, SmallChange, pageStep);
             var newValue = Math.Clamp(Value + delta, Minimum, Maximum);
 
             if (Math.Abs(newValue - Value) > double.Epsilon)
@@ -797,7 +840,10 @@ public sealed class ScrollBar : RangeBase
     {
         if (d is ScrollBar scrollBar)
         {
-            scrollBar.StartAutoHideVisualTransition(scrollBar.IsThumbSlim ? 1.0 : 0.0);
+            var targetProgress = scrollBar.IsThumbSlim ? 1.0 : 0.0;
+            scrollBar._autoHideCollapseProgress = targetProgress;
+            scrollBar.StopAutoHideVisualTimer();
+            scrollBar.ApplyAutoHideVisualState(targetProgress);
         }
     }
 
@@ -890,9 +936,7 @@ public sealed class ScrollBar : RangeBase
                 _track.ThumbCrossAxisThickness = thumbThickness;
                 if (!suppressArrangeInvalidation)
                 {
-                    // Re-arrange the ScrollBar itself so Track->Thumb layout is recomputed
-                    // in a full parent layout pass.
-                    InvalidateArrange();
+                    _track.RefreshThumbVisualLayout();
                 }
             }
         }
@@ -935,6 +979,21 @@ public sealed class ScrollBar : RangeBase
     private static double Lerp(double from, double to, double t)
     {
         return from + ((to - from) * t);
+    }
+
+    private void BeginThumbDrag()
+    {
+        _isDragging = true;
+        _thumbDragStartValue = Value;
+        _thumbDragAccumulatedHorizontal = 0;
+        _thumbDragAccumulatedVertical = 0;
+    }
+
+    private void EndThumbDrag()
+    {
+        _isDragging = false;
+        _thumbDragAccumulatedHorizontal = 0;
+        _thumbDragAccumulatedVertical = 0;
     }
 
     #endregion
@@ -988,13 +1047,13 @@ public sealed class ScrollBar : RangeBase
 
         dc.PushOpacity(chromeOpacity);
 
-        var backdropEffect = BackdropEffect ?? s_defaultTrackBackdropEffect;
-        if (backdropEffect.HasEffect)
+        var backdropEffect = BackdropEffect;
+        if ((backdropEffect ?? s_defaultTrackBackdropEffect).HasEffect && backdropEffect != null)
         {
             dc.DrawBackdropEffect(innerRect, backdropEffect, CornerRadius);
         }
 
-        var bgBrush = Background ?? s_defaultTrackBrush;
+        var bgBrush = Background ?? ResolveTrackBrush();
         dc.DrawRoundedRectangle(bgBrush, null, innerRect, CornerRadius);
 
         if (BorderBrush != null && BorderThickness.TotalWidth > 0)
@@ -1015,8 +1074,9 @@ public sealed class ScrollBar : RangeBase
     private void DrawFallbackArrows(DrawingContext dc)
     {
         const double baseArrowSize = 8.0;
-        var upBrush = (_lineUpButton?.Foreground as Brush) ?? s_defaultArrowBrush;
-        var downBrush = (_lineDownButton?.Foreground as Brush) ?? s_defaultArrowBrush;
+        var fallbackArrowBrush = ResolveArrowBrush();
+        var upBrush = (_lineUpButton?.Foreground as Brush) ?? fallbackArrowBrush;
+        var downBrush = (_lineDownButton?.Foreground as Brush) ?? fallbackArrowBrush;
         var upScale = Math.Clamp(_lineUpButton?.CurrentScrollBarArrowScale ?? 1.0, 0.7, 1.25);
         var downScale = Math.Clamp(_lineDownButton?.CurrentScrollBarArrowScale ?? 1.0, 0.7, 1.25);
         var upArrowSize = baseArrowSize * upScale;

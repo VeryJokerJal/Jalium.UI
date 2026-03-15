@@ -9,12 +9,36 @@ namespace Jalium.UI;
 /// Provides a hash table/dictionary implementation that contains resources
 /// used by components and other elements of a UI application.
 /// </summary>
-public sealed class ResourceDictionary : IDictionary<object, object?>, IDictionary
+public class ResourceDictionary : IDictionary<object, object?>, IDictionary
 {
+    private sealed class NotificationDeferralScope : IDisposable
+    {
+        private ResourceDictionary? _owner;
+
+        public NotificationDeferralScope(ResourceDictionary owner)
+        {
+            _owner = owner;
+            owner._notificationDeferralDepth++;
+        }
+
+        public void Dispose()
+        {
+            if (_owner == null)
+            {
+                return;
+            }
+
+            _owner.EndNotificationDeferral();
+            _owner = null;
+        }
+    }
+
     private readonly Dictionary<object, object?> _innerDictionary = new();
     private readonly MergedDictionaryCollection _mergedDictionaries;
     private Dictionary<object, ResourceDictionary>? _themeDictionaries;
     private Uri? _source;
+    private int _notificationDeferralDepth;
+    private bool _notificationPending;
 
     // Cycle detection for recursive MergedDictionaries lookups
     [ThreadStatic]
@@ -44,11 +68,26 @@ public sealed class ResourceDictionary : IDictionary<object, object?>, IDictiona
     /// </summary>
     public IDictionary<object, ResourceDictionary> ThemeDictionaries => _themeDictionaries ??= new Dictionary<object, ResourceDictionary>();
 
+    private static object? s_currentThemeKey;
+
     /// <summary>
     /// Gets or sets the current theme key used to select resources from ThemeDictionaries.
     /// Common values include "Light", "Dark", and "HighContrast".
+    /// Updating this key refreshes all active dynamic-resource bindings so themed dictionaries
+    /// are re-evaluated immediately.
     /// </summary>
-    public static object? CurrentThemeKey { get; set; }
+    public static object? CurrentThemeKey
+    {
+        get => s_currentThemeKey;
+        set
+        {
+            if (Equals(s_currentThemeKey, value))
+                return;
+
+            s_currentThemeKey = value;
+            DynamicResourceBindingOperations.RefreshAll();
+        }
+    }
 
     /// <summary>
     /// Gets or sets the uniform resource identifier (URI) to load resources from.
@@ -82,6 +121,15 @@ public sealed class ResourceDictionary : IDictionary<object, object?>, IDictiona
     /// This allows the Core assembly to remain independent of the Xaml assembly.
     /// </summary>
     public static Func<ResourceDictionary, Uri, Assembly?, ResourceDictionary?>? SourceLoader { get; set; }
+
+    /// <summary>
+    /// Defers <see cref="Changed"/> notifications until the returned scope is disposed.
+    /// Nested deferrals are supported and coalesced into a single notification.
+    /// </summary>
+    public IDisposable DeferNotifications()
+    {
+        return new NotificationDeferralScope(this);
+    }
 
     /// <summary>
     /// Copies all resources from another dictionary into this one.
@@ -367,7 +415,29 @@ public sealed class ResourceDictionary : IDictionary<object, object?>, IDictiona
 
     private void OnChanged()
     {
+        if (_notificationDeferralDepth > 0)
+        {
+            _notificationPending = true;
+            return;
+        }
+
         Changed?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void EndNotificationDeferral()
+    {
+        if (_notificationDeferralDepth <= 0)
+        {
+            _notificationDeferralDepth = 0;
+            return;
+        }
+
+        _notificationDeferralDepth--;
+        if (_notificationDeferralDepth == 0 && _notificationPending)
+        {
+            _notificationPending = false;
+            Changed?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     private void OnMergedDictionaryAdded(ResourceDictionary dictionary)
@@ -465,6 +535,17 @@ public static class ResourceLookup
         if (resourceKey == null)
             return null;
 
+        return FindResourceCore(element, resourceKey, new HashSet<object>());
+    }
+
+    private static object? FindResourceCore(
+        FrameworkElement? element,
+        object resourceKey,
+        HashSet<object> resourceChain)
+    {
+        if (!resourceChain.Add(resourceKey))
+            return null;
+
         // Walk up the visual tree looking for resources
         var current = element;
         int depthGuard = 0;
@@ -472,7 +553,7 @@ public static class ResourceLookup
         {
             if (current.Resources != null && current.Resources.TryGetValue(resourceKey, out var value))
             {
-                return value;
+                return ResolveDynamicResourceValue(element, value, resourceChain);
             }
 
             FrameworkElement? next = null;
@@ -492,10 +573,21 @@ public static class ResourceLookup
         // Check application resources via callback
         if (ApplicationResourceLookup != null)
         {
-            return ApplicationResourceLookup.Invoke(resourceKey);
+            return ResolveDynamicResourceValue(element, ApplicationResourceLookup.Invoke(resourceKey), resourceChain);
         }
 
         return null;
+    }
+
+    private static object? ResolveDynamicResourceValue(
+        FrameworkElement? element,
+        object? value,
+        HashSet<object> resourceChain)
+    {
+        if (value is not IDynamicResourceReference dynamicReference)
+            return value;
+
+        return FindResourceCore(element, dynamicReference.ResourceKey, resourceChain);
     }
 
     /// <summary>

@@ -46,6 +46,21 @@ typedef enum JaliumBackend {
     JALIUM_BACKEND_SOFTWARE = 99    ///< Software rasterizer (future)
 } JaliumBackend;
 
+/// Host platform identifier for native window/surface handles.
+typedef enum JaliumPlatform {
+    JALIUM_PLATFORM_UNKNOWN = 0,
+    JALIUM_PLATFORM_WINDOWS = 1,
+    JALIUM_PLATFORM_LINUX_X11 = 2,
+    JALIUM_PLATFORM_ANDROID = 3,
+    JALIUM_PLATFORM_MACOS = 4
+} JaliumPlatform;
+
+/// Surface descriptor kind used when creating render targets in a platform-neutral way.
+typedef enum JaliumSurfaceKind {
+    JALIUM_SURFACE_KIND_NATIVE_WINDOW = 1,
+    JALIUM_SURFACE_KIND_COMPOSITION_TARGET = 2
+} JaliumSurfaceKind;
+
 /// Brush types.
 typedef enum JaliumBrushType {
     JALIUM_BRUSH_SOLID = 0,
@@ -156,6 +171,17 @@ typedef struct JaliumTextMetrics {
     uint32_t lineCount;    ///< The number of lines in the layout
 } JaliumTextMetrics;
 
+/// Platform-neutral native surface descriptor.
+/// handle0/1/2 are backend/platform-specific payload slots (for example HWND,
+/// X11 Display + Window, or ANativeWindow pointer).
+typedef struct JaliumSurfaceDescriptor {
+    int32_t platform;
+    int32_t kind;
+    intptr_t handle0;
+    intptr_t handle1;
+    intptr_t handle2;
+} JaliumSurfaceDescriptor;
+
 // ============================================================================
 // Function Pointers
 // ============================================================================
@@ -163,6 +189,10 @@ typedef struct JaliumTextMetrics {
 /// Factory function type for creating rendering backends.
 struct IRenderBackend;
 typedef struct IRenderBackend* (*JaliumBackendFactory)(void);
+
+/// Optional callback used to determine whether a registered backend is
+/// currently runnable on the host platform/runtime.
+typedef int32_t (*JaliumBackendAvailabilityCallback)(void);
 
 #ifdef __cplusplus
 }

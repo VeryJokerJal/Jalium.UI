@@ -6,13 +6,20 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Renders the contained 3-D content within the 2-D layout bounds of this element.
 /// </summary>
-public sealed class Viewport3D : FrameworkElement
+public class Viewport3D : FrameworkElement
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.Viewport3DAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Camera dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty CameraProperty =
         DependencyProperty.Register(nameof(Camera), typeof(Camera), typeof(Viewport3D),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -24,6 +31,7 @@ public sealed class Viewport3D : FrameworkElement
     /// <summary>
     /// Gets or sets the Camera used to view the 3-D content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Camera? Camera
     {
         get => (Camera?)GetValue(CameraProperty);

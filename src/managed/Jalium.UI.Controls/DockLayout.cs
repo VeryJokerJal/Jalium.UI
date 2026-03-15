@@ -9,12 +9,13 @@ namespace Jalium.UI.Controls;
 /// Shows an accent border when dock highlighting is active.
 /// Dock indicator buttons are rendered in a separate topmost window by <see cref="DockManager"/>.
 /// </summary>
-public sealed class DockLayout : ContentControl
+public class DockLayout : ContentControl
 {
     private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(ThemeColors.WindowBackground);
     private static readonly SolidColorBrush s_fallbackBorderBrush = new(ThemeColors.DockTabStripBorder);
     private static readonly SolidColorBrush s_fallbackAccentBrush = new(ThemeColors.Accent);
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanFloatProperty =
         DependencyProperty.Register(nameof(CanFloat), typeof(bool), typeof(DockLayout),
             new PropertyMetadata(true));
@@ -24,6 +25,7 @@ public sealed class DockLayout : ContentControl
     /// <summary>
     /// Controls whether dock items in this layout can be torn off into standalone windows.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanFloat
     {
         get => (bool)(GetValue(CanFloatProperty) ?? true);
@@ -49,6 +51,7 @@ public sealed class DockLayout : ContentControl
 
     public DockLayout()
     {
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         DockManager.Register(this);
         Loaded += (_, _) => DockManager.Register(this);
         Unloaded += (_, _) => DockManager.Unregister(this);

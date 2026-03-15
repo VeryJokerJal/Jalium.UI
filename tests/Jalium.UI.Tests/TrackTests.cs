@@ -2,6 +2,7 @@ using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 
 namespace Jalium.UI.Tests;
 
@@ -111,6 +112,60 @@ public class TrackTests
     }
 
     [Fact]
+    public void Track_ThumbDrag_ShouldUpdateValue_ByDefault()
+    {
+        var thumb = new Thumb();
+        var track = new Track
+        {
+            Orientation = Orientation.Vertical,
+            Minimum = 0,
+            Maximum = 100,
+            Value = 50,
+            Thumb = thumb
+        };
+
+        track.Measure(new Size(12, 120));
+        track.Arrange(new Rect(0, 0, 12, 120));
+
+        var start = GetAbsoluteCenter(thumb);
+        var end = new Point(start.X, start.Y + 12);
+
+        thumb.RaiseEvent(CreateMouseDown(start));
+        thumb.RaiseEvent(CreateMouseMove(end, MouseButtonState.Pressed));
+        thumb.RaiseEvent(CreateMouseUp(end));
+
+        Assert.True(track.Value > 50, $"Value={track.Value}");
+    }
+
+    [Fact]
+    public void Track_ThumbDrag_WhenInternalHandlingDisabled_ShouldNotUpdateValue()
+    {
+        var thumb = new Thumb();
+        var track = new Track
+        {
+            Orientation = Orientation.Vertical,
+            Minimum = 0,
+            Maximum = 100,
+            Value = 50,
+            Thumb = thumb
+        };
+
+        SetTrackHandlesThumbDragInternally(track, false);
+
+        track.Measure(new Size(12, 120));
+        track.Arrange(new Rect(0, 0, 12, 120));
+
+        var start = GetAbsoluteCenter(thumb);
+        var end = new Point(start.X, start.Y + 12);
+
+        thumb.RaiseEvent(CreateMouseDown(start));
+        thumb.RaiseEvent(CreateMouseMove(end, MouseButtonState.Pressed));
+        thumb.RaiseEvent(CreateMouseUp(end));
+
+        Assert.Equal(50.0, track.Value, precision: 3);
+    }
+
+    [Fact]
     public void ScrollBar_ThumbLength_ShouldFollowTrack_WhenThumbStyleSetsFixedHeight()
     {
         var scrollBar = new ScrollBar
@@ -205,5 +260,134 @@ public class TrackTests
 
         Assert.True(expandedWidth > slimWidth, $"Expanded={expandedWidth}, Slim={slimWidth}");
         Assert.InRange(slimWidth, 1.5, 2.5);
+    }
+
+    [Fact]
+    public void ScrollBar_ThumbOvershootAtMaximum_ShouldNotReverseUntilPointerReentersRange()
+    {
+        var scrollBar = new ScrollBar
+        {
+            Orientation = Orientation.Vertical,
+            Minimum = 0,
+            Maximum = 100,
+            ViewportSize = 20,
+            Value = 90
+        };
+
+        scrollBar.Measure(new Size(16, 200));
+        scrollBar.Arrange(new Rect(0, 0, 16, 200));
+
+        var track = Assert.IsType<Track>(scrollBar.GetVisualChild(1));
+        var thumb = Assert.IsType<Thumb>(track.Thumb);
+        var start = GetAbsoluteCenter(thumb);
+
+        var pixelsPerUnit = (track.RenderSize.Height - thumb.RenderSize.Height) / (scrollBar.Maximum - scrollBar.Minimum);
+        var pixelsToMaximum = (scrollBar.Maximum - scrollBar.Value) * pixelsPerUnit;
+        var overshoot = 24.0;
+        var rewind = 10.0;
+
+        var beyondMaximum = new Point(start.X, start.Y + pixelsToMaximum + overshoot);
+        var stillBeyondMaximum = new Point(start.X, beyondMaximum.Y - rewind);
+
+        thumb.RaiseEvent(CreateMouseDown(start));
+        thumb.RaiseEvent(CreateMouseMove(beyondMaximum, MouseButtonState.Pressed));
+
+        Assert.Equal(scrollBar.Maximum, scrollBar.Value, precision: 3);
+        Assert.Equal(scrollBar.Maximum, track.Value, precision: 3);
+
+        thumb.RaiseEvent(CreateMouseMove(stillBeyondMaximum, MouseButtonState.Pressed));
+
+        Assert.Equal(scrollBar.Maximum, scrollBar.Value, precision: 3);
+        Assert.Equal(scrollBar.Maximum, track.Value, precision: 3);
+
+        thumb.RaiseEvent(CreateMouseUp(stillBeyondMaximum));
+    }
+
+    private static Point GetAbsoluteCenter(FrameworkElement element)
+    {
+        var origin = GetAbsoluteOrigin(element);
+        return new Point(origin.X + element.RenderSize.Width / 2, origin.Y + element.RenderSize.Height / 2);
+    }
+
+    private static Point GetAbsoluteOrigin(FrameworkElement element)
+    {
+        double x = 0;
+        double y = 0;
+
+        Visual? current = element;
+        while (current != null)
+        {
+            if (current.VisualParent == null)
+            {
+                break;
+            }
+
+            if (current is FrameworkElement frameworkElement)
+            {
+                x += frameworkElement.VisualBounds.X;
+                y += frameworkElement.VisualBounds.Y;
+            }
+
+            current = current.VisualParent;
+        }
+
+        return new Point(x, y);
+    }
+
+    private static MouseButtonEventArgs CreateMouseDown(Point position)
+    {
+        return new MouseButtonEventArgs(
+            UIElement.MouseDownEvent,
+            position,
+            MouseButton.Left,
+            MouseButtonState.Pressed,
+            clickCount: 1,
+            leftButton: MouseButtonState.Pressed,
+            middleButton: MouseButtonState.Released,
+            rightButton: MouseButtonState.Released,
+            xButton1: MouseButtonState.Released,
+            xButton2: MouseButtonState.Released,
+            modifiers: ModifierKeys.None,
+            timestamp: 0);
+    }
+
+    private static MouseButtonEventArgs CreateMouseUp(Point position)
+    {
+        return new MouseButtonEventArgs(
+            UIElement.MouseUpEvent,
+            position,
+            MouseButton.Left,
+            MouseButtonState.Released,
+            clickCount: 1,
+            leftButton: MouseButtonState.Released,
+            middleButton: MouseButtonState.Released,
+            rightButton: MouseButtonState.Released,
+            xButton1: MouseButtonState.Released,
+            xButton2: MouseButtonState.Released,
+            modifiers: ModifierKeys.None,
+            timestamp: 1);
+    }
+
+    private static MouseEventArgs CreateMouseMove(Point position, MouseButtonState leftButton)
+    {
+        return new MouseEventArgs(
+            UIElement.MouseMoveEvent,
+            position,
+            leftButton,
+            middleButton: MouseButtonState.Released,
+            rightButton: MouseButtonState.Released,
+            xButton1: MouseButtonState.Released,
+            xButton2: MouseButtonState.Released,
+            modifiers: ModifierKeys.None,
+            timestamp: 2);
+    }
+
+    private static void SetTrackHandlesThumbDragInternally(Track track, bool value)
+    {
+        var property = typeof(Track).GetProperty(
+            "HandlesThumbDragInternally",
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(property);
+        property!.SetValue(track, value);
     }
 }

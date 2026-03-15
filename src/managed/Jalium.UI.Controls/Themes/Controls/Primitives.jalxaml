@@ -13,7 +13,7 @@
     <!-- ToolBarOverflowPanel Style -->
     <!-- ============================================== -->
     <Style TargetType="ToolBarOverflowPanel">
-        <Setter Property="Background" Value="{StaticResource SurfaceBackground}" />
+        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
         <Setter Property="WrapWidth" Value="200" />
     </Style>
 
@@ -36,7 +36,7 @@
     <!-- ============================================== -->
     <Style TargetType="StatusBarItem">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="Padding" Value="8,2,8,2" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -46,8 +46,8 @@
     <!-- DocumentPageView Style -->
     <!-- ============================================== -->
     <Style TargetType="DocumentPageView">
-        <Setter Property="Background" Value="{StaticResource WindowBackground}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
     </Style>
 
@@ -56,7 +56,7 @@
     <!-- ============================================== -->
     <Style TargetType="ResizeGrip">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{StaticResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="Width" Value="12" />
         <Setter Property="Height" Value="12" />
     </Style>
@@ -65,8 +65,8 @@
     <!-- Separator Style -->
     <!-- ============================================== -->
     <Style TargetType="Separator">
-        <Setter Property="Background" Value="{StaticResource ControlBorder}" />
-        <Setter Property="StrokeBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="StrokeBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="StrokeThickness" Value="1" />
         <Setter Property="Margin" Value="0,4,0,4" />
         <Setter Property="Template">
@@ -90,29 +90,50 @@
     <!-- Label Style -->
     <!-- ============================================== -->
     <Style TargetType="Label">
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Label">
-                <Border Background="{TemplateBinding Background}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}"
-                        Padding="{TemplateBinding Padding}">
-                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
-                </Border>
+                <Grid>
+                    <Border Name="LabelBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            Padding="{TemplateBinding Padding}">
+                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                    </Border>
+                    <Border Name="FocusOuter"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                            BorderThickness="1"
+                            Opacity="0" />
+                    <Border Name="FocusInner"
+                            IsHitTestVisible="False"
+                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                            BorderThickness="1"
+                            Margin="2"
+                            Opacity="0" />
+                </Grid>
             </ControlTemplate>
         </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
     <!-- ToolTip Style -->
     <!-- ============================================== -->
     <Style TargetType="ToolTip">
-        <Setter Property="Background" Value="{StaticResource TooltipBackground}" />
-        <Setter Property="Foreground" Value="{StaticResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{StaticResource ControlBorder}" />
+        <Setter Property="Background" Value="{DynamicResource TooltipBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />

@@ -1,16 +1,17 @@
-﻿namespace Jalium.UI.Controls;
+namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Positions child elements in sequential position from left to right,
 /// breaking content to the next line at the edge of the containing box.
 /// </summary>
-public sealed class WrapPanel : Panel
+public class WrapPanel : Panel
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(WrapPanel),
             new PropertyMetadata(Orientation.Horizontal, OnOrientationChanged));
@@ -18,6 +19,7 @@ public sealed class WrapPanel : Panel
     /// <summary>
     /// Identifies the ItemWidth dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ItemWidthProperty =
         DependencyProperty.Register(nameof(ItemWidth), typeof(double), typeof(WrapPanel),
             new PropertyMetadata(double.NaN, OnItemSizeChanged));
@@ -25,6 +27,7 @@ public sealed class WrapPanel : Panel
     /// <summary>
     /// Identifies the ItemHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ItemHeightProperty =
         DependencyProperty.Register(nameof(ItemHeight), typeof(double), typeof(WrapPanel),
             new PropertyMetadata(double.NaN, OnItemSizeChanged));
@@ -36,6 +39,7 @@ public sealed class WrapPanel : Panel
     /// <summary>
     /// Gets or sets the orientation of the panel.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -45,6 +49,7 @@ public sealed class WrapPanel : Panel
     /// <summary>
     /// Gets or sets the width of each item. NaN means use natural size.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ItemWidth
     {
         get => (double)GetValue(ItemWidthProperty)!;
@@ -54,6 +59,7 @@ public sealed class WrapPanel : Panel
     /// <summary>
     /// Gets or sets the height of each item. NaN means use natural size.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ItemHeight
     {
         get => (double)GetValue(ItemHeightProperty)!;

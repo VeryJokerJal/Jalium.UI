@@ -3,7 +3,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Arranges ToolBar items and manages overflow.
 /// </summary>
-public sealed class ToolBarPanel : StackPanel
+public class ToolBarPanel : StackPanel
 {
     #region CLR Properties
 

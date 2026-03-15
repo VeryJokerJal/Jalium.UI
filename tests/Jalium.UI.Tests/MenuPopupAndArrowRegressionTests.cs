@@ -54,7 +54,7 @@ public class MenuPopupAndArrowRegressionTests
     }
 
     [Fact]
-    public void MenuFlyoutPresenterPopup_ShouldNotForceRootConstraint()
+    public void MenuFlyoutPresenterPopup_ShouldStayConstrainedToOwnerWindow()
     {
         var flyout = new MenuFlyout();
         flyout.Items.Add(new MenuFlyoutItem { Text = "Open" });
@@ -63,7 +63,7 @@ public class MenuPopupAndArrowRegressionTests
         flyout.ShowAt(anchor);
 
         var popup = GetPrivateField<Popup>(typeof(FlyoutBase), flyout, "_popup");
-        Assert.False(popup.ShouldConstrainToRootBounds);
+        Assert.True(popup.ShouldConstrainToRootBounds);
     }
 
     [Fact]
@@ -100,6 +100,148 @@ public class MenuPopupAndArrowRegressionTests
 
         var popup = GetPrivateField<Popup>(typeof(ContextMenu), contextMenu, "_popup");
         Assert.False(popup.ShouldConstrainToRootBounds);
+    }
+
+    [Fact]
+    public void SwitchingTopLevelMenuBranch_ShouldCloseNestedSubmenusFromPreviousBranch()
+    {
+        var host = new StackPanel { Width = 480, Height = 200 };
+        var menu = new Menu();
+        host.Children.Add(menu);
+
+        var recent = new MenuItem { Header = "Recent" };
+        recent.Items.Add(new MenuItem { Header = "Project A" });
+
+        var file = new MenuItem { Header = "File" };
+        file.Items.Add(recent);
+
+        var edit = new MenuItem { Header = "Edit" };
+        edit.Items.Add(new MenuItem { Header = "Undo" });
+
+        menu.Items.Add(file);
+        menu.Items.Add(edit);
+
+        host.Measure(new Size(480, 200));
+        host.Arrange(new Rect(0, 0, 480, 200));
+
+        file.IsSubmenuOpen = true;
+        recent.IsSubmenuOpen = true;
+
+        var recentPopup = GetPrivateField<Popup>(typeof(MenuItem), recent, "_submenuPopup");
+        Assert.True(recentPopup.IsOpen);
+
+        edit.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, edit));
+
+        var editPopup = GetPrivateField<Popup>(typeof(MenuItem), edit, "_submenuPopup");
+        Assert.False(file.IsSubmenuOpen);
+        Assert.False(recent.IsSubmenuOpen);
+        Assert.False(recentPopup.IsOpen);
+        Assert.True(edit.IsSubmenuOpen);
+        Assert.True(editPopup.IsOpen);
+    }
+
+    [Fact]
+    public void HoveringPlainFlyoutItem_ShouldCloseOpenSiblingSubmenus()
+    {
+        var host = new StackPanel { Width = 320, Height = 200 };
+
+        var addBreakpoint = new MenuFlyoutSubItem { Text = "Add Breakpoint" };
+        addBreakpoint.Items.Add(new MenuFlyoutItem { Text = "Function Breakpoint" });
+
+        var goToDefinition = new MenuFlyoutItem { Text = "Go to Definition" };
+
+        var breakpoints = new MenuFlyoutSubItem { Text = "Breakpoints" };
+        breakpoints.Items.Add(addBreakpoint);
+        breakpoints.Items.Add(goToDefinition);
+
+        host.Children.Add(breakpoints);
+        host.Measure(new Size(320, 200));
+        host.Arrange(new Rect(0, 0, 320, 200));
+
+        breakpoints.ShowSubMenu();
+        addBreakpoint.ShowSubMenu();
+
+        var breakpointsPopup = GetPrivateField<Popup>(typeof(MenuFlyoutSubItem), breakpoints, "_subPopup");
+        var addBreakpointPopup = GetPrivateField<Popup>(typeof(MenuFlyoutSubItem), addBreakpoint, "_subPopup");
+        Assert.True(breakpointsPopup.IsOpen);
+        Assert.True(addBreakpointPopup.IsOpen);
+
+        goToDefinition.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, goToDefinition));
+
+        Assert.True(breakpointsPopup.IsOpen);
+        Assert.False(addBreakpointPopup.IsOpen);
+    }
+
+    [Fact]
+    public void SwitchingFlyoutBranch_ShouldCloseNestedSubmenusFromPreviousBranch()
+    {
+        var host = new StackPanel { Width = 320, Height = 200 };
+
+        var addBreakpoint = new MenuFlyoutSubItem { Text = "Add Breakpoint" };
+        addBreakpoint.Items.Add(new MenuFlyoutItem { Text = "Function Breakpoint" });
+
+        var breakpoints = new MenuFlyoutSubItem { Text = "Breakpoints" };
+        breakpoints.Items.Add(addBreakpoint);
+
+        var refactor = new MenuFlyoutSubItem { Text = "Refactor" };
+        refactor.Items.Add(new MenuFlyoutItem { Text = "Rename" });
+
+        host.Children.Add(breakpoints);
+        host.Children.Add(refactor);
+        host.Measure(new Size(320, 200));
+        host.Arrange(new Rect(0, 0, 320, 200));
+
+        breakpoints.ShowSubMenu();
+        addBreakpoint.ShowSubMenu();
+
+        var breakpointsPopup = GetPrivateField<Popup>(typeof(MenuFlyoutSubItem), breakpoints, "_subPopup");
+        var addBreakpointPopup = GetPrivateField<Popup>(typeof(MenuFlyoutSubItem), addBreakpoint, "_subPopup");
+        Assert.True(breakpointsPopup.IsOpen);
+        Assert.True(addBreakpointPopup.IsOpen);
+
+        refactor.ShowSubMenu();
+
+        var refactorPopup = GetPrivateField<Popup>(typeof(MenuFlyoutSubItem), refactor, "_subPopup");
+        Assert.False(breakpointsPopup.IsOpen);
+        Assert.False(addBreakpointPopup.IsOpen);
+        Assert.True(refactorPopup.IsOpen);
+    }
+
+    [Fact]
+    public void NestedPopupTargetInsidePopupWindow_ShouldResolveBoundsInOwnerWindowSpace()
+    {
+        var ownerWindow = new Window();
+        var target = new MenuFlyoutSubItem();
+        target.SetVisualBounds(new Rect(20, 30, 80, 24));
+
+        var panel = new StackPanel();
+        panel.SetVisualBounds(new Rect(6, 8, 140, 60));
+        panel.Children.Add(target);
+
+        var popupBorder = new Border { Child = panel };
+        popupBorder.SetVisualBounds(new Rect(4, 5, 160, 80));
+
+        var hostPopup = new Popup();
+        var popupRoot = new PopupRoot(hostPopup, popupBorder, isLightDismiss: true);
+        popupRoot.SetVisualBounds(new Rect(0, 0, 160, 80));
+
+        var popupWindow = new PopupWindow(ownerWindow, popupRoot);
+        popupWindow.SetVisualBounds(new Rect(0, 0, 160, 80));
+        SetPrivateField(popupWindow, "_screenX", 100);
+        SetPrivateField(popupWindow, "_screenY", 50);
+        SetPrivateField(popupWindow, "_width", 160);
+        SetPrivateField(popupWindow, "_height", 80);
+
+        var nestedPopup = new Popup { PlacementTarget = target };
+        var method = typeof(Popup).GetMethod("GetElementWindowBounds", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+
+        var bounds = Assert.IsType<Rect>(method!.Invoke(nestedPopup, new object[] { target }));
+
+        Assert.Equal(130, bounds.X);
+        Assert.Equal(93, bounds.Y);
+        Assert.Equal(80, bounds.Width);
+        Assert.Equal(24, bounds.Height);
     }
 
     private static Control CreateOverflowingMenuPopupHost(out Type hostType)
@@ -148,6 +290,13 @@ public class MenuPopupAndArrowRegressionTests
         var value = field!.GetValue(owner);
         Assert.NotNull(value);
         return (T)value!;
+    }
+
+    private static void SetPrivateField(object owner, string fieldName, object value)
+    {
+        var field = owner.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(owner, value);
     }
 
     private sealed class RecordingDrawingContext : DrawingContext

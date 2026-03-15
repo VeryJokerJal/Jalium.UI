@@ -18,11 +18,20 @@ public:
     }
 
     JaliumResult Register(JaliumBackend backend, JaliumBackendFactory factory) {
+        return Register(backend, factory, nullptr);
+    }
+
+    JaliumResult Register(
+        JaliumBackend backend,
+        JaliumBackendFactory factory,
+        JaliumBackendAvailabilityCallback availability)
+    {
         // Use simple array-based storage with atomic writes to avoid mutex in DllMain context
         // This is safe because we only have a small fixed number of backend types
         int index = static_cast<int>(backend);
         if (index >= 0 && index < MAX_BACKENDS) {
             factories_[index].store(factory, std::memory_order_release);
+            availability_[index].store(availability, std::memory_order_release);
             return JALIUM_OK;
         }
         return JALIUM_ERROR_INVALID_ARGUMENT;
@@ -36,14 +45,29 @@ public:
         return nullptr;
     }
 
+    JaliumBackendAvailabilityCallback GetAvailability(JaliumBackend backend) {
+        int index = static_cast<int>(backend);
+        if (index >= 0 && index < MAX_BACKENDS) {
+            return availability_[index].load(std::memory_order_acquire);
+        }
+        return nullptr;
+    }
+
     bool IsAvailable(JaliumBackend backend) {
-        return GetFactory(backend) != nullptr;
+        auto factory = GetFactory(backend);
+        if (!factory) {
+            return false;
+        }
+
+        auto availability = GetAvailability(backend);
+        return availability == nullptr || availability() != 0;
     }
 
 private:
     BackendRegistry() {
         for (int i = 0; i < MAX_BACKENDS; ++i) {
             factories_[i].store(nullptr, std::memory_order_relaxed);
+            availability_[i].store(nullptr, std::memory_order_relaxed);
         }
     }
     ~BackendRegistry() = default;
@@ -52,6 +76,7 @@ private:
 
     static constexpr int MAX_BACKENDS = 16;
     std::atomic<JaliumBackendFactory> factories_[MAX_BACKENDS];
+    std::atomic<JaliumBackendAvailabilityCallback> availability_[MAX_BACKENDS];
 };
 
 inline BackendRegistry& GetBackendRegistry() {

@@ -74,14 +74,21 @@ public sealed class InputLanguageManager
     private static readonly InputLanguageManager _current = new();
     public static InputLanguageManager Current => _current;
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty InputLanguageProperty =
         DependencyProperty.RegisterAttached("InputLanguage", typeof(System.Globalization.CultureInfo), typeof(InputLanguageManager), new PropertyMetadata(null));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty RestoreInputLanguageProperty =
         DependencyProperty.RegisterAttached("RestoreInputLanguage", typeof(bool), typeof(InputLanguageManager), new PropertyMetadata(false));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static System.Globalization.CultureInfo? GetInputLanguage(DependencyObject element) => (System.Globalization.CultureInfo?)element.GetValue(InputLanguageProperty);
     public static void SetInputLanguage(DependencyObject element, System.Globalization.CultureInfo? value) => element.SetValue(InputLanguageProperty, value);
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
+    public static bool GetRestoreInputLanguage(DependencyObject element) => (bool)(element.GetValue(RestoreInputLanguageProperty) ?? false);
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
+    public static void SetRestoreInputLanguage(DependencyObject element, bool value) => element.SetValue(RestoreInputLanguageProperty, value);
 
     public System.Globalization.CultureInfo? CurrentInputLanguage { get; set; }
     public IEnumerable<System.Globalization.CultureInfo> AvailableInputLanguages => Array.Empty<System.Globalization.CultureInfo>();

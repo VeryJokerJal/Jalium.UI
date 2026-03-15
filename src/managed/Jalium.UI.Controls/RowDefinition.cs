@@ -1,15 +1,16 @@
-﻿using Jalium.UI;
+using Jalium.UI;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Defines row-specific properties that apply to Grid elements.
 /// </summary>
-public sealed class RowDefinition : DependencyObject
+public sealed class RowDefinition : DefinitionBase
 {
     /// <summary>
     /// Identifies the Height dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty HeightProperty =
         DependencyProperty.Register(nameof(Height), typeof(GridLength), typeof(RowDefinition),
             new PropertyMetadata(new GridLength(1.0, GridUnitType.Star)));
@@ -17,6 +18,7 @@ public sealed class RowDefinition : DependencyObject
     /// <summary>
     /// Identifies the MinHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinHeightProperty =
         DependencyProperty.Register(nameof(MinHeight), typeof(double), typeof(RowDefinition),
             new PropertyMetadata(0.0));
@@ -24,6 +26,7 @@ public sealed class RowDefinition : DependencyObject
     /// <summary>
     /// Identifies the MaxHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxHeightProperty =
         DependencyProperty.Register(nameof(MaxHeight), typeof(double), typeof(RowDefinition),
             new PropertyMetadata(double.PositiveInfinity));
@@ -31,6 +34,7 @@ public sealed class RowDefinition : DependencyObject
     /// <summary>
     /// Gets or sets the height of the row.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public GridLength Height
     {
         get => (GridLength)GetValue(HeightProperty)!;
@@ -40,6 +44,7 @@ public sealed class RowDefinition : DependencyObject
     /// <summary>
     /// Gets or sets the minimum height of the row.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinHeight
     {
         get => (double)GetValue(MinHeightProperty)!;
@@ -49,6 +54,7 @@ public sealed class RowDefinition : DependencyObject
     /// <summary>
     /// Gets or sets the maximum height of the row.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxHeight
     {
         get => (double)GetValue(MaxHeightProperty)!;
@@ -69,11 +75,12 @@ public sealed class RowDefinition : DependencyObject
 /// <summary>
 /// Defines column-specific properties that apply to Grid elements.
 /// </summary>
-public sealed class ColumnDefinition : DependencyObject
+public sealed class ColumnDefinition : DefinitionBase
 {
     /// <summary>
     /// Identifies the Width dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty WidthProperty =
         DependencyProperty.Register(nameof(Width), typeof(GridLength), typeof(ColumnDefinition),
             new PropertyMetadata(new GridLength(1.0, GridUnitType.Star)));
@@ -81,6 +88,7 @@ public sealed class ColumnDefinition : DependencyObject
     /// <summary>
     /// Identifies the MinWidth dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinWidthProperty =
         DependencyProperty.Register(nameof(MinWidth), typeof(double), typeof(ColumnDefinition),
             new PropertyMetadata(0.0));
@@ -88,6 +96,7 @@ public sealed class ColumnDefinition : DependencyObject
     /// <summary>
     /// Identifies the MaxWidth dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxWidthProperty =
         DependencyProperty.Register(nameof(MaxWidth), typeof(double), typeof(ColumnDefinition),
             new PropertyMetadata(double.PositiveInfinity));
@@ -95,6 +104,7 @@ public sealed class ColumnDefinition : DependencyObject
     /// <summary>
     /// Gets or sets the width of the column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public GridLength Width
     {
         get => (GridLength)GetValue(WidthProperty)!;
@@ -104,6 +114,7 @@ public sealed class ColumnDefinition : DependencyObject
     /// <summary>
     /// Gets or sets the minimum width of the column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinWidth
     {
         get => (double)GetValue(MinWidthProperty)!;
@@ -113,6 +124,7 @@ public sealed class ColumnDefinition : DependencyObject
     /// <summary>
     /// Gets or sets the maximum width of the column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxWidth
     {
         get => (double)GetValue(MaxWidthProperty)!;

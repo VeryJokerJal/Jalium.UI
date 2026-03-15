@@ -79,7 +79,7 @@ public class RenderFailurePropagationTests
         return new RenderTarget(
             backend: RenderBackend.D3D12,
             contextHandle: new nint(0x1234),
-            hwnd: hwnd,
+            surface: NativeSurfaceDescriptor.ForWindowsHwnd(hwnd),
             width: width,
             height: height,
             useComposition: false,

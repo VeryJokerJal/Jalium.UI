@@ -1,39 +1,49 @@
-﻿using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
-using Jalium.UI.Media.Animation;
-using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a control that allows the user to select a time.
 /// </summary>
-public sealed class TimePicker : Control
+public class TimePicker : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TimePickerAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedTimeProperty =
         DependencyProperty.Register(nameof(SelectedTime), typeof(TimeSpan?), typeof(TimePicker),
             new PropertyMetadata(null, OnSelectedTimeChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ClockIdentifierProperty =
         DependencyProperty.Register(nameof(ClockIdentifier), typeof(string), typeof(TimePicker),
             new PropertyMetadata("12HourClock", OnClockIdentifierChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinuteIncrementProperty =
         DependencyProperty.Register(nameof(MinuteIncrement), typeof(int), typeof(TimePicker),
             new PropertyMetadata(1));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(TimePicker),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(TimePicker),
             new PropertyMetadata("Select a time", OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(TimePicker),
             new PropertyMetadata(false, OnIsDropDownOpenChanged));
@@ -56,36 +66,42 @@ public sealed class TimePicker : Control
 
     #region CLR Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public TimeSpan? SelectedTime
     {
         get => (TimeSpan?)GetValue(SelectedTimeProperty);
         set => SetValue(SelectedTimeProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string ClockIdentifier
     {
         get => (string)(GetValue(ClockIdentifierProperty) ?? "12HourClock");
         set => SetValue(ClockIdentifierProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int MinuteIncrement
     {
         get => (int)GetValue(MinuteIncrementProperty)!;
         set => SetValue(MinuteIncrementProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
         set => SetValue(HeaderProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? PlaceholderText
     {
         get => (string?)GetValue(PlaceholderTextProperty);
         set => SetValue(PlaceholderTextProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDropDownOpen
     {
         get => (bool)GetValue(IsDropDownOpenProperty)!;
@@ -106,7 +122,6 @@ public sealed class TimePicker : Control
     private StackPanel? _hourColumn;
     private StackPanel? _minuteColumn;
     private StackPanel? _periodColumn;
-    private DispatcherTimer? _animationTimer;
     private bool _isCloseAnimating;
     private bool _isOpen;
 
@@ -115,13 +130,9 @@ public sealed class TimePicker : Control
     private int _pendingMinute;
     private int _pendingPeriodIndex; // 0=AM, 1=PM
 
-    private const double OpenDurationMs = 250;
-    private const double CloseDurationMs = 180;
     private const double ColumnWidth = 70;
     private const double ItemHeight = 40;
     private const double FlyoutMaxHeight = 260;
-    private static readonly CubicEase OpenEase = new() { EasingMode = EasingMode.EaseOut };
-    private static readonly CubicEase CloseEase = new() { EasingMode = EasingMode.EaseIn };
 
     // Highlight colors
     private static readonly SolidColorBrush SelectedItemBg = new(Color.FromRgb(0, 120, 212));
@@ -140,6 +151,7 @@ public sealed class TimePicker : Control
     public TimePicker()
     {
         Focusable = true;
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
@@ -381,11 +393,7 @@ public sealed class TimePicker : Control
     {
         if (_isOpen) return;
 
-        if (_isCloseAnimating)
-        {
-            _animationTimer?.Stop();
-            _isCloseAnimating = false;
-        }
+        _isCloseAnimating = false;
 
         // Rebuild popup if clock format changed
         if (_popup != null)
@@ -455,8 +463,12 @@ public sealed class TimePicker : Control
     {
         if (_isCloseAnimating) return;
 
-        _animationTimer?.Stop();
         _isOpen = false;
+        if (_flyoutBorder != null)
+        {
+            _flyoutBorder.Opacity = 1;
+            _flyoutBorder.RenderOffset = default;
+        }
         SetValue(IsDropDownOpenProperty, false);
     }
 
@@ -466,82 +478,28 @@ public sealed class TimePicker : Control
 
     private void AnimateOpen()
     {
-        _animationTimer?.Stop();
-
         if (_flyoutBorder != null)
         {
-            _flyoutBorder.Opacity = 0;
-            _flyoutBorder.RenderOffset = new Point(0, -8);
+            _flyoutBorder.Opacity = 1;
+            _flyoutBorder.RenderOffset = default;
         }
-
-        var startTime = Environment.TickCount64;
-
-        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        _animationTimer.Tick += (s, e) =>
-        {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = Math.Min(1.0, elapsed / OpenDurationMs);
-            var eased = OpenEase.Ease(progress);
-
-            if (_flyoutBorder != null)
-            {
-                _flyoutBorder.Opacity = eased;
-                _flyoutBorder.RenderOffset = new Point(0, -8 * (1.0 - eased));
-            }
-
-            if (progress >= 1.0)
-            {
-                _animationTimer!.Stop();
-                if (_flyoutBorder != null)
-                {
-                    _flyoutBorder.Opacity = 1;
-                    _flyoutBorder.RenderOffset = default;
-                }
-            }
-        };
-        _animationTimer.Start();
     }
 
     private void AnimateClose()
     {
-        _animationTimer?.Stop();
-
-        var startOpacity = _flyoutBorder?.Opacity ?? 1.0;
-        var startOffsetY = _flyoutBorder?.RenderOffset.Y ?? 0;
-        var startTime = Environment.TickCount64;
-
         _isCloseAnimating = true;
-
-        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        _animationTimer.Tick += (s, e) =>
+        if (_popup != null)
         {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = Math.Min(1.0, elapsed / CloseDurationMs);
-            var eased = CloseEase.Ease(progress);
+            _popup.IsOpen = false;
+        }
 
-            if (_flyoutBorder != null)
-            {
-                _flyoutBorder.Opacity = startOpacity * (1.0 - eased);
-                _flyoutBorder.RenderOffset = new Point(0, startOffsetY + (-8 - startOffsetY) * eased);
-            }
+        if (_flyoutBorder != null)
+        {
+            _flyoutBorder.Opacity = 1;
+            _flyoutBorder.RenderOffset = default;
+        }
 
-            if (progress >= 1.0)
-            {
-                _animationTimer!.Stop();
-
-                if (_popup != null)
-                    _popup.IsOpen = false;
-
-                _isCloseAnimating = false;
-
-                if (_flyoutBorder != null)
-                {
-                    _flyoutBorder.Opacity = 1;
-                    _flyoutBorder.RenderOffset = default;
-                }
-            }
-        };
-        _animationTimer.Start();
+        _isCloseAnimating = false;
     }
 
     #endregion
@@ -669,19 +627,27 @@ public sealed class TimePicker : Control
         }
 
         var inputRect = new Rect(0, headerHeight, rect.Width, rect.Height - headerHeight);
+        var strokeThickness = BorderThickness.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background
         if (Background != null)
         {
-            dc.DrawRoundedRectangle(Background, null, inputRect, cornerRadius);
+            dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
         }
 
         // Draw border
-        var borderBrush = IsFocused ? ResolveFocusedBorderBrush() : BorderBrush;
+        var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
-            var pen = new Pen(borderBrush, BorderThickness.Left);
-            dc.DrawRoundedRectangle(null, pen, inputRect, cornerRadius);
+            var pen = new Pen(borderBrush, strokeThickness);
+            dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
+        }
+
+        if (IsKeyboardFocused)
+        {
+            ControlFocusVisual.Draw(dc, this, inputRect, cornerRadius);
         }
 
         // Draw time text or placeholder

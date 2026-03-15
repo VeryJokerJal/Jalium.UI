@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
 
@@ -16,6 +16,7 @@ public sealed class FixedDocument : FrameworkContentElement, IDocumentPaginatorS
     /// <summary>
     /// Identifies the PrintTicket dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PrintTicketProperty =
         DependencyProperty.Register(nameof(PrintTicket), typeof(object), typeof(FixedDocument),
             new PropertyMetadata(null));
@@ -28,6 +29,7 @@ public sealed class FixedDocument : FrameworkContentElement, IDocumentPaginatorS
     /// <summary>
     /// Gets or sets the print ticket.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? PrintTicket
     {
         get => GetValue(PrintTicketProperty);
@@ -88,7 +90,7 @@ public sealed class PageContentCollection : Collection<PageContent>
 /// <summary>
 /// Provides information about a page that is part of a FixedDocument.
 /// </summary>
-public sealed class PageContent : FrameworkElement
+public class PageContent : FrameworkElement
 {
     private FixedPage? _child;
     private Uri? _source;
@@ -96,6 +98,7 @@ public sealed class PageContent : FrameworkElement
     /// <summary>
     /// Identifies the Source dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(PageContent),
             new PropertyMetadata(null, OnSourceChanged));
@@ -103,6 +106,7 @@ public sealed class PageContent : FrameworkElement
     /// <summary>
     /// Gets or sets the URI of the FixedPage markup.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? Source
     {
         get => (Uri?)GetValue(SourceProperty);
@@ -148,13 +152,14 @@ public sealed class PageContent : FrameworkElement
 /// <summary>
 /// Provides the content for a high fidelity, fixed-format page.
 /// </summary>
-public sealed class FixedPage : FrameworkElement
+public class FixedPage : FrameworkElement
 {
     private readonly List<UIElement> _children = new();
 
     /// <summary>
     /// Identifies the PrintTicket dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PrintTicketProperty =
         DependencyProperty.Register(nameof(PrintTicket), typeof(object), typeof(FixedPage),
             new PropertyMetadata(null));
@@ -162,6 +167,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(FixedPage),
             new PropertyMetadata(null));
@@ -169,6 +175,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Identifies the ContentBox dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ContentBoxProperty =
         DependencyProperty.Register(nameof(ContentBox), typeof(Rect), typeof(FixedPage),
             new PropertyMetadata(Rect.Empty));
@@ -176,6 +183,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Identifies the BleedBox dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BleedBoxProperty =
         DependencyProperty.Register(nameof(BleedBox), typeof(Rect), typeof(FixedPage),
             new PropertyMetadata(Rect.Empty));
@@ -183,6 +191,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Identifies the Left attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty LeftProperty =
         DependencyProperty.RegisterAttached("Left", typeof(double), typeof(FixedPage),
             new PropertyMetadata(0.0));
@@ -190,6 +199,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Identifies the Top attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty TopProperty =
         DependencyProperty.RegisterAttached("Top", typeof(double), typeof(FixedPage),
             new PropertyMetadata(0.0));
@@ -197,6 +207,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Identifies the Right attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RightProperty =
         DependencyProperty.RegisterAttached("Right", typeof(double), typeof(FixedPage),
             new PropertyMetadata(double.NaN));
@@ -204,6 +215,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Identifies the Bottom attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BottomProperty =
         DependencyProperty.RegisterAttached("Bottom", typeof(double), typeof(FixedPage),
             new PropertyMetadata(double.NaN));
@@ -216,6 +228,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Gets or sets the print ticket.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? PrintTicket
     {
         get => GetValue(PrintTicketProperty);
@@ -225,6 +238,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Gets or sets the background brush.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -234,6 +248,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Gets or sets the content box.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Rect ContentBox
     {
         get => (Rect)GetValue(ContentBoxProperty)!;
@@ -243,6 +258,7 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Gets or sets the bleed box.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Rect BleedBox
     {
         get => (Rect)GetValue(BleedBoxProperty)!;
@@ -252,41 +268,49 @@ public sealed class FixedPage : FrameworkElement
     /// <summary>
     /// Gets the Left attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetLeft(UIElement element) => (double)(element.GetValue(LeftProperty) ?? 0.0);
 
     /// <summary>
     /// Sets the Left attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetLeft(UIElement element, double value) => element.SetValue(LeftProperty, value);
 
     /// <summary>
     /// Gets the Top attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetTop(UIElement element) => (double)(element.GetValue(TopProperty) ?? 0.0);
 
     /// <summary>
     /// Sets the Top attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetTop(UIElement element, double value) => element.SetValue(TopProperty, value);
 
     /// <summary>
     /// Gets the Right attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetRight(UIElement element) => (double)(element.GetValue(RightProperty) ?? double.NaN);
 
     /// <summary>
     /// Sets the Right attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetRight(UIElement element, double value) => element.SetValue(RightProperty, value);
 
     /// <summary>
     /// Gets the Bottom attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static double GetBottom(UIElement element) => (double)(element.GetValue(BottomProperty) ?? double.NaN);
 
     /// <summary>
     /// Sets the Bottom attached property value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetBottom(UIElement element, double value) => element.SetValue(BottomProperty, value);
 }
 
@@ -301,6 +325,7 @@ public sealed class FixedDocumentSequence : FrameworkContentElement, IDocumentPa
     /// <summary>
     /// Identifies the PrintTicket dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PrintTicketProperty =
         DependencyProperty.Register(nameof(PrintTicket), typeof(object), typeof(FixedDocumentSequence),
             new PropertyMetadata(null));
@@ -313,6 +338,7 @@ public sealed class FixedDocumentSequence : FrameworkContentElement, IDocumentPa
     /// <summary>
     /// Gets or sets the print ticket.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public object? PrintTicket
     {
         get => GetValue(PrintTicketProperty);
@@ -343,13 +369,14 @@ public sealed class DocumentReferenceCollection : Collection<DocumentReference>
 /// <summary>
 /// References a FixedDocument that is part of a FixedDocumentSequence.
 /// </summary>
-public sealed class DocumentReference : FrameworkElement
+public class DocumentReference : FrameworkElement
 {
     private FixedDocument? _document;
 
     /// <summary>
     /// Identifies the Source dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(DocumentReference),
             new PropertyMetadata(null));
@@ -357,6 +384,7 @@ public sealed class DocumentReference : FrameworkElement
     /// <summary>
     /// Gets or sets the URI of the referenced FixedDocument.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? Source
     {
         get => (Uri?)GetValue(SourceProperty);
@@ -418,6 +446,7 @@ public abstract class DocumentPaginator
     /// <summary>
     /// Gets the source document.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public abstract IDocumentPaginatorSource Source { get; }
 
     /// <summary>
@@ -520,11 +549,13 @@ public sealed class DocumentPage
     /// <summary>
     /// Gets the bleed box of the page.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Rect BleedBox { get; }
 
     /// <summary>
     /// Gets the content box of the page.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Rect ContentBox { get; }
 
     /// <summary>
@@ -650,6 +681,7 @@ internal sealed class FixedDocumentPaginator : DocumentPaginator
         set => _pageSize = value;
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public override IDocumentPaginatorSource Source => _document;
 
     public override DocumentPage GetPage(int pageNumber)
@@ -705,6 +737,7 @@ internal sealed class FixedDocumentSequencePaginator : DocumentPaginator
         set => _pageSize = value;
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public override IDocumentPaginatorSource Source => _sequence;
 
     public override DocumentPage GetPage(int pageNumber)

@@ -1,0 +1,5 @@
+<ResourceDictionary x:Class="Jalium.UI.Tests.Resources.TestCodeBehindDictionary"
+                    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+                    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+    <SolidColorBrush x:Key="CodeBehindAccentBrush" Color="#FF5A7BEF" />
+</ResourceDictionary>

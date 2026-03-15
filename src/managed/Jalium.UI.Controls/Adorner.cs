@@ -55,7 +55,7 @@ public abstract class Adorner : FrameworkElement
 /// <summary>
 /// Represents a surface for rendering adorners.
 /// </summary>
-public sealed class AdornerLayer : FrameworkElement
+public class AdornerLayer : FrameworkElement
 {
     private readonly List<AdornerInfo> _adorners = new();
 
@@ -168,7 +168,7 @@ public sealed class AdornerLayer : FrameworkElement
 /// Provides an adorner layer for child elements.
 /// </summary>
 [ContentProperty("Child")]
-public sealed class AdornerDecorator : FrameworkElement
+public class AdornerDecorator : FrameworkElement
 {
     private UIElement? _child;
 

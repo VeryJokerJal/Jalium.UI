@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// <summary>
 /// Represents a column header in a DataGrid.
 /// </summary>
-public sealed class DataGridColumnHeader : ButtonBase
+public class DataGridColumnHeader : ButtonBase
 {
     #region Static Brushes & Pens
 
@@ -26,6 +26,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the SortDirection dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty SortDirectionProperty =
         DependencyProperty.Register(nameof(SortDirection), typeof(ListSortDirection?), typeof(DataGridColumnHeader),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -33,6 +34,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the CanUserSort dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanUserSortProperty =
         DependencyProperty.Register(nameof(CanUserSort), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(true));
@@ -40,6 +42,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the CanUserResize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanUserResizeProperty =
         DependencyProperty.Register(nameof(CanUserResize), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(true));
@@ -47,6 +50,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the CanUserReorder dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanUserReorderProperty =
         DependencyProperty.Register(nameof(CanUserReorder), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(true));
@@ -54,6 +58,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the DisplayIndex dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DisplayIndexProperty =
         DependencyProperty.Register(nameof(DisplayIndex), typeof(int), typeof(DataGridColumnHeader),
             new PropertyMetadata(-1));
@@ -61,6 +66,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the IsFrozen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsFrozenProperty =
         DependencyProperty.Register(nameof(IsFrozen), typeof(bool), typeof(DataGridColumnHeader),
             new PropertyMetadata(false));
@@ -68,6 +74,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the SeparatorBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SeparatorBrushProperty =
         DependencyProperty.Register(nameof(SeparatorBrush), typeof(Brush), typeof(DataGridColumnHeader),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -75,6 +82,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Identifies the SeparatorVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SeparatorVisibilityProperty =
         DependencyProperty.Register(nameof(SeparatorVisibility), typeof(Visibility), typeof(DataGridColumnHeader),
             new PropertyMetadata(Visibility.Visible, OnVisualPropertyChanged));
@@ -86,6 +94,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets the sort direction for this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public ListSortDirection? SortDirection
     {
         get => (ListSortDirection?)GetValue(SortDirectionProperty);
@@ -95,6 +104,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether the user can sort by this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanUserSort
     {
         get => (bool)GetValue(CanUserSortProperty)!;
@@ -104,6 +114,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether the user can resize this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanUserResize
     {
         get => (bool)GetValue(CanUserResizeProperty)!;
@@ -113,6 +124,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether the user can reorder this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanUserReorder
     {
         get => (bool)GetValue(CanUserReorderProperty)!;
@@ -122,6 +134,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets the display index of this column.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int DisplayIndex
     {
         get => (int)GetValue(DisplayIndexProperty)!;
@@ -131,6 +144,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets a value indicating whether this column is frozen.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsFrozen
     {
         get => (bool)GetValue(IsFrozenProperty)!;
@@ -140,6 +154,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets the brush used for the separator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SeparatorBrush
     {
         get => (Brush?)GetValue(SeparatorBrushProperty);
@@ -149,6 +164,7 @@ public sealed class DataGridColumnHeader : ButtonBase
     /// <summary>
     /// Gets or sets the visibility of the separator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Visibility SeparatorVisibility
     {
         get => (Visibility)GetValue(SeparatorVisibilityProperty)!;
@@ -258,6 +274,56 @@ public sealed class DataGridColumnHeader : ButtonBase
 
     #region Rendering
 
+    private Brush ResolvePressedBackgroundBrush()
+    {
+        return ResolveThemeBrush("ControlBackgroundPressed", s_pressedBgBrush, "HighlightBackground");
+    }
+
+    private Brush ResolveDefaultBackgroundBrush()
+    {
+        return Background
+            ?? ResolveThemeBrush("ControlBackground", s_defaultBgBrush, "SurfaceBackground");
+    }
+
+    private Brush ResolveForegroundBrush()
+    {
+        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
+        {
+            return Foreground;
+        }
+
+        return ResolveThemeBrush("TextPrimary", s_defaultFgBrush, "TextFillColorPrimaryBrush");
+    }
+
+    private Brush ResolveSeparatorBrush()
+    {
+        return SeparatorBrush
+            ?? BorderBrush
+            ?? ResolveThemeBrush("ControlBorder", s_defaultSeparatorBrush, "DividerStrokeColorDefaultBrush");
+    }
+
+    private Pen ResolveBottomBorderPen()
+    {
+        var borderBrush = BorderBrush
+            ?? ResolveThemeBrush("ControlBorder", s_borderBrush, "DividerStrokeColorDefaultBrush");
+        return new Pen(borderBrush, 1);
+    }
+
+    private Brush ResolveThemeBrush(string resourceKey, Brush fallback, string? secondaryResourceKey = null)
+    {
+        if (TryFindResource(resourceKey) is Brush brush)
+        {
+            return brush;
+        }
+
+        if (secondaryResourceKey != null && TryFindResource(secondaryResourceKey) is Brush secondaryBrush)
+        {
+            return secondaryBrush;
+        }
+
+        return fallback;
+    }
+
     /// <inheritdoc />
     protected override void OnRender(object drawingContext)
     {
@@ -269,14 +335,14 @@ public sealed class DataGridColumnHeader : ButtonBase
 
         // Draw background
         var bgBrush = IsPressed
-            ? s_pressedBgBrush
-            : (Background ?? s_defaultBgBrush);
+            ? ResolvePressedBackgroundBrush()
+            : ResolveDefaultBackgroundBrush();
         dc.DrawRectangle(bgBrush, null, rect);
 
         // Draw content
         if (Content is string text)
         {
-            var fgBrush = Foreground ?? s_defaultFgBrush;
+            var fgBrush = ResolveForegroundBrush();
             var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 12)
             {
                 Foreground = fgBrush
@@ -297,13 +363,13 @@ public sealed class DataGridColumnHeader : ButtonBase
         // Draw separator
         if (SeparatorVisibility == Visibility.Visible)
         {
-            var separatorBrush = SeparatorBrush ?? s_defaultSeparatorBrush;
+            var separatorBrush = ResolveSeparatorBrush();
             var separatorPen = new Pen(separatorBrush, 1);
             dc.DrawLine(separatorPen, new Point(rect.Width - 1, 0), new Point(rect.Width - 1, rect.Height));
         }
 
         // Draw bottom border
-        dc.DrawLine(s_borderPen, new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
+        dc.DrawLine(ResolveBottomBorderPen(), new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
     }
 
     private void DrawSortIndicator(DrawingContext dc, Rect rect, double offsetX, Brush brush)

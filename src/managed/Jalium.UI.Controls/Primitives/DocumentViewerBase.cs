@@ -1,4 +1,4 @@
-﻿namespace Jalium.UI.Controls.Primitives;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Provides an abstract base class for document viewing controls.
@@ -10,6 +10,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Identifies the Document dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DocumentProperty =
         DependencyProperty.Register(nameof(Document), typeof(IDocumentPaginatorSource), typeof(DocumentViewerBase),
             new PropertyMetadata(null, OnDocumentChanged));
@@ -17,6 +18,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Identifies the Zoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomProperty =
         DependencyProperty.Register(nameof(Zoom), typeof(double), typeof(DocumentViewerBase),
             new PropertyMetadata(100.0, OnZoomChanged, CoerceZoom));
@@ -24,6 +26,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Identifies the MinZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinZoomProperty =
         DependencyProperty.Register(nameof(MinZoom), typeof(double), typeof(DocumentViewerBase),
             new PropertyMetadata(5.0));
@@ -31,6 +34,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Identifies the MaxZoom dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxZoomProperty =
         DependencyProperty.Register(nameof(MaxZoom), typeof(double), typeof(DocumentViewerBase),
             new PropertyMetadata(5000.0));
@@ -38,6 +42,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Identifies the ZoomIncrement dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ZoomIncrementProperty =
         DependencyProperty.Register(nameof(ZoomIncrement), typeof(double), typeof(DocumentViewerBase),
             new PropertyMetadata(10.0));
@@ -52,6 +57,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Identifies the CanGoToNextPage dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanGoToNextPageProperty = CanGoToNextPagePropertyKey.DependencyProperty;
 
     /// <summary>
@@ -64,6 +70,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Identifies the CanGoToPreviousPage dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanGoToPreviousPageProperty = CanGoToPreviousPagePropertyKey.DependencyProperty;
 
     /// <summary>
@@ -76,11 +83,13 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Identifies the PageCount dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty PageCountProperty = PageCountPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the MasterPageNumber dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty MasterPageNumberProperty =
         DependencyProperty.Register(nameof(MasterPageNumber), typeof(int), typeof(DocumentViewerBase),
             new PropertyMetadata(0, OnMasterPageNumberChanged));
@@ -92,6 +101,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Gets or sets the document to display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public IDocumentPaginatorSource? Document
     {
         get => (IDocumentPaginatorSource?)GetValue(DocumentProperty);
@@ -101,6 +111,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Gets or sets the zoom level (percentage).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double Zoom
     {
         get => (double)GetValue(ZoomProperty)!;
@@ -110,6 +121,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Gets or sets the minimum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MinZoom
     {
         get => (double)GetValue(MinZoomProperty)!;
@@ -119,6 +131,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Gets or sets the maximum zoom level.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxZoom
     {
         get => (double)GetValue(MaxZoomProperty)!;
@@ -128,6 +141,7 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Gets or sets the zoom increment.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double ZoomIncrement
     {
         get => (double)GetValue(ZoomIncrementProperty)!;
@@ -137,21 +151,25 @@ public abstract class DocumentViewerBase : Control
     /// <summary>
     /// Gets a value indicating whether navigation to the next page is possible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanGoToNextPage => (bool)GetValue(CanGoToNextPageProperty)!;
 
     /// <summary>
     /// Gets a value indicating whether navigation to the previous page is possible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanGoToPreviousPage => (bool)GetValue(CanGoToPreviousPageProperty)!;
 
     /// <summary>
     /// Gets the total page count.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int PageCount => (int)GetValue(PageCountProperty)!;
 
     /// <summary>
     /// Gets or sets the current master page number.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int MasterPageNumber
     {
         get => (int)GetValue(MasterPageNumberProperty)!;
@@ -344,6 +362,7 @@ public abstract class DocumentPaginator
     /// <summary>
     /// Gets the page count.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public abstract int PageCount { get; }
 
     /// <summary>

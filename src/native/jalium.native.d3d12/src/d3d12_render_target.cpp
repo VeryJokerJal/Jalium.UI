@@ -18,6 +18,24 @@ using std::max;
 
 namespace jalium {
 
+namespace {
+
+bool IsEmptyRect(const D2D1_RECT_F& rect)
+{
+    return rect.right <= rect.left || rect.bottom <= rect.top;
+}
+
+D2D1_RECT_F IntersectRects(const D2D1_RECT_F& a, const D2D1_RECT_F& b)
+{
+    return D2D1::RectF(
+        (std::max)(a.left, b.left),
+        (std::max)(a.top, b.top),
+        (std::min)(a.right, b.right),
+        (std::min)(a.bottom, b.bottom));
+}
+
+} // namespace
+
 D3D12RenderTarget::D3D12RenderTarget(D3D12Backend* backend, void* hwnd, int32_t width, int32_t height, bool useComposition)
     : backend_(backend)
     , hwnd_(static_cast<HWND>(hwnd))
@@ -455,6 +473,9 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     while (!clipStack_.empty()) {
         clipStack_.pop();
     }
+    while (!clipBoundsStack_.empty()) {
+        clipBoundsStack_.pop();
+    }
 
     // Resize swap chain (preserve tearing flag; composition swap chains don't support tearing)
     UINT resizeFlags = (tearingSupported_ && !isComposition_) ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
@@ -737,6 +758,12 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
     effectCaptureStack_.clear();
     lastCapturedEffectBitmap_.Reset();
     offscreenResourcesUsedThisFrame_ = false;
+    while (!clipStack_.empty()) {
+        clipStack_.pop();
+    }
+    while (!clipBoundsStack_.empty()) {
+        clipBoundsStack_.pop();
+    }
 
     // WPF-style dirty rendering: NO D2D clip for dirty regions.
     // D2D PushAxisAlignedClip causes artifacts (anti-aliased edges, Clear ignoring clip).
@@ -812,6 +839,7 @@ JaliumResult D3D12RenderTarget::EndDraw() {
         }
     }
 
+    const bool presentOccluded = (hr == DXGI_STATUS_OCCLUDED);
     if (FAILED(hr)) return fail(JALIUM_ERROR_DEVICE_LOST);
 
     // Commit DirectComposition every frame in composition mode.
@@ -827,7 +855,13 @@ JaliumResult D3D12RenderTarget::EndDraw() {
     fullInvalidation_ = false;
     TrimOffscreenResourcesIfIdle();
 
-    MoveToNextFrame();
+    // Start menu / shell overlays can temporarily occlude a top-level HWND.
+    // In that state DXGI may return DXGI_STATUS_OCCLUDED; keep the current
+    // back-buffer index/fence ownership instead of advancing into the next
+    // frame until presentation resumes.
+    if (!presentOccluded) {
+        MoveToNextFrame();
+    }
 
     isDrawing_ = false;
     return JALIUM_OK;
@@ -863,6 +897,7 @@ ID2D1Brush* D3D12RenderTarget::GetD2DBrush(Brush* brush) {
 
 void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush* brush) {
     if (!isDrawing_ || !brush) return;
+    if (!IntersectsActiveClip(D2D1::RectF(x, y, x + w, y + h))) return;
 
     auto d2dBrush = GetD2DBrush(brush);
     if (d2dBrush) {
@@ -873,6 +908,7 @@ void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush*
 
 void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush) return;
+    if (!IntersectsActiveClip(D2D1::RectF(x - strokeWidth, y - strokeWidth, x + w + strokeWidth, y + h + strokeWidth))) return;
 
     auto d2dBrush = GetD2DBrush(brush);
     if (d2dBrush) {
@@ -882,6 +918,7 @@ void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush*
 
 void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush) return;
+    if (!IntersectsActiveClip(D2D1::RectF(x, y, x + w, y + h))) return;
 
     auto d2dBrush = GetD2DBrush(brush);
     if (d2dBrush) {
@@ -892,6 +929,7 @@ void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h,
 
 void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush) return;
+    if (!IntersectsActiveClip(D2D1::RectF(x - strokeWidth, y - strokeWidth, x + w + strokeWidth, y + h + strokeWidth))) return;
 
     auto d2dBrush = GetD2DBrush(brush);
     if (d2dBrush) {
@@ -902,6 +940,7 @@ void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h,
 
 void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush) return;
+    if (!IntersectsActiveClip(D2D1::RectF(cx - rx, cy - ry, cx + rx, cy + ry))) return;
 
     auto d2dBrush = GetD2DBrush(brush);
     if (d2dBrush) {
@@ -911,6 +950,7 @@ void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brus
 
 void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush) return;
+    if (!IntersectsActiveClip(D2D1::RectF(cx - rx - strokeWidth, cy - ry - strokeWidth, cx + rx + strokeWidth, cy + ry + strokeWidth))) return;
 
     auto d2dBrush = GetD2DBrush(brush);
     if (d2dBrush) {
@@ -920,6 +960,11 @@ void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brus
 
 void D3D12RenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush) return;
+    if (!IntersectsActiveClip(D2D1::RectF(
+            (std::min)(x1, x2) - strokeWidth,
+            (std::min)(y1, y2) - strokeWidth,
+            (std::max)(x1, x2) + strokeWidth,
+            (std::max)(y1, y2) + strokeWidth))) return;
 
     auto d2dBrush = GetD2DBrush(brush);
     if (d2dBrush) {
@@ -1023,6 +1068,7 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
     Brush* fillBrush, Brush* strokeBrush, float strokeWidth) {
     if (!isDrawing_ || w <= 0 || h <= 0) return;
     if (!fillBrush && !strokeBrush) return;
+    if (!IntersectsActiveClip(D2D1::RectF(x - strokeWidth, y - strokeWidth, x + w + strokeWidth, y + h + strokeWidth))) return;
 
     auto factory = backend_->GetD2DFactory();
     if (!factory) return;
@@ -1224,6 +1270,7 @@ void D3D12RenderTarget::RenderText(
     Brush* brush)
 {
     if (!isDrawing_ || !text || !format || !brush) return;
+    if (!IntersectsActiveClip(D2D1::RectF(x, y, x + w, y + h))) return;
 
     // Use static_cast with format - it's always D3D12TextFormat when coming from this backend
     auto textFormat = static_cast<D3D12TextFormat*>(format);
@@ -1262,11 +1309,46 @@ void D3D12RenderTarget::PopTransform() {
     d2dContext_->SetTransform(transformStack_.top());
 }
 
+bool D3D12RenderTarget::IntersectsActiveClip(const D2D1_RECT_F& rect) const {
+    if (clipBoundsStack_.empty()) {
+        return true;
+    }
+
+    if (IsEmptyRect(rect)) {
+        return false;
+    }
+
+    const auto& clip = clipBoundsStack_.top();
+    return rect.left < clip.right &&
+        rect.right > clip.left &&
+        rect.top < clip.bottom &&
+        rect.bottom > clip.top;
+}
+
 void D3D12RenderTarget::PushClip(float x, float y, float w, float h) {
+    D2D1_RECT_F clipRect = D2D1::RectF(x, y, x + w, y + h);
+    if (!clipBoundsStack_.empty()) {
+        clipRect = IntersectRects(clipBoundsStack_.top(), clipRect);
+    }
+
     d2dContext_->PushAxisAlignedClip(
-        D2D1::RectF(x, y, x + w, y + h),
+        clipRect,
         D2D1_ANTIALIAS_MODE_PER_PRIMITIVE);
     clipStack_.push(ClipType::AxisAligned);
+    clipBoundsStack_.push(clipRect);
+}
+
+void D3D12RenderTarget::PushClipAliased(float x, float y, float w, float h) {
+    D2D1_RECT_F clipRect = D2D1::RectF(x, y, x + w, y + h);
+    if (!clipBoundsStack_.empty()) {
+        clipRect = IntersectRects(clipBoundsStack_.top(), clipRect);
+    }
+
+    d2dContext_->PushAxisAlignedClip(
+        clipRect,
+        D2D1_ANTIALIAS_MODE_ALIASED);
+    clipStack_.push(ClipType::AxisAligned);
+    clipBoundsStack_.push(clipRect);
 }
 
 void D3D12RenderTarget::PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry) {
@@ -1277,6 +1359,9 @@ void D3D12RenderTarget::PushRoundedRectClip(float x, float y, float w, float h, 
     if (!factory) return;
 
     D2D1_RECT_F clipRect = D2D1::RectF(x, y, x + w, y + h);
+    if (!clipBoundsStack_.empty()) {
+        clipRect = IntersectRects(clipBoundsStack_.top(), clipRect);
+    }
 
     ComPtr<ID2D1RoundedRectangleGeometry> geometry;
     D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(clipRect, rx, ry);
@@ -1302,6 +1387,7 @@ void D3D12RenderTarget::PushRoundedRectClip(float x, float y, float w, float h, 
         nullptr
     );
     clipStack_.push(ClipType::RoundedRectLayer);
+    clipBoundsStack_.push(clipRect);
 }
 
 void D3D12RenderTarget::PopClip() {
@@ -1309,6 +1395,9 @@ void D3D12RenderTarget::PopClip() {
 
     auto type = clipStack_.top();
     clipStack_.pop();
+    if (!clipBoundsStack_.empty()) {
+        clipBoundsStack_.pop();
+    }
 
     if (type == ClipType::AxisAligned) {
         d2dContext_->PopAxisAlignedClip();
@@ -1374,6 +1463,7 @@ void D3D12RenderTarget::SetDpi(float dpiX, float dpiY) {
 
 void D3D12RenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity) {
     if (!isDrawing_ || !bitmap) return;
+    if (!IntersectsActiveClip(D2D1::RectF(x, y, x + w, y + h))) return;
 
     // Use static_cast - bitmap always comes from this backend
     auto d3d12Bitmap = static_cast<D3D12Bitmap*>(bitmap);
@@ -1396,6 +1486,7 @@ void D3D12RenderTarget::DrawBackdropFilter(
 {
     if (!isDrawing_) return;
     if (w <= 0 || h <= 0) return;
+    if (!IntersectsActiveClip(D2D1::RectF(x, y, x + w, y + h))) return;
 
     // Parse tint color from hex string (e.g., "#RRGGBB")
     float r = 1.0f, g = 1.0f, b = 1.0f;
@@ -1492,6 +1583,7 @@ void D3D12RenderTarget::DrawLiquidGlass(
 {
     if (!isDrawing_) return;
     if (w <= 0 || h <= 0) return;
+    if (!IntersectsActiveClip(D2D1::RectF(x, y, x + w, y + h))) return;
 
     // x,y are already in screen-space (managed layer adds Offset before calling).
     // All incoming coordinates are in DIPs.  The D2D1 custom effect pixel shader

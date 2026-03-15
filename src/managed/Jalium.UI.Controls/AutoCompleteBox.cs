@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.ObjectModel;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
@@ -12,8 +12,14 @@ namespace Jalium.UI.Controls;
 /// Represents a text box control that provides auto-completion suggestions.
 /// Inherits from TextBoxBase for full text editing support.
 /// </summary>
-public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
+public class AutoCompleteBox : TextBoxBase, IImeSupport
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.AutoCompleteBoxAutomationPeer(this);
+    }
+
     #region Static Brushes & Pens
 
     private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
@@ -73,6 +79,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(AutoCompleteBox),
             new PropertyMetadata(string.Empty, OnTextPropertyChanged));
@@ -80,6 +87,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the ItemsSource dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty ItemsSourceProperty =
         DependencyProperty.Register(nameof(ItemsSource), typeof(IEnumerable), typeof(AutoCompleteBox),
             new PropertyMetadata(null, OnItemsSourceChanged));
@@ -87,6 +95,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the SelectedItem dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedItemProperty =
         DependencyProperty.Register(nameof(SelectedItem), typeof(object), typeof(AutoCompleteBox),
             new PropertyMetadata(null, OnSelectedItemChanged));
@@ -94,6 +103,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the IsDropDownOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(AutoCompleteBox),
             new PropertyMetadata(false, OnIsDropDownOpenChanged));
@@ -101,6 +111,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the MinimumPrefixLength dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinimumPrefixLengthProperty =
         DependencyProperty.Register(nameof(MinimumPrefixLength), typeof(int), typeof(AutoCompleteBox),
             new PropertyMetadata(1));
@@ -108,6 +119,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the FilterMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty FilterModeProperty =
         DependencyProperty.Register(nameof(FilterMode), typeof(AutoCompleteFilterMode), typeof(AutoCompleteBox),
             new PropertyMetadata(AutoCompleteFilterMode.StartsWith));
@@ -115,6 +127,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the MaxDropDownHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxDropDownHeightProperty =
         DependencyProperty.Register(nameof(MaxDropDownHeight), typeof(double), typeof(AutoCompleteBox),
             new PropertyMetadata(224.0));
@@ -122,6 +135,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the MinimumPopulateDelay dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty MinimumPopulateDelayProperty =
         DependencyProperty.Register(nameof(MinimumPopulateDelay), typeof(TimeSpan), typeof(AutoCompleteBox),
             new PropertyMetadata(TimeSpan.Zero, OnPopulateDelayChanged));
@@ -129,6 +143,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Watermark dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty WatermarkProperty =
         DependencyProperty.Register(nameof(Watermark), typeof(string), typeof(AutoCompleteBox),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -136,6 +151,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the TextMemberPath dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty TextMemberPathProperty =
         DependencyProperty.Register(nameof(TextMemberPath), typeof(string), typeof(AutoCompleteBox),
             new PropertyMetadata(null));
@@ -143,6 +159,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the IsTextCompletionEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsTextCompletionEnabledProperty =
         DependencyProperty.Register(nameof(IsTextCompletionEnabled), typeof(bool), typeof(AutoCompleteBox),
             new PropertyMetadata(false));
@@ -238,6 +255,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the text in the text box.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public new string Text
     {
         get => _text;
@@ -266,6 +284,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the items source for suggestions.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public IEnumerable? ItemsSource
     {
         get => (IEnumerable?)GetValue(ItemsSourceProperty);
@@ -275,6 +294,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the selected item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectedItem
     {
         get => GetValue(SelectedItemProperty);
@@ -284,6 +304,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether the drop-down is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDropDownOpen
     {
         get => (bool)GetValue(IsDropDownOpenProperty)!;
@@ -293,6 +314,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the minimum number of characters to type before suggestions appear.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int MinimumPrefixLength
     {
         get => (int)GetValue(MinimumPrefixLengthProperty)!;
@@ -302,6 +324,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the filter mode for suggestions.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public AutoCompleteFilterMode FilterMode
     {
         get => (AutoCompleteFilterMode)(GetValue(FilterModeProperty) ?? AutoCompleteFilterMode.StartsWith);
@@ -311,6 +334,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the maximum height of the drop-down.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxDropDownHeight
     {
         get => (double)GetValue(MaxDropDownHeightProperty)!;
@@ -320,6 +344,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the delay before populating suggestions.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public TimeSpan MinimumPopulateDelay
     {
         get => (TimeSpan)GetValue(MinimumPopulateDelayProperty)!;
@@ -329,6 +354,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the watermark text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? Watermark
     {
         get => (string?)GetValue(WatermarkProperty);
@@ -338,6 +364,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the property path for text display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public string? TextMemberPath
     {
         get => (string?)GetValue(TextMemberPathProperty);
@@ -347,6 +374,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether text completion is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsTextCompletionEnabled
     {
         get => (bool)GetValue(IsTextCompletionEnabledProperty)!;
@@ -1028,18 +1056,26 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
         var cornerRadius = CornerRadius;
         var lineHeight = Math.Round(GetLineHeight());
         var padding = Padding;
+        var strokeThickness = BorderThickness.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background and border
         if (Background != null)
         {
-            directDc.DrawRoundedRectangle(Background, null, inputRect, cornerRadius);
+            directDc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
         }
 
-        var borderBrush = IsFocused ? ResolveFocusedBorderBrush() : BorderBrush;
+        var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
-            var pen = new Pen(borderBrush, BorderThickness.Left);
-            directDc.DrawRoundedRectangle(null, pen, inputRect, cornerRadius);
+            var pen = new Pen(borderBrush, strokeThickness);
+            directDc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
+        }
+
+        if (IsKeyboardFocused)
+        {
+            ControlFocusVisual.Draw(directDc, this, inputRect, cornerRadius);
         }
 
         // Content area
@@ -1103,7 +1139,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
         {
             var formattedText = new FormattedText(_text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
             {
-                Foreground = Foreground ?? s_whiteBrush,
+                Foreground = ResolveTextForegroundBrush(),
                 MaxTextWidth = contentRect.Width,
                 MaxTextHeight = lineHeight,
                 Trimming = TextTrimming
@@ -1130,7 +1166,8 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
 
     private void DrawSelection(DrawingContext dc, Rect contentRect, double lineHeight)
     {
-        if (SelectionBrush == null)
+        var selectionBrush = ResolveSelectionBrush();
+        if (selectionBrush == null)
             return;
 
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
@@ -1142,7 +1179,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
         var textY = contentRect.Y + (contentRect.Height - lineHeight) / 2;
 
         var selRect = new Rect(startX, textY, width, lineHeight);
-        dc.DrawRectangle(SelectionBrush, null, selRect);
+        dc.DrawRectangle(selectionBrush, null, selRect);
     }
 
     private void DrawImeComposition(DrawingContext dc, Rect contentRect, double lineHeight)
@@ -1173,7 +1210,8 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
     {
         var caretOpacity = UpdateCaretAnimation();
 
-        if (CaretBrush == null || _isImeComposing || caretOpacity < 0.01)
+        var caretBrush = ResolveCaretBrush();
+        if (caretBrush == null || _isImeComposing || caretOpacity < 0.01)
             return;
 
         var columnIndex = Math.Min(_caretIndex, _text.Length);
@@ -1184,7 +1222,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
         var textY = contentRect.Y + (contentRect.Height - lineHeight) / 2;
 
         Brush caretBrushWithOpacity;
-        if (CaretBrush is SolidColorBrush solidBrush)
+        if (caretBrush is SolidColorBrush solidBrush)
         {
             var color = solidBrush.Color;
             var alpha = (byte)(color.A * caretOpacity);
@@ -1192,7 +1230,7 @@ public sealed class AutoCompleteBox : TextBoxBase, IImeSupport
         }
         else
         {
-            caretBrushWithOpacity = CaretBrush;
+            caretBrushWithOpacity = caretBrush;
         }
 
         var caretPen = new Pen(caretBrushWithOpacity, 1.5);

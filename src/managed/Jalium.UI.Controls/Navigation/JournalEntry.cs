@@ -1,4 +1,4 @@
-﻿namespace Jalium.UI.Controls.Navigation;
+namespace Jalium.UI.Controls.Navigation;
 
 /// <summary>
 /// Represents an entry in either back or forward navigation history.
@@ -10,6 +10,7 @@ public sealed class JournalEntry : DependencyObject
     /// <summary>
     /// Identifies the Name dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public static readonly DependencyProperty NameProperty =
         DependencyProperty.Register(nameof(Name), typeof(string), typeof(JournalEntry),
             new PropertyMetadata(null));
@@ -17,6 +18,7 @@ public sealed class JournalEntry : DependencyObject
     /// <summary>
     /// Identifies the Source dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(JournalEntry),
             new PropertyMetadata(null));
@@ -24,6 +26,7 @@ public sealed class JournalEntry : DependencyObject
     /// <summary>
     /// Identifies the KeepAlive attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty KeepAliveProperty =
         DependencyProperty.RegisterAttached("KeepAlive", typeof(bool), typeof(JournalEntry),
             new PropertyMetadata(false));
@@ -66,6 +69,7 @@ public sealed class JournalEntry : DependencyObject
     /// <summary>
     /// Gets or sets the name of the journal entry.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Framework)]
     public string? Name
     {
         get => (string?)GetValue(NameProperty);
@@ -75,6 +79,7 @@ public sealed class JournalEntry : DependencyObject
     /// <summary>
     /// Gets or sets the URI of the content that was navigated to.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? Source
     {
         get => (Uri?)GetValue(SourceProperty);
@@ -101,6 +106,7 @@ public sealed class JournalEntry : DependencyObject
     /// </summary>
     /// <param name="dependencyObject">The dependency object to query.</param>
     /// <returns>The value of the KeepAlive attached property.</returns>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static bool GetKeepAlive(DependencyObject dependencyObject)
     {
         if (dependencyObject == null)
@@ -115,6 +121,7 @@ public sealed class JournalEntry : DependencyObject
     /// </summary>
     /// <param name="dependencyObject">The dependency object to set the property on.</param>
     /// <param name="keepAlive">The value to set.</param>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetKeepAlive(DependencyObject dependencyObject, bool keepAlive)
     {
         if (dependencyObject == null)

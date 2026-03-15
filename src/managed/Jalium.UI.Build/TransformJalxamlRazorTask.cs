@@ -44,12 +44,25 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
 
         var transformed = new List<ITaskItem>();
         var metadataRows = new List<(string Id, string Expression, string[] Dependencies)>();
+        var outputRoot = Path.GetFullPath(OutputDirectory);
+        var seenSourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         foreach (var sourceItem in SourceFiles)
         {
             var sourcePath = sourceItem.GetMetadata("FullPath");
             if (string.IsNullOrWhiteSpace(sourcePath))
                 sourcePath = sourceItem.ItemSpec;
+
+            sourcePath = Path.GetFullPath(sourcePath);
+
+            if (!seenSourcePaths.Add(sourcePath))
+                continue;
+
+            if (sourcePath.StartsWith(outputRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                Log.LogMessage(MessageImportance.Low, "Skipping generated JALXAML input inside Razor output directory: {0}", sourcePath);
+                continue;
+            }
 
             if (!File.Exists(sourcePath))
             {

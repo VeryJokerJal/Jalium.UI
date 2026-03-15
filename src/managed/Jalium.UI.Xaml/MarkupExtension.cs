@@ -256,21 +256,26 @@ public sealed class StaticResourceExtension : MarkupExtension
         if (ResourceKey == null)
             return null;
 
-        // First, check ambient resources (resources being parsed in current XAML context)
         var ambientProvider = serviceProvider?.GetService(typeof(IAmbientResourceProvider)) as IAmbientResourceProvider;
+        var provideValueTarget = serviceProvider?.GetService(typeof(IProvideValueTarget)) as IProvideValueTarget;
+        var targetElement = provideValueTarget?.TargetObject as FrameworkElement;
+
+        // First, check ambient resources (resources being parsed in current XAML context)
         if (ambientProvider != null && ambientProvider.TryGetResource(ResourceKey, out var ambientValue))
         {
-            return ambientValue;
+            var resolvedAmbientValue = ResolveDeferredResourceReference(
+                ambientValue,
+                ambientProvider,
+                targetElement,
+                new HashSet<object>());
+            if (resolvedAmbientValue != null)
+                return resolvedAmbientValue;
         }
 
-        // Get the target object to search from
-        var provideValueTarget = serviceProvider?.GetService(typeof(IProvideValueTarget)) as IProvideValueTarget;
-        var targetObject = provideValueTarget?.TargetObject;
-
         // Search for the resource in the visual tree
-        if (targetObject is FrameworkElement fe)
+        if (targetElement != null)
         {
-            var result = ResourceLookup.FindResource(fe, ResourceKey);
+            var result = ResourceLookup.FindResource(targetElement, ResourceKey);
             if (result != null)
                 return result;
         }
@@ -279,11 +284,60 @@ public sealed class StaticResourceExtension : MarkupExtension
         if (Jalium.UI.Application.Current?.Resources != null &&
             Jalium.UI.Application.Current.Resources.TryGetValue(ResourceKey, out var appValue))
         {
-            return appValue;
+            var resolvedAppValue = ResolveDeferredResourceReference(
+                appValue,
+                ambientProvider,
+                targetElement,
+                new HashSet<object>());
+            if (resolvedAppValue != null)
+                return resolvedAppValue;
         }
 
         // Resource not found - throw exception like WPF does
         throw new XamlParseException($"Cannot find resource named '{ResourceKey}'. Resource names are case sensitive.");
+    }
+
+    private static object? ResolveDeferredResourceReference(
+        object? value,
+        IAmbientResourceProvider? ambientProvider,
+        FrameworkElement? targetElement,
+        HashSet<object> resourceChain)
+    {
+        if (value is not IDynamicResourceReference dynamicReference)
+            return value;
+
+        if (!resourceChain.Add(dynamicReference.ResourceKey))
+            return null;
+
+        if (ambientProvider != null && ambientProvider.TryGetResource(dynamicReference.ResourceKey, out var ambientValue))
+        {
+            var resolvedAmbientValue = ResolveDeferredResourceReference(
+                ambientValue,
+                ambientProvider,
+                targetElement,
+                resourceChain);
+            if (resolvedAmbientValue != null)
+                return resolvedAmbientValue;
+        }
+
+        if (targetElement != null)
+        {
+            var resolvedTreeValue = ResourceLookup.FindResource(targetElement, dynamicReference.ResourceKey);
+            if (resolvedTreeValue != null)
+                return resolvedTreeValue;
+        }
+
+        if (Jalium.UI.Application.Current?.Resources != null &&
+            Jalium.UI.Application.Current.Resources.TryGetValue(dynamicReference.ResourceKey, out var appValue))
+        {
+            return ResolveDeferredResourceReference(
+                appValue,
+                ambientProvider,
+                targetElement,
+                resourceChain);
+        }
+
+        return null;
     }
 }
 

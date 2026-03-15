@@ -3,7 +3,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Panel that lays out cells in a <see cref="DataGridRow"/>.
 /// </summary>
-public sealed class DataGridCellsPanel : VirtualizingPanel
+public class DataGridCellsPanel : VirtualizingPanel
 {
     /// <summary>
     /// Measures the child elements of the panel and determines the desired size.

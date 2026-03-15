@@ -1,0 +1,145 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <Style x:Key="ContentDialogAccentButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="14,6,14,6" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="MinWidth" Value="96" />
+        <Setter Property="MinHeight" Value="32" />
+        <Setter Property="HorizontalContentAlignment" Value="Center" />
+        <Setter Property="VerticalContentAlignment" Value="Center" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="Button">
+                <Grid>
+                    <Border Name="BackgroundBorder"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}" />
+                    <Border Name="HoverOverlay"
+                            IsHitTestVisible="False"
+                            Background="{DynamicResource AccentBrushHover}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Opacity="0" />
+                    <Border Name="PressedOverlay"
+                            IsHitTestVisible="False"
+                            Background="{DynamicResource AccentBrushPressed}"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Opacity="0" />
+                    <ContentPresenter
+                        Margin="{TemplateBinding Padding}"
+                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                </Grid>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter TargetName="HoverOverlay" Property="Opacity" Value="1" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsPressed" Value="True">
+                <Setter TargetName="HoverOverlay" Property="Opacity" Value="0" />
+                <Setter TargetName="PressedOverlay" Property="Opacity" Value="1" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter TargetName="HoverOverlay" Property="Opacity" Value="0" />
+                <Setter TargetName="PressedOverlay" Property="Opacity" Value="0" />
+                <Setter Property="Background" Value="{DynamicResource AccentBrushDisabled}" />
+                <Setter Property="BorderBrush" Value="{DynamicResource AccentBrushDisabled}" />
+                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <Style TargetType="ContentDialog">
+        <Setter Property="Background" Value="{DynamicResource LayerFillColorAltBrush}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource SurfaceStrokeColorDefaultBrush}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="ContentDialog">
+                <Grid Name="PART_Root">
+                    <Border Name="PART_Overlay"
+                            Background="{DynamicResource SmokeFillColorDefaultBrush}" />
+
+                    <Border Name="PART_DialogCard"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            MinWidth="320"
+                            MaxWidth="560"
+                            BackdropEffect="{TemplateBinding BackdropEffect}"
+                            Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="{TemplateBinding CornerRadius}">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <Border Name="PART_TitleHost"
+                                    Grid.Row="0"
+                                    Padding="24,20,24,0">
+                                <ContentPresenter ContentSource="Title"
+                                                  ContentTemplate="{TemplateBinding TitleTemplate}">
+                                    <ContentPresenter.Resources>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+                                            <Setter Property="FontSize" Value="20" />
+                                            <Setter Property="FontWeight" Value="SemiBold" />
+                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                                            <Setter Property="TextWrapping" Value="Wrap" />
+                                        </Style>
+                                    </ContentPresenter.Resources>
+                                </ContentPresenter>
+                            </Border>
+
+                            <Border Grid.Row="1"
+                                    Padding="24,20,24,0">
+                                <ScrollViewer Name="PART_ContentScrollViewer"
+                                              VerticalScrollBarVisibility="Auto"
+                                              HorizontalScrollBarVisibility="Disabled">
+                                    <ContentPresenter />
+                                </ScrollViewer>
+                            </Border>
+
+                            <Border Grid.Row="2"
+                                    Padding="24,20,24,20">
+                                <StackPanel Name="PART_ButtonPanel"
+                                            Orientation="Horizontal"
+                                            HorizontalAlignment="Right">
+                                    <Button Name="PART_CloseButton"
+                                            Content="{TemplateBinding CloseButtonText}"
+                                            MinWidth="96" />
+                                    <Button Name="PART_SecondaryButton"
+                                            Margin="8,0,0,0"
+                                            Content="{TemplateBinding SecondaryButtonText}"
+                                            MinWidth="96" />
+                                    <Button Name="PART_PrimaryButton"
+                                            Margin="8,0,0,0"
+                                            Content="{TemplateBinding PrimaryButtonText}"
+                                            MinWidth="96" />
+                                </StackPanel>
+                            </Border>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
+</ResourceDictionary>

@@ -41,6 +41,8 @@ public class NumberBoxThemeTests
             Assert.IsType<Style>(styleObj);
 
             Assert.False(numberBox.HasLocalValue(FrameworkElement.HeightProperty));
+            Assert.NotNull(numberBox.SelectionBrush);
+            Assert.NotNull(numberBox.CaretBrush);
             Assert.Equal(32, numberBox.MinHeight);
             Assert.True(numberBox.RenderSize.Height >= 32);
         }
@@ -61,6 +63,8 @@ public class NumberBoxThemeTests
             Assert.True(app.Resources.TryGetValue("TextPlaceholder", out var placeholderObj));
             Assert.True(app.Resources.TryGetValue("TextSecondary", out var secondaryObj));
             Assert.True(app.Resources.TryGetValue("ControlBorderFocused", out var focusedObj));
+            var selectionBrush = Assert.IsAssignableFrom<Brush>(app.Resources["SelectionBackground"]);
+            var caretBrush = Assert.IsAssignableFrom<Brush>(app.Resources["TextPrimary"]);
 
             var numberBox = new NumberBox();
 
@@ -70,14 +74,22 @@ public class NumberBoxThemeTests
                 BindingFlags.Instance | BindingFlags.NonPublic);
             var focusedMethod = typeof(NumberBox).GetMethod("ResolveFocusedBorderBrush",
                 BindingFlags.Instance | BindingFlags.NonPublic);
+            var selectionMethod = typeof(TextBoxBase).GetMethod("ResolveSelectionBrush",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var caretMethod = typeof(TextBoxBase).GetMethod("ResolveCaretBrush",
+                BindingFlags.Instance | BindingFlags.NonPublic);
 
             Assert.NotNull(placeholderMethod);
             Assert.NotNull(secondaryMethod);
             Assert.NotNull(focusedMethod);
+            Assert.NotNull(selectionMethod);
+            Assert.NotNull(caretMethod);
 
             Assert.Same(placeholderObj, placeholderMethod!.Invoke(numberBox, null));
             Assert.Same(secondaryObj, secondaryMethod!.Invoke(numberBox, null));
             Assert.Same(focusedObj, focusedMethod!.Invoke(numberBox, null));
+            Assert.Same(selectionBrush, selectionMethod!.Invoke(numberBox, null));
+            Assert.Same(caretBrush, caretMethod!.Invoke(numberBox, null));
         }
         finally
         {
@@ -114,6 +126,8 @@ public class NumberBoxThemeTests
 
             Assert.Same(secondaryText, upPath.Stroke);
             Assert.Same(secondaryText, downPath.Stroke);
+            Assert.Same(Jalium.UI.Cursors.Arrow, upSpinButton.Cursor);
+            Assert.Same(Jalium.UI.Cursors.Arrow, downSpinButton.Cursor);
         }
         finally
         {

@@ -20,6 +20,7 @@ public static class Validation
     /// <summary>
     /// Identifies the HasError attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty HasErrorProperty =
         DependencyProperty.RegisterAttached("HasError", typeof(bool), typeof(Validation),
             new PropertyMetadata(false));
@@ -27,6 +28,7 @@ public static class Validation
     /// <summary>
     /// Identifies the Errors attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ErrorsProperty =
         DependencyProperty.RegisterAttached("Errors", typeof(ReadOnlyObservableCollection<ValidationError>), typeof(Validation),
             new PropertyMetadata(null));
@@ -34,6 +36,7 @@ public static class Validation
     /// <summary>
     /// Identifies the ErrorTemplate attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ErrorTemplateProperty =
         DependencyProperty.RegisterAttached("ErrorTemplate", typeof(ControlTemplate), typeof(Validation),
             new PropertyMetadata(null));
@@ -41,24 +44,28 @@ public static class Validation
     /// <summary>
     /// Gets the HasError value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetHasError(DependencyObject element) =>
         (bool)(element.GetValue(HasErrorProperty) ?? false);
 
     /// <summary>
     /// Gets the Errors collection.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static ReadOnlyObservableCollection<ValidationError>? GetErrors(DependencyObject element) =>
         (ReadOnlyObservableCollection<ValidationError>?)element.GetValue(ErrorsProperty);
 
     /// <summary>
     /// Gets the ErrorTemplate.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static ControlTemplate? GetErrorTemplate(DependencyObject element) =>
         (ControlTemplate?)element.GetValue(ErrorTemplateProperty);
 
     /// <summary>
     /// Sets the ErrorTemplate.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetErrorTemplate(DependencyObject element, ControlTemplate? value) =>
         element.SetValue(ErrorTemplateProperty, value);
 

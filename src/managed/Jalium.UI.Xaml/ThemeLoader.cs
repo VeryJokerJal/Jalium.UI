@@ -28,6 +28,7 @@ public static class ThemeLoader
     {
         // Register XamlReader.Load as the theme loader callback
         ThemeManager.XamlLoader = LoadResourceDictionaryFromStream;
+        ResourceDictionary.SourceLoader = LoadReferencedResourceDictionary;
         Application.StartupObjectLoader = LoadStartupObjectFromUri;
 
         // Register AOT-safe type resolver for PropertyPath and other Core types
@@ -45,9 +46,71 @@ public static class ThemeLoader
     {
         try
         {
-            return XamlReader.Load(stream, resourceName, sourceAssembly) as ResourceDictionary;
+            using var payloadStream = new MemoryStream();
+            stream.CopyTo(payloadStream);
+            return LoadResourceDictionaryFromPayload(payloadStream.ToArray(), resourceName, sourceAssembly, null);
         }
         catch (Exception)
+        {
+            return null;
+        }
+    }
+
+    private static ResourceDictionary? LoadReferencedResourceDictionary(
+        ResourceDictionary owner,
+        Uri sourceUri,
+        Assembly? sourceAssembly)
+    {
+        ArgumentNullException.ThrowIfNull(owner);
+        ArgumentNullException.ThrowIfNull(sourceUri);
+
+        try
+        {
+            var sourceUriText = sourceUri.ToString();
+            var assembly = sourceAssembly;
+            var pathCandidates = new List<string>();
+
+            if (TryParsePackComponentUri(sourceUriText, out var packAssemblyName, out var componentPath))
+            {
+                assembly = ResolveAssembly(packAssemblyName);
+                if (assembly == null)
+                    return null;
+
+                pathCandidates.AddRange(BuildPathCandidates(componentPath));
+            }
+            else if (sourceUri.IsAbsoluteUri &&
+                     sourceUri.Scheme.Equals("resource", StringComparison.OrdinalIgnoreCase))
+            {
+                var (resourceAssembly, resourcePath) = ParseResourceUri(sourceUri.AbsoluteUri);
+                assembly = ResolveAssembly(resourceAssembly);
+                if (assembly == null)
+                    return null;
+
+                pathCandidates.AddRange(BuildPathCandidates(resourcePath));
+            }
+            else
+            {
+                if (assembly == null)
+                    return null;
+
+                pathCandidates.AddRange(BuildPathCandidates(sourceUri.IsAbsoluteUri
+                    ? sourceUri.AbsolutePath
+                    : sourceUri.OriginalString));
+            }
+
+            if (assembly == null || pathCandidates.Count == 0)
+                return null;
+
+            var attemptedResourceNames = new List<string>();
+            using var stream = TryOpenEmbeddedResource(assembly, pathCandidates, attemptedResourceNames, out var resolvedResourceName);
+            if (stream == null || string.IsNullOrEmpty(resolvedResourceName))
+                return null;
+
+            using var payloadStream = new MemoryStream();
+            stream.CopyTo(payloadStream);
+            return LoadResourceDictionaryFromPayload(payloadStream.ToArray(), resolvedResourceName, assembly, sourceUri);
+        }
+        catch
         {
             return null;
         }
@@ -346,6 +409,39 @@ public static class ThemeLoader
         }
 
         return null;
+    }
+
+    private static ResourceDictionary? LoadResourceDictionaryFromPayload(
+        byte[] payload,
+        string resourceName,
+        Assembly assembly,
+        Uri? sourceUri)
+    {
+        ArgumentNullException.ThrowIfNull(payload);
+        ArgumentNullException.ThrowIfNull(resourceName);
+        ArgumentNullException.ThrowIfNull(assembly);
+
+        var className = TryReadRootClassName(payload);
+        if (!string.IsNullOrWhiteSpace(className))
+        {
+            var dictionaryType = ResolveStartupType(className!, assembly, assembly);
+            if (dictionaryType != null &&
+                typeof(ResourceDictionary).IsAssignableFrom(dictionaryType) &&
+                Activator.CreateInstance(dictionaryType) is ResourceDictionary typedDictionary)
+            {
+                if (sourceUri != null)
+                    typedDictionary.Source = sourceUri;
+
+                return typedDictionary;
+            }
+        }
+
+        using var parseStream = new MemoryStream(payload, writable: false);
+        var dictionary = XamlReader.Load(parseStream, resourceName, assembly) as ResourceDictionary;
+        if (dictionary != null && sourceUri != null)
+            dictionary.Source = sourceUri;
+
+        return dictionary;
     }
 
     private static Assembly? ResolveAssembly(string assemblyName)

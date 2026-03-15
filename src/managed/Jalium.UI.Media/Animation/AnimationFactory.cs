@@ -273,7 +273,7 @@ public static class AnimationFactory
             TransitionTimingFunction.EaseIn => new CubicEase { EasingMode = EasingMode.EaseIn },
             TransitionTimingFunction.EaseOut => new CubicEase { EasingMode = EasingMode.EaseOut },
             TransitionTimingFunction.EaseInOut => new CubicEase { EasingMode = EasingMode.EaseInOut },
-            _ => new CubicEase { EasingMode = EasingMode.EaseInOut }
+            _ => new CubicEase { EasingMode = EasingMode.EaseOut }
         };
     }
 

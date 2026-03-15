@@ -99,6 +99,7 @@ public class Decorator : FrameworkElement
     /// <summary>
     /// Identifies the Child property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ChildProperty =
         DependencyProperty.Register(nameof(Child), typeof(UIElement), typeof(Decorator),
             new PropertyMetadata(null, OnChildChanged));
@@ -106,6 +107,7 @@ public class Decorator : FrameworkElement
     /// <summary>
     /// Gets or sets the single child element of a Decorator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public virtual UIElement? Child
     {
         get => _child;

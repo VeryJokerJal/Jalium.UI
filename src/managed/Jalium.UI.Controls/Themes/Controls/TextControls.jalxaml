@@ -17,6 +17,8 @@
         <Setter Property="FontSize" Value="14" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
         <Setter Property="TextWrapping" Value="NoWrap" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         <Setter Property="Template">
@@ -100,6 +102,8 @@
         <Setter Property="FontSize" Value="14" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         <Setter Property="Template">
             <ControlTemplate TargetType="NumberBox">
@@ -185,6 +189,8 @@
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="MaxDropDownHeight" Value="200" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         <Setter Property="Template">
             <ControlTemplate TargetType="AutoCompleteBox">
@@ -246,6 +252,12 @@
         <Setter Property="Padding" Value="4" />
         <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
@@ -256,13 +268,19 @@
         <Setter Property="Foreground" Value="{DynamicResource EditorSyntaxPlainText}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="FontFamily" Value="Cascadia Code" />
+        <Setter Property="FontFamily" Value="{DynamicResource MonoFontFamily}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
         <Setter Property="LineNumberForeground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="CurrentLineBackground" Value="{DynamicResource HighlightBackground}" />
         <Setter Property="GutterBackground" Value="{DynamicResource ControlBackground}" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+        </Style.Triggers>
     </Style>
 
 </ResourceDictionary>

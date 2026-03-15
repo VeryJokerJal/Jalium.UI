@@ -112,6 +112,12 @@ public static class VisualTreeHelper
     {
         ArgumentNullException.ThrowIfNull(reference);
 
+        if (reference is UIElement referenceElement &&
+            (referenceElement.Visibility != Visibility.Visible || !referenceElement.IsHitTestVisible))
+        {
+            return null;
+        }
+
         // Walk the visual tree from top to bottom (reverse child order)
         for (int i = reference.VisualChildrenCount - 1; i >= 0; i--)
         {
@@ -134,8 +140,7 @@ public static class VisualTreeHelper
         // Test the reference itself
         if (reference is UIElement element)
         {
-            if (element.Visibility == Visibility.Visible &&
-                point.X >= 0 && point.Y >= 0 &&
+            if (point.X >= 0 && point.Y >= 0 &&
                 point.X <= element.RenderSize.Width &&
                 point.Y <= element.RenderSize.Height)
             {
@@ -170,6 +175,12 @@ public static class VisualTreeHelper
         HitTestResultCallback resultCallback,
         Point point)
     {
+        if (visual is UIElement uiElement &&
+            (uiElement.Visibility != Visibility.Visible || !uiElement.IsHitTestVisible))
+        {
+            return HitTestFilterBehavior.Continue;
+        }
+
         bool skipSelf = false;
 
         // Apply filter
@@ -216,6 +227,7 @@ public static class VisualTreeHelper
     private static void TestSelf(Visual visual, HitTestResultCallback resultCallback, Point point)
     {
         if (visual is UIElement element &&
+            element.IsHitTestVisible &&
             element.Visibility == Visibility.Visible &&
             point.X >= 0 && point.Y >= 0 &&
             point.X <= element.RenderSize.Width &&

@@ -12,6 +12,7 @@ public class Grid : Panel
     /// <summary>
     /// Identifies the Row attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowProperty =
         DependencyProperty.RegisterAttached("Row", typeof(int), typeof(Grid),
             new PropertyMetadata(0));
@@ -19,6 +20,7 @@ public class Grid : Panel
     /// <summary>
     /// Identifies the Column attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnProperty =
         DependencyProperty.RegisterAttached("Column", typeof(int), typeof(Grid),
             new PropertyMetadata(0));
@@ -26,6 +28,7 @@ public class Grid : Panel
     /// <summary>
     /// Identifies the RowSpan attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowSpanProperty =
         DependencyProperty.RegisterAttached("RowSpan", typeof(int), typeof(Grid),
             new PropertyMetadata(1));
@@ -33,6 +36,7 @@ public class Grid : Panel
     /// <summary>
     /// Identifies the ColumnSpan attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnSpanProperty =
         DependencyProperty.RegisterAttached("ColumnSpan", typeof(int), typeof(Grid),
             new PropertyMetadata(1));
@@ -40,48 +44,56 @@ public class Grid : Panel
     /// <summary>
     /// Gets the value of the Row attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static int GetRow(UIElement element) =>
         (int)(element.GetValue(RowProperty) ?? 0);
 
     /// <summary>
     /// Sets the value of the Row attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetRow(UIElement element, int value) =>
         element.SetValue(RowProperty, value);
 
     /// <summary>
     /// Gets the value of the Column attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static int GetColumn(UIElement element) =>
         (int)(element.GetValue(ColumnProperty) ?? 0);
 
     /// <summary>
     /// Sets the value of the Column attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetColumn(UIElement element, int value) =>
         element.SetValue(ColumnProperty, value);
 
     /// <summary>
     /// Gets the value of the RowSpan attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static int GetRowSpan(UIElement element) =>
         (int)(element.GetValue(RowSpanProperty) ?? 1);
 
     /// <summary>
     /// Sets the value of the RowSpan attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetRowSpan(UIElement element, int value) =>
         element.SetValue(RowSpanProperty, Math.Max(1, value));
 
     /// <summary>
     /// Gets the value of the ColumnSpan attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static int GetColumnSpan(UIElement element) =>
         (int)(element.GetValue(ColumnSpanProperty) ?? 1);
 
     /// <summary>
     /// Sets the value of the ColumnSpan attached property for a given element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static void SetColumnSpan(UIElement element, int value) =>
         element.SetValue(ColumnSpanProperty, Math.Max(1, value));
 

@@ -11,6 +11,7 @@ public sealed class RibbonButton : Button
     /// <summary>
     /// Identifies the Label dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty LabelProperty =
         DependencyProperty.Register(nameof(Label), typeof(string), typeof(RibbonButton),
             new PropertyMetadata(string.Empty));
@@ -18,6 +19,7 @@ public sealed class RibbonButton : Button
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Label
     {
         get => (string)GetValue(LabelProperty);
@@ -53,11 +55,12 @@ public sealed class RibbonButton : Button
 /// <summary>
 /// Represents a toggle button on a Ribbon.
 /// </summary>
-public sealed class RibbonToggleButton : ToggleButton
+public class RibbonToggleButton : ToggleButton
 {
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Label { get; set; } = string.Empty;
 
     /// <summary>
@@ -85,6 +88,7 @@ public class RibbonSplitButton : ItemsControl
     /// <summary>
     /// Identifies the Label dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty LabelProperty =
         DependencyProperty.Register(nameof(Label), typeof(string), typeof(RibbonSplitButton),
             new PropertyMetadata(string.Empty));
@@ -92,6 +96,7 @@ public class RibbonSplitButton : ItemsControl
     /// <summary>
     /// Identifies the IsDropDownOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(RibbonSplitButton),
             new PropertyMetadata(false));
@@ -99,6 +104,7 @@ public class RibbonSplitButton : ItemsControl
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Label
     {
         get => (string)GetValue(LabelProperty);
@@ -108,6 +114,7 @@ public class RibbonSplitButton : ItemsControl
     /// <summary>
     /// Gets or sets whether the dropdown is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDropDownOpen
     {
         get => (bool)GetValue(IsDropDownOpenProperty);
@@ -152,6 +159,7 @@ public class RibbonMenuButton : ItemsControl
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Label { get; set; } = string.Empty;
 
     /// <summary>
@@ -167,6 +175,7 @@ public class RibbonMenuButton : ItemsControl
     /// <summary>
     /// Gets or sets whether the dropdown is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDropDownOpen { get; set; }
 
     /// <summary>
@@ -183,6 +192,7 @@ public sealed class RibbonTextBox : TextBox
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Label { get; set; } = string.Empty;
 
     /// <summary>
@@ -204,6 +214,7 @@ public sealed class RibbonComboBox : ComboBox
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Label { get; set; } = string.Empty;
 
     /// <summary>
@@ -225,6 +236,7 @@ public sealed class RibbonCheckBox : CheckBox
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Label { get; set; } = string.Empty;
 
     /// <summary>
@@ -241,10 +253,11 @@ public sealed class RibbonCheckBox : CheckBox
 /// <summary>
 /// Represents a separator on a Ribbon.
 /// </summary>
-public sealed class RibbonSeparator : Control
+public class RibbonSeparator : Control
 {
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? Label { get; set; }
 }

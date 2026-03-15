@@ -18,6 +18,7 @@ public abstract class VirtualizingPanel : Panel
     /// <summary>
     /// Identifies the IsVirtualizing attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty IsVirtualizingProperty =
         DependencyProperty.RegisterAttached("IsVirtualizing", typeof(bool), typeof(VirtualizingPanel),
             new PropertyMetadata(true));
@@ -25,6 +26,7 @@ public abstract class VirtualizingPanel : Panel
     /// <summary>
     /// Identifies the VirtualizationMode attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty VirtualizationModeProperty =
         DependencyProperty.RegisterAttached("VirtualizationMode", typeof(VirtualizationMode), typeof(VirtualizingPanel),
             new PropertyMetadata(VirtualizationMode.Recycling));
@@ -32,6 +34,7 @@ public abstract class VirtualizingPanel : Panel
     /// <summary>
     /// Identifies the CacheLength attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CacheLengthProperty =
         DependencyProperty.RegisterAttached("CacheLength", typeof(VirtualizationCacheLength), typeof(VirtualizingPanel),
             new PropertyMetadata(new VirtualizationCacheLength(1.0)));
@@ -39,6 +42,7 @@ public abstract class VirtualizingPanel : Panel
     /// <summary>
     /// Identifies the CacheLengthUnit attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CacheLengthUnitProperty =
         DependencyProperty.RegisterAttached("CacheLengthUnit", typeof(VirtualizationCacheLengthUnit), typeof(VirtualizingPanel),
             new PropertyMetadata(VirtualizationCacheLengthUnit.Page));
@@ -46,6 +50,7 @@ public abstract class VirtualizingPanel : Panel
     /// <summary>
     /// Identifies the ScrollUnit attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ScrollUnitProperty =
         DependencyProperty.RegisterAttached("ScrollUnit", typeof(ScrollUnit), typeof(VirtualizingPanel),
             new PropertyMetadata(ScrollUnit.Pixel));
@@ -55,42 +60,52 @@ public abstract class VirtualizingPanel : Panel
     #region Attached Property Accessors
 
     /// <summary>Gets whether virtualization is enabled for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static bool GetIsVirtualizing(DependencyObject element) =>
         (bool)(element.GetValue(IsVirtualizingProperty) ?? true);
 
     /// <summary>Sets whether virtualization is enabled for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetIsVirtualizing(DependencyObject element, bool value) =>
         element.SetValue(IsVirtualizingProperty, value);
 
     /// <summary>Gets the virtualization mode for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static VirtualizationMode GetVirtualizationMode(DependencyObject element) =>
         (VirtualizationMode)(element.GetValue(VirtualizationModeProperty) ?? VirtualizationMode.Recycling);
 
     /// <summary>Sets the virtualization mode for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetVirtualizationMode(DependencyObject element, VirtualizationMode value) =>
         element.SetValue(VirtualizationModeProperty, value);
 
     /// <summary>Gets the cache length for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static VirtualizationCacheLength GetCacheLength(DependencyObject element) =>
         (VirtualizationCacheLength)(element.GetValue(CacheLengthProperty) ?? new VirtualizationCacheLength(1.0));
 
     /// <summary>Sets the cache length for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetCacheLength(DependencyObject element, VirtualizationCacheLength value) =>
         element.SetValue(CacheLengthProperty, value);
 
     /// <summary>Gets the cache length unit for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static VirtualizationCacheLengthUnit GetCacheLengthUnit(DependencyObject element) =>
         (VirtualizationCacheLengthUnit)(element.GetValue(CacheLengthUnitProperty) ?? VirtualizationCacheLengthUnit.Page);
 
     /// <summary>Sets the cache length unit for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetCacheLengthUnit(DependencyObject element, VirtualizationCacheLengthUnit value) =>
         element.SetValue(CacheLengthUnitProperty, value);
 
     /// <summary>Gets the scroll unit for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static ScrollUnit GetScrollUnit(DependencyObject element) =>
         (ScrollUnit)(element.GetValue(ScrollUnitProperty) ?? ScrollUnit.Pixel);
 
     /// <summary>Sets the scroll unit for the given element.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetScrollUnit(DependencyObject element, ScrollUnit value) =>
         element.SetValue(ScrollUnitProperty, value);
 

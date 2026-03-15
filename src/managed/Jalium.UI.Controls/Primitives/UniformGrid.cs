@@ -1,15 +1,16 @@
-﻿namespace Jalium.UI.Controls.Primitives;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Provides a way to arrange content in a grid where all cells have the same size.
 /// </summary>
-public sealed class UniformGrid : Panel
+public class UniformGrid : Panel
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Rows dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RowsProperty =
         DependencyProperty.Register(nameof(Rows), typeof(int), typeof(UniformGrid),
             new PropertyMetadata(0, OnLayoutPropertyChanged));
@@ -17,6 +18,7 @@ public sealed class UniformGrid : Panel
     /// <summary>
     /// Identifies the Columns dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnsProperty =
         DependencyProperty.Register(nameof(Columns), typeof(int), typeof(UniformGrid),
             new PropertyMetadata(0, OnLayoutPropertyChanged));
@@ -24,6 +26,7 @@ public sealed class UniformGrid : Panel
     /// <summary>
     /// Identifies the FirstColumn dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty FirstColumnProperty =
         DependencyProperty.Register(nameof(FirstColumn), typeof(int), typeof(UniformGrid),
             new PropertyMetadata(0, OnLayoutPropertyChanged));
@@ -36,6 +39,7 @@ public sealed class UniformGrid : Panel
     /// Gets or sets the number of rows in the grid.
     /// A value of 0 means the number is calculated automatically.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int Rows
     {
         get => (int)GetValue(RowsProperty)!;
@@ -46,6 +50,7 @@ public sealed class UniformGrid : Panel
     /// Gets or sets the number of columns in the grid.
     /// A value of 0 means the number is calculated automatically.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int Columns
     {
         get => (int)GetValue(ColumnsProperty)!;
@@ -55,6 +60,7 @@ public sealed class UniformGrid : Panel
     /// <summary>
     /// Gets or sets the number of leading blank cells in the first row.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int FirstColumn
     {
         get => (int)GetValue(FirstColumnProperty)!;

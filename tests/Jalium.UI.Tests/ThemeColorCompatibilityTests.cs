@@ -96,12 +96,18 @@ public class ThemeColorCompatibilityTests
         {
             var darkTextPrimary = Assert.IsType<SolidColorBrush>(app.Resources["TextPrimary"]);
             var darkControlBackground = Assert.IsType<SolidColorBrush>(app.Resources["ControlBackground"]);
+            var darkBackground = Assert.IsType<SolidColorBrush>(app.Resources["Background"]);
+            var darkForeground = Assert.IsType<SolidColorBrush>(app.Resources["Foreground"]);
+            var darkBorderBrush = Assert.IsType<SolidColorBrush>(app.Resources["BorderBrush"]);
             var darkWindowBackground = Assert.IsType<SolidColorBrush>(app.Resources["WindowBackground"]);
             var darkMenuBackground = Assert.IsType<SolidColorBrush>(app.Resources["MenuFlyoutPresenterBackground"]);
             var darkCommandBarBackground = Assert.IsType<SolidColorBrush>(app.Resources["CommandBarBackground"]);
 
             Assert.Equal(Color.FromRgb(255, 255, 255), darkTextPrimary.Color);
             Assert.Equal(Color.FromRgb(0x45, 0x45, 0x45), darkControlBackground.Color);
+            Assert.Equal(darkControlBackground.Color, darkBackground.Color);
+            Assert.Equal(darkTextPrimary.Color, darkForeground.Color);
+            Assert.Equal(Color.FromArgb(0x12, 0xFF, 0xFF, 0xFF), darkBorderBrush.Color);
             Assert.Equal(Color.FromRgb(0x20, 0x20, 0x20), darkWindowBackground.Color);
             Assert.Equal(Color.FromRgb(0x1C, 0x1C, 0x1C), darkMenuBackground.Color);
             Assert.Equal(Color.FromRgb(0x1C, 0x1C, 0x1C), darkCommandBarBackground.Color);
@@ -110,15 +116,50 @@ public class ThemeColorCompatibilityTests
 
             var lightTextPrimary = Assert.IsType<SolidColorBrush>(app.Resources["TextPrimary"]);
             var lightControlBackground = Assert.IsType<SolidColorBrush>(app.Resources["ControlBackground"]);
+            var lightBackground = Assert.IsType<SolidColorBrush>(app.Resources["Background"]);
+            var lightForeground = Assert.IsType<SolidColorBrush>(app.Resources["Foreground"]);
+            var lightBorderBrush = Assert.IsType<SolidColorBrush>(app.Resources["BorderBrush"]);
             var lightWindowBackground = Assert.IsType<SolidColorBrush>(app.Resources["WindowBackground"]);
             var lightMenuBackground = Assert.IsType<SolidColorBrush>(app.Resources["MenuFlyoutPresenterBackground"]);
             var lightCommandBarBackground = Assert.IsType<SolidColorBrush>(app.Resources["CommandBarBackground"]);
 
             Assert.Equal(Color.FromArgb(0xE4, 0x00, 0x00, 0x00), lightTextPrimary.Color);
             Assert.Equal(Color.FromRgb(255, 255, 255), lightControlBackground.Color);
+            Assert.Equal(lightControlBackground.Color, lightBackground.Color);
+            Assert.Equal(lightTextPrimary.Color, lightForeground.Color);
+            Assert.Equal(Color.FromArgb(0x0F, 0x00, 0x00, 0x00), lightBorderBrush.Color);
             Assert.Equal(Color.FromRgb(0xF3, 0xF3, 0xF3), lightWindowBackground.Color);
             Assert.Equal(Color.FromRgb(255, 255, 255), lightMenuBackground.Color);
             Assert.Equal(Color.FromRgb(255, 255, 255), lightCommandBarBackground.Color);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ButtonPressedBrush_ShouldBeDeeperThanHover_AndSwitchWithTheme()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var darkHover = Assert.IsType<SolidColorBrush>(app.Resources["ControlBackgroundHover"]);
+            var darkPressed = Assert.IsType<SolidColorBrush>(app.Resources["ButtonBackgroundPressed"]);
+
+            Assert.Equal(Color.FromArgb(0x19, 0x00, 0x00, 0x00), darkPressed.Color);
+            Assert.NotEqual(darkHover.Color, darkPressed.Color);
+
+            ThemeManager.ApplyTheme(ThemeVariant.Light);
+
+            var lightHover = Assert.IsType<SolidColorBrush>(app.Resources["ControlBackgroundHover"]);
+            var lightPressed = Assert.IsType<SolidColorBrush>(app.Resources["ButtonBackgroundPressed"]);
+
+            Assert.Equal(Color.FromArgb(0x06, 0x00, 0x00, 0x00), lightPressed.Color);
+            Assert.NotEqual(lightHover.Color, lightPressed.Color);
         }
         finally
         {

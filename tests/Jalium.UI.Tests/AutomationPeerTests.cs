@@ -7,6 +7,65 @@ namespace Jalium.UI.Tests;
 
 public class AutomationPeerTests
 {
+    public static IEnumerable<object[]> ControlPeerMappings()
+    {
+        yield return new object[] { (Func<UIElement>)(() => new Control()), typeof(FrameworkElementAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ContentControl()), typeof(ContentControlAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ItemsControl()), typeof(ItemsControlAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Jalium.UI.Controls.Primitives.ToggleButton()), typeof(ToggleButtonAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Jalium.UI.Controls.Primitives.RepeatButton()), typeof(RepeatButtonAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Jalium.UI.Controls.Primitives.Thumb()), typeof(ThumbAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ListBox()), typeof(ListBoxAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ListBoxItem()), typeof(ListBoxItemAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ComboBox()), typeof(ComboBoxAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new TreeView()), typeof(TreeViewAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new TreeViewItem()), typeof(TreeViewItemAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Slider()), typeof(SliderAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ProgressBar()), typeof(ProgressBarAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new TabControl()), typeof(TabControlAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new TabItem()), typeof(TabItemAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Menu()), typeof(MenuAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new MenuItem()), typeof(MenuItemAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ScrollViewer()), typeof(ScrollViewerAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Window()), typeof(WindowAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new DataGrid()), typeof(DataGridAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new DataGridRow()), typeof(DataGridRowAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new DataGridCell()), typeof(DataGridCellAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new DataGridColumnHeader()), typeof(DataGridColumnHeaderAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Expander()), typeof(ExpanderAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new GroupBox()), typeof(GroupBoxAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Image()), typeof(ImageAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new TextBlock()), typeof(TextBlockAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ToolTip()), typeof(ToolTipAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new HyperlinkButton()), typeof(HyperlinkButtonAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new RichTextBox()), typeof(RichTextBoxAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ListView()), typeof(ListViewAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new DatePicker()), typeof(DatePickerAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Calendar()), typeof(CalendarAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new TimePicker()), typeof(TimePickerAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new NavigationView()), typeof(NavigationViewAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new NavigationViewItem()), typeof(NavigationViewItemAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new NumberBox()), typeof(NumberBoxAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ToggleSwitch()), typeof(ToggleSwitchAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ColorPicker()), typeof(ColorPickerAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new InfoBar()), typeof(InfoBarAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new AutoCompleteBox()), typeof(AutoCompleteBoxAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Jalium.UI.Controls.Primitives.Popup()), typeof(PopupAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new GridSplitter()), typeof(GridSplitterAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Viewbox()), typeof(ViewboxAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new TitleBarButton()), typeof(TitleBarButtonAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Label()), typeof(LabelAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Separator()), typeof(SeparatorAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new UserControl()), typeof(UserControlAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new StatusBar()), typeof(StatusBarAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new StatusBarItem()), typeof(StatusBarItemAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new ToolBar()), typeof(ToolBarAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Frame()), typeof(FrameAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new Viewport3D()), typeof(Viewport3DAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new DocumentViewer()), typeof(DocumentViewerAutomationPeer) };
+        yield return new object[] { (Func<UIElement>)(() => new GroupItem()), typeof(GroupItemAutomationPeer) };
+    }
+
     #region AutomationPeer Base Tests
 
     [Fact]
@@ -99,6 +158,21 @@ public class AutomationPeerTests
 
         // Assert
         Assert.Same(peer1, peer2);
+    }
+
+    [Theory]
+    [MemberData(nameof(ControlPeerMappings))]
+    public void Control_GetAutomationPeer_ReturnsExpectedPeerType(Func<UIElement> createControl, Type expectedPeerType)
+    {
+        // Arrange
+        var control = createControl();
+
+        // Act
+        var peer = control.GetAutomationPeer();
+
+        // Assert
+        Assert.NotNull(peer);
+        Assert.IsType(expectedPeerType, peer);
     }
 
     #endregion

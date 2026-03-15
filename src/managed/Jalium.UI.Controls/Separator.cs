@@ -1,12 +1,18 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Represents a control used to separate items in a list or menu.
 /// </summary>
-public sealed class Separator : Control
+public class Separator : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.SeparatorAutomationPeer(this);
+    }
+
     #region Static Brushes
 
     private static readonly SolidColorBrush s_defaultStrokeBrush = new(Color.FromRgb(60, 60, 60));
@@ -18,6 +24,7 @@ public sealed class Separator : Control
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(Separator),
             new PropertyMetadata(Orientation.Horizontal, OnLayoutPropertyChanged));
@@ -25,6 +32,7 @@ public sealed class Separator : Control
     /// <summary>
     /// Identifies the StrokeBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty StrokeBrushProperty =
         DependencyProperty.Register(nameof(StrokeBrush), typeof(Brush), typeof(Separator),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -32,6 +40,7 @@ public sealed class Separator : Control
     /// <summary>
     /// Identifies the StrokeThickness dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty StrokeThicknessProperty =
         DependencyProperty.Register(nameof(StrokeThickness), typeof(double), typeof(Separator),
             new PropertyMetadata(1.0, OnLayoutPropertyChanged));
@@ -43,6 +52,7 @@ public sealed class Separator : Control
     /// <summary>
     /// Gets or sets the orientation of the separator line.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -52,6 +62,7 @@ public sealed class Separator : Control
     /// <summary>
     /// Gets or sets the brush used for the separator line.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? StrokeBrush
     {
         get => (Brush?)GetValue(StrokeBrushProperty);
@@ -61,6 +72,7 @@ public sealed class Separator : Control
     /// <summary>
     /// Gets or sets the thickness of the separator line.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public double StrokeThickness
     {
         get => (double)GetValue(StrokeThicknessProperty)!;

@@ -1,4 +1,4 @@
-﻿using System.Collections.ObjectModel;
+using System.Collections.ObjectModel;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -6,13 +6,20 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Provides a container for a group of commands or controls.
 /// </summary>
-public sealed class ToolBar : HeaderedItemsControl
+public class ToolBar : HeaderedItemsControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ToolBarAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Band dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BandProperty =
         DependencyProperty.Register(nameof(Band), typeof(int), typeof(ToolBar),
             new PropertyMetadata(0));
@@ -20,6 +27,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Identifies the BandIndex dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty BandIndexProperty =
         DependencyProperty.Register(nameof(BandIndex), typeof(int), typeof(ToolBar),
             new PropertyMetadata(0));
@@ -27,6 +35,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Identifies the IsOverflowOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOverflowOpenProperty =
         DependencyProperty.Register(nameof(IsOverflowOpen), typeof(bool), typeof(ToolBar),
             new PropertyMetadata(false));
@@ -34,6 +43,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(ToolBar),
             new PropertyMetadata(Orientation.Horizontal));
@@ -41,6 +51,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Identifies the OverflowMode attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty OverflowModeProperty =
         DependencyProperty.RegisterAttached("OverflowMode", typeof(OverflowMode), typeof(ToolBar),
             new PropertyMetadata(OverflowMode.AsNeeded));
@@ -48,6 +59,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Identifies the IsOverflowItem attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsOverflowItemProperty =
         DependencyProperty.RegisterAttached("IsOverflowItem", typeof(bool), typeof(ToolBar),
             new PropertyMetadata(false));
@@ -59,6 +71,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Gets or sets a value that indicates where the toolbar should be located in the ToolBarTray.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int Band
     {
         get => (int)GetValue(BandProperty)!;
@@ -68,6 +81,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Gets or sets the band index number that indicates the position of the toolbar on the band.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public int BandIndex
     {
         get => (int)GetValue(BandIndexProperty)!;
@@ -77,6 +91,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Gets or sets a value that indicates whether the ToolBar overflow area is currently visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsOverflowOpen
     {
         get => (bool)GetValue(IsOverflowOpenProperty)!;
@@ -91,6 +106,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Gets or sets the orientation of the ToolBar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -104,6 +120,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Gets the value of the OverflowMode attached property for an object.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static OverflowMode GetOverflowMode(DependencyObject element)
     {
         return (OverflowMode)(element.GetValue(OverflowModeProperty) ?? OverflowMode.AsNeeded);
@@ -112,6 +129,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Sets the value of the OverflowMode attached property for an object.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static void SetOverflowMode(DependencyObject element, OverflowMode mode)
     {
         element.SetValue(OverflowModeProperty, mode);
@@ -120,6 +138,7 @@ public sealed class ToolBar : HeaderedItemsControl
     /// <summary>
     /// Gets the value of the IsOverflowItem attached property for an object.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static bool GetIsOverflowItem(DependencyObject element)
     {
         return (bool)(element.GetValue(IsOverflowItemProperty) ?? false);
@@ -158,7 +177,7 @@ public sealed class ToolBar : HeaderedItemsControl
 /// <summary>
 /// Represents a container that handles the layout of a ToolBar.
 /// </summary>
-public sealed class ToolBarTray : FrameworkElement
+public class ToolBarTray : FrameworkElement
 {
     private readonly ObservableCollection<ToolBar> _toolBars;
 
@@ -167,6 +186,7 @@ public sealed class ToolBarTray : FrameworkElement
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(ToolBarTray),
             new PropertyMetadata(Orientation.Horizontal));
@@ -174,6 +194,7 @@ public sealed class ToolBarTray : FrameworkElement
     /// <summary>
     /// Identifies the IsLocked dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsLockedProperty =
         DependencyProperty.Register(nameof(IsLocked), typeof(bool), typeof(ToolBarTray),
             new PropertyMetadata(false));
@@ -181,6 +202,7 @@ public sealed class ToolBarTray : FrameworkElement
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(ToolBarTray),
             new PropertyMetadata(null));
@@ -197,6 +219,7 @@ public sealed class ToolBarTray : FrameworkElement
     /// <summary>
     /// Gets or sets a value that specifies the orientation of a ToolBarTray.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -206,6 +229,7 @@ public sealed class ToolBarTray : FrameworkElement
     /// <summary>
     /// Gets or sets a value that indicates whether ToolBar elements can be moved inside the ToolBarTray.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsLocked
     {
         get => (bool)GetValue(IsLockedProperty)!;
@@ -215,6 +239,7 @@ public sealed class ToolBarTray : FrameworkElement
     /// <summary>
     /// Gets or sets a brush to use for the background color of the ToolBarTray.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);

@@ -122,6 +122,11 @@ internal sealed class DockSplitBar : Control
         return finalSize;
     }
 
+    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
+    {
+        InvalidateVisual();
+    }
+
     protected override void OnRender(object drawingContextObj)
     {
         if (drawingContextObj is not DrawingContext dc)

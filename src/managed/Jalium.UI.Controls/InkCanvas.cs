@@ -1,4 +1,4 @@
-﻿using System.Collections.Specialized;
+using System.Collections.Specialized;
 using Jalium.UI.Controls.Ink;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
@@ -12,8 +12,14 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Provides an area for ink collection and display.
 /// </summary>
-public sealed class InkCanvas : FrameworkElement
+public class InkCanvas : FrameworkElement
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.InkCanvasAutomationPeer(this);
+    }
+
     #region Private Fields
 
     private InkStylusPointCollection? _currentPoints;
@@ -35,6 +41,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Identifies the Background dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty BackgroundProperty =
         DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(InkCanvas),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -42,6 +49,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Identifies the Strokes dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StrokesProperty =
         DependencyProperty.Register(nameof(Strokes), typeof(StrokeCollection), typeof(InkCanvas),
             new PropertyMetadata(null, OnStrokesChanged));
@@ -49,6 +57,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Identifies the DefaultDrawingAttributes dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DefaultDrawingAttributesProperty =
         DependencyProperty.Register(nameof(DefaultDrawingAttributes), typeof(DrawingAttributes), typeof(InkCanvas),
             new PropertyMetadata(null, OnDefaultDrawingAttributesChanged));
@@ -56,6 +65,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Identifies the EditingMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty EditingModeProperty =
         DependencyProperty.Register(nameof(EditingMode), typeof(InkCanvasEditingMode), typeof(InkCanvas),
             new PropertyMetadata(InkCanvasEditingMode.Ink, OnEditingModeChanged));
@@ -63,6 +73,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Identifies the EraserDiameter dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty EraserDiameterProperty =
         DependencyProperty.Register(nameof(EraserDiameter), typeof(double), typeof(InkCanvas),
             new PropertyMetadata(8.0));
@@ -70,6 +81,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Identifies the DefaultStrokeTaperMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DefaultStrokeTaperModeProperty =
         DependencyProperty.Register(nameof(DefaultStrokeTaperMode), typeof(StrokeTaperMode), typeof(InkCanvas),
             new PropertyMetadata(StrokeTaperMode.None));
@@ -116,6 +128,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Gets or sets the background brush for the InkCanvas.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Background
     {
         get => (Brush?)GetValue(BackgroundProperty);
@@ -125,6 +138,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Gets or sets the collection of strokes displayed on this InkCanvas.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StrokeCollection Strokes
     {
         get => (StrokeCollection?)GetValue(StrokesProperty) ?? new StrokeCollection();
@@ -134,6 +148,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Gets or sets the default drawing attributes for new strokes.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public DrawingAttributes DefaultDrawingAttributes
     {
         get => (DrawingAttributes?)GetValue(DefaultDrawingAttributesProperty) ?? new DrawingAttributes();
@@ -169,6 +184,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Gets or sets the editing mode for this InkCanvas.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public InkCanvasEditingMode EditingMode
     {
         get => (InkCanvasEditingMode)(GetValue(EditingModeProperty) ?? InkCanvasEditingMode.Ink);
@@ -178,6 +194,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Gets or sets the diameter of the eraser.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double EraserDiameter
     {
         get => (double)GetValue(EraserDiameterProperty)!;
@@ -187,6 +204,7 @@ public sealed class InkCanvas : FrameworkElement
     /// <summary>
     /// Gets or sets the default taper mode for new strokes.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StrokeTaperMode DefaultStrokeTaperMode
     {
         get => (StrokeTaperMode)(GetValue(DefaultStrokeTaperModeProperty) ?? StrokeTaperMode.None);
@@ -735,6 +753,7 @@ public sealed class InkCanvasGestureEventArgs : RoutedEventArgs
     }
 
     /// <summary>Gets the strokes that represent the gesture.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StrokeCollection Strokes { get; }
 
     /// <summary>Gets the recognition results for the gesture.</summary>

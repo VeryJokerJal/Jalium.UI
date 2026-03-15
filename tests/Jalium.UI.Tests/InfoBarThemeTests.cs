@@ -2,6 +2,7 @@ using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Input;
 
 namespace Jalium.UI.Tests;
 
@@ -89,5 +90,87 @@ public class InfoBarThemeTests
         {
             ResetApplicationState();
         }
+    }
+
+    [Fact]
+    public void InfoBar_MouseWheel_ShouldUseAncestorScrollViewerSmoothScrolling()
+    {
+        ResetApplicationState();
+
+        try
+        {
+            var infoBar = new InfoBar
+            {
+                Title = "Scrollable",
+                Message = "Wheel should scroll page."
+            };
+
+            var content = new Grid { Height = 600 };
+            content.Children.Add(new Border { Height = 260 });
+            content.Children.Add(infoBar);
+            Grid.SetRow(infoBar, 1);
+            content.Children.Add(new Border { Height = 260 });
+            Grid.SetRow(content.Children[2], 2);
+
+            var viewer = new ScrollViewer
+            {
+                Width = 360,
+                Height = 200,
+                Content = content,
+                IsScrollInertiaEnabled = true,
+                ScrollInertiaDurationMs = 3000
+            };
+
+            viewer.Measure(new Size(360, 200));
+            viewer.Arrange(new Rect(0, 0, 360, 200));
+
+            SetPrivateField(viewer, "_viewportHeight", 200.0);
+            SetPrivateField(viewer, "_extentHeight", 600.0);
+            SetPrivateField(viewer, "_verticalOffset", 0.0);
+            SetPrivateField(viewer, "_smoothTargetY", 0.0);
+
+            var wheel = CreateMouseWheel(new Point(10, 10), -120, timestamp: 1);
+            infoBar.RaiseEvent(wheel);
+
+            Assert.True(wheel.Handled);
+            Assert.True(GetPrivateField<bool>(viewer, "_isSmoothScrolling"));
+            Assert.True(GetPrivateField<double>(viewer, "_smoothTargetY") > viewer.VerticalOffset);
+            Assert.Equal(0.0, viewer.VerticalOffset, precision: 3);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    private static MouseWheelEventArgs CreateMouseWheel(Point position, int delta, int timestamp)
+    {
+        return new MouseWheelEventArgs(
+            UIElement.MouseWheelEvent,
+            position,
+            delta,
+            leftButton: MouseButtonState.Released,
+            middleButton: MouseButtonState.Released,
+            rightButton: MouseButtonState.Released,
+            xButton1: MouseButtonState.Released,
+            xButton2: MouseButtonState.Released,
+            modifiers: ModifierKeys.None,
+            timestamp: timestamp);
+    }
+
+    private static void SetPrivateField(object instance, string fieldName, object value)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        field!.SetValue(instance, value);
+    }
+
+    private static T GetPrivateField<T>(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        var value = field!.GetValue(instance);
+        Assert.NotNull(value);
+        return (T)value!;
     }
 }

@@ -135,6 +135,32 @@ public class LayoutReparentingStabilityTests
         Assert.True(descendant.LastArrangeWidth > 0, $"unexpected arrange width: {descendant.LastArrangeWidth}");
     }
 
+    [Fact]
+    public void RearrangedAncestor_ShouldInvalidateDescendantScreenBoundsCache()
+    {
+        var host = new OffsetLayoutHostPanel();
+        var container = new Border();
+        var descendant = new ProbeElement();
+
+        container.Child = descendant;
+        host.Children.Add(container);
+
+        var viewport = new Size(420, 280);
+        host.ChildOffset = new Point(0, 0);
+        host.UpdateLayoutPass(viewport);
+
+        var initialBounds = descendant.GetScreenBounds();
+        Assert.Equal(0, initialBounds.X);
+
+        host.ChildOffset = new Point(120, 40);
+        host.InvalidateArrange();
+        host.UpdateLayoutPass(viewport);
+
+        var movedBounds = descendant.GetScreenBounds();
+        Assert.Equal(120, movedBounds.X);
+        Assert.Equal(40, movedBounds.Y);
+    }
+
     private sealed class LayoutHostPanel : Panel, ILayoutManagerHost
     {
         private readonly LayoutManager _layoutManager = new();
@@ -166,6 +192,46 @@ public class LayoutReparentingStabilityTests
                 if (child.Visibility != Visibility.Collapsed)
                 {
                     child.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
+                }
+            }
+
+            return finalSize;
+        }
+    }
+
+    private sealed class OffsetLayoutHostPanel : Panel, ILayoutManagerHost
+    {
+        private readonly LayoutManager _layoutManager = new();
+
+        public Point ChildOffset { get; set; }
+
+        LayoutManager ILayoutManagerHost.LayoutManager => _layoutManager;
+
+        public void UpdateLayoutPass(Size availableSize)
+        {
+            _layoutManager.UpdateLayout(this, availableSize);
+        }
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            foreach (var child in Children)
+            {
+                if (child.Visibility != Visibility.Collapsed)
+                {
+                    child.Measure(availableSize);
+                }
+            }
+
+            return availableSize;
+        }
+
+        protected override Size ArrangeOverride(Size finalSize)
+        {
+            foreach (var child in Children)
+            {
+                if (child.Visibility != Visibility.Collapsed)
+                {
+                    child.Arrange(new Rect(ChildOffset.X, ChildOffset.Y, finalSize.Width - ChildOffset.X, finalSize.Height - ChildOffset.Y));
                 }
             }
 

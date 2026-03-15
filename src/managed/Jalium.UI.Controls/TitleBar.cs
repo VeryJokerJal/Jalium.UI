@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Input;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -6,13 +6,14 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a custom title bar control for windows.
 /// </summary>
-public sealed class TitleBar : Control
+public class TitleBar : Control
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Title dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TitleProperty =
         DependencyProperty.Register(nameof(Title), typeof(string), typeof(TitleBar),
             new PropertyMetadata("", OnTitleChanged));
@@ -20,6 +21,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Identifies the IsMaximized dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsMaximizedProperty =
         DependencyProperty.Register(nameof(IsMaximized), typeof(bool), typeof(TitleBar),
             new PropertyMetadata(false, OnIsMaximizedChanged));
@@ -27,6 +29,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Identifies the ShowMinimizeButton dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowMinimizeButtonProperty =
         DependencyProperty.Register(nameof(ShowMinimizeButton), typeof(bool), typeof(TitleBar),
             new PropertyMetadata(true, OnButtonVisibilityChanged));
@@ -34,6 +37,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Identifies the ShowMaximizeButton dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowMaximizeButtonProperty =
         DependencyProperty.Register(nameof(ShowMaximizeButton), typeof(bool), typeof(TitleBar),
             new PropertyMetadata(true, OnButtonVisibilityChanged));
@@ -41,6 +45,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Identifies the ShowCloseButton dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowCloseButtonProperty =
         DependencyProperty.Register(nameof(ShowCloseButton), typeof(bool), typeof(TitleBar),
             new PropertyMetadata(true, OnButtonVisibilityChanged));
@@ -48,6 +53,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Identifies the LeftWindowCommands dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty LeftWindowCommandsProperty =
         DependencyProperty.Register(nameof(LeftWindowCommands), typeof(FrameworkElement), typeof(TitleBar),
             new PropertyMetadata(null, OnPresentationPropertyChanged));
@@ -55,6 +61,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Identifies the RightWindowCommands dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty RightWindowCommandsProperty =
         DependencyProperty.Register(nameof(RightWindowCommands), typeof(FrameworkElement), typeof(TitleBar),
             new PropertyMetadata(null, OnPresentationPropertyChanged));
@@ -62,6 +69,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Identifies the IsShowIcon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsShowIconProperty =
         DependencyProperty.Register(nameof(IsShowIcon), typeof(bool), typeof(TitleBar),
             new PropertyMetadata(true, OnPresentationPropertyChanged));
@@ -69,6 +77,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Identifies the IsShowTitle dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsShowTitleProperty =
         DependencyProperty.Register(nameof(IsShowTitle), typeof(bool), typeof(TitleBar),
             new PropertyMetadata(true, OnPresentationPropertyChanged));
@@ -76,6 +85,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Identifies the WindowIcon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty WindowIconProperty =
         DependencyProperty.Register(nameof(WindowIcon), typeof(ImageSource), typeof(TitleBar),
             new PropertyMetadata(null, OnPresentationPropertyChanged));
@@ -87,6 +97,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets the title displayed in the title bar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Title
     {
         get => (string)(GetValue(TitleProperty) ?? "");
@@ -96,6 +107,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets whether the window is maximized.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsMaximized
     {
         get => (bool)GetValue(IsMaximizedProperty)!;
@@ -105,6 +117,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets whether to show the minimize button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowMinimizeButton
     {
         get => (bool)GetValue(ShowMinimizeButtonProperty)!;
@@ -114,6 +127,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets whether to show the maximize button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowMaximizeButton
     {
         get => (bool)GetValue(ShowMaximizeButtonProperty)!;
@@ -123,6 +137,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets whether to show the close button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public bool ShowCloseButton
     {
         get => (bool)GetValue(ShowCloseButtonProperty)!;
@@ -132,6 +147,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets the content rendered on the left side of the title bar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public FrameworkElement? LeftWindowCommands
     {
         get => (FrameworkElement?)GetValue(LeftWindowCommandsProperty);
@@ -141,6 +157,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets the content rendered on the right side of the title bar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public FrameworkElement? RightWindowCommands
     {
         get => (FrameworkElement?)GetValue(RightWindowCommandsProperty);
@@ -150,6 +167,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets whether to display the window icon.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsShowIcon
     {
         get => (bool)GetValue(IsShowIconProperty)!;
@@ -159,6 +177,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets whether to display the window title text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsShowTitle
     {
         get => (bool)GetValue(IsShowTitleProperty)!;
@@ -168,6 +187,7 @@ public sealed class TitleBar : Control
     /// <summary>
     /// Gets or sets the icon displayed in the title bar.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public ImageSource? WindowIcon
     {
         get => (ImageSource?)GetValue(WindowIconProperty);

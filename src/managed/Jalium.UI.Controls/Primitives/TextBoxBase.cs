@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls;
+using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
@@ -13,6 +13,12 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public abstract class TextBoxBase : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.TextBoxBaseAutomationPeer(this);
+    }
+
     #region Content Host Fields
 
     /// <summary>
@@ -100,6 +106,21 @@ public abstract class TextBoxBase : Control
     protected bool _isSelecting;
 
     /// <summary>
+    /// Whether the current drag gesture should expand by whole-word ranges.
+    /// </summary>
+    protected bool _isWordSelecting;
+
+    /// <summary>
+    /// The start of the word range captured when a double-click selection begins.
+    /// </summary>
+    protected int _wordSelectionAnchorStart;
+
+    /// <summary>
+    /// The end of the word range captured when a double-click selection begins.
+    /// </summary>
+    protected int _wordSelectionAnchorEnd;
+
+    /// <summary>
     /// The anchor point for selection extension.
     /// </summary>
     protected int _selectionAnchor;
@@ -151,6 +172,9 @@ public abstract class TextBoxBase : Control
     private static readonly CubicEase ContextMenuOpenEase = new() { EasingMode = EasingMode.EaseOut };
     private static readonly CubicEase ContextMenuCloseEase = new() { EasingMode = EasingMode.EaseIn };
 
+    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0, 120, 212));
+    private static readonly SolidColorBrush s_defaultCaretBrush = new(Color.White);
+
     // Static brushes for context menu rendering
     private static readonly SolidColorBrush s_ctxMenuBgBrush = new(Color.FromRgb(45, 45, 48));
     private static readonly SolidColorBrush s_ctxMenuBorderBrush = new(Color.FromRgb(67, 67, 70));
@@ -168,6 +192,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the IsReadOnly dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(TextBoxBase),
             new PropertyMetadata(false));
@@ -175,6 +200,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the AcceptsReturn dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty AcceptsReturnProperty =
         DependencyProperty.Register(nameof(AcceptsReturn), typeof(bool), typeof(TextBoxBase),
             new PropertyMetadata(false));
@@ -182,6 +208,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the AcceptsTab dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty AcceptsTabProperty =
         DependencyProperty.Register(nameof(AcceptsTab), typeof(bool), typeof(TextBoxBase),
             new PropertyMetadata(false));
@@ -189,20 +216,23 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the SelectionBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
         DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(TextBoxBase),
-            new PropertyMetadata(new SolidColorBrush(Color.FromArgb(180, 0, 120, 212)), OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
     /// <summary>
     /// Identifies the CaretBrush dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty CaretBrushProperty =
         DependencyProperty.Register(nameof(CaretBrush), typeof(Brush), typeof(TextBoxBase),
-            new PropertyMetadata(new SolidColorBrush(Color.White), OnVisualPropertyChanged));
+            new PropertyMetadata(null, OnVisualPropertyChanged));
 
     /// <summary>
     /// Identifies the IsUndoEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsUndoEnabledProperty =
         DependencyProperty.Register(nameof(IsUndoEnabled), typeof(bool), typeof(TextBoxBase),
             new PropertyMetadata(true));
@@ -210,6 +240,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the UndoLimit dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UndoLimitProperty =
         DependencyProperty.Register(nameof(UndoLimit), typeof(int), typeof(TextBoxBase),
             new PropertyMetadata(100));
@@ -217,6 +248,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the HorizontalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(TextBoxBase),
             new PropertyMetadata(ScrollBarVisibility.Hidden));
@@ -224,6 +256,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the VerticalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(TextBoxBase),
             new PropertyMetadata(ScrollBarVisibility.Hidden));
@@ -231,6 +264,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Identifies the TextTrimming dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty TextTrimmingProperty =
         DependencyProperty.Register(nameof(TextTrimming), typeof(TextTrimming), typeof(TextBoxBase),
             new PropertyMetadata(TextTrimming.CharacterEllipsis, OnVisualPropertyChanged));
@@ -242,6 +276,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets whether the text box is read-only.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool IsReadOnly
     {
         get => (bool)GetValue(IsReadOnlyProperty)!;
@@ -251,6 +286,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets whether the text box accepts Enter key for new lines.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool AcceptsReturn
     {
         get => (bool)GetValue(AcceptsReturnProperty)!;
@@ -260,6 +296,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets whether the text box accepts Tab key for tab characters.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool AcceptsTab
     {
         get => (bool)GetValue(AcceptsTabProperty)!;
@@ -269,6 +306,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the brush for text selection highlighting.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? SelectionBrush
     {
         get => (Brush?)GetValue(SelectionBrushProperty);
@@ -278,6 +316,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the brush for the caret.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? CaretBrush
     {
         get => (Brush?)GetValue(CaretBrushProperty);
@@ -287,6 +326,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets whether undo is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsUndoEnabled
     {
         get => (bool)GetValue(IsUndoEnabledProperty)!;
@@ -296,6 +336,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the maximum number of undo entries.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int UndoLimit
     {
         get => (int)GetValue(UndoLimitProperty)!;
@@ -305,6 +346,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the horizontal scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility HorizontalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty)!;
@@ -314,6 +356,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the vertical scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility VerticalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty)!;
@@ -323,6 +366,7 @@ public abstract class TextBoxBase : Control
     /// <summary>
     /// Gets or sets the trimming behavior for visible text when it overflows the content area.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public TextTrimming TextTrimming
     {
         get => (TextTrimming)GetValue(TextTrimmingProperty)!;
@@ -1371,6 +1415,11 @@ public abstract class TextBoxBase : Control
                 {
                     // Double-click: select word
                     SelectCurrentWord();
+                    _wordSelectionAnchorStart = _selectionStart;
+                    _wordSelectionAnchorEnd = _selectionStart + _selectionLength;
+                    _isWordSelecting = _selectionLength > 0;
+                    _isSelecting = true;
+                    CaptureMouse();
                 }
                 else
                 {
@@ -1388,6 +1437,7 @@ public abstract class TextBoxBase : Control
                         _selectionAnchor = newCaretIndex;
                         _selectionStart = newCaretIndex;
                         _selectionLength = 0;
+                        _isWordSelecting = false;
                         _isSelecting = true;
                         OnSelectionChanged();
                     }
@@ -1420,6 +1470,7 @@ public abstract class TextBoxBase : Control
             if (_isSelecting)
             {
                 _isSelecting = false;
+                _isWordSelecting = false;
                 ReleaseMouseCapture();
             }
 
@@ -1452,9 +1503,16 @@ public abstract class TextBoxBase : Control
             var position = mouseArgs.GetPosition(this);
             var newCaretIndex = GetCaretIndexFromPosition(position);
 
-            _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
-            _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
-            _caretIndex = newCaretIndex;
+            if (_isWordSelecting)
+            {
+                ExtendWordSelection(newCaretIndex);
+            }
+            else
+            {
+                _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
+                _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
+                _caretIndex = newCaretIndex;
+            }
 
             EnsureCaretVisible();
             InvalidateVisual();
@@ -1487,6 +1545,8 @@ public abstract class TextBoxBase : Control
         {
             _isSelecting = false;
         }
+
+        _isWordSelecting = false;
     }
 
     /// <inheritdoc />
@@ -1853,6 +1913,95 @@ public abstract class TextBoxBase : Control
         return index;
     }
 
+    private void ExtendWordSelection(int newCaretIndex)
+    {
+        var text = GetText();
+        if (string.IsNullOrEmpty(text))
+        {
+            _selectionStart = 0;
+            _selectionLength = 0;
+            _caretIndex = 0;
+            OnSelectionChanged();
+            return;
+        }
+
+        var (currentWordStart, currentWordEnd) = GetWordRangeAtIndex(newCaretIndex);
+
+        int selectionStart;
+        int selectionEnd;
+        if (currentWordEnd <= _wordSelectionAnchorStart)
+        {
+            selectionStart = currentWordStart;
+            selectionEnd = _wordSelectionAnchorEnd;
+            _caretIndex = selectionStart;
+        }
+        else if (currentWordStart >= _wordSelectionAnchorEnd)
+        {
+            selectionStart = _wordSelectionAnchorStart;
+            selectionEnd = currentWordEnd;
+            _caretIndex = selectionEnd;
+        }
+        else
+        {
+            selectionStart = _wordSelectionAnchorStart;
+            selectionEnd = _wordSelectionAnchorEnd;
+            _caretIndex = selectionEnd;
+        }
+
+        _selectionStart = selectionStart;
+        _selectionLength = Math.Max(0, selectionEnd - selectionStart);
+        OnSelectionChanged();
+    }
+
+    private (int start, int end) GetWordRangeAtIndex(int index)
+    {
+        var text = GetText();
+        if (string.IsNullOrEmpty(text))
+        {
+            return (0, 0);
+        }
+
+        var clampedIndex = Math.Clamp(index, 0, text.Length);
+        if (clampedIndex == text.Length && clampedIndex > 0 && !IsWordBoundary(text[clampedIndex - 1]))
+        {
+            clampedIndex--;
+        }
+
+        if (clampedIndex < text.Length && IsWordBoundary(text[clampedIndex]))
+        {
+            if (clampedIndex > 0 && !IsWordBoundary(text[clampedIndex - 1]))
+            {
+                clampedIndex--;
+            }
+            else
+            {
+                while (clampedIndex < text.Length && IsWordBoundary(text[clampedIndex]))
+                {
+                    clampedIndex++;
+                }
+
+                if (clampedIndex >= text.Length)
+                {
+                    return (text.Length, text.Length);
+                }
+            }
+        }
+
+        var start = clampedIndex;
+        while (start > 0 && !IsWordBoundary(text[start - 1]))
+        {
+            start--;
+        }
+
+        var end = clampedIndex;
+        while (end < text.Length && !IsWordBoundary(text[end]))
+        {
+            end++;
+        }
+
+        return (start, end);
+    }
+
     private void SelectCurrentWord()
     {
         var text = GetText();
@@ -1897,9 +2046,80 @@ public abstract class TextBoxBase : Control
         return char.IsWhiteSpace(c) || char.IsPunctuation(c);
     }
 
+    protected Brush? ResolveSelectionBrush()
+    {
+        if (HasLocalValue(SelectionBrushProperty))
+            return SelectionBrush;
+
+        return SelectionBrush
+            ?? ResolveThemeBrush("SelectionBackground", s_defaultSelectionBrush, "AccentFillColorSelectedTextBackgroundBrush");
+    }
+
+    protected Brush? ResolveCaretBrush()
+    {
+        if (HasLocalValue(CaretBrushProperty))
+            return CaretBrush;
+
+        return CaretBrush
+            ?? ((HasLocalValue(Control.ForegroundProperty) && Foreground != null) ? Foreground : null)
+            ?? ResolveThemeBrush("TextPrimary", s_defaultCaretBrush, "TextFillColorPrimaryBrush");
+    }
+
+    protected Brush ResolveTextForegroundBrush()
+    {
+        if (HasLocalValue(Control.ForegroundProperty) && Foreground != null)
+            return Foreground;
+
+        return ResolveThemeBrush("TextPrimary", s_defaultCaretBrush, "TextFillColorPrimaryBrush");
+    }
+
+    private Brush ResolveThemeBrush(string primaryKey, Brush fallback, string? secondaryKey = null)
+    {
+        if (TryFindResource(primaryKey) is Brush primary)
+            return primary;
+        if (!string.IsNullOrWhiteSpace(secondaryKey) && TryFindResource(secondaryKey) is Brush secondary)
+            return secondary;
+        return fallback;
+    }
+
     #endregion
 
     #region Context Menu
+
+    private Brush ResolveContextMenuBackgroundBrush()
+    {
+        return ResolveThemeBrush("MenuFlyoutPresenterBackground", s_ctxMenuBgBrush, "SurfaceBackground");
+    }
+
+    private Brush ResolveContextMenuBorderBrush()
+    {
+        return ResolveThemeBrush("MenuFlyoutPresenterBorderBrush", s_ctxMenuBorderBrush, "ControlBorder");
+    }
+
+    private Brush ResolveContextMenuForegroundBrush()
+    {
+        return ResolveThemeBrush("TextPrimary", s_ctxMenuEnabledTextBrush, "TextFillColorPrimaryBrush");
+    }
+
+    private Brush ResolveContextMenuDisabledForegroundBrush()
+    {
+        return ResolveThemeBrush("TextDisabled", s_ctxMenuDisabledTextBrush, "TextFillColorDisabledBrush");
+    }
+
+    private Brush ResolveContextMenuShortcutForegroundBrush()
+    {
+        return ResolveThemeBrush("TextSecondary", s_ctxMenuShortcutBrush, "TextFillColorSecondaryBrush");
+    }
+
+    private Brush ResolveContextMenuHoverBackgroundBrush()
+    {
+        return ResolveThemeBrush("MenuFlyoutItemBackgroundHover", s_ctxMenuHoverBrush, "HighlightBackground");
+    }
+
+    private Brush ResolveContextMenuSeparatorBrush()
+    {
+        return ResolveThemeBrush("MenuFlyoutPresenterBorderBrush", s_ctxMenuSeparatorBrush, "ControlBorder");
+    }
 
     private void ShowContextMenu()
     {
@@ -1919,23 +2139,23 @@ public abstract class TextBoxBase : Control
 
         if (!IsReadOnly)
         {
-            AddContextMenuItem(panel, "还原", "Ctrl+Z", CanUndo, () => AnimateCloseContextMenu(() => Undo()));
-            AddContextMenuItem(panel, "重做", "Ctrl+Y", CanRedo, () => AnimateCloseContextMenu(() => Redo()));
+            AddContextMenuItem(panel, "Undo", "Ctrl+Z", CanUndo, () => AnimateCloseContextMenu(() => Undo()));
+            AddContextMenuItem(panel, "Redo", "Ctrl+Y", CanRedo, () => AnimateCloseContextMenu(() => Redo()));
             AddContextMenuSeparator(panel);
-            AddContextMenuItem(panel, "剪切", "Ctrl+X", hasSelection, () => AnimateCloseContextMenu(() => Cut()));
+            AddContextMenuItem(panel, "Cut", "Ctrl+X", hasSelection, () => AnimateCloseContextMenu(() => Cut()));
         }
-        AddContextMenuItem(panel, "复制", "Ctrl+C", hasSelection, () => AnimateCloseContextMenu(() => Copy()));
+        AddContextMenuItem(panel, "Copy", "Ctrl+C", hasSelection, () => AnimateCloseContextMenu(() => Copy()));
         if (!IsReadOnly)
         {
-            AddContextMenuItem(panel, "粘贴", "Ctrl+V", hasClipboard, () => AnimateCloseContextMenu(() => Paste()));
+            AddContextMenuItem(panel, "Paste", "Ctrl+V", hasClipboard, () => AnimateCloseContextMenu(() => Paste()));
         }
         AddContextMenuSeparator(panel);
-        AddContextMenuItem(panel, "全选", "Ctrl+A", hasText, () => AnimateCloseContextMenu(() => SelectAll()));
+        AddContextMenuItem(panel, "Select All", "Ctrl+A", hasText, () => AnimateCloseContextMenu(() => SelectAll()));
 
         var border = new Border
         {
-            Background = s_ctxMenuBgBrush,
-            BorderBrush = s_ctxMenuBorderBrush,
+            Background = ResolveContextMenuBackgroundBrush(),
+            BorderBrush = ResolveContextMenuBorderBrush(),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(8),
             Padding = new Thickness(4),
@@ -2045,6 +2265,14 @@ public abstract class TextBoxBase : Control
 
     private void AddContextMenuItem(StackPanel panel, string text, string shortcut, bool isEnabled, Action onClick)
     {
+        var foregroundBrush = isEnabled
+            ? ResolveContextMenuForegroundBrush()
+            : ResolveContextMenuDisabledForegroundBrush();
+        var shortcutBrush = isEnabled
+            ? ResolveContextMenuShortcutForegroundBrush()
+            : ResolveContextMenuDisabledForegroundBrush();
+        var hoverBrush = ResolveContextMenuHoverBackgroundBrush();
+
         var itemPanel = new Grid();
         itemPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
         itemPanel.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
@@ -2053,9 +2281,7 @@ public abstract class TextBoxBase : Control
         {
             Text = text,
             FontSize = 13,
-            Foreground = isEnabled
-                ? s_ctxMenuEnabledTextBrush
-                : s_ctxMenuDisabledTextBrush,
+            Foreground = foregroundBrush,
             VerticalAlignment = VerticalAlignment.Center
         };
         Grid.SetColumn(label, 0);
@@ -2065,7 +2291,7 @@ public abstract class TextBoxBase : Control
         {
             Text = shortcut,
             FontSize = 12,
-            Foreground = s_ctxMenuShortcutBrush,
+            Foreground = shortcutBrush,
             VerticalAlignment = VerticalAlignment.Center,
             Margin = new Thickness(24, 0, 0, 0)
         };
@@ -2084,7 +2310,7 @@ public abstract class TextBoxBase : Control
         {
             itemBorder.AddHandler(MouseEnterEvent, new RoutedEventHandler((s, e) =>
             {
-                itemBorder.Background = s_ctxMenuHoverBrush;
+                itemBorder.Background = hoverBrush;
             }));
             itemBorder.AddHandler(MouseLeaveEvent, new RoutedEventHandler((s, e) =>
             {
@@ -2103,12 +2329,12 @@ public abstract class TextBoxBase : Control
         panel.Children.Add(itemBorder);
     }
 
-    private static void AddContextMenuSeparator(StackPanel panel)
+    private void AddContextMenuSeparator(StackPanel panel)
     {
         var separator = new Border
         {
             Height = 1,
-            Background = s_ctxMenuSeparatorBrush,
+            Background = ResolveContextMenuSeparatorBrush(),
             Margin = new Thickness(8, 4, 8, 4)
         };
         panel.Children.Add(separator);

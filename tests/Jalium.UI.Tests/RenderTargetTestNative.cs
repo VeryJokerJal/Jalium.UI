@@ -6,14 +6,23 @@ namespace Jalium.UI.Tests;
 internal sealed class RenderTargetTestNative : IRenderTargetNative
 {
     public nint CreatedHandle { get; set; } = new(0xCAFE);
+    public NativeSurfaceDescriptor? LastSurface { get; private set; }
     public int ContextLastError { get; set; } = (int)JaliumResult.Unknown;
     public int ResizeResult { get; set; } = (int)JaliumResult.Ok;
     public int BeginDrawResult { get; set; } = (int)JaliumResult.Ok;
     public int EndDrawResult { get; set; } = (int)JaliumResult.Ok;
 
-    public nint CreateForHwnd(nint context, nint hwnd, int width, int height) => CreatedHandle;
+    public nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
+    {
+        LastSurface = surface;
+        return CreatedHandle;
+    }
 
-    public nint CreateForComposition(nint context, nint hwnd, int width, int height) => CreatedHandle;
+    public nint CreateForCompositionSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
+    {
+        LastSurface = surface;
+        return CreatedHandle;
+    }
 
     public int GetContextLastError(nint context) => ContextLastError;
 

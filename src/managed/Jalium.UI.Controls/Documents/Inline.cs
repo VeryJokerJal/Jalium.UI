@@ -215,6 +215,7 @@ public sealed class Hyperlink : Span
     /// <summary>
     /// Identifies the NavigateUri dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty NavigateUriProperty =
         DependencyProperty.Register(nameof(NavigateUri), typeof(Uri), typeof(Hyperlink),
             new PropertyMetadata(null));
@@ -222,6 +223,7 @@ public sealed class Hyperlink : Span
     /// <summary>
     /// Gets or sets the URI to navigate to.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? NavigateUri
     {
         get => (Uri?)GetValue(NavigateUriProperty);

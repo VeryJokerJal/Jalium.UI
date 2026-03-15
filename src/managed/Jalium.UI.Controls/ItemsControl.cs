@@ -19,11 +19,18 @@ public class ItemsControl : Control
         "1",
         StringComparison.OrdinalIgnoreCase);
 
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ItemsControlAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the ItemsSource dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty ItemsSourceProperty =
         DependencyProperty.Register(nameof(ItemsSource), typeof(IEnumerable), typeof(ItemsControl),
             new PropertyMetadata(null, OnItemsSourceChanged));
@@ -31,6 +38,7 @@ public class ItemsControl : Control
     /// <summary>
     /// Identifies the ItemTemplate dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty ItemTemplateProperty =
         DependencyProperty.Register(nameof(ItemTemplate), typeof(DataTemplate), typeof(ItemsControl),
             new PropertyMetadata(null, OnItemTemplateChanged));
@@ -38,6 +46,7 @@ public class ItemsControl : Control
     /// <summary>
     /// Identifies the ItemTemplateSelector dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty ItemTemplateSelectorProperty =
         DependencyProperty.Register(nameof(ItemTemplateSelector), typeof(DataTemplateSelector), typeof(ItemsControl),
             new PropertyMetadata(null, OnItemTemplateSelectorChanged));
@@ -45,6 +54,7 @@ public class ItemsControl : Control
     /// <summary>
     /// Identifies the ItemsPanel dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public static readonly DependencyProperty ItemsPanelProperty =
         DependencyProperty.Register(nameof(ItemsPanel), typeof(ItemsPanelTemplate), typeof(ItemsControl),
             new PropertyMetadata(null, OnItemsPanelChanged));
@@ -56,6 +66,7 @@ public class ItemsControl : Control
     /// <summary>
     /// Gets or sets a collection used to generate the content of the ItemsControl.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public IEnumerable? ItemsSource
     {
         get => (IEnumerable?)GetValue(ItemsSourceProperty);
@@ -65,6 +76,7 @@ public class ItemsControl : Control
     /// <summary>
     /// Gets or sets the DataTemplate used to display each item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public DataTemplate? ItemTemplate
     {
         get => (DataTemplate?)GetValue(ItemTemplateProperty);
@@ -74,6 +86,7 @@ public class ItemsControl : Control
     /// <summary>
     /// Gets or sets the DataTemplateSelector used to display each item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public DataTemplateSelector? ItemTemplateSelector
     {
         get => (DataTemplateSelector?)GetValue(ItemTemplateSelectorProperty);
@@ -83,6 +96,7 @@ public class ItemsControl : Control
     /// <summary>
     /// Gets or sets the template that defines the panel that controls the layout of items.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Items)]
     public ItemsPanelTemplate? ItemsPanel
     {
         get => (ItemsPanelTemplate?)GetValue(ItemsPanelProperty);

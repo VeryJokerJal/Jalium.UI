@@ -1,4 +1,4 @@
-﻿using System.Globalization;
+using System.Globalization;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
@@ -10,8 +10,14 @@ namespace Jalium.UI.Controls;
 /// Represents a text box for entering numeric values with spin buttons for increment/decrement.
 /// Inherits from TextBoxBase for full text editing support.
 /// </summary>
-public sealed class NumberBox : TextBoxBase, IImeSupport
+public class NumberBox : TextBoxBase, IImeSupport
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.NumberBoxAutomationPeer(this);
+    }
+
     #region Fields
 
     // Internal text storage
@@ -72,6 +78,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Value dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ValueProperty =
         DependencyProperty.Register(nameof(Value), typeof(double), typeof(NumberBox),
             new PropertyMetadata(0.0, OnValueChanged, CoerceValue));
@@ -79,6 +86,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Minimum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinimumProperty =
         DependencyProperty.Register(nameof(Minimum), typeof(double), typeof(NumberBox),
             new PropertyMetadata(double.MinValue, OnRangeChanged));
@@ -86,6 +94,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Maximum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaximumProperty =
         DependencyProperty.Register(nameof(Maximum), typeof(double), typeof(NumberBox),
             new PropertyMetadata(double.MaxValue, OnRangeChanged));
@@ -93,6 +102,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the SmallChange dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SmallChangeProperty =
         DependencyProperty.Register(nameof(SmallChange), typeof(double), typeof(NumberBox),
             new PropertyMetadata(1.0));
@@ -100,6 +110,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the LargeChange dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LargeChangeProperty =
         DependencyProperty.Register(nameof(LargeChange), typeof(double), typeof(NumberBox),
             new PropertyMetadata(10.0));
@@ -107,6 +118,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the SpinButtonPlacementMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SpinButtonPlacementModeProperty =
         DependencyProperty.Register(nameof(SpinButtonPlacementMode), typeof(NumberBoxSpinButtonPlacementMode), typeof(NumberBox),
             new PropertyMetadata(NumberBoxSpinButtonPlacementMode.Inline, OnLayoutPropertyChanged));
@@ -114,6 +126,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Placeholder dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(NumberBox),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -121,6 +134,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(NumberBox),
             new PropertyMetadata(null, OnLayoutPropertyChanged));
@@ -128,6 +142,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the NumberFormatter dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty NumberFormatterProperty =
         DependencyProperty.Register(nameof(NumberFormatter), typeof(string), typeof(NumberBox),
             new PropertyMetadata("G", OnFormatChanged));
@@ -135,6 +150,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the AcceptsExpression dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty AcceptsExpressionProperty =
         DependencyProperty.Register(nameof(AcceptsExpression), typeof(bool), typeof(NumberBox),
             new PropertyMetadata(false));
@@ -142,6 +158,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the IsWrapEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsWrapEnabledProperty =
         DependencyProperty.Register(nameof(IsWrapEnabled), typeof(bool), typeof(NumberBox),
             new PropertyMetadata(false));
@@ -149,6 +166,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Identifies the DecimalPlaces dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DecimalPlacesProperty =
         DependencyProperty.Register(nameof(DecimalPlaces), typeof(int), typeof(NumberBox),
             new PropertyMetadata(-1, OnFormatChanged));
@@ -180,6 +198,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the numeric value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Value
     {
         get => (double)GetValue(ValueProperty)!;
@@ -189,6 +208,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the minimum value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Minimum
     {
         get => (double)GetValue(MinimumProperty)!;
@@ -198,6 +218,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the maximum value.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Maximum
     {
         get => (double)GetValue(MaximumProperty)!;
@@ -207,6 +228,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the small change value (for arrow keys and spin buttons).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SmallChange
     {
         get => (double)GetValue(SmallChangeProperty)!;
@@ -216,6 +238,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the large change value (for page up/down).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double LargeChange
     {
         get => (double)GetValue(LargeChangeProperty)!;
@@ -225,6 +248,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the spin button placement mode.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public NumberBoxSpinButtonPlacementMode SpinButtonPlacementMode
     {
         get => (NumberBoxSpinButtonPlacementMode)(GetValue(SpinButtonPlacementModeProperty) ?? NumberBoxSpinButtonPlacementMode.Inline);
@@ -234,6 +258,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the placeholder text.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string? PlaceholderText
     {
         get => (string?)GetValue(PlaceholderTextProperty);
@@ -243,6 +268,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the header content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
@@ -252,6 +278,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the number format string.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string NumberFormatter
     {
         get => (string)(GetValue(NumberFormatterProperty) ?? "G");
@@ -261,6 +288,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether mathematical expressions are accepted.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public bool AcceptsExpression
     {
         get => (bool)GetValue(AcceptsExpressionProperty)!;
@@ -270,6 +298,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets whether the value wraps around at min/max.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsWrapEnabled
     {
         get => (bool)GetValue(IsWrapEnabledProperty)!;
@@ -279,6 +308,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// <summary>
     /// Gets or sets the number of decimal places (-1 for auto).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public int DecimalPlaces
     {
         get => (int)GetValue(DecimalPlacesProperty)!;
@@ -316,6 +346,8 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     /// </summary>
     public NumberBox()
     {
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
+
         // Set IBeam cursor for text input
         Cursor = Jalium.UI.Cursors.IBeam;
 
@@ -332,6 +364,12 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
         // This ensures spin buttons work even if event routing has issues
         AddHandler(PreviewMouseDownEvent, new RoutedEventHandler(OnPreviewMouseDownHandler));
         AddHandler(PreviewMouseUpEvent, new RoutedEventHandler(OnPreviewMouseUpHandler));
+    }
+
+    /// <inheritdoc />
+    protected override bool ShouldSuppressAutomaticTransition(DependencyProperty dp)
+    {
+        return ReferenceEquals(dp, ValueProperty);
     }
 
     private RepeatButton? _pressedSpinButton;
@@ -467,10 +505,12 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
         if (_upSpinButton != null)
         {
             _upSpinButton.Click += OnUpButtonClick;
+            _upSpinButton.Cursor = Jalium.UI.Cursors.Arrow;
         }
         if (_downSpinButton != null)
         {
             _downSpinButton.Click += OnDownButtonClick;
+            _downSpinButton.Cursor = Jalium.UI.Cursors.Arrow;
         }
     }
 
@@ -1072,20 +1112,28 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
 
         // Input area rect
         var inputRect = new Rect(0, headerHeight, bounds.Width, bounds.Height - headerHeight);
+        var strokeThickness = border.Left;
+        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(inputRect, strokeThickness);
+        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
 
         // Draw background and border only in direct rendering mode (template provides these)
         if (!HasContentHost)
         {
             if (Background != null)
             {
-                dc.DrawRoundedRectangle(Background, null, inputRect, cornerRadius);
+                dc.DrawRoundedRectangle(Background, null, borderRect, borderRadius);
             }
 
             var borderBrush = IsKeyboardFocused ? ResolveFocusedBorderBrush() : BorderBrush;
             if (borderBrush != null && border.TotalWidth > 0)
             {
-                var pen = new Pen(borderBrush, border.Left);
-                dc.DrawRoundedRectangle(null, pen, inputRect, cornerRadius);
+                var pen = new Pen(borderBrush, strokeThickness);
+                dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
+            }
+
+            if (IsKeyboardFocused)
+            {
+                ControlFocusVisual.Draw(dc, this, inputRect, cornerRadius);
             }
         }
 
@@ -1159,7 +1207,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
         {
             var valueFormatted = new FormattedText(displayText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
             {
-                Foreground = Foreground ?? s_whiteBrush,
+                Foreground = ResolveTextForegroundBrush(),
                 MaxTextWidth = Math.Max(0, contentRect.Width),
                 MaxTextHeight = lineHeight,
                 Trimming = TextTrimming
@@ -1186,7 +1234,8 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
 
     private void DrawSelection(DrawingContext dc, Rect contentRect, double lineHeight)
     {
-        if (SelectionBrush == null)
+        var selectionBrush = ResolveSelectionBrush();
+        if (selectionBrush == null)
             return;
 
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
@@ -1198,7 +1247,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
         var textY = contentRect.Top + (contentRect.Height - lineHeight) / 2;
 
         var selRect = new Rect(startX, textY, width, lineHeight);
-        dc.DrawRectangle(SelectionBrush, null, selRect);
+        dc.DrawRectangle(selectionBrush, null, selRect);
     }
 
     private void DrawImeComposition(DrawingContext dc, Rect contentRect, double lineHeight)
@@ -1231,7 +1280,8 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
     {
         var caretOpacity = UpdateCaretAnimation();
 
-        if (CaretBrush == null || _isImeComposing || caretOpacity < 0.01)
+        var caretBrush = ResolveCaretBrush();
+        if (caretBrush == null || _isImeComposing || caretOpacity < 0.01)
             return;
 
         var columnIndex = Math.Min(_caretIndex, _text.Length);
@@ -1242,7 +1292,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
         var textY = contentRect.Top + (contentRect.Height - lineHeight) / 2;
 
         Brush caretBrushWithOpacity;
-        if (CaretBrush is SolidColorBrush solidBrush)
+        if (caretBrush is SolidColorBrush solidBrush)
         {
             var color = solidBrush.Color;
             var alpha = (byte)(color.A * caretOpacity);
@@ -1250,7 +1300,7 @@ public sealed class NumberBox : TextBoxBase, IImeSupport
         }
         else
         {
-            caretBrushWithOpacity = CaretBrush;
+            caretBrushWithOpacity = caretBrush;
         }
 
         var caretPen = new Pen(caretBrushWithOpacity, 1.5);

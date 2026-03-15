@@ -12,6 +12,7 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
     /// <summary>
     /// Identifies the Columns dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ColumnsProperty =
         DependencyProperty.Register(nameof(Columns), typeof(GridViewColumnCollection), typeof(GridViewRowPresenterBase),
             new PropertyMetadata(null, OnColumnsChanged));
@@ -23,6 +24,7 @@ public abstract class GridViewRowPresenterBase : FrameworkElement
     /// <summary>
     /// Gets or sets the collection of columns.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public GridViewColumnCollection? Columns
     {
         get => (GridViewColumnCollection?)GetValue(ColumnsProperty);

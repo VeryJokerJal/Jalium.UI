@@ -6,7 +6,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// Used within the template of an item control to specify the place in the control's
 /// visual tree where the ItemsPanel defined by the ItemsControl is to be added.
 /// </summary>
-public sealed class ItemsPresenter : FrameworkElement, IScrollInfo
+public class ItemsPresenter : FrameworkElement, IScrollInfo
 {
     private Panel? _itemsPanel;
     private ItemsControl? _owner;

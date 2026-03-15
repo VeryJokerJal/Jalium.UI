@@ -1,5 +1,6 @@
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -26,6 +27,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(MenuFlyoutItem),
             new PropertyMetadata(string.Empty));
@@ -33,6 +35,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Identifies the Icon dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty IconProperty =
         DependencyProperty.Register(nameof(Icon), typeof(object), typeof(MenuFlyoutItem),
             new PropertyMetadata(null));
@@ -40,6 +43,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Identifies the Command dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
         DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(MenuFlyoutItem),
             new PropertyMetadata(null, OnCommandChanged));
@@ -47,6 +51,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Identifies the CommandParameter dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandParameterProperty =
         DependencyProperty.Register(nameof(CommandParameter), typeof(object), typeof(MenuFlyoutItem),
             new PropertyMetadata(null));
@@ -54,6 +59,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Identifies the KeyboardAcceleratorTextOverride dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty KeyboardAcceleratorTextOverrideProperty =
         DependencyProperty.Register(nameof(KeyboardAcceleratorTextOverride), typeof(string), typeof(MenuFlyoutItem),
             new PropertyMetadata(string.Empty));
@@ -85,6 +91,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Gets or sets the text content of the menu item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string?)GetValue(TextProperty) ?? string.Empty;
@@ -94,6 +101,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Gets or sets the graphic content of the menu item.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Icon
     {
         get => GetValue(IconProperty);
@@ -103,6 +111,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Gets or sets the command to invoke when the item is pressed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public ICommand? Command
     {
         get => (ICommand?)GetValue(CommandProperty);
@@ -112,6 +121,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Gets or sets the parameter to pass to the Command property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public object? CommandParameter
     {
         get => GetValue(CommandParameterProperty);
@@ -121,6 +131,7 @@ public class MenuFlyoutItem : Control
     /// <summary>
     /// Gets or sets the keyboard accelerator text override for display.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string KeyboardAcceleratorTextOverride
     {
         get => (string?)GetValue(KeyboardAcceleratorTextOverrideProperty) ?? string.Empty;
@@ -138,6 +149,7 @@ public class MenuFlyoutItem : Control
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
         AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
+        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
     }
 
     /// <inheritdoc />
@@ -171,7 +183,7 @@ public class MenuFlyoutItem : Control
         if (RenderSize.Width <= 0 || RenderSize.Height <= 0) return;
 
         // Background (hover state handled by IsMouseOver)
-        if (IsMouseOver)
+        if (IsMouseOver || IsKeyboardFocused)
         {
             const double hoverInset = 2.0;
             var hoverBrush = ResolveBrush("OneSurfaceHover", "MenuFlyoutItemBackgroundHover", s_fallbackHoverBrush);
@@ -182,6 +194,11 @@ public class MenuFlyoutItem : Control
                     Math.Max(0, RenderSize.Width - hoverInset * 2),
                     Math.Max(0, RenderSize.Height - hoverInset * 2)),
                 4, 4);
+        }
+
+        if (IsKeyboardFocused)
+        {
+            ControlFocusVisual.Draw(dc, this, new Rect(RenderSize), new CornerRadius(4));
         }
 
         var textBrush = IsEnabled
@@ -228,20 +245,210 @@ public class MenuFlyoutItem : Control
     {
         if (!IsEnabled) return;
 
-        RaiseEvent(new RoutedEventArgs(ClickEvent, this));
-
-        Command?.Execute(CommandParameter);
+        InvokeItem();
         e.Handled = true;
     }
 
     private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
     {
+        CloseSiblingSubMenus();
         InvalidateVisual();
     }
 
     private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
     {
         InvalidateVisual();
+    }
+
+    private void CloseSiblingSubMenus()
+    {
+        if (VisualParent is not Panel panel)
+        {
+            return;
+        }
+
+        foreach (var child in panel.Children)
+        {
+            if (child is MenuFlyoutSubItem sibling && !ReferenceEquals(sibling, this))
+            {
+                sibling.HideSubMenu();
+            }
+        }
+    }
+
+    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not KeyEventArgs keyArgs)
+        {
+            return;
+        }
+
+        var handled = keyArgs.Key switch
+        {
+            Key.Enter or Key.Space => InvokeFromKeyboard(),
+            Key.Down => MoveFocusToSibling(1),
+            Key.Up => MoveFocusToSibling(-1),
+            Key.Home => FocusBoundarySibling(last: false),
+            Key.End => FocusBoundarySibling(last: true),
+            Key.Right => OpenSubMenuAndFocusFirstItem() || MoveFocusToAdjacentMenuBarItem(1),
+            Key.Left => MoveFocusToAdjacentMenuBarItem(-1) || CloseParentPopupAndRestoreFocus(),
+            Key.Escape => CloseParentPopupAndRestoreFocus(),
+            _ => false
+        };
+
+        if (handled)
+        {
+            keyArgs.Handled = true;
+        }
+    }
+
+    protected virtual void InvokeItem()
+    {
+        RaiseEvent(new RoutedEventArgs(ClickEvent, this));
+        Command?.Execute(CommandParameter);
+    }
+
+    protected virtual bool InvokeFromKeyboard()
+    {
+        InvokeItem();
+        return true;
+    }
+
+    protected bool MoveFocusToSibling(int direction)
+    {
+        if (VisualParent is not Panel panel)
+        {
+            return false;
+        }
+
+        var currentIndex = panel.Children.IndexOf(this);
+        if (currentIndex < 0)
+        {
+            return false;
+        }
+
+        for (int offset = 1; offset < panel.Children.Count; offset++)
+        {
+            var nextIndex = (currentIndex + (direction * offset) + panel.Children.Count) % panel.Children.Count;
+            if (panel.Children[nextIndex] is not UIElement candidate ||
+                !candidate.IsEnabled ||
+                candidate.Visibility != Visibility.Visible)
+            {
+                continue;
+            }
+
+            if (candidate.Focus())
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected bool FocusBoundarySibling(bool last)
+    {
+        if (VisualParent is not Panel panel || panel.Children.Count == 0)
+        {
+            return false;
+        }
+
+        if (!last)
+        {
+            for (int i = 0; i < panel.Children.Count; i++)
+            {
+                if (panel.Children[i] is UIElement candidate &&
+                    candidate.IsEnabled &&
+                    candidate.Visibility == Visibility.Visible &&
+                    candidate.Focus())
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        for (int i = panel.Children.Count - 1; i >= 0; i--)
+        {
+            if (panel.Children[i] is UIElement candidate &&
+                candidate.IsEnabled &&
+                candidate.Visibility == Visibility.Visible &&
+                candidate.Focus())
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    protected bool OpenSubMenuAndFocusFirstItem()
+    {
+        if (this is not MenuFlyoutSubItem subItem)
+        {
+            return false;
+        }
+
+        subItem.ShowSubMenu();
+        subItem.FocusFirstSubMenuItem();
+        return true;
+    }
+
+    protected bool CloseParentPopupAndRestoreFocus()
+    {
+        var popupRoot = FindAncestorPopupRoot();
+        if (popupRoot == null)
+        {
+            return false;
+        }
+
+        var placementTarget = popupRoot.OwnerPopup.PlacementTarget as UIElement;
+        var parentSubItem = placementTarget as MenuFlyoutSubItem;
+        popupRoot.OwnerPopup.IsOpen = false;
+
+        Dispatcher.BeginInvokeCritical(() =>
+        {
+            if (parentSubItem != null)
+            {
+                parentSubItem.Focus();
+                return;
+            }
+
+            placementTarget?.Focus();
+        });
+
+        return true;
+    }
+
+    protected bool MoveFocusToAdjacentMenuBarItem(int direction)
+    {
+        var popupRoot = FindAncestorPopupRoot();
+        if (popupRoot?.OwnerPopup.PlacementTarget is not MenuBarItem ownerItem || ownerItem.ParentMenuBar == null)
+        {
+            return false;
+        }
+
+        popupRoot.OwnerPopup.IsOpen = false;
+        Dispatcher.BeginInvokeCritical(() =>
+        {
+            ownerItem.ParentMenuBar.FocusSibling(ownerItem, direction, openMenu: true);
+        });
+
+        return true;
+    }
+
+    private PopupRoot? FindAncestorPopupRoot()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is PopupRoot popupRoot)
+            {
+                return popupRoot;
+            }
+        }
+
+        return null;
     }
 
     private static void OnCommandChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

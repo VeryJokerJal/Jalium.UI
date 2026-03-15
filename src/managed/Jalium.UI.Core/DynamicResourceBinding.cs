@@ -47,7 +47,6 @@ internal static class DynamicResourceBindingOperations
         ArgumentNullException.ThrowIfNull(target);
         ArgumentNullException.ThrowIfNull(property);
         ArgumentNullException.ThrowIfNull(resourceKey);
-
         ClearDynamicResource(target, property);
 
         var subscriptions = Subscriptions.GetOrCreateValue(target);
@@ -144,18 +143,42 @@ internal static class DynamicResourceBindingOperations
             return;
 
         var resolved = ResourceLookup.FindResource(target, subscription.ResourceKey);
+        var currentValue = target.GetValue(property);
         if (subscription.LayerSource.HasValue)
         {
             if (resolved != null)
+            {
+                if (ReferenceEquals(currentValue, resolved) || Equals(currentValue, resolved))
+                {
+                    return;
+                }
+
                 target.SetLayerValue(property, resolved, subscription.LayerSource.Value);
+            }
             else
+            {
+                if (ReferenceEquals(currentValue, DependencyProperty.UnsetValue))
+                {
+                    return;
+                }
+
                 target.ClearLayerValue(property, subscription.LayerSource.Value);
+            }
             return;
         }
 
         if (resolved != null)
+        {
+            if (ReferenceEquals(currentValue, resolved) || Equals(currentValue, resolved))
+            {
+                return;
+            }
+
             target.SetValue(property, resolved);
+        }
         else if (target.HasLocalValue(property))
+        {
             target.ClearValue(property);
+        }
     }
 }

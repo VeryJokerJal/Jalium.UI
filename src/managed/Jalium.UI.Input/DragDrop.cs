@@ -93,6 +93,7 @@ public static class DragDrop
     /// <summary>
     /// Identifies the AllowDrop attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty AllowDropProperty =
         DependencyProperty.RegisterAttached("AllowDrop", typeof(bool), typeof(DragDrop),
             new PropertyMetadata(false));
@@ -100,6 +101,7 @@ public static class DragDrop
     /// <summary>
     /// Gets the AllowDrop value for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static bool GetAllowDrop(DependencyObject element)
     {
         return (bool)(element.GetValue(AllowDropProperty) ?? false);
@@ -108,6 +110,7 @@ public static class DragDrop
     /// <summary>
     /// Sets the AllowDrop value for the specified element.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static void SetAllowDrop(DependencyObject element, bool value)
     {
         element.SetValue(AllowDropProperty, value);

@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -60,8 +60,14 @@ public enum StretchDirection
 /// Defines a content decorator that can stretch and scale a single child to fill the available space.
 /// </summary>
 [ContentProperty("Child")]
-public sealed class Viewbox : FrameworkElement
+public class Viewbox : FrameworkElement
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ViewboxAutomationPeer(this);
+    }
+
     private FrameworkElement? _child;
     private ScaleTransform? _scaleTransform;
 
@@ -75,6 +81,7 @@ public sealed class Viewbox : FrameworkElement
     /// <summary>
     /// Identifies the Stretch dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchProperty =
         DependencyProperty.Register(nameof(Stretch), typeof(Stretch), typeof(Viewbox),
             new PropertyMetadata(Stretch.Uniform, OnStretchPropertyChanged));
@@ -82,6 +89,7 @@ public sealed class Viewbox : FrameworkElement
     /// <summary>
     /// Identifies the StretchDirection dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchDirectionProperty =
         DependencyProperty.Register(nameof(StretchDirection), typeof(StretchDirection), typeof(Viewbox),
             new PropertyMetadata(StretchDirection.Both, OnStretchPropertyChanged));
@@ -89,6 +97,7 @@ public sealed class Viewbox : FrameworkElement
     /// <summary>
     /// Identifies the Child dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty ChildProperty =
         DependencyProperty.Register(nameof(Child), typeof(UIElement), typeof(Viewbox),
             new PropertyMetadata(null, OnChildChanged));
@@ -100,6 +109,7 @@ public sealed class Viewbox : FrameworkElement
     /// <summary>
     /// Gets or sets a value that describes how the content should be stretched to fill the allocated space.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Stretch Stretch
     {
         get => (Stretch)GetValue(StretchProperty)!;
@@ -109,6 +119,7 @@ public sealed class Viewbox : FrameworkElement
     /// <summary>
     /// Gets or sets a value that determines how scaling is applied to the child.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StretchDirection StretchDirection
     {
         get => (StretchDirection)GetValue(StretchDirectionProperty)!;
@@ -118,6 +129,7 @@ public sealed class Viewbox : FrameworkElement
     /// <summary>
     /// Gets or sets the single child of the Viewbox.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public UIElement? Child
     {
         get => (UIElement?)GetValue(ChildProperty);

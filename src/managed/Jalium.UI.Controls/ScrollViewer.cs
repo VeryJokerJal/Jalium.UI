@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
@@ -10,8 +11,17 @@ namespace Jalium.UI.Controls;
 /// Represents a scrollable area that can contain other visible elements.
 /// </summary>
 [ContentProperty("Content")]
-public sealed partial class ScrollViewer : Control
+public partial class ScrollViewer : Control
 {
+    private const string ScrollBarAutoHideEnvironmentVariable = "JALIUM_SCROLLBAR_AUTOHIDE";
+    private static readonly bool s_isScrollBarAutoHideEnabledByDefault = DetermineDefaultScrollBarAutoHide();
+
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ScrollViewerAutomationPeer(this);
+    }
+
     #region Fields
 
     private UIElement? _content;
@@ -44,6 +54,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Identifies the HorizontalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HorizontalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(HorizontalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ScrollViewer),
             new PropertyMetadata(ScrollBarVisibility.Disabled, OnScrollBarVisibilityChanged));
@@ -51,6 +62,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Identifies the VerticalScrollBarVisibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VerticalScrollBarVisibilityProperty =
         DependencyProperty.Register(nameof(VerticalScrollBarVisibility), typeof(ScrollBarVisibility), typeof(ScrollViewer),
             new PropertyMetadata(ScrollBarVisibility.Auto, OnScrollBarVisibilityChanged));
@@ -58,6 +70,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Identifies the CanContentScroll dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanContentScrollProperty =
         DependencyProperty.Register(nameof(CanContentScroll), typeof(bool), typeof(ScrollViewer),
             new PropertyMetadata(false));
@@ -65,6 +78,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Identifies the PanningMode dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PanningModeProperty =
         DependencyProperty.Register(nameof(PanningMode), typeof(PanningMode), typeof(ScrollViewer),
             new PropertyMetadata(PanningMode.None));
@@ -72,6 +86,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Identifies the PanningDeceleration dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PanningDecelerationProperty =
         DependencyProperty.Register(nameof(PanningDeceleration), typeof(double), typeof(ScrollViewer),
             new PropertyMetadata(DefaultPanningDeceleration, OnPanningParametersChanged));
@@ -79,6 +94,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Identifies the PanningRatio dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PanningRatioProperty =
         DependencyProperty.Register(nameof(PanningRatio), typeof(double), typeof(ScrollViewer),
             new PropertyMetadata(DefaultPanningRatio, OnPanningParametersChanged));
@@ -86,13 +102,15 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Identifies the IsScrollInertiaEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsScrollInertiaEnabledProperty =
         DependencyProperty.Register(nameof(IsScrollInertiaEnabled), typeof(bool), typeof(ScrollViewer),
-            new PropertyMetadata(true));
+            new PropertyMetadata(true, OnScrollInertiaEnabledChanged));
 
     /// <summary>
     /// Identifies the ScrollInertiaDurationMs dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ScrollInertiaDurationMsProperty =
         DependencyProperty.Register(nameof(ScrollInertiaDurationMs), typeof(double), typeof(ScrollViewer),
             new PropertyMetadata(DefaultScrollInertiaDurationMs, OnScrollInertiaDurationChanged));
@@ -100,6 +118,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Identifies the IsDeferredScrollingEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDeferredScrollingEnabledProperty =
         DependencyProperty.Register(nameof(IsDeferredScrollingEnabled), typeof(bool), typeof(ScrollViewer),
             new PropertyMetadata(false));
@@ -107,9 +126,10 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Identifies the IsScrollBarAutoHideEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsScrollBarAutoHideEnabledProperty =
         DependencyProperty.Register(nameof(IsScrollBarAutoHideEnabled), typeof(bool), typeof(ScrollViewer),
-            new PropertyMetadata(true, OnScrollBarAutoHideEnabledChanged));
+            new PropertyMetadata(s_isScrollBarAutoHideEnabledByDefault, OnScrollBarAutoHideEnabledChanged));
 
     #endregion
 
@@ -118,6 +138,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Gets or sets the horizontal scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility HorizontalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(HorizontalScrollBarVisibilityProperty)!;
@@ -127,6 +148,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Gets or sets the vertical scroll bar visibility.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ScrollBarVisibility VerticalScrollBarVisibility
     {
         get => (ScrollBarVisibility)GetValue(VerticalScrollBarVisibilityProperty)!;
@@ -136,6 +158,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Gets or sets whether the content can scroll by items rather than pixels.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanContentScroll
     {
         get => (bool)GetValue(CanContentScrollProperty)!;
@@ -145,6 +168,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Gets or sets the panning mode for touch interaction.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public PanningMode PanningMode
     {
         get => (PanningMode)(GetValue(PanningModeProperty) ?? PanningMode.None);
@@ -155,6 +179,7 @@ public sealed partial class ScrollViewer : Control
     /// Gets or sets the deceleration used to project touch/stylus panning inertia.
     /// Unit is DIPs per ms^2.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double PanningDeceleration
     {
         get => (double)GetValue(PanningDecelerationProperty)!;
@@ -164,6 +189,7 @@ public sealed partial class ScrollViewer : Control
     /// <summary>
     /// Gets or sets the translation ratio between pointer movement and scroll delta.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double PanningRatio
     {
         get => (double)GetValue(PanningRatioProperty)!;
@@ -172,8 +198,9 @@ public sealed partial class ScrollViewer : Control
 
     /// <summary>
     /// Gets or sets a value that indicates whether scroll inertia is enabled.
-    /// When enabled, mouse wheel scrolling will have momentum with smooth deceleration.
+    /// Enabled by default for ScrollViewer so wheel and touch panning use smooth deceleration.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsScrollInertiaEnabled
     {
         get => (bool)GetValue(IsScrollInertiaEnabledProperty)!;
@@ -184,6 +211,7 @@ public sealed partial class ScrollViewer : Control
     /// Gets or sets the smooth wheel inertia duration in milliseconds.
     /// Larger values feel softer/slower. Values less than or equal to 0 disable wheel inertia.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public double ScrollInertiaDurationMs
     {
         get => (double)GetValue(ScrollInertiaDurationMsProperty)!;
@@ -195,6 +223,7 @@ public sealed partial class ScrollViewer : Control
     /// When enabled, content position updates only when the scrollbar thumb is released,
     /// rather than continuously during thumb dragging.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDeferredScrollingEnabled
     {
         get => (bool)GetValue(IsDeferredScrollingEnabledProperty)!;
@@ -205,10 +234,48 @@ public sealed partial class ScrollViewer : Control
     /// Gets or sets a value indicating whether scroll bars auto-hide when not being interacted with.
     /// Matches WinUI-style behavior and is enabled by default.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsScrollBarAutoHideEnabled
     {
         get => (bool)GetValue(IsScrollBarAutoHideEnabledProperty)!;
         set => SetValue(IsScrollBarAutoHideEnabledProperty, value);
+    }
+
+    private static bool DetermineDefaultScrollBarAutoHide()
+    {
+        var environmentValue = Environment.GetEnvironmentVariable(ScrollBarAutoHideEnvironmentVariable);
+        if (!string.IsNullOrWhiteSpace(environmentValue))
+        {
+            switch (environmentValue.Trim().ToLowerInvariant())
+            {
+                case "1":
+                case "true":
+                case "yes":
+                case "on":
+                    return true;
+                case "0":
+                case "false":
+                case "no":
+                case "off":
+                    return false;
+            }
+        }
+
+        try
+        {
+            using var process = Process.GetCurrentProcess();
+            if (!string.IsNullOrWhiteSpace(process.ProcessName) &&
+                process.ProcessName.Contains("gallery", StringComparison.OrdinalIgnoreCase))
+            {
+                return false;
+            }
+        }
+        catch
+        {
+            // Ignore and fall back to command line probing.
+        }
+
+        return !Environment.CommandLine.Contains("gallery", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -357,6 +424,7 @@ public sealed partial class ScrollViewer : Control
     private long _lastSmoothTickTime;
     private const double DefaultScrollInertiaDurationMs = 300.0;
     private const double DefaultScrollBarAutoHideDelayMs = 3000.0;
+    private const int ScrollBarAutoHidePollIntervalMs = 100;
     private const double SmoothScrollDurationTailRatio = 0.05;
     private const double SmoothScrollSnapThreshold = 0.5;
     private const double SmoothScrollMinSpeedPixelsPerSecond = 60.0;
@@ -396,6 +464,7 @@ public sealed partial class ScrollViewer : Control
     /// </summary>
     public ScrollViewer()
     {
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         _verticalScrollBar = CreateScrollBar(Orientation.Vertical);
         _horizontalScrollBar = CreateScrollBar(Orientation.Horizontal);
         AddVisualChild(_verticalScrollBar);
@@ -798,6 +867,9 @@ public sealed partial class ScrollViewer : Control
 
     private void StartPointerPanningInertia()
     {
+        if (!IsScrollInertiaEnabled || GetEffectiveScrollInertiaDurationMs() <= 0)
+            return;
+
         double deceleration = GetEffectivePanningDeceleration();
         if (deceleration <= 0)
             return;
@@ -878,6 +950,31 @@ public sealed partial class ScrollViewer : Control
     protected override HitTestResult? HitTestCore(Point point)
     {
         return base.HitTestCore(point);
+    }
+
+    internal bool IsContentDescendant(UIElement element)
+    {
+        for (UIElement? current = element; current != null && !ReferenceEquals(current, this); current = current.VisualParent as UIElement)
+        {
+            var parent = current.VisualParent as UIElement;
+            if (ReferenceEquals(parent, this))
+            {
+                return ReferenceEquals(current, _content);
+            }
+        }
+
+        return false;
+    }
+
+    internal bool IsPointWithinContentViewport(Point point)
+    {
+        double viewportWidth = _viewportWidth > 0 ? _viewportWidth : RenderSize.Width;
+        double viewportHeight = _viewportHeight > 0 ? _viewportHeight : RenderSize.Height;
+
+        return point.X >= 0 &&
+               point.Y >= 0 &&
+               point.X <= viewportWidth &&
+               point.Y <= viewportHeight;
     }
 
     /// <inheritdoc />
@@ -961,7 +1058,7 @@ public sealed partial class ScrollViewer : Control
 
         _scrollBarAutoHideTimer ??= new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
+            Interval = TimeSpan.FromMilliseconds(ScrollBarAutoHidePollIntervalMs)
         };
         _scrollBarAutoHideTimer.Tick -= OnScrollBarAutoHideTimerTick;
         _scrollBarAutoHideTimer.Tick += OnScrollBarAutoHideTimerTick;
@@ -1281,8 +1378,7 @@ public sealed partial class ScrollViewer : Control
 
         _horizontalOffset = _scrollInfo.HorizontalOffset;
         _verticalOffset = _scrollInfo.VerticalOffset;
-        _extentWidth = _scrollInfo.ExtentWidth;
-        _extentHeight = _scrollInfo.ExtentHeight;
+        SyncExtentFromScrollInfo();
         // Note: Do NOT sync _viewportWidth/_viewportHeight here; those are authoritatively
         // computed in ArrangeOverride based on finalSize and scrollbar visibility.
         // The IScrollInfo.ViewportWidth/Height reflects the Measure constraint, which can
@@ -1494,32 +1590,50 @@ public sealed partial class ScrollViewer : Control
         var contentAvailableWidth = availableSize.Width - (reserveVertical ? ScrollBarSize : 0);
         var contentAvailableHeight = availableSize.Height - (reserveHorizontal ? ScrollBarSize : 0);
 
-        // If scrolling is enabled in a direction, give infinite space in that direction
-        // When using IScrollInfo, pass the viewport size so the content can manage its own scrolling
-        var measureWidth = HorizontalScrollBarVisibility != ScrollBarVisibility.Disabled && _scrollInfo == null
-            ? double.PositiveInfinity
-            : contentAvailableWidth;
+        // First measure with the finite viewport-sized constraint. Measuring immediately with
+        // Infinity for non-IScrollInfo content causes star-grid based forms to blow out to
+        // unbounded width even when the intended layout is viewport-constrained.
+        var finiteContentAvailable = new Size(
+            Math.Max(0, contentAvailableWidth),
+            Math.Max(0, contentAvailableHeight));
 
-        var measureHeight = VerticalScrollBarVisibility != ScrollBarVisibility.Disabled && _scrollInfo == null
-            ? double.PositiveInfinity
-            : contentAvailableHeight;
-
-        var contentAvailable = new Size(measureWidth, measureHeight);
-
-        // Measure content
-        _content.Measure(contentAvailable);
+        _content.Measure(finiteContentAvailable);
         var contentDesired = _content.DesiredSize;
 
         // Update extent from IScrollInfo or from content desired size
         if (_scrollInfo != null)
         {
-            _extentWidth = _scrollInfo.ExtentWidth;
-            _extentHeight = _scrollInfo.ExtentHeight;
+            SyncExtentFromScrollInfo();
         }
         else
         {
             _extentWidth = contentDesired.Width;
             _extentHeight = contentDesired.Height;
+
+            // Only fall back to an unconstrained measure on an axis if the finite pass already
+            // reported overflow there. This preserves correct viewport-based form layout while
+            // still allowing naturally oversized content to report its scroll extent.
+            var needsHorizontalOverflowMeasure =
+                HorizontalScrollBarVisibility != ScrollBarVisibility.Disabled &&
+                !double.IsInfinity(finiteContentAvailable.Width) &&
+                contentDesired.Width > finiteContentAvailable.Width + 0.5;
+
+            var needsVerticalOverflowMeasure =
+                VerticalScrollBarVisibility != ScrollBarVisibility.Disabled &&
+                !double.IsInfinity(finiteContentAvailable.Height) &&
+                contentDesired.Height > finiteContentAvailable.Height + 0.5;
+
+            if (needsHorizontalOverflowMeasure || needsVerticalOverflowMeasure)
+            {
+                var overflowContentAvailable = new Size(
+                    needsHorizontalOverflowMeasure ? double.PositiveInfinity : finiteContentAvailable.Width,
+                    needsVerticalOverflowMeasure ? double.PositiveInfinity : finiteContentAvailable.Height);
+
+                _content.Measure(overflowContentAvailable);
+                contentDesired = _content.DesiredSize;
+                _extentWidth = contentDesired.Width;
+                _extentHeight = contentDesired.Height;
+            }
         }
 
         // Return the smaller of content size and available size
@@ -1540,8 +1654,7 @@ public sealed partial class ScrollViewer : Control
         {
             _horizontalOffset = _scrollInfo.HorizontalOffset;
             _verticalOffset = _scrollInfo.VerticalOffset;
-            _extentWidth = _scrollInfo.ExtentWidth;
-            _extentHeight = _scrollInfo.ExtentHeight;
+            SyncExtentFromScrollInfo();
         }
 
         // Calculate if scrollbars are needed (now using up-to-date extent values)
@@ -1699,7 +1812,6 @@ public sealed partial class ScrollViewer : Control
     }
 
     #endregion
-
     #region Input Handling
 
     /// <summary>
@@ -1720,11 +1832,7 @@ public sealed partial class ScrollViewer : Control
             if (useSmoothWheelInertia)
             {
                 // Smooth animated scroll through IScrollInfo
-                var scrollLines = GetSystemWheelScrollLines();
-                var notches = -e.Delta / 120.0;
-                var delta = scrollLines == WHEEL_PAGESCROLL
-                    ? notches * _viewportHeight
-                    : notches * scrollLines * LineScrollAmount;
+                var delta = ComputeMouseWheelDelta(e.Delta, LineScrollAmount, _viewportHeight);
 
                 if (!_isSmoothScrolling)
                     _smoothTargetY = _verticalOffset;
@@ -1746,17 +1854,14 @@ public sealed partial class ScrollViewer : Control
             return;
         }
 
-        var scrollLines2 = GetSystemWheelScrollLines();
-        var notches2 = -e.Delta / 120.0;
-
         if (CanScrollVertically)
         {
             // Only consume the event if we can actually scroll in the requested direction.
             // This allows nested ScrollViewers to bubble the event to the parent when at bounds.
             bool atTop = _verticalOffset <= 0;
             bool atBottom = _verticalOffset >= ScrollableHeight;
-            bool scrollingUp = notches2 < 0;
-            bool scrollingDown = notches2 > 0;
+            bool scrollingUp = e.Delta > 0;
+            bool scrollingDown = e.Delta < 0;
 
             if ((scrollingUp && atTop) || (scrollingDown && atBottom))
             {
@@ -1764,9 +1869,7 @@ public sealed partial class ScrollViewer : Control
             }
             else
             {
-                var delta = scrollLines2 == WHEEL_PAGESCROLL
-                    ? notches2 * _viewportHeight
-                    : notches2 * scrollLines2 * LineScrollAmount;
+                var delta = ComputeMouseWheelDelta(e.Delta, LineScrollAmount, _viewportHeight);
 
                 if (useSmoothWheelInertia)
                 {
@@ -1789,8 +1892,8 @@ public sealed partial class ScrollViewer : Control
         {
             bool atLeft = _horizontalOffset <= 0;
             bool atRight = _horizontalOffset >= ScrollableWidth;
-            bool scrollingLeft = notches2 < 0;
-            bool scrollingRight = notches2 > 0;
+            bool scrollingLeft = e.Delta > 0;
+            bool scrollingRight = e.Delta < 0;
 
             if ((scrollingLeft && atLeft) || (scrollingRight && atRight))
             {
@@ -1798,9 +1901,7 @@ public sealed partial class ScrollViewer : Control
             }
             else
             {
-                var delta = scrollLines2 == WHEEL_PAGESCROLL
-                    ? notches2 * _viewportWidth
-                    : notches2 * scrollLines2 * LineScrollAmount;
+                var delta = ComputeMouseWheelDelta(e.Delta, LineScrollAmount, _viewportWidth);
 
                 if (useSmoothWheelInertia)
                 {
@@ -1822,7 +1923,7 @@ public sealed partial class ScrollViewer : Control
 
     private void StartSmoothScroll()
     {
-        if (GetEffectiveScrollInertiaDurationMs() <= 0)
+        if (!IsScrollInertiaEnabled || GetEffectiveScrollInertiaDurationMs() <= 0)
         {
             _isApplyingSmoothScrollStep = true;
             try
@@ -2098,6 +2199,35 @@ public sealed partial class ScrollViewer : Control
         ApplyScrollBarAutoHideVisualState();
     }
 
+    private void SyncExtentFromScrollInfo()
+    {
+        if (_scrollInfo == null)
+            return;
+
+        var margin = GetContentMargin();
+        _extentWidth = Math.Max(0, _scrollInfo.ExtentWidth + margin.Width);
+        _extentHeight = Math.Max(0, _scrollInfo.ExtentHeight + margin.Height);
+    }
+
+    private Size GetContentMargin()
+    {
+        if (_content is not FrameworkElement frameworkElement)
+            return Size.Empty;
+
+        var margin = frameworkElement.Margin;
+        return new Size(
+            CoerceFiniteMargin(margin.Left) + CoerceFiniteMargin(margin.Right),
+            CoerceFiniteMargin(margin.Top) + CoerceFiniteMargin(margin.Bottom));
+    }
+
+    private static double CoerceFiniteMargin(double value)
+    {
+        if (double.IsNaN(value) || double.IsInfinity(value))
+            return 0;
+
+        return value;
+    }
+
     private static void ConfigureScrollBar(
         ScrollBar scrollBar,
         double maxOffset,
@@ -2169,21 +2299,15 @@ public sealed partial class ScrollViewer : Control
         if (d is not ScrollViewer scrollViewer)
             return;
 
-        if (scrollViewer.GetEffectiveScrollInertiaDurationMs() > 0 || !scrollViewer._isSmoothScrolling)
+        scrollViewer.SnapPendingSmoothScrollIfDisabled();
+    }
+
+    private static void OnScrollInertiaEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not ScrollViewer scrollViewer)
             return;
 
-        scrollViewer._isApplyingSmoothScrollStep = true;
-        try
-        {
-            scrollViewer.ScrollToVerticalOffset(scrollViewer._smoothTargetY);
-            scrollViewer.ScrollToHorizontalOffset(scrollViewer._smoothTargetX);
-        }
-        finally
-        {
-            scrollViewer._isApplyingSmoothScrollStep = false;
-        }
-
-        scrollViewer.StopSmoothScroll();
+        scrollViewer.SnapPendingSmoothScrollIfDisabled();
     }
 
     private void CancelSmoothScroll()
@@ -2202,6 +2326,25 @@ public sealed partial class ScrollViewer : Control
         if (double.IsNaN(durationMs) || double.IsInfinity(durationMs))
             return DefaultScrollInertiaDurationMs;
         return durationMs;
+    }
+
+    private void SnapPendingSmoothScrollIfDisabled()
+    {
+        if ((IsScrollInertiaEnabled && GetEffectiveScrollInertiaDurationMs() > 0) || !_isSmoothScrolling)
+            return;
+
+        _isApplyingSmoothScrollStep = true;
+        try
+        {
+            ScrollToVerticalOffset(_smoothTargetY);
+            ScrollToHorizontalOffset(_smoothTargetX);
+        }
+        finally
+        {
+            _isApplyingSmoothScrollStep = false;
+        }
+
+        StopSmoothScroll();
     }
 
     private double ComputeSmoothAlpha(double dtSeconds)
@@ -2296,6 +2439,26 @@ public sealed partial class ScrollViewer : Control
         }
 
         scrollViewer.ApplyScrollBarAutoHideVisualState();
+    }
+
+    internal static double ComputeMouseWheelDelta(int wheelDelta, double lineStep, double pageStep)
+    {
+        double safeLineStep = double.IsFinite(lineStep) && lineStep > 0
+            ? lineStep
+            : 1.0;
+        double safePageStep = double.IsFinite(pageStep) && pageStep > 0
+            ? pageStep
+            : safeLineStep;
+
+        double notches = -wheelDelta / 120.0;
+        if (Math.Abs(notches) <= double.Epsilon)
+            return 0;
+
+        var scrollLines = GetSystemWheelScrollLines();
+        if (scrollLines == WHEEL_PAGESCROLL)
+            return notches * safePageStep;
+
+        return notches * scrollLines * safeLineStep;
     }
 
     private static uint GetSystemWheelScrollLines()

@@ -3,6 +3,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Markup;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
 
@@ -66,5 +67,42 @@ public class ToolTipAndTreeThemeTests
         {
             ResetApplicationState();
         }
+    }
+
+    [Fact]
+    public void ListBoxItem_LocalHoverAndSelectionState_ShouldUseThemeBrushes()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var item = new ListBoxItem { Content = "Node" };
+            item.Style = Assert.IsType<Style>(app.Resources[typeof(ListBoxItem)]);
+            item.ApplyTemplate();
+
+            var backgroundBorder = GetPrivateField<Border>(item, "_backgroundBorder");
+            var hoverBrush = Assert.IsAssignableFrom<Brush>(app.Resources["HighlightBackground"]);
+            var selectionBrush = Assert.IsAssignableFrom<Brush>(app.Resources["SelectionBackground"]);
+
+            Assert.NotNull(backgroundBorder);
+
+            item.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, item));
+            Assert.Same(hoverBrush, backgroundBorder.Background);
+
+            item.IsSelected = true;
+            Assert.Same(selectionBrush, backgroundBorder.Background);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    private static T? GetPrivateField<T>(object instance, string fieldName) where T : class
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        return field?.GetValue(instance) as T;
     }
 }

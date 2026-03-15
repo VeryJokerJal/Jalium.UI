@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -10,8 +10,10 @@ namespace Jalium.UI.Controls;
 /// Used as a child of <see cref="DockTabPanel"/>.
 /// Supports drag-to-float: dragging a tab header beyond a threshold tears it off into a floating window.
 /// </summary>
-public sealed partial class DockItem : HeaderedContentControl
+public partial class DockItem : HeaderedContentControl
 {
+    private const string HeaderEllipsis = "...";
+
     // Cached brushes and pens for OnRender (OneTheme-aligned deep blue-gray palette)
     private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Color.FromRgb(0x1E, 0x1E, 0x2E));
     private static readonly SolidColorBrush s_fallbackHoverBackgroundBrush = new(Color.FromRgb(0x22, 0x22, 0x34));
@@ -28,26 +30,32 @@ public sealed partial class DockItem : HeaderedContentControl
 
     #region Dependency Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsSelectedProperty =
         DependencyProperty.Register(nameof(IsSelected), typeof(bool), typeof(DockItem),
             new PropertyMetadata(false, OnIsSelectedChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanCloseProperty =
         DependencyProperty.Register(nameof(CanClose), typeof(bool), typeof(DockItem),
             new PropertyMetadata(true, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty CanFloatProperty =
         DependencyProperty.Register(nameof(CanFloat), typeof(bool), typeof(DockItem),
             new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedBackgroundProperty =
         DependencyProperty.Register(nameof(SelectedBackground), typeof(Brush), typeof(DockItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty HoverBackgroundProperty =
         DependencyProperty.Register(nameof(HoverBackground), typeof(Brush), typeof(DockItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty IndicatorBrushProperty =
         DependencyProperty.Register(nameof(IndicatorBrush), typeof(Brush), typeof(DockItem),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -56,36 +64,42 @@ public sealed partial class DockItem : HeaderedContentControl
 
     #region Properties
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsSelected
     {
         get => (bool)GetValue(IsSelectedProperty);
         set => SetValue(IsSelectedProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanClose
     {
         get => (bool)GetValue(CanCloseProperty)!;
         set => SetValue(CanCloseProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool CanFloat
     {
         get => (bool)(GetValue(CanFloatProperty) ?? true);
         set => SetValue(CanFloatProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public Brush? SelectedBackground
     {
         get => (Brush?)GetValue(SelectedBackgroundProperty);
         set => SetValue(SelectedBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Brush? HoverBackground
     {
         get => (Brush?)GetValue(HoverBackgroundProperty);
         set => SetValue(HoverBackgroundProperty, value);
     }
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? IndicatorBrush
     {
         get => (Brush?)GetValue(IndicatorBrushProperty);
@@ -130,6 +144,7 @@ public sealed partial class DockItem : HeaderedContentControl
 
     public DockItem()
     {
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
         AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
         AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
@@ -137,7 +152,7 @@ public sealed partial class DockItem : HeaderedContentControl
     }
 
     /// <summary>
-    /// Do NOT add Content as visual child — DockTabPanel manages content display.
+    /// Do NOT add Content as visual child 閳?DockTabPanel manages content display.
     /// When content changes, notify OwnerPanel to release the old content and adopt the new one.
     /// </summary>
     protected override void OnContentChanged(object? oldContent, object? newContent)
@@ -226,7 +241,7 @@ public sealed partial class DockItem : HeaderedContentControl
             // Select tab and begin potential drag
             OwnerPanel?.SelectTab(this);
             _isMouseDown = true;
-            // Track in OwnerPanel's coordinate space — stable during tab reorder
+            // Track in OwnerPanel's coordinate space 閳?stable during tab reorder
             _mouseDownPos = mouseArgs.GetPosition((UIElement?)OwnerPanel ?? this);
             e.Handled = true;
         }
@@ -277,7 +292,7 @@ public sealed partial class DockItem : HeaderedContentControl
     {
         if (e is not MouseEventArgs mouseArgs) return;
 
-        // Floating window drag — move the window and update dock highlights
+        // Floating window drag 閳?move the window and update dock highlights
         if (_isDraggingFloatingWindow && _floatingDragWindow != null)
         {
             GetCursorPos(out var cursor);
@@ -297,7 +312,7 @@ public sealed partial class DockItem : HeaderedContentControl
             return;
         }
 
-        // Reorder preview drag — update insertion indicator position
+        // Reorder preview drag 閳?update insertion indicator position
         if (_isReorderDragging && OwnerPanel != null)
         {
             if (mouseArgs.LeftButton == MouseButtonState.Released)
@@ -643,7 +658,7 @@ public sealed partial class DockItem : HeaderedContentControl
             }
             else
             {
-                // Dock failed — restore content to floating window to prevent content loss
+                // Dock failed 閳?restore content to floating window to prevent content loss
                 newItem.Content = null;
                 Content = content;
                 _floatingDragWindow = windowToClose;
@@ -651,7 +666,7 @@ public sealed partial class DockItem : HeaderedContentControl
         }
         else if (targetPanel != null && _floatingDragWindow != null)
         {
-            // Cursor is over a panel but not on any indicator button — add as tab (fallback)
+            // Cursor is over a panel but not on any indicator button 閳?add as tab (fallback)
             var content = Content;
             var headerText = Header?.ToString() ?? "Panel";
             var floatingPanel2 = OwnerPanel;
@@ -699,7 +714,7 @@ public sealed partial class DockItem : HeaderedContentControl
         }
         else if (parent is ContentControl contentParent)
         {
-            // Target is direct child of DockLayout or Window — wrap in a new split panel
+            // Target is direct child of DockLayout or Window 閳?wrap in a new split panel
             contentParent.Content = null;
 
             var orientation = position is DockPosition.Left or DockPosition.Right
@@ -755,7 +770,7 @@ public sealed partial class DockItem : HeaderedContentControl
 
         if (existingContent is DockSplitPanel existingSplit && existingSplit.Orientation == orientation)
         {
-            // Same orientation — insert at the edge
+            // Same orientation 閳?insert at the edge
             if (insertBefore)
                 existingSplit.Children.Insert(0, newTabPanel);
             else
@@ -1081,6 +1096,11 @@ public sealed partial class DockItem : HeaderedContentControl
         return finalSize;
     }
 
+    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
+    {
+        InvalidateVisual();
+    }
+
     protected override void OnRender(object drawingContextObj)
     {
         if (drawingContextObj is not DrawingContext dc)
@@ -1137,27 +1157,8 @@ public sealed partial class DockItem : HeaderedContentControl
         }
 
         // Header text
-        var headerText = Header?.ToString() ?? "";
-        if (!string.IsNullOrEmpty(headerText))
+        if (CreateHeaderTextLayout(ResolveHeaderTextBrush(activeTextBrush, inactiveTextBrush), ActualWidth, ActualHeight) is FormattedText text)
         {
-            var textBrush = IsSelected || IsMouseOver
-                ? activeTextBrush
-                : inactiveTextBrush;
-
-            var fontSize = FontSize > 0 ? FontSize : 12;
-            var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : "Segoe UI";
-
-            var text = new FormattedText(headerText, fontFamily, fontSize)
-            {
-                Foreground = textBrush
-            };
-
-            // Keep text inside the tab and trim when space is insufficient.
-            var closeSpace = CanClose ? 20.0 : 0.0;
-            text.MaxTextWidth = Math.Max(0, ActualWidth - padding.Left - padding.Right - closeSpace);
-            text.Trimming = TextTrimming.CharacterEllipsis;
-            TextMeasurement.MeasureText(text);
-
             var textX = padding.Left;
             var textY = (ActualHeight - text.Height) / 2;
             dc.PushClip(new RectangleGeometry(bounds));
@@ -1165,7 +1166,7 @@ public sealed partial class DockItem : HeaderedContentControl
             dc.Pop();
         }
 
-        // Close button (X) — only show when selected or hovered
+        // Close button (X) 閳?only show when selected or hovered
         if (CanClose && (IsSelected || IsMouseOver))
         {
             var closeSize = 14.0;
@@ -1212,6 +1213,108 @@ public sealed partial class DockItem : HeaderedContentControl
         if (padding.Left == 0 && padding.Top == 0 && padding.Right == 0 && padding.Bottom == 0)
             return new Thickness(10, 5, 10, 5);
         return padding;
+    }
+
+    internal FormattedText? CreateHeaderTextLayoutForTesting(double availableWidth, double availableHeight)
+    {
+        return CreateHeaderTextLayout(ResolveActiveTextBrush(), availableWidth, availableHeight);
+    }
+
+    private Brush ResolveHeaderTextBrush(Brush activeTextBrush, Brush inactiveTextBrush)
+    {
+        return IsSelected || IsMouseOver
+            ? activeTextBrush
+            : inactiveTextBrush;
+    }
+
+    private FormattedText? CreateHeaderTextLayout(Brush textBrush, double availableWidth, double availableHeight)
+    {
+        var headerText = Header?.ToString() ?? string.Empty;
+        if (string.IsNullOrEmpty(headerText))
+            return null;
+
+        var fontSize = FontSize > 0 ? FontSize : 12;
+        var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : "Segoe UI";
+        if (!ShouldConstrainHeaderTextWidth())
+        {
+            var naturalText = new FormattedText(headerText, fontFamily, fontSize)
+            {
+                Foreground = textBrush
+            };
+            TextMeasurement.MeasureText(naturalText);
+            return naturalText;
+        }
+
+        var padding = GetEffectivePadding();
+        var closeSpace = CanClose ? 20.0 : 0.0;
+        var textWidth = Math.Max(0, availableWidth - padding.Left - padding.Right - closeSpace);
+        if (textWidth <= 0)
+            return null;
+
+        var textHeight = GetSingleLineHeaderHeight(fontFamily, fontSize, availableHeight, padding);
+        var displayText = TrimHeaderTextToFit(headerText, fontFamily, fontSize, textWidth, textHeight);
+        if (string.IsNullOrEmpty(displayText))
+            return null;
+
+        var text = new FormattedText(displayText, fontFamily, fontSize)
+        {
+            Foreground = textBrush,
+            MaxTextWidth = textWidth,
+            MaxTextHeight = textHeight,
+            Trimming = TextTrimming.CharacterEllipsis
+        };
+        TextMeasurement.MeasureText(text);
+        return text;
+    }
+
+    private bool ShouldConstrainHeaderTextWidth()
+    {
+        return double.IsFinite(MaxWidth);
+    }
+
+    private static double GetSingleLineHeaderHeight(string fontFamily, double fontSize, double availableHeight, Thickness padding)
+    {
+        var contentHeight = availableHeight - padding.Top - padding.Bottom;
+        if (!double.IsFinite(contentHeight))
+            contentHeight = TextMeasurement.GetLineHeight(fontFamily, fontSize);
+
+        var singleLineHeight = TextMeasurement.GetLineHeight(fontFamily, fontSize);
+        return Math.Max(1, Math.Min(Math.Max(1, contentHeight), singleLineHeight));
+    }
+
+    private static string TrimHeaderTextToFit(string headerText, string fontFamily, double fontSize, double maxWidth, double maxHeight)
+    {
+        if (MeasureHeaderTextWidth(headerText, fontFamily, fontSize, maxHeight) <= maxWidth)
+            return headerText;
+
+        if (MeasureHeaderTextWidth(HeaderEllipsis, fontFamily, fontSize, maxHeight) > maxWidth)
+            return string.Empty;
+
+        int low = 0;
+        int high = headerText.Length;
+        while (low < high)
+        {
+            var mid = (low + high + 1) / 2;
+            var candidate = headerText.Substring(0, mid) + HeaderEllipsis;
+            if (MeasureHeaderTextWidth(candidate, fontFamily, fontSize, maxHeight) <= maxWidth)
+                low = mid;
+            else
+                high = mid - 1;
+        }
+
+        return low > 0
+            ? headerText.Substring(0, low) + HeaderEllipsis
+            : HeaderEllipsis;
+    }
+
+    private static double MeasureHeaderTextWidth(string text, string fontFamily, double fontSize, double maxHeight)
+    {
+        var measured = new FormattedText(text, fontFamily, fontSize)
+        {
+            MaxTextHeight = maxHeight
+        };
+        TextMeasurement.MeasureText(measured);
+        return measured.Width;
     }
 
     private Brush ResolveSelectedBackgroundBrush()

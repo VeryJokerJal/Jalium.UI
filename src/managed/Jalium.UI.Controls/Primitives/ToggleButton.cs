@@ -1,4 +1,4 @@
-﻿using Jalium.UI.Controls;
+using Jalium.UI.Controls;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -7,11 +7,18 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class ToggleButton : ButtonBase
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ToggleButtonAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the IsChecked dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsCheckedProperty =
         DependencyProperty.Register(nameof(IsChecked), typeof(bool?), typeof(ToggleButton),
             new PropertyMetadata(false, OnIsCheckedChanged));
@@ -19,6 +26,7 @@ public class ToggleButton : ButtonBase
     /// <summary>
     /// Identifies the IsThreeState dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsThreeStateProperty =
         DependencyProperty.Register(nameof(IsThreeState), typeof(bool), typeof(ToggleButton),
             new PropertyMetadata(false));
@@ -82,6 +90,7 @@ public class ToggleButton : ButtonBase
     /// <summary>
     /// Gets or sets whether the ToggleButton is checked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool? IsChecked
     {
         get => (bool?)GetValue(IsCheckedProperty);
@@ -91,6 +100,7 @@ public class ToggleButton : ButtonBase
     /// <summary>
     /// Gets or sets whether the ToggleButton supports three states (checked, unchecked, indeterminate).
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsThreeState
     {
         get => (bool)GetValue(IsThreeStateProperty)!;

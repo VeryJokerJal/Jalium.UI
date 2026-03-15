@@ -13,6 +13,7 @@ public sealed class TextSearch : DependencyObject
     /// Identifies the TextPath attached property, which names the property on each data item
     /// that is used to do the text search.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextPathProperty =
         DependencyProperty.RegisterAttached("TextPath", typeof(string), typeof(TextSearch),
             new PropertyMetadata(string.Empty));
@@ -20,6 +21,7 @@ public sealed class TextSearch : DependencyObject
     /// <summary>
     /// Identifies the Text attached property, which is the string by which the item is known.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.RegisterAttached("Text", typeof(string), typeof(TextSearch),
             new PropertyMetadata(string.Empty));
@@ -31,6 +33,7 @@ public sealed class TextSearch : DependencyObject
     /// <summary>
     /// Gets the value of the TextPath attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static string GetTextPath(DependencyObject element)
     {
         return (string)(element.GetValue(TextPathProperty) ?? string.Empty);
@@ -39,6 +42,7 @@ public sealed class TextSearch : DependencyObject
     /// <summary>
     /// Sets the value of the TextPath attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static void SetTextPath(DependencyObject element, string value)
     {
         element.SetValue(TextPathProperty, value);
@@ -47,6 +51,7 @@ public sealed class TextSearch : DependencyObject
     /// <summary>
     /// Gets the value of the Text attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static string GetText(DependencyObject element)
     {
         return (string)(element.GetValue(TextProperty) ?? string.Empty);
@@ -55,6 +60,7 @@ public sealed class TextSearch : DependencyObject
     /// <summary>
     /// Sets the value of the Text attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static void SetText(DependencyObject element, string value)
     {
         element.SetValue(TextProperty, value);

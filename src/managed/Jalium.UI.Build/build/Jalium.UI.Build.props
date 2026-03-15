@@ -8,6 +8,12 @@
 
   <PropertyGroup>
     <!-- 启用 JALXAML 默认项发现 -->
+    <_JalxamlOutputConfigurationSegment Condition="'$(_JalxamlOutputConfigurationSegment)' == '' and '$(Configuration)' != ''">$(Configuration)\</_JalxamlOutputConfigurationSegment>
+    <_JalxamlOutputTargetFrameworkSegment Condition="'$(_JalxamlOutputTargetFrameworkSegment)' == '' and '$(TargetFramework)' != ''">$(TargetFramework)\</_JalxamlOutputTargetFrameworkSegment>
+    <_JalxamlOutputRuntimeIdentifierSegment Condition="'$(_JalxamlOutputRuntimeIdentifierSegment)' == '' and '$(RuntimeIdentifier)' != ''">$(RuntimeIdentifier)\</_JalxamlOutputRuntimeIdentifierSegment>
+    <_JalxamlDefaultIntermediateOutputPath Condition="'$(_JalxamlDefaultIntermediateOutputPath)' == ''">$(MSBuildProjectExtensionsPath)$(_JalxamlOutputConfigurationSegment)$(_JalxamlOutputTargetFrameworkSegment)$(_JalxamlOutputRuntimeIdentifierSegment)Jalxaml\</_JalxamlDefaultIntermediateOutputPath>
+    <JalxamlIntermediateOutputPath Condition="'$(JalxamlIntermediateOutputPath)' == ''">$(_JalxamlDefaultIntermediateOutputPath)</JalxamlIntermediateOutputPath>
+    <_JalxamlUsesDefaultIntermediateOutputPath Condition="'$(JalxamlIntermediateOutputPath)' == '$(_JalxamlDefaultIntermediateOutputPath)'">true</_JalxamlUsesDefaultIntermediateOutputPath>
     <EnableDefaultJalxamlItems Condition="'$(EnableDefaultJalxamlItems)' == ''">true</EnableDefaultJalxamlItems>
 
     <!-- 默认启用优化 -->
@@ -17,7 +23,9 @@
     <JalxamlDebugInfo Condition="'$(JalxamlDebugInfo)' == '' And '$(Configuration)' == 'Debug'">true</JalxamlDebugInfo>
     <JalxamlDebugInfo Condition="'$(JalxamlDebugInfo)' == ''">false</JalxamlDebugInfo>
     <EnableJalxamlRazorTransform Condition="'$(EnableJalxamlRazorTransform)' == ''">true</EnableJalxamlRazorTransform>
-    <JalxamlRazorIntermediateOutputPath Condition="'$(JalxamlRazorIntermediateOutputPath)' == ''">$(JalxamlIntermediateOutputPath)Razor\</JalxamlRazorIntermediateOutputPath>
+    <_JalxamlDefaultRazorIntermediateOutputPath Condition="'$(_JalxamlDefaultRazorIntermediateOutputPath)' == ''">$(JalxamlIntermediateOutputPath)Razor\</_JalxamlDefaultRazorIntermediateOutputPath>
+    <JalxamlRazorIntermediateOutputPath Condition="'$(JalxamlRazorIntermediateOutputPath)' == ''">$(_JalxamlDefaultRazorIntermediateOutputPath)</JalxamlRazorIntermediateOutputPath>
+    <_JalxamlUsesDefaultRazorIntermediateOutputPath Condition="'$(JalxamlRazorIntermediateOutputPath)' == '$(_JalxamlDefaultRazorIntermediateOutputPath)'">true</_JalxamlUsesDefaultRazorIntermediateOutputPath>
 
     <!-- HLSL 着色器预编译 -->
     <EnableHlslShaderPrecompilation Condition="'$(EnableHlslShaderPrecompilation)' == ''">false</EnableHlslShaderPrecompilation>
@@ -34,6 +42,10 @@
     <HlslShaderWarningsAsErrors Condition="'$(HlslShaderWarningsAsErrors)' == ''">true</HlslShaderWarningsAsErrors>
     <!-- 着色器中间输出路径 -->
     <HlslShaderIntermediateOutputPath Condition="'$(HlslShaderIntermediateOutputPath)' == ''">$(IntermediateOutputPath)Shaders\</HlslShaderIntermediateOutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);$(JalxamlIntermediateOutputPath)**\*;$(JalxamlRazorIntermediateOutputPath)**\*;Jalxaml\**\*;Razor\**\*</DefaultItemExcludes>
   </PropertyGroup>
 
   <!-- 定义 JALXAML 文件类型的 Visual Studio 显示属性 -->
@@ -61,5 +73,14 @@
     <Using Include="Jalium.UI.Thickness" Alias="Thickness" />
     <Using Include="Jalium.UI.CornerRadius" Alias="CornerRadius" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <UseJaliumNativeAot Condition="'$(UseJaliumNativeAot)' == ''">false</UseJaliumNativeAot>
+    <JaliumNativeAotAssetRoot Condition="'$(JaliumNativeAotAssetRoot)' == ''">$(MSBuildThisFileDirectory)nativeaot\</JaliumNativeAotAssetRoot>
+    <PublishAot Condition="'$(UseJaliumNativeAot)' == 'true' and '$(PublishAot)' == ''">true</PublishAot>
+    <SelfContained Condition="'$(UseJaliumNativeAot)' == 'true' and '$(SelfContained)' == ''">true</SelfContained>
+    <PublishSingleFile Condition="'$(UseJaliumNativeAot)' == 'true' and '$(PublishSingleFile)' == ''">true</PublishSingleFile>
+    <UseAppHost Condition="'$(UseJaliumNativeAot)' == 'true' and '$(UseAppHost)' == ''">true</UseAppHost>
+  </PropertyGroup>
 
 </Project>

@@ -9,7 +9,7 @@
         <Setter Property="Background" Value="{DynamicResource TitleBarBackground}" />
         <Setter Property="Foreground" Value="{DynamicResource TitleBarText}" />
         <Setter Property="FontSize" Value="12" />
-        <Setter Property="FontFamily" Value="Segoe UI" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
         <Setter Property="Height" Value="32" />
         <Setter Property="Template">
             <ControlTemplate TargetType="TitleBar">

@@ -1,8 +1,6 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
-using Jalium.UI.Media.Animation;
-using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls;
 
@@ -11,30 +9,31 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ComboBox : Selector
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ComboBoxAutomationPeer(this);
+    }
+
     private Popup? _popup;
     private ToggleButton? _toggleButton;
     private TextBox? _editableTextBox;
     private ContentPresenter? _selectionPresenter;
+    private Grid? _dropDownArea;
     private StackPanel? _itemsPanel;
     private bool _isDropDownOpen;
     private bool _isUpdatingEditableText;
 
-    // Animation
     private Shapes.Path? _arrowPath;
     private RotateTransform? _arrowRotate;
-    private DispatcherTimer? _animationTimer;
     private bool _isCloseAnimating;
-
-    private const double OpenDurationMs = 250;
-    private const double CloseDurationMs = 180;
-    private static readonly CubicEase OpenEase = new() { EasingMode = EasingMode.EaseOut };
-    private static readonly CubicEase CloseEase = new() { EasingMode = EasingMode.EaseIn };
 
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the IsDropDownOpen dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDropDownOpenProperty =
         DependencyProperty.Register(nameof(IsDropDownOpen), typeof(bool), typeof(ComboBox),
             new PropertyMetadata(false, OnIsDropDownOpenChanged));
@@ -42,6 +41,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the MaxDropDownHeight dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaxDropDownHeightProperty =
         DependencyProperty.Register(nameof(MaxDropDownHeight), typeof(double), typeof(ComboBox),
             new PropertyMetadata(200.0));
@@ -49,6 +49,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the IsEditable dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsEditableProperty =
         DependencyProperty.Register(nameof(IsEditable), typeof(bool), typeof(ComboBox),
             new PropertyMetadata(false, OnIsEditableChanged));
@@ -56,6 +57,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty TextProperty =
         DependencyProperty.Register(nameof(Text), typeof(string), typeof(ComboBox),
             new PropertyMetadata(string.Empty, OnTextChanged));
@@ -63,6 +65,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the Placeholder dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty PlaceholderTextProperty =
         DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(ComboBox),
             new PropertyMetadata("Select an item...", OnPlaceholderTextChanged));
@@ -70,6 +73,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Identifies the SelectionBoxItem dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectionBoxItemProperty =
         DependencyProperty.Register(nameof(SelectionBoxItem), typeof(object), typeof(ComboBox),
             new PropertyMetadata(null, OnSelectionBoxItemChanged));
@@ -88,6 +92,7 @@ public class ComboBox : Selector
         if (d is ComboBox comboBox)
         {
             comboBox.UpdateEditableModeVisualState();
+            comboBox.UpdateCursorState();
             comboBox.UpdateSelectionBoxItem();
         }
     }
@@ -115,6 +120,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets whether the dropdown is open.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDropDownOpen
     {
         get => (bool)GetValue(IsDropDownOpenProperty);
@@ -124,6 +130,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets the maximum height of the dropdown.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double MaxDropDownHeight
     {
         get => (double)GetValue(MaxDropDownHeightProperty);
@@ -133,6 +140,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets whether users can type text directly into the control.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsEditable
     {
         get => (bool)GetValue(IsEditableProperty);
@@ -142,6 +150,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets the current text in the combo box.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Text
     {
         get => (string)(GetValue(TextProperty) ?? string.Empty);
@@ -151,6 +160,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets or sets the placeholder text shown when no item is selected.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string PlaceholderText
     {
         get => (string)(GetValue(PlaceholderTextProperty) ?? "Select an item...");
@@ -160,6 +170,7 @@ public class ComboBox : Selector
     /// <summary>
     /// Gets the item displayed in the selection box.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public object? SelectionBoxItem
     {
         get => GetValue(SelectionBoxItemProperty);
@@ -186,6 +197,7 @@ public class ComboBox : Selector
     {
         MinWidth = 120;
         Focusable = true;
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         SizeChanged += OnComboBoxSizeChanged;
 
         // Initialize SelectionBoxItem with placeholder
@@ -193,9 +205,9 @@ public class ComboBox : Selector
 
         // Set up mouse handling for toggle
         AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-
-        // Set up keyboard handling for navigation
+        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
         AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnGotKeyboardFocusHandler));
     }
 
     /// <inheritdoc />
@@ -225,12 +237,14 @@ public class ComboBox : Selector
         _popup = GetTemplateChild("PART_Popup") as Popup;
         _editableTextBox = GetTemplateChild("PART_EditableTextBox") as TextBox;
         _selectionPresenter = GetTemplateChild("PART_SelectionPresenter") as ContentPresenter;
+        _dropDownArea = GetTemplateChild("PART_DropDownArea") as Grid;
 
         // Wire up toggle button
         if (_toggleButton != null)
         {
             _toggleButton.Checked += OnToggleButtonChecked;
             _toggleButton.Unchecked += OnToggleButtonUnchecked;
+            _toggleButton.Cursor = Jalium.UI.Cursors.Arrow;
         }
 
         // Wire up popup
@@ -257,6 +271,7 @@ public class ComboBox : Selector
         // Update selection box
         UpdatePlaceholderState();
         UpdateEditableModeVisualState();
+        UpdateCursorState();
         UpdateSelectionBoxItem();
     }
 
@@ -272,58 +287,84 @@ public class ComboBox : Selector
 
     private void OnPopupClosed(object? sender, EventArgs e)
     {
-        // If CloseDropDown's animation is already handling the close, skip
         if (_isCloseAnimating) return;
 
-        // Popup was closed externally (light dismiss / StaysOpen=false)
-        // The popup is already gone, so just animate the arrow back
-        _animationTimer?.Stop();
         _isDropDownOpen = false;
 
         if (_toggleButton != null)
             _toggleButton.IsChecked = false;
 
-        // Animate arrow back to 0° (popup child is already hidden)
-        if (_arrowRotate != null && Math.Abs(_arrowRotate.Angle) > 0.5)
+        if (_arrowRotate != null)
         {
-            var arrowStartAngle = _arrowRotate.Angle;
-            var startTime = Environment.TickCount64;
-
-            _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-            _animationTimer.Tick += (s, ev) =>
-            {
-                var elapsed = Environment.TickCount64 - startTime;
-                var progress = Math.Min(1.0, elapsed / CloseDurationMs);
-                var eased = CloseEase.Ease(progress);
-
-                _arrowRotate.Angle = arrowStartAngle * (1.0 - eased);
-                _arrowPath!.InvalidateVisual();
-
-                if (progress >= 1.0)
-                {
-                    _animationTimer!.Stop();
-                    _arrowRotate.Angle = 0;
-                    _arrowPath!.InvalidateVisual();
-                }
-            };
-            _animationTimer.Start();
+            _arrowRotate.Angle = 0;
+            _arrowPath?.InvalidateVisual();
         }
 
         SetValue(IsDropDownOpenProperty, false);
         DropDownClosed?.Invoke(this, EventArgs.Empty);
     }
 
+    private void OnGotKeyboardFocusHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEditable || _editableTextBox == null || !ReferenceEquals(e.OriginalSource, this))
+        {
+            return;
+        }
+
+        if (_editableTextBox.Focus())
+        {
+            _editableTextBox.CaretIndex = _editableTextBox.Text?.Length ?? 0;
+            e.Handled = true;
+        }
+    }
+
     private void OnMouseDownHandler(object sender, RoutedEventArgs e)
     {
-        if (IsEditable && IsEventFromEditableTextBox(e))
+        if (!IsEnabled)
         {
-            // Let the inner TextBox handle focus/caret behavior.
             return;
+        }
+
+        if (e is not MouseButtonEventArgs mouseArgs)
+        {
+            return;
+        }
+
+        if (IsEditable)
+        {
+            if (IsEventFromToggleButton(e) || IsMousePositionInToggleButton(mouseArgs))
+            {
+                IsDropDownOpen = !IsDropDownOpen;
+                e.Handled = true;
+                return;
+            }
+
+            if (IsEventFromEditableTextBox(e))
+            {
+                // Let the inner TextBox handle focus/caret behavior.
+                return;
+            }
+
+            if (TryForwardMouseButtonEventToEditableTextBox(mouseArgs))
+            {
+                e.Handled = true;
+                return;
+            }
         }
 
         // Toggle dropdown
         IsDropDownOpen = !IsDropDownOpen;
         e.Handled = true;
+    }
+
+    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEditable || e is not MouseEventArgs mouseArgs)
+        {
+            return;
+        }
+
+        UpdateCursorState(mouseArgs.GetPosition(this));
     }
 
     private void OnKeyDownHandler(object sender, RoutedEventArgs e)
@@ -433,6 +474,28 @@ public class ComboBox : Selector
         UpdateSelectionBoxItem();
     }
 
+    /// <inheritdoc />
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+
+        if (!newValue && IsDropDownOpen)
+        {
+            IsDropDownOpen = false;
+        }
+    }
+
+    /// <inheritdoc />
+    protected override void OnIsKeyboardFocusedChanged(bool isFocused)
+    {
+        base.OnIsKeyboardFocusedChanged(isFocused);
+
+        if (isFocused && IsEditable && _editableTextBox != null && !_editableTextBox.IsKeyboardFocused)
+        {
+            _editableTextBox.Focus();
+        }
+    }
+
     private void UpdateSelectionBoxItem()
     {
         var selectedItem = SelectedItem;
@@ -498,6 +561,28 @@ public class ComboBox : Selector
         }
 
         UpdateEditableTextBoxText();
+    }
+
+    private void UpdateCursorState()
+    {
+        UpdateCursorState(null);
+    }
+
+    private void UpdateCursorState(Point? pointerPosition)
+    {
+        Cursor = !IsEditable || (pointerPosition.HasValue && IsPointInToggleArea(pointerPosition.Value))
+            ? Jalium.UI.Cursors.Arrow
+            : Jalium.UI.Cursors.IBeam;
+
+        if (_dropDownArea != null)
+        {
+            _dropDownArea.Cursor = Jalium.UI.Cursors.Arrow;
+        }
+
+        if (_toggleButton != null)
+        {
+            _toggleButton.Cursor = Jalium.UI.Cursors.Arrow;
+        }
     }
 
     private void UpdateEditableTextBoxText()
@@ -568,14 +653,79 @@ public class ComboBox : Selector
 
     private bool IsEventFromEditableTextBox(RoutedEventArgs e)
     {
-        if (_editableTextBox == null || e.OriginalSource is not Visual sourceVisual)
+        return IsEventFromVisualTree(e, _editableTextBox);
+    }
+
+    private bool IsEventFromToggleButton(RoutedEventArgs e)
+    {
+        return IsEventFromVisualTree(e, _toggleButton);
+    }
+
+    private bool IsMousePositionInToggleButton(MouseButtonEventArgs e)
+    {
+        return IsPointInToggleArea(e.GetPosition(this));
+    }
+
+    private bool IsPointInToggleArea(Point position)
+    {
+        if (position.X < 0 || position.Y < 0 || position.X > RenderSize.Width || position.Y > RenderSize.Height)
+        {
+            return false;
+        }
+
+        double toggleWidth = 0;
+        if (_toggleButton != null)
+        {
+            toggleWidth = Math.Max(_toggleButton.ActualWidth, _toggleButton.RenderSize.Width);
+            if (toggleWidth <= 0 && _toggleButton.VisualBounds.Width > 0)
+            {
+                toggleWidth = _toggleButton.VisualBounds.Width;
+            }
+        }
+
+        if (toggleWidth <= 0)
+        {
+            toggleWidth = 28;
+        }
+
+        return position.X >= Math.Max(0, RenderSize.Width - toggleWidth);
+    }
+
+    private bool TryForwardMouseButtonEventToEditableTextBox(MouseButtonEventArgs e)
+    {
+        if (_editableTextBox == null || e.RoutedEvent == null)
+        {
+            return false;
+        }
+
+        var forwardedArgs = new MouseButtonEventArgs(
+            e.RoutedEvent,
+            e.Position,
+            e.ChangedButton,
+            e.ButtonState,
+            e.ClickCount,
+            e.LeftButton,
+            e.MiddleButton,
+            e.RightButton,
+            e.XButton1,
+            e.XButton2,
+            e.KeyboardModifiers,
+            e.Timestamp);
+
+        _editableTextBox.RaiseEvent(forwardedArgs);
+        return forwardedArgs.Handled;
+    }
+
+    private static bool IsEventFromVisualTree(RoutedEventArgs e, Visual? targetVisual)
+    {
+        if (targetVisual == null || e.OriginalSource is not Visual sourceVisual)
         {
             return false;
         }
 
         for (Visual? current = sourceVisual; current != null; current = current.VisualParent)
         {
-            if (ReferenceEquals(current, _editableTextBox))
+            if (ReferenceEquals(current, targetVisual))
             {
                 return true;
             }
@@ -588,12 +738,7 @@ public class ComboBox : Selector
     {
         if (_isDropDownOpen) return;
 
-        // Cancel any close animation in progress
-        if (_isCloseAnimating)
-        {
-            _animationTimer?.Stop();
-            _isCloseAnimating = false;
-        }
+        _isCloseAnimating = false;
 
         PopulateDropdownItems();
 
@@ -610,7 +755,6 @@ public class ComboBox : Selector
             _toggleButton.IsChecked = true;
         }
 
-        // Animate: arrow 0→180°, popup child fade+slide in
         AnimateOpen();
 
         DropDownOpened?.Invoke(this, EventArgs.Empty);
@@ -627,7 +771,6 @@ public class ComboBox : Selector
             _toggleButton.IsChecked = false;
         }
 
-        // Animate: arrow 180→0°, popup child fade+slide out, then close popup
         AnimateClose();
 
         DropDownClosed?.Invoke(this, EventArgs.Empty);
@@ -663,118 +806,41 @@ public class ComboBox : Selector
 
     private void AnimateOpen()
     {
-        _animationTimer?.Stop();
-
         var popupChild = _popup?.Child as FrameworkElement;
-
-        // Initial state: transparent + shifted up
         if (popupChild != null)
         {
-            popupChild.Opacity = 0;
-            popupChild.RenderOffset = new Point(0, -8);
+            popupChild.Opacity = 1;
+            popupChild.RenderOffset = default;
         }
 
-        var arrowStartAngle = _arrowRotate?.Angle ?? 0;
-        var startTime = Environment.TickCount64;
-
-        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        _animationTimer.Tick += (s, e) =>
+        if (_arrowRotate != null)
         {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = Math.Min(1.0, elapsed / OpenDurationMs);
-            var eased = OpenEase.Ease(progress);
-
-            // Arrow: rotate to 180°
-            if (_arrowRotate != null)
-            {
-                _arrowRotate.Angle = arrowStartAngle + (180.0 - arrowStartAngle) * eased;
-                _arrowPath!.InvalidateVisual();
-            }
-
-            // Popup child: fade in + slide down
-            if (popupChild != null)
-            {
-                popupChild.Opacity = eased;
-                popupChild.RenderOffset = new Point(0, -8 * (1.0 - eased));
-            }
-
-            if (progress >= 1.0)
-            {
-                _animationTimer!.Stop();
-                if (popupChild != null)
-                {
-                    popupChild.Opacity = 1;
-                    popupChild.RenderOffset = default;
-                }
-                if (_arrowRotate != null)
-                {
-                    _arrowRotate.Angle = 180;
-                    _arrowPath!.InvalidateVisual();
-                }
-            }
-        };
-        _animationTimer.Start();
+            _arrowRotate.Angle = 180;
+            _arrowPath?.InvalidateVisual();
+        }
     }
 
     private void AnimateClose()
     {
-        _animationTimer?.Stop();
-
         var popupChild = _popup?.Child as FrameworkElement;
-        var arrowStartAngle = _arrowRotate?.Angle ?? 180;
-        var startOpacity = popupChild?.Opacity ?? 1.0;
-        var startOffsetY = popupChild?.RenderOffset.Y ?? 0;
-        var startTime = Environment.TickCount64;
+        if (popupChild != null)
+        {
+            popupChild.Opacity = 1;
+            popupChild.RenderOffset = default;
+        }
+
+        if (_arrowRotate != null)
+        {
+            _arrowRotate.Angle = 0;
+            _arrowPath?.InvalidateVisual();
+        }
 
         _isCloseAnimating = true;
-
-        _animationTimer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        _animationTimer.Tick += (s, e) =>
+        if (_popup != null)
         {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = Math.Min(1.0, elapsed / CloseDurationMs);
-            var eased = CloseEase.Ease(progress);
-
-            // Arrow: rotate back to 0°
-            if (_arrowRotate != null)
-            {
-                _arrowRotate.Angle = arrowStartAngle * (1.0 - eased);
-                _arrowPath!.InvalidateVisual();
-            }
-
-            // Popup child: fade out + slide up
-            if (popupChild != null)
-            {
-                popupChild.Opacity = startOpacity * (1.0 - eased);
-                popupChild.RenderOffset = new Point(0, startOffsetY + (-8 - startOffsetY) * eased);
-            }
-
-            if (progress >= 1.0)
-            {
-                _animationTimer!.Stop();
-
-                // Actually close the popup after animation completes
-                // Keep _isCloseAnimating=true until AFTER popup closes to prevent OnPopupClosed re-entry
-                if (_popup != null)
-                {
-                    _popup.IsOpen = false;
-                }
-                _isCloseAnimating = false;
-
-                // Reset state
-                if (popupChild != null)
-                {
-                    popupChild.Opacity = 1;
-                    popupChild.RenderOffset = default;
-                }
-                if (_arrowRotate != null)
-                {
-                    _arrowRotate.Angle = 0;
-                    _arrowPath!.InvalidateVisual();
-                }
-            }
-        };
-        _animationTimer.Start();
+            _popup.IsOpen = false;
+        }
+        _isCloseAnimating = false;
     }
 
     private static T? FindDescendant<T>(Visual? root) where T : Visual
@@ -860,7 +926,7 @@ public class ComboBox : Selector
 /// <summary>
 /// Represents an item in a ComboBox.
 /// </summary>
-public sealed class ComboBoxItem : ContentControl
+public class ComboBoxItem : ContentControl
 {
     private bool _isPressed;
 

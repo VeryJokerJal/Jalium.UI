@@ -34,97 +34,16 @@ internal static class ExpandCollapseAnimator
 
         panel.Visibility = Visibility.Visible;
         panel.ClipToBounds = true;
-
-        var currentHeight = panel.ActualHeight;
-
-        // Measure natural height
         panel.Height = double.NaN;
         panel.MaxHeight = double.PositiveInfinity;
-        panel.Measure(new Size(
-            panel.ActualWidth > 0 ? panel.ActualWidth : double.PositiveInfinity,
-            double.PositiveInfinity));
-        var targetHeight = panel.DesiredSize.Height;
-
-        if (targetHeight <= 0)
-        {
-            panel.ClipToBounds = false;
-            return null;
-        }
-
-        var startHeight = Math.Min(currentHeight, targetHeight);
-        panel.Height = startHeight;
-
-        // Arrow setup
-        RotateTransform? rotateTransform = null;
-        double startAngle = 0;
-        double lastAngle = double.NaN;
         if (arrow != null)
         {
-            rotateTransform = EnsureRotateTransform(arrow);
-            startAngle = rotateTransform.Angle;
-            lastAngle = startAngle;
+            EnsureRotateTransform(arrow).Angle = 90;
+            arrow.InvalidateVisual();
         }
 
-        // Cloth setup
-        var clothChildren = CollectClothChildren(panel, targetHeight);
-
-        var startTime = Environment.TickCount64;
-        var remainingRatio = targetHeight > 0 ? 1.0 - startHeight / targetHeight : 1.0;
-        var duration = ExpandDurationMs * Math.Max(remainingRatio, 0.3);
-
-        var timer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        timer.Tick += (s, e) =>
-        {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = duration > 0 ? Math.Min(1.0, elapsed / duration) : 1.0;
-
-            // --- Height: BackEase elastic ---
-            panel.Height = startHeight + (targetHeight - startHeight) * ExpandEase.Ease(progress);
-
-            // --- Arrow: CubicEase smooth ---
-            if (rotateTransform != null)
-            {
-                var newAngle = startAngle + (90.0 - startAngle) * ArrowEase.Ease(progress);
-                if (Math.Abs(newAngle - lastAngle) >= 0.5)
-                {
-                    rotateTransform.Angle = newAngle;
-                    lastAngle = newAngle;
-                    arrow!.InvalidateVisual();
-                }
-            }
-
-            // --- Cloth: staggered by progress offset ---
-            for (int i = 0; i < clothChildren.Length; i++)
-            {
-                ref var c = ref clothChildren[i];
-                // Child's local progress: delayed by its stagger, then scaled to fill remaining range
-                var delay = c.ProgressDelay;
-                var childProgress = delay < 1.0
-                    ? Math.Clamp((progress - delay) / (1.0 - delay), 0.0, 1.0)
-                    : 1.0;
-                var childEased = ClothEase.Ease(childProgress);
-                c.Element.RenderOffset = new Point(0, c.InitialY * (1.0 - childEased));
-            }
-
-            if (progress >= 1.0)
-            {
-                timer.Stop();
-                panel.Height = double.NaN;
-                panel.MaxHeight = double.PositiveInfinity;
-                panel.ClipToBounds = false;
-
-                for (int i = 0; i < clothChildren.Length; i++)
-                    clothChildren[i].Element.RenderOffset = default;
-
-                if (rotateTransform != null)
-                {
-                    rotateTransform.Angle = 90;
-                    arrow!.InvalidateVisual();
-                }
-            }
-        };
-        timer.Start();
-        return timer;
+        panel.ClipToBounds = false;
+        return null;
     }
 
     /// <summary>
@@ -134,75 +53,17 @@ internal static class ExpandCollapseAnimator
     {
         activeTimer?.Stop();
         ClearChildOffsets(panel);
-
-        var startHeight = panel.ActualHeight;
-        if (startHeight <= 0)
-        {
-            panel.Visibility = Visibility.Collapsed;
-            panel.Height = double.NaN;
-            panel.MaxHeight = double.PositiveInfinity;
-            if (arrow != null)
-            {
-                EnsureRotateTransform(arrow).Angle = 0;
-                arrow.InvalidateVisual();
-            }
-            return null;
-        }
-
-        panel.ClipToBounds = true;
-        panel.Height = double.NaN;
-        panel.MaxHeight = startHeight;
-
-        RotateTransform? rotateTransform = null;
-        double startAngle = 0;
-        double lastAngle = double.NaN;
         if (arrow != null)
         {
-            rotateTransform = EnsureRotateTransform(arrow);
-            startAngle = rotateTransform.Angle;
-            lastAngle = startAngle;
+            EnsureRotateTransform(arrow).Angle = 0;
+            arrow.InvalidateVisual();
         }
 
-        var startTime = Environment.TickCount64;
-        var duration = CollapseDurationMs;
-
-        var timer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
-        timer.Tick += (s, e) =>
-        {
-            var elapsed = Environment.TickCount64 - startTime;
-            var progress = duration > 0 ? Math.Min(1.0, elapsed / duration) : 1.0;
-            var easedProgress = CollapseEase.Ease(progress);
-
-            panel.MaxHeight = startHeight * (1.0 - easedProgress);
-
-            if (rotateTransform != null)
-            {
-                var newAngle = startAngle * (1.0 - easedProgress);
-                if (Math.Abs(newAngle - lastAngle) >= 0.5)
-                {
-                    rotateTransform.Angle = newAngle;
-                    lastAngle = newAngle;
-                    arrow!.InvalidateVisual();
-                }
-            }
-
-            if (progress >= 1.0)
-            {
-                timer.Stop();
-                panel.Visibility = Visibility.Collapsed;
-                panel.Height = double.NaN;
-                panel.MaxHeight = double.PositiveInfinity;
-                panel.ClipToBounds = false;
-
-                if (rotateTransform != null)
-                {
-                    rotateTransform.Angle = 0;
-                    arrow!.InvalidateVisual();
-                }
-            }
-        };
-        timer.Start();
-        return timer;
+        panel.Visibility = Visibility.Collapsed;
+        panel.Height = double.NaN;
+        panel.MaxHeight = double.PositiveInfinity;
+        panel.ClipToBounds = false;
+        return null;
     }
 
     #region Helpers

@@ -32,13 +32,14 @@ public enum SelectiveScrollingOrientation
 /// A grid panel that allows child elements to selectively scroll in different directions.
 /// Commonly used in DataGrid to freeze certain rows or columns.
 /// </summary>
-public sealed class SelectiveScrollingGrid : Grid
+public class SelectiveScrollingGrid : Grid
 {
     #region Attached Properties
 
     /// <summary>
     /// Identifies the SelectiveScrollingOrientation attached property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SelectiveScrollingOrientationProperty =
         DependencyProperty.RegisterAttached(
             "SelectiveScrollingOrientation",
@@ -51,6 +52,7 @@ public sealed class SelectiveScrollingGrid : Grid
     /// </summary>
     /// <param name="element">The element to get the orientation for.</param>
     /// <returns>The selective scrolling orientation.</returns>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static SelectiveScrollingOrientation GetSelectiveScrollingOrientation(DependencyObject element)
     {
         return (SelectiveScrollingOrientation)(element.GetValue(SelectiveScrollingOrientationProperty) ?? SelectiveScrollingOrientation.Both);
@@ -61,6 +63,7 @@ public sealed class SelectiveScrollingGrid : Grid
     /// </summary>
     /// <param name="element">The element to set the orientation for.</param>
     /// <param name="value">The orientation value.</param>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static void SetSelectiveScrollingOrientation(DependencyObject element, SelectiveScrollingOrientation value)
     {
         element.SetValue(SelectiveScrollingOrientationProperty, value);

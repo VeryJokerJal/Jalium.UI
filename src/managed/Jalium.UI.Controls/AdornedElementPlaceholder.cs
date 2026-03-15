@@ -4,7 +4,7 @@ namespace Jalium.UI.Controls;
 /// Represents the element used in a ControlTemplate to specify where a decorated control is placed
 /// relative to other elements in the ControlTemplate. Used with Validation.ErrorTemplate.
 /// </summary>
-public sealed class AdornedElementPlaceholder : FrameworkElement
+public class AdornedElementPlaceholder : FrameworkElement
 {
     /// <summary>
     /// Gets the UIElement that this AdornedElementPlaceholder is reserving space for.

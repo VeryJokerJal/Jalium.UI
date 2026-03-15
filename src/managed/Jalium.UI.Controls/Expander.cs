@@ -7,13 +7,20 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a control that displays a header and has a collapsible content area.
 /// </summary>
-public sealed class Expander : ContentControl
+public class Expander : ContentControl
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+    {
+        return new Jalium.UI.Controls.Automation.ExpanderAutomationPeer(this);
+    }
+
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the IsExpanded dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsExpandedProperty =
         DependencyProperty.Register(nameof(IsExpanded), typeof(bool), typeof(Expander),
             new PropertyMetadata(false, OnIsExpandedChanged));
@@ -21,6 +28,7 @@ public sealed class Expander : ContentControl
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderProperty =
         DependencyProperty.Register(nameof(Header), typeof(object), typeof(Expander),
             new PropertyMetadata(null, OnHeaderChanged));
@@ -28,6 +36,7 @@ public sealed class Expander : ContentControl
     /// <summary>
     /// Identifies the ExpandDirection dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ExpandDirectionProperty =
         DependencyProperty.Register(nameof(ExpandDirection), typeof(ExpandDirection), typeof(Expander),
             new PropertyMetadata(ExpandDirection.Down, OnLayoutPropertyChanged));
@@ -35,6 +44,7 @@ public sealed class Expander : ContentControl
     /// <summary>
     /// Identifies the HeaderBackground dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty HeaderBackgroundProperty =
         DependencyProperty.Register(nameof(HeaderBackground), typeof(Brush), typeof(Expander),
             new PropertyMetadata(null, OnVisualPropertyChanged));
@@ -82,6 +92,7 @@ public sealed class Expander : ContentControl
     /// <summary>
     /// Gets or sets a value indicating whether the expander is expanded.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsExpanded
     {
         get => (bool)GetValue(IsExpandedProperty)!;
@@ -91,6 +102,7 @@ public sealed class Expander : ContentControl
     /// <summary>
     /// Gets or sets the header content.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public object? Header
     {
         get => GetValue(HeaderProperty);
@@ -100,6 +112,7 @@ public sealed class Expander : ContentControl
     /// <summary>
     /// Gets or sets the direction in which the content area expands.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ExpandDirection ExpandDirection
     {
         get => (ExpandDirection)GetValue(ExpandDirectionProperty)!;
@@ -109,6 +122,7 @@ public sealed class Expander : ContentControl
     /// <summary>
     /// Gets or sets the background brush for the header area.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Brush? HeaderBackground
     {
         get => (Brush?)GetValue(HeaderBackgroundProperty);
@@ -125,6 +139,7 @@ public sealed class Expander : ContentControl
     public Expander()
     {
         Focusable = true;
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         UseTemplateContentManagement();
 
         // Register keyboard handler

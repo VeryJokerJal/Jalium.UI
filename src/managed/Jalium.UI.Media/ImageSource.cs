@@ -31,6 +31,8 @@ public sealed class BitmapImage : ImageSource
     private double _height;
     private Uri? _uriSource;
     private byte[]? _imageData;
+    private byte[]? _rawPixelData;
+    private int _pixelStride;
 
     /// <summary>
     /// Occurs when the image has been loaded from a remote source.
@@ -56,6 +58,26 @@ public sealed class BitmapImage : ImageSource
     /// Gets the raw image data bytes.
     /// </summary>
     public byte[]? ImageData => _imageData;
+
+    /// <summary>
+    /// Gets the raw BGRA8 pixel buffer when the image was created from pixels.
+    /// </summary>
+    public byte[]? RawPixelData => _rawPixelData;
+
+    /// <summary>
+    /// Gets the pixel width when raw pixel data is available.
+    /// </summary>
+    public int PixelWidth => (int)Math.Round(_width);
+
+    /// <summary>
+    /// Gets the pixel height when raw pixel data is available.
+    /// </summary>
+    public int PixelHeight => (int)Math.Round(_height);
+
+    /// <summary>
+    /// Gets the number of bytes between two adjacent rows in the raw pixel buffer.
+    /// </summary>
+    public int PixelStride => _pixelStride;
 
     /// <summary>
     /// Gets or sets the URI source of the bitmap image.
@@ -104,14 +126,34 @@ public sealed class BitmapImage : ImageSource
     /// <param name="pixels">The pixel data in BGRA format.</param>
     /// <param name="width">The width in pixels.</param>
     /// <param name="height">The height in pixels.</param>
-    public static BitmapImage FromPixels(byte[] pixels, int width, int height)
+    /// <param name="stride">The number of bytes between two adjacent rows. Defaults to <c>width * 4</c>.</param>
+    public static BitmapImage FromPixels(byte[] pixels, int width, int height, int stride = 0)
     {
+        ArgumentNullException.ThrowIfNull(pixels);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(width);
+        ArgumentOutOfRangeException.ThrowIfNegativeOrZero(height);
+
+        if (stride <= 0)
+        {
+            stride = checked(width * 4);
+        }
+
+        var minimumBytes = checked(stride * height);
+        if (pixels.Length < minimumBytes)
+        {
+            throw new ArgumentException("Pixel buffer is smaller than the specified dimensions and stride.", nameof(pixels));
+        }
+
+        var pixelCopy = new byte[minimumBytes];
+        Buffer.BlockCopy(pixels, 0, pixelCopy, 0, minimumBytes);
+
         var image = new BitmapImage
         {
             _width = width,
-            _height = height
+            _height = height,
+            _rawPixelData = pixelCopy,
+            _pixelStride = stride
         };
-        // Native image creation will be done by the rendering backend
         return image;
     }
 
@@ -165,6 +207,8 @@ public sealed class BitmapImage : ImageSource
     {
         // Store the raw bytes for the native rendering backend to process
         _imageData = data;
+        _rawPixelData = null;
+        _pixelStride = 0;
 
         // Try to read image dimensions from the header
         if (TryReadImageDimensions(data, out var width, out var height))

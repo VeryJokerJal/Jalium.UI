@@ -1,3 +1,4 @@
+using Jalium.UI;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -814,8 +815,11 @@ internal sealed class EditorView
         return GetFallbackBrushForClassification(classification, defaultBrush);
     }
 
-    private static Brush GetFallbackBrushForClassification(TokenClassification classification, Brush defaultBrush)
+    private Brush GetFallbackBrushForClassification(TokenClassification classification, Brush defaultBrush)
     {
+        if (TryResolveApplicationClassificationBrush(classification, out var themeBrush))
+            return themeBrush;
+
         return classification switch
         {
             TokenClassification.Keyword => s_keywordBrush,
@@ -841,6 +845,52 @@ internal sealed class EditorView
             TokenClassification.BindingOperator => s_bindingOperatorBrush,
             TokenClassification.Error => s_errorBrush,
             _ => defaultBrush,
+        };
+    }
+
+    private static bool TryResolveApplicationClassificationBrush(TokenClassification classification, out Brush brush)
+    {
+        if (Application.Current?.Resources.TryGetValue(GetEditorSyntaxBrushKey(classification), out var appResource) == true &&
+            appResource is Brush appBrush)
+        {
+            brush = appBrush;
+            return true;
+        }
+
+        brush = null!;
+        return false;
+    }
+
+    private static string GetEditorSyntaxBrushKey(TokenClassification classification)
+    {
+        return classification switch
+        {
+            TokenClassification.PlainText => "EditorSyntaxPlainText",
+            TokenClassification.Keyword => "EditorSyntaxKeyword",
+            TokenClassification.ControlKeyword => "EditorSyntaxControlKeyword",
+            TokenClassification.TypeName => "EditorSyntaxTypeName",
+            TokenClassification.String => "EditorSyntaxString",
+            TokenClassification.Character => "EditorSyntaxCharacter",
+            TokenClassification.Number => "EditorSyntaxNumber",
+            TokenClassification.Comment => "EditorSyntaxComment",
+            TokenClassification.XmlDoc => "EditorSyntaxXmlDoc",
+            TokenClassification.Preprocessor => "EditorSyntaxPreprocessor",
+            TokenClassification.Operator => "EditorSyntaxOperator",
+            TokenClassification.Punctuation => "EditorSyntaxPunctuation",
+            TokenClassification.Identifier => "EditorSyntaxIdentifier",
+            TokenClassification.LocalVariable => "EditorSyntaxLocalVariable",
+            TokenClassification.Parameter => "EditorSyntaxParameter",
+            TokenClassification.Field => "EditorSyntaxField",
+            TokenClassification.Property => "EditorSyntaxProperty",
+            TokenClassification.Method => "EditorSyntaxMethod",
+            TokenClassification.Namespace => "EditorSyntaxNamespace",
+            TokenClassification.Attribute => "EditorSyntaxAttribute",
+            TokenClassification.BindingKeyword => "EditorSyntaxBindingKeyword",
+            TokenClassification.BindingParameter => "EditorSyntaxBindingParameter",
+            TokenClassification.BindingPath => "EditorSyntaxBindingPath",
+            TokenClassification.BindingOperator => "EditorSyntaxBindingOperator",
+            TokenClassification.Error => "EditorSyntaxError",
+            _ => "EditorSyntaxPlainText",
         };
     }
 

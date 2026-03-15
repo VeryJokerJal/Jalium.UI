@@ -5,13 +5,14 @@ namespace Jalium.UI.Controls.Shapes;
 /// <summary>
 /// Draws a series of connected lines and curves.
 /// </summary>
-public sealed class Path : Shape
+public class Path : Shape
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Data dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty DataProperty =
         DependencyProperty.Register(nameof(Data), typeof(string), typeof(Path),
             new PropertyMetadata(null, OnDataChanged));
@@ -25,6 +26,7 @@ public sealed class Path : Shape
     /// Supported commands: M/m, L/l, H/h, V/v, C/c (cubic bezier), Z/z
     /// Example: "M 0,5 L 3,8 L 8,2" draws a checkmark
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public string? Data
     {
         get => (string?)GetValue(DataProperty);

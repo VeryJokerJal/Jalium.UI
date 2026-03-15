@@ -6,13 +6,14 @@ namespace Jalium.UI.Controls.Primitives;
 /// Represents the Track element used in ScrollBar and Slider controls.
 /// Contains a Thumb and optionally two RepeatButtons for value manipulation.
 /// </summary>
-public sealed class Track : FrameworkElement
+public class Track : FrameworkElement
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the Orientation dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty OrientationProperty =
         DependencyProperty.Register(nameof(Orientation), typeof(Orientation), typeof(Track),
             new PropertyMetadata(Orientation.Horizontal, OnLayoutPropertyChanged));
@@ -20,6 +21,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Identifies the Minimum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MinimumProperty =
         DependencyProperty.Register(nameof(Minimum), typeof(double), typeof(Track),
             new PropertyMetadata(0.0, OnLayoutPropertyChanged));
@@ -27,6 +29,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Identifies the Maximum dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty MaximumProperty =
         DependencyProperty.Register(nameof(Maximum), typeof(double), typeof(Track),
             new PropertyMetadata(1.0, OnLayoutPropertyChanged));
@@ -34,6 +37,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Identifies the Value dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ValueProperty =
         DependencyProperty.Register(nameof(Value), typeof(double), typeof(Track),
             new PropertyMetadata(0.0, OnLayoutPropertyChanged));
@@ -41,6 +45,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Identifies the ViewportSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ViewportSizeProperty =
         DependencyProperty.Register(nameof(ViewportSize), typeof(double), typeof(Track),
             new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
@@ -48,6 +53,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Identifies the IsDirectionReversed dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsDirectionReversedProperty =
         DependencyProperty.Register(nameof(IsDirectionReversed), typeof(bool), typeof(Track),
             new PropertyMetadata(false, OnLayoutPropertyChanged));
@@ -57,9 +63,22 @@ public sealed class Track : FrameworkElement
     /// When set to a positive value, the thumb is centered and constrained to this
     /// thickness on the axis perpendicular to scrolling.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ThumbCrossAxisThicknessProperty =
         DependencyProperty.Register(nameof(ThumbCrossAxisThickness), typeof(double), typeof(Track),
-            new PropertyMetadata(double.NaN, OnLayoutPropertyChanged));
+            new PropertyMetadata(double.NaN, OnThumbCrossAxisThicknessChanged));
+
+    #endregion
+
+    #region Constructor
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="Track"/> class.
+    /// </summary>
+    public Track()
+    {
+        SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
+    }
 
     #endregion
 
@@ -68,6 +87,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Gets or sets the orientation of the Track.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public Orientation Orientation
     {
         get => (Orientation)GetValue(OrientationProperty)!;
@@ -77,6 +97,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Gets or sets the minimum value of the Track.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Minimum
     {
         get => (double)GetValue(MinimumProperty)!;
@@ -86,6 +107,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Gets or sets the maximum value of the Track.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double Maximum
     {
         get => (double)GetValue(MaximumProperty)!;
@@ -95,6 +117,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Gets or sets the current value of the Track.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Value
     {
         get => (double)GetValue(ValueProperty)!;
@@ -104,6 +127,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Gets or sets the size of the viewport for scrolling scenarios.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ViewportSize
     {
         get => (double)GetValue(ViewportSizeProperty)!;
@@ -113,6 +137,7 @@ public sealed class Track : FrameworkElement
     /// <summary>
     /// Gets or sets whether the direction of increasing value is reversed.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsDirectionReversed
     {
         get => (bool)GetValue(IsDirectionReversedProperty)!;
@@ -123,6 +148,7 @@ public sealed class Track : FrameworkElement
     /// Gets or sets the thumb thickness on the cross axis.
     /// Set to NaN (default) to use the track's normal inset behavior.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public double ThumbCrossAxisThickness
     {
         get => (double)GetValue(ThumbCrossAxisThicknessProperty)!;
@@ -142,7 +168,7 @@ public sealed class Track : FrameworkElement
                 if (_thumb != null)
                 {
                     RemoveVisualChild(_thumb);
-                    _thumb.DragDelta -= OnThumbDragDelta;
+                    DetachThumbDragHandlers(_thumb);
                 }
 
                 _thumb = value;
@@ -150,7 +176,7 @@ public sealed class Track : FrameworkElement
                 if (_thumb != null)
                 {
                     AddVisualChild(_thumb);
-                    _thumb.DragDelta += OnThumbDragDelta;
+                    AttachThumbDragHandlers(_thumb);
                 }
 
                 InvalidateMeasure();
@@ -220,6 +246,35 @@ public sealed class Track : FrameworkElement
     private RepeatButton? _decreaseButton;
     private RepeatButton? _increaseButton;
     private double _density;
+    private bool _isThumbDragging;
+    private double _thumbDragStartValue;
+    private double _thumbDragAccumulatedHorizontal;
+    private double _thumbDragAccumulatedVertical;
+    private bool _handlesThumbDragInternally = true;
+
+    #endregion
+
+    #region Internal Options
+
+    internal bool HandlesThumbDragInternally
+    {
+        get => _handlesThumbDragInternally;
+        set
+        {
+            if (_handlesThumbDragInternally == value)
+            {
+                return;
+            }
+
+            _handlesThumbDragInternally = value;
+            if (!value)
+            {
+                EndThumbDrag();
+            }
+
+            UpdateThumbDragSubscriptions();
+        }
+    }
 
     #endregion
 
@@ -301,6 +356,23 @@ public sealed class Track : FrameworkElement
 
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
+    {
+        return ArrangeParts(finalSize);
+    }
+
+    internal void RefreshThumbVisualLayout()
+    {
+        if (!IsArrangeValid || RenderSize.Width <= 0 || RenderSize.Height <= 0)
+        {
+            InvalidateArrange();
+            return;
+        }
+
+        ArrangeParts(RenderSize);
+        InvalidateVisual();
+    }
+
+    private Size ArrangeParts(Size finalSize)
     {
         static double CoerceFiniteNonNegative(double value)
         {
@@ -552,16 +624,68 @@ public sealed class Track : FrameworkElement
 
     #endregion
 
+    #region Thumb Drag Wiring
+
+    private void AttachThumbDragHandlers(Thumb thumb)
+    {
+        if (!_handlesThumbDragInternally)
+        {
+            return;
+        }
+
+        thumb.DragStarted += OnThumbDragStarted;
+        thumb.DragDelta += OnThumbDragDelta;
+        thumb.DragCompleted += OnThumbDragCompleted;
+    }
+
+    private void DetachThumbDragHandlers(Thumb thumb)
+    {
+        thumb.DragStarted -= OnThumbDragStarted;
+        thumb.DragDelta -= OnThumbDragDelta;
+        thumb.DragCompleted -= OnThumbDragCompleted;
+    }
+
+    private void UpdateThumbDragSubscriptions()
+    {
+        if (_thumb == null)
+        {
+            return;
+        }
+
+        DetachThumbDragHandlers(_thumb);
+        AttachThumbDragHandlers(_thumb);
+    }
+
+    #endregion
+
     #region Event Handlers
+
+    private void OnThumbDragStarted(object sender, DragStartedEventArgs e)
+    {
+        BeginThumbDrag();
+    }
 
     private void OnThumbDragDelta(object sender, DragDeltaEventArgs e)
     {
-        var newValue = Value + ValueFromDistance(e.HorizontalChange, e.VerticalChange);
+        if (!_isThumbDragging)
+        {
+            BeginThumbDrag();
+        }
+
+        _thumbDragAccumulatedHorizontal += e.HorizontalChange;
+        _thumbDragAccumulatedVertical += e.VerticalChange;
+
+        var newValue = _thumbDragStartValue + ValueFromDistance(_thumbDragAccumulatedHorizontal, _thumbDragAccumulatedVertical);
         newValue = Math.Clamp(newValue, Minimum, Maximum);
 
         // This should be bound to the parent control's Value property
         // For now, we'll just update our local value
         Value = newValue;
+    }
+
+    private void OnThumbDragCompleted(object sender, DragCompletedEventArgs e)
+    {
+        EndThumbDrag();
     }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -570,6 +694,29 @@ public sealed class Track : FrameworkElement
         {
             track.InvalidateArrange();
         }
+    }
+
+    private static void OnThumbCrossAxisThicknessChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Track track)
+        {
+            track.RefreshThumbVisualLayout();
+        }
+    }
+
+    private void BeginThumbDrag()
+    {
+        _isThumbDragging = true;
+        _thumbDragStartValue = Value;
+        _thumbDragAccumulatedHorizontal = 0;
+        _thumbDragAccumulatedVertical = 0;
+    }
+
+    private void EndThumbDrag()
+    {
+        _isThumbDragging = false;
+        _thumbDragAccumulatedHorizontal = 0;
+        _thumbDragAccumulatedVertical = 0;
     }
 
     #endregion

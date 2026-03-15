@@ -1,4 +1,4 @@
-﻿using System.Collections;
+using System.Collections;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
@@ -14,6 +14,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
 {
     private sealed class DefaultViewCacheEntry
     {
+        [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
         public WeakReference<ICollectionView>? View { get; set; }
     }
 
@@ -25,6 +26,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
     /// <summary>
     /// Identifies the Source dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(object), typeof(CollectionViewSource),
             new PropertyMetadata(null, OnSourceChanged));
@@ -39,11 +41,13 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
     /// <summary>
     /// Identifies the View dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty ViewProperty = ViewPropertyKey.DependencyProperty;
 
     /// <summary>
     /// Identifies the IsLiveFilteringRequested dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty IsLiveFilteringRequestedProperty =
         DependencyProperty.Register(nameof(IsLiveFilteringRequested), typeof(bool), typeof(CollectionViewSource),
             new PropertyMetadata(false));
@@ -51,6 +55,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
     /// <summary>
     /// Identifies the IsLiveSortingRequested dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty IsLiveSortingRequestedProperty =
         DependencyProperty.Register(nameof(IsLiveSortingRequested), typeof(bool), typeof(CollectionViewSource),
             new PropertyMetadata(false));
@@ -58,6 +63,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
     /// <summary>
     /// Identifies the IsLiveGroupingRequested dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public static readonly DependencyProperty IsLiveGroupingRequestedProperty =
         DependencyProperty.Register(nameof(IsLiveGroupingRequested), typeof(bool), typeof(CollectionViewSource),
             new PropertyMetadata(false));
@@ -85,6 +91,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
     /// <summary>
     /// Gets or sets the collection object from which to create this view.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public object? Source
     {
         get => GetValue(SourceProperty);
@@ -94,6 +101,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
     /// <summary>
     /// Gets the view object that is currently associated with this instance of CollectionViewSource.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public ICollectionView? View => (ICollectionView?)GetValue(ViewProperty);
 
     /// <summary>
@@ -125,6 +133,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
     /// <summary>
     /// Gets or sets a value that indicates whether live filtering is requested.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public bool IsLiveFilteringRequested
     {
         get => (bool)GetValue(IsLiveFilteringRequestedProperty)!;
@@ -134,6 +143,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
     /// <summary>
     /// Gets or sets a value that indicates whether live sorting is requested.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public bool IsLiveSortingRequested
     {
         get => (bool)GetValue(IsLiveSortingRequestedProperty)!;
@@ -143,6 +153,7 @@ public sealed class CollectionViewSource : DependencyObject, ISupportInitialize
     /// <summary>
     /// Gets or sets a value that indicates whether live grouping is requested.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public bool IsLiveGroupingRequested
     {
         get => (bool)GetValue(IsLiveGroupingRequestedProperty)!;

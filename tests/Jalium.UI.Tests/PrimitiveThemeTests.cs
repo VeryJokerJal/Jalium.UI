@@ -1,7 +1,9 @@
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Markup;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
@@ -79,6 +81,94 @@ public class PrimitiveThemeTests
     }
 
     [Fact]
+    public void Button_TemplateChrome_ShouldNotStartAutomaticTransition()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var button = new Button
+            {
+                Content = "Hover me"
+            };
+            var host = new StackPanel { Width = 320, Height = 80 };
+            host.Children.Add(button);
+
+            host.Measure(new Size(320, 80));
+            host.Arrange(new Rect(0, 0, 320, 80));
+
+            var backgroundBorder = Assert.IsType<Border>(button.FindName("BackgroundBorder"));
+            var hoverOverlay = Assert.IsType<Border>(button.FindName("HoverOverlay"));
+            var pressedOverlay = Assert.IsType<Border>(button.FindName("PressedOverlay"));
+            var newBrush = new SolidColorBrush(Color.FromRgb(12, 34, 56));
+
+            button.Background = newBrush;
+
+            Assert.Equal("None", button.TransitionProperty);
+            Assert.Equal("None", backgroundBorder.TransitionProperty);
+            Assert.Equal("Opacity", hoverOverlay.TransitionProperty);
+            Assert.Equal("Opacity", pressedOverlay.TransitionProperty);
+            Assert.False(backgroundBorder.HasAutomaticTransition(Border.BackgroundProperty));
+            Assert.Same(newBrush, backgroundBorder.Background);
+            Assert.Same(app.Resources["ControlBackgroundHover"], hoverOverlay.Background);
+            Assert.Same(app.Resources["ButtonBackgroundPressed"], pressedOverlay.Background);
+            Assert.Equal(0.0, hoverOverlay.Opacity);
+            Assert.Equal(0.0, pressedOverlay.Opacity);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void FocusableTemplates_ShouldExposeNamedFocusChrome()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var button = new Button { Content = "Launch" };
+            var checkBox = new CheckBox { Content = "Remember me" };
+            var comboBox = new ComboBox();
+            comboBox.Items.Add("Alpha");
+            var toggleSwitch = new ToggleSwitch();
+            var listBox = new ListBox();
+            listBox.Items.Add("Row 1");
+
+            var host = new StackPanel { Width = 360, Height = 320 };
+            host.Children.Add(button);
+            host.Children.Add(checkBox);
+            host.Children.Add(comboBox);
+            host.Children.Add(toggleSwitch);
+            host.Children.Add(listBox);
+
+            host.Measure(new Size(360, 320));
+            host.Arrange(new Rect(0, 0, 360, 320));
+
+            var listBoxItem = FindDescendant<ListBoxItem>(listBox);
+
+            Assert.NotNull(button.FindName("FocusOuter"));
+            Assert.NotNull(button.FindName("FocusInner"));
+            Assert.NotNull(checkBox.FindName("FocusOuter"));
+            Assert.NotNull(checkBox.FindName("FocusInner"));
+            Assert.NotNull(comboBox.FindName("FocusOuter"));
+            Assert.NotNull(comboBox.FindName("FocusInner"));
+            Assert.NotNull(toggleSwitch.FindName("FocusOuter"));
+            Assert.NotNull(toggleSwitch.FindName("FocusInner"));
+            Assert.NotNull(listBoxItem);
+            Assert.NotNull(listBoxItem!.FindName("FocusOuter"));
+            Assert.NotNull(listBoxItem.FindName("FocusInner"));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
     public void Slider_ImplicitThemeStyle_ShouldApplyWithoutLocalHeightOverride()
     {
         ResetApplicationState();
@@ -99,6 +189,327 @@ public class PrimitiveThemeTests
             Assert.False(slider.HasLocalValue(FrameworkElement.HeightProperty));
             Assert.Equal(24, slider.Height);
             Assert.True(slider.RenderSize.Height >= 24);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void TickBar_ImplicitThemeStyle_ShouldApplyWithoutLocalFillOverride()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var tickBar = new TickBar();
+            var host = new StackPanel { Width = 320, Height = 24 };
+            host.Children.Add(tickBar);
+
+            host.Measure(new Size(320, 24));
+            host.Arrange(new Rect(0, 0, 320, 24));
+
+            Assert.True(app.Resources.TryGetValue(typeof(TickBar), out var styleObj));
+            Assert.IsType<Style>(styleObj);
+            Assert.False(tickBar.HasLocalValue(TickBar.FillProperty));
+            Assert.Same(app.Resources["TextSecondary"], tickBar.Fill);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void Panel_BackgroundProperty_ShouldRenderFill()
+    {
+        var brush = new SolidColorBrush(Color.FromRgb(12, 34, 56));
+        var panel = new StackPanel
+        {
+            Width = 64,
+            Height = 32,
+            Background = brush
+        };
+
+        panel.Measure(new Size(64, 32));
+        panel.Arrange(new Rect(0, 0, 64, 32));
+
+        var drawingContext = new RecordingDrawingContext();
+        panel.Render(drawingContext);
+
+        Assert.Same(brush, drawingContext.LastBackgroundBrush);
+        Assert.Equal(new Rect(0, 0, 64, 32), drawingContext.LastRectangle);
+    }
+
+    [Fact]
+    public void InfrastructurePanels_ImplicitThemeStyles_ShouldApplyBackgroundWithoutLocalOverrides()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var virtualizingPanel = new VirtualizingStackPanel { Width = 320, Height = 32 };
+            var toolBarPanel = new ToolBarPanel { Width = 320, Height = 32 };
+            var toolBarOverflowPanel = new ToolBarOverflowPanel { Width = 320, Height = 48 };
+            var uniformGrid = new UniformGrid { Width = 320, Height = 32 };
+            var selectiveScrollingGrid = new SelectiveScrollingGrid { Width = 320, Height = 32 };
+            var tabPanel = new TabPanel { Width = 320, Height = 32 };
+
+            var host = new StackPanel { Width = 320, Height = 240 };
+            host.Children.Add(virtualizingPanel);
+            host.Children.Add(toolBarPanel);
+            host.Children.Add(toolBarOverflowPanel);
+            host.Children.Add(uniformGrid);
+            host.Children.Add(selectiveScrollingGrid);
+            host.Children.Add(tabPanel);
+
+            host.Measure(new Size(320, 240));
+            host.Arrange(new Rect(0, 0, 320, 240));
+
+            Assert.False(virtualizingPanel.HasLocalValue(Panel.BackgroundProperty));
+            Assert.False(toolBarPanel.HasLocalValue(Panel.BackgroundProperty));
+            Assert.False(toolBarOverflowPanel.HasLocalValue(Panel.BackgroundProperty));
+            Assert.False(uniformGrid.HasLocalValue(Panel.BackgroundProperty));
+            Assert.False(selectiveScrollingGrid.HasLocalValue(Panel.BackgroundProperty));
+            Assert.False(tabPanel.HasLocalValue(Panel.BackgroundProperty));
+
+            Assert.Equal(0x00, Assert.IsType<SolidColorBrush>(virtualizingPanel.Background).Color.A);
+            Assert.Equal(0x00, Assert.IsType<SolidColorBrush>(toolBarPanel.Background).Color.A);
+            Assert.Same(app.Resources["SurfaceBackground"], toolBarOverflowPanel.Background);
+            Assert.Equal(0x00, Assert.IsType<SolidColorBrush>(uniformGrid.Background).Color.A);
+            Assert.Equal(0x00, Assert.IsType<SolidColorBrush>(selectiveScrollingGrid.Background).Color.A);
+            Assert.Same(app.Resources["TabStripBackground"], tabPanel.Background);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void Label_TemplatedRender_ShouldNotDrawTextTwice()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var label = new Label
+            {
+                Content = "Username:"
+            };
+
+            var host = new StackPanel { Width = 200, Height = 40 };
+            host.Children.Add(label);
+
+            host.Measure(new Size(200, 40));
+            host.Arrange(new Rect(0, 0, 200, 40));
+
+            var drawingContext = new RecordingDrawingContext();
+            label.Render(drawingContext);
+
+            Assert.NotNull(label.FindName("LabelBorder"));
+            Assert.Equal(1, drawingContext.DrawTextCalls);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void Label_TemplatedStringContent_ShouldInheritThemeTextStyle()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var label = new Label
+            {
+                Content = "Username:"
+            };
+
+            var host = new StackPanel { Width = 200, Height = 40 };
+            host.Children.Add(label);
+
+            host.Measure(new Size(200, 40));
+            host.Arrange(new Rect(0, 0, 200, 40));
+
+            var textBlock = FindDescendant<TextBlock>(label);
+            var expectedForeground = Assert.IsAssignableFrom<Brush>(app.Resources["TextSecondary"]);
+
+            Assert.NotNull(textBlock);
+            Assert.Same(expectedForeground, textBlock!.Foreground);
+            Assert.Equal(14, textBlock.FontSize);
+            Assert.Equal(label.FontFamily, textBlock.FontFamily);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void Label_TemplatedStringContent_ShouldMeasureTemplateText()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var label = new Label
+            {
+                Content = "Username:"
+            };
+
+            var host = new Grid { Width = 280, Height = 40 };
+            host.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            host.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Star });
+            host.Children.Add(label);
+            host.Children.Add(new TextBox { Text = "demo", MinWidth = 120, Margin = new Thickness(12, 0, 0, 0) });
+            Grid.SetColumn(host.Children[1], 1);
+
+            host.Measure(new Size(280, 40));
+            host.Arrange(new Rect(0, 0, 280, 40));
+
+            var textBlock = FindDescendant<TextBlock>(label);
+
+            Assert.NotNull(textBlock);
+            Assert.True(textBlock!.DesiredSize.Width > 40);
+            Assert.True(textBlock.ActualWidth > 40);
+            Assert.True(host.ColumnDefinitions[0].ActualWidth > 40);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void TextBlock_NoWrapRender_ShouldNotConstrainTextToRenderWidth()
+    {
+        var textBlock = new TextBlock
+        {
+            Text = "Username:",
+            Width = 12
+        };
+
+        textBlock.Measure(new Size(12, 40));
+        textBlock.Arrange(new Rect(0, 0, 12, 40));
+
+        var drawingContext = new TextRecordingDrawingContext();
+        textBlock.Render(drawingContext);
+
+        Assert.NotNull(drawingContext.LastFormattedText);
+        Assert.True(drawingContext.LastFormattedText!.MaxTextWidth > textBlock.ActualWidth);
+    }
+
+    [Fact]
+    public void Thumb_ImplicitThemeStyle_ShouldApplyWithoutLocalVisualOverrides()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var thumb = new Thumb();
+            var host = new StackPanel { Width = 48, Height = 48 };
+            host.Children.Add(thumb);
+
+            host.Measure(new Size(48, 48));
+            host.Arrange(new Rect(0, 0, 48, 48));
+
+            Assert.True(app.Resources.TryGetValue(typeof(Thumb), out var styleObj));
+            Assert.IsType<Style>(styleObj);
+            Assert.False(thumb.HasLocalValue(Control.BackgroundProperty));
+            Assert.False(thumb.HasLocalValue(Control.BorderBrushProperty));
+            Assert.Same(app.Resources["ControlBackground"], thumb.Background);
+            Assert.Same(app.Resources["ControlBorder"], thumb.BorderBrush);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void Thumb_AndTickBar_InternalResolvers_ShouldUseThemeResources()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var thumb = new Thumb();
+            var tickBar = new TickBar();
+
+            Assert.Same(app.Resources["ControlBackground"], InvokePrivateBrushResolver(thumb, "ResolveDefaultBackgroundBrush"));
+            Assert.Same(app.Resources["ControlBackgroundPressed"], InvokePrivateBrushResolver(thumb, "ResolveDraggingBackgroundBrush"));
+            Assert.Same(app.Resources["TextTertiary"], InvokePrivatePenResolver(thumb, "ResolveGripPen").Brush);
+            Assert.Same(app.Resources["TextSecondary"], InvokePrivateBrushResolver(tickBar, "ResolveTickBrush"));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void DocumentPageView_InternalResolvers_ShouldUseThemeResources()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var pageView = new DocumentPageView();
+
+            Assert.Same(app.Resources["ControlBackground"], InvokePrivateBrushResolver(pageView, "ResolvePlaceholderBrush"));
+            Assert.Same(app.Resources["WindowBackground"], InvokePrivateBrushResolver(pageView, "ResolvePageBrush"));
+            Assert.Same(app.Resources["SmokeFillColorDefaultBrush"], InvokePrivateBrushResolver(pageView, "ResolveShadowBrush"));
+            Assert.Same(app.Resources["ControlBorder"], InvokePrivatePenResolver(pageView, "ResolveBorderPen").Brush);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void DocumentPageView_ImplicitThemeStyle_ShouldApplyWithoutLocalVisualOverrides()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var pageView = new DocumentPageView
+            {
+                Width = 120,
+                Height = 180
+            };
+            var host = new StackPanel { Width = 160, Height = 220 };
+            host.Children.Add(pageView);
+
+            host.Measure(new Size(160, 220));
+            host.Arrange(new Rect(0, 0, 160, 220));
+
+            Assert.True(app.Resources.TryGetValue(typeof(DocumentPageView), out var styleObj));
+            Assert.IsType<Style>(styleObj);
+            Assert.False(pageView.HasLocalValue(DocumentPageView.BackgroundProperty));
+            Assert.False(pageView.HasLocalValue(DocumentPageView.BorderBrushProperty));
+            Assert.False(pageView.HasLocalValue(DocumentPageView.BorderThicknessProperty));
+            Assert.Same(app.Resources["WindowBackground"], pageView.Background);
+            Assert.Same(app.Resources["ControlBorder"], pageView.BorderBrush);
+            Assert.Equal(new Thickness(1), pageView.BorderThickness);
         }
         finally
         {
@@ -179,6 +590,9 @@ public class PrimitiveThemeTests
     private sealed class RecordingDrawingContext : DrawingContext
     {
         public Pen? LastPen { get; private set; }
+        public Brush? LastBackgroundBrush { get; private set; }
+        public Rect LastRectangle { get; private set; }
+        public int DrawTextCalls { get; private set; }
 
         public override void DrawLine(Pen pen, Point point0, Point point1)
         {
@@ -187,6 +601,8 @@ public class PrimitiveThemeTests
 
         public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle)
         {
+            LastBackgroundBrush = brush;
+            LastRectangle = rectangle;
         }
 
         public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY)
@@ -199,6 +615,7 @@ public class PrimitiveThemeTests
 
         public override void DrawText(FormattedText formattedText, Point origin)
         {
+            DrawTextCalls++;
         }
 
         public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
@@ -232,5 +649,99 @@ public class PrimitiveThemeTests
         public override void Close()
         {
         }
+    }
+
+    private sealed class TextRecordingDrawingContext : DrawingContext
+    {
+        public FormattedText? LastFormattedText { get; private set; }
+
+        public override void DrawLine(Pen pen, Point point0, Point point1)
+        {
+        }
+
+        public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle)
+        {
+        }
+
+        public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY)
+        {
+        }
+
+        public override void DrawEllipse(Brush? brush, Pen? pen, Point center, double radiusX, double radiusY)
+        {
+        }
+
+        public override void DrawText(FormattedText formattedText, Point origin)
+        {
+            LastFormattedText = formattedText;
+        }
+
+        public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry)
+        {
+        }
+
+        public override void DrawImage(ImageSource imageSource, Rect rectangle)
+        {
+        }
+
+        public override void DrawBackdropEffect(Rect rectangle, IBackdropEffect effect, CornerRadius cornerRadius)
+        {
+        }
+
+        public override void PushTransform(Transform transform)
+        {
+        }
+
+        public override void PushClip(Geometry clipGeometry)
+        {
+        }
+
+        public override void PushOpacity(double opacity)
+        {
+        }
+
+        public override void Pop()
+        {
+        }
+
+        public override void Close()
+        {
+        }
+    }
+
+    private static T? FindDescendant<T>(Visual root) where T : class
+    {
+        if (root is T match)
+        {
+            return match;
+        }
+
+        for (int i = 0; i < root.VisualChildrenCount; i++)
+        {
+            if (root.GetVisualChild(i) is Visual child)
+            {
+                var result = FindDescendant<T>(child);
+                if (result != null)
+                {
+                    return result;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static Brush InvokePrivateBrushResolver(object control, string methodName, params object[] args)
+    {
+        var method = control.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return Assert.IsAssignableFrom<Brush>(method!.Invoke(control, args));
+    }
+
+    private static Pen InvokePrivatePenResolver(object control, string methodName, params object[] args)
+    {
+        var method = control.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        return Assert.IsType<Pen>(method!.Invoke(control, args));
     }
 }

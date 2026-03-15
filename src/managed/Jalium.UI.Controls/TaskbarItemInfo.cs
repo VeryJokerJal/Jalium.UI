@@ -44,6 +44,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Identifies the ProgressState dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ProgressStateProperty =
         DependencyProperty.Register(nameof(ProgressState), typeof(TaskbarItemProgressState), typeof(TaskbarItemInfo),
             new PropertyMetadata(TaskbarItemProgressState.None, OnProgressStateChanged));
@@ -51,6 +52,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Identifies the ProgressValue dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ProgressValueProperty =
         DependencyProperty.Register(nameof(ProgressValue), typeof(double), typeof(TaskbarItemInfo),
             new PropertyMetadata(0.0, OnProgressValueChanged, CoerceProgressValue));
@@ -58,6 +60,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Identifies the Overlay dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OverlayProperty =
         DependencyProperty.Register(nameof(Overlay), typeof(ImageSource), typeof(TaskbarItemInfo),
             new PropertyMetadata(null, OnOverlayChanged));
@@ -65,6 +68,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Identifies the Description dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty DescriptionProperty =
         DependencyProperty.Register(nameof(Description), typeof(string), typeof(TaskbarItemInfo),
             new PropertyMetadata(string.Empty, OnDescriptionChanged));
@@ -72,6 +76,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Identifies the ThumbnailClipMargin dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ThumbnailClipMarginProperty =
         DependencyProperty.Register(nameof(ThumbnailClipMargin), typeof(Thickness), typeof(TaskbarItemInfo),
             new PropertyMetadata(Thickness.Zero, OnThumbnailClipMarginChanged));
@@ -79,6 +84,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Identifies the ThumbButtonInfos dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ThumbButtonInfosProperty =
         DependencyProperty.Register(nameof(ThumbButtonInfos), typeof(ThumbButtonInfoCollection), typeof(TaskbarItemInfo),
             new PropertyMetadata(null));
@@ -102,6 +108,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Gets or sets a value that indicates how the progress indicator is displayed in the taskbar button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public TaskbarItemProgressState ProgressState
     {
         get => (TaskbarItemProgressState)(GetValue(ProgressStateProperty) ?? TaskbarItemProgressState.None);
@@ -111,6 +118,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Gets or sets a value that indicates the fullness of the progress indicator.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double ProgressValue
     {
         get => (double)GetValue(ProgressValueProperty)!;
@@ -120,6 +128,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Gets or sets the image that is displayed over the taskbar button icon.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ImageSource? Overlay
     {
         get => (ImageSource?)GetValue(OverlayProperty);
@@ -129,6 +138,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Gets or sets the text for the taskbar item tooltip.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Description
     {
         get => (string)(GetValue(DescriptionProperty) ?? string.Empty);
@@ -139,6 +149,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// Gets or sets a value that specifies the part of the application window's client area
     /// that is displayed in the taskbar thumbnail.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Thickness ThumbnailClipMargin
     {
         get => (Thickness)GetValue(ThumbnailClipMarginProperty)!;
@@ -149,6 +160,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// Gets or sets the collection of ThumbButtonInfo objects that are associated
     /// with the Window's taskbar thumbnail.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ThumbButtonInfoCollection? ThumbButtonInfos
     {
         get => (ThumbButtonInfoCollection?)GetValue(ThumbButtonInfosProperty);
@@ -262,6 +274,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Identifies the ImageSource dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ImageSourceProperty =
         DependencyProperty.Register(nameof(ImageSource), typeof(ImageSource), typeof(ThumbButtonInfo),
             new PropertyMetadata(null));
@@ -269,6 +282,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Identifies the Description dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty DescriptionProperty =
         DependencyProperty.Register(nameof(Description), typeof(string), typeof(ThumbButtonInfo),
             new PropertyMetadata(string.Empty));
@@ -276,6 +290,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Identifies the IsEnabled dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsEnabledProperty =
         DependencyProperty.Register(nameof(IsEnabled), typeof(bool), typeof(ThumbButtonInfo),
             new PropertyMetadata(true));
@@ -283,6 +298,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Identifies the Visibility dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VisibilityProperty =
         DependencyProperty.Register(nameof(Visibility), typeof(Visibility), typeof(ThumbButtonInfo),
             new PropertyMetadata(Visibility.Visible));
@@ -290,6 +306,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Identifies the IsInteractive dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsInteractiveProperty =
         DependencyProperty.Register(nameof(IsInteractive), typeof(bool), typeof(ThumbButtonInfo),
             new PropertyMetadata(true));
@@ -297,6 +314,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Identifies the DismissWhenClicked dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty DismissWhenClickedProperty =
         DependencyProperty.Register(nameof(DismissWhenClicked), typeof(bool), typeof(ThumbButtonInfo),
             new PropertyMetadata(false));
@@ -304,6 +322,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Identifies the IsBackgroundVisible dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsBackgroundVisibleProperty =
         DependencyProperty.Register(nameof(IsBackgroundVisible), typeof(bool), typeof(ThumbButtonInfo),
             new PropertyMetadata(true));
@@ -311,6 +330,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Identifies the Command dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
         DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(ThumbButtonInfo),
             new PropertyMetadata(null));
@@ -318,6 +338,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Identifies the CommandParameter dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandParameterProperty =
         DependencyProperty.Register(nameof(CommandParameter), typeof(object), typeof(ThumbButtonInfo),
             new PropertyMetadata(null));
@@ -338,6 +359,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Gets or sets the image source for the button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public ImageSource? ImageSource
     {
         get => (ImageSource?)GetValue(ImageSourceProperty);
@@ -347,6 +369,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Gets or sets the description (tooltip) for the button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public string Description
     {
         get => (string)(GetValue(DescriptionProperty) ?? string.Empty);
@@ -356,6 +379,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Gets or sets a value indicating whether the button is enabled.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsEnabled
     {
         get => (bool)GetValue(IsEnabledProperty)!;
@@ -365,6 +389,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Gets or sets the visibility of the button.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public new Visibility Visibility
     {
         get => (Visibility)GetValue(VisibilityProperty)!;
@@ -374,6 +399,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Gets or sets a value indicating whether the button is interactive.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsInteractive
     {
         get => (bool)GetValue(IsInteractiveProperty)!;
@@ -383,6 +409,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Gets or sets a value indicating whether to dismiss the thumbnail when clicked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool DismissWhenClicked
     {
         get => (bool)GetValue(DismissWhenClickedProperty)!;
@@ -392,6 +419,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Gets or sets a value indicating whether the button background is visible.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsBackgroundVisible
     {
         get => (bool)GetValue(IsBackgroundVisibleProperty)!;
@@ -401,6 +429,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Gets or sets the command to invoke when the button is clicked.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public ICommand? Command
     {
         get => (ICommand?)GetValue(CommandProperty);
@@ -410,6 +439,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// <summary>
     /// Gets or sets the command parameter.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public object? CommandParameter
     {
         get => GetValue(CommandParameterProperty);

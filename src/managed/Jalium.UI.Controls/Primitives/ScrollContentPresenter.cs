@@ -1,10 +1,10 @@
-﻿namespace Jalium.UI.Controls.Primitives;
+namespace Jalium.UI.Controls.Primitives;
 
 /// <summary>
 /// Displays the content of a ScrollViewer control. Acts as a proxy for IScrollInfo
 /// when the content implements it.
 /// </summary>
-public sealed class ScrollContentPresenter : ContentPresenter, IScrollInfo
+public class ScrollContentPresenter : ContentPresenter, IScrollInfo
 {
     private IScrollInfo? _scrollInfo;
     private bool _canHorizontallyScroll;
@@ -219,18 +219,38 @@ public sealed class ScrollContentPresenter : ContentPresenter, IScrollInfo
             ScrollInfo = scrollInfo;
         }
 
-        // Give the content infinite size in scrollable directions
-        var measureSize = new Size(
-            CanHorizontallyScroll ? double.PositiveInfinity : availableSize.Width,
-            CanVerticallyScroll ? double.PositiveInfinity : availableSize.Height
-        );
+        // Measure with the finite viewport first so viewport-constrained content can establish
+        // its intended layout. Only if non-IScrollInfo content already overflows do we remeasure
+        // unconstrained on that axis to determine the full scroll extent.
+        var finiteMeasureSize = new Size(
+            Math.Max(0, availableSize.Width),
+            Math.Max(0, availableSize.Height));
 
-        content.Measure(measureSize);
+        content.Measure(finiteMeasureSize);
         var desiredSize = content.DesiredSize;
 
         // Update extent and viewport (only if we're handling scroll ourselves)
         if (_scrollInfo == null)
         {
+            var needsHorizontalOverflowMeasure =
+                CanHorizontallyScroll &&
+                !double.IsInfinity(finiteMeasureSize.Width) &&
+                desiredSize.Width > finiteMeasureSize.Width + 0.5;
+
+            var needsVerticalOverflowMeasure =
+                CanVerticallyScroll &&
+                !double.IsInfinity(finiteMeasureSize.Height) &&
+                desiredSize.Height > finiteMeasureSize.Height + 0.5;
+
+            if (needsHorizontalOverflowMeasure || needsVerticalOverflowMeasure)
+            {
+                var overflowMeasureSize = new Size(
+                    needsHorizontalOverflowMeasure ? double.PositiveInfinity : finiteMeasureSize.Width,
+                    needsVerticalOverflowMeasure ? double.PositiveInfinity : finiteMeasureSize.Height);
+                content.Measure(overflowMeasureSize);
+                desiredSize = content.DesiredSize;
+            }
+
             _extent = desiredSize;
             _viewport = availableSize;
             ScrollOwner?.InvalidateArrange();

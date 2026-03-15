@@ -154,7 +154,17 @@ public static class TextMeasurement
 
     private static NativeTextFormat? GetOrCreateFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle = 0)
     {
-        var key = BuildCacheKey(fontFamily, fontSize, fontWeight, fontStyle);
+        if (string.IsNullOrWhiteSpace(fontFamily))
+        {
+            fontFamily = "Segoe UI";
+        }
+
+        if (float.IsNaN(fontSize) || float.IsInfinity(fontSize) || fontSize <= 0)
+        {
+            fontSize = 12;
+        }
+
+        var key = BuildCacheKey(context.Generation, fontFamily, fontSize, fontWeight, fontStyle);
 
         lock (_lock)
         {
@@ -184,9 +194,11 @@ public static class TextMeasurement
         }
     }
 
-    private static string BuildCacheKey(string fontFamily, float fontSize, int fontWeight, int fontStyle)
+    private static string BuildCacheKey(int contextGeneration, string fontFamily, float fontSize, int fontWeight, int fontStyle)
     {
         return string.Concat(
+            contextGeneration.ToString(CultureInfo.InvariantCulture),
+            "_",
             fontFamily,
             "_",
             fontSize.ToString("0.###", CultureInfo.InvariantCulture),

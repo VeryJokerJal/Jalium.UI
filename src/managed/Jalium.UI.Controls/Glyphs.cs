@@ -1,17 +1,18 @@
-﻿using Jalium.UI.Media;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Provides a low-level element for displaying glyphs.
 /// </summary>
-public sealed class Glyphs : FrameworkElement
+public class Glyphs : FrameworkElement
 {
     #region Dependency Properties
 
     /// <summary>
     /// Identifies the FontUri dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontUriProperty =
         DependencyProperty.Register(nameof(FontUri), typeof(Uri), typeof(Glyphs),
             new PropertyMetadata(null));
@@ -19,6 +20,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Identifies the FontRenderingEmSize dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontRenderingEmSizeProperty =
         DependencyProperty.Register(nameof(FontRenderingEmSize), typeof(double), typeof(Glyphs),
             new PropertyMetadata(0.0));
@@ -26,6 +28,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Identifies the StyleSimulations dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StyleSimulationsProperty =
         DependencyProperty.Register(nameof(StyleSimulations), typeof(StyleSimulations), typeof(Glyphs),
             new PropertyMetadata(StyleSimulations.None));
@@ -33,6 +36,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Identifies the UnicodeString dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UnicodeStringProperty =
         DependencyProperty.Register(nameof(UnicodeString), typeof(string), typeof(Glyphs),
             new PropertyMetadata(string.Empty));
@@ -40,6 +44,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Identifies the Indices dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty IndicesProperty =
         DependencyProperty.Register(nameof(Indices), typeof(string), typeof(Glyphs),
             new PropertyMetadata(string.Empty));
@@ -47,6 +52,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Identifies the Fill dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty FillProperty =
         DependencyProperty.Register(nameof(Fill), typeof(Brush), typeof(Glyphs),
             new PropertyMetadata(null));
@@ -54,6 +60,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Identifies the OriginX dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OriginXProperty =
         DependencyProperty.Register(nameof(OriginX), typeof(double), typeof(Glyphs),
             new PropertyMetadata(double.NaN));
@@ -61,6 +68,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Identifies the OriginY dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty OriginYProperty =
         DependencyProperty.Register(nameof(OriginY), typeof(double), typeof(Glyphs),
             new PropertyMetadata(double.NaN));
@@ -72,6 +80,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Gets or sets the URI of the font to render.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public Uri? FontUri
     {
         get => (Uri?)GetValue(FontUriProperty);
@@ -81,6 +90,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Gets or sets the em size used for rendering the glyphs.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public double FontRenderingEmSize
     {
         get => (double)GetValue(FontRenderingEmSizeProperty)!;
@@ -90,6 +100,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Gets or sets the StyleSimulations for the glyphs.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StyleSimulations StyleSimulations
     {
         get => (StyleSimulations)(GetValue(StyleSimulationsProperty) ?? StyleSimulations.None);
@@ -99,6 +110,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Gets or sets the Unicode string to render.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string UnicodeString
     {
         get => (string)(GetValue(UnicodeStringProperty) ?? string.Empty);
@@ -108,6 +120,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Gets or sets the glyph indices string.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public string Indices
     {
         get => (string)(GetValue(IndicesProperty) ?? string.Empty);
@@ -117,6 +130,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Gets or sets the Brush used to render the glyphs.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public Brush? Fill
     {
         get => (Brush?)GetValue(FillProperty);
@@ -126,6 +140,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Gets or sets the origin X of the glyph run.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double OriginX
     {
         get => (double)GetValue(OriginXProperty)!;
@@ -135,6 +150,7 @@ public sealed class Glyphs : FrameworkElement
     /// <summary>
     /// Gets or sets the origin Y of the glyph run.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double OriginY
     {
         get => (double)GetValue(OriginYProperty)!;

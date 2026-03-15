@@ -8,7 +8,7 @@ namespace Jalium.UI.Controls;
 /// Represents a button that can be selected, but not cleared, by a user.
 /// RadioButtons in the same group are mutually exclusive.
 /// </summary>
-public sealed class RadioButton : ToggleButton
+public class RadioButton : ToggleButton
 {
     #region Automation
 
@@ -34,6 +34,7 @@ public sealed class RadioButton : ToggleButton
     /// <summary>
     /// Identifies the GroupName dependency property.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty GroupNameProperty =
         DependencyProperty.Register(nameof(GroupName), typeof(string), typeof(RadioButton),
             new PropertyMetadata(string.Empty, OnGroupNameChanged));
@@ -46,6 +47,7 @@ public sealed class RadioButton : ToggleButton
     /// Gets or sets the name of the group that the RadioButton belongs to.
     /// RadioButtons in the same group are mutually exclusive.
     /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public string GroupName
     {
         get => (string)(GetValue(GroupNameProperty) ?? string.Empty);
