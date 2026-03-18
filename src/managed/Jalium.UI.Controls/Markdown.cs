@@ -693,5 +693,5 @@ public class Markdown : Control
             : FontFamily;
 
     private string ResolveMonoFontFamily() =>
-        TryFindResource("MonoFontFamily") as string ?? "Cascadia Mono";
+        TryFindResource("MonoFontFamily") as string ?? "Cascadia Code";
 }

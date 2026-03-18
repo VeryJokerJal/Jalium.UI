@@ -22,9 +22,10 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private readonly LayoutManager _layoutManager = new();
     private readonly Dispatcher _dispatcher;
 
-    private volatile bool _renderScheduled;
-    private bool _isRendering;
-    private volatile bool _renderRequested;
+    private int _renderState; // Bitfield: 1=Scheduled, 2=Rendering, 4=Requested
+    private const int RenderFlag_Scheduled = 1;
+    private const int RenderFlag_Rendering = 2;
+    private const int RenderFlag_Requested = 4;
     private bool _renderRecoveryInProgress;
     private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _disposed;
@@ -175,15 +176,22 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     {
         if (_hwnd == nint.Zero || _disposed) return;
 
-        if (_isRendering)
+        if ((Volatile.Read(ref _renderState) & RenderFlag_Rendering) != 0)
         {
-            _renderRequested = true;
+            int prev, next;
+            do { prev = Volatile.Read(ref _renderState); next = prev | RenderFlag_Requested; }
+            while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
             return;
         }
 
-        if (!_renderScheduled)
         {
-            _renderScheduled = true;
+            int prev, next;
+            do
+            {
+                prev = Volatile.Read(ref _renderState);
+                if ((prev & RenderFlag_Scheduled) != 0) return;
+                next = prev | RenderFlag_Scheduled;
+            } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
     }
@@ -239,16 +247,15 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void ProcessRender()
     {
-        _renderScheduled = false;
+        { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Scheduled; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
         if (_hwnd == nint.Zero || _disposed) return;
         RenderFrame();
     }
 
     private void RenderFrame()
     {
-        if (_isRendering) return;
-        _isRendering = true;
-        _renderRequested = false;
+        if ((Volatile.Read(ref _renderState) & RenderFlag_Rendering) != 0) return;
+        { int p, n; do { p = Volatile.Read(ref _renderState); n = (p | RenderFlag_Rendering) & ~RenderFlag_Requested; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
 
         try
         {
@@ -284,19 +291,36 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
             _renderTarget.SetFullInvalidation();
             _renderTarget.BeginDraw();
+            bool drawSessionActive = true;
 
-            // Clear with transparent background
-            _renderTarget.Clear(0f, 0f, 0f, 0f);
-
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
-            if (Child != null)
+            try
             {
-                _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
-                _drawingContext.Offset = Point.Zero;
-                Child.Render(_drawingContext);
+                // Clear with transparent background
+                _renderTarget.Clear(0f, 0f, 0f, 0f);
+
+                var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+                if (Child != null)
+                {
+                    _drawingContext ??= new RenderTargetDrawingContext(_renderTarget, context);
+                    _drawingContext.Offset = Point.Zero;
+                    Child.Render(_drawingContext);
+                }
+
+                _renderTarget.EndDraw();
+                drawSessionActive = false;
+            }
+            finally
+            {
+                // If an exception interrupted rendering, ensure the draw session is
+                // closed so the next frame can start a fresh BeginDraw.  Without this
+                // the _isDrawing flag stays true and subsequent BeginDraw calls no-op,
+                // leaving the partially-drawn error frame permanently on screen.
+                if (drawSessionActive && _renderTarget != null && _renderTarget.IsValid)
+                {
+                    try { _renderTarget.EndDraw(); } catch { }
+                }
             }
 
-            _renderTarget.EndDraw();
             _drawingContext?.TrimCacheIfNeeded();
         }
         catch (RenderPipelineException ex)
@@ -323,17 +347,19 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         }
         catch (Exception ex)
         {
+            // Schedule a full re-render so the stale error frame gets cleared.
+            ScheduleRenderAfterRecovery();
             LogRenderFailure(ex, "RenderFrame");
             throw;
         }
         finally
         {
-            _isRendering = false;
+            { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Rendering; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
         }
 
-        if (_renderRequested)
+        if ((Volatile.Read(ref _renderState) & RenderFlag_Requested) != 0)
         {
-            _renderRequested = false;
+            { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Requested; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
             InvalidateWindow();
         }
     }
@@ -420,9 +446,10 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             return;
         }
 
-        if (!_renderScheduled)
         {
-            _renderScheduled = true;
+            int p, n;
+            do { p = Volatile.Read(ref _renderState); if ((p & RenderFlag_Scheduled) != 0) return; n = p | RenderFlag_Scheduled; }
+            while (Interlocked.CompareExchange(ref _renderState, n, p) != p);
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
     }
@@ -460,9 +487,10 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             return;
         }
 
-        if (!_renderScheduled)
         {
-            _renderScheduled = true;
+            int p, n;
+            do { p = Volatile.Read(ref _renderState); if ((p & RenderFlag_Scheduled) != 0) return; n = p | RenderFlag_Scheduled; }
+            while (Interlocked.CompareExchange(ref _renderState, n, p) != p);
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
     }
@@ -561,44 +589,30 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                     return nint.Zero;
 
                 case WM_LBUTTONDOWN:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     popupWindow.OnMouseButtonDown(MouseButton.Left, wParam, lParam);
                     return nint.Zero;
 
                 case WM_LBUTTONUP:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     popupWindow.OnMouseButtonUp(MouseButton.Left, wParam, lParam);
                     return nint.Zero;
 
                 case WM_RBUTTONDOWN:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     popupWindow.OnMouseButtonDown(MouseButton.Right, wParam, lParam);
                     return nint.Zero;
 
                 case WM_RBUTTONUP:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     popupWindow.OnMouseButtonUp(MouseButton.Right, wParam, lParam);
                     return nint.Zero;
 
                 case WM_MBUTTONDOWN:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     popupWindow.OnMouseButtonDown(MouseButton.Middle, wParam, lParam);
                     return nint.Zero;
 
                 case WM_MBUTTONUP:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     popupWindow.OnMouseButtonUp(MouseButton.Middle, wParam, lParam);
                     return nint.Zero;
 
                 case WM_MOUSEWHEEL:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     popupWindow.OnMouseWheel(wParam, lParam);
                     return nint.Zero;
 

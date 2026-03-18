@@ -30,24 +30,24 @@ internal sealed class DockSplitBar : Control
     {
         Focusable = false;
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             // Use Owner coordinate space so the reference frame doesn't move with the splitter
-            StartDrag(mouseArgs.GetPosition(Owner ?? (UIElement)this));
+            StartDrag(e.GetPosition(Owner ?? (UIElement)this));
             e.Handled = true;
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             if (_isDragging)
                 FinishDrag();
@@ -55,11 +55,11 @@ internal sealed class DockSplitBar : Control
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (_isDragging && e is MouseEventArgs mouseArgs)
+        if (_isDragging)
         {
-            UpdateDrag(mouseArgs.GetPosition(Owner ?? (UIElement)this));
+            UpdateDrag(e.GetPosition(Owner ?? (UIElement)this));
             e.Handled = true;
         }
     }

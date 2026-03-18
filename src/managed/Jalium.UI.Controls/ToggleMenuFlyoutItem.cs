@@ -40,7 +40,7 @@ public class ToggleMenuFlyoutItem : MenuFlyoutItem
     /// </summary>
     public ToggleMenuFlyoutItem()
     {
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnToggleMouseDown));
+        AddHandler(MouseDownEvent, new Input.MouseButtonEventHandler(OnToggleMouseDown));
     }
 
     /// <inheritdoc />
@@ -71,7 +71,7 @@ public class ToggleMenuFlyoutItem : MenuFlyoutItem
             ?? s_defaultCheckGlyphBrush;
     }
 
-    private void OnToggleMouseDown(object sender, RoutedEventArgs e)
+    private void OnToggleMouseDown(object sender, Input.MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
         IsChecked = !IsChecked;

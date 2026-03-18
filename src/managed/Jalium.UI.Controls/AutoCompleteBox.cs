@@ -409,8 +409,8 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         InputMethod.CompositionEnded += OnImeCompositionEnded;
 
         // Subscribe to focus events
-        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnGotFocusHandler));
-        AddHandler(LostKeyboardFocusEvent, new RoutedEventHandler(OnLostFocusHandler));
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
+        AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnLostFocusHandler));
         SizeChanged += OnAutoCompleteBoxSizeChanged;
     }
 
@@ -439,13 +439,13 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         SyncPopupOpenState();
     }
 
-    private void OnGotFocusHandler(object sender, RoutedEventArgs e)
+    private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         InputMethod.SetTarget(this);
         InvalidateVisual();
     }
 
-    private void OnLostFocusHandler(object sender, RoutedEventArgs e)
+    private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         if (InputMethod.Current == this)
         {

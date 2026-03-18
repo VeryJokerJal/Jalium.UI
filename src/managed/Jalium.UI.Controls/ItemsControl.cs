@@ -220,6 +220,14 @@ public class ItemsControl : Control
     /// </summary>
     protected virtual void PrepareContainerForItem(FrameworkElement element, object item)
     {
+        // Items that are already their own container must not be assigned back into
+        // their own Content property, otherwise controls like DockItem/StatusBarItem
+        // end up parenting themselves as content visuals.
+        if (ReferenceEquals(element, item))
+        {
+            return;
+        }
+
         // Determine the template to use
         var template = ItemTemplate;
         if (template == null && ItemTemplateSelector != null)
@@ -319,6 +327,7 @@ public class ItemsControl : Control
         if (IsItemItsOwnContainer(item))
         {
             container = (FrameworkElement)item;
+            PrepareContainerForItem(container, item);
         }
         else
         {
@@ -637,6 +646,7 @@ public class ItemsControl : Control
         if (IsItemItsOwnContainer(item))
         {
             container = (FrameworkElement)item;
+            PrepareContainerForItem(container, item);
         }
         else
         {

@@ -1,5 +1,6 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Documents;
+using Jalium.UI.Input;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -37,9 +38,9 @@ internal sealed class PopupRoot : Decorator
 
         // Popup itself is detached from the interactive visual tree, so mirror the hosted
         // subtree's hover state back onto the owner Popup for controls that inspect it.
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler), handledEventsToo: true);
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler), handledEventsToo: true);
-        AddHandler(PreviewMouseDownEvent, new RoutedEventHandler(OnPreviewMouseDownHandler), handledEventsToo: true);
+        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler), handledEventsToo: true);
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler), handledEventsToo: true);
+        AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnPreviewMouseDownHandler), handledEventsToo: true);
     }
 
     private void OnOwnerDataContextChanged(object? sender, DependencyPropertyChangedEventArgs e)
@@ -47,17 +48,17 @@ internal sealed class PopupRoot : Decorator
         DataContext = e.NewValue;
     }
 
-    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
         OwnerPopup.SetIsMouseOver(true);
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         OwnerPopup.SetIsMouseOver(false);
     }
 
-    private void OnPreviewMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnPreviewMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         OwnerPopup.SetIsMouseOver(true);
     }
@@ -68,9 +69,9 @@ internal sealed class PopupRoot : Decorator
     internal void Detach()
     {
         OwnerPopup.DataContextChanged -= OnOwnerDataContextChanged;
-        RemoveHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
-        RemoveHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
-        RemoveHandler(PreviewMouseDownEvent, new RoutedEventHandler(OnPreviewMouseDownHandler));
+        RemoveHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
+        RemoveHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        RemoveHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnPreviewMouseDownHandler));
         OwnerPopup.SetIsMouseOver(false);
         Child = null;
     }

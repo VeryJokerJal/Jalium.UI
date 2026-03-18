@@ -24,6 +24,10 @@ public:
     /// Gets the backend name for debugging.
     virtual const wchar_t* GetName() const = 0;
 
+    /// Checks if the GPU device is still operational.
+    /// Returns JALIUM_OK if the device is healthy, non-zero if device is lost.
+    virtual JaliumResult CheckDeviceStatus() { return JALIUM_OK; }
+
     /// Creates a render target for a window handle.
     virtual RenderTarget* CreateRenderTarget(void* hwnd, int32_t width, int32_t height) = 0;
 
@@ -167,6 +171,11 @@ public:
 
     /// Draws a filled ellipse.
     virtual void FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) = 0;
+
+    /// Draws a batch of filled ellipses with per-ellipse color.
+    /// data layout per ellipse: [cx, cy, rx, ry, colorRGBA_packed_as_float] × count.
+    /// Default implementation is a no-op; backends should override for efficient batch rendering.
+    virtual void FillEllipseBatch(const float* data, uint32_t count) { (void)data; (void)count; }
 
     /// Draws an ellipse outline.
     virtual void DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) = 0;

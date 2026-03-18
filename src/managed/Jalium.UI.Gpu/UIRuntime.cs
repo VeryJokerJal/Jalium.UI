@@ -124,9 +124,32 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
         }
     }
 
+    private void ReleaseGpuBuffers()
+    {
+        if (_vertexBuffer != nint.Zero) { _backend.DestroyBuffer(_vertexBuffer); _vertexBuffer = nint.Zero; }
+        if (_indexBuffer != nint.Zero) { _backend.DestroyBuffer(_indexBuffer); _indexBuffer = nint.Zero; }
+        if (_instanceBuffer != nint.Zero) { _backend.DestroyBuffer(_instanceBuffer); _instanceBuffer = nint.Zero; }
+        if (_uniformBuffer != nint.Zero) { _backend.DestroyBuffer(_uniformBuffer); _uniformBuffer = nint.Zero; }
+
+        foreach (var handle in _textureHandles.Values)
+        {
+            _backend.DestroyTexture(handle);
+        }
+        _textureHandles.Clear();
+
+        foreach (var handle in _glyphAtlasHandles.Values)
+        {
+            _backend.DestroyTexture(handle);
+        }
+        _glyphAtlasHandles.Clear();
+    }
+
     private void UploadResources()
     {
         if (_currentBundle == null) return;
+
+        // 释放旧缓冲区
+        ReleaseGpuBuffers();
 
         // 创建顶点/索引缓冲区（矩形的标准网格）
         _vertexBuffer = _backend.CreateVertexBuffer(RectVertices);
@@ -684,6 +707,14 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
             if (x >= region.Bounds.X && x < region.Bounds.X + region.Bounds.Width &&
                 y >= region.Bounds.Y && y < region.Bounds.Y + region.Bounds.Height)
             {
+                // 如果有裁剪边界，检查点是否在裁剪区域内
+                if (!region.ClipBounds.IsEmpty &&
+                    (x < region.ClipBounds.X || x >= region.ClipBounds.X + region.ClipBounds.Width ||
+                     y < region.ClipBounds.Y || y >= region.ClipBounds.Y + region.ClipBounds.Height))
+                {
+                    continue;
+                }
+
                 return region;
             }
         }
@@ -822,20 +853,7 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
 
     public void Dispose()
     {
-        _backend.DestroyBuffer(_vertexBuffer);
-        _backend.DestroyBuffer(_indexBuffer);
-        _backend.DestroyBuffer(_instanceBuffer);
-        _backend.DestroyBuffer(_uniformBuffer);
-
-        foreach (var handle in _textureHandles.Values)
-        {
-            _backend.DestroyTexture(handle);
-        }
-
-        foreach (var handle in _glyphAtlasHandles.Values)
-        {
-            _backend.DestroyTexture(handle);
-        }
+        ReleaseGpuBuffers();
 
         _resourceStore.Clear();
         _propertyStore.Clear();
@@ -1472,7 +1490,8 @@ public interface IRenderBackend
 /// </summary>
 public static class BundleSerializer
 {
-    private const ushort CurrentVersion = 1;
+    private const ushort CurrentVersion = (ushort)RenderIR.Version;
+    private const ushort LegacyInteractiveRegionVersion = 1;
     private static ReadOnlySpan<byte> JuibMagic => "JUIB"u8;
     private static ReadOnlySpan<byte> LegacyUicMagic => "JUIC"u8;
     private static ReadOnlySpan<byte> LegacyJuibMagicFromUInt32 => [0x42, 0x49, 0x55, 0x4A];
@@ -1568,7 +1587,7 @@ public static class BundleSerializer
         // 读取各部分
         return new CompiledUIBundle
         {
-            Version = version,
+            Version = RenderIR.Version,
             Nodes = ReadNodeArray(reader),
             Materials = ReadMaterialArray(reader),
             Gradients = ReadGradientArray(reader),
@@ -1581,7 +1600,7 @@ public static class BundleSerializer
             Textures = ReadTextureRefArray(reader),
             GlyphAtlases = ReadGlyphAtlasRefArray(reader),
             PathCaches = ReadPathCacheArray(reader),
-            InteractiveRegions = ReadInteractiveRegionArray(reader),
+            InteractiveRegions = ReadInteractiveRegionArray(reader, version),
             StateTransitions = ReadStateTransitionArray(reader),
             BackdropFilterParams = ReadBackdropFilterParamsArray(reader)
         };
@@ -1604,7 +1623,7 @@ public static class BundleSerializer
             throw new InvalidDataException("Invalid bundle file format.");
 
         var version = reader.ReadUInt16();
-        if (version != CurrentVersion)
+        if (version != CurrentVersion && version != LegacyInteractiveRegionVersion)
             throw new InvalidDataException($"Unsupported bundle version: {version}");
 
         return version;
@@ -2271,10 +2290,11 @@ public static class BundleSerializer
             WriteRect(writer, r.Bounds);
             writer.Write((byte)r.Flags);
             writer.Write(r.HandlerIndex);
+            WriteRect(writer, r.ClipBounds);
         }
     }
 
-    private static InteractiveRegion[] ReadInteractiveRegionArray(BinaryReader reader)
+    private static InteractiveRegion[] ReadInteractiveRegionArray(BinaryReader reader, ushort version)
     {
         var count = reader.ReadInt32();
         var regions = new InteractiveRegion[count];
@@ -2284,7 +2304,8 @@ public static class BundleSerializer
                 reader.ReadUInt32(),
                 ReadRect(reader),
                 (InteractionFlags)reader.ReadByte(),
-                reader.ReadUInt32()
+                reader.ReadUInt32(),
+                version > LegacyInteractiveRegionVersion ? ReadRect(reader) : Rect.Empty
             );
         }
         return regions;

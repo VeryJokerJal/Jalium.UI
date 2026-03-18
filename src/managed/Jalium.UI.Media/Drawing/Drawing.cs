@@ -14,7 +14,7 @@ public abstract class Drawing
     /// Renders this Drawing to the specified DrawingContext.
     /// </summary>
     /// <param name="context">The DrawingContext to render to.</param>
-    internal abstract void RenderTo(DrawingContext context);
+    public abstract void RenderTo(DrawingContext context);
 }
 
 /// <summary>

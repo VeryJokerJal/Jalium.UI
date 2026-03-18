@@ -142,6 +142,7 @@ public class ContentDialog : ContentControl
     private Task? _closeTask;
     private ContentDialogPlacement _activePlacement;
     private Size _previousOverlayRenderSize;
+    private readonly List<(UIElement Element, bool WasEnabled)> _disabledSiblings = new();
 
     public ContentDialog()
     {
@@ -304,18 +305,13 @@ public class ContentDialog : ContentControl
             throw new InvalidOperationException("ContentDialog is already open.");
         }
 
-        if (placement == ContentDialogPlacement.UnconstrainedPopup)
-        {
-            throw new NotSupportedException("ContentDialogPlacement.UnconstrainedPopup is not supported.");
-        }
-
         var effectivePlacement = placement;
         if (effectivePlacement == ContentDialogPlacement.InPlace && VisualParent == null)
         {
             effectivePlacement = ContentDialogPlacement.Popup;
         }
 
-        if (effectivePlacement == ContentDialogPlacement.Popup && VisualParent != null)
+        if ((effectivePlacement == ContentDialogPlacement.Popup || effectivePlacement == ContentDialogPlacement.UnconstrainedPopup) && VisualParent != null)
         {
             throw new InvalidOperationException("Popup-hosted ContentDialog must not already be attached to the visual tree.");
         }
@@ -334,7 +330,7 @@ public class ContentDialog : ContentControl
         _hostWindow.ActiveContentDialog = this;
         _hostWindow.OverlayLayer.CloseLightDismissPopups();
 
-        if (_activePlacement == ContentDialogPlacement.Popup)
+        if (_activePlacement == ContentDialogPlacement.Popup || _activePlacement == ContentDialogPlacement.UnconstrainedPopup)
         {
             PrepareDialogSubtree(this);
             InvalidateSubtree(this);
@@ -342,6 +338,7 @@ public class ContentDialog : ContentControl
         }
         else
         {
+            DisableInPlaceSiblings();
             Visibility = Visibility.Visible;
             InvalidateMeasure();
             InvalidateArrange();
@@ -389,6 +386,13 @@ public class ContentDialog : ContentControl
             Math.Max(0, availableSize.Height - marginHeight));
 
         var contentSize = MeasureOverride(overlayAvailable);
+
+        if (_activePlacement == ContentDialogPlacement.UnconstrainedPopup)
+        {
+            return new Size(
+                Math.Max(0, contentSize.Width + marginWidth),
+                Math.Max(0, contentSize.Height + marginHeight));
+        }
 
         var desiredWidth = double.IsInfinity(overlayAvailable.Width)
             ? contentSize.Width
@@ -546,17 +550,38 @@ public class ContentDialog : ContentControl
 
     private async void OnPrimaryButtonClicked(object sender, RoutedEventArgs e)
     {
-        await RequestCloseAsync(ContentDialogButton.Primary, ContentDialogResult.Primary, raiseButtonClickEvent: true, invokeCommand: true);
+        try
+        {
+            await RequestCloseAsync(ContentDialogButton.Primary, ContentDialogResult.Primary, raiseButtonClickEvent: true, invokeCommand: true);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            System.Diagnostics.Debug.WriteLine($"ContentDialog primary button handler failed: {ex}");
+        }
     }
 
     private async void OnSecondaryButtonClicked(object sender, RoutedEventArgs e)
     {
-        await RequestCloseAsync(ContentDialogButton.Secondary, ContentDialogResult.Secondary, raiseButtonClickEvent: true, invokeCommand: true);
+        try
+        {
+            await RequestCloseAsync(ContentDialogButton.Secondary, ContentDialogResult.Secondary, raiseButtonClickEvent: true, invokeCommand: true);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            System.Diagnostics.Debug.WriteLine($"ContentDialog secondary button handler failed: {ex}");
+        }
     }
 
     private async void OnCloseButtonClicked(object sender, RoutedEventArgs e)
     {
-        await RequestCloseAsync(ContentDialogButton.Close, ContentDialogResult.None, raiseButtonClickEvent: true, invokeCommand: true);
+        try
+        {
+            await RequestCloseAsync(ContentDialogButton.Close, ContentDialogResult.None, raiseButtonClickEvent: true, invokeCommand: true);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            System.Diagnostics.Debug.WriteLine($"ContentDialog close button handler failed: {ex}");
+        }
     }
 
     private async Task RequestCloseAsync(ContentDialogButton button, ContentDialogResult result, bool raiseButtonClickEvent, bool invokeCommand)
@@ -671,11 +696,12 @@ public class ContentDialog : ContentControl
             hostWindow.ActiveContentDialog = null;
         }
 
-        if (_activePlacement == ContentDialogPlacement.Popup)
+        if (_activePlacement == ContentDialogPlacement.Popup || _activePlacement == ContentDialogPlacement.UnconstrainedPopup)
         {
             DetachFromPopupOverlay();
         }
 
+        RestoreInPlaceSiblings();
         Visibility = Visibility.Collapsed;
         _hostWindow = null;
         _activePlacement = ContentDialogPlacement.Popup;
@@ -748,6 +774,11 @@ public class ContentDialog : ContentControl
         if (placement == ContentDialogPlacement.InPlace)
         {
             return FindWindowAncestor(this);
+        }
+
+        if (placement == ContentDialogPlacement.UnconstrainedPopup)
+        {
+            return FindWindowAncestor(this) ?? DialogOwnerResolver.ResolveWindow();
         }
 
         return FindWindowAncestor(this) ?? DialogOwnerResolver.ResolveWindow();
@@ -930,6 +961,18 @@ public class ContentDialog : ContentControl
     private void OnDialogSizeChanged(object sender, SizeChangedEventArgs e)
     {
         UpdateCardLayout();
+        RequestHostFullInvalidation();
+    }
+
+    private void RequestHostFullInvalidation()
+    {
+        if (_showTaskSource == null || _hostWindow == null)
+        {
+            return;
+        }
+
+        _hostWindow.RequestFullInvalidation();
+        _hostWindow.InvalidateWindow();
     }
 
     private Size ResolveViewportSize()
@@ -1122,6 +1165,35 @@ public class ContentDialog : ContentControl
                 InvalidateSubtree(child);
             }
         }
+    }
+
+    private void DisableInPlaceSiblings()
+    {
+        _disabledSiblings.Clear();
+        var parent = VisualParent;
+        if (parent == null)
+        {
+            return;
+        }
+
+        for (int i = 0; i < parent.VisualChildrenCount; i++)
+        {
+            if (parent.GetVisualChild(i) is UIElement sibling && !ReferenceEquals(sibling, this))
+            {
+                _disabledSiblings.Add((sibling, sibling.IsEnabled));
+                sibling.IsEnabled = false;
+            }
+        }
+    }
+
+    private void RestoreInPlaceSiblings()
+    {
+        foreach (var (element, wasEnabled) in _disabledSiblings)
+        {
+            element.IsEnabled = wasEnabled;
+        }
+
+        _disabledSiblings.Clear();
     }
 }
 

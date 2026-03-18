@@ -175,8 +175,8 @@ public class ScrollBar : RangeBase
         CreateVisualChildren();
 
         // Register event handlers
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseWheelEvent, new RoutedEventHandler(OnMouseWheelHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
         ResourcesChanged += OnResourcesChangedHandler;
 
         _autoHideCollapseProgress = IsThumbSlim ? 1.0 : 0.0;
@@ -772,40 +772,37 @@ public class ScrollBar : RangeBase
         RaiseScrollEvent(ScrollEventType.EndScroll);
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
         }
     }
 
-    private void OnMouseWheelHandler(object sender, RoutedEventArgs e)
+    private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        if (e is MouseWheelEventArgs wheelArgs)
+        double pageStep = double.IsFinite(LargeChange) && LargeChange > 0
+            ? LargeChange
+            : SmallChange;
+        var delta = ScrollViewer.ComputeMouseWheelDelta(e.Delta, SmallChange, pageStep);
+        var newValue = Math.Clamp(Value + delta, Minimum, Maximum);
+
+        if (Math.Abs(newValue - Value) > double.Epsilon)
         {
-            double pageStep = double.IsFinite(LargeChange) && LargeChange > 0
-                ? LargeChange
-                : SmallChange;
-            var delta = ScrollViewer.ComputeMouseWheelDelta(wheelArgs.Delta, SmallChange, pageStep);
-            var newValue = Math.Clamp(Value + delta, Minimum, Maximum);
-
-            if (Math.Abs(newValue - Value) > double.Epsilon)
+            Value = newValue;
+            IsWheelScrollingInput = true;
+            try
             {
-                Value = newValue;
-                IsWheelScrollingInput = true;
-                try
-                {
-                    RaiseScrollEvent(delta < 0 ? ScrollEventType.SmallDecrement : ScrollEventType.SmallIncrement);
-                }
-                finally
-                {
-                    IsWheelScrollingInput = false;
-                }
+                RaiseScrollEvent(delta < 0 ? ScrollEventType.SmallDecrement : ScrollEventType.SmallIncrement);
             }
-
-            e.Handled = true;
+            finally
+            {
+                IsWheelScrollingInput = false;
+            }
         }
+
+        e.Handled = true;
     }
 
     private void RaiseScrollEvent(ScrollEventType scrollType)

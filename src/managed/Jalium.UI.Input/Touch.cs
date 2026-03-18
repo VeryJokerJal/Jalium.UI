@@ -315,6 +315,19 @@ public sealed class TouchEventArgs : InputEventArgs
     {
         return TouchDevice.GetIntermediateTouchPoints(relativeTo);
     }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is TouchEventHandler touchHandler)
+        {
+            touchHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>

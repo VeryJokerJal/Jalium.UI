@@ -54,24 +54,32 @@ CMAKE_BINARY_DIR = D:\Users\suppe\source\repos\Jalium.UI\src\native\build-nmake
 # The main recursive "all" target.
 all: jalium.native.core\all
 all: jalium.native.d3d12\all
+all: jalium.native.vulkan\all
+all: jalium.native.metal\all
 all: jalium.native.browser\all
 .PHONY : all
 
 # The main recursive "codegen" target.
 codegen: jalium.native.core\codegen
 codegen: jalium.native.d3d12\codegen
+codegen: jalium.native.vulkan\codegen
+codegen: jalium.native.metal\codegen
 codegen: jalium.native.browser\codegen
 .PHONY : codegen
 
 # The main recursive "preinstall" target.
 preinstall: jalium.native.core\preinstall
 preinstall: jalium.native.d3d12\preinstall
+preinstall: jalium.native.vulkan\preinstall
+preinstall: jalium.native.metal\preinstall
 preinstall: jalium.native.browser\preinstall
 .PHONY : preinstall
 
 # The main recursive "clean" target.
 clean: jalium.native.core\clean
 clean: jalium.native.d3d12\clean
+clean: jalium.native.vulkan\clean
+clean: jalium.native.metal\clean
 clean: jalium.native.browser\clean
 .PHONY : clean
 
@@ -131,6 +139,44 @@ jalium.native.d3d12\preinstall:
 # Recursive "clean" directory target.
 jalium.native.d3d12\clean: jalium.native.d3d12\CMakeFiles\jalium.native.d3d12.dir\clean
 .PHONY : jalium.native.d3d12\clean
+
+#=============================================================================
+# Directory level rules for directory jalium.native.metal
+
+# Recursive "all" directory target.
+jalium.native.metal\all: jalium.native.metal\CMakeFiles\jalium.native.metal.dir\all
+.PHONY : jalium.native.metal\all
+
+# Recursive "codegen" directory target.
+jalium.native.metal\codegen: jalium.native.metal\CMakeFiles\jalium.native.metal.dir\codegen
+.PHONY : jalium.native.metal\codegen
+
+# Recursive "preinstall" directory target.
+jalium.native.metal\preinstall:
+.PHONY : jalium.native.metal\preinstall
+
+# Recursive "clean" directory target.
+jalium.native.metal\clean: jalium.native.metal\CMakeFiles\jalium.native.metal.dir\clean
+.PHONY : jalium.native.metal\clean
+
+#=============================================================================
+# Directory level rules for directory jalium.native.vulkan
+
+# Recursive "all" directory target.
+jalium.native.vulkan\all: jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\all
+.PHONY : jalium.native.vulkan\all
+
+# Recursive "codegen" directory target.
+jalium.native.vulkan\codegen: jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\codegen
+.PHONY : jalium.native.vulkan\codegen
+
+# Recursive "preinstall" directory target.
+jalium.native.vulkan\preinstall:
+.PHONY : jalium.native.vulkan\preinstall
+
+# Recursive "clean" directory target.
+jalium.native.vulkan\clean: jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\clean
+.PHONY : jalium.native.vulkan\clean
 
 #=============================================================================
 # Target rules for target jalium.native.core/CMakeFiles/jalium.native.core.dir
@@ -195,6 +241,70 @@ jalium.native.d3d12\CMakeFiles\jalium.native.d3d12.dir\codegen:
 jalium.native.d3d12\CMakeFiles\jalium.native.d3d12.dir\clean:
 	$(MAKE) $(MAKESILENT) -f jalium.native.d3d12\CMakeFiles\jalium.native.d3d12.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.d3d12\CMakeFiles\jalium.native.d3d12.dir\clean
 .PHONY : jalium.native.d3d12\CMakeFiles\jalium.native.d3d12.dir\clean
+
+#=============================================================================
+# Target rules for target jalium.native.vulkan/CMakeFiles/jalium.native.vulkan.dir
+
+# All Build rule for target.
+jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\all: jalium.native.core\CMakeFiles\jalium.native.core.dir\all
+	$(MAKE) $(MAKESILENT) -f jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\depend
+	$(MAKE) $(MAKESILENT) -f jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=D:\Users\suppe\source\repos\Jalium.UI\src\native\build-nmake\CMakeFiles --progress-num=21,22,23,24,25,26 "Built target jalium.native.vulkan"
+.PHONY : jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\all
+
+# Build rule for subdir invocation for target.
+jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start D:\Users\suppe\source\repos\Jalium.UI\src\native\build-nmake\CMakeFiles 12
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Makefile2 /nologo -$(MAKEFLAGS) jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\all
+	$(CMAKE_COMMAND) -E cmake_progress_start D:\Users\suppe\source\repos\Jalium.UI\src\native\build-nmake\CMakeFiles 0
+.PHONY : jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\rule
+
+# Convenience name for target.
+jalium.native.vulkan: jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\rule
+.PHONY : jalium.native.vulkan
+
+# codegen rule for target.
+jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\codegen:
+	$(MAKE) $(MAKESILENT) -f jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=D:\Users\suppe\source\repos\Jalium.UI\src\native\build-nmake\CMakeFiles --progress-num=21,22,23,24,25,26 "Finished codegen for target jalium.native.vulkan"
+.PHONY : jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\codegen
+
+# clean rule for target.
+jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\clean:
+	$(MAKE) $(MAKESILENT) -f jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\clean
+.PHONY : jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\clean
+
+#=============================================================================
+# Target rules for target jalium.native.metal/CMakeFiles/jalium.native.metal.dir
+
+# All Build rule for target.
+jalium.native.metal\CMakeFiles\jalium.native.metal.dir\all: jalium.native.core\CMakeFiles\jalium.native.core.dir\all
+	$(MAKE) $(MAKESILENT) -f jalium.native.metal\CMakeFiles\jalium.native.metal.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.metal\CMakeFiles\jalium.native.metal.dir\depend
+	$(MAKE) $(MAKESILENT) -f jalium.native.metal\CMakeFiles\jalium.native.metal.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.metal\CMakeFiles\jalium.native.metal.dir\build
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=D:\Users\suppe\source\repos\Jalium.UI\src\native\build-nmake\CMakeFiles --progress-num=18,19,20 "Built target jalium.native.metal"
+.PHONY : jalium.native.metal\CMakeFiles\jalium.native.metal.dir\all
+
+# Build rule for subdir invocation for target.
+jalium.native.metal\CMakeFiles\jalium.native.metal.dir\rule: cmake_check_build_system
+	$(CMAKE_COMMAND) -E cmake_progress_start D:\Users\suppe\source\repos\Jalium.UI\src\native\build-nmake\CMakeFiles 9
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Makefile2 /nologo -$(MAKEFLAGS) jalium.native.metal\CMakeFiles\jalium.native.metal.dir\all
+	$(CMAKE_COMMAND) -E cmake_progress_start D:\Users\suppe\source\repos\Jalium.UI\src\native\build-nmake\CMakeFiles 0
+.PHONY : jalium.native.metal\CMakeFiles\jalium.native.metal.dir\rule
+
+# Convenience name for target.
+jalium.native.metal: jalium.native.metal\CMakeFiles\jalium.native.metal.dir\rule
+.PHONY : jalium.native.metal
+
+# codegen rule for target.
+jalium.native.metal\CMakeFiles\jalium.native.metal.dir\codegen:
+	$(MAKE) $(MAKESILENT) -f jalium.native.metal\CMakeFiles\jalium.native.metal.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.metal\CMakeFiles\jalium.native.metal.dir\codegen
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --progress-dir=D:\Users\suppe\source\repos\Jalium.UI\src\native\build-nmake\CMakeFiles --progress-num=18,19,20 "Finished codegen for target jalium.native.metal"
+.PHONY : jalium.native.metal\CMakeFiles\jalium.native.metal.dir\codegen
+
+# clean rule for target.
+jalium.native.metal\CMakeFiles\jalium.native.metal.dir\clean:
+	$(MAKE) $(MAKESILENT) -f jalium.native.metal\CMakeFiles\jalium.native.metal.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.metal\CMakeFiles\jalium.native.metal.dir\clean
+.PHONY : jalium.native.metal\CMakeFiles\jalium.native.metal.dir\clean
 
 #=============================================================================
 # Target rules for target jalium.native.browser/CMakeFiles/jalium.native.browser.dir

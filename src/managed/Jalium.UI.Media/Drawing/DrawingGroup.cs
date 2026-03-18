@@ -133,7 +133,7 @@ public sealed class DrawingGroup : Drawing
     }
 
     /// <inheritdoc />
-    internal override void RenderTo(DrawingContext context)
+    public override void RenderTo(DrawingContext context)
     {
         var popCount = 0;
 

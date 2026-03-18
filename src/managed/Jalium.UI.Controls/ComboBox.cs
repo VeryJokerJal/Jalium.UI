@@ -204,10 +204,10 @@ public class ComboBox : Selector
         SelectionBoxItem = PlaceholderText;
 
         // Set up mouse handling for toggle
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnGotKeyboardFocusHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotKeyboardFocusHandler));
     }
 
     /// <inheritdoc />
@@ -304,7 +304,7 @@ public class ComboBox : Selector
         DropDownClosed?.Invoke(this, EventArgs.Empty);
     }
 
-    private void OnGotKeyboardFocusHandler(object sender, RoutedEventArgs e)
+    private void OnGotKeyboardFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         if (!IsEditable || _editableTextBox == null || !ReferenceEquals(e.OriginalSource, this))
         {
@@ -318,21 +318,16 @@ public class ComboBox : Selector
         }
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled)
         {
             return;
         }
 
-        if (e is not MouseButtonEventArgs mouseArgs)
-        {
-            return;
-        }
-
         if (IsEditable)
         {
-            if (IsEventFromToggleButton(e) || IsMousePositionInToggleButton(mouseArgs))
+            if (IsEventFromToggleButton(e) || IsMousePositionInToggleButton(e))
             {
                 IsDropDownOpen = !IsDropDownOpen;
                 e.Handled = true;
@@ -345,7 +340,7 @@ public class ComboBox : Selector
                 return;
             }
 
-            if (TryForwardMouseButtonEventToEditableTextBox(mouseArgs))
+            if (TryForwardMouseButtonEventToEditableTextBox(e))
             {
                 e.Handled = true;
                 return;
@@ -357,25 +352,24 @@ public class ComboBox : Selector
         e.Handled = true;
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (!IsEditable || e is not MouseEventArgs mouseArgs)
+        if (!IsEditable)
         {
             return;
         }
 
-        UpdateCursorState(mouseArgs.GetPosition(this));
+        UpdateCursorState(e.GetPosition(this));
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
-        if (e is not KeyEventArgs keyArgs) return;
 
         if (IsEditable && IsEventFromEditableTextBox(e))
         {
             // Preserve TextBox editing behavior in editable mode.
-            if (keyArgs.Key == Key.F4)
+            if (e.Key == Key.F4)
             {
                 if (IsDropDownOpen)
                     CloseDropDown();
@@ -387,7 +381,7 @@ public class ComboBox : Selector
             return;
         }
 
-        switch (keyArgs.Key)
+        switch (e.Key)
         {
             case Key.Down:
                 if (SelectedIndex < Items.Count - 1)
@@ -957,26 +951,26 @@ public class ComboBoxItem : ContentControl
         UseTemplateContentManagement();
 
         // Set up mouse event handlers for click behavior
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             _isPressed = true;
             e.Handled = true;
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             if (_isPressed)
             {

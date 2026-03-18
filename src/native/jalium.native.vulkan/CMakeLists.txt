@@ -1,10 +1,18 @@
 project(jalium.native.vulkan)
 
+if(DEFINED ENV{JALIUM_SDK_ROOT} AND NOT "$ENV{JALIUM_SDK_ROOT}" STREQUAL "")
+    file(TO_CMAKE_PATH "$ENV{JALIUM_SDK_ROOT}" JALIUM_SDK_ROOT)
+else()
+    get_filename_component(JALIUM_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../../Jalium.SDK" ABSOLUTE)
+endif()
+
 if(DEFINED ENV{VULKAN_SDK} AND NOT "$ENV{VULKAN_SDK}" STREQUAL "")
     file(TO_CMAKE_PATH "$ENV{VULKAN_SDK}" JALIUM_VULKAN_SDK_ROOT)
 else()
-    set(JALIUM_VULKAN_SDK_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../third_party/VulkanSDK/1.4.341.1")
+    set(JALIUM_VULKAN_SDK_ROOT "${JALIUM_SDK_ROOT}/VulkanSDK/1.4.341.1")
 endif()
+
+set(JALIUM_STB_ROOT "${JALIUM_SDK_ROOT}/stb")
 
 set(HEADERS
     include/vulkan_backend.h
@@ -30,6 +38,7 @@ target_include_directories(${PROJECT_NAME}
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.core/include
         ${JALIUM_VULKAN_SDK_ROOT}/Include
+        ${JALIUM_STB_ROOT}
 )
 
 target_link_libraries(${PROJECT_NAME}

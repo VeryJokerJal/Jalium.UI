@@ -102,9 +102,9 @@ public class SwipeControl : ContentControl
     public SwipeControl()
     {
         ClipToBounds = true;
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnSwipeMouseDown));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnSwipeMouseMove));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnSwipeMouseUp));
+        AddHandler(MouseDownEvent, new Input.MouseButtonEventHandler(OnSwipeMouseDown));
+        AddHandler(MouseMoveEvent, new Input.MouseEventHandler(OnSwipeMouseMove));
+        AddHandler(MouseUpEvent, new Input.MouseButtonEventHandler(OnSwipeMouseUp));
     }
 
     /// <summary>
@@ -185,23 +185,19 @@ public class SwipeControl : ContentControl
             ?? s_defaultSwipeForegroundBrush;
     }
 
-    private void OnSwipeMouseDown(object sender, RoutedEventArgs e)
+    private void OnSwipeMouseDown(object sender, Input.MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs)
-        {
-            _isDragging = true;
-            _dragStart = mouseArgs.GetPosition(this);
-            CaptureMouse();
-            e.Handled = true;
-        }
+        _isDragging = true;
+        _dragStart = e.GetPosition(this);
+        CaptureMouse();
+        e.Handled = true;
     }
 
-    private void OnSwipeMouseMove(object sender, RoutedEventArgs e)
+    private void OnSwipeMouseMove(object sender, Input.MouseEventArgs e)
     {
         if (!_isDragging) return;
-        if (e is not MouseEventArgs mouseArgs) return;
 
-        var pos = mouseArgs.GetPosition(this);
+        var pos = e.GetPosition(this);
         var deltaX = pos.X - _dragStart.X;
 
         // Constrain to directions that have swipe items
@@ -214,7 +210,7 @@ public class SwipeControl : ContentControl
         e.Handled = true;
     }
 
-    private void OnSwipeMouseUp(object sender, RoutedEventArgs e)
+    private void OnSwipeMouseUp(object sender, Input.MouseButtonEventArgs e)
     {
         if (!_isDragging) return;
         _isDragging = false;

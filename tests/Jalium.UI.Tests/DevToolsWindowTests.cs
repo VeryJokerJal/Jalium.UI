@@ -6,7 +6,6 @@ using Jalium.UI.Controls.Themes;
 
 namespace Jalium.UI.Tests;
 
-#if DEBUG
 [Collection("Application")]
 public class DevToolsWindowTests
 {
@@ -196,4 +195,3 @@ public class DevToolsWindowTests
         method!.Invoke(instance, args);
     }
 }
-#endif

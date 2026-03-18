@@ -218,6 +218,18 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Draws a batch of filled ellipses with per-ellipse color.
+    /// data layout: [cx, cy, rx, ry, packedRGBA] × count (5 floats per ellipse).
+    /// Single P/Invoke call eliminates per-ellipse marshaling overhead.
+    /// </summary>
+    public void FillEllipseBatch(float[] data, uint count)
+    {
+        ThrowIfDisposed();
+        if (data == null || count == 0) return;
+        NativeMethods.FillEllipseBatch(_handle, data, count);
+    }
+
+    /// <summary>
     /// Draws an ellipse outline.
     /// </summary>
     public void DrawEllipse(float centerX, float centerY, float radiusX, float radiusY, NativeBrush brush, float strokeWidth = 1.0f)

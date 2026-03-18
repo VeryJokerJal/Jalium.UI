@@ -138,43 +138,43 @@ public class TabControl : Selector
         Items.CollectionChanged += OnTabItemsChanged;
 
         // Register keyboard handler
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs || keyArgs.Handled) return;
+        if (e.Handled) return;
 
         var tabCount = Items.Count;
         if (tabCount == 0) return;
 
-        switch (keyArgs.Key)
+        switch (e.Key)
         {
-            case Key.Tab when keyArgs.IsControlDown:
+            case Key.Tab when e.IsControlDown:
             {
                 // Ctrl+Shift+Tab = previous, Ctrl+Tab = next
-                var direction = keyArgs.IsShiftDown ? -1 : 1;
+                var direction = e.IsShiftDown ? -1 : 1;
                 SelectAdjacentTab(direction);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
             }
             case Key.Left:
             case Key.Up:
                 SelectAdjacentTab(-1);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
             case Key.Right:
             case Key.Down:
                 SelectAdjacentTab(1);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
             case Key.Home:
                 if (tabCount > 0) SelectedIndex = 0;
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
             case Key.End:
                 if (tabCount > 0) SelectedIndex = tabCount - 1;
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
         }
     }
@@ -691,7 +691,7 @@ public class TabItem : HeaderedContentControl
 
     public TabItem()
     {
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
     }
 
     /// <summary>
@@ -726,7 +726,7 @@ public class TabItem : HeaderedContentControl
         }
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         TabControl?.SelectTab(this);
         e.Handled = true;

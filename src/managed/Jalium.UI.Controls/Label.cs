@@ -123,14 +123,14 @@ public class Label : ContentControl
         Focusable = true;
         KeyboardNavigation.SetIsTabStop(this, false);
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler), handledEventsToo: true);
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler), handledEventsToo: true);
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnKeyboardFocusChanged));
-        AddHandler(LostKeyboardFocusEvent, new RoutedEventHandler(OnKeyboardFocusChanged));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler), handledEventsToo: true);
+        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler), handledEventsToo: true);
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnKeyboardFocusChanged));
+        AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnKeyboardFocusChanged));
     }
 
     #endregion
@@ -159,14 +159,14 @@ public class Label : ContentControl
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
         {
             return;
         }
 
-        if (TryHandleTemplateTextMouseDown(mouseArgs) || TryHandleDirectTextMouseDown(mouseArgs))
+        if (TryHandleTemplateTextMouseDown(e) || TryHandleDirectTextMouseDown(e))
         {
             e.Handled = true;
             return;
@@ -176,26 +176,26 @@ public class Label : ContentControl
         e.Handled = true;
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
         UpdateDirectTextCursor();
 
-        if (!_isSelectingDirectText || e is not MouseEventArgs mouseArgs || Content is not string text)
+        if (!_isSelectingDirectText || Content is not string text)
         {
             return;
         }
 
-        var index = GetDirectTextCharacterIndex(mouseArgs.GetPosition(this), text);
+        var index = GetDirectTextCharacterIndex(e.GetPosition(this), text);
         UpdateDirectSelection(index);
         e.Handled = true;
     }
 
-    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
         UpdateDirectTextCursor();
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         if (_labelBorder == null)
         {
@@ -203,9 +203,9 @@ public class Label : ContentControl
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
         {
             return;
         }
@@ -496,25 +496,25 @@ public class Label : ContentControl
         _directSelectionAnchor = Math.Clamp(_directSelectionAnchor, 0, text.Length);
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (!IsTextSelectionEnabled || _labelBorder != null || e is not KeyEventArgs keyArgs || keyArgs.Handled || Content is not string text)
+        if (!IsTextSelectionEnabled || _labelBorder != null || e.Handled || Content is not string text)
         {
             return;
         }
 
-        if (keyArgs.IsControlDown && keyArgs.Key == Key.C && _directSelectionLength > 0)
+        if (e.IsControlDown && e.Key == Key.C && _directSelectionLength > 0)
         {
             Copy();
-            keyArgs.Handled = true;
+            e.Handled = true;
             return;
         }
 
-        if (keyArgs.IsControlDown && keyArgs.Key == Key.A && !string.IsNullOrEmpty(text))
+        if (e.IsControlDown && e.Key == Key.A && !string.IsNullOrEmpty(text))
         {
             _directSelectionAnchor = 0;
             ApplyDirectSelection(0, text.Length);
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
     }
 
@@ -526,7 +526,7 @@ public class Label : ContentControl
         }
     }
 
-    private void OnKeyboardFocusChanged(object sender, RoutedEventArgs e)
+    private void OnKeyboardFocusChanged(object sender, KeyboardFocusChangedEventArgs e)
     {
         InvalidateVisual();
     }

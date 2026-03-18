@@ -432,7 +432,7 @@ public class TreeAndNavigationExpandStateTests
             Assert.NotNull(parentHeader);
             Assert.NotNull(childHeader);
 
-            childHeader!.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, childHeader));
+            childHeader!.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = childHeader });
 
             Assert.Same(hoverBrush, childHeader.Background);
             Assert.NotSame(hoverBrush, parentHeader!.Background);
@@ -463,10 +463,10 @@ public class TreeAndNavigationExpandStateTests
             Assert.NotNull(header);
             Assert.Same(selectionBrush, header!.Background);
 
-            header.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, header));
+            header.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = header });
             Assert.Same(selectedHoverBrush, header.Background);
 
-            header.RaiseEvent(new RoutedEventArgs(UIElement.MouseLeaveEvent, header));
+            header.RaiseEvent(new MouseEventArgs(UIElement.MouseLeaveEvent) { Source = header });
             Assert.Same(selectionBrush, header.Background);
         }
         finally
@@ -606,6 +606,109 @@ public class TreeAndNavigationExpandStateTests
             InvokeMouseButtonUp(window, MouseButton.Left, x: 70, y: 12);
 
             Assert.True(headerButtonClicked);
+        }
+        finally
+        {
+            Keyboard.ClearFocus();
+            UIElement.ForceReleaseMouseCapture();
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void TreeViewItem_HeaderRow_ShouldSelectBeyondTextBounds()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            Keyboard.Initialize();
+            Keyboard.ClearFocus();
+            UIElement.ForceReleaseMouseCapture();
+
+            var rootItem = new TreeViewItem { Header = "Root" };
+            rootItem.Style = Assert.IsType<Style>(app.Resources[typeof(TreeViewItem)]);
+
+            var tree = new TreeView
+            {
+                Width = 260,
+                Height = 120,
+                Style = Assert.IsType<Style>(app.Resources[typeof(TreeView)])
+            };
+            tree.Items.Add(rootItem);
+
+            var window = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 260,
+                Height = 120,
+                Content = tree
+            };
+
+            window.Measure(new Size(260, 120));
+            window.Arrange(new Rect(0, 0, 260, 120));
+
+            var headerBorder = GetPrivateField<Border>(rootItem, "_headerBorder");
+            Assert.NotNull(headerBorder);
+            Assert.True(headerBorder!.ActualWidth > 120);
+
+            InvokeMouseButtonDown(window, MouseButton.Left, x: 180, y: 12);
+            InvokeMouseButtonUp(window, MouseButton.Left, x: 180, y: 12);
+
+            Assert.Same(rootItem, tree.SelectedItem);
+            Assert.True(rootItem.IsSelected);
+        }
+        finally
+        {
+            Keyboard.ClearFocus();
+            UIElement.ForceReleaseMouseCapture();
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void TreeViewItem_ClickOnTextContent_ShouldSelect()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            Keyboard.Initialize();
+            Keyboard.ClearFocus();
+            UIElement.ForceReleaseMouseCapture();
+
+            var rootItem = new TreeViewItem { Header = "Root" };
+            rootItem.Style = Assert.IsType<Style>(app.Resources[typeof(TreeViewItem)]);
+
+            var tree = new TreeView
+            {
+                Width = 260,
+                Height = 120,
+                Style = Assert.IsType<Style>(app.Resources[typeof(TreeView)])
+            };
+            tree.Items.Add(rootItem);
+
+            var window = new Window
+            {
+                TitleBarStyle = WindowTitleBarStyle.Native,
+                Width = 260,
+                Height = 120,
+                Content = tree
+            };
+
+            window.Measure(new Size(260, 120));
+            window.Arrange(new Rect(0, 0, 260, 120));
+
+            // Click directly on the text label area (x: 40 is within text bounds)
+            InvokeMouseButtonDown(window, MouseButton.Left, x: 40, y: 12);
+            InvokeMouseButtonUp(window, MouseButton.Left, x: 40, y: 12);
+
+            Assert.Same(rootItem, tree.SelectedItem);
+            Assert.True(rootItem.IsSelected);
         }
         finally
         {

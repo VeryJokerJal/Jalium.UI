@@ -42,6 +42,7 @@ public:
     void FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush) override;
     void DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth) override;
     void FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) override;
+    void FillEllipseBatch(const float* data, uint32_t count) override;
     void DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) override;
     void DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) override;
     void FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) override;

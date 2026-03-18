@@ -1,3 +1,4 @@
+using Jalium.UI.Input;
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
@@ -88,7 +89,7 @@ public class ToolTipAndTreeThemeTests
 
             Assert.NotNull(backgroundBorder);
 
-            item.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, item));
+            item.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = item });
             Assert.Same(hoverBrush, backgroundBorder.Background);
 
             item.IsSelected = true;

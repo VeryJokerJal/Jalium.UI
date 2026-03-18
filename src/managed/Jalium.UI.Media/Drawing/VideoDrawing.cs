@@ -38,7 +38,7 @@ public sealed class VideoDrawing : Drawing
     public override Rect Bounds => Rect;
 
     /// <inheritdoc />
-    internal override void RenderTo(DrawingContext context)
+    public override void RenderTo(DrawingContext context)
     {
         // Video rendering would need special handling
         // For now, this is a placeholder

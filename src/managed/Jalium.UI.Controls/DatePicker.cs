@@ -197,8 +197,8 @@ public class DatePicker : Control
         Focusable = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     #endregion
@@ -338,11 +338,11 @@ public class DatePicker : Control
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
             IsDropDownOpen = !IsDropDownOpen;
@@ -350,28 +350,25 @@ public class DatePicker : Control
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is KeyEventArgs keyArgs)
+        switch (e.Key)
         {
-            switch (keyArgs.Key)
-            {
-                case Key.Enter:
-                case Key.Space:
-                    IsDropDownOpen = !IsDropDownOpen;
-                    e.Handled = true;
-                    break;
-                case Key.Escape when IsDropDownOpen:
-                    IsDropDownOpen = false;
-                    e.Handled = true;
-                    break;
-                case Key.Down when keyArgs.KeyboardModifiers.HasFlag(ModifierKeys.Alt):
-                    IsDropDownOpen = true;
-                    e.Handled = true;
-                    break;
-            }
+            case Key.Enter:
+            case Key.Space:
+                IsDropDownOpen = !IsDropDownOpen;
+                e.Handled = true;
+                break;
+            case Key.Escape when IsDropDownOpen:
+                IsDropDownOpen = false;
+                e.Handled = true;
+                break;
+            case Key.Down when e.KeyboardModifiers.HasFlag(ModifierKeys.Alt):
+                IsDropDownOpen = true;
+                e.Handled = true;
+                break;
         }
     }
 

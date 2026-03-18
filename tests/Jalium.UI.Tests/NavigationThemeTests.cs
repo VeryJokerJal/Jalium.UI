@@ -41,7 +41,7 @@ public class NavigationThemeTests
             Assert.False(header.HasLocalValue(FrameworkElement.MarginProperty));
             Assert.False(header.HasLocalValue(Control.ForegroundProperty));
             Assert.Equal(40, header.Height);
-            Assert.Equal(12, header.Margin.Left);
+            Assert.Equal(14, header.Margin.Left);
             Assert.NotNull(header.Foreground);
         }
         finally
@@ -72,7 +72,7 @@ public class NavigationThemeTests
             Assert.False(separator.HasLocalValue(FrameworkElement.MarginProperty));
             Assert.False(separator.HasLocalValue(Control.BackgroundProperty));
             Assert.Equal(1, separator.Height);
-            Assert.Equal(16, separator.Margin.Left);
+            Assert.Equal(18, separator.Margin.Left);
             Assert.NotNull(separator.Background);
         }
         finally

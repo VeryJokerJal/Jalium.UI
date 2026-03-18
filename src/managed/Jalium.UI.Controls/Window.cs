@@ -23,10 +23,52 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private readonly LayoutManager _layoutManager = new();
     private double _dpiScale = 1.0;
     private Dispatcher? _dispatcher; // UI thread Dispatcher, captured in Show()
-    private volatile bool _renderScheduled;   // True when a Dispatcher-based render is pending
-    private bool _isRendering;       // True during RenderFrame execution
-    private volatile bool _renderRequested;   // True if InvalidateWindow was called during rendering
-    private volatile bool _dirtyBetweenFrames; // True if InvalidateWindow was blocked between frames
+    // Render state machine — all flags packed into a single int for atomic access.
+    // Prevents race conditions where multiple threads check-then-set individual bools.
+    private int _renderState; // Bitfield of RenderStateFlags, accessed via Interlocked
+    private const int RenderFlag_Scheduled      = 1 << 0; // A Dispatcher-based render is pending
+    private const int RenderFlag_Rendering       = 1 << 1; // Inside RenderFrame execution
+    private const int RenderFlag_Requested       = 1 << 2; // InvalidateWindow called during rendering
+    private const int RenderFlag_DirtyBetween    = 1 << 3; // InvalidateWindow blocked between frames
+
+    /// <summary>Atomically sets a flag if it was not already set. Returns true if this call set it.</summary>
+    private bool TrySetRenderFlag(int flag)
+    {
+        int prev, next;
+        do
+        {
+            prev = Volatile.Read(ref _renderState);
+            if ((prev & flag) != 0) return false;
+            next = prev | flag;
+        } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
+        return true;
+    }
+
+    /// <summary>Atomically sets a flag (unconditionally).</summary>
+    private void SetRenderFlag(int flag)
+    {
+        int prev, next;
+        do
+        {
+            prev = Volatile.Read(ref _renderState);
+            next = prev | flag;
+        } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
+    }
+
+    /// <summary>Atomically clears a flag.</summary>
+    private void ClearRenderFlag(int flag)
+    {
+        int prev, next;
+        do
+        {
+            prev = Volatile.Read(ref _renderState);
+            next = prev & ~flag;
+        } while (Interlocked.CompareExchange(ref _renderState, next, prev) != prev);
+    }
+
+    /// <summary>Reads whether a flag is currently set.</summary>
+    private bool HasRenderFlag(int flag) => (Volatile.Read(ref _renderState) & flag) != 0;
+
     private bool _isFirstLayout = true;
     private bool _renderRecoveryInProgress;
     private DispatcherTimer? _renderRecoveryRetryTimer;
@@ -470,6 +512,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     public Window()
     {
+        DragDropPlatform.EnsureInitialized();
+
         Width = 800;
         Height = 600;
 
@@ -1598,6 +1642,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         if (Handle != nint.Zero)
         {
+            OleDropTarget.RevokeWindow(this);
+
             var handle = Handle;
             Handle = nint.Zero;
             // Remove from window map and destroy
@@ -1708,6 +1754,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             ApplySystemBackdrop(SystemBackdrop);
         }
+
+        // Register OLE drop target for external drag-and-drop (e.g. files from Explorer)
+        OleDropTarget.RegisterWindow(this);
 
         UpdateInputMethodAssociation();
     }
@@ -2002,7 +2051,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
 
-            // Ensure composition-compatible window style for composition swap chain hosting.
+            // Dispose the old render target BEFORE changing the window style.
+            // SetWindowPos(SWP_FRAMECHANGED) can trigger a synchronous WM_PAINT,
+            // which would call RenderFrame with the old non-composition swap chain
+            // on a window that now has WS_EX_NOREDIRECTIONBITMAP — the old swap
+            // chain's Present fails, dirty state is lost, and the stale frame
+            // from before the transition stays on screen permanently.
+            // Nulling the render target first causes the intermediate RenderFrame
+            // to early-return (RenderTarget == null check at the top).
+            var oldDrawingContext = _drawingContext;
+            _drawingContext = null;
+            oldDrawingContext?.ClearCache();
+
+            var oldRenderTarget = RenderTarget;
+            RenderTarget = null;
+            oldRenderTarget?.Dispose();
+
+            // Now safe to change window style — any WM_PAINT during SetWindowPos
+            // will see RenderTarget == null and skip rendering.
             long exStyle = GetWindowLong(Handle, GWL_EXSTYLE);
             if ((exStyle & WS_EX_NOREDIRECTIONBITMAP) == 0)
             {
@@ -2010,10 +2076,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 _ = SetWindowPos(Handle, nint.Zero, 0, 0, 0, 0,
                     SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
             }
-
-            var oldRenderTarget = RenderTarget;
-            RenderTarget = null;
-            oldRenderTarget?.Dispose();
 
             int widthDip = ActualWidth > 0 ? (int)Math.Ceiling(ActualWidth) : (int)Math.Ceiling(Width);
             int heightDip = ActualHeight > 0 ? (int)Math.Ceiling(ActualHeight) : (int)Math.Ceiling(Height);
@@ -2025,8 +2087,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             float dpi = (float)(_dpiScale * 96.0);
             RenderTarget.SetDpi(dpi, dpi);
 
-            // Rebind drawing context to the new native render target instance.
-            _drawingContext = null;
             ForceRenderFrame();
 
             if (RenderTarget.TryCreateWebViewCompositionVisual(out var visualAfterSwitch) && visualAfterSwitch != nint.Zero)
@@ -2037,7 +2097,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
         catch (Exception ex)
         {
-            _ = ex;
+            LogRenderFailure(ex, "EnsureCompositionRenderTargetForEmbeddedContent");
+
+            // Ensure a full re-render is scheduled so the window doesn't stay
+            // stuck with stale content from before the render target swap.
+            lock (_dirtyLock)
+            {
+                _fullInvalidation = true;
+            }
+            if (RenderTarget != null && RenderTarget.IsValid)
+            {
+                ScheduleRenderAfterRecovery();
+            }
         }
 
         return false;
@@ -2260,7 +2331,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         return null;
     }
 
-#if DEBUG
     private DevToolsWindow? _devToolsWindow;
     internal DevToolsOverlay? DevToolsOverlay { get; set; }
 
@@ -2269,7 +2339,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// Override to return false in windows that should not open DevTools (e.g., DevToolsWindow).
     /// </summary>
     protected virtual bool CanOpenDevTools => true;
-#endif
 
     internal static (int left, int top, int right, int bottom) ComputeCustomNcCalcSizeRect(
         (int left, int top, int right, int bottom) originalRect,
@@ -2969,67 +3038,47 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     window.OnMouseMove(wParam, lParam);
                     return nint.Zero;
 
+                // NOTE: Do NOT filter promoted mouse messages here.
+                // OnPointerMessage already returns early for Mouse-kind pointers,
+                // so WM_xBUTTON* / WM_MOUSEWHEEL are the sole delivery path for
+                // mouse clicks on systems with WM_POINTER support.
                 case WM_LBUTTONDOWN:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                    {
-                        return nint.Zero;
-                    }
                     window.OnMouseButtonDown(MouseButton.Left, wParam, lParam, clickCount: 1);
                     return nint.Zero;
 
                 case WM_LBUTTONDBLCLK:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     window.OnMouseButtonDown(MouseButton.Left, wParam, lParam, clickCount: 2);
                     return nint.Zero;
 
                 case WM_LBUTTONUP:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                    {
-                        return nint.Zero;
-                    }
                     window.OnMouseButtonUp(MouseButton.Left, wParam, lParam);
                     return nint.Zero;
 
                 case WM_RBUTTONDOWN:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     window.OnMouseButtonDown(MouseButton.Right, wParam, lParam, clickCount: 1);
                     return nint.Zero;
 
                 case WM_RBUTTONDBLCLK:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     window.OnMouseButtonDown(MouseButton.Right, wParam, lParam, clickCount: 2);
                     return nint.Zero;
 
                 case WM_RBUTTONUP:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     window.OnMouseButtonUp(MouseButton.Right, wParam, lParam);
                     return nint.Zero;
 
                 case WM_MBUTTONDOWN:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     window.OnMouseButtonDown(MouseButton.Middle, wParam, lParam, clickCount: 1);
                     return nint.Zero;
 
                 case WM_MBUTTONDBLCLK:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     window.OnMouseButtonDown(MouseButton.Middle, wParam, lParam, clickCount: 2);
                     return nint.Zero;
 
                 case WM_MBUTTONUP:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     window.OnMouseButtonUp(MouseButton.Middle, wParam, lParam);
                     return nint.Zero;
 
                 case WM_MOUSEWHEEL:
-                    if (Win32PointerInterop.IsPromotedMouseMessage())
-                        return nint.Zero;
                     window.OnMouseWheel(wParam, lParam);
                     return nint.Zero;
 
@@ -3208,9 +3257,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
-        if (!_renderScheduled)
+        if (TrySetRenderFlag(RenderFlag_Scheduled))
         {
-            _renderScheduled = true;
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
     }
@@ -3248,9 +3296,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
-        if (!_renderScheduled)
+        if (TrySetRenderFlag(RenderFlag_Scheduled))
         {
-            _renderScheduled = true;
             _dispatcher?.BeginInvokeCritical(ProcessRender);
         }
     }
@@ -3302,7 +3349,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     private void ProcessRender()
     {
-        _renderScheduled = false;
+        ClearRenderFlag(RenderFlag_Scheduled);
         if (Handle == nint.Zero) return;
 
         // Dispose any pending throttle timer from a previous rate-limit cycle.
@@ -3324,7 +3371,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             {
                 // Too soon — defer this render. Dirty elements continue accumulating
                 // via AddDirtyElement and will all be rendered in the deferred frame.
-                _renderScheduled = true;
+                TrySetRenderFlag(RenderFlag_Scheduled);
                 int delay = Math.Max(1, minIntervalMs - (int)elapsed);
                 _renderThrottleTimer = new Timer(_ =>
                 {
@@ -3354,9 +3401,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     private void RenderFrame()
     {
-        if (_isRendering) return;
-        _isRendering = true;
-        _renderRequested = false;
+        if (HasRenderFlag(RenderFlag_Rendering)) return;
+        SetRenderFlag(RenderFlag_Rendering);
+        ClearRenderFlag(RenderFlag_Requested);
         _lastRenderTicks = Environment.TickCount64;
 
         try
@@ -3405,17 +3452,33 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             if (fullInvalidation)
             {
                 // ── Full render path (first frame, resize, theme change) ──
-                _previousDirtyRegion = Rect.Empty; // Reset — full render covers everything
+                // After full render, mark the entire window as "previous dirty" so the
+                // next partial render also repaints everything.  DXGI FLIP_SEQUENTIAL uses
+                // two buffers — the full render only updates the current back buffer.  The
+                // other buffer still holds content from 2 frames ago.  Without this, the
+                // next partial render leaves stale pixels on the alternate buffer, causing
+                // persistent ghost images that can't be refreshed away.
+                _previousDirtyRegion = new Rect(0, 0, ActualWidth, ActualHeight);
                 RenderTarget.SetFullInvalidation();
                 RenderTarget.BeginDraw();
-                ClearBackground();
-                _drawingContext.Offset = Point.Zero;
-                Render(_drawingContext);
-#if DEBUG
-                DevToolsOverlay?.DrawOverlay(_drawingContext);
-#endif
-                OnRender(RenderTarget);
-                RenderTarget.EndDraw();
+                try
+                {
+                    ClearBackground();
+                    _drawingContext.Offset = Point.Zero;
+                    Render(_drawingContext);
+                    DevToolsOverlay?.DrawOverlay(_drawingContext);
+                    OnRender(RenderTarget);
+                    RenderTarget.EndDraw();
+                }
+                catch
+                {
+                    // Ensure the draw session is closed so the next frame can start
+                    // a fresh BeginDraw.  Without this, _isDrawing stays true and
+                    // the stale error frame is permanently displayed.
+                    if (RenderTarget.IsDrawing)
+                        try { RenderTarget.EndDraw(); } catch { }
+                    throw;
+                }
             }
             else if (dirtyRegion.IsEmpty)
             {
@@ -3462,17 +3525,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 if (windowArea > 0 &&
                     clipRegion.Width * clipRegion.Height > windowArea * 0.5)
                 {
-                    _previousDirtyRegion = Rect.Empty;
+                    // Auto-upgraded to full — same double-buffer sync as above.
+                    _previousDirtyRegion = new Rect(0, 0, ActualWidth, ActualHeight);
                     RenderTarget.SetFullInvalidation();
                     RenderTarget.BeginDraw();
-                    ClearBackground();
-                    _drawingContext.Offset = Point.Zero;
-                    Render(_drawingContext);
-#if DEBUG
-                    DevToolsOverlay?.DrawOverlay(_drawingContext);
-#endif
-                    OnRender(RenderTarget);
-                    RenderTarget.EndDraw();
+                    try
+                    {
+                        ClearBackground();
+                        _drawingContext.Offset = Point.Zero;
+                        Render(_drawingContext);
+                        DevToolsOverlay?.DrawOverlay(_drawingContext);
+                        OnRender(RenderTarget);
+                        RenderTarget.EndDraw();
+                    }
+                    catch
+                    {
+                        if (RenderTarget.IsDrawing)
+                            try { RenderTarget.EndDraw(); } catch { }
+                        throw;
+                    }
                 }
                 else
                 {
@@ -3483,21 +3554,27 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                         (float)dirtyRegion.Width, (float)dirtyRegion.Height);
 
                     RenderTarget.BeginDraw();
+                    try
+                    {
+                        // Push ALIASED D2D clip — hard pixel boundary, no semi-transparent
+                        // edge artifacts. Matches the Present1 dirty rect exactly.
+                        _drawingContext.Offset = Point.Zero;
+                        _drawingContext.PushDirtyRegionClip(clipRegion);
 
-                    // Push ALIASED D2D clip — hard pixel boundary, no semi-transparent
-                    // edge artifacts. Matches the Present1 dirty rect exactly.
-                    _drawingContext.Offset = Point.Zero;
-                    _drawingContext.PushDirtyRegionClip(clipRegion);
+                        ClearBackground(clipRegion);
+                        Render(_drawingContext);
 
-                    ClearBackground();
-                    Render(_drawingContext);
-
-                    _drawingContext.PopDirtyRegionClip();
-#if DEBUG
-                    DevToolsOverlay?.DrawOverlay(_drawingContext);
-#endif
-                    OnRender(RenderTarget);
-                    RenderTarget.EndDraw();
+                        _drawingContext.PopDirtyRegionClip();
+                        DevToolsOverlay?.DrawOverlay(_drawingContext);
+                        OnRender(RenderTarget);
+                        RenderTarget.EndDraw();
+                    }
+                    catch
+                    {
+                        if (RenderTarget.IsDrawing)
+                            try { RenderTarget.EndDraw(); } catch { }
+                        throw;
+                    }
                 }
             }
 
@@ -3527,20 +3604,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
         catch (Exception ex)
         {
+            // Restore full invalidation so dirty elements aren't permanently lost.
+            // Without this, the stale error frame stays on screen because the dirty
+            // tracking was already cleared before rendering began.
+            lock (_dirtyLock)
+            {
+                _fullInvalidation = true;
+            }
+            ScheduleRenderAfterRecovery();
             LogRenderFailure(ex, "RenderFrame");
             throw;
         }
         finally
         {
-            _isRendering = false;
+            ClearRenderFlag(RenderFlag_Rendering);
         }
 
         // If something requested a render during our rendering
         // (e.g., UpdateLayout triggered further invalidation),
         // schedule another render cycle.
-        if (_renderRequested)
+        if (HasRenderFlag(RenderFlag_Requested))
         {
-            _renderRequested = false;
+            ClearRenderFlag(RenderFlag_Requested);
             if (!CompositionTarget.IsActive)
             {
                 InvalidateWindow();
@@ -3584,18 +3669,92 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     private void ClearBackground()
     {
-        if (Background is SolidColorBrush solidBrush)
+        ClearBackground(clipRegion: null);
+    }
+
+    /// <summary>
+    /// Clears the window background.  When <paramref name="clipRegion"/> is non-null
+    /// a clip-aware fill is used instead of <c>D2D1::Clear</c>, which ignores D2D clips
+    /// and would destroy transparent punch-through areas (e.g. WebView composition holes)
+    /// outside the dirty region.
+    /// </summary>
+    private void ClearBackground(Rect? clipRegion)
+    {
+        if (clipRegion == null)
         {
-            var color = solidBrush.Color;
-            RenderTarget.Clear(color.ScR, color.ScG, color.ScB, color.ScA);
+            // Full render — D2D Clear is safe because the entire surface is redrawn.
+            if (Background is SolidColorBrush solidFull)
+            {
+                var c = solidFull.Color;
+                RenderTarget.Clear(c.ScR, c.ScG, c.ScB, c.ScA);
+            }
+            else if (SystemBackdrop != WindowBackdropType.None)
+            {
+                RenderTarget.Clear(0.0f, 0.0f, 0.0f, 0.0f);
+            }
+            else
+            {
+                RenderTarget.Clear(1.0f, 1.0f, 1.0f, 1.0f);
+            }
+            return;
+        }
+
+        // Partial render — use clip-aware operations to avoid destroying content
+        // outside the dirty region (D2D Clear ignores all clips).
+        var r = clipRegion.Value;
+        if (Background is SolidColorBrush solidPartial)
+        {
+            // For opaque backgrounds, FillRectangle is clip-aware and equivalent
+            // to Clear within the clip region.  For semi-transparent backgrounds
+            // PunchTransparentRect (D2D1_PRIMITIVE_BLEND_COPY) is needed to
+            // overwrite rather than blend.
+            if (solidPartial.Color.A == 255)
+            {
+                var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+                using var brush = context.CreateSolidBrush(
+                    solidPartial.Color.ScR,
+                    solidPartial.Color.ScG,
+                    solidPartial.Color.ScB,
+                    solidPartial.Color.ScA);
+                RenderTarget.FillRectangle(
+                    (float)r.X, (float)r.Y,
+                    (float)r.Width, (float)r.Height,
+                    brush);
+            }
+            else
+            {
+                RenderTarget.PunchTransparentRect(
+                    (float)r.X, (float)r.Y,
+                    (float)r.Width, (float)r.Height);
+                if (solidPartial.Color.A > 0)
+                {
+                    var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+                    using var brush = context.CreateSolidBrush(
+                        solidPartial.Color.ScR,
+                        solidPartial.Color.ScG,
+                        solidPartial.Color.ScB,
+                        solidPartial.Color.ScA);
+                    RenderTarget.FillRectangle(
+                        (float)r.X, (float)r.Y,
+                        (float)r.Width, (float)r.Height,
+                        brush);
+                }
+            }
         }
         else if (SystemBackdrop != WindowBackdropType.None)
         {
-            RenderTarget.Clear(0.0f, 0.0f, 0.0f, 0.0f);
+            RenderTarget.PunchTransparentRect(
+                (float)r.X, (float)r.Y,
+                (float)r.Width, (float)r.Height);
         }
         else
         {
-            RenderTarget.Clear(1.0f, 1.0f, 1.0f, 1.0f);
+            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+            using var brush = context.CreateSolidBrush(1.0f, 1.0f, 1.0f, 1.0f);
+            RenderTarget.FillRectangle(
+                (float)r.X, (float)r.Y,
+                (float)r.Width, (float)r.Height,
+                brush);
         }
     }
 
@@ -3676,12 +3835,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     private void OnFrameStarting()
     {
-        if (_dirtyBetweenFrames)
+        if (HasRenderFlag(RenderFlag_DirtyBetween))
         {
-            _dirtyBetweenFrames = false;
-            if (!_renderScheduled)
+            ClearRenderFlag(RenderFlag_DirtyBetween);
+            if (TrySetRenderFlag(RenderFlag_Scheduled))
             {
-                _renderScheduled = true;
                 _dispatcher?.BeginInvokeCritical(ProcessRender);
             }
         }
@@ -3708,9 +3866,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         if (Handle == nint.Zero) return;
 
         // During rendering, don't schedule 鈥?just flag for re-render after current frame
-        if (_isRendering)
+        if (HasRenderFlag(RenderFlag_Rendering))
         {
-            _renderRequested = true;
+            SetRenderFlag(RenderFlag_Requested);
             return;
         }
 
@@ -3722,13 +3880,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // the message pump to process input.
         if (CompositionTarget.IsActive && !CompositionTarget.IsInRenderingPhase)
         {
-            _dirtyBetweenFrames = true;
+            SetRenderFlag(RenderFlag_DirtyBetween);
             return;
         }
 
-        if (!_renderScheduled)
+        if (TrySetRenderFlag(RenderFlag_Scheduled))
         {
-            _renderScheduled = true;
             // Use stored UI thread Dispatcher 鈥?NOT Dispatcher.CurrentDispatcher,
             // which returns null on thread-pool threads (System.Threading.Timer callbacks,
             // Storyboard ticks, etc.) and would silently drop the render request.
@@ -3821,7 +3978,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         bool isRepeat = ((lParam.ToInt64() >> 30) & 1) != 0;
         int timestamp = Environment.TickCount;
 
-#if DEBUG
         // F12 opens DevTools (only in DEBUG builds)
         // Skip if this window cannot open DevTools (e.g., DevToolsWindow itself)
         if (key == Key.F12 && !isRepeat && CanOpenDevTools)
@@ -3838,7 +3994,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             _devToolsWindow?.ActivatePicker();
             return true;
         }
-#endif
 
         var target = GetKeyboardEventTarget();
 
@@ -3976,7 +4131,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         return null;
     }
 
-#if DEBUG
     /// <summary>
     /// Toggles the DevTools window for this window.
     /// Press F12 to open/close DevTools in DEBUG builds.
@@ -4026,7 +4180,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             DevToolsOverlay = null;
         }
     }
-#endif
 
     private bool OnKeyUp(nint wParam, nint lParam)
     {
@@ -4158,15 +4311,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
-        if (_isRendering)
+        if (HasRenderFlag(RenderFlag_Rendering))
         {
-            _renderRequested = true;
+            SetRenderFlag(RenderFlag_Requested);
             return;
         }
 
-        if (!_renderScheduled)
+        if (TrySetRenderFlag(RenderFlag_Scheduled))
         {
-            _renderScheduled = true;
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
     }
@@ -4567,7 +4719,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 }
 
                 uiElement.SetIsMouseOver(false);
-                RoutedEventArgs args = new(MouseLeaveEvent, uiElement);
+                MouseEventArgs args = new(MouseLeaveEvent) { Source = uiElement };
                 uiElement.RaiseEvent(args);
             }
             current = current.VisualParent;
@@ -4611,7 +4763,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             var uiElement = enterElements[i];
             uiElement.SetIsMouseOver(true);
-            RoutedEventArgs args = new(MouseEnterEvent, uiElement);
+            MouseEventArgs args = new(MouseEnterEvent) { Source = uiElement };
             uiElement.RaiseEvent(args);
         }
     }
@@ -4957,38 +5109,37 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private HitTestResult? TryHitTestCachedSubtree(Point windowPosition)
     {
         var current = _lastHitTestElement;
-        while (current != null)
+        if (current == null)
+            return null;
+
+        if (!IsElementAttachedToThisWindow(current))
         {
-            if (!IsElementAttachedToThisWindow(current))
+            _lastHitTestElement = null;
+            return null;
+        }
+
+        // Only use the cache when the mouse is still within the last hit element
+        // itself (the common case for small mouse movements).  Walking up ancestor
+        // subtrees is unsafe because it can miss higher-z-order siblings — e.g. a
+        // LiquidGlass overlay in a Grid would be skipped if the cache started from
+        // a background element in a lower-z sibling StackPanel.
+        if (current is FrameworkElement fe
+            && fe.IsHitTestVisible
+            && fe.Visibility == Visibility.Visible
+            && fe.GetScreenBounds().Contains(windowPosition))
+        {
+            var parent = fe.VisualParent as UIElement;
+            var pointInParent = parent == null
+                ? windowPosition
+                : new Point(
+                    windowPosition.X - parent.GetScreenBounds().X,
+                    windowPosition.Y - parent.GetScreenBounds().Y);
+
+            var subtreeHit = fe.HitTest(pointInParent);
+            if (subtreeHit != null)
             {
-                if (ReferenceEquals(current, _lastHitTestElement))
-                {
-                    _lastHitTestElement = null;
-                }
-
-                return null;
+                return subtreeHit;
             }
-
-            if (current is FrameworkElement frameworkElement
-                && frameworkElement.IsHitTestVisible
-                && frameworkElement.Visibility == Visibility.Visible
-                && frameworkElement.GetScreenBounds().Contains(windowPosition))
-            {
-                var parent = frameworkElement.VisualParent as UIElement;
-                var pointInParent = parent == null
-                    ? windowPosition
-                    : new Point(
-                        windowPosition.X - parent.GetScreenBounds().X,
-                        windowPosition.Y - parent.GetScreenBounds().Y);
-
-                var subtreeHit = frameworkElement.HitTest(pointInParent);
-                if (subtreeHit != null)
-                {
-                    return subtreeHit;
-                }
-            }
-
-            current = current.VisualParent as UIElement;
         }
 
         return null;

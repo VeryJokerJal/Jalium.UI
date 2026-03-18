@@ -36,6 +36,19 @@ public sealed class ManipulationStartedEventArgs : InputEventArgs
     public bool Cancel { get; set; }
 
     public void Complete() { }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is ManipulationStartedEventHandler typedHandler)
+        {
+            typedHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -54,6 +67,19 @@ public sealed class ManipulationDeltaEventArgs : InputEventArgs
     public void Cancel() { }
     public void StartInertia() { }
     public void ReportBoundaryFeedback(ManipulationDelta unusedManipulation) { }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is ManipulationDeltaEventHandler typedHandler)
+        {
+            typedHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -66,6 +92,19 @@ public sealed class ManipulationCompletedEventArgs : InputEventArgs
     public ManipulationDelta? TotalManipulation { get; init; }
     public ManipulationVelocities? FinalVelocities { get; init; }
     public bool IsInertial { get; init; }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is ManipulationCompletedEventHandler typedHandler)
+        {
+            typedHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -83,6 +122,19 @@ public sealed class ManipulationInertiaStartingEventArgs : InputEventArgs
     public void SetInertiaParameter(InertiaParameters2D parameter) { }
     public void Complete() { }
     public void Cancel() { }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is ManipulationInertiaStartingEventHandler typedHandler)
+        {
+            typedHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>

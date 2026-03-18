@@ -312,6 +312,19 @@ public class PointerEventArgs : InputEventArgs
         // In a real implementation, this would return all intermediate points
         return new List<PointerPoint> { GetCurrentPoint(relativeTo) };
     }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerEventHandler pointerHandler)
+        {
+            pointerHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -331,6 +344,19 @@ public class PointerDownEventArgs : PointerEventArgs
         : base(pointer, modifiers, timestamp)
     {
     }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerDownEventHandler downHandler)
+        {
+            downHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -344,6 +370,19 @@ public class PointerUpEventArgs : PointerEventArgs
     public PointerUpEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
         : base(pointer, modifiers, timestamp)
     {
+    }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerUpEventHandler upHandler)
+        {
+            upHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
     }
 }
 
@@ -359,6 +398,19 @@ public class PointerMoveEventArgs : PointerEventArgs
         : base(pointer, modifiers, timestamp)
     {
     }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerMoveEventHandler moveHandler)
+        {
+            moveHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -372,6 +424,19 @@ public class PointerCancelEventArgs : PointerEventArgs
     public PointerCancelEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
         : base(pointer, modifiers, timestamp)
     {
+    }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerCancelEventHandler cancelHandler)
+        {
+            cancelHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
     }
 }
 
@@ -387,6 +452,19 @@ public sealed class PointerPressedEventArgs : PointerDownEventArgs
         : base(pointer, modifiers, timestamp)
     {
     }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerPressedEventHandler pressedHandler)
+        {
+            pressedHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -401,6 +479,19 @@ public sealed class PointerReleasedEventArgs : PointerUpEventArgs
         : base(pointer, modifiers, timestamp)
     {
     }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerReleasedEventHandler releasedHandler)
+        {
+            releasedHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -414,6 +505,19 @@ public sealed class PointerMovedEventArgs : PointerMoveEventArgs
     public PointerMovedEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
         : base(pointer, modifiers, timestamp)
     {
+    }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerMovedEventHandler movedHandler)
+        {
+            movedHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
     }
 }
 
@@ -434,6 +538,19 @@ public sealed class PointerWheelChangedEventArgs : PointerEventArgs
         : base(pointer, modifiers, timestamp)
     {
     }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerWheelChangedEventHandler wheelHandler)
+        {
+            wheelHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -447,6 +564,19 @@ public sealed class PointerCaptureLostEventArgs : PointerEventArgs
     public PointerCaptureLostEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
         : base(pointer, modifiers, timestamp)
     {
+    }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is PointerCaptureLostEventHandler captureLostHandler)
+        {
+            captureLostHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
     }
 }
 

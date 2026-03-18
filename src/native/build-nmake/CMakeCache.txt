@@ -253,6 +253,24 @@ jalium.native.d3d12_IS_TOP_LEVEL:STATIC=OFF
 //Value Computed by CMake
 jalium.native.d3d12_SOURCE_DIR:STATIC=D:/Users/suppe/source/repos/Jalium.UI/src/native/jalium.native.d3d12
 
+//Value Computed by CMake
+jalium.native.metal_BINARY_DIR:STATIC=D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.metal
+
+//Value Computed by CMake
+jalium.native.metal_IS_TOP_LEVEL:STATIC=OFF
+
+//Value Computed by CMake
+jalium.native.metal_SOURCE_DIR:STATIC=D:/Users/suppe/source/repos/Jalium.UI/src/native/jalium.native.metal
+
+//Value Computed by CMake
+jalium.native.vulkan_BINARY_DIR:STATIC=D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.vulkan
+
+//Value Computed by CMake
+jalium.native.vulkan_IS_TOP_LEVEL:STATIC=OFF
+
+//Value Computed by CMake
+jalium.native.vulkan_SOURCE_DIR:STATIC=D:/Users/suppe/source/repos/Jalium.UI/src/native/jalium.native.vulkan
+
 
 ########################
 # INTERNAL cache entries
@@ -350,7 +368,7 @@ CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO-ADVANCED:INTERNAL=1
 //ADVANCED property for variable: CMAKE_MT
 CMAKE_MT-ADVANCED:INTERNAL=1
 //number of local generators
-CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=4
+CMAKE_NUMBER_OF_MAKEFILES:INTERNAL=6
 //Platform information initialized
 CMAKE_PLATFORM_INFO_INITIALIZED:INTERNAL=1
 //noop for ranlib

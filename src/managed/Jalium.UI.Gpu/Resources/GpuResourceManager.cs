@@ -128,6 +128,52 @@ public sealed class GpuResourceManager : IDisposable
         _backend.DestroyTexture(texture);
     }
 
+    #region Buffer Pool
+
+    // 缓冲区池：按 (大小, 用途) 分组复用
+    private readonly Dictionary<(int Size, BufferUsage Usage), Stack<nint>> _bufferPool = new();
+    private const int MaxPooledBuffersPerBucket = 8;
+
+    /// <summary>
+    /// 从池中获取或创建缓冲区。调用方负责在不再需要时归还。
+    /// </summary>
+    public nint AcquireBuffer(int size, BufferUsage usage)
+    {
+        var key = (size, usage);
+        if (_bufferPool.TryGetValue(key, out var stack) && stack.Count > 0)
+        {
+            return stack.Pop();
+        }
+
+        return _backend.CreateBuffer(size, usage);
+    }
+
+    /// <summary>
+    /// 归还缓冲区到池中。如果池已满则直接销毁。
+    /// </summary>
+    public void ReleaseBuffer(nint buffer, int size, BufferUsage usage)
+    {
+        if (buffer == nint.Zero) return;
+
+        var key = (size, usage);
+        if (!_bufferPool.TryGetValue(key, out var stack))
+        {
+            stack = new Stack<nint>();
+            _bufferPool[key] = stack;
+        }
+
+        if (stack.Count < MaxPooledBuffersPerBucket)
+        {
+            stack.Push(buffer);
+        }
+        else
+        {
+            _backend.DestroyBuffer(buffer);
+        }
+    }
+
+    #endregion
+
     public void Dispose()
     {
         if (_disposed) return;
@@ -157,6 +203,16 @@ public sealed class GpuResourceManager : IDisposable
             _backend.DestroyTexture(texture);
         }
         _staticTextures.Clear();
+
+        // 释放池化缓冲区
+        foreach (var (_, stack) in _bufferPool)
+        {
+            while (stack.Count > 0)
+            {
+                _backend.DestroyBuffer(stack.Pop());
+            }
+        }
+        _bufferPool.Clear();
     }
 }
 

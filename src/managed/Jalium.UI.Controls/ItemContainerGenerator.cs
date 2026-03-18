@@ -274,6 +274,10 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         if (isOwnContainer)
         {
             container = (DependencyObject)item;
+            if (container is FrameworkElement ownContainer)
+            {
+                _host.PrepareContainerForItemInternal(ownContainer, item);
+            }
             isNewlyRealized = true;
         }
         else if (_preferredContainerType != null && _recyclePool.TryPop(_preferredContainerType, out var recycled) && recycled != null)
@@ -348,6 +352,10 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
             return;
         }
 
+        // Capture generator position BEFORE index remapping so event subscribers
+        // receive the position relative to the pre-mutation state.
+        var position = GeneratorPositionFromIndex(index);
+
         var keys = _realizedItems.Keys.Where(k => k >= index).OrderByDescending(k => k).ToArray();
         foreach (var key in keys)
         {
@@ -360,7 +368,6 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         }
 
         MarkSortedCacheDirty();
-        var position = GeneratorPositionFromIndex(index);
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
             NotifyCollectionChangedAction.Add, position, count, 0));
     }
@@ -371,6 +378,10 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         {
             return;
         }
+
+        // Capture generator position BEFORE index remapping so event subscribers
+        // receive the position relative to the pre-mutation state.
+        var position = GeneratorPositionFromIndex(index);
 
         var toRemove = _realizedItems.Keys.Where(k => k >= index && k < index + count).ToArray();
         foreach (var key in toRemove)
@@ -390,7 +401,6 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         }
 
         MarkSortedCacheDirty();
-        var position = GeneratorPositionFromIndex(index);
         ItemsChanged?.Invoke(this, new ItemsChangedEventArgs(
             NotifyCollectionChangedAction.Remove, position, count, count));
     }

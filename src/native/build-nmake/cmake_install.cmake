@@ -44,6 +44,16 @@ endif()
 
 if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   # Include the install script for the subdirectory.
+  include("D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.vulkan/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
+  include("D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.metal/cmake_install.cmake")
+endif()
+
+if(NOT CMAKE_INSTALL_LOCAL_ONLY)
+  # Include the install script for the subdirectory.
   include("D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.browser/cmake_install.cmake")
 endif()
 

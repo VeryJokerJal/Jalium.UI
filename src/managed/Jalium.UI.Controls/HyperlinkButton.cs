@@ -140,7 +140,7 @@ public class HyperlinkButton : ButtonBase
     }
 
     /// <inheritdoc />
-    protected override void OnMouseEnter(RoutedEventArgs e)
+    protected override void OnMouseEnter(MouseEventArgs e)
     {
         base.OnMouseEnter(e);
         _isHovered = true;
@@ -148,7 +148,7 @@ public class HyperlinkButton : ButtonBase
     }
 
     /// <inheritdoc />
-    protected override void OnMouseLeave(RoutedEventArgs e)
+    protected override void OnMouseLeave(MouseEventArgs e)
     {
         base.OnMouseLeave(e);
         _isHovered = false;

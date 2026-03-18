@@ -132,6 +132,32 @@ jalium.native.d3d12\fast:
 .PHONY : jalium.native.d3d12\fast
 
 #=============================================================================
+# Target rules for targets named jalium.native.vulkan
+
+# Build rule for target.
+jalium.native.vulkan: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Makefile2 /nologo -$(MAKEFLAGS) jalium.native.vulkan
+.PHONY : jalium.native.vulkan
+
+# fast build rule for target.
+jalium.native.vulkan\fast:
+	$(MAKE) $(MAKESILENT) -f jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.vulkan\CMakeFiles\jalium.native.vulkan.dir\build
+.PHONY : jalium.native.vulkan\fast
+
+#=============================================================================
+# Target rules for targets named jalium.native.metal
+
+# Build rule for target.
+jalium.native.metal: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles\Makefile2 /nologo -$(MAKEFLAGS) jalium.native.metal
+.PHONY : jalium.native.metal
+
+# fast build rule for target.
+jalium.native.metal\fast:
+	$(MAKE) $(MAKESILENT) -f jalium.native.metal\CMakeFiles\jalium.native.metal.dir\build.make /nologo -$(MAKEFLAGS) jalium.native.metal\CMakeFiles\jalium.native.metal.dir\build
+.PHONY : jalium.native.metal\fast
+
+#=============================================================================
 # Target rules for targets named jalium.native.browser
 
 # Build rule for target.
@@ -155,6 +181,8 @@ help:
 	@echo ... jalium.native.browser
 	@echo ... jalium.native.core
 	@echo ... jalium.native.d3d12
+	@echo ... jalium.native.metal
+	@echo ... jalium.native.vulkan
 .PHONY : help
 
 

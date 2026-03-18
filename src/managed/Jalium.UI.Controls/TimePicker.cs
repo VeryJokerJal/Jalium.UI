@@ -153,8 +153,8 @@ public class TimePicker : Control
         Focusable = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     #endregion
@@ -332,9 +332,9 @@ public class TimePicker : Control
             Padding = new Thickness(4)
         };
 
-        border.AddHandler(MouseDownEvent, new RoutedEventHandler((s, e) =>
+        border.AddHandler(MouseDownEvent, new MouseButtonEventHandler((s, e) =>
         {
-            if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+            if (e.ChangedButton == MouseButton.Left)
             {
                 onClick();
                 e.Handled = true;
@@ -506,11 +506,11 @@ public class TimePicker : Control
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
             IsDropDownOpen = !IsDropDownOpen;
@@ -518,32 +518,29 @@ public class TimePicker : Control
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is KeyEventArgs keyArgs)
+        switch (e.Key)
         {
-            switch (keyArgs.Key)
-            {
-                case Key.Enter:
-                case Key.Space:
-                    IsDropDownOpen = !IsDropDownOpen;
-                    e.Handled = true;
-                    break;
-                case Key.Escape when IsDropDownOpen:
-                    IsDropDownOpen = false;
-                    e.Handled = true;
-                    break;
-                case Key.Up:
-                    IncrementTime(TimeSpan.FromMinutes(MinuteIncrement));
-                    e.Handled = true;
-                    break;
-                case Key.Down:
-                    IncrementTime(TimeSpan.FromMinutes(-MinuteIncrement));
-                    e.Handled = true;
-                    break;
-            }
+            case Key.Enter:
+            case Key.Space:
+                IsDropDownOpen = !IsDropDownOpen;
+                e.Handled = true;
+                break;
+            case Key.Escape when IsDropDownOpen:
+                IsDropDownOpen = false;
+                e.Handled = true;
+                break;
+            case Key.Up:
+                IncrementTime(TimeSpan.FromMinutes(MinuteIncrement));
+                e.Handled = true;
+                break;
+            case Key.Down:
+                IncrementTime(TimeSpan.FromMinutes(-MinuteIncrement));
+                e.Handled = true;
+                break;
         }
     }
 

@@ -46,19 +46,9 @@ public class Path : Shape
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        // Get the natural bounds of the path geometry
         var geomBounds = _pathGeometry?.Bounds ?? Rect.Empty;
-        var naturalSize = geomBounds.Width > 0 && geomBounds.Height > 0
-            ? new Size(geomBounds.Width + geomBounds.X, geomBounds.Height + geomBounds.Y)
-            : new Size(0, 0);
-
-        // Account for stroke thickness in the natural size
-        if (StrokeThickness > 0 && _pathGeometry != null)
-        {
-            naturalSize = new Size(
-                naturalSize.Width + StrokeThickness,
-                naturalSize.Height + StrokeThickness);
-        }
+        var strokeThickness = Stroke != null && StrokeThickness > 0 ? StrokeThickness : 0;
+        var naturalSize = GetNaturalSize(geomBounds, strokeThickness);
 
         if (Stretch == Stretch.None)
         {
@@ -123,47 +113,36 @@ public class Path : Shape
         }
 
         // Calculate scaling based on stretch mode
-        var scaleX = 1.0;
-        var scaleY = 1.0;
-        var offsetX = 0.0;
-        var offsetY = 0.0;
-
         var bounds = _pathGeometry.Bounds;
-        if (bounds.Width > 0 && bounds.Height > 0)
-        {
-            switch (Stretch)
-            {
-                case Stretch.Fill:
-                    scaleX = width / bounds.Width;
-                    scaleY = height / bounds.Height;
-                    offsetX = -bounds.X * scaleX;
-                    offsetY = -bounds.Y * scaleY;
-                    break;
-                case Stretch.Uniform:
-                    var scale = Math.Min(width / bounds.Width, height / bounds.Height);
-                    scaleX = scaleY = scale;
-                    offsetX = (width - bounds.Width * scale) / 2 - bounds.X * scale;
-                    offsetY = (height - bounds.Height * scale) / 2 - bounds.Y * scale;
-                    break;
-                case Stretch.UniformToFill:
-                    var scaleFill = Math.Max(width / bounds.Width, height / bounds.Height);
-                    scaleX = scaleY = scaleFill;
-                    offsetX = (width - bounds.Width * scaleFill) / 2 - bounds.X * scaleFill;
-                    offsetY = (height - bounds.Height * scaleFill) / 2 - bounds.Y * scaleFill;
-                    break;
-            }
-        }
+        var strokeInset = pen?.Thickness > 0 ? pen.Thickness / 2 : 0.0;
+        var targetRect = new Rect(
+            strokeInset,
+            strokeInset,
+            Math.Max(0, width - strokeInset * 2),
+            Math.Max(0, height - strokeInset * 2));
+        ComputeStretchTransform(bounds, targetRect, Stretch, out var scaleX, out var scaleY, out var offsetX, out var offsetY);
 
         // Transform the geometry and render
         var transformed = TransformGeometry(_pathGeometry, scaleX, scaleY, offsetX, offsetY);
 
-        // Apply RenderTransform (e.g. RotateTransform) if set
+        // Apply the element-level RenderTransform separately so we preserve
+        // arc and multi-point segment fidelity inside the geometry itself.
         if (RenderTransform is Transform renderXform)
         {
             var matrix = renderXform.Value;
             if (!matrix.IsIdentity)
             {
-                transformed = ApplyMatrixTransform(transformed, matrix, width / 2, height / 2);
+                dc.PushTransform(new MatrixTransform(CreateCenteredMatrix(matrix, width / 2, height / 2)));
+                try
+                {
+                    dc.DrawGeometry(Fill, pen, transformed);
+                }
+                finally
+                {
+                    dc.Pop();
+                }
+
+                return;
             }
         }
 
@@ -190,20 +169,81 @@ public class Path : Shape
                 {
                     case LineSegment line:
                         newFigure.Segments.Add(new LineSegment(
-                            TransformPoint(line.Point, scaleX, scaleY, offsetX, offsetY)));
+                            TransformPoint(line.Point, scaleX, scaleY, offsetX, offsetY),
+                            line.IsStroked));
                         break;
+
+                    case PolyLineSegment polyLine:
+                    {
+                        var newSegment = new PolyLineSegment
+                        {
+                            IsStroked = polyLine.IsStroked
+                        };
+
+                        foreach (var point in polyLine.Points)
+                        {
+                            newSegment.Points.Add(TransformPoint(point, scaleX, scaleY, offsetX, offsetY));
+                        }
+
+                        newFigure.Segments.Add(newSegment);
+                        break;
+                    }
 
                     case BezierSegment bezier:
                         newFigure.Segments.Add(new BezierSegment(
                             TransformPoint(bezier.Point1, scaleX, scaleY, offsetX, offsetY),
                             TransformPoint(bezier.Point2, scaleX, scaleY, offsetX, offsetY),
-                            TransformPoint(bezier.Point3, scaleX, scaleY, offsetX, offsetY)));
+                            TransformPoint(bezier.Point3, scaleX, scaleY, offsetX, offsetY),
+                            bezier.IsStroked));
                         break;
+
+                    case PolyBezierSegment polyBezier:
+                    {
+                        var newSegment = new PolyBezierSegment
+                        {
+                            IsStroked = polyBezier.IsStroked
+                        };
+
+                        foreach (var point in polyBezier.Points)
+                        {
+                            newSegment.Points.Add(TransformPoint(point, scaleX, scaleY, offsetX, offsetY));
+                        }
+
+                        newFigure.Segments.Add(newSegment);
+                        break;
+                    }
 
                     case QuadraticBezierSegment quad:
                         newFigure.Segments.Add(new QuadraticBezierSegment(
                             TransformPoint(quad.Point1, scaleX, scaleY, offsetX, offsetY),
-                            TransformPoint(quad.Point2, scaleX, scaleY, offsetX, offsetY)));
+                            TransformPoint(quad.Point2, scaleX, scaleY, offsetX, offsetY),
+                            quad.IsStroked));
+                        break;
+
+                    case PolyQuadraticBezierSegment polyQuad:
+                    {
+                        var newSegment = new PolyQuadraticBezierSegment
+                        {
+                            IsStroked = polyQuad.IsStroked
+                        };
+
+                        foreach (var point in polyQuad.Points)
+                        {
+                            newSegment.Points.Add(TransformPoint(point, scaleX, scaleY, offsetX, offsetY));
+                        }
+
+                        newFigure.Segments.Add(newSegment);
+                        break;
+                    }
+
+                    case ArcSegment arc:
+                        newFigure.Segments.Add(new ArcSegment(
+                            TransformPoint(arc.Point, scaleX, scaleY, offsetX, offsetY),
+                            new Size(Math.Abs(arc.Size.Width * scaleX), Math.Abs(arc.Size.Height * scaleY)),
+                            arc.RotationAngle,
+                            arc.IsLargeArc,
+                            scaleX * scaleY < 0 ? FlipSweep(arc.SweepDirection) : arc.SweepDirection,
+                            arc.IsStroked));
                         break;
                 }
             }
@@ -212,6 +252,128 @@ public class Path : Shape
         }
 
         return result;
+    }
+
+    private static Size GetNaturalSize(Rect bounds, double strokeThickness)
+    {
+        var width = Math.Max(0, bounds.Width);
+        var height = Math.Max(0, bounds.Height);
+
+        if (strokeThickness > 0)
+        {
+            width += strokeThickness;
+            height += strokeThickness;
+        }
+
+        return new Size(width, height);
+    }
+
+    private static void ComputeStretchTransform(
+        Rect bounds,
+        Rect targetRect,
+        Stretch stretch,
+        out double scaleX,
+        out double scaleY,
+        out double offsetX,
+        out double offsetY)
+    {
+        scaleX = 1.0;
+        scaleY = 1.0;
+        offsetX = targetRect.X - bounds.X;
+        offsetY = targetRect.Y - bounds.Y;
+
+        var hasWidth = bounds.Width > 0;
+        var hasHeight = bounds.Height > 0;
+
+        if (stretch == Stretch.None)
+        {
+            if (hasWidth && !hasHeight)
+            {
+                if (bounds.Width > targetRect.Width && targetRect.Width > 0)
+                {
+                    scaleX = targetRect.Width / bounds.Width;
+                    offsetX = targetRect.X - bounds.X * scaleX;
+                }
+                else
+                {
+                    offsetX = targetRect.X + (targetRect.Width - bounds.Width) / 2 - bounds.X;
+                }
+
+                offsetY = targetRect.Y + targetRect.Height / 2 - bounds.Y;
+            }
+            else if (!hasWidth && hasHeight)
+            {
+                if (bounds.Height > targetRect.Height && targetRect.Height > 0)
+                {
+                    scaleY = targetRect.Height / bounds.Height;
+                    offsetY = targetRect.Y - bounds.Y * scaleY;
+                }
+                else
+                {
+                    offsetY = targetRect.Y + (targetRect.Height - bounds.Height) / 2 - bounds.Y;
+                }
+
+                offsetX = targetRect.X + targetRect.Width / 2 - bounds.X;
+            }
+            else if (!hasWidth && !hasHeight)
+            {
+                offsetX = targetRect.X + targetRect.Width / 2 - bounds.X;
+                offsetY = targetRect.Y + targetRect.Height / 2 - bounds.Y;
+            }
+
+            return;
+        }
+
+        switch (stretch)
+        {
+            case Stretch.Fill:
+                scaleX = hasWidth ? targetRect.Width / bounds.Width : 1.0;
+                scaleY = hasHeight ? targetRect.Height / bounds.Height : 1.0;
+                offsetX = hasWidth
+                    ? targetRect.X - bounds.X * scaleX
+                    : targetRect.X + targetRect.Width / 2 - bounds.X;
+                offsetY = hasHeight
+                    ? targetRect.Y - bounds.Y * scaleY
+                    : targetRect.Y + targetRect.Height / 2 - bounds.Y;
+                return;
+
+            case Stretch.Uniform:
+            case Stretch.UniformToFill:
+            {
+                if (hasWidth && hasHeight)
+                {
+                    var scale = stretch == Stretch.Uniform
+                        ? Math.Min(targetRect.Width / bounds.Width, targetRect.Height / bounds.Height)
+                        : Math.Max(targetRect.Width / bounds.Width, targetRect.Height / bounds.Height);
+                    scaleX = scaleY = scale;
+                    offsetX = targetRect.X + (targetRect.Width - bounds.Width * scale) / 2 - bounds.X * scale;
+                    offsetY = targetRect.Y + (targetRect.Height - bounds.Height * scale) / 2 - bounds.Y * scale;
+                    return;
+                }
+
+                if (hasWidth)
+                {
+                    var scale = targetRect.Width / bounds.Width;
+                    scaleX = scaleY = scale;
+                    offsetX = targetRect.X + (targetRect.Width - bounds.Width * scale) / 2 - bounds.X * scale;
+                    offsetY = targetRect.Y + targetRect.Height / 2 - bounds.Y * scale;
+                    return;
+                }
+
+                if (hasHeight)
+                {
+                    var scale = targetRect.Height / bounds.Height;
+                    scaleX = scaleY = scale;
+                    offsetX = targetRect.X + targetRect.Width / 2 - bounds.X * scale;
+                    offsetY = targetRect.Y + (targetRect.Height - bounds.Height * scale) / 2 - bounds.Y * scale;
+                    return;
+                }
+
+                offsetX = targetRect.X + targetRect.Width / 2 - bounds.X;
+                offsetY = targetRect.Y + targetRect.Height / 2 - bounds.Y;
+                return;
+            }
+        }
     }
 
     private static Point TransformPoint(Point p, double scaleX, double scaleY, double offsetX, double offsetY)
@@ -219,57 +381,20 @@ public class Path : Shape
         return new Point(p.X * scaleX + offsetX, p.Y * scaleY + offsetY);
     }
 
-    private static PathGeometry ApplyMatrixTransform(PathGeometry source, Matrix matrix, double centerX, double centerY)
+    private static SweepDirection FlipSweep(SweepDirection sweepDirection) =>
+        sweepDirection == SweepDirection.Clockwise
+            ? SweepDirection.Counterclockwise
+            : SweepDirection.Clockwise;
+
+    private static Matrix CreateCenteredMatrix(Matrix matrix, double centerX, double centerY)
     {
-        var result = new PathGeometry();
-        result.FillRule = source.FillRule;
-
-        foreach (var figure in source.Figures)
-        {
-            var newFigure = new PathFigure
-            {
-                StartPoint = ApplyMatrix(figure.StartPoint, matrix, centerX, centerY),
-                IsClosed = figure.IsClosed,
-                IsFilled = figure.IsFilled,
-            };
-
-            foreach (var segment in figure.Segments)
-            {
-                switch (segment)
-                {
-                    case LineSegment line:
-                        newFigure.Segments.Add(new LineSegment(
-                            ApplyMatrix(line.Point, matrix, centerX, centerY)));
-                        break;
-
-                    case BezierSegment bezier:
-                        newFigure.Segments.Add(new BezierSegment(
-                            ApplyMatrix(bezier.Point1, matrix, centerX, centerY),
-                            ApplyMatrix(bezier.Point2, matrix, centerX, centerY),
-                            ApplyMatrix(bezier.Point3, matrix, centerX, centerY)));
-                        break;
-
-                    case QuadraticBezierSegment quad:
-                        newFigure.Segments.Add(new QuadraticBezierSegment(
-                            ApplyMatrix(quad.Point1, matrix, centerX, centerY),
-                            ApplyMatrix(quad.Point2, matrix, centerX, centerY)));
-                        break;
-                }
-            }
-
-            result.Figures.Add(newFigure);
-        }
-
-        return result;
-    }
-
-    private static Point ApplyMatrix(Point p, Matrix m, double cx, double cy)
-    {
-        var x = p.X - cx;
-        var y = p.Y - cy;
-        return new Point(
-            x * m.M11 + y * m.M21 + m.OffsetX + cx,
-            x * m.M12 + y * m.M22 + m.OffsetY + cy);
+        return new Matrix(
+            matrix.M11,
+            matrix.M12,
+            matrix.M21,
+            matrix.M22,
+            matrix.OffsetX + centerX - centerX * matrix.M11 - centerY * matrix.M21,
+            matrix.OffsetY + centerY - centerX * matrix.M12 - centerY * matrix.M22);
     }
 
     #endregion
@@ -281,7 +406,9 @@ public class Path : Shape
         if (d is Path path)
         {
             var data = (string?)e.NewValue;
-            path._pathGeometry = string.IsNullOrWhiteSpace(data) ? null : ArrowIcons.ParseSvgPath(data);
+            path._pathGeometry = string.IsNullOrWhiteSpace(data)
+                ? null
+                : Geometry.Parse(data) as PathGeometry;
             path.InvalidateMeasure();
             path.InvalidateVisual();
         }

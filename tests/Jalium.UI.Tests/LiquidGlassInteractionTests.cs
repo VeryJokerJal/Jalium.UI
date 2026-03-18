@@ -56,6 +56,32 @@ public class LiquidGlassInteractionTests
         }
     }
 
+    [Fact]
+    public void LiquidGlassBorder_ShouldKeepTrackingHover_JustOutsideBounds()
+    {
+        var glass = CreateLiquidGlassHost();
+        WireLiquidGlassTracking(glass);
+
+        InvokeWindowMouseMove(glass, new Point(184, 18));
+
+        var light = GetPrivateField<Point>(glass, "_lgLightLocal");
+        Assert.True(GetPrivateField<bool>(glass, "_lgMouseOver"));
+        Assert.Equal(184, light.X);
+        Assert.Equal(18, light.Y);
+    }
+
+    [Fact]
+    public void LiquidGlassBorder_ShouldStopTrackingHover_WhenFarOutsideInfluenceRange()
+    {
+        var glass = CreateLiquidGlassHost();
+        WireLiquidGlassTracking(glass);
+
+        InvokeWindowMouseMove(glass, new Point(80, 18));
+        InvokeWindowMouseMove(glass, new Point(320, 18));
+
+        Assert.False(GetPrivateField<bool>(glass, "_lgMouseOver"));
+    }
+
     private static Border CreateInteractiveLiquidGlassHost(out Border child)
     {
         child = new Border
@@ -86,11 +112,40 @@ public class LiquidGlassInteractionTests
         return glass;
     }
 
+    private static Border CreateLiquidGlassHost()
+    {
+        var glass = new Border
+        {
+            Width = 160,
+            Height = 56,
+            LiquidGlass = true
+        };
+
+        var window = new Window
+        {
+            TitleBarStyle = WindowTitleBarStyle.Native,
+            Width = 160,
+            Height = 56,
+            Content = glass
+        };
+
+        window.Measure(new Size(160, 56));
+        window.Arrange(new Rect(0, 0, 160, 56));
+        return glass;
+    }
+
     private static void WireLiquidGlassTracking(Border glass)
     {
         var method = typeof(Border).GetMethod("TryWireLgWindowTracking", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         Assert.True((bool)method!.Invoke(glass, [])!);
+    }
+
+    private static void InvokeWindowMouseMove(Border glass, Point position, MouseButtonState leftButton = MouseButtonState.Released)
+    {
+        var method = typeof(Border).GetMethod("OnLgWindowMouseMove", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(method);
+        method!.Invoke(glass, [glass, CreateMouseMove(position, leftButton)]);
     }
 
     private static MouseButtonEventArgs CreateMouseDown(Point position)

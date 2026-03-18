@@ -143,14 +143,14 @@ public class TextBlock : FrameworkElement
         Focusable = true;
         KeyboardNavigation.SetIsTabStop(this, false);
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnKeyboardFocusChanged));
-        AddHandler(LostKeyboardFocusEvent, new RoutedEventHandler(OnKeyboardFocusChanged));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnKeyboardFocusChanged));
+        AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnKeyboardFocusChanged));
     }
 
     /// <summary>
@@ -507,27 +507,27 @@ public class TextBlock : FrameworkElement
         }
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (!CanStartSelection() || e is not MouseButtonEventArgs mouseArgs)
+        if (!CanStartSelection())
         {
             return;
         }
 
-        if (mouseArgs.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
         {
             return;
         }
 
         Focus();
-        var index = GetCharacterIndexFromPosition(mouseArgs.GetPosition(this));
+        var index = GetCharacterIndexFromPosition(e.GetPosition(this));
 
-        if (mouseArgs.ClickCount >= 3)
+        if (e.ClickCount >= 3)
         {
             SelectAll();
             _isWordSelecting = false;
         }
-        else if (mouseArgs.ClickCount == 2)
+        else if (e.ClickCount == 2)
         {
             SelectWordAt(index);
             _wordSelectionAnchorStart = _selectionStart;
@@ -548,21 +548,21 @@ public class TextBlock : FrameworkElement
         e.Handled = true;
     }
 
-    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
         UpdateHoverCursor();
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
         UpdateHoverCursor();
 
-        if (!_isSelecting || e is not MouseEventArgs mouseArgs)
+        if (!_isSelecting)
         {
             return;
         }
 
-        var index = GetCharacterIndexFromPosition(mouseArgs.GetPosition(this));
+        var index = GetCharacterIndexFromPosition(e.GetPosition(this));
         if (_isWordSelecting)
         {
             ExtendWordSelection(index);
@@ -574,14 +574,14 @@ public class TextBlock : FrameworkElement
         e.Handled = true;
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         Cursor = null;
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (!_isSelecting || e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
+        if (!_isSelecting || e.ChangedButton != MouseButton.Left)
         {
             return;
         }
@@ -592,28 +592,28 @@ public class TextBlock : FrameworkElement
         e.Handled = true;
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs || keyArgs.Handled || !IsTextSelectionEnabled)
+        if (e.Handled || !IsTextSelectionEnabled)
         {
             return;
         }
 
-        if (keyArgs.IsControlDown && keyArgs.Key == Key.C && _selectionLength > 0)
+        if (e.IsControlDown && e.Key == Key.C && _selectionLength > 0)
         {
             Copy();
-            keyArgs.Handled = true;
+            e.Handled = true;
             return;
         }
 
-        if (keyArgs.IsControlDown && keyArgs.Key == Key.A && !string.IsNullOrEmpty(Text))
+        if (e.IsControlDown && e.Key == Key.A && !string.IsNullOrEmpty(Text))
         {
             SelectAll();
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
     }
 
-    private void OnKeyboardFocusChanged(object sender, RoutedEventArgs e)
+    private void OnKeyboardFocusChanged(object sender, KeyboardFocusChangedEventArgs e)
     {
         // Keep the current selection when focus moves away, but repaint so the
         // selection highlight stays in sync with the new focus state.

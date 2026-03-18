@@ -28,9 +28,27 @@ public partial class Application
     public static Application? Current => _current;
 
     /// <summary>
+    /// Occurs when the current application instance changes.
+    /// </summary>
+    internal static event EventHandler? CurrentChanged;
+
+    private Window? _mainWindow;
+
+    /// <summary>
     /// Gets or sets the main window.
     /// </summary>
-    public Window? MainWindow { get; set; }
+    public Window? MainWindow
+    {
+        get => _mainWindow;
+        set
+        {
+            if (ReferenceEquals(_mainWindow, value))
+                return;
+
+            _mainWindow = value;
+            MainWindowChanged?.Invoke(this, EventArgs.Empty);
+        }
+    }
 
     /// <summary>
     /// Gets or sets the startup URI used to load the initial window or visual root.
@@ -80,6 +98,11 @@ public partial class Application
     public event EventHandler? ResourcesChanged;
 
     /// <summary>
+    /// Occurs when the main window reference changes.
+    /// </summary>
+    internal event EventHandler? MainWindowChanged;
+
+    /// <summary>
     /// Occurs when the application is starting.
     /// </summary>
     public event EventHandler? Startup;
@@ -105,6 +128,7 @@ public partial class Application
         _ = TryEnablePerMonitorDpiAwareness();
 
         _current = this;
+        CurrentChanged?.Invoke(this, EventArgs.Empty);
 
         // Initialize the dispatcher for the main UI thread
         Dispatcher.SetAsMainThread();
@@ -251,6 +275,7 @@ public partial class Application
 
         // Clear application reference
         _current = null;
+        CurrentChanged?.Invoke(null, EventArgs.Empty);
     }
 
     /// <summary>

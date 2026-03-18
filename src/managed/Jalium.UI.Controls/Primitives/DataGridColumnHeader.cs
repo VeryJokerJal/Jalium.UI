@@ -200,18 +200,18 @@ public class DataGridColumnHeader : ButtonBase
         VerticalContentAlignment = VerticalAlignment.Center;
         Padding = new Thickness(8, 0, 8, 0);
 
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
     }
 
     #endregion
 
     #region Resize Handling
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (e is MouseEventArgs mouseArgs && CanUserResize)
+        if (CanUserResize)
         {
-            var position = mouseArgs.GetPosition(this);
+            var position = e.GetPosition(this);
             var isInResizeGrip = position.X >= RenderSize.Width - ResizeGripWidth;
 
             // Change cursor when over resize grip

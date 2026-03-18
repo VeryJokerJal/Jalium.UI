@@ -145,10 +145,10 @@ public partial class DockItem : HeaderedContentControl
     public DockItem()
     {
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
     }
 
     /// <summary>
@@ -219,14 +219,14 @@ public partial class DockItem : HeaderedContentControl
         return null;
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             // Check if clicking the close button
             if (CanClose && _closeButtonRect.Width > 0)
             {
-                var pos = mouseArgs.GetPosition(this);
+                var pos = e.GetPosition(this);
                 if (_closeButtonRect.Contains(pos))
                 {
                     _isCloseButtonPressed = true;
@@ -242,18 +242,18 @@ public partial class DockItem : HeaderedContentControl
             OwnerPanel?.SelectTab(this);
             _isMouseDown = true;
             // Track in OwnerPanel's coordinate space 閳?stable during tab reorder
-            _mouseDownPos = mouseArgs.GetPosition((UIElement?)OwnerPanel ?? this);
+            _mouseDownPos = e.GetPosition((UIElement?)OwnerPanel ?? this);
             e.Handled = true;
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             if (_isCloseButtonPressed)
             {
-                var pos = mouseArgs.GetPosition(this);
+                var pos = e.GetPosition(this);
                 var shouldClose = _closeButtonRect.Contains(pos);
 
                 _isCloseButtonPressed = false;
@@ -288,10 +288,8 @@ public partial class DockItem : HeaderedContentControl
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (e is not MouseEventArgs mouseArgs) return;
-
         // Floating window drag 閳?move the window and update dock highlights
         if (_isDraggingFloatingWindow && _floatingDragWindow != null)
         {
@@ -315,13 +313,13 @@ public partial class DockItem : HeaderedContentControl
         // Reorder preview drag 閳?update insertion indicator position
         if (_isReorderDragging && OwnerPanel != null)
         {
-            if (mouseArgs.LeftButton == MouseButtonState.Released)
+            if (e.LeftButton == MouseButtonState.Released)
             {
                 CancelReorderDrag();
                 return;
             }
 
-            var posInPanel = mouseArgs.GetPosition((UIElement)OwnerPanel);
+            var posInPanel = e.GetPosition((UIElement)OwnerPanel);
             UpdateReorderDragVisual(posInPanel);
 
             // Escape from the tab-strip band: if cursor moves too far away on the cross-axis,
@@ -353,7 +351,7 @@ public partial class DockItem : HeaderedContentControl
         // Close button hover tracking
         if (CanClose && _closeButtonRect.Width > 0)
         {
-            var pos = mouseArgs.GetPosition(this);
+            var pos = e.GetPosition(this);
             var newHover = _closeButtonRect.Contains(pos);
             if (newHover != _isCloseButtonHovered)
             {
@@ -373,14 +371,14 @@ public partial class DockItem : HeaderedContentControl
         if (_isMouseDown && OwnerPanel != null)
         {
             // Guard: if left button was released without us seeing MouseUp, cancel drag
-            if (mouseArgs.LeftButton == MouseButtonState.Released)
+            if (e.LeftButton == MouseButtonState.Released)
             {
                 _isMouseDown = false;
                 return;
             }
 
             var referenceElement = (UIElement?)OwnerPanel ?? this;
-            var currentPos = mouseArgs.GetPosition(referenceElement);
+            var currentPos = e.GetPosition(referenceElement);
             var dx = currentPos.X - _mouseDownPos.X;
             var dy = currentPos.Y - _mouseDownPos.Y;
 
@@ -411,7 +409,7 @@ public partial class DockItem : HeaderedContentControl
         }
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         if (_isCloseButtonHovered)
         {

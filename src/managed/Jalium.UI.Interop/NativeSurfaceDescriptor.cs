@@ -51,6 +51,26 @@ internal readonly struct NativeSurfaceDescriptor
         };
     }
 
+    public static NativeSurfaceDescriptor ForAndroidNativeWindow(nint nativeWindow, bool composition = false)
+    {
+        return new NativeSurfaceDescriptor
+        {
+            Platform = NativePlatform.Android,
+            Kind = composition ? NativeSurfaceKind.CompositionTarget : NativeSurfaceKind.NativeWindow,
+            Handle0 = nativeWindow
+        };
+    }
+
+    public static NativeSurfaceDescriptor ForMacOSView(nint viewHandle, bool composition = false)
+    {
+        return new NativeSurfaceDescriptor
+        {
+            Platform = NativePlatform.MacOS,
+            Kind = composition ? NativeSurfaceKind.CompositionTarget : NativeSurfaceKind.NativeWindow,
+            Handle0 = viewHandle
+        };
+    }
+
     public bool IsValid => Platform switch
     {
         NativePlatform.LinuxX11 => Handle0 != nint.Zero && Handle1 != nint.Zero,

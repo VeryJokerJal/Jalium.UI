@@ -30,6 +30,17 @@
         </Style.Triggers>
     </Style>
 
+    <!-- Dock indicators -->
+    <SolidColorBrush x:Key="DockIndicatorChromeBackground" Color="#E6202020" />
+    <SolidColorBrush x:Key="DockIndicatorChromeBorder" Color="#B4464646" />
+    <SolidColorBrush x:Key="DockIndicatorButtonBackground" Color="#FF323232" />
+    <SolidColorBrush x:Key="DockIndicatorButtonBorder" Color="#A0505050" />
+    <SolidColorBrush x:Key="DockIndicatorButtonHoverBackground" Color="#FF0078D4" />
+    <SolidColorBrush x:Key="DockIndicatorIconForeground" Color="#DCC8C8C8" />
+    <SolidColorBrush x:Key="DockIndicatorIconHoverForeground" Color="#FFFFFFFF" />
+    <SolidColorBrush x:Key="DockIndicatorPreviewBackground" Color="#320078D4" />
+    <SolidColorBrush x:Key="DockIndicatorPreviewBorder" Color="#8C0078D4" />
+
     <!-- DockSplitBar (internal) -->
     <Style TargetType="DockSplitBar">
         <Setter Property="Background" Value="{DynamicResource DockSplitterBackground}" />

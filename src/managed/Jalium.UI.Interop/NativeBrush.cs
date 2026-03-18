@@ -8,7 +8,7 @@ namespace Jalium.UI.Interop;
 public sealed class NativeBrush : IDisposable
 {
     private nint _handle;
-    private bool _disposed;
+    private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for thread-safety)
 
     /// <summary>
     /// Gets the native handle.
@@ -18,12 +18,17 @@ public sealed class NativeBrush : IDisposable
     /// <summary>
     /// Gets whether the brush is valid.
     /// </summary>
-    public bool IsValid => _handle != nint.Zero && !_disposed;
+    public bool IsValid => _handle != nint.Zero && Volatile.Read(ref _disposed) == 0;
 
     /// <summary>
     /// Gets or sets the cached color used for cache invalidation.
     /// </summary>
     internal Color CachedColor { get; set; }
+
+    /// <summary>
+    /// Gets or sets the access sequence for LRU eviction.
+    /// </summary>
+    internal long LastAccessSequence { get; set; }
 
     /// <summary>
     /// Gets the color components.
@@ -76,13 +81,12 @@ public sealed class NativeBrush : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
 
-        if (_handle != nint.Zero)
+        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+        if (handle != nint.Zero)
         {
-            NativeMethods.BrushDestroy(_handle);
-            _handle = nint.Zero;
+            NativeMethods.BrushDestroy(handle);
         }
 
         GC.SuppressFinalize(this);
@@ -90,7 +94,7 @@ public sealed class NativeBrush : IDisposable
 
     ~NativeBrush()
     {
-        _disposed = true;
-        _handle = nint.Zero;
+        Volatile.Write(ref _disposed, 1);
+        Volatile.Write(ref _handle, nint.Zero);
     }
 }

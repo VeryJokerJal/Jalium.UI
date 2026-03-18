@@ -232,9 +232,9 @@ public class ColorPicker : Control
         Focusable = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
 
         UpdateFromColor(Color);
     }
@@ -324,15 +324,15 @@ public class ColorPicker : Control
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
             CaptureMouse();
-            var position = mouseArgs.GetPosition(this);
+            var position = e.GetPosition(this);
 
             if (_spectrumRect.Contains(position))
             {
@@ -354,9 +354,9 @@ public class ColorPicker : Control
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             ReleaseMouseCapture();
             _isDraggingSpectrum = false;
@@ -366,24 +366,21 @@ public class ColorPicker : Control
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (e is MouseEventArgs mouseArgs)
-        {
-            var position = mouseArgs.GetPosition(this);
+        var position = e.GetPosition(this);
 
-            if (_isDraggingSpectrum)
-            {
-                UpdateSpectrumFromPosition(position);
-            }
-            else if (_isDraggingHue)
-            {
-                UpdateHueFromPosition(position);
-            }
-            else if (_isDraggingAlpha)
-            {
-                UpdateAlphaFromPosition(position);
-            }
+        if (_isDraggingSpectrum)
+        {
+            UpdateSpectrumFromPosition(position);
+        }
+        else if (_isDraggingHue)
+        {
+            UpdateHueFromPosition(position);
+        }
+        else if (_isDraggingAlpha)
+        {
+            UpdateAlphaFromPosition(position);
         }
     }
 

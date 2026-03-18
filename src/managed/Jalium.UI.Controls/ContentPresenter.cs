@@ -133,7 +133,7 @@ public class ContentPresenter : FrameworkElement
         if (newContent != null)
         {
             _contentElement = CreateContentElement(newContent);
-            if (_contentElement != null)
+            if (_contentElement != null && _contentElement.VisualParent == null)
             {
                 AddVisualChild(_contentElement);
             }

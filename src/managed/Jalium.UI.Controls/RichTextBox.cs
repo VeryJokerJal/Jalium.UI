@@ -431,12 +431,12 @@ public class RichTextBox : Control, IImeSupport
         InputMethod.CompositionEnded += OnImeCompositionEnded;
 
         // Register input event handlers
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(TextInputEvent, new RoutedEventHandler(OnTextInputHandler));
-        AddHandler(MouseWheelEvent, new RoutedEventHandler(OnMouseWheelHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
+        AddHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
     }
 
     /// <summary>
@@ -1506,12 +1506,12 @@ public class RichTextBox : Control, IImeSupport
 
     #region Input Handling
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        if (e.Handled)
             return;
 
-        OnKeyDown(keyArgs);
+        OnKeyDown(e);
     }
 
     /// <summary>
@@ -1669,19 +1669,19 @@ public class RichTextBox : Control, IImeSupport
         };
     }
 
-    private void OnTextInputHandler(object sender, RoutedEventArgs e)
+    private void OnTextInputHandler(object sender, TextCompositionEventArgs e)
     {
-        if (e is not TextCompositionEventArgs textArgs || textArgs.Handled || IsReadOnly)
+        if (e.Handled || IsReadOnly)
             return;
 
-        if (!string.IsNullOrEmpty(textArgs.Text))
+        if (!string.IsNullOrEmpty(e.Text))
         {
-            var text = textArgs.Text;
+            var text = e.Text;
             if (text.Length == 1 && char.IsControl(text[0]) && text[0] != '\t')
                 return;
 
             InsertText(text);
-            textArgs.Handled = true;
+            e.Handled = true;
         }
     }
 
@@ -1709,15 +1709,15 @@ public class RichTextBox : Control, IImeSupport
         }
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
 
-            var position = mouseArgs.GetPosition(this);
+            var position = e.GetPosition(this);
             var now = DateTime.Now;
 
             var timeSinceLastClick = (now - _lastClickTime).TotalMilliseconds;
@@ -1758,7 +1758,7 @@ public class RichTextBox : Control, IImeSupport
             {
                 CaptureMouse();
 
-                if ((mouseArgs.KeyboardModifiers & ModifierKeys.Shift) != 0 && _caretPosition != null && newCaretPosition != null)
+                if ((e.KeyboardModifiers & ModifierKeys.Shift) != 0 && _caretPosition != null && newCaretPosition != null)
                 {
                     _selection = new TextRange(_caretPosition, newCaretPosition);
                 }
@@ -1784,11 +1784,11 @@ public class RichTextBox : Control, IImeSupport
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             if (_isSelecting)
             {
@@ -1801,43 +1801,37 @@ public class RichTextBox : Control, IImeSupport
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
         if (!IsEnabled || !_isSelecting) return;
 
-        if (e is MouseEventArgs mouseArgs)
+        var position = e.GetPosition(this);
+        var newCaretPosition = GetTextPositionFromPoint(position);
+
+        if (newCaretPosition != null)
         {
-            var position = mouseArgs.GetPosition(this);
-            var newCaretPosition = GetTextPositionFromPoint(position);
-
-            if (newCaretPosition != null)
+            if (_isWordSelecting)
             {
-                if (_isWordSelecting)
-                {
-                    ExtendWordSelection(newCaretPosition);
-                }
-                else if (_selectionAnchor != null)
-                {
-                    _selection = new TextRange(_selectionAnchor, newCaretPosition);
-                    _caretPosition = newCaretPosition;
-                }
+                ExtendWordSelection(newCaretPosition);
             }
-
-            EnsureCaretVisible();
-            InvalidateVisual();
-            e.Handled = true;
+            else if (_selectionAnchor != null)
+            {
+                _selection = new TextRange(_selectionAnchor, newCaretPosition);
+                _caretPosition = newCaretPosition;
+            }
         }
+
+        EnsureCaretVisible();
+        InvalidateVisual();
+        e.Handled = true;
     }
 
-    private void OnMouseWheelHandler(object sender, RoutedEventArgs e)
+    private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        if (e is MouseWheelEventArgs wheelArgs)
-        {
-            var lineHeight = GetDefaultLineHeight();
-            var delta = wheelArgs.Delta > 0 ? -3 : 3;
-            VerticalOffset += delta * lineHeight;
-            e.Handled = true;
-        }
+        var lineHeight = GetDefaultLineHeight();
+        var delta = e.Delta > 0 ? -3 : 3;
+        VerticalOffset += delta * lineHeight;
+        e.Handled = true;
     }
 
     private TextPointer? GetTextPositionFromPoint(Point point)

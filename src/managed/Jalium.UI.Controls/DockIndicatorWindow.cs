@@ -18,9 +18,10 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     private readonly DockIndicatorVisual _visual;
     private readonly Dispatcher _dispatcher;
 
-    private volatile bool _renderScheduled;
-    private bool _isRendering;
-    private volatile bool _renderRequested;
+    private int _renderState; // Bitfield: 1=Scheduled, 2=Rendering, 4=Requested
+    private const int RenderFlag_Scheduled = 1;
+    private const int RenderFlag_Rendering = 2;
+    private const int RenderFlag_Requested = 4;
     private bool _renderRecoveryInProgress;
     private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _disposed;
@@ -157,31 +158,31 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     {
         if (_hwnd == nint.Zero || _disposed) return;
 
-        if (_isRendering)
+        if ((Volatile.Read(ref _renderState) & RenderFlag_Rendering) != 0)
         {
-            _renderRequested = true;
+            int p, n; do { p = Volatile.Read(ref _renderState); n = p | RenderFlag_Requested; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p);
             return;
         }
 
-        if (!_renderScheduled)
         {
-            _renderScheduled = true;
+            int p, n;
+            do { p = Volatile.Read(ref _renderState); if ((p & RenderFlag_Scheduled) != 0) return; n = p | RenderFlag_Scheduled; }
+            while (Interlocked.CompareExchange(ref _renderState, n, p) != p);
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
     }
 
     private void ProcessRender()
     {
-        _renderScheduled = false;
+        { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Scheduled; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
         if (_hwnd == nint.Zero || _disposed) return;
         RenderFrame();
     }
 
     private void RenderFrame()
     {
-        if (_isRendering) return;
-        _isRendering = true;
-        _renderRequested = false;
+        if ((Volatile.Read(ref _renderState) & RenderFlag_Rendering) != 0) return;
+        { int p, n; do { p = Volatile.Read(ref _renderState); n = (p | RenderFlag_Rendering) & ~RenderFlag_Requested; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
 
         try
         {
@@ -246,12 +247,12 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         }
         finally
         {
-            _isRendering = false;
+            { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Rendering; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
         }
 
-        if (_renderRequested)
+        if ((Volatile.Read(ref _renderState) & RenderFlag_Requested) != 0)
         {
-            _renderRequested = false;
+            { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Requested; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
             ScheduleRender();
         }
     }
@@ -338,9 +339,10 @@ internal sealed partial class DockIndicatorWindow : IDisposable
             return;
         }
 
-        if (!_renderScheduled)
         {
-            _renderScheduled = true;
+            int p, n;
+            do { p = Volatile.Read(ref _renderState); if ((p & RenderFlag_Scheduled) != 0) return; n = p | RenderFlag_Scheduled; }
+            while (Interlocked.CompareExchange(ref _renderState, n, p) != p);
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
     }
@@ -378,9 +380,10 @@ internal sealed partial class DockIndicatorWindow : IDisposable
             return;
         }
 
-        if (!_renderScheduled)
         {
-            _renderScheduled = true;
+            int p, n;
+            do { p = Volatile.Read(ref _renderState); if ((p & RenderFlag_Scheduled) != 0) return; n = p | RenderFlag_Scheduled; }
+            while (Interlocked.CompareExchange(ref _renderState, n, p) != p);
             _dispatcher.BeginInvokeCritical(ProcessRender);
         }
     }

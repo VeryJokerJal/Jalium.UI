@@ -260,10 +260,10 @@ public class Slider : Control
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
 
         // Register input event handlers
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     #endregion
@@ -355,12 +355,12 @@ public class Slider : Control
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
-            var position = mouseArgs.GetPosition(this);
+            var position = e.GetPosition(this);
             var thumbRect = GetThumbRect();
 
             // Capture mouse for dragging
@@ -387,9 +387,9 @@ public class Slider : Control
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             if (_isDragging)
             {
@@ -401,11 +401,11 @@ public class Slider : Control
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (e is MouseEventArgs mouseArgs && _isDragging)
+        if (_isDragging)
         {
-            var position = mouseArgs.GetPosition(this);
+            var position = e.GetPosition(this);
             SetValueFromPosition(position);
             e.Handled = true;
         }
@@ -422,39 +422,36 @@ public class Slider : Control
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is KeyEventArgs keyArgs)
+        switch (e.Key)
         {
-            switch (keyArgs.Key)
-            {
-                case Key.Left:
-                case Key.Down:
-                    Value -= SmallChange;
-                    e.Handled = true;
-                    break;
-                case Key.Right:
-                case Key.Up:
-                    Value += SmallChange;
-                    e.Handled = true;
-                    break;
-                case Key.PageDown:
-                    Value -= LargeChange;
-                    e.Handled = true;
-                    break;
-                case Key.PageUp:
-                    Value += LargeChange;
-                    e.Handled = true;
-                    break;
-                case Key.Home:
-                    Value = Minimum;
-                    e.Handled = true;
-                    break;
-                case Key.End:
-                    Value = Maximum;
-                    e.Handled = true;
-                    break;
-            }
+            case Key.Left:
+            case Key.Down:
+                Value -= SmallChange;
+                e.Handled = true;
+                break;
+            case Key.Right:
+            case Key.Up:
+                Value += SmallChange;
+                e.Handled = true;
+                break;
+            case Key.PageDown:
+                Value -= LargeChange;
+                e.Handled = true;
+                break;
+            case Key.PageUp:
+                Value += LargeChange;
+                e.Handled = true;
+                break;
+            case Key.Home:
+                Value = Minimum;
+                e.Handled = true;
+                break;
+            case Key.End:
+                Value = Maximum;
+                e.Handled = true;
+                break;
         }
     }
 

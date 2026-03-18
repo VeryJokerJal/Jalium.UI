@@ -86,10 +86,10 @@ public class PointerRoutingTests
             Assert.True(window.CaptureMouse());
             var order = new List<string>();
 
-            window.AddHandler(UIElement.PreviewMouseDownEvent, new RoutedEventHandler((_, _) => order.Add("PreviewMouseDown")));
-            window.AddHandler(UIElement.MouseDownEvent, new RoutedEventHandler((_, _) => order.Add("MouseDown")));
-            window.AddHandler(UIElement.PreviewPointerDownEvent, new RoutedEventHandler((_, _) => order.Add("PreviewPointerDown")));
-            window.AddHandler(UIElement.PointerDownEvent, new RoutedEventHandler((_, _) => order.Add("PointerDown")));
+            window.AddHandler(UIElement.PreviewMouseDownEvent, new Input.MouseButtonEventHandler((_, _) => order.Add("PreviewMouseDown")));
+            window.AddHandler(UIElement.MouseDownEvent, new Input.MouseButtonEventHandler((_, _) => order.Add("MouseDown")));
+            window.AddHandler(UIElement.PreviewPointerDownEvent, new Input.PointerDownEventHandler((_, _) => order.Add("PreviewPointerDown")));
+            window.AddHandler(UIElement.PointerDownEvent, new Input.PointerDownEventHandler((_, _) => order.Add("PointerDown")));
 
             InvokeMouseButtonDown(window, MouseButton.Left, x: 160, y: 200);
 

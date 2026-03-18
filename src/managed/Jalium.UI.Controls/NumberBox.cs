@@ -357,13 +357,13 @@ public class NumberBox : TextBoxBase, IImeSupport
         InputMethod.CompositionEnded += OnImeCompositionEnded;
 
         // Subscribe to focus events
-        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnGotFocusHandler));
-        AddHandler(LostKeyboardFocusEvent, new RoutedEventHandler(OnLostFocusHandler));
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
+        AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnLostFocusHandler));
 
         // Subscribe to preview mouse events for direct spin button handling
         // This ensures spin buttons work even if event routing has issues
-        AddHandler(PreviewMouseDownEvent, new RoutedEventHandler(OnPreviewMouseDownHandler));
-        AddHandler(PreviewMouseUpEvent, new RoutedEventHandler(OnPreviewMouseUpHandler));
+        AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnPreviewMouseDownHandler));
+        AddHandler(PreviewMouseUpEvent, new MouseButtonEventHandler(OnPreviewMouseUpHandler));
     }
 
     /// <inheritdoc />
@@ -374,14 +374,14 @@ public class NumberBox : TextBoxBase, IImeSupport
 
     private RepeatButton? _pressedSpinButton;
 
-    private void OnPreviewMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnPreviewMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled || SpinButtonPlacementMode == NumberBoxSpinButtonPlacementMode.Hidden)
             return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
-            var position = mouseArgs.GetPosition(this);
+            var position = e.GetPosition(this);
 
             // Check if click is in the spin button area
             var spinAction = GetSpinActionAtPosition(position);
@@ -421,12 +421,12 @@ public class NumberBox : TextBoxBase, IImeSupport
         }
     }
 
-    private void OnPreviewMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnPreviewMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
         if (_currentSpinAction == SpinAction.None)
             return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             // Reset button state
             if (_pressedSpinButton != null)
@@ -564,7 +564,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         StepDown();
     }
 
-    private void OnGotFocusHandler(object sender, RoutedEventArgs e)
+    private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         InputMethod.SetTarget(this);
         _isEditing = true;
@@ -572,7 +572,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         InvalidateVisual();
     }
 
-    private void OnLostFocusHandler(object sender, RoutedEventArgs e)
+    private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         if (InputMethod.Current == this)
         {

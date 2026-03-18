@@ -1,4 +1,5 @@
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -130,7 +131,7 @@ public class TitleBarButton : ButtonBase
     /// <summary>
     /// Called when the mouse enters the button.
     /// </summary>
-    protected override void OnMouseEnter(RoutedEventArgs e)
+    protected override void OnMouseEnter(MouseEventArgs e)
     {
         base.OnMouseEnter(e);
         // Redraw to show hover state
@@ -140,7 +141,7 @@ public class TitleBarButton : ButtonBase
     /// <summary>
     /// Called when the mouse leaves the button.
     /// </summary>
-    protected override void OnMouseLeave(RoutedEventArgs e)
+    protected override void OnMouseLeave(MouseEventArgs e)
     {
         base.OnMouseLeave(e);
         // Redraw to remove hover state

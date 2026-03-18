@@ -7,7 +7,7 @@ namespace Jalium.UI.Gpu;
 public static class RenderIR
 {
     // 版本号，用于验证编译产物兼容性
-    public const int Version = 1;
+    public const int Version = 2;
 }
 
 #region Scene Graph Nodes
@@ -1018,6 +1018,11 @@ public enum DrawCommandType : byte
     DrawPath,
 
     /// <summary>
+    /// 绘制路径批次 - 合并多个路径到单次提交
+    /// </summary>
+    DrawPathBatch,
+
+    /// <summary>
     /// 应用效果
     /// </summary>
     ApplyEffect,
@@ -1235,6 +1240,53 @@ public sealed class DrawPathCommand : DrawCommand
     /// 变换索引
     /// </summary>
     public uint TransformIndex { get; init; }
+}
+
+/// <summary>
+/// 路径批次绘制命令 - 将多个路径合并为单次 GPU 提交
+/// 所有路径共享同一全局顶点/索引缓冲区，通过偏移区分。
+/// </summary>
+public sealed class DrawPathBatchCommand : DrawCommand
+{
+    public override DrawCommandType CommandType => DrawCommandType.DrawPathBatch;
+
+    /// <summary>
+    /// 批次中的路径条目（每个路径的缓存索引、材质和变换）
+    /// </summary>
+    public PathBatchEntry[] Entries { get; init; } = [];
+
+    /// <summary>
+    /// 批次中路径的数量
+    /// </summary>
+    public int Count => Entries.Length;
+}
+
+/// <summary>
+/// 路径批次中的单个路径条目
+/// </summary>
+public readonly struct PathBatchEntry
+{
+    /// <summary>
+    /// 路径缓存索引
+    /// </summary>
+    public readonly uint PathCacheIndex;
+
+    /// <summary>
+    /// 材质索引
+    /// </summary>
+    public readonly uint MaterialIndex;
+
+    /// <summary>
+    /// 变换索引
+    /// </summary>
+    public readonly uint TransformIndex;
+
+    public PathBatchEntry(uint pathCacheIndex, uint materialIndex, uint transformIndex)
+    {
+        PathCacheIndex = pathCacheIndex;
+        MaterialIndex = materialIndex;
+        TransformIndex = transformIndex;
+    }
 }
 
 /// <summary>
@@ -1551,12 +1603,19 @@ public readonly struct InteractiveRegion
     /// </summary>
     public readonly uint HandlerIndex;
 
-    public InteractiveRegion(uint nodeId, Rect bounds, InteractionFlags flags, uint handlerIndex)
+    /// <summary>
+    /// 裁剪边界（由祖先 ClipToBounds 元素决定）。
+    /// 如果 IsEmpty 则不应用裁剪。
+    /// </summary>
+    public readonly Rect ClipBounds;
+
+    public InteractiveRegion(uint nodeId, Rect bounds, InteractionFlags flags, uint handlerIndex, Rect clipBounds = default)
     {
         NodeId = nodeId;
         Bounds = bounds;
         Flags = flags;
         HandlerIndex = handlerIndex;
+        ClipBounds = clipBounds;
     }
 }
 
@@ -1668,6 +1727,24 @@ public readonly struct Rect
     }
 
     public static readonly Rect Empty = new(0, 0, 0, 0);
+
+    /// <summary>
+    /// 计算两个矩形的交集。如果不相交则返回 Empty。
+    /// </summary>
+    public Rect Intersect(Rect other)
+    {
+        float x1 = MathF.Max(X, other.X);
+        float y1 = MathF.Max(Y, other.Y);
+        float x2 = MathF.Min(X + Width, other.X + other.Width);
+        float y2 = MathF.Min(Y + Height, other.Y + other.Height);
+
+        if (x2 > x1 && y2 > y1)
+            return new Rect(x1, y1, x2 - x1, y2 - y1);
+
+        return Empty;
+    }
+
+    public bool IsEmpty => Width <= 0 || Height <= 0;
 }
 
 /// <summary>

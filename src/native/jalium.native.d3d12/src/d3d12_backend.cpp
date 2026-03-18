@@ -84,6 +84,31 @@ D3D12Backend::~D3D12Backend() {
     dxgiFactory_.Reset();
 }
 
+void D3D12Backend::ReleasePartialInit() {
+    // Clean up resources allocated during a partially-failed Initialize().
+    // Without this, successful sub-steps (e.g. CreateD3D12Device) would leak
+    // if a later sub-step (e.g. CreateD2DDevice) fails.
+    wicFactory_.Reset();
+    dwriteFactory_.Reset();
+    d2dDevice_.Reset();
+    d2dFactory_.Reset();
+    d3d11On12Device_.Reset();
+    d3d11Context_.Reset();
+    d3d11Device_.Reset();
+    commandQueue_.Reset();
+    device_.Reset();
+    dxgiFactory_.Reset();
+}
+
+JaliumResult D3D12Backend::CheckDeviceStatus() {
+    if (!device_) return JALIUM_ERROR_DEVICE_LOST;
+
+    HRESULT hr = device_->GetDeviceRemovedReason();
+    if (SUCCEEDED(hr)) return JALIUM_OK;
+
+    return JALIUM_ERROR_DEVICE_LOST;
+}
+
 bool D3D12Backend::Initialize(void* preferredWindow) {
     if (initialized_) return true;
 
@@ -92,14 +117,17 @@ bool D3D12Backend::Initialize(void* preferredWindow) {
     }
 
     if (!CreateD2DDevice()) {
+        ReleasePartialInit();
         return false;
     }
 
     if (!CreateDWriteFactory()) {
+        ReleasePartialInit();
         return false;
     }
 
     if (!CreateWICFactory()) {
+        ReleasePartialInit();
         return false;
     }
 

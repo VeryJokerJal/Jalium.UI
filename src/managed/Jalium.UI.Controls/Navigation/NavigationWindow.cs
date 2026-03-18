@@ -371,17 +371,33 @@ public class NavigationWindow : Window
         var panel = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Height = 40
+            Height = 44,
+            VerticalAlignment = VerticalAlignment.Center
         };
 
-        // Back button
-        var backButton = new Button
+        // Helper to create a compact chrome button with consistent styling.
+        Button CreateChromeButton(string glyph, Thickness margin)
         {
-            Content = "\u2190", // Left arrow
-            Width = 40,
-            Height = 40,
-            Margin = new Thickness(4, 0, 4, 0)
-        };
+            return new Button
+            {
+                Content = glyph,
+                Width = 36,
+                Height = 36,
+                MinWidth = 36,
+                MinHeight = 36,
+                Padding = new Thickness(0),
+                Margin = margin,
+                CornerRadius = new CornerRadius(6),
+                Background = Brushes.Transparent,
+                BorderThickness = new Thickness(0),
+                HorizontalContentAlignment = HorizontalAlignment.Center,
+                VerticalContentAlignment = VerticalAlignment.Center,
+                FontSize = 16
+            };
+        }
+
+        // Back button
+        var backButton = CreateChromeButton("\u2190", new Thickness(8, 0, 2, 0));
         backButton.Click += (s, e) =>
         {
             if (CanGoBack)
@@ -392,13 +408,7 @@ public class NavigationWindow : Window
         panel.Children.Add(backButton);
 
         // Forward button
-        var forwardButton = new Button
-        {
-            Content = "\u2192", // Right arrow
-            Width = 40,
-            Height = 40,
-            Margin = new Thickness(0, 0, 4, 0)
-        };
+        var forwardButton = CreateChromeButton("\u2192", new Thickness(0, 0, 2, 0));
         forwardButton.Click += (s, e) =>
         {
             if (CanGoForward)
@@ -409,20 +419,19 @@ public class NavigationWindow : Window
         panel.Children.Add(forwardButton);
 
         // Refresh button
-        var refreshButton = new Button
-        {
-            Content = "\u21BB", // Refresh symbol
-            Width = 40,
-            Height = 40,
-            Margin = new Thickness(0, 0, 4, 0)
-        };
+        var refreshButton = CreateChromeButton("\u21BB", new Thickness(0, 0, 8, 0));
         refreshButton.Click += (s, e) => Refresh();
         panel.Children.Add(refreshButton);
 
-        // Wrap in a border to provide background
+        // Wrap in a border with theme-aware background and bottom divider
         var border = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(255, 45, 45, 48)),
+            Background = TryFindResource("LayerFillColorDefaultBrush") as Brush
+                ?? new SolidColorBrush(Color.FromArgb(0x4C, 0x3A, 0x3A, 0x3A)),
+            BorderBrush = TryFindResource("ControlBorder") as Brush
+                ?? new SolidColorBrush(Color.FromArgb(0x12, 0xFF, 0xFF, 0xFF)),
+            BorderThickness = new Thickness(0, 0, 0, 1),
+            Padding = new Thickness(0, 2, 0, 2),
             Child = panel
         };
 

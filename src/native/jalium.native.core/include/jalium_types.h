@@ -39,11 +39,9 @@ typedef enum JaliumResult {
 typedef enum JaliumBackend {
     JALIUM_BACKEND_AUTO = 0,        ///< Automatically select the best available backend
     JALIUM_BACKEND_D3D12 = 1,       ///< Direct3D 12
-    JALIUM_BACKEND_D3D11 = 2,       ///< Direct3D 11 (future)
-    JALIUM_BACKEND_VULKAN = 3,      ///< Vulkan (future)
-    JALIUM_BACKEND_OPENGL = 4,      ///< OpenGL (future)
-    JALIUM_BACKEND_METAL = 5,       ///< Metal (future, macOS/iOS)
-    JALIUM_BACKEND_SOFTWARE = 99    ///< Software rasterizer (future)
+    JALIUM_BACKEND_VULKAN = 3,      ///< Vulkan
+    JALIUM_BACKEND_METAL = 5,       ///< Metal (macOS/iOS)
+    JALIUM_BACKEND_SOFTWARE = 99    ///< Software rasterizer
 } JaliumBackend;
 
 /// Host platform identifier for native window/surface handles.

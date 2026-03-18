@@ -1,5 +1,6 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Tests;
@@ -350,5 +351,40 @@ public class TextBoxTests
 
         // Assert
         Assert.True(textBox.DetectUrls);
+    }
+
+    [Fact]
+    public void TextBox_DeleteSelection_ShouldBeUndoable()
+    {
+        // Arrange
+        var textBox = new TextBox { Text = "Hello World" };
+        textBox.SelectAll();
+
+        // Act
+        textBox.RaiseEvent(new KeyEventArgs(UIElement.KeyDownEvent, Key.Delete, ModifierKeys.None, isDown: true, isRepeat: false, timestamp: 0));
+
+        // Assert
+        Assert.Equal(string.Empty, textBox.Text);
+        Assert.True(textBox.CanUndo);
+
+        textBox.Undo();
+
+        Assert.Equal("Hello World", textBox.Text);
+    }
+
+    [Fact]
+    public void TextBox_CtrlZ_ShouldRestoreDeletedSelection()
+    {
+        // Arrange
+        var textBox = new TextBox { Text = "Hello World" };
+        textBox.SelectAll();
+
+        textBox.RaiseEvent(new KeyEventArgs(UIElement.KeyDownEvent, Key.Delete, ModifierKeys.None, isDown: true, isRepeat: false, timestamp: 0));
+
+        // Act
+        textBox.RaiseEvent(new KeyEventArgs(UIElement.KeyDownEvent, Key.Z, ModifierKeys.Control, isDown: true, isRepeat: false, timestamp: 1));
+
+        // Assert
+        Assert.Equal("Hello World", textBox.Text);
     }
 }

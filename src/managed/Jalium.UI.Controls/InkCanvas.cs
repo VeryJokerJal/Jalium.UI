@@ -111,14 +111,14 @@ public class InkCanvas : FrameworkElement
         // Reduce anti-aliasing for sharper strokes
         RenderOptions.SetEdgeMode(this, EdgeMode.Aliased);
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
 
-        AddHandler(PreviewStylusDownEvent, new RoutedEventHandler(OnPreviewStylusInputHandler));
-        AddHandler(PreviewStylusMoveEvent, new RoutedEventHandler(OnPreviewStylusInputHandler));
-        AddHandler(PreviewStylusUpEvent, new RoutedEventHandler(OnPreviewStylusInputHandler));
+        AddHandler(PreviewStylusDownEvent, new Input.StylusDownEventHandler((s, e) => OnPreviewStylusInputHandler(s, e)));
+        AddHandler(PreviewStylusMoveEvent, new Input.StylusEventHandler(OnPreviewStylusInputHandler));
+        AddHandler(PreviewStylusUpEvent, new Input.StylusEventHandler(OnPreviewStylusInputHandler));
     }
 
     #endregion
@@ -284,7 +284,7 @@ public class InkCanvas : FrameworkElement
             dc.DrawRectangle(background, null, new Rect(0, 0, ActualWidth, ActualHeight));
         }
 
-        // Draw all committed strokes
+        // Draw committed strokes (each stroke caches its own geometry internally)
         Strokes?.Draw(dc);
 
         // Draw the current stroke being drawn
@@ -298,12 +298,12 @@ public class InkCanvas : FrameworkElement
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is not MouseButtonEventArgs args || args.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
             return;
 
-        var position = args.GetPosition(this);
+        var position = e.GetPosition(this);
 
         switch (EditingMode)
         {
@@ -324,19 +324,16 @@ public class InkCanvas : FrameworkElement
         e.Handled = true;
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (e is not MouseEventArgs args)
-            return;
-
-        var position = args.GetPosition(this);
+        var position = e.GetPosition(this);
 
         if (_isDrawing && EditingMode == InkCanvasEditingMode.Ink)
         {
             ContinueDrawing(position);
             e.Handled = true;
         }
-        else if (args.LeftButton == MouseButtonState.Pressed)
+        else if (e.LeftButton == MouseButtonState.Pressed)
         {
             switch (EditingMode)
             {
@@ -349,9 +346,9 @@ public class InkCanvas : FrameworkElement
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is not MouseButtonEventArgs args || args.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
             return;
 
         if (_isDrawing && EditingMode == InkCanvasEditingMode.Ink)
@@ -361,7 +358,7 @@ public class InkCanvas : FrameworkElement
         }
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         if (_isDrawing && EditingMode == InkCanvasEditingMode.Ink)
         {
@@ -369,13 +366,8 @@ public class InkCanvas : FrameworkElement
         }
     }
 
-    private void OnPreviewStylusInputHandler(object sender, RoutedEventArgs e)
+    private void OnPreviewStylusInputHandler(object sender, Input.StylusEventArgs e)
     {
-        if (e is not StylusEventArgs)
-        {
-            return;
-        }
-
         if (EditingMode is InkCanvasEditingMode.Ink or InkCanvasEditingMode.EraseByStroke or InkCanvasEditingMode.EraseByPoint)
         {
             e.Handled = true;
@@ -529,7 +521,7 @@ public class InkCanvas : FrameworkElement
 
     private static void OnDefaultDrawingAttributesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is InkCanvas canvas)
+        if (d is InkCanvas canvas && canvas._dynamicRenderer != null)
         {
             canvas._dynamicRenderer.DrawingAttributes = canvas.DefaultDrawingAttributes.Clone();
         }
@@ -549,8 +541,8 @@ public class InkCanvas : FrameworkElement
                 canvas.InvalidateVisual();
             }
 
-            canvas._dynamicRenderer.Reset();
-            canvas._inkCollectionStylusPlugIn.Reset();
+            canvas._dynamicRenderer?.Reset();
+            canvas._inkCollectionStylusPlugIn?.Reset();
             canvas.EditingModeChanged?.Invoke(canvas, new RoutedEventArgs());
         }
     }

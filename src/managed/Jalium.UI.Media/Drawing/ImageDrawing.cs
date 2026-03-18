@@ -38,7 +38,7 @@ public sealed class ImageDrawing : Drawing
     public override Rect Bounds => Rect;
 
     /// <inheritdoc />
-    internal override void RenderTo(DrawingContext context)
+    public override void RenderTo(DrawingContext context)
     {
         if (ImageSource != null && !Rect.IsEmpty)
         {

@@ -92,12 +92,12 @@ public class AutoCompleteBoxTests
             var popupRoot = GetPrivateField<PopupRoot>(popup, "_popupRoot");
             Assert.NotNull(popupRoot);
 
-            popupRoot.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, popupRoot));
+            popupRoot.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = popupRoot });
             Assert.True(popup.IsMouseOver);
 
             var lostFocusHandler = typeof(AutoCompleteBox).GetMethod("OnLostFocusHandler", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(lostFocusHandler);
-            lostFocusHandler!.Invoke(autoComplete, new object[] { autoComplete, new RoutedEventArgs(UIElement.LostKeyboardFocusEvent, autoComplete) });
+            lostFocusHandler!.Invoke(autoComplete, new object[] { autoComplete, new KeyboardFocusChangedEventArgs(UIElement.LostKeyboardFocusEvent) });
 
             Assert.True(autoComplete.IsDropDownOpen);
         }

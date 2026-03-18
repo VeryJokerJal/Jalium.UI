@@ -1,3 +1,4 @@
+using Jalium.UI.Input;
 using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
@@ -16,10 +17,10 @@ public class MenuItemSelectionTests
 
         Assert.False(item.IsSelected);
 
-        item.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, item));
+        item.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = item });
         Assert.True(item.IsSelected);
 
-        item.RaiseEvent(new RoutedEventArgs(UIElement.MouseLeaveEvent, item));
+        item.RaiseEvent(new MouseEventArgs(UIElement.MouseLeaveEvent) { Source = item });
         Assert.False(item.IsSelected);
 
         var updateFocusMethod = typeof(UIElement).GetMethod("UpdateIsKeyboardFocused", BindingFlags.Instance | BindingFlags.NonPublic);
@@ -67,12 +68,12 @@ public class MenuItemSelectionTests
             var flyoutHover = Assert.IsAssignableFrom<Brush>(app.Resources["MenuFlyoutItemBackgroundHover"]);
 
             Assert.Equal(MenuItemRole.TopLevelHeader, topLevelItem.Role);
-            topLevelItem.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, topLevelItem));
+            topLevelItem.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = topLevelItem });
             Assert.True(topLevelItem.IsSelected);
             Assert.Same(menuBarHover, topLevelItem.Background);
 
             Assert.Equal(MenuItemRole.SubmenuItem, submenuItem.Role);
-            submenuItem.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, submenuItem));
+            submenuItem.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = submenuItem });
             Assert.True(submenuItem.IsSelected);
             Assert.Same(flyoutHover, submenuItem.Background);
         }

@@ -36,11 +36,30 @@ public sealed class InputManager
 
     /// <summary>
     /// Processes the specified input synchronously.
+    /// Returns false if the input was canceled during pre-processing.
     /// </summary>
     public bool ProcessInput(InputEventArgs input)
     {
+        MostRecentInputTimestamp = Environment.TickCount;
+
+        // Stage 1: Notify listeners that input is about to be processed
         PreNotifyInput?.Invoke(this, new NotifyInputEventArgs(input));
+
+        // Stage 2: Pre-process — subscribers can inspect and cancel the input
+        var preProcessArgs = new PreProcessInputEventArgs(input);
+        PreProcessInput?.Invoke(this, preProcessArgs);
+
+        if (preProcessArgs.Canceled)
+        {
+            return false;
+        }
+
+        // Stage 3: Post-process — subscribers can react to the processed input
+        PostProcessInput?.Invoke(this, new ProcessInputEventArgs(input));
+
+        // Stage 4: Final notification after all processing is complete
         PostNotifyInput?.Invoke(this, new NotifyInputEventArgs(input));
+
         return true;
     }
 
@@ -180,6 +199,19 @@ public sealed class ManipulationStartingEventArgs : InputEventArgs
 
     /// <summary>Gets or sets a value indicating whether manipulation is single-touch only.</summary>
     public bool IsSingleTouchEnabled { get; set; } = true;
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is ManipulationStartingEventHandler typedHandler)
+        {
+            typedHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>
@@ -192,6 +224,19 @@ public sealed class ManipulationBoundaryFeedbackEventArgs : InputEventArgs
 
     /// <summary>Gets the manipulation container.</summary>
     public UIElement? ManipulationContainer { get; init; }
+
+    /// <inheritdoc />
+    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is ManipulationBoundaryFeedbackEventHandler typedHandler)
+        {
+            typedHandler(target, this);
+        }
+        else
+        {
+            base.InvokeEventHandler(handler, target);
+        }
+    }
 }
 
 /// <summary>

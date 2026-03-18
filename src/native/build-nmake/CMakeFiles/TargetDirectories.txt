@@ -6,6 +6,12 @@ D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.core/
 D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.d3d12/CMakeFiles/jalium.native.d3d12.dir
 D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.d3d12/CMakeFiles/edit_cache.dir
 D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.d3d12/CMakeFiles/rebuild_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.vulkan/CMakeFiles/jalium.native.vulkan.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.vulkan/CMakeFiles/edit_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.vulkan/CMakeFiles/rebuild_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.metal/CMakeFiles/jalium.native.metal.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.metal/CMakeFiles/edit_cache.dir
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.metal/CMakeFiles/rebuild_cache.dir
 D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.browser/CMakeFiles/jalium.native.browser.dir
 D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.browser/CMakeFiles/edit_cache.dir
 D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.browser/CMakeFiles/rebuild_cache.dir

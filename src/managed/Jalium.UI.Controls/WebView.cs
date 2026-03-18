@@ -422,6 +422,18 @@ public partial class WebView : FrameworkElement, IDisposable
     private void OnPositionSyncTick(object? sender, EventArgs e)
     {
         UpdateHostWindowPosition();
+
+        // The WebView2 browser process may update its DComp visual tree at any time
+        // (page load, CSS animation, JavaScript DOM changes, video playback).
+        // Those changes only become visible after the hosting app's DComp device commits,
+        // which happens inside RenderTarget.EndDraw.  Invalidating the WebView element
+        // ensures a frame render (and commit) occurs each tick so browser content stays
+        // in sync.  The actual re-render is lightweight — just a clip-aware background
+        // fill + transparent punch-through for the WebView area.
+        if (_isInitialized && _controller != null)
+        {
+            InvalidateVisual();
+        }
     }
 
     private void EnsurePositionSyncTimer()
@@ -795,6 +807,10 @@ public partial class WebView : FrameworkElement, IDisposable
         UpdateNavigationState(_coreWebView2?.CanGoBack ?? false, _coreWebView2?.CanGoForward ?? false);
         NavigationCompleted?.Invoke(this,
             new WebViewNavigationCompletedEventArgs(e.IsSuccess, e.HttpStatusCode));
+
+        // Trigger a frame render so the DComp device commits and the browser's
+        // newly-rendered content becomes visible through the transparent punch-through.
+        InvalidateVisual();
     }
 
     private void OnCoreDocumentTitleChanged(object? sender, object e)
@@ -831,6 +847,7 @@ public partial class WebView : FrameworkElement, IDisposable
     private void OnCoreContentLoading(object? sender, CoreWebView2ContentLoadingEventArgs e)
     {
         ContentLoading?.Invoke(this, new WebViewContentLoadingEventArgs(true));
+        InvalidateVisual();
     }
 
     private void OnCoreProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs e)

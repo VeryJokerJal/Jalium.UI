@@ -83,7 +83,7 @@
                     <Grid Width="10" Height="10" HorizontalAlignment="Center" VerticalAlignment="Center">
                         <!-- Minimize Glyph (horizontal line) -->
                         <Path Name="MinimizeGlyph"
-                              Data="M 0,0 L 10,0"
+                              Data="M 1,0 L 9,0"
                               Stroke="{TemplateBinding Foreground}"
                               StrokeThickness="1"
                               Stretch="None"
@@ -92,7 +92,7 @@
 
                         <!-- Maximize Glyph (square) -->
                         <Path Name="MaximizeGlyph"
-                              Data="M 0,0 L 10,0 L 10,10 L 0,10 Z"
+                              Data="M 1,1 L 9,1 L 9,9 L 1,9 Z"
                               Stroke="{TemplateBinding Foreground}"
                               StrokeThickness="1"
                               Stretch="None"
@@ -101,12 +101,12 @@
                         <!-- Restore Glyph (two overlapping squares) -->
                         <Grid Name="RestoreGlyph" Width="10" Height="10" Visibility="Collapsed">
                             <!-- Back square (top-right) -->
-                            <Path Data="M 2,0 L 10,0 L 10,8 L 8,8 L 8,2 L 2,2 Z"
+                            <Path Data="M 3,1 L 9,1 L 9,7 L 7,7 L 7,3 L 3,3 Z"
                                   Stroke="{TemplateBinding Foreground}"
                                   StrokeThickness="1"
                                   Stretch="None" />
                             <!-- Front square (bottom-left) -->
-                            <Path Data="M 0,2 L 8,2 L 8,10 L 0,10 Z"
+                            <Path Data="M 1,3 L 7,3 L 7,9 L 1,9 Z"
                                   Stroke="{TemplateBinding Foreground}"
                                   StrokeThickness="1"
                                   Stretch="None"
@@ -115,7 +115,7 @@
 
                         <!-- Close Glyph (X shape) -->
                         <Path Name="CloseGlyph"
-                              Data="M 0,0 L 10,10 M 10,0 L 0,10"
+                              Data="M 1,1 L 9,9 M 9,1 L 1,9"
                               Stroke="{TemplateBinding Foreground}"
                               StrokeThickness="1"
                               Stretch="None"

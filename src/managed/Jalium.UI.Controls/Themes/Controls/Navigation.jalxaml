@@ -11,7 +11,7 @@
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="VerticalContentAlignment" Value="Stretch" />
-        <Setter Property="PaneBackground" Value="{DynamicResource ControlBackground}" />
+        <Setter Property="PaneBackground" Value="{DynamicResource LayerFillColorDefaultBrush}" />
         <Setter Property="ContentBackground" Value="{DynamicResource WindowBackground}" />
         <Setter Property="PaneHeader" Value="{x:Null}" />
         <Setter Property="PaneFooter" Value="{x:Null}" />
@@ -26,7 +26,9 @@
                     <Border Name="PART_PaneContainer"
                             Grid.Column="0"
                             Background="{TemplateBinding PaneBackground}"
-                            Padding="0,0,6,0">
+                            BorderBrush="{DynamicResource ControlBorder}"
+                            BorderThickness="0,0,1,0"
+                            Padding="0,8,0,0">
                         <Grid ClipToBounds="True">
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
@@ -37,6 +39,8 @@
                             <Border Name="PART_PaneHeaderHost"
                                     Grid.Row="0"
                                     HorizontalAlignment="Stretch"
+                                    Padding="16,8,16,10"
+                                    Margin="0,0,0,2"
                                     Visibility="Collapsed" />
 
                             <ScrollViewer Name="PART_PaneScrollViewer"
@@ -46,17 +50,24 @@
                                           HorizontalScrollBarVisibility="Disabled"
                                           ClipToBounds="True">
                                 <StackPanel Name="PART_MenuItemsHost"
-                                            Orientation="Vertical" />
+                                            Orientation="Vertical"
+                                            Margin="0,2,0,2" />
                             </ScrollViewer>
 
                             <Border Name="PART_PaneFooterRegion"
                                     Grid.Row="2"
                                     HorizontalAlignment="Stretch"
+                                    Margin="0,2,0,6"
                                     Visibility="Collapsed">
                                 <StackPanel Orientation="Vertical">
+                                    <!-- Footer separator line -->
+                                    <Border Background="{DynamicResource ControlBorder}"
+                                            Height="1"
+                                            Margin="18,0,18,6" />
                                     <StackPanel Name="PART_FooterItemsHost"
                                                 Orientation="Vertical" />
                                     <Border Name="PART_PaneFooterHost"
+                                            Padding="16,4,16,4"
                                             Visibility="Collapsed" />
                                 </StackPanel>
                             </Border>
@@ -83,8 +94,8 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="Margin" Value="4,2,4,2" />
-        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Margin" Value="6,1,6,1" />
+        <Setter Property="CornerRadius" Value="6" />
         <Setter Property="Template">
             <ControlTemplate TargetType="NavigationViewItem">
                 <StackPanel>
@@ -93,7 +104,7 @@
                         <Border Name="PART_ItemBorder"
                                 Background="{TemplateBinding Background}"
                                 CornerRadius="{TemplateBinding CornerRadius}"
-                                Height="36">
+                                Height="40">
                             <Grid>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="Auto" />
@@ -102,21 +113,21 @@
                                     <ColumnDefinition Width="Auto" />
                                 </Grid.ColumnDefinitions>
 
-                                <!-- Selection Indicator -->
+                                <!-- Selection Indicator (pill bar) -->
                                 <Border Name="PART_SelectionIndicator"
                                         Grid.Column="0"
                                         Width="3"
-                                        Height="16"
+                                        Height="18"
                                         CornerRadius="1.5"
                                         Background="{DynamicResource AccentBrush}"
-                                        Margin="4,0,0,0"
+                                        Margin="5,0,0,0"
                                         VerticalAlignment="Center"
                                         Visibility="Collapsed" />
 
                                 <!-- Indent Spacer -->
                                 <Border Name="PART_IndentSpacer"
                                         Grid.Column="1"
-                                        Width="12" />
+                                        Width="14" />
 
                                 <!-- Content -->
                                 <ContentPresenter Grid.Column="2"
@@ -132,7 +143,7 @@
                                       Height="8"
                                       Stretch="Uniform"
                                       VerticalAlignment="Center"
-                                      Margin="0,0,12,0"
+                                      Margin="0,0,14,0"
                                       Visibility="Collapsed" />
                             </Grid>
                         </Border>
@@ -161,14 +172,14 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource SelectionBackground}" />
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource SelectionBackgroundWeak}" />
                 <Setter TargetName="PART_SelectionIndicator" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource SubtleFillColorTertiaryBrush}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
                 <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
@@ -179,7 +190,7 @@
                     <Condition Property="IsSelected" Value="True" />
                     <Condition Property="IsMouseOver" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource AccentBrushHover}" />
+                <Setter TargetName="PART_ItemBorder" Property="Background" Value="{DynamicResource SelectionBackground}" />
             </MultiTrigger>
             <MultiTrigger>
                 <MultiTrigger.Conditions>
@@ -198,7 +209,7 @@
     <Style TargetType="NavigationViewItemHeader">
         <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="Height" Value="40" />
-        <Setter Property="Margin" Value="12,8,12,4" />
+        <Setter Property="Margin" Value="14,12,14,4" />
     </Style>
 
     <!-- ============================================== -->
@@ -207,7 +218,7 @@
     <Style TargetType="NavigationViewItemSeparator">
         <Setter Property="Background" Value="{DynamicResource ControlBorder}" />
         <Setter Property="Height" Value="1" />
-        <Setter Property="Margin" Value="16,8,16,8" />
+        <Setter Property="Margin" Value="18,6,18,6" />
     </Style>
 
 </ResourceDictionary>

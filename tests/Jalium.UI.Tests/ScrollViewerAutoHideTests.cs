@@ -54,7 +54,7 @@ public class ScrollViewerAutoHideTests
         var verticalBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
         Assert.True(verticalBar.IsThumbSlim);
 
-        verticalBar.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, verticalBar));
+        verticalBar.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = verticalBar });
 
         Assert.Equal(Visibility.Visible, verticalBar.Visibility);
         Assert.False(verticalBar.IsThumbSlim);
@@ -66,10 +66,10 @@ public class ScrollViewerAutoHideTests
         var viewer = CreateConfiguredViewer(autoHideEnabled: true, verticalVisibility: ScrollBarVisibility.Auto);
         var verticalBar = GetPrivateField<ScrollBar>(viewer, "_verticalScrollBar");
 
-        verticalBar.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, verticalBar));
+        verticalBar.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = verticalBar });
         Assert.False(verticalBar.IsThumbSlim);
 
-        verticalBar.RaiseEvent(new RoutedEventArgs(UIElement.MouseLeaveEvent, verticalBar));
+        verticalBar.RaiseEvent(new MouseEventArgs(UIElement.MouseLeaveEvent) { Source = verticalBar });
 
         Assert.Equal(Visibility.Visible, verticalBar.Visibility);
         Assert.False(verticalBar.IsThumbSlim);

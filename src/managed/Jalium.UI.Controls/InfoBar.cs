@@ -214,7 +214,7 @@ public class InfoBar : ContentControl
     /// </summary>
     public InfoBar()
     {
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
     }
 
     #endregion
@@ -246,11 +246,11 @@ public class InfoBar : ContentControl
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
-            var position = mouseArgs.GetPosition(this);
+            var position = e.GetPosition(this);
 
             // Check if click is on close button
             if (IsClosable && _closeButtonRect.Contains(position))

@@ -315,8 +315,14 @@ C:/Program Files (x86)/Windows Kits/10/include/10.0.26100.0/shared/dcomptypes.h
 C:/Program Files (x86)/Windows Kits/10/include/10.0.26100.0/um/dcompanimation.h
 D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/stack
 D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/deque
+D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/unordered_map
+D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/xhash
+D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/cmath
+D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/list
 D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/vector
 D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/__msvc_bit_utils.hpp
+D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/xbit_ops.h
+D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/xnode_handle.h
 D:/Users/suppe/source/repos/Jalium.UI/src/native/jalium.native.d3d12/include/d3d12_resources.h
 D:/Users/suppe/source/repos/Jalium.UI/src/native/jalium.native.d3d12/include/liquid_glass_effects.h
 C:/Program Files (x86)/Windows Kits/10/include/10.0.26100.0/um/d2d1effectauthor.h
@@ -326,7 +332,6 @@ C:/Program Files (x86)/Windows Kits/10/include/10.0.26100.0/um/d3d11shader.h
 C:/Program Files (x86)/Windows Kits/10/include/10.0.26100.0/um/d3d12shader.h
 D:/Users/suppe/source/repos/Jalium.UI/src/native/jalium.native.d3d12/include/transition_shader_effect.h
 D:/Users/suppe/source/repos/Jalium.UI/src/native/jalium.native.d3d12/include/d3dx12.h
-D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/cmath
 D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/algorithm
 D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/__msvc_heap_algorithms.hpp
 D:/Program Files/Microsoft Visual Studio/18/Insiders/VC/Tools/MSVC/14.50.35717/include/__msvc_minmax.hpp

@@ -73,7 +73,7 @@ public class StatusBar : ItemsControl
     /// <inheritdoc />
     protected override void PrepareContainerForItem(FrameworkElement element, object item)
     {
-        if (element is StatusBarItem statusBarItem)
+        if (element is StatusBarItem statusBarItem && !ReferenceEquals(statusBarItem, item))
         {
             statusBarItem.Content = item;
         }

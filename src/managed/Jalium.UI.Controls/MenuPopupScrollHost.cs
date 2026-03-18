@@ -143,19 +143,14 @@ internal sealed class MenuPopupScrollHost : Control
         UpdateScrollButtonState();
     }
 
-    private void OnMouseWheelHandler(object sender, RoutedEventArgs e)
+    private void OnMouseWheelHandler(object sender, Input.MouseWheelEventArgs e)
     {
-        if (e is not MouseWheelEventArgs wheelArgs)
+        if (!_isOverflowing || e.Delta == 0)
         {
             return;
         }
 
-        if (!_isOverflowing || wheelArgs.Delta == 0)
-        {
-            return;
-        }
-
-        var notches = wheelArgs.Delta / WheelNotch;
+        var notches = e.Delta / WheelNotch;
         if (Math.Abs(notches) < double.Epsilon)
         {
             return;
@@ -163,7 +158,7 @@ internal sealed class MenuPopupScrollHost : Control
 
         var delta = -notches * ScrollStepPerClick;
         _scrollViewer.ScrollToVerticalOffset(_scrollViewer.VerticalOffset + delta);
-        wheelArgs.Handled = true;
+        e.Handled = true;
     }
 
     private void ScrollBy(double delta)

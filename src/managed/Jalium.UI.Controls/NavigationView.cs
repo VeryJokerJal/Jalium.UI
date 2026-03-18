@@ -41,7 +41,7 @@ public class NavigationView : ContentControl
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PaneBackgroundProperty =
         DependencyProperty.Register(nameof(PaneBackground), typeof(Brush), typeof(NavigationView),
-            new PropertyMetadata(new SolidColorBrush(Color.FromRgb(32, 32, 32)), OnPaneBackgroundChanged));
+            new PropertyMetadata(new SolidColorBrush(Color.FromArgb(0x4C, 0x3A, 0x3A, 0x3A)), OnPaneBackgroundChanged));
 
     /// <summary>
     /// Identifies the ContentBackground dependency property.
@@ -649,18 +649,13 @@ public class NavigationView : ContentControl
         if (_paneHeaderHost == null || _paneFooterRegion == null)
             return;
 
+        // Let header/footer be transparent so they inherit the pane background
+        // seamlessly instead of applying a separate acrylic layer that causes
+        // a visible color mismatch.
         _paneHeaderHost.Background = null;
+        _paneHeaderHost.BackdropEffect = null;
         _paneFooterRegion.Background = null;
-        _paneHeaderHost.BackdropEffect = CreatePaneRegionBlurEffect(PaneBackground);
-        _paneFooterRegion.BackdropEffect = CreatePaneRegionBlurEffect(PaneBackground);
-    }
-
-    private static IBackdropEffect CreatePaneRegionBlurEffect(Brush? paneBackground)
-    {
-        var tint = paneBackground is SolidColorBrush solid
-            ? solid.Color
-            : Color.FromRgb(30, 30, 36);
-        return new AcrylicEffect(tint, tintOpacity: 0.72f, blurRadius: 20f);
+        _paneFooterRegion.BackdropEffect = null;
     }
 
     private void EnsureTemplatePartsReady()

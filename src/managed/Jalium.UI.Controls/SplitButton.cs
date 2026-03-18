@@ -92,8 +92,8 @@ public class SplitButton : ContentControl
         UseTemplateContentManagement();
         Focusable = true;
 
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(KeyUpEvent, new RoutedEventHandler(OnKeyUpHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(KeyUpEvent, new KeyEventHandler(OnKeyUpHandler));
     }
 
     /// <inheritdoc />
@@ -217,45 +217,45 @@ public class SplitButton : ContentControl
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (!IsEnabled || e is not KeyEventArgs keyArgs)
+        if (!IsEnabled)
             return;
 
-        if (keyArgs.Key == Key.Space || keyArgs.Key == Key.Enter)
+        if (e.Key == Key.Space || e.Key == Key.Enter)
         {
             _isKeyDown = true;
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
     }
 
-    private void OnKeyUpHandler(object sender, RoutedEventArgs e)
+    private void OnKeyUpHandler(object sender, KeyEventArgs e)
     {
-        if (!IsEnabled || e is not KeyEventArgs keyArgs)
+        if (!IsEnabled)
             return;
 
-        if (keyArgs.Key == Key.Space || keyArgs.Key == Key.Enter)
+        if (e.Key == Key.Space || e.Key == Key.Enter)
         {
             if (!_isKeyDown)
                 return;
 
             _isKeyDown = false;
             InvokePrimaryAction(executeCommand: true);
-            keyArgs.Handled = true;
+            e.Handled = true;
             return;
         }
 
-        if (keyArgs.Key == Key.Down && keyArgs.IsAltDown)
+        if (e.Key == Key.Down && e.IsAltDown)
         {
             OpenFlyout();
-            keyArgs.Handled = true;
+            e.Handled = true;
             return;
         }
 
-        if (keyArgs.Key == Key.F4)
+        if (e.Key == Key.F4)
         {
             OpenFlyout();
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
     }
 

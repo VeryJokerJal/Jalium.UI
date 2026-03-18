@@ -42,6 +42,18 @@ public class BundleSerializerCompatibilityTests
         Assert.Equal(bundle.DrawCommands.Length, loaded.DrawCommands.Length);
     }
 
+    [Fact]
+    public void Load_ShouldUpgradeVersion1InteractiveRegionsWithoutClipBounds()
+    {
+        var bytes = WriteLegacyVersion1Bundle();
+
+        var loaded = BundleSerializer.Load(bytes);
+
+        Assert.Equal(RenderIR.Version, loaded.Version);
+        Assert.Single(loaded.InteractiveRegions);
+        Assert.True(loaded.InteractiveRegions[0].ClipBounds.IsEmpty);
+    }
+
     private static CompiledUIBundle CreateTestBundle()
     {
         return new CompiledUIBundle
@@ -84,5 +96,124 @@ public class BundleSerializerCompatibilityTests
             InteractiveRegions = [new InteractiveRegion(1, new GpuRect(0, 0, 100, 100), InteractionFlags.Click, 0)],
             StateTransitions = []
         };
+    }
+
+    private static byte[] WriteLegacyVersion1Bundle()
+    {
+        const byte nodeTypeRect = 1;
+        const byte cmdTypeDrawRectBatch = 5;
+        const byte cmdTypeSubmit = 11;
+
+        var bundle = CreateTestBundle();
+        var rect = Assert.IsType<RectNode>(bundle.Nodes[0]);
+        var drawRect = Assert.IsType<DrawRectBatchCommand>(bundle.DrawCommands[0]);
+
+        using var stream = new MemoryStream();
+        using var writer = new BinaryWriter(stream, System.Text.Encoding.UTF8, leaveOpen: true);
+
+        writer.Write("JUIB"u8);
+        writer.Write((ushort)1);
+
+        writer.Write(bundle.Nodes.Length);
+        writer.Write(nodeTypeRect);
+        writer.Write(rect.Id);
+        writer.Write(rect.ParentId);
+        writer.Write(rect.TransformIndex);
+        writer.Write(rect.MaterialIndex);
+        writer.Write(rect.ClipIndex);
+        writer.Write(rect.IsVisible);
+        writer.Write(rect.ZIndex);
+        WriteRect(writer, rect.Bounds);
+        WriteCornerRadius(writer, rect.CornerRadius);
+        WriteThickness(writer, rect.BorderThickness);
+
+        writer.Write(bundle.Materials.Length);
+        foreach (var material in bundle.Materials)
+        {
+            writer.Write(material.BackgroundColor);
+            writer.Write(material.BorderColor);
+            writer.Write(material.ForegroundColor);
+            writer.Write(material.GradientIndex);
+            writer.Write(material.Opacity);
+            writer.Write((byte)material.BlendMode);
+        }
+
+        writer.Write(bundle.Gradients.Length);
+        writer.Write(bundle.GradientStops.Length);
+
+        writer.Write(bundle.Curves.Length);
+        foreach (var curve in bundle.Curves)
+        {
+            writer.Write((byte)curve.Easing);
+            writer.Write(curve.P1X);
+            writer.Write(curve.P1Y);
+            writer.Write(curve.P2X);
+            writer.Write(curve.P2Y);
+            writer.Write(curve.DurationMs);
+            writer.Write(curve.DelayMs);
+            writer.Write(curve.RepeatCount);
+            writer.Write(curve.AutoReverse);
+        }
+
+        writer.Write(bundle.AnimationTargets.Length);
+
+        writer.Write(bundle.Transforms.Length);
+        foreach (var transform in bundle.Transforms)
+        {
+            writer.Write(transform);
+        }
+
+        writer.Write(bundle.AnimationValues.Length);
+        writer.Write(bundle.AnimationValues);
+
+        writer.Write(bundle.DrawCommands.Length);
+        writer.Write(cmdTypeDrawRectBatch);
+        writer.Write(drawRect.InstanceBufferOffset);
+        writer.Write(drawRect.InstanceCount);
+        writer.Write(drawRect.TextureIndex);
+        writer.Write(cmdTypeSubmit);
+
+        writer.Write(bundle.Textures.Length);
+        writer.Write(bundle.GlyphAtlases.Length);
+        writer.Write(bundle.PathCaches.Length);
+
+        writer.Write(bundle.InteractiveRegions.Length);
+        foreach (var region in bundle.InteractiveRegions)
+        {
+            writer.Write(region.NodeId);
+            WriteRect(writer, region.Bounds);
+            writer.Write((byte)region.Flags);
+            writer.Write(region.HandlerIndex);
+        }
+
+        writer.Write(bundle.StateTransitions.Length);
+        writer.Write(bundle.BackdropFilterParams.Length);
+
+        writer.Flush();
+        return stream.ToArray();
+    }
+
+    private static void WriteRect(BinaryWriter writer, GpuRect rect)
+    {
+        writer.Write(rect.X);
+        writer.Write(rect.Y);
+        writer.Write(rect.Width);
+        writer.Write(rect.Height);
+    }
+
+    private static void WriteCornerRadius(BinaryWriter writer, GpuCornerRadius cornerRadius)
+    {
+        writer.Write(cornerRadius.TopLeft);
+        writer.Write(cornerRadius.TopRight);
+        writer.Write(cornerRadius.BottomRight);
+        writer.Write(cornerRadius.BottomLeft);
+    }
+
+    private static void WriteThickness(BinaryWriter writer, GpuThickness thickness)
+    {
+        writer.Write(thickness.Left);
+        writer.Write(thickness.Top);
+        writer.Write(thickness.Right);
+        writer.Write(thickness.Bottom);
     }
 }

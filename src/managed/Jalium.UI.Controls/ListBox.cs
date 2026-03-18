@@ -81,8 +81,8 @@ public class ListBox : Selector
         }
 
         // Register input event handlers
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     #endregion
@@ -114,8 +114,16 @@ public class ListBox : Selector
 
         if (element is ListBoxItem listBoxItem)
         {
-            listBoxItem.Content = item;
-            listBoxItem.ContentTemplate = ItemTemplate;
+            // When the item IS its own container, do not assign it as its own
+            // Content — the template's ContentPresenter would try to parent the
+            // element that is already in the items panel, causing a
+            // "Visual already has a parent" exception.
+            if (!ReferenceEquals(element, item))
+            {
+                listBoxItem.Content = item;
+                listBoxItem.ContentTemplate = ItemTemplate;
+            }
+
             listBoxItem.ParentListBox = this;
             var logicalValue = GetSelectionValueFromLogicalItem(item);
 
@@ -483,27 +491,26 @@ public class ListBox : Selector
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         Focus();
 
         // Begin drag-select tracking for Extended mode
-        if (SelectionMode == SelectionMode.Extended && e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (SelectionMode == SelectionMode.Extended && e.ChangedButton == MouseButton.Left)
         {
             _isDragSelecting = true;
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is KeyEventArgs keyArgs)
         {
             var handled = false;
             var itemCount = GetItemCount();
-            var isCtrl = keyArgs.IsControlDown;
-            var isShift = keyArgs.IsShiftDown;
+            var isCtrl = e.IsControlDown;
+            var isShift = e.IsShiftDown;
 
-            switch (keyArgs.Key)
+            switch (e.Key)
             {
                 case Key.Up:
                     handled = HandleArrowKey(-1, isCtrl, isShift, itemCount);
@@ -914,9 +921,9 @@ public class ListBoxItem : ContentControl
         ResourcesChanged += OnResourcesChangedHandler;
 
         // Register input event handlers
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
     }
 
     #endregion
@@ -931,24 +938,24 @@ public class ListBoxItem : ContentControl
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
 
             // Extract modifier key state from the event args
-            bool ctrl = (mouseArgs.KeyboardModifiers & ModifierKeys.Control) != 0;
-            bool shift = (mouseArgs.KeyboardModifiers & ModifierKeys.Shift) != 0;
+            bool ctrl = (e.KeyboardModifiers & ModifierKeys.Control) != 0;
+            bool shift = (e.KeyboardModifiers & ModifierKeys.Shift) != 0;
 
             ParentListBox?.SelectItem(this, ctrl, shift);
             e.Handled = true;
         }
     }
 
-    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
         if (!_isItemMouseOver)
         {
@@ -957,13 +964,13 @@ public class ListBoxItem : ContentControl
         }
 
         // If left mouse button is down while entering, perform drag selection
-        if (e is MouseEventArgs mouseArgs && mouseArgs.LeftButton == MouseButtonState.Pressed)
+        if (e.LeftButton == MouseButtonState.Pressed)
         {
             ParentListBox?.HandleDragSelect(this);
         }
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         if (_isItemMouseOver)
         {

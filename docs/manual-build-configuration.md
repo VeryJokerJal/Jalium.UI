@@ -1,6 +1,6 @@
 # Jalium.UI 手动配置构建说明
 
-本文档面向“**不修改仓库源码**，只在用户本机做配置”的场景。
+本文档面向"**不修改仓库源码**，只在用户本机做配置"的场景。
 
 结论先说：
 
@@ -34,7 +34,7 @@ mkdir packages\build
 这一步的目的不是放包，而是避免 `NU1301`：
 
 ```text
-本地源“...\packages”不存在
+本地源"...\packages"不存在
 ```
 
 ## 3. 先做还原
@@ -45,37 +45,99 @@ mkdir packages\build
 dotnet restore .\Jalium.UI.slnx -v minimal -p:GenerateAssemblyInfo=true
 ```
 
-我已经验证过：在不改源码、只补 `packages\build` 的情况下，这一步可以通过。
+## 4. 重要说明：不要把自定义 obj/bin 放在仓库目录里
 
-## 4. 已验证可行的 managed 构建命令
+下面这些参数：
 
-下面两条命令我已经做过实际验证，能够在未改源码的副本上编译通过。
+- `BaseIntermediateOutputPath`
+- `IntermediateOutputPath`
+- `OutputPath`
 
-### 4.1 编译 Jalium.UI.Input
+不要指到仓库内部的 `src\managed\...\obj_local_*` 或 `bin_local_*`。
+
+原因：
+
+- 仓库默认只排除了 `obj` 和 `bin`
+- 没有排除 `obj_local_*`
+- 如果你把自定义中间目录放在项目目录下面，第二次编译别的项目时，SDK 可能会把上一次生成的 `AssemblyInfo.cs` 一起扫进去
+- 然后就会出现你刚碰到的 `CS0579` 重复特性错误
+
+所以正确做法是：
+
+- 把临时输出放到仓库外，比如 `%TEMP%` 或 `C:\temp`
+
+如果你已经按旧写法跑过一次，请先清掉这些目录：
+
+```powershell
+Get-ChildItem .\src\managed -Recurse -Directory | Where-Object Name -like 'obj_local_*' | Remove-Item -Recurse -Force
+Get-ChildItem .\src\managed -Recurse -Directory | Where-Object Name -like 'bin_local_*' | Remove-Item -Recurse -Force
+```
+
+## 5. 推荐构建顺序
+
+先准备一个仓库外的临时目录：
+
+```powershell
+$work = Join-Path $env:TEMP "jalium-manual-build"
+New-Item -ItemType Directory -Force `
+  -Path "$work\\input\\obj", "$work\\input\\bin", `
+        "$work\\media\\obj", "$work\\media\\bin", `
+        "$work\\interop\\obj", "$work\\interop\\bin" | Out-Null
+```
+
+### 5.1 编译 Jalium.UI.Input
 
 ```powershell
 dotnet build .\src\managed\Jalium.UI.Input\Jalium.UI.Input.csproj `
   -v minimal `
   -p:GenerateAssemblyInfo=true `
   -p:ProduceReferenceAssembly=false `
-  -p:BaseIntermediateOutputPath=obj_local_input\ `
-  -p:IntermediateOutputPath=obj_local_input\Debug\net10.0-windows\ `
-  -p:OutputPath=bin_local_input\Debug\net10.0-windows\
+  -p:BaseIntermediateOutputPath="$work\input\obj\" `
+  -p:IntermediateOutputPath="$work\input\obj\Debug\net10.0-windows\" `
+  -p:OutputPath="$work\input\bin\Debug\net10.0-windows\"
 ```
 
-### 4.2 编译 Jalium.UI.Media
+### 5.2 编译 Jalium.UI.Media
 
 ```powershell
 dotnet build .\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj `
   -v minimal `
   -p:GenerateAssemblyInfo=true `
   -p:ProduceReferenceAssembly=false `
-  -p:BaseIntermediateOutputPath=obj_local_media\ `
-  -p:IntermediateOutputPath=obj_local_media\Debug\net10.0-windows\ `
-  -p:OutputPath=bin_local_media\Debug\net10.0-windows\
+  -p:BaseIntermediateOutputPath="$work\media\obj\" `
+  -p:IntermediateOutputPath="$work\media\obj\Debug\net10.0-windows\" `
+  -p:OutputPath="$work\media\bin\Debug\net10.0-windows\"
 ```
 
-这些参数的意义：
+### 5.3 编译 Jalium.UI.Interop
+
+```powershell
+dotnet build .\src\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj `
+  -v minimal `
+  -p:GenerateAssemblyInfo=true `
+  -p:ProduceReferenceAssembly=false `
+  -p:BaseIntermediateOutputPath="$work\interop\obj\" `
+  -p:IntermediateOutputPath="$work\interop\obj\Debug\net10.0-windows\" `
+  -p:OutputPath="$work\interop\bin\Debug\net10.0-windows\"
+```
+
+### 5.4 编译 Jalium.UI.Controls
+
+```powershell
+dotnet build .\src\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj `
+  -v minimal `
+  -p:GenerateAssemblyInfo=true
+```
+
+### 5.5 编译 Jalium.UI.Xaml
+
+```powershell
+dotnet build .\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj `
+  -v minimal `
+  -p:GenerateAssemblyInfo=true
+```
+
+参数说明：
 
 - `GenerateAssemblyInfo=true`
   让项目文件里的程序集元数据重新生成。
@@ -84,44 +146,69 @@ dotnet build .\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj `
 - `BaseIntermediateOutputPath` / `IntermediateOutputPath` / `OutputPath`
   把本次构建输出放到独立目录里，尽量绕开已有 `obj/bin` 和编译器文件锁。
 
-## 5. 当前没有验证通过的部分
+## 6. Native/C++
 
-下面这些在“完全不改源码”的前提下，我**没有验证通过**：
+### 6.1 前置条件
 
+- Visual Studio C++ 工具链
+- Windows SDK
+- Vulkan SDK
+
+### 6.2 推荐命令
+
+请在 **VS Developer Command Prompt** 或等效的 MSVC 环境中执行：
+
+```powershell
+msbuild .\src\native\Jalium.Native.sln /m /p:Configuration=Debug /p:Platform=x64 /v:minimal
+```
+
+### 6.3 说明
+
+- `browser`、`core`、`metal`、`d3d12` 后端可以作为手动构建目标。
+- `vulkan` 后端依赖 Vulkan SDK；未安装时会报 `vulkan/vulkan.h` 缺失。
+- 在普通 PowerShell 里直接跑 CMake/NMake，不保证具备完整的 `rc` / `mt` / MSVC 环境。
+
+## 7. 当前支持矩阵
+
+- `dotnet restore .\Jalium.UI.slnx -p:GenerateAssemblyInfo=true`
+  可以
+- `Jalium.UI.Input`
+  可以
+- `Jalium.UI.Media`
+  可以
 - `Jalium.UI.Interop`
+  可以
 - `Jalium.UI.Controls`
+  可以
 - `Jalium.UI.Xaml`
-- `tests/Jalium.UI.Tests`
-- 整个 `Jalium.UI.slnx` 的完整编译
+  可以
+- `src\native\Jalium.Native.sln`
+  部分可以
+  `vulkan` 需要额外安装 Vulkan SDK
+- `src\managed\Jalium.UI.Build\Jalium.UI.Build.csproj`
+  不建议用 `dotnet build`
+  需要 `MSBuild.exe`
+- `src\packaging\Jalium.UI.csproj`
+  当前不作为手动配置目标
+- `tests\Jalium.UI.Tests\Jalium.UI.Tests.csproj`
+  当前不作为手动配置目标
 
-其中我实际见到过的失败类型包括：
-
-- 友元程序集相关的内部 API 可见性问题
-- `GenerateAssemblyInfo=true` 后出现重复程序集特性
-- `Controls` 层更高层的 API 漂移
-- native/C++ 工程在 `dotnet build` 下无法完整处理
-
-所以如果你的目标是：
-
-- “先让用户恢复依赖，并编底层 managed 库”
-  这份教程可以直接用。
-- “让用户 clone 后一条命令编完整仓库”
-  仅靠用户本机配置还不够，最终仍需要仓库侧修复。
-
-## 6. 给用户的最小操作建议
+## 8. 给用户的最小操作建议
 
 如果你要把这套流程发给用户，建议只给下面这组最小步骤：
 
 1. 安装 `.NET 10 SDK`
 2. 安装 Visual Studio C++ 工作负载
-3. 在仓库根目录创建 `packages\build`
-4. 执行 `dotnet restore .\Jalium.UI.slnx -p:GenerateAssemblyInfo=true`
-5. 如果只需要底层库，再分别执行上面的 `Input` / `Media` 构建命令
+3. 安装 Vulkan SDK
+4. 在仓库根目录创建 `packages\build`
+5. 执行 `dotnet restore .\Jalium.UI.slnx -p:GenerateAssemblyInfo=true`
+6. 按顺序执行 `Input`、`Media`、`Interop`、`Controls`、`Xaml`
+7. 如需 native，再用 `MSBuild` 执行 `src\native\Jalium.Native.sln`
 
 不要承诺：
 
-- “整仓一定能一键编过”
-- “只要装好 SDK 就行”
-- “不需要 Visual Studio / MSBuild / C++ 工具链”
+- "整仓一定能一键编过"
+- "只要装好 SDK 就行"
+- "不需要 Visual Studio / MSBuild / C++ 工具链"
 
 这些承诺和当前仓库实际状态不一致。

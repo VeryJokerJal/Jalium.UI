@@ -150,11 +150,6 @@ public abstract class TextBoxBase : Control
     /// </summary>
     protected bool _isUndoRedoing;
 
-    /// <summary>
-    /// The last text value (for undo tracking).
-    /// </summary>
-    protected string _lastText = string.Empty;
-
     // Double/Triple click
     private DateTime _lastClickTime;
     private int _clickCount;
@@ -489,12 +484,12 @@ public abstract class TextBoxBase : Control
         _lastClickTime = DateTime.MinValue;
 
         // Register input event handlers
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(TextInputEvent, new RoutedEventHandler(OnTextInputHandler));
-        AddHandler(MouseWheelEvent, new RoutedEventHandler(OnMouseWheelHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
+        AddHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
     }
 
     #endregion
@@ -932,12 +927,16 @@ public abstract class TextBoxBase : Control
             return;
 
         var currentText = GetText();
-
-        // Don't push if text hasn't changed
-        if (currentText == _lastText)
+        if (_undoStack.TryPeek(out var entry) &&
+            entry.Text == currentText &&
+            entry.CaretIndex == _caretIndex &&
+            entry.SelectionStart == _selectionStart &&
+            entry.SelectionLength == _selectionLength)
+        {
             return;
+        }
 
-        _undoStack.Push(new UndoEntry(_lastText, _caretIndex, _selectionStart, _selectionLength));
+        _undoStack.Push(new UndoEntry(currentText, _caretIndex, _selectionStart, _selectionLength));
         _redoStack.Clear();
 
         // Limit stack size
@@ -954,8 +953,6 @@ public abstract class TextBoxBase : Control
                 _undoStack.Push(temp.Pop());
             }
         }
-
-        _lastText = currentText;
     }
 
     /// <summary>
@@ -1216,12 +1213,12 @@ public abstract class TextBoxBase : Control
 
     #region Input Handling
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        if (e.Handled)
             return;
 
-        OnKeyDown(keyArgs);
+        OnKeyDown(e);
     }
 
     /// <summary>
@@ -1343,24 +1340,24 @@ public abstract class TextBoxBase : Control
         }
     }
 
-    private void OnTextInputHandler(object sender, RoutedEventArgs e)
+    private void OnTextInputHandler(object sender, TextCompositionEventArgs e)
     {
-        if (e is not TextCompositionEventArgs textArgs || textArgs.Handled || IsReadOnly)
+        if (e.Handled || IsReadOnly)
             return;
 
-        if (!string.IsNullOrEmpty(textArgs.Text))
+        if (!string.IsNullOrEmpty(e.Text))
         {
             // Filter control characters
-            var text = textArgs.Text;
+            var text = e.Text;
             if (text.Length == 1 && char.IsControl(text[0]) && text[0] != '\t')
                 return;
 
             InsertText(text);
-            textArgs.Handled = true;
+            e.Handled = true;
         }
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
@@ -1368,96 +1365,93 @@ public abstract class TextBoxBase : Control
         if (e.OriginalSource is DependencyObject source && IsInsideButton(source))
             return;
 
-        if (e is MouseButtonEventArgs mouseArgs)
+        if (e.ChangedButton == MouseButton.Left)
         {
-            if (mouseArgs.ChangedButton == MouseButton.Left)
+            // Close context menu if open
+            _contextMenuAnimTimer?.Stop();
+            _isContextMenuCloseAnimating = false;
+            CloseContextMenuImmediate();
+
+            Focus();
+
+            var position = e.GetPosition(this);
+            var now = DateTime.Now;
+
+            // Detect double/triple click
+            var timeSinceLastClick = (now - _lastClickTime).TotalMilliseconds;
+            var distanceFromLastClick = Math.Abs(position.X - _lastClickPosition.X) + Math.Abs(position.Y - _lastClickPosition.Y);
+
+            if (timeSinceLastClick < DoubleClickTime && distanceFromLastClick < DoubleClickDistance)
             {
-                // Close context menu if open
-                _contextMenuAnimTimer?.Stop();
-                _isContextMenuCloseAnimating = false;
-                CloseContextMenuImmediate();
+                _clickCount++;
+            }
+            else
+            {
+                _clickCount = 1;
+            }
 
-                Focus();
+            _lastClickTime = now;
+            _lastClickPosition = position;
 
-                var position = mouseArgs.GetPosition(this);
-                var now = DateTime.Now;
-
-                // Detect double/triple click
-                var timeSinceLastClick = (now - _lastClickTime).TotalMilliseconds;
-                var distanceFromLastClick = Math.Abs(position.X - _lastClickPosition.X) + Math.Abs(position.Y - _lastClickPosition.Y);
-
-                if (timeSinceLastClick < DoubleClickTime && distanceFromLastClick < DoubleClickDistance)
+            if (_clickCount == 3)
+            {
+                // Triple-click: select line or all
+                if (AcceptsReturn)
                 {
-                    _clickCount++;
+                    SelectCurrentLine();
                 }
                 else
                 {
-                    _clickCount = 1;
+                    SelectAll();
                 }
+                _clickCount = 0;
+            }
+            else if (_clickCount == 2)
+            {
+                // Double-click: select word
+                SelectCurrentWord();
+                _wordSelectionAnchorStart = _selectionStart;
+                _wordSelectionAnchorEnd = _selectionStart + _selectionLength;
+                _isWordSelecting = _selectionLength > 0;
+                _isSelecting = true;
+                CaptureMouse();
+            }
+            else
+            {
+                // Single click
+                CaptureMouse();
+                var newCaretIndex = GetCaretIndexFromPosition(position);
 
-                _lastClickTime = now;
-                _lastClickPosition = position;
-
-                if (_clickCount == 3)
+                if ((e.KeyboardModifiers & ModifierKeys.Shift) != 0)
                 {
-                    // Triple-click: select line or all
-                    if (AcceptsReturn)
-                    {
-                        SelectCurrentLine();
-                    }
-                    else
-                    {
-                        SelectAll();
-                    }
-                    _clickCount = 0;
+                    ExtendSelection(newCaretIndex);
                 }
-                else if (_clickCount == 2)
+                else
                 {
-                    // Double-click: select word
-                    SelectCurrentWord();
-                    _wordSelectionAnchorStart = _selectionStart;
-                    _wordSelectionAnchorEnd = _selectionStart + _selectionLength;
-                    _isWordSelecting = _selectionLength > 0;
+                    _caretIndex = newCaretIndex;
+                    _selectionAnchor = newCaretIndex;
+                    _selectionStart = newCaretIndex;
+                    _selectionLength = 0;
+                    _isWordSelecting = false;
                     _isSelecting = true;
-                    CaptureMouse();
-                }
-                else
-                {
-                    // Single click
-                    CaptureMouse();
-                    var newCaretIndex = GetCaretIndexFromPosition(position);
-
-                    if ((mouseArgs.KeyboardModifiers & ModifierKeys.Shift) != 0)
-                    {
-                        ExtendSelection(newCaretIndex);
-                    }
-                    else
-                    {
-                        _caretIndex = newCaretIndex;
-                        _selectionAnchor = newCaretIndex;
-                        _selectionStart = newCaretIndex;
-                        _selectionLength = 0;
-                        _isWordSelecting = false;
-                        _isSelecting = true;
-                        OnSelectionChanged();
-                    }
-
-                    ResetCaretBlink();
+                    OnSelectionChanged();
                 }
 
-                InvalidateVisual();
-                e.Handled = true;
+                ResetCaretBlink();
             }
-            else if (mouseArgs.ChangedButton == MouseButton.Right)
-            {
-                Focus();
-                ShowContextMenu();
-                e.Handled = true;
-            }
+
+            InvalidateVisual();
+            e.Handled = true;
+        }
+        else if (e.ChangedButton == MouseButton.Right)
+        {
+            Focus();
+            ShowContextMenu();
+            e.Handled = true;
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
@@ -1465,7 +1459,7 @@ public abstract class TextBoxBase : Control
         if (e.OriginalSource is DependencyObject source && IsInsideButton(source))
             return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             if (_isSelecting)
             {
@@ -1494,47 +1488,41 @@ public abstract class TextBoxBase : Control
         return false;
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
         if (!IsEnabled || !_isSelecting) return;
 
-        if (e is MouseEventArgs mouseArgs)
+        var position = e.GetPosition(this);
+        var newCaretIndex = GetCaretIndexFromPosition(position);
+
+        if (_isWordSelecting)
         {
-            var position = mouseArgs.GetPosition(this);
-            var newCaretIndex = GetCaretIndexFromPosition(position);
-
-            if (_isWordSelecting)
-            {
-                ExtendWordSelection(newCaretIndex);
-            }
-            else
-            {
-                _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
-                _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
-                _caretIndex = newCaretIndex;
-            }
-
-            EnsureCaretVisible();
-            InvalidateVisual();
-            e.Handled = true;
+            ExtendWordSelection(newCaretIndex);
         }
+        else
+        {
+            _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
+            _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
+            _caretIndex = newCaretIndex;
+        }
+
+        EnsureCaretVisible();
+        InvalidateVisual();
+        e.Handled = true;
     }
 
-    private void OnMouseWheelHandler(object sender, RoutedEventArgs e)
+    private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        if (e is MouseWheelEventArgs wheelArgs)
-        {
-            // Round line height for consistent scrolling
-            var lineHeight = Math.Round(GetLineHeight());
-            var delta = wheelArgs.Delta > 0 ? -3 : 3;
-            VerticalOffset += delta * lineHeight;
+        // Round line height for consistent scrolling
+        var lineHeight = Math.Round(GetLineHeight());
+        var delta = e.Delta > 0 ? -3 : 3;
+        VerticalOffset += delta * lineHeight;
 
-            // Clamp
-            var maxOffset = Math.Max(0, GetLineCount() * lineHeight - RenderSize.Height);
-            VerticalOffset = Math.Min(VerticalOffset, maxOffset);
+        // Clamp
+        var maxOffset = Math.Max(0, GetLineCount() * lineHeight - RenderSize.Height);
+        VerticalOffset = Math.Min(VerticalOffset, maxOffset);
 
-            e.Handled = true;
-        }
+        e.Handled = true;
     }
 
     /// <inheritdoc />
@@ -2308,15 +2296,15 @@ public abstract class TextBoxBase : Control
 
         if (isEnabled)
         {
-            itemBorder.AddHandler(MouseEnterEvent, new RoutedEventHandler((s, e) =>
+            itemBorder.AddHandler(MouseEnterEvent, new Input.MouseEventHandler((s, e) =>
             {
                 itemBorder.Background = hoverBrush;
             }));
-            itemBorder.AddHandler(MouseLeaveEvent, new RoutedEventHandler((s, e) =>
+            itemBorder.AddHandler(MouseLeaveEvent, new Input.MouseEventHandler((s, e) =>
             {
                 itemBorder.Background = s_ctxMenuTransparentBrush;
             }));
-            itemBorder.AddHandler(MouseUpEvent, new RoutedEventHandler((s, e) =>
+            itemBorder.AddHandler(MouseUpEvent, new Input.MouseButtonEventHandler((s, e) =>
             {
                 if (e is MouseButtonEventArgs { ChangedButton: MouseButton.Left })
                 {

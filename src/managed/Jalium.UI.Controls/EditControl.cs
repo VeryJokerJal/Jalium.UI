@@ -614,15 +614,15 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         _foldingManager.Document = _document;
 
         // Input event handlers
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(TextInputEvent, new RoutedEventHandler(OnTextInputHandler));
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
-        AddHandler(MouseWheelEvent, new RoutedEventHandler(OnMouseWheelHandler));
-        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnGotFocusHandler));
-        AddHandler(LostKeyboardFocusEvent, new RoutedEventHandler(OnLostFocusHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        AddHandler(MouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
+        AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnLostFocusHandler));
 
         // IME
         InputMethod.CompositionStarted += OnImeCompositionStarted;
@@ -833,58 +833,58 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         return false;
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        if (e.Handled)
             return;
 
-        var shift = keyArgs.IsShiftDown;
-        var ctrl = keyArgs.IsControlDown;
+        var shift = e.IsShiftDown;
+        var ctrl = e.IsControlDown;
 
         if (_isImeComposing && (_behaviorOptions.SuppressShortcutsDuringIme || IsFeatureEnabled(EditFeature.ImeShortcutSuppression)))
         {
-            bool hasModifier = keyArgs.IsControlDown || keyArgs.IsAltDown;
+            bool hasModifier = e.IsControlDown || e.IsAltDown;
             if (hasModifier)
             {
-                keyArgs.Handled = false;
+                e.Handled = false;
                 return;
             }
         }
 
-        if (TryHandleChordShortcut(keyArgs, ctrl))
+        if (TryHandleChordShortcut(e, ctrl))
             return;
 
-        if (TryExecuteKeyBinding(keyArgs))
+        if (TryExecuteKeyBinding(e))
         {
-            keyArgs.Handled = true;
+            e.Handled = true;
             return;
         }
 
-        if (TryHandleDirectShortcut(keyArgs, ctrl, shift))
+        if (TryHandleDirectShortcut(e, ctrl, shift))
             return;
 
-        switch (keyArgs.Key)
+        switch (e.Key)
         {
             case Key.Left:
                 MoveCaret(ctrl ? MoveToWordBoundary(_caret.Offset, -1) : _caret.Offset - 1, shift);
                 _caret.DesiredColumn = -1;
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.Right:
                 MoveCaret(ctrl ? MoveToWordBoundary(_caret.Offset, 1) : _caret.Offset + 1, shift);
                 _caret.DesiredColumn = -1;
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.Up:
                 MoveCaretVertically(-1, shift);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.Down:
                 MoveCaretVertically(1, shift);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.Home:
@@ -893,7 +893,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 else
                     MoveCaretToLineStart(shift);
                 _caret.DesiredColumn = -1;
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.End:
@@ -902,37 +902,37 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 else
                     MoveCaretToLineEnd(shift);
                 _caret.DesiredColumn = -1;
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.PageUp:
                 MoveCaretVertically(-Math.Max(1, _view.VisibleLineCount), shift);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.PageDown:
                 MoveCaretVertically(Math.Max(1, _view.VisibleLineCount), shift);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.Back:
                 HandleBackspace(ctrl);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.Delete:
                 HandleDelete(ctrl);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.Enter:
                 HandleEnter();
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
 
             case Key.Tab:
                 HandleTab(shift);
-                keyArgs.Handled = true;
+                e.Handled = true;
                 break;
         }
     }
@@ -1054,12 +1054,12 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         _pendingChordKey = null;
     }
 
-    private void OnTextInputHandler(object sender, RoutedEventArgs e)
+    private void OnTextInputHandler(object sender, TextCompositionEventArgs e)
     {
-        if (e is not TextCompositionEventArgs textArgs || textArgs.Handled || IsReadOnly)
+        if (e.Handled || IsReadOnly)
             return;
 
-        var text = textArgs.Text;
+        var text = e.Text;
         if (string.IsNullOrEmpty(text)) return;
 
         // Filter control characters (except tab handled by KeyDown)
@@ -1067,16 +1067,16 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             return;
 
         InsertText(text);
-        textArgs.Handled = true;
+        e.Handled = true;
     }
 
     #endregion
 
     #region Mouse Input
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
             return;
 
         int oldSelectionStart = _selection.StartOffset;
@@ -1084,17 +1084,17 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         int oldCaret = _caret.Offset;
         Focus();
 
-        var position = mouseArgs.GetPosition(this);
+        var position = e.GetPosition(this);
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
         UpdateCursorForPointer(position);
-        if (TryHandleMinimapMouseDown(mouseArgs, position))
+        if (TryHandleMinimapMouseDown(e, position))
             return;
-        if (TryHandleScrollBarMouseDown(mouseArgs, position))
+        if (TryHandleScrollBarMouseDown(e, position))
             return;
-        if (TryHandleFoldingMarkerMouseDown(mouseArgs, position))
+        if (TryHandleFoldingMarkerMouseDown(e, position))
             return;
-        if (TryHandleFoldedSectionHintMouseDown(mouseArgs, position))
+        if (TryHandleFoldedSectionHintMouseDown(e, position))
             return;
 
         UpdateClickCount(position);
@@ -1123,7 +1123,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         else
         {
             // Single click
-            if (mouseArgs.KeyboardModifiers.HasFlag(ModifierKeys.Shift))
+            if (e.KeyboardModifiers.HasFlag(ModifierKeys.Shift))
             {
                 _selection.ExtendTo(offset);
                 _caret.Offset = offset;
@@ -1146,7 +1146,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         if (oldCaret != _caret.Offset)
             OnCaretPositionChanged();
         InvalidateVisual();
-        mouseArgs.Handled = true;
+        e.Handled = true;
     }
 
     private int UpdateClickCount(Point position)
@@ -1165,9 +1165,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         return _clickCount;
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
             return;
 
         if (_isMinimapDragging || _isMinimapViewportPressPending)
@@ -1177,9 +1177,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             _isMinimapViewportPressPending = false;
             ReleaseMouseCapture();
             if (shouldNavigateOnRelease)
-                NavigateMinimapToPosition(mouseArgs.GetPosition(this), allowAnimation: true);
+                NavigateMinimapToPosition(e.GetPosition(this), allowAnimation: true);
             InvalidateVisual();
-            mouseArgs.Handled = true;
+            e.Handled = true;
             return;
         }
 
@@ -1188,7 +1188,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             _scrollBarDragMode = ScrollBarDragMode.None;
             ReleaseMouseCapture();
             InvalidateVisual();
-            mouseArgs.Handled = true;
+            e.Handled = true;
             return;
         }
 
@@ -1199,15 +1199,12 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             ReleaseMouseCapture();
         }
 
-        UpdateCursorForPointer(mouseArgs.GetPosition(this));
+        UpdateCursorForPointer(e.GetPosition(this));
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (e is not MouseEventArgs mouseArgs)
-            return;
-
-        var position = mouseArgs.GetPosition(this);
+        var position = e.GetPosition(this);
         _lastPointerPosition = position;
         _hasPointerPosition = true;
         UpdateCursorForPointer(position);
@@ -1215,7 +1212,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         double contentWidth = GetContentRenderWidth(RenderSize.Width);
         double contentHeight = GetContentRenderHeight(RenderSize.Height);
 
-        if (_isMinimapViewportPressPending && !_isMinimapDragging && mouseArgs.LeftButton == MouseButtonState.Pressed)
+        if (_isMinimapViewportPressPending && !_isMinimapDragging && e.LeftButton == MouseButtonState.Pressed)
         {
             double dx = Math.Abs(position.X - _minimapViewportPressPoint.X);
             double dy = Math.Abs(position.Y - _minimapViewportPressPoint.Y);
@@ -1227,7 +1224,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         {
             _hoveredScopeGuideSection = null;
             _hoveredFoldedHintSection = null;
-            HandleMinimapMouseDrag(mouseArgs);
+            HandleMinimapMouseDrag(e);
             return;
         }
 
@@ -1236,7 +1233,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             ClearMinimapHover();
             _hoveredScopeGuideSection = null;
             _hoveredFoldedHintSection = null;
-            HandleScrollBarMouseDrag(mouseArgs);
+            HandleScrollBarMouseDrag(e);
             return;
         }
 
@@ -1286,7 +1283,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         InvalidateVisual();
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         _hasPointerPosition = false;
         bool minimapHoverCleared = ClearMinimapHover();
@@ -1298,28 +1295,25 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         InvalidateVisual();
     }
 
-    private void OnMouseWheelHandler(object sender, RoutedEventArgs e)
+    private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        if (e is not MouseWheelEventArgs wheelArgs)
-            return;
-
         EnsureViewLayoutMetrics();
         UpdateScrollBarLayout(RenderSize);
 
-        bool horizontal = wheelArgs.KeyboardModifiers.HasFlag(ModifierKeys.Shift);
+        bool horizontal = e.KeyboardModifiers.HasFlag(ModifierKeys.Shift);
         if (horizontal)
         {
             double columnsToScroll = 6;
-            double delta = -wheelArgs.Delta / 120.0 * columnsToScroll * Math.Max(1, _view.CharWidth);
+            double delta = -e.Delta / 120.0 * columnsToScroll * Math.Max(1, _view.CharWidth);
             ScrollHorizontallyBy(delta, allowAnimation: true, userInitiated: true);
         }
         else
         {
             double linesToScroll = 3;
-            double delta = -wheelArgs.Delta / 120.0 * linesToScroll * Math.Max(1, _view.LineHeight);
+            double delta = -e.Delta / 120.0 * linesToScroll * Math.Max(1, _view.LineHeight);
             ScrollVerticallyBy(delta, allowAnimation: true, userInitiated: true);
         }
-        wheelArgs.Handled = true;
+        e.Handled = true;
     }
 
     private void UpdateCursorForPointer(Point position)
@@ -1724,7 +1718,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     #region Focus
 
-    private void OnGotFocusHandler(object sender, RoutedEventArgs e)
+    private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         InputMethod.SetTarget(this);
         StartCaretTimer();
@@ -1733,7 +1727,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         InvalidateVisual();
     }
 
-    private void OnLostFocusHandler(object sender, RoutedEventArgs e)
+    private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         if (InputMethod.Current == this)
             InputMethod.SetTarget(null);

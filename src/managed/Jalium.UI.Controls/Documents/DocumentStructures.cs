@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.ObjectModel;
+using System.Linq;
 
 namespace Jalium.UI.Documents.DocumentStructures;
 
@@ -67,7 +68,7 @@ public sealed class SectionStructure : SemanticBasicElement, IEnumerable<BlockEl
 
     IEnumerator<BlockElement> IEnumerable<BlockElement>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -93,7 +94,7 @@ public sealed class ParagraphStructure : SemanticBasicElement, IEnumerable<Named
 
     IEnumerator<NamedElement> IEnumerable<NamedElement>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.Cast<NamedElement>().GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -119,7 +120,7 @@ public sealed class FigureStructure : SemanticBasicElement, IEnumerable<NamedEle
 
     IEnumerator<NamedElement> IEnumerable<NamedElement>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.Cast<NamedElement>().GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -145,7 +146,7 @@ public sealed class ListStructure : SemanticBasicElement, IEnumerable<ListItemSt
 
     IEnumerator<ListItemStructure> IEnumerable<ListItemStructure>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.Cast<ListItemStructure>().GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -185,7 +186,7 @@ public sealed class ListItemStructure : SemanticBasicElement, IEnumerable<BlockE
 
     IEnumerator<BlockElement> IEnumerable<BlockElement>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -211,7 +212,7 @@ public sealed class TableStructure : SemanticBasicElement, IEnumerable<TableRowG
 
     IEnumerator<TableRowGroupStructure> IEnumerable<TableRowGroupStructure>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.Cast<TableRowGroupStructure>().GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -237,7 +238,7 @@ public sealed class TableRowGroupStructure : SemanticBasicElement, IEnumerable<T
 
     IEnumerator<TableRowStructure> IEnumerable<TableRowStructure>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.Cast<TableRowStructure>().GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -263,7 +264,7 @@ public sealed class TableRowStructure : SemanticBasicElement, IEnumerable<TableC
 
     IEnumerator<TableCellStructure> IEnumerable<TableCellStructure>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.Cast<TableCellStructure>().GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -319,7 +320,7 @@ public sealed class TableCellStructure : SemanticBasicElement, IEnumerable<Block
 
     IEnumerator<BlockElement> IEnumerable<BlockElement>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -379,7 +380,7 @@ public sealed class StoryFragment : IEnumerable<BlockElement>, IEnumerable
 
     IEnumerator<BlockElement> IEnumerable<BlockElement>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return BlockElementList.GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()
@@ -413,7 +414,7 @@ public sealed class StoryFragments : IEnumerable<StoryFragment>, IEnumerable
 
     IEnumerator<StoryFragment> IEnumerable<StoryFragment>.GetEnumerator()
     {
-        throw new NotSupportedException();
+        return _storyFragmentList.GetEnumerator();
     }
 
     IEnumerator IEnumerable.GetEnumerator()

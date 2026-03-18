@@ -2,7 +2,9 @@ using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Markup;
 using Jalium.UI.Media;
+using ShapePath = Jalium.UI.Controls.Shapes.Path;
 
 namespace Jalium.UI.Tests;
 
@@ -41,6 +43,33 @@ public class TitleBarButtonThemeTests
             Assert.Same(closeHoverBrush, InvokePrivateBrushResolver(button, "ResolveCloseHoverBackgroundBrush"));
             Assert.Same(closePressedBrush, InvokePrivateBrushResolver(button, "ResolveClosePressedBackgroundBrush"));
             Assert.Same(glyphBrush, InvokePrivateBrushResolver(button, "ResolveGlyphBrush"));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void TitleBarButton_TemplateGlyphs_ShouldUseInsetPathData()
+    {
+        ResetApplicationState();
+        ThemeLoader.Initialize();
+        var app = new Application();
+
+        try
+        {
+            var button = new TitleBarButton();
+            var host = new StackPanel { Width = 80, Height = 40 };
+            host.Children.Add(button);
+
+            host.Measure(new Size(80, 40));
+            host.Arrange(new Rect(0, 0, 80, 40));
+            button.ApplyTemplate();
+
+            Assert.Equal("M 1,0 L 9,0", Assert.IsType<ShapePath>(button.FindName("MinimizeGlyph")).Data);
+            Assert.Equal("M 1,1 L 9,1 L 9,9 L 1,9 Z", Assert.IsType<ShapePath>(button.FindName("MaximizeGlyph")).Data);
+            Assert.Equal("M 1,1 L 9,9 M 9,1 L 1,9", Assert.IsType<ShapePath>(button.FindName("CloseGlyph")).Data);
         }
         finally
         {

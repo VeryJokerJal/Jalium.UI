@@ -69,7 +69,7 @@ public sealed class GeometryDrawing : Drawing
     }
 
     /// <inheritdoc />
-    internal override void RenderTo(DrawingContext context)
+    public override void RenderTo(DrawingContext context)
     {
         if (Geometry != null)
         {

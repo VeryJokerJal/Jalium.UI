@@ -16,17 +16,13 @@ JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
 #if defined(_WIN32)
             JALIUM_BACKEND_D3D12,
             JALIUM_BACKEND_VULKAN,
-            JALIUM_BACKEND_D3D11,
-            JALIUM_BACKEND_OPENGL,
             JALIUM_BACKEND_SOFTWARE
 #elif defined(__APPLE__)
             JALIUM_BACKEND_METAL,
             JALIUM_BACKEND_VULKAN,
-            JALIUM_BACKEND_OPENGL,
             JALIUM_BACKEND_SOFTWARE
 #else
             JALIUM_BACKEND_VULKAN,
-            JALIUM_BACKEND_OPENGL,
             JALIUM_BACKEND_SOFTWARE
 #endif
         };
@@ -81,6 +77,13 @@ JALIUM_API JaliumResult jalium_context_get_last_error(JaliumContext* ctx) {
 JALIUM_API const wchar_t* jalium_context_get_error_message(JaliumContext* ctx) {
     if (!ctx) return nullptr;
     return reinterpret_cast<jalium::Context*>(ctx)->GetErrorMessage();
+}
+
+JALIUM_API JaliumResult jalium_context_check_device_status(JaliumContext* ctx) {
+    if (!ctx) return JALIUM_ERROR_INVALID_ARGUMENT;
+    auto* impl = reinterpret_cast<jalium::Context*>(ctx)->GetBackendImpl();
+    if (!impl) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return impl->CheckDeviceStatus();
 }
 
 } // extern "C"

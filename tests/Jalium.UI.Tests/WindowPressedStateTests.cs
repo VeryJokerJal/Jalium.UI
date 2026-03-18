@@ -1067,9 +1067,11 @@ public class WindowPressedStateTests
 
     private static bool GetRenderScheduledForTest(Window window)
     {
-        var field = typeof(Window).GetField("_renderScheduled", BindingFlags.Instance | BindingFlags.NonPublic);
+        var field = typeof(Window).GetField("_renderState", BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(field);
-        return (bool)field!.GetValue(window)!;
+        var state = (int)field!.GetValue(window)!;
+        const int RenderFlag_Scheduled = 1 << 0;
+        return (state & RenderFlag_Scheduled) != 0;
     }
 
     private static UIElement? InvokeHitTestElement(Window window, Point point)

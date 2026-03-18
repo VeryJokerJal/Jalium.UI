@@ -247,7 +247,7 @@ public class DockTabPanel : Selector
         };
         _tabStripScrollBar.Scroll += OnTabStripScroll;
         AddVisualChild(_tabStripScrollBar);
-        AddHandler(PreviewMouseWheelEvent, new RoutedEventHandler(OnMouseWheelHandler));
+        AddHandler(PreviewMouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
 
         Items.CollectionChanged += OnDockItemsChanged;
 
@@ -524,18 +524,16 @@ public class DockTabPanel : Selector
         SetTabStripScrollOffsetInternal(_tabStripScrollBar.Value, invalidateLayout: true);
     }
 
-    private void OnMouseWheelHandler(object sender, RoutedEventArgs e)
+    private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        if (e is not MouseWheelEventArgs wheelArgs)
-            return;
         if (_tabStripScrollBar.Visibility != Visibility.Visible)
             return;
 
-        var pos = wheelArgs.GetPosition(this);
+        var pos = e.GetPosition(this);
         if (!GetTabStripInteractionRect().Contains(pos))
             return;
 
-        var delta = wheelArgs.Delta > 0
+        var delta = e.Delta > 0
             ? -Math.Max(12, _tabStripScrollBar.SmallChange * 2)
             : Math.Max(12, _tabStripScrollBar.SmallChange * 2);
 

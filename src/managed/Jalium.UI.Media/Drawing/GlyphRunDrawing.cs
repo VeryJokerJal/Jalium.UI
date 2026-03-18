@@ -76,7 +76,7 @@ public sealed class GlyphRunDrawing : Drawing
     }
 
     /// <inheritdoc />
-    internal override void RenderTo(DrawingContext context)
+    public override void RenderTo(DrawingContext context)
     {
         if (FormattedText != null)
         {

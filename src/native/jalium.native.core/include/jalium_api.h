@@ -47,6 +47,11 @@ JALIUM_API JaliumResult jalium_context_get_last_error(JaliumContext* ctx);
 /// @return The error message, or nullptr if no error.
 JALIUM_API const wchar_t* jalium_context_get_error_message(JaliumContext* ctx);
 
+/// Checks if the GPU device is still operational.
+/// @param ctx The context.
+/// @return 0 if OK, non-zero if device lost.
+JALIUM_API JaliumResult jalium_context_check_device_status(JaliumContext* ctx);
+
 // ============================================================================
 // Render Target Management
 // ============================================================================
@@ -240,6 +245,18 @@ JALIUM_API void jalium_draw_fill_ellipse(
     JaliumRenderTarget* rt,
     float centerX, float centerY, float radiusX, float radiusY,
     JaliumBrush* brush
+);
+
+/// Draws a batch of filled ellipses with per-ellipse color.
+/// Each ellipse is 5 floats: [cx, cy, rx, ry, colorRGBA_packed_as_float].
+/// Eliminates per-call P/Invoke overhead for particle brushes.
+/// @param rt The render target.
+/// @param data Array of ellipse data (5 floats per ellipse).
+/// @param count Number of ellipses.
+JALIUM_API void jalium_fill_ellipse_batch(
+    JaliumRenderTarget* rt,
+    const float* data,
+    uint32_t count
 );
 
 /// Draws an ellipse outline.

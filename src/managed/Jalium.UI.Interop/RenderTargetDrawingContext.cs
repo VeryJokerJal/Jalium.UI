@@ -27,6 +27,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     private readonly Stack<Rect?> _clipBoundsStack = new();
     private long _bitmapCacheBytes;
     private long _bitmapCacheSequence;
+    private long _brushCacheSequence;
     private bool _closed;
 
     private sealed class BitmapCacheEntry
@@ -43,6 +44,11 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         public long LastAccessSequence { get; set; }
     }
 
+    // Ellipse batch buffer for particle brush optimization
+    private float[]? _ellipseBatchBuffer;
+    private int _ellipseBatchCount;
+    private bool _isEllipseBatching;
+
     /// <summary>
     /// Gets the underlying render target.
     /// </summary>
@@ -55,6 +61,35 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     /// <inheritdoc />
     public Rect? CurrentClipBounds => _clipBoundsStack.Count > 0 ? _clipBoundsStack.Peek() : null;
+
+    /// <summary>
+    /// Begins batching ellipse draw calls. While batching is active, DrawEllipse calls
+    /// with solid color brushes are accumulated and flushed as a single native call.
+    /// </summary>
+    public void BeginEllipseBatch(int estimatedCount = 256)
+    {
+        if (_isEllipseBatching) return;
+        _isEllipseBatching = true;
+        _ellipseBatchCount = 0;
+        var bufferSize = estimatedCount * 5;
+        if (_ellipseBatchBuffer == null || _ellipseBatchBuffer.Length < bufferSize)
+            _ellipseBatchBuffer = new float[bufferSize];
+    }
+
+    /// <summary>
+    /// Flushes all accumulated ellipses as a single native batch call.
+    /// </summary>
+    public void EndEllipseBatch()
+    {
+        if (!_isEllipseBatching) return;
+        _isEllipseBatching = false;
+
+        if (_ellipseBatchCount > 0 && _ellipseBatchBuffer != null)
+        {
+            _renderTarget.FillEllipseBatch(_ellipseBatchBuffer, (uint)_ellipseBatchCount);
+            _ellipseBatchCount = 0;
+        }
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="RenderTargetDrawingContext"/> class.
@@ -229,6 +264,23 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var rx = (float)radiusX;
         var ry = (float)radiusY;
 
+        // Fast path: batch filled ellipses with solid color brushes (particle brushes)
+        if (_isEllipseBatching && brush is SolidColorBrush solidBrush && pen == null)
+        {
+            EnsureBatchCapacity();
+            var offset = _ellipseBatchCount * 5;
+            _ellipseBatchBuffer![offset] = cx;
+            _ellipseBatchBuffer[offset + 1] = cy;
+            _ellipseBatchBuffer[offset + 2] = rx;
+            _ellipseBatchBuffer[offset + 3] = ry;
+            // Pack color as RGBA uint32 stored in float bits
+            var c = solidBrush.Color;
+            uint packed = (uint)c.R | ((uint)c.G << 8) | ((uint)c.B << 16) | ((uint)c.A << 24);
+            _ellipseBatchBuffer[offset + 4] = BitConverter.Int32BitsToSingle((int)packed);
+            _ellipseBatchCount++;
+            return;
+        }
+
         // Bounding box for gradient brush coordinate conversion
         float bx = cx - rx, by = cy - ry, bw = rx * 2, bh = ry * 2;
 
@@ -250,6 +302,19 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             {
                 _renderTarget.DrawEllipse(cx, cy, rx, ry, strokeBrush, (float)pen.Thickness);
             }
+        }
+    }
+
+    private void EnsureBatchCapacity()
+    {
+        var needed = (_ellipseBatchCount + 1) * 5;
+        if (_ellipseBatchBuffer == null || _ellipseBatchBuffer.Length < needed)
+        {
+            var newSize = Math.Max(needed, (_ellipseBatchBuffer?.Length ?? 256) * 2);
+            var newBuffer = new float[newSize];
+            if (_ellipseBatchBuffer != null)
+                Array.Copy(_ellipseBatchBuffer, newBuffer, _ellipseBatchCount * 5);
+            _ellipseBatchBuffer = newBuffer;
         }
     }
 
@@ -335,22 +400,24 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
     }
 
+    private static bool FigureHasCurves(PathFigure figure)
+    {
+        foreach (var segment in figure.Segments)
+        {
+            if (segment is BezierSegment or QuadraticBezierSegment
+                or PolyBezierSegment or PolyQuadraticBezierSegment)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private void DrawPathGeometry(Brush? brush, Pen? pen, PathGeometry pathGeom)
     {
         foreach (var figure in pathGeom.Figures)
         {
-            // Check if figure has any bezier/quadratic segments → use native path API
-            bool hasCurves = false;
-            foreach (var segment in figure.Segments)
-            {
-                if (segment is BezierSegment or QuadraticBezierSegment)
-                {
-                    hasCurves = true;
-                    break;
-                }
-            }
-
-            if (hasCurves)
+            if (FigureHasCurves(figure))
             {
                 DrawPathFigureNative(brush, pen, figure, pathGeom.FillRule);
             }
@@ -359,6 +426,26 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 DrawPathFigurePolygon(brush, pen, figure, pathGeom.FillRule);
             }
         }
+    }
+
+    /// <summary>
+    /// Promotes a quadratic bezier to cubic and appends the cubic command.
+    /// cp1 = start + 2/3*(ctrl - start), cp2 = end + 2/3*(ctrl - end)
+    /// </summary>
+    private static void AppendQuadAsCubic(List<float> cmds, Point start, Point ctrl, Point end, double ox, double oy)
+    {
+        var cp1X = start.X + 2.0 / 3.0 * (ctrl.X - start.X);
+        var cp1Y = start.Y + 2.0 / 3.0 * (ctrl.Y - start.Y);
+        var cp2X = end.X + 2.0 / 3.0 * (ctrl.X - end.X);
+        var cp2Y = end.Y + 2.0 / 3.0 * (ctrl.Y - end.Y);
+
+        cmds.Add(1f);
+        cmds.Add((float)(cp1X + ox));
+        cmds.Add((float)(cp1Y + oy));
+        cmds.Add((float)(cp2X + ox));
+        cmds.Add((float)(cp2Y + oy));
+        cmds.Add((float)(end.X + ox));
+        cmds.Add((float)(end.Y + oy));
     }
 
     /// <summary>
@@ -402,19 +489,36 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 cmds.Add((float)(bezier.Point3.Y + oy));
                 currentPoint = bezier.Point3;
             }
+            else if (segment is PolyBezierSegment polyBezier)
+            {
+                // Points come in groups of 3: cp1, cp2, endpoint
+                var pts = polyBezier.Points;
+                for (int i = 0; i + 2 < pts.Count; i += 3)
+                {
+                    cmds.Add(1f);
+                    cmds.Add((float)(pts[i].X + ox));
+                    cmds.Add((float)(pts[i].Y + oy));
+                    cmds.Add((float)(pts[i + 1].X + ox));
+                    cmds.Add((float)(pts[i + 1].Y + oy));
+                    cmds.Add((float)(pts[i + 2].X + ox));
+                    cmds.Add((float)(pts[i + 2].Y + oy));
+                    currentPoint = pts[i + 2];
+                }
+            }
             else if (segment is QuadraticBezierSegment quad)
             {
-                // Promote quadratic to cubic: cp1 = start + 2/3*(ctrl-start), cp2 = end + 2/3*(ctrl-end)
-                // We need the current point for this; track it
-                // For simplicity, approximate as cubic with control points
-                cmds.Add(1f);
-                cmds.Add((float)(quad.Point1.X + ox));
-                cmds.Add((float)(quad.Point1.Y + oy));
-                cmds.Add((float)(quad.Point1.X + ox));
-                cmds.Add((float)(quad.Point1.Y + oy));
-                cmds.Add((float)(quad.Point2.X + ox));
-                cmds.Add((float)(quad.Point2.Y + oy));
+                AppendQuadAsCubic(cmds, currentPoint, quad.Point1, quad.Point2, ox, oy);
                 currentPoint = quad.Point2;
+            }
+            else if (segment is PolyQuadraticBezierSegment polyQuad)
+            {
+                // Points come in groups of 2: control, endpoint
+                var pts = polyQuad.Points;
+                for (int i = 0; i + 1 < pts.Count; i += 2)
+                {
+                    AppendQuadAsCubic(cmds, currentPoint, pts[i], pts[i + 1], ox, oy);
+                    currentPoint = pts[i + 1];
+                }
             }
             else if (segment is ArcSegment arc)
             {
@@ -457,13 +561,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     }
 
     /// <summary>
-    /// Renders a path figure as a polygon (line segments only, for figures without curves).
+    /// Renders a path figure as a polygon (all segments flattened to line points).
     /// </summary>
     private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule)
     {
         var points = new List<Point> { figure.StartPoint };
         var currentPoint = figure.StartPoint;
-        bool hasArc = false;
+        bool hasCurvedSegments = false;
 
         foreach (var segment in figure.Segments)
         {
@@ -482,12 +586,60 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             }
             else if (segment is ArcSegment arc)
             {
-                hasArc = true;
+                hasCurvedSegments = true;
                 var arcPoints = GetArcPoints(currentPoint, arc);
                 points.AddRange(arcPoints);
                 currentPoint = arc.Point;
             }
+            else if (segment is BezierSegment bezier)
+            {
+                hasCurvedSegments = true;
+                var bezierPoints = GetBezierPoints(currentPoint, bezier.Point1, bezier.Point2, bezier.Point3);
+                points.AddRange(bezierPoints);
+                currentPoint = bezier.Point3;
+            }
+            else if (segment is PolyBezierSegment polyBezier)
+            {
+                hasCurvedSegments = true;
+                var pts = polyBezier.Points;
+                for (int i = 0; i + 2 < pts.Count; i += 3)
+                {
+                    var bezierPoints = GetBezierPoints(currentPoint, pts[i], pts[i + 1], pts[i + 2]);
+                    points.AddRange(bezierPoints);
+                    currentPoint = pts[i + 2];
+                }
+            }
+            else if (segment is QuadraticBezierSegment quad)
+            {
+                hasCurvedSegments = true;
+                var quadPoints = GetQuadBezierPoints(currentPoint, quad.Point1, quad.Point2);
+                points.AddRange(quadPoints);
+                currentPoint = quad.Point2;
+            }
+            else if (segment is PolyQuadraticBezierSegment polyQuad)
+            {
+                hasCurvedSegments = true;
+                var pts = polyQuad.Points;
+                for (int i = 0; i + 1 < pts.Count; i += 2)
+                {
+                    var quadPoints = GetQuadBezierPoints(currentPoint, pts[i], pts[i + 1]);
+                    points.AddRange(quadPoints);
+                    currentPoint = pts[i + 1];
+                }
+            }
         }
+
+        // The native DrawPolygon already adds a 0.5 offset for odd-pixel strokes
+        // to align to pixel centers.  The managed side must therefore snap to the
+        // nearest *integer* so the combined result lands on half-pixel → crisp 1px.
+        // Using SnapCoordinate (which preserves half-pixel values) would cause a
+        // double offset: 0.5 (snap) + 0.5 (native) = 1.0 → integer position →
+        // the stroke spans two pixel rows and appears ~2px thick.
+        //
+        // For paths that contain diagonal segments we skip snapping entirely so
+        // that the native 0.5 shift is a uniform translation (no visual impact on
+        // thickness) and anti-aliased diagonals render at their natural weight.
+        bool isAxisAligned = !hasCurvedSegments && IsAxisAlignedPath(points);
 
         var pointArray = new float[points.Count * 2];
         for (int i = 0; i < points.Count; i++)
@@ -495,10 +647,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             var px = points[i].X + Offset.X;
             var py = points[i].Y + Offset.Y;
 
-            // Integer snapping on arc-generated points turns small radii into beveled corners.
-            // Keep subpixel coordinates for arc paths; keep legacy snapping for straight polygons.
-            if (!hasArc)
+            if (isAxisAligned)
             {
+                // Round to nearest integer; native will add 0.5 → half-pixel → crisp.
                 px = Math.Round(px);
                 py = Math.Round(py);
             }
@@ -525,6 +676,22 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed);
             }
         }
+    }
+
+    /// <summary>
+    /// Checks whether all consecutive point pairs form axis-aligned (horizontal or vertical) segments.
+    /// </summary>
+    private static bool IsAxisAlignedPath(List<Point> points)
+    {
+        for (int i = 0; i < points.Count - 1; i++)
+        {
+            var p1 = points[i];
+            var p2 = points[i + 1];
+            // Segment is axis-aligned if either X or Y is the same
+            if (Math.Abs(p1.X - p2.X) > 0.001 && Math.Abs(p1.Y - p2.Y) > 0.001)
+                return false;
+        }
+        return true;
     }
 
     private List<Point> GetBezierPoints(Point p0, Point p1, Point p2, Point p3)
@@ -1154,8 +1321,11 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_brushCache.Count > MaxBrushCacheSize)
         {
-            // Clear half of the cache when limit is exceeded
-            var toRemove = _brushCache.Take(_brushCache.Count / 2).ToList();
+            // LRU eviction: remove the least recently used half
+            var toRemove = _brushCache
+                .OrderBy(static kvp => kvp.Value.LastAccessSequence)
+                .Take(_brushCache.Count / 2)
+                .ToList();
             foreach (var kvp in toRemove)
             {
                 kvp.Value.Dispose();
@@ -1165,7 +1335,11 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (_textFormatCache.Count > MaxTextFormatCacheSize)
         {
-            var toRemove = _textFormatCache.Take(_textFormatCache.Count / 2).ToList();
+            // LRU eviction: remove least recently used half
+            var toRemove = _textFormatCache
+                .OrderBy(static kvp => kvp.Value.LastAccessSequence)
+                .Take(_textFormatCache.Count / 2)
+                .ToList();
             foreach (var kvp in toRemove)
             {
                 kvp.Value.Dispose();
@@ -1191,7 +1365,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             if (_brushCache.TryGetValue(brush, out var cached))
             {
                 if (cached.CachedColor == color)
+                {
+                    cached.LastAccessSequence = ++_brushCacheSequence;
                     return cached;
+                }
                 // Color changed — dispose old native brush and recreate
                 cached.Dispose();
                 _brushCache.Remove(brush);
@@ -1199,6 +1376,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
             var nb = _context.CreateSolidBrush(color.ScR, color.ScG, color.ScB, color.ScA);
             nb.CachedColor = color;
+            nb.LastAccessSequence = ++_brushCacheSequence;
             _brushCache[brush] = nb;
             return nb;
         }
@@ -1253,6 +1431,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         var stops = MarshalGradientStops(brush.GradientStops);
         var nb = _context.CreateLinearGradientBrush(sx, sy, ex, ey, stops, (uint)brush.GradientStops.Count);
+        nb.LastAccessSequence = ++_brushCacheSequence;
 
         // Replace previous cached entry if any
         if (_brushCache.TryGetValue(brush, out var old))
@@ -1286,6 +1465,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         var stops = MarshalGradientStops(brush.GradientStops);
         var nb = _context.CreateRadialGradientBrush(cx, cy, rx, ry, ox, oy, stops, (uint)brush.GradientStops.Count);
+        nb.LastAccessSequence = ++_brushCacheSequence;
 
         // Replace previous cached entry if any
         if (_brushCache.TryGetValue(brush, out var old))
@@ -1310,6 +1490,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (_textFormatCache.TryGetValue(key, out var cached) && cached.IsValid)
         {
+            cached.LastAccessSequence = ++_brushCacheSequence;
             return cached;
         }
 

@@ -57,21 +57,12 @@ internal static class RenderBackendSelector
             case "direct3d12":
                 backend = RenderBackend.D3D12;
                 return true;
-            case "d3d11":
-            case "dx11":
-            case "direct3d11":
-                backend = RenderBackend.D3D11;
-                return true;
             case "vulkan":
             case "vk":
                 backend = RenderBackend.Vulkan;
                 return true;
             case "metal":
                 backend = RenderBackend.Metal;
-                return true;
-            case "opengl":
-            case "gl":
-                backend = RenderBackend.OpenGL;
                 return true;
             case "software":
             case "cpu":
@@ -91,8 +82,6 @@ internal static class RenderBackendSelector
             [
                 RenderBackend.D3D12,
                 RenderBackend.Vulkan,
-                RenderBackend.D3D11,
-                RenderBackend.OpenGL,
                 RenderBackend.Software
             ];
         }
@@ -103,7 +92,6 @@ internal static class RenderBackendSelector
             [
                 RenderBackend.Metal,
                 RenderBackend.Vulkan,
-                RenderBackend.OpenGL,
                 RenderBackend.Software
             ];
         }
@@ -113,7 +101,6 @@ internal static class RenderBackendSelector
             return
             [
                 RenderBackend.Vulkan,
-                RenderBackend.OpenGL,
                 RenderBackend.Software
             ];
         }
@@ -123,7 +110,6 @@ internal static class RenderBackendSelector
             RenderBackend.D3D12,
             RenderBackend.Metal,
             RenderBackend.Vulkan,
-            RenderBackend.OpenGL,
             RenderBackend.Software
         ];
     }

@@ -19,4 +19,12 @@
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="5.0.0" />
   </ItemGroup>
 
+  <!-- Allow ILC to trim Roslyn when RazorScripting feature switch is off -->
+  <ItemGroup>
+    <TrimmableAssembly Include="Microsoft.CodeAnalysis" />
+    <TrimmableAssembly Include="Microsoft.CodeAnalysis.CSharp" />
+    <TrimmableAssembly Include="Microsoft.CodeAnalysis.CSharp.Scripting" />
+    <TrimmableAssembly Include="Microsoft.CodeAnalysis.Scripting" />
+  </ItemGroup>
+
 </Project>

@@ -130,7 +130,7 @@ public class MenuPopupAndArrowRegressionTests
         var recentPopup = GetPrivateField<Popup>(typeof(MenuItem), recent, "_submenuPopup");
         Assert.True(recentPopup.IsOpen);
 
-        edit.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, edit));
+        edit.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = edit });
 
         var editPopup = GetPrivateField<Popup>(typeof(MenuItem), edit, "_submenuPopup");
         Assert.False(file.IsSubmenuOpen);
@@ -166,7 +166,7 @@ public class MenuPopupAndArrowRegressionTests
         Assert.True(breakpointsPopup.IsOpen);
         Assert.True(addBreakpointPopup.IsOpen);
 
-        goToDefinition.RaiseEvent(new RoutedEventArgs(UIElement.MouseEnterEvent, goToDefinition));
+        goToDefinition.RaiseEvent(new MouseEventArgs(UIElement.MouseEnterEvent) { Source = goToDefinition });
 
         Assert.True(breakpointsPopup.IsOpen);
         Assert.False(addBreakpointPopup.IsOpen);

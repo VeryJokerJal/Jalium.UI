@@ -75,8 +75,16 @@ public class ListView : ListBox
 
         if (element is ListViewItem listViewItem)
         {
-            listViewItem.Content = item;
-            listViewItem.ContentTemplate = ItemTemplate;
+            // When the item IS its own container, do not assign it as its own
+            // Content — the template's ContentPresenter would try to parent the
+            // element that is already in the items panel, causing a
+            // "Visual already has a parent" exception.
+            if (!ReferenceEquals(element, item))
+            {
+                listViewItem.Content = item;
+                listViewItem.ContentTemplate = ItemTemplate;
+            }
+
             listViewItem.ParentListBox = this;
             listViewItem.IsSelected = item == SelectedItem;
 

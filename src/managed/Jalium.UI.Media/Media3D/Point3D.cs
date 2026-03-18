@@ -238,9 +238,37 @@ public struct Matrix3D : IEquatable<Matrix3D>
 
     public void Invert()
     {
-        if (!HasInverse) throw new InvalidOperationException("Matrix is not invertible.");
-        // Simple adjugate/determinant approach (stub - real impl would be more extensive)
-        this = Identity; // Placeholder
+        double det = Determinant;
+        if (Math.Abs(det) <= 1e-15) throw new InvalidOperationException("Matrix is not invertible.");
+
+        double invDet = 1.0 / det;
+
+        // Cofactor expansion for 4x4 matrix inversion
+        // Using row4 = (OffsetX, OffsetY, OffsetZ, M44)
+        double a11 = M11, a12 = M12, a13 = M13, a14 = M14;
+        double a21 = M21, a22 = M22, a23 = M23, a24 = M24;
+        double a31 = M31, a32 = M32, a33 = M33, a34 = M34;
+        double a41 = OffsetX, a42 = OffsetY, a43 = OffsetZ, a44 = M44;
+
+        M11 = (a22 * (a33 * a44 - a34 * a43) - a23 * (a32 * a44 - a34 * a42) + a24 * (a32 * a43 - a33 * a42)) * invDet;
+        M12 = -(a12 * (a33 * a44 - a34 * a43) - a13 * (a32 * a44 - a34 * a42) + a14 * (a32 * a43 - a33 * a42)) * invDet;
+        M13 = (a12 * (a23 * a44 - a24 * a43) - a13 * (a22 * a44 - a24 * a42) + a14 * (a22 * a43 - a23 * a42)) * invDet;
+        M14 = -(a12 * (a23 * a34 - a24 * a33) - a13 * (a22 * a34 - a24 * a32) + a14 * (a22 * a33 - a23 * a32)) * invDet;
+
+        M21 = -(a21 * (a33 * a44 - a34 * a43) - a23 * (a31 * a44 - a34 * a41) + a24 * (a31 * a43 - a33 * a41)) * invDet;
+        M22 = (a11 * (a33 * a44 - a34 * a43) - a13 * (a31 * a44 - a34 * a41) + a14 * (a31 * a43 - a33 * a41)) * invDet;
+        M23 = -(a11 * (a23 * a44 - a24 * a43) - a13 * (a21 * a44 - a24 * a41) + a14 * (a21 * a43 - a23 * a41)) * invDet;
+        M24 = (a11 * (a23 * a34 - a24 * a33) - a13 * (a21 * a34 - a24 * a31) + a14 * (a21 * a33 - a23 * a31)) * invDet;
+
+        M31 = (a21 * (a32 * a44 - a34 * a42) - a22 * (a31 * a44 - a34 * a41) + a24 * (a31 * a42 - a32 * a41)) * invDet;
+        M32 = -(a11 * (a32 * a44 - a34 * a42) - a12 * (a31 * a44 - a34 * a41) + a14 * (a31 * a42 - a32 * a41)) * invDet;
+        M33 = (a11 * (a22 * a44 - a24 * a42) - a12 * (a21 * a44 - a24 * a41) + a14 * (a21 * a42 - a22 * a41)) * invDet;
+        M34 = -(a11 * (a22 * a34 - a24 * a32) - a12 * (a21 * a34 - a24 * a31) + a14 * (a21 * a32 - a22 * a31)) * invDet;
+
+        OffsetX = -(a21 * (a32 * a43 - a33 * a42) - a22 * (a31 * a43 - a33 * a41) + a23 * (a31 * a42 - a32 * a41)) * invDet;
+        OffsetY = (a11 * (a32 * a43 - a33 * a42) - a12 * (a31 * a43 - a33 * a41) + a13 * (a31 * a42 - a32 * a41)) * invDet;
+        OffsetZ = -(a11 * (a22 * a43 - a23 * a42) - a12 * (a21 * a43 - a23 * a41) + a13 * (a21 * a42 - a22 * a41)) * invDet;
+        M44 = (a11 * (a22 * a33 - a23 * a32) - a12 * (a21 * a33 - a23 * a31) + a13 * (a21 * a32 - a22 * a31)) * invDet;
     }
 
     public static Matrix3D operator *(Matrix3D a, Matrix3D b) => new(

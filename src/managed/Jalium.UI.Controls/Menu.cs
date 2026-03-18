@@ -398,10 +398,10 @@ public class MenuItem : HeaderedItemsControl
         Focusable = true;
         Items.CollectionChanged += OnItemsCollectionChanged;
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
 
         UpdateRole();
         UpdateIsSelected();
@@ -411,11 +411,11 @@ public class MenuItem : HeaderedItemsControl
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             if (HasItems)
             {
@@ -449,7 +449,7 @@ public class MenuItem : HeaderedItemsControl
         }
     }
 
-    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
         if (!IsEnabled)
         {
@@ -484,7 +484,7 @@ public class MenuItem : HeaderedItemsControl
         }
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         _isPointerOverMenuItem = false;
         UpdateIsSelected();
@@ -493,84 +493,81 @@ public class MenuItem : HeaderedItemsControl
         // MenuItem into the popup content area.
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is KeyEventArgs keyArgs)
+        if (e.Key == Key.Enter || e.Key == Key.Space)
         {
-            if (keyArgs.Key == Key.Enter || keyArgs.Key == Key.Space)
+            if (HasItems)
             {
-                if (HasItems)
-                {
-                    IsSubmenuOpen = true;
-                    FocusFirstSubmenuItem();
-                }
-                else
-                {
-                    OnClick();
-                }
-                e.Handled = true;
+                IsSubmenuOpen = true;
+                FocusFirstSubmenuItem();
             }
-            else if (keyArgs.Key == Key.Right)
+            else
             {
-                if (HasItems)
-                {
-                    IsSubmenuOpen = true;
-                    FocusFirstSubmenuItem();
-                }
-                e.Handled = true;
+                OnClick();
             }
-            else if (keyArgs.Key == Key.Left)
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Right)
+        {
+            if (HasItems)
             {
-                if (IsSubmenuOpen)
-                {
-                    IsSubmenuOpen = false;
-                }
-                else
-                {
-                    // Close parent submenu and return focus to parent
-                    var parent = FindParentMenuItem();
-                    if (parent != null)
-                    {
-                        parent.IsSubmenuOpen = false;
-                        parent.Focus();
-                    }
-                }
-                e.Handled = true;
+                IsSubmenuOpen = true;
+                FocusFirstSubmenuItem();
             }
-            else if (keyArgs.Key == Key.Up)
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Left)
+        {
+            if (IsSubmenuOpen)
             {
-                FocusSiblingMenuItem(-1);
-                e.Handled = true;
+                IsSubmenuOpen = false;
             }
-            else if (keyArgs.Key == Key.Down)
+            else
             {
-                // If top-level, open submenu; otherwise navigate to next sibling
-                var isTopLevel = VisualParent is Panel p && p.VisualParent is Menu;
-                if (isTopLevel && HasItems)
+                // Close parent submenu and return focus to parent
+                var parent = FindParentMenuItem();
+                if (parent != null)
                 {
-                    IsSubmenuOpen = true;
-                    FocusFirstSubmenuItem();
+                    parent.IsSubmenuOpen = false;
+                    parent.Focus();
                 }
-                else
-                {
-                    FocusSiblingMenuItem(1);
-                }
-                e.Handled = true;
             }
-            else if (keyArgs.Key == Key.Escape)
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Up)
+        {
+            FocusSiblingMenuItem(-1);
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Down)
+        {
+            // If top-level, open submenu; otherwise navigate to next sibling
+            var isTopLevel = VisualParent is Panel p && p.VisualParent is Menu;
+            if (isTopLevel && HasItems)
             {
-                if (IsSubmenuOpen)
-                {
-                    IsSubmenuOpen = false;
-                }
-                else
-                {
-                    CloseParentMenus();
-                }
-                e.Handled = true;
+                IsSubmenuOpen = true;
+                FocusFirstSubmenuItem();
             }
+            else
+            {
+                FocusSiblingMenuItem(1);
+            }
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Escape)
+        {
+            if (IsSubmenuOpen)
+            {
+                IsSubmenuOpen = false;
+            }
+            else
+            {
+                CloseParentMenus();
+            }
+            e.Handled = true;
         }
     }
 

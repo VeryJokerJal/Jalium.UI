@@ -161,34 +161,34 @@ public class GridSplitter : Control
         VerticalAlignment = VerticalAlignment.Stretch;
         Cursor = SizeWE; // Default to horizontal resize cursor
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     #endregion
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
             // Use position relative to parent Grid for stable coordinates during drag
             var grid = GetParentGrid();
             var relativeTo = grid as UIElement ?? this;
-            StartDrag(mouseArgs.GetPosition(relativeTo));
+            StartDrag(e.GetPosition(relativeTo));
             e.Handled = true;
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             if (_isDragging)
             {
@@ -198,69 +198,66 @@ public class GridSplitter : Control
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (_isDragging && e is MouseEventArgs mouseArgs)
+        if (_isDragging)
         {
             // Use position relative to parent Grid for stable coordinates during drag
             var grid = GetParentGrid();
             var relativeTo = grid as UIElement ?? this;
-            UpdateDrag(mouseArgs.GetPosition(relativeTo));
+            UpdateDrag(e.GetPosition(relativeTo));
             e.Handled = true;
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is KeyEventArgs keyArgs)
+        var delta = 0.0;
+        var isHorizontal = GetEffectiveResizeDirection() == GridResizeDirection.Columns;
+
+        switch (e.Key)
         {
-            var delta = 0.0;
-            var isHorizontal = GetEffectiveResizeDirection() == GridResizeDirection.Columns;
+            case Key.Left when isHorizontal:
+                delta = -KeyboardIncrement;
+                break;
+            case Key.Right when isHorizontal:
+                delta = KeyboardIncrement;
+                break;
+            case Key.Up when !isHorizontal:
+                delta = -KeyboardIncrement;
+                break;
+            case Key.Down when !isHorizontal:
+                delta = KeyboardIncrement;
+                break;
+        }
 
-            switch (keyArgs.Key)
+        if (delta != 0)
+        {
+            // Initialize state that ApplyResize and GetResizeIndices depend on
+            _effectiveResizeDirection = GetEffectiveResizeDirection();
+            var grid = GetParentGrid();
+            if (grid != null)
             {
-                case Key.Left when isHorizontal:
-                    delta = -KeyboardIncrement;
-                    break;
-                case Key.Right when isHorizontal:
-                    delta = KeyboardIncrement;
-                    break;
-                case Key.Up when !isHorizontal:
-                    delta = -KeyboardIncrement;
-                    break;
-                case Key.Down when !isHorizontal:
-                    delta = KeyboardIncrement;
-                    break;
-            }
-
-            if (delta != 0)
-            {
-                // Initialize state that ApplyResize and GetResizeIndices depend on
-                _effectiveResizeDirection = GetEffectiveResizeDirection();
-                var grid = GetParentGrid();
-                if (grid != null)
+                var (idx1, idx2) = GetResizeIndices();
+                if (_effectiveResizeDirection == GridResizeDirection.Columns)
                 {
-                    var (idx1, idx2) = GetResizeIndices();
-                    if (_effectiveResizeDirection == GridResizeDirection.Columns)
-                    {
-                        _originalDimension1 = idx1 >= 0 && idx1 < grid.ColumnDefinitions.Count
-                            ? grid.ColumnDefinitions[idx1].ActualWidth : 0;
-                        _originalDimension2 = idx2 >= 0 && idx2 < grid.ColumnDefinitions.Count
-                            ? grid.ColumnDefinitions[idx2].ActualWidth : 0;
-                    }
-                    else
-                    {
-                        _originalDimension1 = idx1 >= 0 && idx1 < grid.RowDefinitions.Count
-                            ? grid.RowDefinitions[idx1].ActualHeight : 0;
-                        _originalDimension2 = idx2 >= 0 && idx2 < grid.RowDefinitions.Count
-                            ? grid.RowDefinitions[idx2].ActualHeight : 0;
-                    }
+                    _originalDimension1 = idx1 >= 0 && idx1 < grid.ColumnDefinitions.Count
+                        ? grid.ColumnDefinitions[idx1].ActualWidth : 0;
+                    _originalDimension2 = idx2 >= 0 && idx2 < grid.ColumnDefinitions.Count
+                        ? grid.ColumnDefinitions[idx2].ActualWidth : 0;
                 }
-                ApplyResize(delta);
-                e.Handled = true;
+                else
+                {
+                    _originalDimension1 = idx1 >= 0 && idx1 < grid.RowDefinitions.Count
+                        ? grid.RowDefinitions[idx1].ActualHeight : 0;
+                    _originalDimension2 = idx2 >= 0 && idx2 < grid.RowDefinitions.Count
+                        ? grid.RowDefinitions[idx2].ActualHeight : 0;
+                }
             }
+            ApplyResize(delta);
+            e.Handled = true;
         }
     }
 

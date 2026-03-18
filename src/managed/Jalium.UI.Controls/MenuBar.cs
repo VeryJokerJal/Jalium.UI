@@ -28,7 +28,7 @@ public class MenuBar : Control
     {
         Focusable = true;
         _items.CollectionChanged += OnItemsCollectionChanged;
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     /// <inheritdoc />
@@ -227,9 +227,9 @@ public class MenuBar : Control
         return false;
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        if (e.Handled)
         {
             return;
         }
@@ -239,7 +239,7 @@ public class MenuBar : Control
             return;
         }
 
-        var handled = keyArgs.Key switch
+        var handled = e.Key switch
         {
             Key.Left => FocusBoundaryItem(last: true, openMenu: false),
             Key.Right or Key.Down => FocusBoundaryItem(last: false, openMenu: false),
@@ -250,7 +250,7 @@ public class MenuBar : Control
 
         if (handled)
         {
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
     }
 }

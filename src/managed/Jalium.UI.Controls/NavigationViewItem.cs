@@ -195,7 +195,7 @@ public class NavigationViewItem : ContentControl
         UseTemplateContentManagement();
 
         // Mouse down for click handling (expand/invoke)
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
     }
 
     #region Template
@@ -258,12 +258,12 @@ public class NavigationViewItem : ContentControl
 
     #region Mouse Event Handlers
 
-    private void OnMouseDownHandler(object? sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object? sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled)
             return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
 
@@ -282,7 +282,7 @@ public class NavigationViewItem : ContentControl
                 }
             }
 
-            mouseArgs.Handled = true;
+            e.Handled = true;
         }
     }
 
@@ -331,7 +331,7 @@ public class NavigationViewItem : ContentControl
     {
         if (_indentSpacer != null)
         {
-            _indentSpacer.Width = 12 + _indentLevel * IndentPerLevel;
+            _indentSpacer.Width = 14 + _indentLevel * IndentPerLevel;
         }
     }
 

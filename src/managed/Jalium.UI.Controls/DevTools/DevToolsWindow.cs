@@ -10,7 +10,6 @@ using Jalium.UI.Threading;
 
 namespace Jalium.UI.Controls.DevTools;
 
-#if DEBUG
 /// <summary>
 /// Developer tools window for inspecting the visual tree and element properties.
 /// Features: syntax-highlighted values, color swatches, inline editing, font preview,
@@ -203,7 +202,7 @@ public class DevToolsWindow : Window
         _overlay = new DevToolsOverlay(_targetWindow);
         _targetWindow.DevToolsOverlay = _overlay;
 
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
         Loaded += OnDevToolsLoaded;
         Closing += OnDevToolsClosing;
     }
@@ -545,43 +544,41 @@ public class DevToolsWindow : Window
         _overlay = null;
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs) return;
-
-        if (keyArgs.Key == Key.F5)
+        if (e.Key == Key.F5)
         {
             RefreshVisualTree();
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
-        else if (keyArgs.Key == Key.Escape)
+        else if (e.Key == Key.Escape)
         {
             if (_isPickerActive)
             {
                 DeactivatePicker();
-                keyArgs.Handled = true;
+                e.Handled = true;
             }
             else
             {
                 CloseDevTools();
-                keyArgs.Handled = true;
+                e.Handled = true;
             }
         }
-        else if (keyArgs.Key == Key.F12)
+        else if (e.Key == Key.F12)
         {
             CloseDevTools();
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
-        else if (keyArgs.IsControlDown)
+        else if (e.IsControlDown)
         {
-            switch (keyArgs.Key)
+            switch (e.Key)
             {
                 case Key.F:
                     _searchTextBox.Focus();
-                    keyArgs.Handled = true;
+                    e.Handled = true;
                     break;
                 case Key.C:
-                    if (keyArgs.IsShiftDown)
+                    if (e.IsShiftDown)
                     {
                         // Ctrl+Shift+C: Toggle element picker
                         if (_isPickerActive) DeactivatePicker(); else ActivatePicker();
@@ -591,11 +588,11 @@ public class DevToolsWindow : Window
                         // Ctrl+C: Copy element info
                         CopyElementInfo();
                     }
-                    keyArgs.Handled = true;
+                    e.Handled = true;
                     break;
                 case Key.E:
-                    if (keyArgs.IsShiftDown) CollapseAll(); else ExpandAll();
-                    keyArgs.Handled = true;
+                    if (e.IsShiftDown) CollapseAll(); else ExpandAll();
+                    e.Handled = true;
                     break;
             }
         }
@@ -2711,4 +2708,3 @@ internal sealed class PendingTreeBuildNode
 
     public int NextChildIndex { get; set; }
 }
-#endif

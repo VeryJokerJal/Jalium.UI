@@ -417,7 +417,7 @@ public class DataGrid : Control
         Columns.CollectionChanged += OnColumnsCollectionChanged;
         SelectedItems = _selectedItems;
 
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     #endregion
@@ -516,14 +516,14 @@ public class DataGrid : Control
                 Column = column
             };
 
-            header.AddHandler(MouseDownEvent, new RoutedEventHandler(OnColumnHeaderClick));
+            header.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnColumnHeaderClick));
             header.UpdateSortIndicator(column.SortDirection);
 
             _columnHeadersHost.Children.Add(header);
         }
     }
 
-    private void OnColumnHeaderClick(object sender, RoutedEventArgs e)
+    private void OnColumnHeaderClick(object sender, MouseButtonEventArgs e)
     {
         if (!CanUserSortColumns) return;
 
@@ -779,7 +779,7 @@ public class DataGrid : Control
 
         if (columnStart < 0 || columnEnd < 0 || Columns.Count == 0)
         {
-            row.AddHandler(MouseDownEvent, new RoutedEventHandler(OnRowMouseDown));
+            row.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnRowMouseDown));
             return row;
         }
 
@@ -806,19 +806,19 @@ public class DataGrid : Control
             row.CellsByColumn[colIndex] = cell;
         }
 
-        row.AddHandler(MouseDownEvent, new RoutedEventHandler(OnRowMouseDown));
+        row.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnRowMouseDown));
 
         return row;
     }
 
-    private void OnRowMouseDown(object sender, RoutedEventArgs e)
+    private void OnRowMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (sender is DataGridRow row && e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (sender is DataGridRow row && e.ChangedButton == MouseButton.Left)
         {
             Focus();
-            SelectRow(row.RowIndex, mouseArgs.KeyboardModifiers);
+            SelectRow(row.RowIndex, e.KeyboardModifiers);
             e.Handled = true;
         }
     }
@@ -1077,65 +1077,62 @@ public class DataGrid : Control
 
     #region Input Handling
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is KeyEventArgs keyArgs)
+        switch (e.Key)
         {
-            switch (keyArgs.Key)
-            {
-                case Key.Up:
-                    if (SelectedIndex > 0)
-                        SelectedIndex--;
+            case Key.Up:
+                if (SelectedIndex > 0)
+                    SelectedIndex--;
+                e.Handled = true;
+                break;
+            case Key.Down:
+                if (SelectedIndex < _items.Count - 1)
+                    SelectedIndex++;
+                e.Handled = true;
+                break;
+            case Key.Home:
+                if (_items.Count > 0)
+                    SelectedIndex = 0;
+                e.Handled = true;
+                break;
+            case Key.End:
+                if (_items.Count > 0)
+                    SelectedIndex = _items.Count - 1;
+                e.Handled = true;
+                break;
+            case Key.A when e.KeyboardModifiers.HasFlag(ModifierKeys.Control):
+                if (SelectionMode == DataGridSelectionMode.Extended)
+                    SelectAll();
+                e.Handled = true;
+                break;
+            case Key.F2:
+                BeginEdit();
+                e.Handled = true;
+                break;
+            case Key.Escape:
+                if (_currentEditingCell != null)
+                {
+                    CancelEdit();
                     e.Handled = true;
-                    break;
-                case Key.Down:
-                    if (SelectedIndex < _items.Count - 1)
-                        SelectedIndex++;
+                }
+                break;
+            case Key.Enter:
+                if (_currentEditingCell != null)
+                {
+                    CommitEdit();
                     e.Handled = true;
-                    break;
-                case Key.Home:
-                    if (_items.Count > 0)
-                        SelectedIndex = 0;
+                }
+                break;
+            case Key.Tab:
+                if (_currentEditingCell != null)
+                {
+                    CommitEdit();
                     e.Handled = true;
-                    break;
-                case Key.End:
-                    if (_items.Count > 0)
-                        SelectedIndex = _items.Count - 1;
-                    e.Handled = true;
-                    break;
-                case Key.A when keyArgs.KeyboardModifiers.HasFlag(ModifierKeys.Control):
-                    if (SelectionMode == DataGridSelectionMode.Extended)
-                        SelectAll();
-                    e.Handled = true;
-                    break;
-                case Key.F2:
-                    BeginEdit();
-                    e.Handled = true;
-                    break;
-                case Key.Escape:
-                    if (_currentEditingCell != null)
-                    {
-                        CancelEdit();
-                        e.Handled = true;
-                    }
-                    break;
-                case Key.Enter:
-                    if (_currentEditingCell != null)
-                    {
-                        CommitEdit();
-                        e.Handled = true;
-                    }
-                    break;
-                case Key.Tab:
-                    if (_currentEditingCell != null)
-                    {
-                        CommitEdit();
-                        e.Handled = true;
-                    }
-                    break;
-            }
+                }
+                break;
         }
     }
 
@@ -2006,9 +2003,9 @@ public class DataGridColumnHeader : ContentControl
         UseTemplateContentManagement();
         Focusable = false;
 
-        AddHandler(PreviewMouseDownEvent, new RoutedEventHandler(OnPreviewMouseDownHandler), true);
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler), true);
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler), true);
+        AddHandler(PreviewMouseDownEvent, new MouseButtonEventHandler(OnPreviewMouseDownHandler), true);
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler), true);
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler), true);
     }
 
     protected override void OnApplyTemplate()
@@ -2063,15 +2060,14 @@ public class DataGridColumnHeader : ContentControl
             : null;
     }
 
-    private void OnPreviewMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnPreviewMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs
-            && mouseArgs.ChangedButton == MouseButton.Left
+        if (e.ChangedButton == MouseButton.Left
             && Column != null
-            && IsInResizeZone(mouseArgs.GetPosition(this)))
+            && IsInResizeZone(e.GetPosition(this)))
         {
             _isResizing = true;
-            _resizeStartX = mouseArgs.GetPosition(null).X;
+            _resizeStartX = e.GetPosition(null).X;
             _resizeStartWidth = Column.Width;
             CaptureMouse();
             Cursor = Jalium.UI.Cursors.SizeWE;
@@ -2079,16 +2075,11 @@ public class DataGridColumnHeader : ContentControl
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (e is not MouseEventArgs mouseArgs)
-        {
-            return;
-        }
-
         if (_isResizing && Column != null)
         {
-            var currentX = mouseArgs.GetPosition(null).X;
+            var currentX = e.GetPosition(null).X;
             var delta = currentX - _resizeStartX;
             var newWidth = Math.Clamp(_resizeStartWidth + delta, Column.MinWidth, Column.MaxWidth);
             ParentDataGrid?.ResizeColumn(Column, newWidth);
@@ -2097,10 +2088,10 @@ public class DataGridColumnHeader : ContentControl
             return;
         }
 
-        UpdateResizeCursor(mouseArgs.GetPosition(this));
+        UpdateResizeCursor(e.GetPosition(this));
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
         if (_isResizing)
         {
@@ -2110,14 +2101,7 @@ public class DataGridColumnHeader : ContentControl
                 ReleaseMouseCapture();
             }
 
-            if (e is MouseEventArgs mouseArgs)
-            {
-                UpdateResizeCursor(mouseArgs.GetPosition(this));
-            }
-            else
-            {
-                Cursor = null;
-            }
+            UpdateResizeCursor(e.GetPosition(this));
 
             e.Handled = true;
         }

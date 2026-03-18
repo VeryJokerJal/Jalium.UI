@@ -9,6 +9,15 @@ set(SOURCES
     src/metal_init.cpp
 )
 
+# On Apple platforms, compile as Objective-C++
+if(APPLE)
+    set_source_files_properties(
+        src/metal_backend.cpp
+        src/metal_init.cpp
+        PROPERTIES LANGUAGE OBJCXX
+    )
+endif()
+
 add_library(${PROJECT_NAME} SHARED ${HEADERS} ${SOURCES})
 
 target_include_directories(${PROJECT_NAME}
@@ -23,6 +32,20 @@ target_link_libraries(${PROJECT_NAME}
     PRIVATE
         jalium.native.core
 )
+
+if(APPLE)
+    target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+            "-framework Metal"
+            "-framework QuartzCore"
+            "-framework AppKit"
+            "-framework CoreFoundation"
+            "-framework CoreGraphics"
+            "-framework CoreText"
+            "-framework ImageIO"
+    )
+    target_compile_options(${PROJECT_NAME} PRIVATE -fobjc-arc)
+endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "jalium.native.metal"

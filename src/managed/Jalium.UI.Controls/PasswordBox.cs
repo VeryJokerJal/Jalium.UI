@@ -167,9 +167,9 @@ public class PasswordBox : Control, IImeSupport
 
     #region Static Brushes & Pens
 
-    private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
-    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
-    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    private static readonly SolidColorBrush s_fallbackPlaceholderBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_fallbackFocusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_fallbackWhiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
     private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
     private static readonly SolidColorBrush s_compositionUnderlineBrush = new(Color.FromRgb(200, 200, 100));
@@ -469,11 +469,11 @@ public class PasswordBox : Control, IImeSupport
         _lastClickTime = DateTime.MinValue;
 
         // Register input event handlers
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(TextInputEvent, new RoutedEventHandler(OnTextInputHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(TextInputEvent, new TextCompositionEventHandler(OnTextInputHandler));
 
         // Subscribe to IME events
         InputMethod.CompositionStarted += OnImeCompositionStarted;
@@ -481,8 +481,8 @@ public class PasswordBox : Control, IImeSupport
         InputMethod.CompositionEnded += OnImeCompositionEnded;
 
         // Subscribe to focus events for IME target management
-        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnGotFocusHandler));
-        AddHandler(LostKeyboardFocusEvent, new RoutedEventHandler(OnLostFocusHandler));
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
+        AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnLostFocusHandler));
     }
 
     #endregion
@@ -724,12 +724,16 @@ public class PasswordBox : Control, IImeSupport
 
     private Brush ResolveFocusedBorderBrush()
     {
-        return TryFindResource("ControlBorderFocused") as Brush ?? s_focusBorderBrush;
+        return TryFindResource("ControlBorderFocused") as Brush
+            ?? TryFindResource("AccentBrush") as Brush
+            ?? s_fallbackFocusBorderBrush;
     }
 
     private Brush ResolvePlaceholderBrush()
     {
-        return TryFindResource("TextPlaceholder") as Brush ?? s_placeholderBrush;
+        return TryFindResource("TextPlaceholder") as Brush
+            ?? TryFindResource("TextFillColorTertiaryBrush") as Brush
+            ?? s_fallbackPlaceholderBrush;
     }
 
     private Brush ResolveSecondaryTextBrush()
@@ -739,7 +743,9 @@ public class PasswordBox : Control, IImeSupport
 
     private void DrawText(DrawingContext dc, Rect contentRect, double lineHeight)
     {
-        var textBrush = Foreground ?? s_whiteBrush;
+        var textBrush = Foreground
+            ?? TryFindResource("TextFillColorPrimaryBrush") as Brush
+            ?? s_fallbackWhiteBrush;
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
 
         var displayText = IsPasswordRevealed ? _password : new string(PasswordChar, _password.Length);
@@ -1161,12 +1167,12 @@ public class PasswordBox : Control, IImeSupport
 
     #region Input Handling
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        if (e.Handled)
             return;
 
-        OnKeyDown(keyArgs);
+        OnKeyDown(e);
     }
 
     private void OnKeyDown(KeyEventArgs e)
@@ -1246,32 +1252,32 @@ public class PasswordBox : Control, IImeSupport
         }
     }
 
-    private void OnTextInputHandler(object sender, RoutedEventArgs e)
+    private void OnTextInputHandler(object sender, TextCompositionEventArgs e)
     {
-        if (e is not TextCompositionEventArgs textArgs || textArgs.Handled || IsReadOnly)
+        if (e.Handled || IsReadOnly)
             return;
 
-        if (!string.IsNullOrEmpty(textArgs.Text))
+        if (!string.IsNullOrEmpty(e.Text))
         {
-            var text = textArgs.Text;
+            var text = e.Text;
             // Filter control characters and newlines
             if (text.Length == 1 && (char.IsControl(text[0]) || text[0] == '\n' || text[0] == '\r'))
                 return;
 
             InsertText(text);
-            textArgs.Handled = true;
+            e.Handled = true;
         }
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
 
-            var position = mouseArgs.GetPosition(this);
+            var position = e.GetPosition(this);
             var now = DateTime.Now;
 
             // Detect double/triple click
@@ -1302,7 +1308,7 @@ public class PasswordBox : Control, IImeSupport
                 CaptureMouse();
                 var newCaretIndex = GetCaretIndexFromPosition(position);
 
-                if ((mouseArgs.KeyboardModifiers & ModifierKeys.Shift) != 0)
+                if ((e.KeyboardModifiers & ModifierKeys.Shift) != 0)
                 {
                     ExtendSelection(newCaretIndex);
                 }
@@ -1323,11 +1329,11 @@ public class PasswordBox : Control, IImeSupport
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             if (_isSelecting)
             {
@@ -1339,23 +1345,20 @@ public class PasswordBox : Control, IImeSupport
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
         if (!IsEnabled || !_isSelecting) return;
 
-        if (e is MouseEventArgs mouseArgs)
-        {
-            var position = mouseArgs.GetPosition(this);
-            var newCaretIndex = GetCaretIndexFromPosition(position);
+        var position = e.GetPosition(this);
+        var newCaretIndex = GetCaretIndexFromPosition(position);
 
-            _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
-            _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
-            _caretIndex = newCaretIndex;
+        _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
+        _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
+        _caretIndex = newCaretIndex;
 
-            EnsureCaretVisible();
-            InvalidateVisual();
-            e.Handled = true;
-        }
+        EnsureCaretVisible();
+        InvalidateVisual();
+        e.Handled = true;
     }
 
     /// <inheritdoc />
@@ -1592,12 +1595,12 @@ public class PasswordBox : Control, IImeSupport
 
     #region IME Support
 
-    private void OnGotFocusHandler(object sender, RoutedEventArgs e)
+    private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         InputMethod.SetTarget(this);
     }
 
-    private void OnLostFocusHandler(object sender, RoutedEventArgs e)
+    private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         if (InputMethod.Current == this)
         {

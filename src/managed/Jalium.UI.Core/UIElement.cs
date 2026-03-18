@@ -1,3 +1,4 @@
+using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 
 namespace Jalium.UI;
@@ -1542,25 +1543,25 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Identifies the PreviewKeyDown routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewKeyDownEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewKeyDown), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewKeyDown), RoutingStrategy.Tunnel, typeof(KeyEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the KeyDown routed event.
     /// </summary>
     public static readonly RoutedEvent KeyDownEvent =
-        EventManager.RegisterRoutedEvent(nameof(KeyDown), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(KeyDown), RoutingStrategy.Bubble, typeof(KeyEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewKeyUp routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewKeyUpEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewKeyUp), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewKeyUp), RoutingStrategy.Tunnel, typeof(KeyEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the KeyUp routed event.
     /// </summary>
     public static readonly RoutedEvent KeyUpEvent =
-        EventManager.RegisterRoutedEvent(nameof(KeyUp), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(KeyUp), RoutingStrategy.Bubble, typeof(KeyEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewTextInput routed event.
@@ -1578,61 +1579,61 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Identifies the PreviewMouseDown routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewMouseDownEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewMouseDown), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewMouseDown), RoutingStrategy.Tunnel, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseDown routed event.
     /// </summary>
     public static readonly RoutedEvent MouseDownEvent =
-        EventManager.RegisterRoutedEvent(nameof(MouseDown), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(MouseDown), RoutingStrategy.Bubble, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewMouseUp routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewMouseUpEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewMouseUp), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewMouseUp), RoutingStrategy.Tunnel, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseUp routed event.
     /// </summary>
     public static readonly RoutedEvent MouseUpEvent =
-        EventManager.RegisterRoutedEvent(nameof(MouseUp), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(MouseUp), RoutingStrategy.Bubble, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewMouseMove routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewMouseMoveEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewMouseMove), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewMouseMove), RoutingStrategy.Tunnel, typeof(MouseEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseMove routed event.
     /// </summary>
     public static readonly RoutedEvent MouseMoveEvent =
-        EventManager.RegisterRoutedEvent(nameof(MouseMove), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(MouseMove), RoutingStrategy.Bubble, typeof(MouseEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseEnter routed event.
     /// </summary>
     public static readonly RoutedEvent MouseEnterEvent =
-        EventManager.RegisterRoutedEvent(nameof(MouseEnter), RoutingStrategy.Direct, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(MouseEnter), RoutingStrategy.Direct, typeof(MouseEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseLeave routed event.
     /// </summary>
     public static readonly RoutedEvent MouseLeaveEvent =
-        EventManager.RegisterRoutedEvent(nameof(MouseLeave), RoutingStrategy.Direct, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(MouseLeave), RoutingStrategy.Direct, typeof(MouseEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewMouseWheel routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewMouseWheelEvent =
-        EventManager.RegisterRoutedEvent(nameof(PreviewMouseWheel), RoutingStrategy.Tunnel, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(PreviewMouseWheel), RoutingStrategy.Tunnel, typeof(MouseWheelEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseWheel routed event.
     /// </summary>
     public static readonly RoutedEvent MouseWheelEvent =
-        EventManager.RegisterRoutedEvent(nameof(MouseWheel), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+        EventManager.RegisterRoutedEvent(nameof(MouseWheel), RoutingStrategy.Bubble, typeof(MouseWheelEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewTouchDown routed event.
@@ -1895,7 +1896,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when a key is pressed (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewKeyDown
+    public event KeyEventHandler PreviewKeyDown
     {
         add => AddHandler(PreviewKeyDownEvent, value);
         remove => RemoveHandler(PreviewKeyDownEvent, value);
@@ -1904,7 +1905,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when a key is pressed (bubble).
     /// </summary>
-    public event RoutedEventHandler KeyDown
+    public event KeyEventHandler KeyDown
     {
         add => AddHandler(KeyDownEvent, value);
         remove => RemoveHandler(KeyDownEvent, value);
@@ -1913,7 +1914,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when a key is released (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewKeyUp
+    public event KeyEventHandler PreviewKeyUp
     {
         add => AddHandler(PreviewKeyUpEvent, value);
         remove => RemoveHandler(PreviewKeyUpEvent, value);
@@ -1922,7 +1923,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when a key is released (bubble).
     /// </summary>
-    public event RoutedEventHandler KeyUp
+    public event KeyEventHandler KeyUp
     {
         add => AddHandler(KeyUpEvent, value);
         remove => RemoveHandler(KeyUpEvent, value);
@@ -1949,7 +1950,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when a mouse button is pressed (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewMouseDown
+    public event MouseButtonEventHandler PreviewMouseDown
     {
         add => AddHandler(PreviewMouseDownEvent, value);
         remove => RemoveHandler(PreviewMouseDownEvent, value);
@@ -1958,7 +1959,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when a mouse button is pressed (bubble).
     /// </summary>
-    public event RoutedEventHandler MouseDown
+    public event MouseButtonEventHandler MouseDown
     {
         add => AddHandler(MouseDownEvent, value);
         remove => RemoveHandler(MouseDownEvent, value);
@@ -1967,7 +1968,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when a mouse button is released (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewMouseUp
+    public event MouseButtonEventHandler PreviewMouseUp
     {
         add => AddHandler(PreviewMouseUpEvent, value);
         remove => RemoveHandler(PreviewMouseUpEvent, value);
@@ -1976,7 +1977,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when a mouse button is released (bubble).
     /// </summary>
-    public event RoutedEventHandler MouseUp
+    public event MouseButtonEventHandler MouseUp
     {
         add => AddHandler(MouseUpEvent, value);
         remove => RemoveHandler(MouseUpEvent, value);
@@ -1985,7 +1986,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when the mouse moves (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewMouseMove
+    public event MouseEventHandler PreviewMouseMove
     {
         add => AddHandler(PreviewMouseMoveEvent, value);
         remove => RemoveHandler(PreviewMouseMoveEvent, value);
@@ -1994,7 +1995,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when the mouse moves (bubble).
     /// </summary>
-    public event RoutedEventHandler MouseMove
+    public event MouseEventHandler MouseMove
     {
         add => AddHandler(MouseMoveEvent, value);
         remove => RemoveHandler(MouseMoveEvent, value);
@@ -2003,7 +2004,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when the mouse enters this element.
     /// </summary>
-    public event RoutedEventHandler MouseEnter
+    public event MouseEventHandler MouseEnter
     {
         add => AddHandler(MouseEnterEvent, value);
         remove => RemoveHandler(MouseEnterEvent, value);
@@ -2012,7 +2013,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when the mouse leaves this element.
     /// </summary>
-    public event RoutedEventHandler MouseLeave
+    public event MouseEventHandler MouseLeave
     {
         add => AddHandler(MouseLeaveEvent, value);
         remove => RemoveHandler(MouseLeaveEvent, value);
@@ -2021,7 +2022,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when the mouse wheel is rotated (tunnel).
     /// </summary>
-    public event RoutedEventHandler PreviewMouseWheel
+    public event MouseWheelEventHandler PreviewMouseWheel
     {
         add => AddHandler(PreviewMouseWheelEvent, value);
         remove => RemoveHandler(PreviewMouseWheelEvent, value);
@@ -2030,7 +2031,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// <summary>
     /// Occurs when the mouse wheel is rotated (bubble).
     /// </summary>
-    public event RoutedEventHandler MouseWheel
+    public event MouseWheelEventHandler MouseWheel
     {
         add => AddHandler(MouseWheelEvent, value);
         remove => RemoveHandler(MouseWheelEvent, value);
@@ -2421,6 +2422,179 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         add => AddHandler(ManipulationCompletedEvent, value);
         remove => RemoveHandler(ManipulationCompletedEvent, value);
+    }
+
+    #endregion
+
+    #region Drag and Drop
+
+    /// <summary>
+    /// Gets or sets a value indicating whether this element can be used as the target of a drag-and-drop operation.
+    /// </summary>
+    public bool AllowDrop
+    {
+        get => (bool)(GetValue(DragDrop.AllowDropProperty) ?? false);
+        set => SetValue(DragDrop.AllowDropProperty, value);
+    }
+
+    /// <summary>
+    /// Occurs when the drag cursor enters this element (tunnel).
+    /// </summary>
+    public event DragEventHandler PreviewDragEnter
+    {
+        add => AddHandler(DragDrop.PreviewDragEnterEvent, value);
+        remove => RemoveHandler(DragDrop.PreviewDragEnterEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the drag cursor enters this element (bubble).
+    /// </summary>
+    public event DragEventHandler DragEnter
+    {
+        add => AddHandler(DragDrop.DragEnterEvent, value);
+        remove => RemoveHandler(DragDrop.DragEnterEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the drag cursor moves over this element (tunnel).
+    /// </summary>
+    public event DragEventHandler PreviewDragOver
+    {
+        add => AddHandler(DragDrop.PreviewDragOverEvent, value);
+        remove => RemoveHandler(DragDrop.PreviewDragOverEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the drag cursor moves over this element (bubble).
+    /// </summary>
+    public event DragEventHandler DragOver
+    {
+        add => AddHandler(DragDrop.DragOverEvent, value);
+        remove => RemoveHandler(DragDrop.DragOverEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the drag cursor leaves this element (tunnel).
+    /// </summary>
+    public event DragEventHandler PreviewDragLeave
+    {
+        add => AddHandler(DragDrop.PreviewDragLeaveEvent, value);
+        remove => RemoveHandler(DragDrop.PreviewDragLeaveEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the drag cursor leaves this element (bubble).
+    /// </summary>
+    public event DragEventHandler DragLeave
+    {
+        add => AddHandler(DragDrop.DragLeaveEvent, value);
+        remove => RemoveHandler(DragDrop.DragLeaveEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when data is dropped on this element (tunnel).
+    /// </summary>
+    public event DragEventHandler PreviewDrop
+    {
+        add => AddHandler(DragDrop.PreviewDropEvent, value);
+        remove => RemoveHandler(DragDrop.PreviewDropEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when data is dropped on this element (bubble).
+    /// </summary>
+    public event DragEventHandler Drop
+    {
+        add => AddHandler(DragDrop.DropEvent, value);
+        remove => RemoveHandler(DragDrop.DropEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs to allow the drag source to provide visual feedback (bubble).
+    /// </summary>
+    public event GiveFeedbackEventHandler GiveFeedback
+    {
+        add => AddHandler(DragDrop.GiveFeedbackEvent, value);
+        remove => RemoveHandler(DragDrop.GiveFeedbackEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs to allow the drag source to control the drag operation (bubble).
+    /// </summary>
+    public event QueryContinueDragEventHandler QueryContinueDrag
+    {
+        add => AddHandler(DragDrop.QueryContinueDragEvent, value);
+        remove => RemoveHandler(DragDrop.QueryContinueDragEvent, value);
+    }
+
+    /// <summary>
+    /// Called when the drag cursor enters this element.
+    /// </summary>
+    protected virtual void OnDragEnter(DragEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Called when the drag cursor moves over this element.
+    /// </summary>
+    protected virtual void OnDragOver(DragEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Called when the drag cursor leaves this element.
+    /// </summary>
+    protected virtual void OnDragLeave(DragEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Called when data is dropped on this element.
+    /// </summary>
+    protected virtual void OnDrop(DragEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Called when the drag cursor enters this element (tunnel).
+    /// </summary>
+    protected virtual void OnPreviewDragEnter(DragEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Called when the drag cursor moves over this element (tunnel).
+    /// </summary>
+    protected virtual void OnPreviewDragOver(DragEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Called when the drag cursor leaves this element (tunnel).
+    /// </summary>
+    protected virtual void OnPreviewDragLeave(DragEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Called when data is dropped on this element (tunnel).
+    /// </summary>
+    protected virtual void OnPreviewDrop(DragEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Called to provide feedback during a drag operation.
+    /// </summary>
+    protected virtual void OnGiveFeedback(GiveFeedbackEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Called to query whether to continue a drag operation.
+    /// </summary>
+    protected virtual void OnQueryContinueDrag(QueryContinueDragEventArgs e)
+    {
     }
 
     #endregion

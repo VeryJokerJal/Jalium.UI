@@ -32,6 +32,7 @@ public sealed class UICompiler
     private readonly Dictionary<string, uint> _materialCache = new();
     private readonly Dictionary<uint, int> _nodeToInstanceIndex = new();
     private readonly List<string> _sourceFiles = new();
+    private readonly Stack<Rect> _clipStack = new();
 
     /// <summary>
     /// 编译选项
@@ -351,10 +352,28 @@ public sealed class UICompiler
             CompileInteractiveRegion(element, nodeId);
         }
 
+        // 如果元素设置了 ClipToBounds，将其边界压入裁剪栈
+        bool pushedClip = false;
+        if (element.ClipToBounds)
+        {
+            var elementBounds = CompileBounds(element);
+            // 与当前裁剪区域取交集
+            var clipRect = _clipStack.Count > 0
+                ? _clipStack.Peek().Intersect(elementBounds)
+                : elementBounds;
+            _clipStack.Push(clipRect);
+            pushedClip = true;
+        }
+
         // 递归编译子元素
         foreach (var child in element.Children)
         {
             CompileElement(child, nodeId);
+        }
+
+        if (pushedClip)
+        {
+            _clipStack.Pop();
         }
     }
 
@@ -429,11 +448,17 @@ public sealed class UICompiler
         if (element.IsDraggable) flags |= InteractionFlags.Drag;
         if (element.IsScrollable) flags |= InteractionFlags.Scroll;
 
+        var bounds = CompileBounds(element);
+
+        // 如果有祖先设置了 ClipToBounds，将交互区域裁剪到可见范围内
+        var clipBounds = _clipStack.Count > 0 ? _clipStack.Peek() : Rect.Empty;
+
         var region = new InteractiveRegion(
             nodeId,
-            CompileBounds(element),
+            bounds,
             flags,
-            element.HandlerIndex
+            element.HandlerIndex,
+            clipBounds
         );
         _interactiveRegions.Add(region);
     }
@@ -974,6 +999,9 @@ public sealed class UICompiler
         var textInstanceOffset = 0;
         var imageInstanceOffset = 0;
 
+        // 路径批次累积
+        var pendingPathEntries = new List<PathBatchEntry>();
+
         for (int i = 0; i < _nodes.Count; i++)
         {
             var node = _nodes[i];
@@ -1040,13 +1068,11 @@ public sealed class UICompiler
                     {
                         FlushCurrentBatch();
 
-                        // 路径需要单独绘制
-                        _drawCommands.Add(new DrawPathCommand
-                        {
-                            PathCacheIndex = path.PathCacheIndex,
-                            MaterialIndex = path.MaterialIndex,
-                            TransformIndex = path.TransformIndex
-                        });
+                        // 路径累积到批次中
+                        pendingPathEntries.Add(new PathBatchEntry(
+                            path.PathCacheIndex,
+                            path.MaterialIndex,
+                            path.TransformIndex));
                         break;
                     }
 
@@ -1102,12 +1128,44 @@ public sealed class UICompiler
 
         // 刷新最后一个批次
         FlushCurrentBatch();
+        FlushPathBatch();
 
         // 添加提交命令
         _drawCommands.Add(new SubmitCommand());
 
+        void FlushPathBatch()
+        {
+            if (pendingPathEntries.Count == 0)
+                return;
+
+            if (pendingPathEntries.Count == 1)
+            {
+                // 单个路径保持原有命令格式
+                var entry = pendingPathEntries[0];
+                _drawCommands.Add(new DrawPathCommand
+                {
+                    PathCacheIndex = entry.PathCacheIndex,
+                    MaterialIndex = entry.MaterialIndex,
+                    TransformIndex = entry.TransformIndex
+                });
+            }
+            else
+            {
+                // 多个路径合并为批次命令
+                _drawCommands.Add(new DrawPathBatchCommand
+                {
+                    Entries = pendingPathEntries.ToArray()
+                });
+            }
+
+            pendingPathEntries.Clear();
+        }
+
         void FlushCurrentBatch()
         {
+            // 同时刷新路径批次
+            FlushPathBatch();
+
             if (batchCount == 0)
                 return;
 
@@ -1700,6 +1758,9 @@ public sealed class ElementNode
     public float MaterialTintOpacity { get; init; } = 0.6f;
     public float MaterialBlurRadius { get; init; }
 
+    // 裁剪
+    public bool ClipToBounds { get; init; }
+
     // 交互
     public bool IsInteractive { get; init; }
     public bool HasClickHandler { get; init; }
@@ -2200,6 +2261,11 @@ public sealed class JalxamlParser
             MaterialTint = GetAttributeValue(element, "MaterialTint"),
             MaterialTintOpacity = (float)ParseDouble(GetAttributeValue(element, "MaterialTintOpacity"), 0.6),
             MaterialBlurRadius = (float)ParseDouble(GetAttributeValue(element, "MaterialBlurRadius"), 0),
+
+            // 裁剪
+            ClipToBounds = GetAttributeValue(element, "ClipToBounds") == "True"
+                || elementType == ElementType.ScrollViewer
+                || elementType == ElementType.ListBox,
 
             // 交互属性
             IsInteractive = HasEventHandler(element),

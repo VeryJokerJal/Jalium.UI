@@ -89,7 +89,7 @@ public static class ThemeManager
     /// <summary>
     /// Gets the current monospace font family.
     /// </summary>
-    public static string CurrentMonospaceFontFamily { get; private set; } = "Cascadia Mono";
+    public static string CurrentMonospaceFontFamily { get; private set; } = "Cascadia Code";
 
     /// <summary>
     /// Initializes the default theme for the application.
@@ -187,7 +187,7 @@ public static class ThemeManager
     {
         CurrentDisplayFontFamily = NormalizeFontFamily(display, "Segoe UI");
         CurrentBodyFontFamily = NormalizeFontFamily(body, "Segoe UI");
-        CurrentMonospaceFontFamily = NormalizeFontFamily(mono, "Cascadia Mono");
+        CurrentMonospaceFontFamily = NormalizeFontFamily(mono, "Cascadia Code");
 
         if (_application == null)
             return;
@@ -298,7 +298,7 @@ public static class ThemeManager
         CurrentAccentColor = DefaultPrimaryAccentColor;
         CurrentDisplayFontFamily = "Segoe UI";
         CurrentBodyFontFamily = "Segoe UI";
-        CurrentMonospaceFontFamily = "Cascadia Mono";
+        CurrentMonospaceFontFamily = "Cascadia Code";
 
         ResourceDictionary.CurrentThemeKey = null;
     }

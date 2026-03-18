@@ -40,7 +40,7 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement
         }
     }
 
-    public string CodeFontFamily { get; set; } = "Cascadia Mono";
+    public string CodeFontFamily { get; set; } = "Cascadia Code";
     public double CodeFontSize { get; set; } = 14;
     public Brush? ForegroundBrush { get; set; }
     public Brush? LineNumberForegroundBrush { get; set; }

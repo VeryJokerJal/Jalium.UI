@@ -238,10 +238,10 @@ public class Calendar : Control
     {
         Focusable = true;
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
 
         CalculateDayGrid();
     }
@@ -255,14 +255,14 @@ public class Calendar : Control
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
-            var position = mouseArgs.GetPosition(this);
+            var position = e.GetPosition(this);
 
             // Check navigation buttons
             if (_prevButtonRect.Contains(position))
@@ -300,49 +300,46 @@ public class Calendar : Control
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseEventArgs mouseArgs)
+        var position = e.GetPosition(this);
+        var newRow = -1;
+        var newCol = -1;
+
+        for (int row = 0; row < Rows; row++)
         {
-            var position = mouseArgs.GetPosition(this);
-            var newRow = -1;
-            var newCol = -1;
-
-            for (int row = 0; row < Rows; row++)
+            for (int col = 0; col < Columns; col++)
             {
-                for (int col = 0; col < Columns; col++)
+                if (_dayCells[row, col].Contains(position))
                 {
-                    if (_dayCells[row, col].Contains(position))
-                    {
-                        newRow = row;
-                        newCol = col;
-                        break;
-                    }
+                    newRow = row;
+                    newCol = col;
+                    break;
                 }
-                if (newRow >= 0) break;
             }
-
-            var hoverChanged = newRow != _hoveredRow || newCol != _hoveredCol;
-            _hoveredRow = newRow;
-            _hoveredCol = newCol;
-
-            var newHoveringPrev = _prevButtonRect.Contains(position);
-            var newHoveringNext = _nextButtonRect.Contains(position);
-            if (newHoveringPrev != _isHoveringPrev || newHoveringNext != _isHoveringNext)
-            {
-                _isHoveringPrev = newHoveringPrev;
-                _isHoveringNext = newHoveringNext;
-                hoverChanged = true;
-            }
-
-            if (hoverChanged)
-                InvalidateVisual();
+            if (newRow >= 0) break;
         }
+
+        var hoverChanged = newRow != _hoveredRow || newCol != _hoveredCol;
+        _hoveredRow = newRow;
+        _hoveredCol = newCol;
+
+        var newHoveringPrev = _prevButtonRect.Contains(position);
+        var newHoveringNext = _nextButtonRect.Contains(position);
+        if (newHoveringPrev != _isHoveringPrev || newHoveringNext != _isHoveringNext)
+        {
+            _isHoveringPrev = newHoveringPrev;
+            _isHoveringNext = newHoveringNext;
+            hoverChanged = true;
+        }
+
+        if (hoverChanged)
+            InvalidateVisual();
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         if (_hoveredRow != -1 || _hoveredCol != -1 || _isHoveringPrev || _isHoveringNext)
         {
@@ -354,50 +351,47 @@ public class Calendar : Control
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is KeyEventArgs keyArgs)
-        {
-            var currentDate = SelectedDate ?? DisplayDate;
+        var currentDate = SelectedDate ?? DisplayDate;
 
-            switch (keyArgs.Key)
-            {
-                case Key.Left:
-                    SelectDate(currentDate.AddDays(-1));
-                    e.Handled = true;
-                    break;
-                case Key.Right:
-                    SelectDate(currentDate.AddDays(1));
-                    e.Handled = true;
-                    break;
-                case Key.Up:
-                    SelectDate(currentDate.AddDays(-7));
-                    e.Handled = true;
-                    break;
-                case Key.Down:
-                    SelectDate(currentDate.AddDays(7));
-                    e.Handled = true;
-                    break;
-                case Key.PageUp:
-                    NavigateToPreviousMonth();
-                    e.Handled = true;
-                    break;
-                case Key.PageDown:
-                    NavigateToNextMonth();
-                    e.Handled = true;
-                    break;
-                case Key.Home:
-                    SelectDate(new DateTime(currentDate.Year, currentDate.Month, 1));
-                    e.Handled = true;
-                    break;
-                case Key.End:
-                    SelectDate(new DateTime(currentDate.Year, currentDate.Month,
-                        DateTime.DaysInMonth(currentDate.Year, currentDate.Month)));
-                    e.Handled = true;
-                    break;
-            }
+        switch (e.Key)
+        {
+            case Key.Left:
+                SelectDate(currentDate.AddDays(-1));
+                e.Handled = true;
+                break;
+            case Key.Right:
+                SelectDate(currentDate.AddDays(1));
+                e.Handled = true;
+                break;
+            case Key.Up:
+                SelectDate(currentDate.AddDays(-7));
+                e.Handled = true;
+                break;
+            case Key.Down:
+                SelectDate(currentDate.AddDays(7));
+                e.Handled = true;
+                break;
+            case Key.PageUp:
+                NavigateToPreviousMonth();
+                e.Handled = true;
+                break;
+            case Key.PageDown:
+                NavigateToNextMonth();
+                e.Handled = true;
+                break;
+            case Key.Home:
+                SelectDate(new DateTime(currentDate.Year, currentDate.Month, 1));
+                e.Handled = true;
+                break;
+            case Key.End:
+                SelectDate(new DateTime(currentDate.Year, currentDate.Month,
+                    DateTime.DaysInMonth(currentDate.Year, currentDate.Month)));
+                e.Handled = true;
+                break;
         }
     }
 

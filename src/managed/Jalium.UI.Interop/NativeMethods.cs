@@ -9,9 +9,7 @@ public enum RenderBackend
 {
     Auto = 0,
     D3D12 = 1,
-    D3D11 = 2,
     Vulkan = 3,
-    OpenGL = 4,
     Metal = 5,
     Software = 99
 }
@@ -56,15 +54,17 @@ internal static partial class NativeMethods
     private const string D3D12Lib = "jalium.native.d3d12";
     private const string VulkanLib = "jalium.native.vulkan";
     private const string MetalLib = "jalium.native.metal";
+    private const string SoftwareLib = "jalium.native.software";
 
     /// <summary>
-    /// Static constructor to register the D3D12 backend once the native library is available.
+    /// Static constructor to register all available backends.
     /// </summary>
     static NativeMethods()
     {
         TryInitializeBackend(D3D12Init);
         TryInitializeBackend(VulkanInit);
         TryInitializeBackend(MetalInit);
+        TryInitializeBackend(SoftwareInit);
     }
 
     [LibraryImport(D3D12Lib, EntryPoint = "jalium_d3d12_init")]
@@ -75,6 +75,9 @@ internal static partial class NativeMethods
 
     [LibraryImport(MetalLib, EntryPoint = "jalium_metal_init")]
     private static partial void MetalInit();
+
+    [LibraryImport(SoftwareLib, EntryPoint = "jalium_software_init")]
+    private static partial void SoftwareInit();
 
     private static void TryInitializeBackend(Action init)
     {
@@ -118,6 +121,13 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_context_get_last_error")]
     internal static partial int ContextGetLastError(nint context);
+
+    /// <summary>
+    /// Checks if the GPU device is still operational.
+    /// Returns 0 if OK, non-zero if device lost.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_context_check_device_status")]
+    internal static partial int ContextCheckDeviceStatus(nint context);
 
     #endregion
 
@@ -263,6 +273,13 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_fill_ellipse")]
     internal static partial void DrawFillEllipse(nint renderTarget, float centerX, float centerY, float radiusX, float radiusY, nint brush);
+
+    /// <summary>
+    /// Draws a batch of filled ellipses with per-ellipse color (5 floats each: cx, cy, rx, ry, packedRGBA).
+    /// Single P/Invoke call for thousands of ellipses.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_fill_ellipse_batch")]
+    internal static partial void FillEllipseBatch(nint renderTarget, float[] data, uint count);
 
     /// <summary>
     /// Draws an ellipse outline.

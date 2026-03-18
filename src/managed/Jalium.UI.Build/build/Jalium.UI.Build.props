@@ -79,8 +79,34 @@
     <JaliumNativeAotAssetRoot Condition="'$(JaliumNativeAotAssetRoot)' == ''">$(MSBuildThisFileDirectory)nativeaot\</JaliumNativeAotAssetRoot>
     <PublishAot Condition="'$(UseJaliumNativeAot)' == 'true' and '$(PublishAot)' == ''">true</PublishAot>
     <SelfContained Condition="'$(UseJaliumNativeAot)' == 'true' and '$(SelfContained)' == ''">true</SelfContained>
-    <PublishSingleFile Condition="'$(UseJaliumNativeAot)' == 'true' and '$(PublishSingleFile)' == ''">true</PublishSingleFile>
     <UseAppHost Condition="'$(UseJaliumNativeAot)' == 'true' and '$(UseAppHost)' == ''">true</UseAppHost>
+
+    <!-- NativeAOT 体积优化（PublishAot=true 时自动生效） -->
+    <!-- 优先体积而非速度 -->
+    <IlcOptimizationPreference Condition="'$(PublishAot)' == 'true' and '$(IlcOptimizationPreference)' == ''">Size</IlcOptimizationPreference>
+    <!-- 剥离调试符号到单独文件 -->
+    <StripSymbols Condition="'$(PublishAot)' == 'true' and '$(StripSymbols)' == ''">true</StripSymbols>
+    <!-- InvariantGlobalization 可省 ~28MB ICU 数据，但会破坏本地化格式化。
+         UI 框架默认不启用，消费者可按需在自己项目中设为 true。 -->
+    <!--<InvariantGlobalization Condition="'$(PublishAot)' == 'true' and '$(InvariantGlobalization)' == ''">true</InvariantGlobalization>-->
+    <!-- 禁用不需要的运行时特性 -->
+    <StackTraceSupport Condition="'$(PublishAot)' == 'true' and '$(StackTraceSupport)' == ''">false</StackTraceSupport>
+    <UseSystemResourceKeys Condition="'$(PublishAot)' == 'true' and '$(UseSystemResourceKeys)' == ''">true</UseSystemResourceKeys>
+    <EventSourceSupport Condition="'$(PublishAot)' == 'true' and '$(EventSourceSupport)' == ''">false</EventSourceSupport>
+    <IlcTrimMetadata Condition="'$(PublishAot)' == 'true' and '$(IlcTrimMetadata)' == ''">true</IlcTrimMetadata>
+    <!-- 禁用 HttpClient 和未使用的网络功能 -->
+    <HttpActivityPropagationSupport Condition="'$(PublishAot)' == 'true' and '$(HttpActivityPropagationSupport)' == ''">false</HttpActivityPropagationSupport>
+    <EnableUnsafeBinaryFormatterSerialization Condition="'$(PublishAot)' == 'true' and '$(EnableUnsafeBinaryFormatterSerialization)' == ''">false</EnableUnsafeBinaryFormatterSerialization>
+    <MetricsSupport Condition="'$(PublishAot)' == 'true' and '$(MetricsSupport)' == ''">false</MetricsSupport>
+    <!-- ILC 折叠泛型实例化以减少代码膨胀 -->
+    <IlcGenerateStackTraceData Condition="'$(PublishAot)' == 'true' and '$(IlcGenerateStackTraceData)' == ''">false</IlcGenerateStackTraceData>
   </PropertyGroup>
+
+  <!-- 禁用 Razor 运行时脚本（Roslyn），让 ILC 裁掉整个 Roslyn 依赖树（~10MB） -->
+  <ItemGroup Condition="'$(PublishAot)' == 'true'">
+    <RuntimeHostConfigurationOption Include="Jalium.UI.Markup.RazorScripting"
+                                    Value="false"
+                                    Trim="true" />
+  </ItemGroup>
 
 </Project>

@@ -143,7 +143,7 @@ public class Expander : ContentControl
         UseTemplateContentManagement();
 
         // Register keyboard handler
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     #endregion
@@ -161,7 +161,7 @@ public class Expander : ContentControl
         // Unsubscribe from old header border
         if (_headerBorder != null)
         {
-            _headerBorder.RemoveHandler(MouseDownEvent, new RoutedEventHandler(OnHeaderMouseDown));
+            _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnHeaderMouseDown));
         }
 
         base.OnApplyTemplate();
@@ -172,7 +172,7 @@ public class Expander : ContentControl
         // Subscribe to header border click
         if (_headerBorder != null)
         {
-            _headerBorder.AddHandler(MouseDownEvent, new RoutedEventHandler(OnHeaderMouseDown));
+            _headerBorder.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnHeaderMouseDown));
         }
 
         // Sync initial state without animation
@@ -199,11 +199,11 @@ public class Expander : ContentControl
 
     #region Input Handling
 
-    private void OnHeaderMouseDown(object sender, RoutedEventArgs e)
+    private void OnHeaderMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             Focus();
             Toggle();
@@ -211,17 +211,14 @@ public class Expander : ContentControl
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is KeyEventArgs keyArgs)
+        if (e.Key == Key.Space || e.Key == Key.Enter)
         {
-            if (keyArgs.Key == Key.Space || keyArgs.Key == Key.Enter)
-            {
-                Toggle();
-                e.Handled = true;
-            }
+            Toggle();
+            e.Handled = true;
         }
     }
 

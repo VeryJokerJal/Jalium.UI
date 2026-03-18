@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -7,8 +8,12 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public sealed class SplashScreen
 {
+    private readonly System.Reflection.Assembly _resourceAssembly;
     private readonly string _resourceName;
     private nint _hwnd;
+    private Window? _window;
+    private Application? _autoCloseApplication;
+    private Window? _autoCloseTargetWindow;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="SplashScreen"/> class with the specified resource.
@@ -16,6 +21,8 @@ public sealed class SplashScreen
     /// <param name="resourceName">The name of the embedded resource.</param>
     public SplashScreen(string resourceName)
     {
+        _resourceAssembly = System.Reflection.Assembly.GetEntryAssembly()
+            ?? System.Reflection.Assembly.GetExecutingAssembly();
         _resourceName = resourceName ?? throw new ArgumentNullException(nameof(resourceName));
     }
 
@@ -25,8 +32,19 @@ public sealed class SplashScreen
     /// </summary>
     public SplashScreen(System.Reflection.Assembly resourceAssembly, string resourceName)
     {
+        _resourceAssembly = resourceAssembly ?? throw new ArgumentNullException(nameof(resourceAssembly));
         _resourceName = resourceName ?? throw new ArgumentNullException(nameof(resourceName));
     }
+
+    /// <summary>
+    /// Gets the resource name used by the splash screen.
+    /// </summary>
+    public string ResourceName => _resourceName;
+
+    /// <summary>
+    /// Gets whether the splash screen is currently shown.
+    /// </summary>
+    public bool IsVisible => _window != null;
 
     /// <summary>
     /// Displays the splash screen.
@@ -44,8 +62,50 @@ public sealed class SplashScreen
     /// <param name="topMost">true to make the splash screen topmost.</param>
     public void Show(bool autoClose, bool topMost)
     {
-        // Splash screen display is handled by the native rendering backend
-        // The resource is loaded and shown as a simple bitmap window
+        if (_window != null)
+        {
+            return;
+        }
+
+        var image = TryCreateSplashImage();
+        if (image == null)
+        {
+            return;
+        }
+
+        _window = new Window
+        {
+            Width = image.Width,
+            Height = image.Height,
+            WindowStyle = WindowStyle.None,
+            ResizeMode = ResizeMode.NoResize,
+            Background = Brushes.Transparent,
+            Topmost = topMost,
+            Content = new Border
+            {
+                Background = Brushes.Transparent,
+                Child = new Image
+                {
+                    Source = image,
+                    Stretch = Stretch.None
+                }
+            }
+        };
+
+        _window.Closed += (_, _) =>
+        {
+            DetachAutoClose();
+            _window = null;
+            _hwnd = nint.Zero;
+        };
+
+        _window.Show();
+        _hwnd = _window.Handle;
+
+        if (autoClose)
+        {
+            ArmAutoClose();
+        }
     }
 
     /// <summary>
@@ -54,11 +114,156 @@ public sealed class SplashScreen
     /// <param name="fadeoutDuration">The duration of the fadeout animation.</param>
     public void Close(TimeSpan fadeoutDuration)
     {
-        // Close the splash screen with optional fade animation
-        if (_hwnd != nint.Zero)
+        DetachAutoClose();
+
+        var window = _window;
+        if (window == null)
         {
             _hwnd = nint.Zero;
+            return;
         }
+
+        _window = null;
+        _hwnd = nint.Zero;
+        window.Close();
+    }
+
+    private void ArmAutoClose()
+    {
+        if (TryAttachAutoCloseApplication(Application.Current))
+        {
+            return;
+        }
+
+        Application.CurrentChanged += OnApplicationCurrentChanged;
+    }
+
+    private void OnApplicationCurrentChanged(object? sender, EventArgs e)
+    {
+        if (!TryAttachAutoCloseApplication(Application.Current))
+        {
+            return;
+        }
+
+        Application.CurrentChanged -= OnApplicationCurrentChanged;
+    }
+
+    private bool TryAttachAutoCloseApplication(Application? app)
+    {
+        if (app == null)
+        {
+            return false;
+        }
+
+        if (!ReferenceEquals(_autoCloseApplication, app))
+        {
+            if (_autoCloseApplication != null)
+            {
+                _autoCloseApplication.MainWindowChanged -= OnApplicationMainWindowChanged;
+            }
+
+            _autoCloseApplication = app;
+            _autoCloseApplication.MainWindowChanged += OnApplicationMainWindowChanged;
+        }
+
+        TryAttachAutoCloseTarget(app.MainWindow);
+        return true;
+    }
+
+    private void OnApplicationMainWindowChanged(object? sender, EventArgs e)
+    {
+        if (sender is not Application app)
+        {
+            return;
+        }
+
+        TryAttachAutoCloseTarget(app.MainWindow);
+    }
+
+    private bool TryAttachAutoCloseTarget(Window? targetWindow)
+    {
+        if (targetWindow == null || ReferenceEquals(targetWindow, _window))
+        {
+            return false;
+        }
+
+        if (!ReferenceEquals(_autoCloseTargetWindow, targetWindow))
+        {
+            if (_autoCloseTargetWindow != null)
+            {
+                _autoCloseTargetWindow.Loaded -= OnAutoCloseTargetLoaded;
+            }
+
+            _autoCloseTargetWindow = targetWindow;
+            _autoCloseTargetWindow.Loaded += OnAutoCloseTargetLoaded;
+        }
+
+        if (targetWindow.Handle != nint.Zero)
+        {
+            Close(TimeSpan.Zero);
+        }
+
+        return true;
+    }
+
+    private void OnAutoCloseTargetLoaded(object? sender, EventArgs e)
+    {
+        if (sender is Window targetWindow)
+        {
+            targetWindow.Loaded -= OnAutoCloseTargetLoaded;
+            if (ReferenceEquals(_autoCloseTargetWindow, targetWindow))
+            {
+                _autoCloseTargetWindow = null;
+            }
+        }
+
+        Close(TimeSpan.Zero);
+    }
+
+    private void DetachAutoClose()
+    {
+        Application.CurrentChanged -= OnApplicationCurrentChanged;
+
+        if (_autoCloseApplication != null)
+        {
+            _autoCloseApplication.MainWindowChanged -= OnApplicationMainWindowChanged;
+            _autoCloseApplication = null;
+        }
+
+        if (_autoCloseTargetWindow != null)
+        {
+            _autoCloseTargetWindow.Loaded -= OnAutoCloseTargetLoaded;
+            _autoCloseTargetWindow = null;
+        }
+    }
+
+    private BitmapImage? TryCreateSplashImage()
+    {
+        var resourceName = ResolveResourceName(_resourceAssembly, _resourceName);
+        if (resourceName == null)
+        {
+            return null;
+        }
+
+        using var stream = _resourceAssembly.GetManifestResourceStream(resourceName);
+        if (stream == null)
+        {
+            return null;
+        }
+
+        using var memory = new MemoryStream();
+        stream.CopyTo(memory);
+        return BitmapImage.FromBytes(memory.ToArray());
+    }
+
+    private static string? ResolveResourceName(System.Reflection.Assembly assembly, string resourceName)
+    {
+        ArgumentNullException.ThrowIfNull(assembly);
+        ArgumentException.ThrowIfNullOrWhiteSpace(resourceName);
+
+        var manifestNames = assembly.GetManifestResourceNames();
+        return manifestNames.FirstOrDefault(name => string.Equals(name, resourceName, StringComparison.Ordinal))
+            ?? manifestNames.FirstOrDefault(name => name.EndsWith(resourceName, StringComparison.OrdinalIgnoreCase));
     }
 }
 

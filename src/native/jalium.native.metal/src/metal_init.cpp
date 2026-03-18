@@ -18,9 +18,18 @@ static IRenderBackend* CreateMetalBackendWrapper()
 
 static int32_t IsMetalBackendAvailable()
 {
-    // Metal ABI wiring is present, but the renderer is not yet ready to be
-    // selected by runtime probing.
+#ifdef __APPLE__
+    // On macOS/iOS, Metal is available if we can create a system default device.
+    // This check is lightweight — MTLCreateSystemDefaultDevice() returns nil on
+    // hardware that does not support Metal (pre-2012 Macs).
+    @autoreleasepool {
+        id<MTLDevice> device = MTLCreateSystemDefaultDevice();
+        return device ? 1 : 0;
+    }
+#else
+    // Metal is not available on non-Apple platforms.
     return 0;
+#endif
 }
 
 void RegisterMetalBackend()

@@ -84,23 +84,23 @@ public abstract class ButtonBase : ContentControl
         Focusable = true;
 
         // Register mouse event handlers
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
-        AddHandler(KeyUpEvent, new RoutedEventHandler(OnKeyUpHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(KeyUpEvent, new KeyEventHandler(OnKeyUpHandler));
     }
 
     #endregion
 
     #region Input Handling
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             // Capture mouse to receive mouse events even when mouse moves outside
             CaptureMouse();
@@ -116,11 +116,11 @@ public abstract class ButtonBase : ContentControl
         }
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is MouseButtonEventArgs mouseArgs && mouseArgs.ChangedButton == MouseButton.Left)
+        if (e.ChangedButton == MouseButton.Left)
         {
             var wasPressed = IsPressed;
 
@@ -138,7 +138,7 @@ public abstract class ButtonBase : ContentControl
         }
     }
 
-    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
         if (ClickMode == ClickMode.Hover)
         {
@@ -148,7 +148,7 @@ public abstract class ButtonBase : ContentControl
         OnMouseEnter(e);
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         OnMouseLeave(e);
     }
@@ -164,63 +164,57 @@ public abstract class ButtonBase : ContentControl
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is KeyEventArgs keyArgs)
+        if (e.Key == Key.Space)
         {
-            if (keyArgs.Key == Key.Space)
+            // Space key presses the button
+            if (ClickMode == ClickMode.Press)
             {
-                // Space key presses the button
-                if (ClickMode == ClickMode.Press)
-                {
-                    OnClick();
-                }
-                else
-                {
-                    SetIsPressed(true);
-                }
-                e.Handled = true;
-            }
-            else if (keyArgs.Key == Key.Enter)
-            {
-                // Enter key clicks immediately
                 OnClick();
-                e.Handled = true;
             }
+            else
+            {
+                SetIsPressed(true);
+            }
+            e.Handled = true;
+        }
+        else if (e.Key == Key.Enter)
+        {
+            // Enter key clicks immediately
+            OnClick();
+            e.Handled = true;
         }
     }
 
-    private void OnKeyUpHandler(object sender, RoutedEventArgs e)
+    private void OnKeyUpHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
 
-        if (e is KeyEventArgs keyArgs)
+        if (e.Key == Key.Space && IsPressed)
         {
-            if (keyArgs.Key == Key.Space && IsPressed)
+            SetIsPressed(false);
+            if (ClickMode == ClickMode.Release)
             {
-                SetIsPressed(false);
-                if (ClickMode == ClickMode.Release)
-                {
-                    OnClick();
-                }
-                e.Handled = true;
+                OnClick();
             }
+            e.Handled = true;
         }
     }
 
     /// <summary>
     /// Called when the mouse enters the button.
     /// </summary>
-    protected virtual void OnMouseEnter(RoutedEventArgs e)
+    protected virtual void OnMouseEnter(MouseEventArgs e)
     {
     }
 
     /// <summary>
     /// Called when the mouse leaves the button.
     /// </summary>
-    protected virtual void OnMouseLeave(RoutedEventArgs e)
+    protected virtual void OnMouseLeave(MouseEventArgs e)
     {
     }
 

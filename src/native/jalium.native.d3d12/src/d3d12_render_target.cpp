@@ -948,6 +948,31 @@ void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brus
     }
 }
 
+void D3D12RenderTarget::FillEllipseBatch(const float* data, uint32_t count) {
+    if (!isDrawing_ || !data || count == 0) return;
+
+    // Create a single reusable brush - update color per ellipse (avoids COM object creation per particle)
+    ComPtr<ID2D1SolidColorBrush> brush;
+    if (FAILED(d2dContext_->CreateSolidColorBrush(D2D1::ColorF(0, 0, 0, 1), &brush))) return;
+
+    for (uint32_t i = 0; i < count; i++) {
+        float cx = data[i * 5 + 0];
+        float cy = data[i * 5 + 1];
+        float rx = data[i * 5 + 2];
+        float ry = data[i * 5 + 3];
+        uint32_t colorPacked;
+        memcpy(&colorPacked, &data[i * 5 + 4], sizeof(uint32_t));
+
+        float r = ((colorPacked >>  0) & 0xFF) / 255.0f;
+        float g = ((colorPacked >>  8) & 0xFF) / 255.0f;
+        float b = ((colorPacked >> 16) & 0xFF) / 255.0f;
+        float a = ((colorPacked >> 24) & 0xFF) / 255.0f;
+
+        brush->SetColor(D2D1::ColorF(r, g, b, a));
+        d2dContext_->FillEllipse(D2D1::Ellipse(D2D1::Point2F(cx, cy), rx, ry), brush.Get());
+    }
+}
+
 void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush) return;
     if (!IntersectsActiveClip(D2D1::RectF(cx - rx - strokeWidth, cy - ry - strokeWidth, cx + rx + strokeWidth, cy + ry + strokeWidth))) return;

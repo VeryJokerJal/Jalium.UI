@@ -350,12 +350,12 @@
           Condition="'$(UseJaliumNativeAot)' == 'true'">
     <PropertyGroup>
       <_JaliumNativeAotAssetDirectory>$([System.IO.Path]::GetFullPath('$(JaliumNativeAotAssetRoot)$(RuntimeIdentifier)\'))</_JaliumNativeAotAssetDirectory>
+      <_JaliumNativeAotFallbackAssetDirectory>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)..\..\..\native\bin\native-static\Release\'))</_JaliumNativeAotFallbackAssetDirectory>
+      <_JaliumNativeAotAssetDirectory Condition="'$(RuntimeIdentifier)' == 'win-x64' and !Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.core.static.lib') and Exists('$(_JaliumNativeAotFallbackAssetDirectory)jalium.native.core.static.lib')">$(_JaliumNativeAotFallbackAssetDirectory)</_JaliumNativeAotAssetDirectory>
     </PropertyGroup>
 
     <Error Condition="'$(RuntimeIdentifier)' == ''"
-           Text="UseJaliumNativeAot requires a RuntimeIdentifier. Set RuntimeIdentifier to win-x64 before publishing." />
-    <Error Condition="'$(RuntimeIdentifier)' != 'win-x64'"
-           Text="UseJaliumNativeAot currently supports only the win-x64 runtime." />
+           Text="UseJaliumNativeAot requires a RuntimeIdentifier. Set RuntimeIdentifier to a runtime with available static assets before publishing." />
     <Error Condition="'$(PublishAot)' != 'true'"
            Text="UseJaliumNativeAot requires PublishAot=true." />
     <Error Condition="!Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.core.static.lib')"

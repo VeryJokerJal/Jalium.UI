@@ -146,10 +146,10 @@ public class MenuFlyoutItem : Control
     public MenuFlyoutItem()
     {
         Focusable = true;
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     /// <inheritdoc />
@@ -241,7 +241,7 @@ public class MenuFlyoutItem : Control
         }
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
 
@@ -249,13 +249,13 @@ public class MenuFlyoutItem : Control
         e.Handled = true;
     }
 
-    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
         CloseSiblingSubMenus();
         InvalidateVisual();
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         InvalidateVisual();
     }
@@ -276,14 +276,14 @@ public class MenuFlyoutItem : Control
         }
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (!IsEnabled || e is not KeyEventArgs keyArgs)
+        if (!IsEnabled)
         {
             return;
         }
 
-        var handled = keyArgs.Key switch
+        var handled = e.Key switch
         {
             Key.Enter or Key.Space => InvokeFromKeyboard(),
             Key.Down => MoveFocusToSibling(1),
@@ -298,7 +298,7 @@ public class MenuFlyoutItem : Control
 
         if (handled)
         {
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
     }
 

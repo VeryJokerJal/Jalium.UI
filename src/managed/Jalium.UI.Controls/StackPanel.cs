@@ -165,7 +165,10 @@ public class StackPanel : Panel, IScrollInfo
         {
             if (c == child) break;
             if (c.Visibility == Visibility.Collapsed) continue;
-            childOffset += isVertical ? c.DesiredSize.Height : c.DesiredSize.Width;
+            // Use RenderSize (actual arranged size) rather than DesiredSize (measured size)
+            // to correctly calculate scroll offset after layout is complete.
+            var size = c.RenderSize.Width > 0 || c.RenderSize.Height > 0 ? c.RenderSize : c.DesiredSize;
+            childOffset += isVertical ? size.Height : size.Width;
         }
 
         if (isVertical)

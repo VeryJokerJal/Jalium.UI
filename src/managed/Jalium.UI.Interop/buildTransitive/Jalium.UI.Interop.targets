@@ -19,6 +19,11 @@
           CopyToOutputDirectory="PreserveNewest"
           Visible="false"
           Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.metal.dll')" />
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.software.dll"
+          Link="jalium.native.software.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.software.dll')" />
     <None Include="$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.browser.dll"
           Link="jalium.native.browser.dll"
           CopyToOutputDirectory="PreserveNewest"

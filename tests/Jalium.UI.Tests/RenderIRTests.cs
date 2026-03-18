@@ -96,6 +96,12 @@ public class RenderIRTests
             Assert.Equal(originalRect.Id, loadedRect.Id);
             Assert.Equal(originalRect.Bounds.X, loadedRect.Bounds.X);
             Assert.Equal(originalRect.Bounds.Y, loadedRect.Bounds.Y);
+
+            Assert.Single(loadedBundle.InteractiveRegions);
+            Assert.Equal(10f, loadedBundle.InteractiveRegions[0].ClipBounds.X);
+            Assert.Equal(20f, loadedBundle.InteractiveRegions[0].ClipBounds.Y);
+            Assert.Equal(80f, loadedBundle.InteractiveRegions[0].ClipBounds.Width);
+            Assert.Equal(60f, loadedBundle.InteractiveRegions[0].ClipBounds.Height);
         }
         finally
         {
@@ -168,7 +174,12 @@ public class RenderIRTests
             PathCaches = [],
             InteractiveRegions =
             [
-                new InteractiveRegion(1, new GpuRect(0, 0, 100, 100), InteractionFlags.Click | InteractionFlags.Hover, 0)
+                new InteractiveRegion(
+                    1,
+                    new GpuRect(0, 0, 100, 100),
+                    InteractionFlags.Click | InteractionFlags.Hover,
+                    0,
+                    new GpuRect(10, 20, 80, 60))
             ],
             StateTransitions =
             [

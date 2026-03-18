@@ -16,13 +16,13 @@ public static class ContextMenuService
         EventManager.RegisterClassHandler(
             typeof(UIElement),
             UIElement.MouseUpEvent,
-            new RoutedEventHandler(OnMouseUpClassHandler),
+            new MouseButtonEventHandler(OnMouseUpClassHandler),
             handledEventsToo: true);
 
         EventManager.RegisterClassHandler(
             typeof(UIElement),
             UIElement.KeyDownEvent,
-            new RoutedEventHandler(OnKeyDownClassHandler),
+            new KeyEventHandler(OnKeyDownClassHandler),
             handledEventsToo: true);
     }
 
@@ -380,32 +380,32 @@ public static class ContextMenuService
 
     #region Internal Open Pipeline
 
-    private static void OnMouseUpClassHandler(object sender, RoutedEventArgs e)
+    private static void OnMouseUpClassHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e.Handled || sender is not UIElement owner || e is not MouseButtonEventArgs mouseArgs)
+        if (e.Handled || sender is not UIElement owner)
         {
             return;
         }
 
-        if (mouseArgs.ChangedButton != MouseButton.Right)
+        if (e.ChangedButton != MouseButton.Right)
         {
             return;
         }
 
-        if (TryOpen(owner, mouseArgs.GetPosition(null)))
+        if (TryOpen(owner, e.GetPosition(null)))
         {
             e.Handled = true;
         }
     }
 
-    private static void OnKeyDownClassHandler(object sender, RoutedEventArgs e)
+    private static void OnKeyDownClassHandler(object sender, KeyEventArgs e)
     {
-        if (e.Handled || sender is not UIElement owner || e is not KeyEventArgs keyArgs)
+        if (e.Handled || sender is not UIElement owner)
         {
             return;
         }
 
-        if (keyArgs.Key != Key.F10 || keyArgs.KeyboardModifiers != ModifierKeys.Shift)
+        if (e.Key != Key.F10 || e.KeyboardModifiers != ModifierKeys.Shift)
         {
             return;
         }

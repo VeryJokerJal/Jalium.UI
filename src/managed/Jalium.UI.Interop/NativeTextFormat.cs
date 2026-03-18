@@ -48,7 +48,7 @@ public enum TextTrimmingMode
 public sealed class NativeTextFormat : IDisposable
 {
     private nint _handle;
-    private bool _disposed;
+    private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for thread-safety)
     private TextTrimmingMode? _currentTrimming;
 
     /// <summary>
@@ -59,7 +59,7 @@ public sealed class NativeTextFormat : IDisposable
     /// <summary>
     /// Gets whether the text format is valid.
     /// </summary>
-    public bool IsValid => _handle != nint.Zero && !_disposed;
+    public bool IsValid => _handle != nint.Zero && Volatile.Read(ref _disposed) == 0;
 
     /// <summary>
     /// Gets the font family name.
@@ -80,6 +80,11 @@ public sealed class NativeTextFormat : IDisposable
     /// Gets the font style.
     /// </summary>
     public int FontStyle { get; }
+
+    /// <summary>
+    /// Gets or sets the access sequence for LRU eviction.
+    /// </summary>
+    internal long LastAccessSequence { get; set; }
 
     internal NativeTextFormat(RenderContext context, string fontFamily, float fontSize, int fontWeight, int fontStyle)
     {
@@ -126,12 +131,8 @@ public sealed class NativeTextFormat : IDisposable
         {
             return;
         }
-        // NOTE:
-        // Calling into native trimming setup can trigger a StackOverflowException under
-        // long-running high-frequency redraw scenarios (e.g. animated overlays).
-        // Keep the managed state for cache semantics, but avoid native invocation for stability.
-        // TODO: Re-enable after native jalium_text_format_set_trimming is fixed.
         _currentTrimming = trimming;
+        NativeMethods.TextFormatSetTrimming(_handle, (int)trimming);
     }
 
     /// <summary>
@@ -198,19 +199,18 @@ public sealed class NativeTextFormat : IDisposable
 
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
     }
 
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
 
-        if (_handle != nint.Zero)
+        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+        if (handle != nint.Zero)
         {
-            NativeMethods.TextFormatDestroy(_handle);
-            _handle = nint.Zero;
+            NativeMethods.TextFormatDestroy(handle);
         }
 
         GC.SuppressFinalize(this);
@@ -221,7 +221,7 @@ public sealed class NativeTextFormat : IDisposable
         // Do NOT call native destroy from finalizer.
         // The native context (DWrite factory) may already be destroyed,
         // causing stack overflow or access violation during shutdown.
-        _disposed = true;
-        _handle = nint.Zero;
+        Volatile.Write(ref _disposed, 1);
+        Volatile.Write(ref _handle, nint.Zero);
     }
 }

@@ -474,17 +474,17 @@ public partial class ScrollViewer : Control
         ClipToBounds = true;
 
         // Register for input events
-        AddHandler(MouseWheelEvent, new RoutedEventHandler(HandleMouseWheel));
-        AddHandler(MouseDownEvent, new RoutedEventHandler(HandleMouseDown));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(HandleMouseMove));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(HandleMouseUp));
-        AddHandler(PointerDownEvent, new RoutedEventHandler(HandlePointerDown));
-        AddHandler(PointerMoveEvent, new RoutedEventHandler(HandlePointerMove));
-        AddHandler(PointerUpEvent, new RoutedEventHandler(HandlePointerUp));
-        AddHandler(PointerCancelEvent, new RoutedEventHandler(HandlePointerCancel));
+        AddHandler(MouseWheelEvent, new Input.MouseWheelEventHandler(HandleMouseWheel));
+        AddHandler(MouseDownEvent, new Input.MouseButtonEventHandler(HandleMouseDown));
+        AddHandler(MouseMoveEvent, new Input.MouseEventHandler(HandleMouseMove));
+        AddHandler(MouseUpEvent, new Input.MouseButtonEventHandler(HandleMouseUp));
+        AddHandler(PointerDownEvent, new Input.PointerDownEventHandler(HandlePointerDown));
+        AddHandler(PointerMoveEvent, new Input.PointerMoveEventHandler(HandlePointerMove));
+        AddHandler(PointerUpEvent, new Input.PointerUpEventHandler(HandlePointerUp));
+        AddHandler(PointerCancelEvent, new Input.PointerCancelEventHandler(HandlePointerCancel));
 
         // Register keyboard handler
-        AddHandler(KeyDownEvent, new RoutedEventHandler(HandleKeyDown));
+        AddHandler(KeyDownEvent, new Input.KeyEventHandler(HandleKeyDown));
 
         // Register for BringIntoView requests
         AddHandler(FrameworkElement.RequestBringIntoViewEvent, new RequestBringIntoViewEventHandler(HandleRequestBringIntoView));
@@ -501,17 +501,14 @@ public partial class ScrollViewer : Control
             SmallChange = LineScrollAmount
         };
         scrollBar.Scroll += OnScrollBarScroll;
-        scrollBar.AddHandler(MouseEnterEvent, new RoutedEventHandler(OnScrollBarMouseEnter));
-        scrollBar.AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnScrollBarMouseLeave));
+        scrollBar.AddHandler(MouseEnterEvent, new Input.MouseEventHandler(OnScrollBarMouseEnter));
+        scrollBar.AddHandler(MouseLeaveEvent, new Input.MouseEventHandler(OnScrollBarMouseLeave));
         return scrollBar;
     }
 
-    private void HandleKeyDown(object sender, RoutedEventArgs e)
+    private void HandleKeyDown(object sender, Input.KeyEventArgs e)
     {
-        if (e is KeyEventArgs keyArgs)
-        {
-            OnKeyDown(keyArgs);
-        }
+        OnKeyDown(e);
     }
 
     private void HandleRequestBringIntoView(object sender, RequestBringIntoViewEventArgs e)
@@ -523,30 +520,26 @@ public partial class ScrollViewer : Control
         }
     }
 
-    private void HandleMouseWheel(object sender, RoutedEventArgs e)
+    private void HandleMouseWheel(object sender, Input.MouseWheelEventArgs e)
     {
-        if (e is MouseWheelEventArgs wheelArgs)
-        {
-            OnMouseWheel(wheelArgs);
-        }
+        OnMouseWheel(e);
     }
 
-    private void HandleMouseDown(object sender, RoutedEventArgs e)
+    private void HandleMouseDown(object sender, Input.MouseButtonEventArgs e)
     {
         // Only apply this fallback for direct viewer-originated input.
         // Real pointer input normally targets ScrollBar/Thumb directly.
         if (!ReferenceEquals(e.OriginalSource, this))
             return;
 
-        if (e is not MouseButtonEventArgs mouseArgs ||
-            mouseArgs.ChangedButton != MouseButton.Left ||
+        if (e.ChangedButton != MouseButton.Left ||
             !CanScrollVertically ||
             ScrollableHeight <= 0)
         {
             return;
         }
 
-        var point = mouseArgs.GetPosition(this);
+        var point = e.GetPosition(this);
         if (point.X < RenderSize.Width - InputThumbHitWidth)
             return;
 
@@ -565,19 +558,19 @@ public partial class ScrollViewer : Control
         e.Handled = true;
     }
 
-    private void HandleMouseMove(object sender, RoutedEventArgs e)
+    private void HandleMouseMove(object sender, Input.MouseEventArgs e)
     {
         if (!_isDraggingVerticalThumb)
             return;
 
-        if (e is not MouseEventArgs mouseArgs || mouseArgs.LeftButton != MouseButtonState.Pressed)
+        if (e.LeftButton != MouseButtonState.Pressed)
             return;
 
         var metrics = GetInputVerticalThumbMetrics();
         if (metrics.ScrollRange <= 0)
             return;
 
-        var point = mouseArgs.GetPosition(this);
+        var point = e.GetPosition(this);
         var deltaY = point.Y - _dragStartMouseY;
         var newOffset = _dragStartVerticalOffset + (deltaY / metrics.ScrollRange) * ScrollableHeight;
 
@@ -586,12 +579,12 @@ public partial class ScrollViewer : Control
         e.Handled = true;
     }
 
-    private void HandleMouseUp(object sender, RoutedEventArgs e)
+    private void HandleMouseUp(object sender, Input.MouseButtonEventArgs e)
     {
         if (!_isDraggingVerticalThumb)
             return;
 
-        if (e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
             return;
 
         _isDraggingVerticalThumb = false;
@@ -599,39 +592,27 @@ public partial class ScrollViewer : Control
         e.Handled = true;
     }
 
-    private void HandlePointerDown(object sender, RoutedEventArgs e)
+    private void HandlePointerDown(object sender, Input.PointerDownEventArgs e)
     {
-        if (e is PointerDownEventArgs pointerArgs)
-        {
-            OnPointerDown(pointerArgs);
-        }
+        OnPointerDown(e);
     }
 
-    private void HandlePointerMove(object sender, RoutedEventArgs e)
+    private void HandlePointerMove(object sender, Input.PointerMoveEventArgs e)
     {
-        if (e is PointerMoveEventArgs pointerArgs)
-        {
-            OnPointerMove(pointerArgs);
-        }
+        OnPointerMove(e);
     }
 
-    private void HandlePointerUp(object sender, RoutedEventArgs e)
+    private void HandlePointerUp(object sender, Input.PointerUpEventArgs e)
     {
-        if (e is PointerUpEventArgs pointerArgs)
-        {
-            OnPointerUp(pointerArgs);
-        }
+        OnPointerUp(e);
     }
 
-    private void HandlePointerCancel(object sender, RoutedEventArgs e)
+    private void HandlePointerCancel(object sender, Input.PointerCancelEventArgs e)
     {
-        if (e is PointerCancelEventArgs pointerArgs)
-        {
-            OnPointerCancel(pointerArgs);
-        }
+        OnPointerCancel(e);
     }
 
-    private void OnScrollBarMouseEnter(object sender, RoutedEventArgs e)
+    private void OnScrollBarMouseEnter(object sender, Input.MouseEventArgs e)
     {
         if (!ReferenceEquals(sender, _verticalScrollBar) && !ReferenceEquals(sender, _horizontalScrollBar))
             return;
@@ -639,7 +620,7 @@ public partial class ScrollViewer : Control
         RevealAutoHideScrollBarsTemporarily();
     }
 
-    private void OnScrollBarMouseLeave(object sender, RoutedEventArgs e)
+    private void OnScrollBarMouseLeave(object sender, Input.MouseEventArgs e)
     {
         if (!ReferenceEquals(sender, _verticalScrollBar) && !ReferenceEquals(sender, _horizontalScrollBar))
             return;

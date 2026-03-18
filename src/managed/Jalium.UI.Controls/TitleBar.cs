@@ -268,9 +268,9 @@ public class TitleBar : Control
         _fallbackCloseButton.Click += OnCloseButtonClick;
 
         // Register for mouse events
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnTitleBarMouseDown));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnTitleBarMouseUp));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnTitleBarMouseMove));
+        AddHandler(MouseDownEvent, new Input.MouseButtonEventHandler(OnTitleBarMouseDown));
+        AddHandler(MouseUpEvent, new Input.MouseButtonEventHandler(OnTitleBarMouseUp));
+        AddHandler(MouseMoveEvent, new Input.MouseEventHandler(OnTitleBarMouseMove));
 
         UpdateMaximizeButtonKind();
         UpdateButtonVisibility();
@@ -530,29 +530,26 @@ public class TitleBar : Control
 
     #region Input Handling
 
-    private void OnTitleBarMouseDown(object sender, RoutedEventArgs e)
+    private void OnTitleBarMouseDown(object sender, Input.MouseButtonEventArgs e)
     {
-        if (e is not MouseButtonEventArgs args)
-            return;
-
-        if (args.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
             return;
 
         // Handle double-click for maximize/restore
         // Note: Window dragging is handled by WM_NCHITTEST in Window class
-        if (args.ClickCount == 2 && ShowMaximizeButton)
+        if (e.ClickCount == 2 && ShowMaximizeButton)
         {
             MaximizeRestoreClicked?.Invoke(this, EventArgs.Empty);
             e.Handled = true;
         }
     }
 
-    private void OnTitleBarMouseUp(object sender, RoutedEventArgs e)
+    private void OnTitleBarMouseUp(object sender, Input.MouseButtonEventArgs e)
     {
         // Window dragging is handled by WM_NCHITTEST
     }
 
-    private void OnTitleBarMouseMove(object sender, RoutedEventArgs e)
+    private void OnTitleBarMouseMove(object sender, Input.MouseEventArgs e)
     {
         // Window dragging is handled by WM_NCHITTEST
     }

@@ -9,9 +9,12 @@ public sealed class PathTessellator
 {
     private readonly List<Vector2> _vertices = new();
     private readonly List<ushort> _indices = new();
-    private readonly List<Vector2> _currentContour = new();
+    private readonly List<List<Vector2>> _contours = new();
+    private List<Vector2> _currentContour = new();
     private Vector2 _currentPoint;
     private Vector2 _startPoint;
+    private Vector2 _lastControlPoint;
+    private char _lastCommandUpper;
 
     /// <summary>
     /// 细分精度（较小的值产生更多三角形但更平滑）
@@ -129,6 +132,11 @@ public sealed class PathTessellator
 
         // 生成三角形扇形
         var vertexCount = _vertices.Count;
+        if (vertexCount <= 1)
+        {
+            return new TessellationResult(_vertices.ToArray(), _indices.ToArray());
+        }
+
         for (int i = 1; i < vertexCount; i++)
         {
             _indices.Add(centerIndex);
@@ -163,9 +171,12 @@ public sealed class PathTessellator
     {
         _vertices.Clear();
         _indices.Clear();
-        _currentContour.Clear();
+        _contours.Clear();
+        _currentContour = new List<Vector2>();
         _currentPoint = Vector2.Zero;
         _startPoint = Vector2.Zero;
+        _lastControlPoint = Vector2.Zero;
+        _lastCommandUpper = '\0';
     }
 
     private void ParseAndTessellate(string pathData)
@@ -179,13 +190,23 @@ public sealed class PathTessellator
         {
             var token = tokens[index];
 
-            // 检查是否是命令
+            // 检查是否是命令字母
             if (token.Length == 1 && char.IsLetter(token[0]))
             {
                 lastCommand = token[0];
                 index++;
+
+                // Z/z takes no parameters - execute immediately
+                if (char.ToUpper(lastCommand) == 'Z')
+                {
+                    ClosePath();
+                    _lastCommandUpper = 'Z';
+                }
+
                 continue;
             }
+
+            bool isRelative = char.IsLower(lastCommand);
 
             // 根据命令处理参数
             switch (char.ToUpper(lastCommand))
@@ -193,48 +214,53 @@ public sealed class PathTessellator
                 case 'M': // MoveTo
                     var mx = ParseFloat(tokens, ref index);
                     var my = ParseFloat(tokens, ref index);
-                    if (char.IsLower(lastCommand))
+                    if (isRelative)
                     {
                         mx += _currentPoint.X;
                         my += _currentPoint.Y;
                     }
                     MoveTo(mx, my);
-                    lastCommand = char.IsLower(lastCommand) ? 'l' : 'L'; // 后续参数视为 LineTo
+                    lastCommand = isRelative ? 'l' : 'L'; // 后续参数视为 LineTo
+                    _lastCommandUpper = 'M';
                     break;
 
                 case 'L': // LineTo
                     var lx = ParseFloat(tokens, ref index);
                     var ly = ParseFloat(tokens, ref index);
-                    if (char.IsLower(lastCommand))
+                    if (isRelative)
                     {
                         lx += _currentPoint.X;
                         ly += _currentPoint.Y;
                     }
                     LineTo(lx, ly);
+                    _lastCommandUpper = 'L';
                     break;
 
                 case 'H': // Horizontal LineTo
                     var hx = ParseFloat(tokens, ref index);
-                    if (char.IsLower(lastCommand))
+                    if (isRelative)
                         hx += _currentPoint.X;
                     LineTo(hx, _currentPoint.Y);
+                    _lastCommandUpper = 'H';
                     break;
 
                 case 'V': // Vertical LineTo
                     var vy = ParseFloat(tokens, ref index);
-                    if (char.IsLower(lastCommand))
+                    if (isRelative)
                         vy += _currentPoint.Y;
                     LineTo(_currentPoint.X, vy);
+                    _lastCommandUpper = 'V';
                     break;
 
                 case 'C': // CurveTo (三次贝塞尔)
+                {
                     var c1x = ParseFloat(tokens, ref index);
                     var c1y = ParseFloat(tokens, ref index);
                     var c2x = ParseFloat(tokens, ref index);
                     var c2y = ParseFloat(tokens, ref index);
                     var cx = ParseFloat(tokens, ref index);
                     var cy = ParseFloat(tokens, ref index);
-                    if (char.IsLower(lastCommand))
+                    if (isRelative)
                     {
                         c1x += _currentPoint.X;
                         c1y += _currentPoint.Y;
@@ -243,23 +269,71 @@ public sealed class PathTessellator
                         cx += _currentPoint.X;
                         cy += _currentPoint.Y;
                     }
+                    _lastControlPoint = new Vector2(c2x, c2y);
                     CubicBezierTo(c1x, c1y, c2x, c2y, cx, cy);
+                    _lastCommandUpper = 'C';
                     break;
+                }
+
+                case 'S': // Smooth CurveTo
+                {
+                    var s2x = ParseFloat(tokens, ref index);
+                    var s2y = ParseFloat(tokens, ref index);
+                    var sx = ParseFloat(tokens, ref index);
+                    var sy = ParseFloat(tokens, ref index);
+                    if (isRelative)
+                    {
+                        s2x += _currentPoint.X;
+                        s2y += _currentPoint.Y;
+                        sx += _currentPoint.X;
+                        sy += _currentPoint.Y;
+                    }
+                    // Reflect previous control point
+                    var s1 = (_lastCommandUpper is 'C' or 'S')
+                        ? ReflectPoint(_lastControlPoint, _currentPoint)
+                        : _currentPoint;
+                    _lastControlPoint = new Vector2(s2x, s2y);
+                    CubicBezierTo(s1.X, s1.Y, s2x, s2y, sx, sy);
+                    _lastCommandUpper = 'S';
+                    break;
+                }
 
                 case 'Q': // QuadraticCurveTo
+                {
                     var qcx = ParseFloat(tokens, ref index);
                     var qcy = ParseFloat(tokens, ref index);
                     var qx = ParseFloat(tokens, ref index);
                     var qy = ParseFloat(tokens, ref index);
-                    if (char.IsLower(lastCommand))
+                    if (isRelative)
                     {
                         qcx += _currentPoint.X;
                         qcy += _currentPoint.Y;
                         qx += _currentPoint.X;
                         qy += _currentPoint.Y;
                     }
+                    _lastControlPoint = new Vector2(qcx, qcy);
                     QuadraticBezierTo(qcx, qcy, qx, qy);
+                    _lastCommandUpper = 'Q';
                     break;
+                }
+
+                case 'T': // Smooth QuadraticCurveTo
+                {
+                    var tx = ParseFloat(tokens, ref index);
+                    var ty = ParseFloat(tokens, ref index);
+                    if (isRelative)
+                    {
+                        tx += _currentPoint.X;
+                        ty += _currentPoint.Y;
+                    }
+                    var tc = (_lastCommandUpper is 'Q' or 'T')
+                        ? ReflectPoint(_lastControlPoint, _currentPoint)
+                        : _currentPoint;
+                    _lastControlPoint = tc;
+                    QuadraticBezierTo(tc.X, tc.Y, tx, ty);
+                    _lastCommandUpper = 'T';
+                    break;
+                }
 
                 case 'A': // Arc
                     var rx = ParseFloat(tokens, ref index);
@@ -269,16 +343,13 @@ public sealed class PathTessellator
                     var sweep = ParseFloat(tokens, ref index) != 0;
                     var ax = ParseFloat(tokens, ref index);
                     var ay = ParseFloat(tokens, ref index);
-                    if (char.IsLower(lastCommand))
+                    if (isRelative)
                     {
                         ax += _currentPoint.X;
                         ay += _currentPoint.Y;
                     }
                     ArcTo(rx, ry, rotation, largeArc, sweep, ax, ay);
-                    break;
-
-                case 'Z': // ClosePath
-                    ClosePath();
+                    _lastCommandUpper = 'A';
                     break;
 
                 default:
@@ -287,8 +358,14 @@ public sealed class PathTessellator
             }
         }
 
-        // 三角化所有轮廓
-        TriangulateContours();
+        // Finalize the last contour and triangulate all contours
+        FinalizeCurrentContour();
+        TriangulateAllContours();
+    }
+
+    private static Vector2 ReflectPoint(Vector2 control, Vector2 current)
+    {
+        return new Vector2(2 * current.X - control.X, 2 * current.Y - control.Y);
     }
 
     private static List<string> TokenizePath(string pathData)
@@ -345,16 +422,20 @@ public sealed class PathTessellator
         return float.TryParse(token, out var result) ? result : 0;
     }
 
+    private void FinalizeCurrentContour()
+    {
+        if (_currentContour.Count >= 3)
+        {
+            _contours.Add(_currentContour);
+        }
+        _currentContour = new List<Vector2>();
+    }
+
     private void MoveTo(float x, float y)
     {
-        // 关闭当前轮廓
-        if (_currentContour.Count > 0)
-        {
-            // 将轮廓添加到顶点列表
-            // 这里简化处理
-        }
+        // Finalize previous contour before starting a new one
+        FinalizeCurrentContour();
 
-        _currentContour.Clear();
         _currentPoint = new Vector2(x, y);
         _startPoint = _currentPoint;
         _currentContour.Add(_currentPoint);
@@ -426,9 +507,6 @@ public sealed class PathTessellator
 
     private void ArcTo(float rx, float ry, float rotation, bool largeArc, bool sweep, float x, float y)
     {
-        // 简化实现：将圆弧转换为贝塞尔曲线
-        // 完整实现需要更复杂的数学
-
         var endPoint = new Vector2(x, y);
 
         if (rx < 0.001f || ry < 0.001f || _currentPoint == endPoint)
@@ -437,33 +515,69 @@ public sealed class PathTessellator
             return;
         }
 
-        // 简化：使用多段二次贝塞尔近似
-        var segments = Math.Max(4, (int)(MathF.Max(rx, ry) / Tolerance));
-        var center = (_currentPoint + endPoint) * 0.5f;
-        var startAngle = MathF.Atan2(_currentPoint.Y - center.Y, _currentPoint.X - center.X);
-        var endAngle = MathF.Atan2(endPoint.Y - center.Y, endPoint.X - center.X);
+        // SVG endpoint-to-center parameterization (same algorithm as RenderTargetDrawingContext)
+        rx = MathF.Abs(rx);
+        ry = MathF.Abs(ry);
 
-        var angleDiff = endAngle - startAngle;
-        if (sweep && angleDiff < 0) angleDiff += MathF.PI * 2;
-        if (!sweep && angleDiff > 0) angleDiff -= MathF.PI * 2;
+        var dx = (_currentPoint.X - endPoint.X) / 2f;
+        var dy = (_currentPoint.Y - endPoint.Y) / 2f;
 
-        if (largeArc)
+        var rotRad = rotation * MathF.PI / 180f;
+        var cosA = MathF.Cos(rotRad);
+        var sinA = MathF.Sin(rotRad);
+
+        var x1p = cosA * dx + sinA * dy;
+        var y1p = -sinA * dx + cosA * dy;
+
+        // Ensure radii are large enough
+        var x1pSq = x1p * x1p;
+        var y1pSq = y1p * y1p;
+        var rxSq = rx * rx;
+        var rySq = ry * ry;
+
+        var lambda = x1pSq / rxSq + y1pSq / rySq;
+        if (lambda > 1f)
         {
-            if (MathF.Abs(angleDiff) < MathF.PI)
-            {
-                angleDiff = angleDiff > 0 ? angleDiff - MathF.PI * 2 : angleDiff + MathF.PI * 2;
-            }
+            var sqrtLambda = MathF.Sqrt(lambda);
+            rx *= sqrtLambda;
+            ry *= sqrtLambda;
+            rxSq = rx * rx;
+            rySq = ry * ry;
         }
 
-        var angleStep = angleDiff / segments;
+        // Calculate center
+        var sign = (largeArc != sweep) ? 1f : -1f;
+        var sq = MathF.Max(0f, (rxSq * rySq - rxSq * y1pSq - rySq * x1pSq) / (rxSq * y1pSq + rySq * x1pSq));
+        var coef = sign * MathF.Sqrt(sq);
 
+        var cxp = coef * rx * y1p / ry;
+        var cyp = -coef * ry * x1p / rx;
+
+        var cx = cosA * cxp - sinA * cyp + (_currentPoint.X + endPoint.X) / 2f;
+        var cy = sinA * cxp + cosA * cyp + (_currentPoint.Y + endPoint.Y) / 2f;
+
+        var startAngle = MathF.Atan2((y1p - cyp) / ry, (x1p - cxp) / rx);
+        var endAngle = MathF.Atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx);
+
+        var deltaAngle = endAngle - startAngle;
+        if (sweep && deltaAngle < 0)
+            deltaAngle += 2f * MathF.PI;
+        else if (!sweep && deltaAngle > 0)
+            deltaAngle -= 2f * MathF.PI;
+
+        var segments = Math.Max(8, (int)(MathF.Abs(deltaAngle) * MathF.Max(rx, ry) / Tolerance));
         for (int i = 1; i <= segments; i++)
         {
-            var angle = startAngle + angleStep * i;
-            var point = new Vector2(
-                center.X + rx * MathF.Cos(angle),
-                center.Y + ry * MathF.Sin(angle));
-            _currentContour.Add(point);
+            var t = (float)i / segments;
+            var angle = startAngle + deltaAngle * t;
+
+            var px = rx * MathF.Cos(angle);
+            var py = ry * MathF.Sin(angle);
+
+            var ptX = cosA * px - sinA * py + cx;
+            var ptY = sinA * px + cosA * py + cy;
+
+            _currentContour.Add(new Vector2(ptX, ptY));
         }
 
         _currentPoint = endPoint;
@@ -478,21 +592,33 @@ public sealed class PathTessellator
         _currentPoint = _startPoint;
     }
 
-    private void TriangulateContours()
+    private void TriangulateAllContours()
     {
-        if (_currentContour.Count < 3)
+        foreach (var contour in _contours)
+        {
+            TriangulateSingleContour(contour);
+        }
+    }
+
+    private void TriangulateSingleContour(List<Vector2> contour)
+    {
+        if (contour.Count < 3)
             return;
 
         // 使用耳切法（Ear Clipping）进行三角化
         var baseIndex = (ushort)_vertices.Count;
 
         // 添加顶点
-        _vertices.AddRange(_currentContour);
+        _vertices.AddRange(contour);
 
         // 创建顶点索引列表
-        var indices = new List<int>(_currentContour.Count);
-        for (int i = 0; i < _currentContour.Count; i++)
+        var indices = new List<int>(contour.Count);
+        for (int i = 0; i < contour.Count; i++)
             indices.Add(i);
+
+        // 确保顶点顺序为逆时针（耳切法需要一致的缠绕方向）
+        if (ComputeSignedArea(contour) < 0)
+            indices.Reverse();
 
         // 耳切法
         while (indices.Count > 3)
@@ -505,7 +631,7 @@ public sealed class PathTessellator
                 var curr = indices[i];
                 var next = indices[(i + 1) % indices.Count];
 
-                if (IsEar(_currentContour, indices, prev, curr, next))
+                if (IsEar(contour, indices, prev, curr, next))
                 {
                     // 添加三角形
                     _indices.Add((ushort)(baseIndex + prev));
@@ -530,6 +656,18 @@ public sealed class PathTessellator
             _indices.Add((ushort)(baseIndex + indices[1]));
             _indices.Add((ushort)(baseIndex + indices[2]));
         }
+    }
+
+    private static float ComputeSignedArea(List<Vector2> contour)
+    {
+        float area = 0;
+        for (int i = 0; i < contour.Count; i++)
+        {
+            var a = contour[i];
+            var b = contour[(i + 1) % contour.Count];
+            area += (b.X - a.X) * (b.Y + a.Y);
+        }
+        return area;
     }
 
     private static bool IsEar(List<Vector2> vertices, List<int> indices, int prev, int curr, int next)
@@ -570,7 +708,11 @@ public sealed class PathTessellator
         var dot11 = Vector2.Dot(v1, v1);
         var dot12 = Vector2.Dot(v1, v2);
 
-        var invDenom = 1 / (dot00 * dot11 - dot01 * dot01);
+        var denom = dot00 * dot11 - dot01 * dot01;
+        if (MathF.Abs(denom) < 1e-10f)
+            return false; // Degenerate triangle — no point can be "inside"
+
+        var invDenom = 1 / denom;
         var u = (dot11 * dot02 - dot01 * dot12) * invDenom;
         var v = (dot00 * dot12 - dot01 * dot02) * invDenom;
 

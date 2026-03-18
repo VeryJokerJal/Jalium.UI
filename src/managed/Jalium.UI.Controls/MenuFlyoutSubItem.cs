@@ -28,8 +28,8 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
     /// </summary>
     public MenuFlyoutSubItem()
     {
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnSubItemMouseEnter));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnSubItemMouseLeave));
+        AddHandler(MouseEnterEvent, new Input.MouseEventHandler(OnSubItemMouseEnter));
+        AddHandler(MouseLeaveEvent, new Input.MouseEventHandler(OnSubItemMouseLeave));
     }
 
     /// <inheritdoc />
@@ -162,12 +162,12 @@ public sealed class MenuFlyoutSubItem : MenuFlyoutItem
         _subPopupScrollHost?.ItemsPanel.Children.Clear();
     }
 
-    private void OnSubItemMouseEnter(object sender, RoutedEventArgs e)
+    private void OnSubItemMouseEnter(object sender, Input.MouseEventArgs e)
     {
         ShowSubMenu();
     }
 
-    private void OnSubItemMouseLeave(object sender, RoutedEventArgs e)
+    private void OnSubItemMouseLeave(object sender, Input.MouseEventArgs e)
     {
         // Keep submenu open while pointer moves from item into submenu popup.
     }

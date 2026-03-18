@@ -27,6 +27,7 @@ public:
     // IRenderBackend implementation
     JaliumBackend GetType() const override { return JALIUM_BACKEND_D3D12; }
     const wchar_t* GetName() const override { return L"Direct3D 12"; }
+    JaliumResult CheckDeviceStatus() override;
 
     RenderTarget* CreateRenderTarget(void* hwnd, int32_t width, int32_t height) override;
     RenderTarget* CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height) override;
@@ -60,6 +61,7 @@ private:
     bool CreateD2DDevice();
     bool CreateDWriteFactory();
     bool CreateWICFactory();
+    void ReleasePartialInit();
 
     // D3D12 resources
     ComPtr<IDXGIFactory6> dxgiFactory_;

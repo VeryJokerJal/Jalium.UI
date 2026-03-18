@@ -68,10 +68,10 @@ public class MenuBarItem : Control
     {
         Focusable = true;
         _items.CollectionChanged += OnItemsCollectionChanged;
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseEnterEvent, new RoutedEventHandler(OnMouseEnterHandler));
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     /// <inheritdoc />
@@ -174,7 +174,7 @@ public class MenuBarItem : Control
         InvalidateVisual();
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (IsMenuOpen)
             CloseMenu();
@@ -183,26 +183,26 @@ public class MenuBarItem : Control
         e.Handled = true;
     }
 
-    private void OnMouseEnterHandler(object sender, RoutedEventArgs e)
+    private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
         // Keep hover visual only. Top-level menu opens by click to avoid accidental popup.
         InvalidateVisual();
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         InvalidateVisual();
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (!IsEnabled || e is not KeyEventArgs keyArgs)
+        if (!IsEnabled)
         {
             return;
         }
 
         var menuModeActive = ParentMenuBar?.IsAnyMenuOpen() == true;
-        var handled = keyArgs.Key switch
+        var handled = e.Key switch
         {
             Key.Enter or Key.Space or Key.Down => OpenFromKeyboard(),
             Key.Escape => CloseFromKeyboard(),
@@ -215,7 +215,7 @@ public class MenuBarItem : Control
 
         if (handled)
         {
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
     }
 

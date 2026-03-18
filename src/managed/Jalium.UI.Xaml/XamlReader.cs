@@ -2571,6 +2571,7 @@ public static class XamlTypeRegistry
         Register<HyperlinkButton>(types);
         Register<Label>(types);
         Register<InkCanvas>(types);
+        Register<MediaElement>(types);
         Register<EditControl>(types);
         Register<Markdown>(types);
         Register<Calendar>(types);
@@ -2664,6 +2665,7 @@ public static class XamlTypeRegistry
         Register<Ellipse>(types);
         Register<Rectangle>(types);
         Register<Jalium.UI.Controls.Shapes.Path>(types);
+        Register<Line>(types);
     }
 
     private static void Register<[DynamicallyAccessedMembers(

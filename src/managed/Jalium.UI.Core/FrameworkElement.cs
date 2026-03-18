@@ -607,6 +607,10 @@ public class FrameworkElement : UIElement
     {
         ResourcesChanged?.Invoke(this, EventArgs.Empty);
 
+        // Re-evaluate implicit style for this element in case a closer-scope
+        // style was added to (or removed from) an ancestor's resources.
+        ReEvaluateImplicitStyle();
+
         for (int i = 0; i < VisualChildrenCount; i++)
         {
             if (GetVisualChild(i) is FrameworkElement child)
@@ -1135,13 +1139,21 @@ public class FrameworkElement : UIElement
         // Invalidate cached Window/LayoutManager references for this subtree
         InvalidateHostCaches();
 
-        ApplyImplicitStyleIfNeeded();
-
         // Reactivate bindings when visual parent changes
         // This allows DataContext and RelativeSource FindAncestor bindings to resolve
         // after being added to the visual tree
         if (VisualParent != null)
         {
+            // Re-evaluate implicit styles for this entire subtree.
+            // During XAML parsing, children are added bottom-up: a Button is added
+            // to a StackPanel before the StackPanel is connected to the Window.
+            // The initial implicit style lookup may only reach Application resources
+            // (theme styles) because the ancestor with user resources isn't reachable
+            // yet. When the subtree is later connected to the full tree, we must
+            // re-evaluate so that closer-scope user-defined implicit styles take
+            // precedence over theme styles.
+            ReEvaluateImplicitStylesRecursive(this);
+
             // Recursively reactivate bindings on this element and ALL descendants,
             // because descendants may have bindings that depend on DataContext
             // inherited from an ancestor that is now reachable via the visual tree
@@ -1281,33 +1293,93 @@ public class FrameworkElement : UIElement
     /// </summary>
     internal void ApplyImplicitStyleIfNeeded()
     {
-        // Explicit style or implicit style already applied — nothing to do.
-        // Matches WPF behavior: implicit styles are determined when the element
-        // first enters the visual tree and persist until an explicit Style is set.
-        // Re-applying would destroy and recreate ControlTemplate visual trees,
-        // losing any children that were programmatically added to template parts.
-        if (Style != null || _implicitStyle != null)
-        {
+        // Explicit style set — nothing to do.
+        if (Style != null)
             return;
-        }
 
-        // Look up implicit style by Type, walking up the hierarchy.
-        Style? implicitStyle = null;
-        var currentType = GetType();
-        while (currentType != null && currentType != typeof(FrameworkElement))
-        {
-            implicitStyle = TryFindResource(currentType) as Style;
-            if (implicitStyle != null && IsStyleApplicable(implicitStyle))
-                break;
-            implicitStyle = null;
-            currentType = currentType.BaseType;
-        }
+        // Already have an implicit style — skip first-time application.
+        // Re-evaluation after tree changes is handled by ReEvaluateImplicitStyle().
+        if (_implicitStyle != null)
+            return;
 
+        var implicitStyle = LookupImplicitStyle();
         if (implicitStyle != null)
         {
             _implicitStyle = implicitStyle;
             implicitStyle.Apply(this);
             InvalidateVisual();
+        }
+    }
+
+    /// <summary>
+    /// Re-evaluates the implicit style for this element after a tree change.
+    /// If a closer-scope implicit style is now available (e.g., user-defined style
+    /// in Window.Resources after the subtree was connected), it replaces the
+    /// previously applied style (e.g., theme style from Application.Resources).
+    /// </summary>
+    private void ReEvaluateImplicitStyle()
+    {
+        if (Style != null)
+            return;
+
+        var newImplicit = LookupImplicitStyle();
+        if (newImplicit == null)
+        {
+            // No implicit style found; apply first-time if needed.
+            ApplyImplicitStyleIfNeeded();
+            return;
+        }
+
+        if (ReferenceEquals(_implicitStyle, newImplicit))
+            return; // Same style — no change needed.
+
+        // Different (closer-scope) implicit style found — swap.
+        if (_implicitStyle != null)
+        {
+            _implicitStyle.Remove(this);
+        }
+
+        _implicitStyle = newImplicit;
+        newImplicit.Apply(this);
+        InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Looks up the implicit style for this element by walking up the type
+    /// hierarchy and searching resources.
+    /// </summary>
+    private Style? LookupImplicitStyle()
+    {
+        var currentType = GetType();
+        while (currentType != null && currentType != typeof(FrameworkElement))
+        {
+            var style = TryFindResource(currentType) as Style;
+            if (style != null && IsStyleApplicable(style))
+                return style;
+            currentType = currentType.BaseType;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Recursively re-evaluates implicit styles for the given subtree.
+    /// Called when a subtree gains a visual parent, since the resource lookup
+    /// scope may now include ancestor resources that were unreachable before.
+    /// </summary>
+    private static void ReEvaluateImplicitStylesRecursive(Visual visual)
+    {
+        if (visual is FrameworkElement fe)
+        {
+            fe.ReEvaluateImplicitStyle();
+        }
+
+        for (int i = 0; i < visual.VisualChildrenCount; i++)
+        {
+            var child = visual.GetVisualChild(i);
+            if (child != null)
+            {
+                ReEvaluateImplicitStylesRecursive(child);
+            }
         }
     }
 

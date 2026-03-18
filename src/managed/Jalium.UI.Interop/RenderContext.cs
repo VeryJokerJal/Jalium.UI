@@ -1,6 +1,28 @@
 namespace Jalium.UI.Interop;
 
 /// <summary>
+/// Event data for device-lost recovery events.
+/// </summary>
+public sealed class DeviceLostEventArgs : EventArgs
+{
+    /// <summary>
+    /// The previous context that was lost (may already be disposed).
+    /// </summary>
+    public RenderContext? PreviousContext { get; }
+
+    /// <summary>
+    /// The newly created replacement context.
+    /// </summary>
+    public RenderContext NewContext { get; }
+
+    public DeviceLostEventArgs(RenderContext? previousContext, RenderContext newContext)
+    {
+        PreviousContext = previousContext;
+        NewContext = newContext;
+    }
+}
+
+/// <summary>
 /// Represents a native rendering context.
 /// </summary>
 public sealed class RenderContext : IDisposable
@@ -10,7 +32,7 @@ public sealed class RenderContext : IDisposable
     private static int _generationCounter;
     private static RenderContext? _current;
     private nint _handle;
-    private bool _disposed;
+    private int _disposed; // 0 = not disposed, 1 = disposed (Interlocked for thread-safety)
     private bool _retireRequested;
     private int _activeRenderTargetCount;
 
@@ -37,7 +59,13 @@ public sealed class RenderContext : IDisposable
     /// <summary>
     /// Gets whether the context is valid.
     /// </summary>
-    public bool IsValid => _handle != nint.Zero && !_disposed;
+    public bool IsValid => _handle != nint.Zero && Volatile.Read(ref _disposed) == 0;
+
+    /// <summary>
+    /// Raised when the rendering device is lost and a new context has been created.
+    /// Subscribers should release cached GPU resources and recreate them.
+    /// </summary>
+    public static event EventHandler<DeviceLostEventArgs>? DeviceLost;
 
     /// <summary>
     /// Creates a new render context with the specified backend.
@@ -134,7 +162,7 @@ public sealed class RenderContext : IDisposable
 
     private bool CanDisposeRetiredUnsafe()
         => _retireRequested &&
-           !_disposed &&
+           Volatile.Read(ref _disposed) == 0 &&
            _handle != nint.Zero &&
            Volatile.Read(ref _activeRenderTargetCount) == 0 &&
            !ReferenceEquals(_current, this);
@@ -302,9 +330,54 @@ public sealed class RenderContext : IDisposable
         return new NativeBitmap(this, pixelData, width, height, stride);
     }
 
+    /// <summary>
+    /// Attempts to recover from a device-lost scenario by creating a new render context.
+    /// Returns the new context if recovery succeeds, or null if it fails.
+    /// Raises <see cref="DeviceLost"/> so subscribers can recreate GPU resources.
+    /// </summary>
+    public static RenderContext? TryRecoverFromDeviceLost(RenderBackend backend = RenderBackend.Auto)
+    {
+        try
+        {
+            var previous = _current;
+            var newContext = GetOrCreateCurrent(backend, forceReplace: true);
+
+            if (newContext.IsValid)
+            {
+                DeviceLost?.Invoke(null, new DeviceLostEventArgs(previous, newContext));
+                return newContext;
+            }
+
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Checks whether the current context's device is still operational.
+    /// If device loss is detected, automatically attempts recovery.
+    /// Returns false if the device is lost and recovery failed.
+    /// </summary>
+    public bool CheckDeviceStatus()
+    {
+        if (Volatile.Read(ref _disposed) != 0 || _handle == nint.Zero)
+            return false;
+
+        var status = NativeMethods.ContextCheckDeviceStatus(_handle);
+        if (status == 0) // device OK
+            return true;
+
+        // Device lost — attempt recovery
+        var recovered = TryRecoverFromDeviceLost(Backend);
+        return recovered != null;
+    }
+
     private void ThrowIfDisposed()
     {
-        ObjectDisposedException.ThrowIf(_disposed, this);
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
     }
 
     private static RenderBackend NormalizeRequestedBackend(RenderBackend backend)
@@ -315,13 +388,12 @@ public sealed class RenderContext : IDisposable
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
+        if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0) return;
 
-        if (_handle != nint.Zero)
+        var handle = Interlocked.Exchange(ref _handle, nint.Zero);
+        if (handle != nint.Zero)
         {
-            NativeMethods.ContextDestroy(_handle);
-            _handle = nint.Zero;
+            NativeMethods.ContextDestroy(handle);
         }
 
         lock (s_sync)
@@ -338,8 +410,8 @@ public sealed class RenderContext : IDisposable
 
     ~RenderContext()
     {
-        _disposed = true;
-        _handle = nint.Zero;
+        Volatile.Write(ref _disposed, 1);
+        Volatile.Write(ref _handle, nint.Zero);
         lock (s_sync)
         {
             _retiredContexts.Remove(this);

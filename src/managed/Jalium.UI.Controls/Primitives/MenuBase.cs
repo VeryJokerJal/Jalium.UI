@@ -90,7 +90,7 @@ public abstract class MenuBase : ItemsControl
     protected MenuBase()
     {
         Focusable = true;
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     #endregion
@@ -143,16 +143,13 @@ public abstract class MenuBase : ItemsControl
 
     #region Keyboard Navigation
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs)
-            return;
-
         var itemCount = Items.Count;
         if (itemCount == 0)
             return;
 
-        switch (keyArgs.Key)
+        switch (e.Key)
         {
             case Key.Up:
                 NavigateToItem(_currentIndex - 1);

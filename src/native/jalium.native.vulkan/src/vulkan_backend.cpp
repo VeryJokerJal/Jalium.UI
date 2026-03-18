@@ -9,7 +9,7 @@
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
 #define STBI_FAILURE_USERMSG
-#include "../../../../third_party/stb/stb_image.h"
+#include <stb_image.h>
 #endif
 
 #ifdef _WIN32
@@ -42,8 +42,16 @@ Bitmap* DecodeBitmapWithStb(const uint8_t* data, uint32_t dataSize)
         return nullptr;
     }
 
-    std::vector<uint8_t> bgraPixels(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u, 0);
-    for (size_t offset = 0; offset + 3 < bgraPixels.size(); offset += 4u) {
+    const size_t pixelDataSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
+    if (pixelDataSize == 0) {
+        stbi_image_free(decodedPixels);
+        return nullptr;
+    }
+
+    std::vector<uint8_t> bgraPixels(pixelDataSize, 0);
+    // STBI_rgb_alpha guarantees decodedPixels has exactly pixelDataSize bytes (RGBA).
+    // Convert RGBA → BGRA in-place for D2D/Vulkan surface compatibility.
+    for (size_t offset = 0; offset + 3 < pixelDataSize; offset += 4u) {
         bgraPixels[offset + 0] = decodedPixels[offset + 2];
         bgraPixels[offset + 1] = decodedPixels[offset + 1];
         bgraPixels[offset + 2] = decodedPixels[offset + 0];

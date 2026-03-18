@@ -803,8 +803,8 @@ public class Border : FrameworkElement
         }
     }
 
-    private RoutedEventHandler? _lgMouseMoveHandler;
-    private RoutedEventHandler? _lgMouseLeaveHandler;
+    private Input.MouseEventHandler? _lgMouseMoveHandler;
+    private Input.MouseEventHandler? _lgMouseLeaveHandler;
 
     private bool TryWireLgWindowTracking()
     {
@@ -814,8 +814,8 @@ public class Border : FrameworkElement
         if (window == null) return false;
 
         _lgTrackingWindow = window;
-        _lgMouseMoveHandler = new RoutedEventHandler(OnLgWindowMouseMove);
-        _lgMouseLeaveHandler = new RoutedEventHandler(OnLgWindowMouseLeave);
+        _lgMouseMoveHandler = new Input.MouseEventHandler(OnLgWindowMouseMove);
+        _lgMouseLeaveHandler = new Input.MouseEventHandler(OnLgWindowMouseLeave);
         window.AddHandler(MouseMoveEvent, _lgMouseMoveHandler, handledEventsToo: true);
         window.AddHandler(MouseLeaveEvent, _lgMouseLeaveHandler, handledEventsToo: true);
 
@@ -852,36 +852,33 @@ public class Border : FrameworkElement
             TryWireLgWindowTracking();
     }
 
-    private void OnLgWindowMouseMove(object sender, RoutedEventArgs e)
+    private void OnLgWindowMouseMove(object sender, Input.MouseEventArgs e)
     {
-        if (e is MouseEventArgs mouseArgs)
+        var pos = e.GetPosition(this);
+        _lgLightLocal = pos;
+        _lgMouseOver = true;
+
+        // Track drag offset while pressed
+        // Power curve applied at input for diminishing returns during drag;
+        // spring and render use linear values so the snap-back animation is smooth.
+        if (_lgPressed)
         {
-            var pos = mouseArgs.GetPosition(this);
-            _lgLightLocal = pos;
-            _lgMouseOver = true;
-
-            // Track drag offset while pressed
-            // Power curve applied at input for diminishing returns during drag;
-            // spring and render use linear values so the snap-back animation is smooth.
-            if (_lgPressed)
-            {
-                double dx = pos.X - _lgPressPoint.X;
-                double dy = pos.Y - _lgPressPoint.Y;
-                double tx = Math.Sign(dx) * LgDragScale * Math.Pow(Math.Abs(dx), LgDragPower);
-                double ty = Math.Sign(dy) * LgDragScale * Math.Pow(Math.Abs(dy), LgDragPower);
-                _lgSpringOffX.Position = tx;
-                _lgSpringOffX.Target = tx;
-                _lgSpringOffX.Velocity = 0;
-                _lgSpringOffY.Position = ty;
-                _lgSpringOffY.Target = ty;
-                _lgSpringOffY.Velocity = 0;
-            }
-
-            InvalidateVisual();
+            double dx = pos.X - _lgPressPoint.X;
+            double dy = pos.Y - _lgPressPoint.Y;
+            double tx = Math.Sign(dx) * LgDragScale * Math.Pow(Math.Abs(dx), LgDragPower);
+            double ty = Math.Sign(dy) * LgDragScale * Math.Pow(Math.Abs(dy), LgDragPower);
+            _lgSpringOffX.Position = tx;
+            _lgSpringOffX.Target = tx;
+            _lgSpringOffX.Velocity = 0;
+            _lgSpringOffY.Position = ty;
+            _lgSpringOffY.Target = ty;
+            _lgSpringOffY.Velocity = 0;
         }
+
+        InvalidateVisual();
     }
 
-    private void OnLgWindowMouseLeave(object sender, RoutedEventArgs e)
+    private void OnLgWindowMouseLeave(object sender, Input.MouseEventArgs e)
     {
         _lgMouseOver = false;
         InvalidateVisual();
@@ -914,15 +911,15 @@ public class Border : FrameworkElement
 
     #region Liquid Glass Press Interaction
 
-    private RoutedEventHandler? _lgMouseDownHandler;
-    private RoutedEventHandler? _lgMouseUpHandler;
+    private Input.MouseButtonEventHandler? _lgMouseDownHandler;
+    private Input.MouseButtonEventHandler? _lgMouseUpHandler;
 
     private void UpdateLiquidGlassPressTracking(bool enabled)
     {
         if (enabled)
         {
-            _lgMouseDownHandler = new RoutedEventHandler(OnLgMouseDown);
-            _lgMouseUpHandler = new RoutedEventHandler(OnLgMouseUp);
+            _lgMouseDownHandler = new Input.MouseButtonEventHandler(OnLgMouseDown);
+            _lgMouseUpHandler = new Input.MouseButtonEventHandler(OnLgMouseUp);
             // MouseDown on Border (press starts here)
             AddHandler(MouseDownEvent, _lgMouseDownHandler, handledEventsToo: true);
             // MouseUp on Window (release works even when mouse is outside Border)
@@ -949,12 +946,12 @@ public class Border : FrameworkElement
         }
     }
 
-    private void OnLgMouseDown(object sender, RoutedEventArgs e)
+    private void OnLgMouseDown(object sender, Input.MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs { ChangedButton: MouseButton.Left } mouseArgs)
+        if (e.ChangedButton == MouseButton.Left)
         {
             _lgPressed = true;
-            _lgPressPoint = mouseArgs.GetPosition(this);
+            _lgPressPoint = e.GetPosition(this);
             _lgSpringX.Target = LgPressScale;
             _lgSpringY.Target = LgPressScale;
             // Reset drag offset springs to zero (fresh drag)
@@ -966,9 +963,9 @@ public class Border : FrameworkElement
         }
     }
 
-    private void OnLgMouseUp(object sender, RoutedEventArgs e)
+    private void OnLgMouseUp(object sender, Input.MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs { ChangedButton: MouseButton.Left } && _lgPressed)
+        if (e.ChangedButton == MouseButton.Left && _lgPressed)
         {
             _lgPressed = false;
             _lgSpringX.Target = 1.0;

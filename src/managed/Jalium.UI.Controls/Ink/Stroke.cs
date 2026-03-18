@@ -12,6 +12,17 @@ public sealed class Stroke : INotifyPropertyChanged
     private DrawingAttributes _drawingAttributes;
     private StrokeTaperMode _taperMode = StrokeTaperMode.None;
 
+    // Rendering cache: avoids expensive per-frame tessellation for committed strokes.
+    // For path-based brushes: cached geometry + pen drawn in a single DrawGeometry call.
+    // For particle brushes: cached raw ellipse batch data for native batch rendering.
+    private Geometry? _cachedGeometry;
+    private SolidColorBrush? _cachedBrush;
+    private Pen? _cachedPen;
+    private DrawingGroup? _cachedDrawing;
+    private float[]? _cachedEllipseBatchData;
+    private int _cachedEllipseBatchCount;
+    private bool _renderCacheDirty = true;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="Stroke"/> class.
     /// </summary>
@@ -202,7 +213,8 @@ public sealed class Stroke : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Core drawing implementation using ellipse stamping for smooth strokes.
+    /// Core drawing implementation. Uses cached path geometry for path-based brushes
+    /// (single draw call) or cached DrawingGroup for particle brushes (replay).
     /// </summary>
     /// <param name="dc">The drawing context.</param>
     protected void DrawCore(DrawingContext dc)
@@ -210,38 +222,394 @@ public sealed class Stroke : INotifyPropertyChanged
         if (_stylusPoints.Count == 0)
             return;
 
-        // Dispatch to appropriate brush type renderer
+        if (_renderCacheDirty)
+        {
+            BuildRenderCache();
+        }
+
+        // Fast path: single DrawGeometry call for path-based brushes
+        if (_cachedGeometry != null)
+        {
+            if (_cachedPen != null)
+                dc.DrawGeometry(null, _cachedPen, _cachedGeometry);
+            else
+                dc.DrawGeometry(_cachedBrush, null, _cachedGeometry);
+            return;
+        }
+
+        // Particle brushes: use native batch when available, otherwise replay DrawingGroup
+        if (_cachedEllipseBatchData != null && _cachedEllipseBatchCount > 0)
+        {
+            if (dc is Jalium.UI.Interop.RenderTargetDrawingContext rtdc)
+            {
+                // Direct native batch: single P/Invoke for all particles
+                rtdc.BeginEllipseBatch(_cachedEllipseBatchCount);
+                // Push all cached data into the batch buffer
+                for (int i = 0; i < _cachedEllipseBatchCount; i++)
+                {
+                    var off = i * 5;
+                    // Reconstruct color from packed float
+                    var packedBits = BitConverter.SingleToInt32Bits(_cachedEllipseBatchData[off + 4]);
+                    var r = (byte)(packedBits & 0xFF);
+                    var g = (byte)((packedBits >> 8) & 0xFF);
+                    var b = (byte)((packedBits >> 16) & 0xFF);
+                    var a = (byte)((packedBits >> 24) & 0xFF);
+                    var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
+                    dc.DrawEllipse(brush, null,
+                        new Point(_cachedEllipseBatchData[off], _cachedEllipseBatchData[off + 1]),
+                        _cachedEllipseBatchData[off + 2], _cachedEllipseBatchData[off + 3]);
+                }
+                rtdc.EndEllipseBatch();
+                return;
+            }
+
+            // Fallback for non-RenderTarget contexts (e.g., DrawingGroup recording)
+            if (_cachedDrawing != null)
+            {
+                _cachedDrawing.RenderTo(dc);
+                return;
+            }
+        }
+
+        // Fallback
+        DrawRoundBrush(dc);
+    }
+
+    /// <summary>
+    /// Builds the rendering cache appropriate for the brush type.
+    /// </summary>
+    private void BuildRenderCache()
+    {
+        _renderCacheDirty = false;
+        _cachedGeometry = null;
+        _cachedBrush = null;
+        _cachedPen = null;
+        _cachedDrawing = null;
+
         switch (_drawingAttributes.BrushType)
         {
             case BrushType.Round:
             case BrushType.Pen:
-                DrawRoundBrush(dc);
+            case BrushType.Marker:
+                BuildPathCache();
                 break;
             case BrushType.Calligraphy:
-                DrawCalligraphyBrush(dc);
+                BuildCalligraphyPathCache();
                 break;
+            // Particle-based brushes: record into DrawingGroup
             case BrushType.Airbrush:
-                DrawAirbrush(dc);
-                break;
             case BrushType.Crayon:
-                DrawCrayonBrush(dc);
-                break;
-            case BrushType.Marker:
-                DrawMarkerBrush(dc);
-                break;
             case BrushType.Pencil:
-                DrawPencilBrush(dc);
-                break;
             case BrushType.Oil:
-                DrawOilBrush(dc);
-                break;
             case BrushType.Watercolor:
-                DrawWatercolorBrush(dc);
+                BuildParticleCache();
                 break;
             default:
-                DrawRoundBrush(dc);
+                BuildPathCache();
                 break;
         }
+    }
+
+    /// <summary>
+    /// Builds a cached StreamGeometry path for round/pen/marker brushes.
+    /// Produces a single DrawGeometry call instead of hundreds of DrawEllipse calls.
+    /// </summary>
+    private void BuildPathCache()
+    {
+        var color = _drawingAttributes.Color;
+        if (_drawingAttributes.IsHighlighter || _drawingAttributes.BrushType == BrushType.Marker)
+        {
+            var alpha = _drawingAttributes.BrushType == BrushType.Marker
+                ? (byte)Math.Min((int)200, (int)color.A)
+                : (byte)128;
+            color = Color.FromArgb(alpha, color.R, color.G, color.B);
+        }
+
+        var hasPressureVariation = !_drawingAttributes.IgnorePressure && HasPressureVariation();
+        var hasTaper = _taperMode != StrokeTaperMode.None;
+
+        if (hasPressureVariation || hasTaper)
+        {
+            // Variable-width stroke: build filled outline geometry
+            BuildVariableWidthCache(color);
+            return;
+        }
+
+        // Uniform-width stroke: use thick Pen on a polyline path
+        var brush = new SolidColorBrush(color);
+        var pen = new Pen(brush, _drawingAttributes.Width)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+            LineJoin = PenLineJoin.Round
+        };
+
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
+        {
+            ctx.BeginFigure(_stylusPoints[0].ToPoint(), false, false);
+            for (int i = 1; i < _stylusPoints.Count; i++)
+            {
+                ctx.LineTo(_stylusPoints[i].ToPoint(), true, true);
+            }
+        }
+
+        _cachedGeometry = geometry;
+        _cachedPen = pen;
+    }
+
+    /// <summary>
+    /// Builds a variable-width stroke outline for pressure-sensitive or tapered strokes.
+    /// The outline is a single filled geometry (no pen needed).
+    /// </summary>
+    private void BuildVariableWidthCache(Color color)
+    {
+        var radiusX = _drawingAttributes.Width / 2;
+        var radiusY = _drawingAttributes.Height / 2;
+        var totalPoints = _stylusPoints.Count;
+
+        if (totalPoints == 1)
+        {
+            var point = _stylusPoints[0].ToPoint();
+            var animatedRadius = ApplyAnimationScale(radiusX, radiusY, 0.0);
+            var ellipse = new EllipseGeometry { Center = point, RadiusX = animatedRadius.X, RadiusY = animatedRadius.Y };
+            _cachedGeometry = ellipse;
+            _cachedBrush = new SolidColorBrush(color);
+            return;
+        }
+
+        // Compute radius at each stylus point
+        var radii = new double[totalPoints];
+        for (int i = 0; i < totalPoints; i++)
+        {
+            var pressure = _drawingAttributes.IgnorePressure ? 1.0 : _stylusPoints[i].PressureFactor;
+            var progress = (double)i / (totalPoints - 1);
+            var animR = ApplyAnimationScale(radiusX * pressure, radiusY * pressure, progress);
+            radii[i] = Math.Max(animR.X, animR.Y);
+        }
+
+        // Build outline: forward pass (left side) + backward pass (right side)
+        var leftSide = new Point[totalPoints];
+        var rightSide = new Point[totalPoints];
+
+        for (int i = 0; i < totalPoints; i++)
+        {
+            var p = _stylusPoints[i].ToPoint();
+            double nx, ny;
+
+            if (totalPoints == 1)
+            {
+                nx = 0; ny = 1;
+            }
+            else if (i == 0)
+            {
+                var next = _stylusPoints[i + 1].ToPoint();
+                var dx = next.X - p.X; var dy = next.Y - p.Y;
+                var len = Math.Sqrt(dx * dx + dy * dy);
+                if (len < 0.001) { nx = 0; ny = 1; }
+                else { nx = -dy / len; ny = dx / len; }
+            }
+            else if (i == totalPoints - 1)
+            {
+                var prev = _stylusPoints[i - 1].ToPoint();
+                var dx = p.X - prev.X; var dy = p.Y - prev.Y;
+                var len = Math.Sqrt(dx * dx + dy * dy);
+                if (len < 0.001) { nx = 0; ny = 1; }
+                else { nx = -dy / len; ny = dx / len; }
+            }
+            else
+            {
+                var prev = _stylusPoints[i - 1].ToPoint();
+                var next = _stylusPoints[i + 1].ToPoint();
+                var dx = next.X - prev.X; var dy = next.Y - prev.Y;
+                var len = Math.Sqrt(dx * dx + dy * dy);
+                if (len < 0.001) { nx = 0; ny = 1; }
+                else { nx = -dy / len; ny = dx / len; }
+            }
+
+            var r = radii[i];
+            leftSide[i] = new Point(p.X + nx * r, p.Y + ny * r);
+            rightSide[i] = new Point(p.X - nx * r, p.Y - ny * r);
+        }
+
+        // Build a closed path: left side forward, round cap at end, right side backward, round cap at start
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
+        {
+            ctx.BeginFigure(leftSide[0], true, true);
+
+            // Left side forward
+            for (int i = 1; i < totalPoints; i++)
+                ctx.LineTo(leftSide[i], true, true);
+
+            // Round cap at end (semicircle from left to right)
+            var endPoint = _stylusPoints[totalPoints - 1].ToPoint();
+            var endR = radii[totalPoints - 1];
+            ctx.ArcTo(rightSide[totalPoints - 1],
+                new Size(endR, endR), 0, false, SweepDirection.Clockwise, true, true);
+
+            // Right side backward
+            for (int i = totalPoints - 2; i >= 0; i--)
+                ctx.LineTo(rightSide[i], true, true);
+
+            // Round cap at start (semicircle from right to left)
+            var startR = radii[0];
+            ctx.ArcTo(leftSide[0],
+                new Size(startR, startR), 0, false, SweepDirection.Clockwise, true, true);
+        }
+
+        _cachedGeometry = geometry;
+        _cachedBrush = new SolidColorBrush(color);
+    }
+
+    /// <summary>
+    /// Builds a path cache for calligraphy brush (thin elliptical pen nib).
+    /// </summary>
+    private void BuildCalligraphyPathCache()
+    {
+        var color = _drawingAttributes.Color;
+        var brush = new SolidColorBrush(color);
+
+        // Calligraphy uses a flattened pen nib - thin in Y direction
+        var pen = new Pen(brush, _drawingAttributes.Width)
+        {
+            StartLineCap = PenLineCap.Round,
+            EndLineCap = PenLineCap.Round,
+            LineJoin = PenLineJoin.Round
+        };
+
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
+        {
+            ctx.BeginFigure(_stylusPoints[0].ToPoint(), false, false);
+            for (int i = 1; i < _stylusPoints.Count; i++)
+                ctx.LineTo(_stylusPoints[i].ToPoint(), true, true);
+        }
+
+        _cachedGeometry = geometry;
+        _cachedPen = pen;
+    }
+
+    /// <summary>
+    /// Builds a raw ellipse batch cache for particle-based brushes (airbrush, crayon, etc.).
+    /// Collects all ellipse data into a flat array for native batch rendering.
+    /// Also records into a DrawingGroup as fallback for non-GPU contexts.
+    /// </summary>
+    private void BuildParticleCache()
+    {
+        // Record into DrawingGroup (fallback) and simultaneously collect raw ellipse data
+        var collector = new EllipseBatchCollector();
+        _cachedDrawing = new DrawingGroup();
+        using var cacheDc = _cachedDrawing.Open();
+
+        // Draw into a collecting wrapper that captures ellipse data
+        var wrappedDc = new EllipseCollectingDrawingContext(cacheDc, collector);
+
+        switch (_drawingAttributes.BrushType)
+        {
+            case BrushType.Airbrush:
+                DrawAirbrush(wrappedDc);
+                break;
+            case BrushType.Crayon:
+                DrawCrayonBrush(wrappedDc);
+                break;
+            case BrushType.Pencil:
+                DrawPencilBrush(wrappedDc);
+                break;
+            case BrushType.Oil:
+                DrawOilBrush(wrappedDc);
+                break;
+            case BrushType.Watercolor:
+                DrawWatercolorBrush(wrappedDc);
+                break;
+        }
+
+        cacheDc.Close();
+
+        // Store the collected batch data
+        _cachedEllipseBatchData = collector.GetData();
+        _cachedEllipseBatchCount = collector.Count;
+    }
+
+    /// <summary>
+    /// Collects ellipse draw calls into a flat array for native batching.
+    /// </summary>
+    private sealed class EllipseBatchCollector
+    {
+        private float[] _data = new float[256 * 5];
+        private int _count;
+
+        public int Count => _count;
+
+        public void Add(float cx, float cy, float rx, float ry, Color color)
+        {
+            if ((_count + 1) * 5 > _data.Length)
+                Array.Resize(ref _data, _data.Length * 2);
+
+            var offset = _count * 5;
+            _data[offset] = cx;
+            _data[offset + 1] = cy;
+            _data[offset + 2] = rx;
+            _data[offset + 3] = ry;
+            uint packed = (uint)color.R | ((uint)color.G << 8) | ((uint)color.B << 16) | ((uint)color.A << 24);
+            _data[offset + 4] = BitConverter.Int32BitsToSingle((int)packed);
+            _count++;
+        }
+
+        public float[] GetData() => _data;
+    }
+
+    /// <summary>
+    /// A DrawingContext wrapper that delegates to an inner context while also
+    /// collecting filled ellipse data for native batch rendering.
+    /// </summary>
+    private sealed class EllipseCollectingDrawingContext : DrawingContext
+    {
+        private readonly DrawingContext _inner;
+        private readonly EllipseBatchCollector _collector;
+
+        public EllipseCollectingDrawingContext(DrawingContext inner, EllipseBatchCollector collector)
+        {
+            _inner = inner;
+            _collector = collector;
+        }
+
+        public override void DrawEllipse(Brush? brush, Pen? pen, Point center, double radiusX, double radiusY)
+        {
+            _inner.DrawEllipse(brush, pen, center, radiusX, radiusY);
+
+            if (brush is SolidColorBrush solidBrush && pen == null)
+            {
+                _collector.Add((float)center.X, (float)center.Y, (float)radiusX, (float)radiusY, solidBrush.Color);
+            }
+        }
+
+        // Delegate remaining methods to inner
+        public override void DrawLine(Pen pen, Point point0, Point point1) => _inner.DrawLine(pen, point0, point1);
+        public override void DrawRectangle(Brush? brush, Pen? pen, Rect rectangle) => _inner.DrawRectangle(brush, pen, rectangle);
+        public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, double radiusX, double radiusY) => _inner.DrawRoundedRectangle(brush, pen, rectangle, radiusX, radiusY);
+        public override void DrawText(FormattedText formattedText, Point origin) => _inner.DrawText(formattedText, origin);
+        public override void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry) => _inner.DrawGeometry(brush, pen, geometry);
+        public override void DrawImage(ImageSource imageSource, Rect rectangle) => _inner.DrawImage(imageSource, rectangle);
+        public override void DrawBackdropEffect(Rect rectangle, IBackdropEffect effect, CornerRadius cornerRadius) => _inner.DrawBackdropEffect(rectangle, effect, cornerRadius);
+        public override void PushTransform(Transform transform) => _inner.PushTransform(transform);
+        public override void PushClip(Geometry clipGeometry) => _inner.PushClip(clipGeometry);
+        public override void PushOpacity(double opacity) => _inner.PushOpacity(opacity);
+        public override void Pop() => _inner.Pop();
+        public override void Close() => _inner.Close();
+    }
+
+    private bool HasPressureVariation()
+    {
+        if (_stylusPoints.Count <= 1)
+            return false;
+        var first = _stylusPoints[0].PressureFactor;
+        for (int i = 1; i < _stylusPoints.Count; i++)
+        {
+            if (Math.Abs(_stylusPoints[i].PressureFactor - first) > 0.01)
+                return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -799,6 +1167,13 @@ public sealed class Stroke : INotifyPropertyChanged
     /// </summary>
     protected void OnInvalidated()
     {
+        _renderCacheDirty = true;
+        _cachedGeometry = null;
+        _cachedBrush = null;
+        _cachedPen = null;
+        _cachedDrawing = null;
+        _cachedEllipseBatchData = null;
+        _cachedEllipseBatchCount = 0;
         Invalidated?.Invoke(this, EventArgs.Empty);
     }
 }

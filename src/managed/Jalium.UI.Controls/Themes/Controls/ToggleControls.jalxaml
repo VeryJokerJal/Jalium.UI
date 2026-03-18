@@ -256,10 +256,9 @@
         <Setter Property="OffBackground" Value="{DynamicResource ToggleUncheckedBackground}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="MinHeight" Value="32" />
-        <Setter Property="ClipToBounds" Value="True" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ToggleSwitch">
-                <StackPanel Orientation="Vertical" Background="Transparent" ClipToBounds="True">
+                <StackPanel Orientation="Vertical" Background="Transparent">
                     <!-- Header -->
                     <ContentPresenter Name="PART_Header"
                                       Content="{TemplateBinding Header}"
@@ -303,8 +302,8 @@
                                         CornerRadius="7"
                                         Background="{DynamicResource SliderThumb}"
                                         HorizontalAlignment="Left"
-                                        VerticalAlignment="Center"
-                                        Margin="3,0,0,0" />
+                                        VerticalAlignment="Top"
+                                        Margin="3,2,0,0" />
                             </Border>
                         </Grid>
 

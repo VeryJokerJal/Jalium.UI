@@ -47,15 +47,19 @@
     <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.vulkan</TargetName>
+    <JaliumSdkRoot Condition="'$(JALIUM_SDK_ROOT)' != ''">$(JALIUM_SDK_ROOT)</JaliumSdkRoot>
+    <JaliumSdkRoot Condition="'$(JaliumSdkRoot)' == ''">$(SolutionDir)..\Jalium.SDK</JaliumSdkRoot>
     <VulkanSdkRoot Condition="'$(VULKAN_SDK)' != ''">$(VULKAN_SDK)</VulkanSdkRoot>
-    <VulkanSdkRoot Condition="'$(VulkanSdkRoot)' == ''">$(SolutionDir)..\..\third_party\VulkanSDK\1.4.341.1</VulkanSdkRoot>
+    <VulkanSdkRoot Condition="'$(VulkanSdkRoot)' == ''">$(JaliumSdkRoot)\VulkanSDK\1.4.341.1</VulkanSdkRoot>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <OutDir>$(SolutionDir)bin\native\$(Configuration)\</OutDir>
     <IntDir>$(Configuration)\</IntDir>
     <TargetName>jalium.native.vulkan</TargetName>
+    <JaliumSdkRoot Condition="'$(JALIUM_SDK_ROOT)' != ''">$(JALIUM_SDK_ROOT)</JaliumSdkRoot>
+    <JaliumSdkRoot Condition="'$(JaliumSdkRoot)' == ''">$(SolutionDir)..\Jalium.SDK</JaliumSdkRoot>
     <VulkanSdkRoot Condition="'$(VULKAN_SDK)' != ''">$(VULKAN_SDK)</VulkanSdkRoot>
-    <VulkanSdkRoot Condition="'$(VulkanSdkRoot)' == ''">$(SolutionDir)..\..\third_party\VulkanSDK\1.4.341.1</VulkanSdkRoot>
+    <VulkanSdkRoot Condition="'$(VulkanSdkRoot)' == ''">$(JaliumSdkRoot)\VulkanSDK\1.4.341.1</VulkanSdkRoot>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
@@ -64,7 +68,7 @@
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;_DEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;$(JaliumSdkRoot)\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -82,7 +86,7 @@
       <PreprocessorDefinitions>WIN32_LEAN_AND_MEAN;NOMINMAX;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.core\include;$(VulkanSdkRoot)\Include;$(JaliumSdkRoot)\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
     </ClCompile>
     <Link>

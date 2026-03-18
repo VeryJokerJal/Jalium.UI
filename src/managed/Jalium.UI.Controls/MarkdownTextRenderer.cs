@@ -17,9 +17,9 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
 
     public MarkdownTextRenderer()
     {
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler), true);
-        AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnMouseLeaveHandler), true);
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler), true);
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler), true);
+        AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler), true);
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler), true);
         Focusable = false;
     }
 
@@ -34,7 +34,7 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
     }
 
     public string TextFontFamily { get; set; } = "Segoe UI";
-    public string MonoFontFamily { get; set; } = "Cascadia Mono";
+    public string MonoFontFamily { get; set; } = "Cascadia Code";
     public double TextFontSize { get; set; } = 14;
     public FontWeight DefaultFontWeight { get; set; } = FontWeights.Normal;
     public FontStyle DefaultFontStyle { get; set; } = FontStyles.Normal;
@@ -107,36 +107,31 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
         }
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        if (e is not MouseEventArgs mouseArgs)
-        {
-            return;
-        }
-
-        Cursor = TryGetLinkAt(mouseArgs.GetPosition(this)) != null ? Jalium.UI.Cursors.Hand : Jalium.UI.Cursors.Arrow;
+        Cursor = TryGetLinkAt(e.GetPosition(this)) != null ? Jalium.UI.Cursors.Hand : Jalium.UI.Cursors.Arrow;
     }
 
-    private void OnMouseLeaveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseLeaveHandler(object sender, MouseEventArgs e)
     {
         Cursor = Jalium.UI.Cursors.Arrow;
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is not MouseButtonEventArgs mouseArgs || mouseArgs.ChangedButton != MouseButton.Left)
+        if (e.ChangedButton != MouseButton.Left)
         {
             return;
         }
 
-        var uri = TryGetLinkAt(mouseArgs.GetPosition(this));
+        var uri = TryGetLinkAt(e.GetPosition(this));
         if (uri == null)
         {
             return;
         }
 
         LinkClicked?.Invoke(this, new MarkdownLinkClickedEventArgs(uri));
-        mouseArgs.Handled = true;
+        e.Handled = true;
     }
 
     private Uri? TryGetLinkAt(Point point)

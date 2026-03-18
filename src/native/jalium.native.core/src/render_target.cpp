@@ -269,6 +269,16 @@ JALIUM_API void jalium_draw_fill_ellipse(
     }
 }
 
+JALIUM_API void jalium_fill_ellipse_batch(
+    JaliumRenderTarget* rt,
+    const float* data,
+    uint32_t count)
+{
+    if (rt && data && count > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->FillEllipseBatch(data, count);
+    }
+}
+
 JALIUM_API void jalium_draw_ellipse(
     JaliumRenderTarget* rt,
     float centerX, float centerY, float radiusX, float radiusY,

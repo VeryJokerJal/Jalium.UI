@@ -93,7 +93,7 @@ public class TreeView : ItemsControl
             ItemsPanel = CreateItemsPanelTemplate(typeof(VirtualizingStackPanel));
         }
 
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnTreeViewKeyDown));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnTreeViewKeyDown));
     }
 
     #region Template
@@ -247,9 +247,9 @@ public class TreeView : ItemsControl
         return (last ? visibleItems[^1] : visibleItems[0]).Focus();
     }
 
-    private void OnTreeViewKeyDown(object sender, RoutedEventArgs e)
+    private void OnTreeViewKeyDown(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        if (e.Handled)
         {
             return;
         }
@@ -259,7 +259,7 @@ public class TreeView : ItemsControl
             return;
         }
 
-        var handled = keyArgs.Key switch
+        var handled = e.Key switch
         {
             Key.Down or Key.Right or Key.Home => FocusBoundaryVisibleItem(last: false),
             Key.Up or Key.Left or Key.End => FocusBoundaryVisibleItem(last: true),
@@ -268,7 +268,7 @@ public class TreeView : ItemsControl
 
         if (handled)
         {
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
     }
 
@@ -482,7 +482,7 @@ public class TreeViewItem : HeaderedItemsControl
         Focusable = true;
         Items.CollectionChanged += OnChildItemsChanged;
         ResourcesChanged += OnResourcesChangedHandler;
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
     }
 
     /// <summary>
@@ -504,9 +504,9 @@ public class TreeViewItem : HeaderedItemsControl
 
         if (_headerBorder != null)
         {
-            _headerBorder.RemoveHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-            _headerBorder.RemoveHandler(MouseEnterEvent, new RoutedEventHandler(OnHeaderMouseEnter));
-            _headerBorder.RemoveHandler(MouseLeaveEvent, new RoutedEventHandler(OnHeaderMouseLeave));
+            _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+            _headerBorder.RemoveHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter));
+            _headerBorder.RemoveHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave));
         }
 
         _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
@@ -519,9 +519,9 @@ public class TreeViewItem : HeaderedItemsControl
         // so child item clicks don't bubble up to parent items
         if (_headerBorder != null)
         {
-            _headerBorder.AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler), true);
-            _headerBorder.AddHandler(MouseEnterEvent, new RoutedEventHandler(OnHeaderMouseEnter), true);
-            _headerBorder.AddHandler(MouseLeaveEvent, new RoutedEventHandler(OnHeaderMouseLeave), true);
+            _headerBorder.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler), true);
+            _headerBorder.AddHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter), true);
+            _headerBorder.AddHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave), true);
         }
 
         // Sync initial state
@@ -717,39 +717,36 @@ public class TreeViewItem : HeaderedItemsControl
         }
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (e is MouseButtonEventArgs mouseArgs)
+        // Check if clicked on expander area
+        if (HasItems && _expanderBorder is { Visibility: Visibility.Visible } expander)
         {
-            // Check if clicked on expander area
-            if (HasItems && _expanderBorder is { Visibility: Visibility.Visible } expander)
+            var pos = e.GetPosition(expander);
+            if (pos.X >= 0 && pos.X <= expander.ActualWidth &&
+                pos.Y >= 0 && pos.Y <= expander.ActualHeight)
             {
-                var pos = mouseArgs.GetPosition(expander);
-                if (pos.X >= 0 && pos.X <= expander.ActualWidth &&
-                    pos.Y >= 0 && pos.Y <= expander.ActualHeight)
-                {
-                    IsExpanded = !IsExpanded;
-                    e.Handled = true;
-                    return;
-                }
-            }
-
-            // Let focusable controls inside the header (for example buttons or text boxes)
-            // receive the click instead of treating the whole header as a selection surface.
-            if (e.OriginalSource is DependencyObject source && IsInsideInteractiveHeaderElement(source))
-            {
+                IsExpanded = !IsExpanded;
+                e.Handled = true;
                 return;
             }
-
-            Focus();
-
-            // Select this item
-            ParentTreeView?.SelectItem(this);
-            e.Handled = true;
         }
+
+        // Let focusable controls inside the header (for example buttons or text boxes)
+        // receive the click instead of treating the whole header as a selection surface.
+        if (e.OriginalSource is DependencyObject source && IsInsideInteractiveHeaderElement(source))
+        {
+            return;
+        }
+
+        Focus();
+
+        // Select this item
+        ParentTreeView?.SelectItem(this);
+        e.Handled = true;
     }
 
-    private void OnHeaderMouseEnter(object sender, RoutedEventArgs e)
+    private void OnHeaderMouseEnter(object sender, MouseEventArgs e)
     {
         if (_isHeaderMouseOver)
         {
@@ -760,7 +757,7 @@ public class TreeViewItem : HeaderedItemsControl
         UpdateHeaderVisualState();
     }
 
-    private void OnHeaderMouseLeave(object sender, RoutedEventArgs e)
+    private void OnHeaderMouseLeave(object sender, MouseEventArgs e)
     {
         if (!_isHeaderMouseOver)
         {
@@ -771,14 +768,14 @@ public class TreeViewItem : HeaderedItemsControl
         UpdateHeaderVisualState();
     }
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (e is not KeyEventArgs keyArgs || keyArgs.Handled)
+        if (e.Handled)
         {
             return;
         }
 
-        var handled = keyArgs.Key switch
+        var handled = e.Key switch
         {
             Key.Up => ParentTreeView?.FocusAdjacentVisibleItem(this, -1) == true,
             Key.Down => ParentTreeView?.FocusAdjacentVisibleItem(this, 1) == true,
@@ -792,7 +789,7 @@ public class TreeViewItem : HeaderedItemsControl
 
         if (handled)
         {
-            keyArgs.Handled = true;
+            e.Handled = true;
         }
     }
 
@@ -1247,7 +1244,8 @@ public class TreeViewItem : HeaderedItemsControl
                 break;
             }
 
-            if (current is UIElement uiElement && uiElement.Focusable)
+            if (current is UIElement uiElement && uiElement.Focusable
+                && current is not TextBlock && current is not Label)
             {
                 return true;
             }

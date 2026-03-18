@@ -8,6 +8,11 @@ public sealed class D3DImage : ImageSource
     private double _pixelWidth;
     private double _pixelHeight;
     private bool _isFrontBufferAvailable;
+    private nint _backBuffer;
+    private D3DResourceType _backBufferType;
+    private bool _enableSoftwareFallback;
+    private int _lockCount;
+    private readonly List<Int32Rect> _dirtyRects = new();
 
     /// <summary>
     /// Gets a value indicating whether a front buffer is available.
@@ -27,7 +32,7 @@ public sealed class D3DImage : ImageSource
     /// <summary>
     /// Gets the native handle (not applicable for D3DImage).
     /// </summary>
-    public override nint NativeHandle => nint.Zero;
+    public override nint NativeHandle => _backBuffer;
 
     /// <summary>
     /// Gets the pixel width.
@@ -50,10 +55,21 @@ public sealed class D3DImage : ImageSource
     public double DpiY { get; } = 96.0;
 
     /// <summary>
+    /// Gets whether software fallback was requested when the back buffer was assigned.
+    /// </summary>
+    public bool IsSoftwareFallbackEnabled => _enableSoftwareFallback;
+
+    /// <summary>
+    /// Gets whether the image is currently locked for updates.
+    /// </summary>
+    public bool IsLocked => _lockCount > 0;
+
+    /// <summary>
     /// Assigns a Direct3D surface as the source of the back buffer.
     /// </summary>
     public void SetBackBuffer(D3DResourceType backBufferType, IntPtr backBuffer)
     {
+        SetBackBuffer(backBufferType, backBuffer, enableSoftwareFallback: false);
     }
 
     /// <summary>
@@ -61,6 +77,17 @@ public sealed class D3DImage : ImageSource
     /// </summary>
     public void SetBackBuffer(D3DResourceType backBufferType, IntPtr backBuffer, bool enableSoftwareFallback)
     {
+        _backBufferType = backBufferType;
+        _backBuffer = backBuffer;
+        _enableSoftwareFallback = enableSoftwareFallback;
+        _dirtyRects.Clear();
+
+        var isFrontBufferAvailable = backBuffer != IntPtr.Zero;
+        if (_isFrontBufferAvailable != isFrontBufferAvailable)
+        {
+            _isFrontBufferAvailable = isFrontBufferAvailable;
+            IsFrontBufferAvailableChanged?.Invoke(this, EventArgs.Empty);
+        }
     }
 
     /// <summary>
@@ -68,6 +95,10 @@ public sealed class D3DImage : ImageSource
     /// </summary>
     public void Lock()
     {
+        checked
+        {
+            _lockCount++;
+        }
     }
 
     /// <summary>
@@ -75,15 +106,33 @@ public sealed class D3DImage : ImageSource
     /// </summary>
     public void Unlock()
     {
+        if (_lockCount == 0)
+        {
+            throw new InvalidOperationException("The D3DImage is not locked.");
+        }
+
+        _lockCount--;
     }
 
     /// <summary>
     /// Attempts to lock the D3DImage for updates.
+    /// Returns false if the front buffer is not available (e.g., device lost).
     /// </summary>
-    /// <param name="timeout">The timeout to wait.</param>
-    /// <returns>True if the lock was acquired.</returns>
+    /// <param name="timeout">The timeout to wait for availability.</param>
+    /// <returns>True if the lock was acquired; false if the front buffer is unavailable.</returns>
     public bool TryLock(TimeSpan timeout)
     {
+        if (timeout < TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+
+        if (!_isFrontBufferAvailable)
+        {
+            return false;
+        }
+
+        Lock();
         return true;
     }
 
@@ -92,12 +141,35 @@ public sealed class D3DImage : ImageSource
     /// </summary>
     public void AddDirtyRect(Int32Rect dirtyRect)
     {
+        if (dirtyRect.Width < 0 || dirtyRect.Height < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(dirtyRect));
+        }
+
+        if (dirtyRect.IsEmpty)
+        {
+            return;
+        }
+
+        _dirtyRects.Add(dirtyRect);
     }
 
     /// <summary>
     /// Occurs when the front buffer becomes available or unavailable.
     /// </summary>
     public event EventHandler? IsFrontBufferAvailableChanged;
+
+    /// <summary>
+    /// Sets the pixel dimensions reported by the D3DImage.
+    /// </summary>
+    public void SetPixelSize(int pixelWidth, int pixelHeight)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(pixelWidth);
+        ArgumentOutOfRangeException.ThrowIfNegative(pixelHeight);
+
+        _pixelWidth = pixelWidth;
+        _pixelHeight = pixelHeight;
+    }
 }
 
 /// <summary>

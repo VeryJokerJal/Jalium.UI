@@ -1,6 +1,7 @@
 using System.Timers;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
@@ -255,7 +256,7 @@ public class RepeatButton : ButtonBase
     }
 
     /// <inheritdoc />
-    protected override void OnMouseEnter(RoutedEventArgs e)
+    protected override void OnMouseEnter(MouseEventArgs e)
     {
         base.OnMouseEnter(e);
         _isPointerOverForArrow = true;
@@ -263,7 +264,7 @@ public class RepeatButton : ButtonBase
     }
 
     /// <inheritdoc />
-    protected override void OnMouseLeave(RoutedEventArgs e)
+    protected override void OnMouseLeave(MouseEventArgs e)
     {
         base.OnMouseLeave(e);
         _isPointerOverForArrow = false;

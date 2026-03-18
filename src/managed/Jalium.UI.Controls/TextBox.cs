@@ -53,17 +53,22 @@ public class TextBox : TextBoxBase, IImeSupport
     // Auto-formatting
     private List<FormattedRegion> _formattedRegions = new();
 
-    // Static brushes & pens for rendering
-    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
-    private static readonly SolidColorBrush s_placeholderTextBrush = new(Color.FromRgb(128, 128, 128));
-    private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
+    // Fallback brushes & pens for rendering (used when theme resources are unavailable)
+    private static readonly SolidColorBrush s_fallbackFocusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_fallbackPlaceholderTextBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_fallbackWhiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_spellErrorBrush = new(Color.FromRgb(255, 0, 0));
     private static readonly Pen s_spellErrorPen = new(s_spellErrorBrush, 1);
     private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
     private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
     private static readonly SolidColorBrush s_compositionUnderlineBrush = new(Color.FromRgb(200, 200, 100));
     private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
-    private static readonly Pen s_compositionCursorPen = new(s_whiteBrush, 1);
+    private static readonly Pen s_compositionCursorPen = new(s_fallbackWhiteBrush, 1);
+
+    // Theme-aware brush accessors
+    private Brush FocusBorderBrush => TryFindResource("AccentBrush") as Brush ?? s_fallbackFocusBorderBrush;
+    private Brush PlaceholderTextBrush => TryFindResource("TextFillColorTertiaryBrush") as Brush ?? s_fallbackPlaceholderTextBrush;
+    private Brush TextBoxWhiteBrush => TryFindResource("TextFillColorPrimaryBrush") as Brush ?? s_fallbackWhiteBrush;
 
     #endregion
 
@@ -329,16 +334,16 @@ public class TextBox : TextBoxBase, IImeSupport
         InputMethod.CompositionEnded += OnImeCompositionEnded;
 
         // Subscribe to focus events for IME target management
-        AddHandler(GotKeyboardFocusEvent, new RoutedEventHandler(OnGotFocusHandler));
-        AddHandler(LostKeyboardFocusEvent, new RoutedEventHandler(OnLostFocusHandler));
+        AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnGotFocusHandler));
+        AddHandler(LostKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnLostFocusHandler));
     }
 
-    private void OnGotFocusHandler(object sender, RoutedEventArgs e)
+    private void OnGotFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         InputMethod.SetTarget(this);
     }
 
-    private void OnLostFocusHandler(object sender, RoutedEventArgs e)
+    private void OnLostFocusHandler(object sender, KeyboardFocusChangedEventArgs e)
     {
         if (InputMethod.Current == this)
         {
@@ -912,12 +917,16 @@ public class TextBox : TextBoxBase, IImeSupport
 
     private Brush ResolveFocusedBorderBrush()
     {
-        return TryFindResource("ControlBorderFocused") as Brush ?? s_focusBorderBrush;
+        return TryFindResource("ControlBorderFocused") as Brush
+            ?? TryFindResource("AccentBrush") as Brush
+            ?? s_fallbackFocusBorderBrush;
     }
 
     private Brush ResolvePlaceholderBrush()
     {
-        return TryFindResource("TextPlaceholder") as Brush ?? s_placeholderTextBrush;
+        return TryFindResource("TextPlaceholder") as Brush
+            ?? TryFindResource("TextFillColorTertiaryBrush") as Brush
+            ?? s_fallbackPlaceholderTextBrush;
     }
 
     private void DrawText(DrawingContext dc, Rect contentRect, double lineHeight)
@@ -1285,12 +1294,6 @@ public class TextBox : TextBoxBase, IImeSupport
             {
                 textBox._selectionStart = Math.Min(textBox._selectionStart, newText.Length);
                 textBox._selectionLength = 0;
-            }
-
-            // Update undo tracking
-            if (!textBox._isUndoRedoing)
-            {
-                textBox._lastText = newText;
             }
 
             // Invalidate spell check

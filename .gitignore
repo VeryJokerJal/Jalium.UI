@@ -28,10 +28,18 @@ x86/
 [Aa][Rr][Mm]64/
 bld/
 [Bb]in/
+[Bb]in_*/
 [Oo]bj/
+[Oo]bj_*/
 [Oo]ut/
 [Ll]og/
 [Ll]ogs/
+
+# Jalium temporary build/test artifacts
+.tmp-build/
+.tmp*.log
+.tmp_*.log
+build_editcontrol.log
 
 # Visual Studio 2015/2017 cache/options directory
 .vs/

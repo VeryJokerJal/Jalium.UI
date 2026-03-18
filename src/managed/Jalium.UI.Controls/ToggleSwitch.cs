@@ -19,8 +19,10 @@ public class ToggleSwitch : Control
     #region Animation Constants
 
     private const double TrackWidth = 44.0;
+    private const double TrackHeight = 20.0;
     private const double TrackBorderThickness = 1.0;
     private const double TrackInnerWidth = TrackWidth - 2 * TrackBorderThickness; // 42
+    private const double TrackInnerHeight = TrackHeight - 2 * TrackBorderThickness; // 18
     private const double ThumbPadding = 3.0;
 
     private const double ThumbDefaultSize = 14.0;
@@ -187,10 +189,10 @@ public class ToggleSwitch : Control
         _thumbWidthSpring = new SpringAxis { Position = ThumbDefaultSize, Target = ThumbDefaultSize };
         _thumbHeightSpring = new SpringAxis { Position = ThumbDefaultSize, Target = ThumbDefaultSize };
 
-        AddHandler(MouseDownEvent, new RoutedEventHandler(OnMouseDownHandler));
-        AddHandler(MouseUpEvent, new RoutedEventHandler(OnMouseUpHandler));
-        AddHandler(MouseMoveEvent, new RoutedEventHandler(OnMouseMoveHandler));
-        AddHandler(KeyDownEvent, new RoutedEventHandler(OnKeyDownHandler));
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
+        AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+        AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
         AddHandler(LostMouseCaptureEvent, new RoutedEventHandler(OnLostMouseCaptureHandler));
     }
 
@@ -211,6 +213,7 @@ public class ToggleSwitch : Control
         if (_switchThumb != null)
         {
             _switchThumb.HorizontalAlignment = HorizontalAlignment.Left;
+            _switchThumb.VerticalAlignment = VerticalAlignment.Top;
         }
 
         UpdateHeaderVisibility();
@@ -343,9 +346,11 @@ public class ToggleSwitch : Control
         _switchThumb.Height = thumbH;
         _switchThumb.CornerRadius = new CornerRadius(thumbH / 2.0);
 
-        // Thumb position
+        // Thumb position — VerticalAlignment is Top, so we compute the vertical
+        // centering ourselves with pixel rounding to avoid subpixel jitter.
         double marginLeft = ComputeThumbMarginLeft(progress, thumbW);
-        _switchThumb.Margin = new Thickness(marginLeft, 0, 0, 0);
+        double marginTop = Math.Round((TrackInnerHeight - thumbH) / 2.0);
+        _switchThumb.Margin = new Thickness(marginLeft, marginTop, 0, 0);
 
         // Track colors (interpolate based on position)
         if (!IsEnabled) return; // disabled colors handled separately
@@ -384,15 +389,15 @@ public class ToggleSwitch : Control
         StartSpringAnimation();
     }
 
-    private void OnMouseDownHandler(object sender, RoutedEventArgs e)
+    private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (!IsEnabled) return;
-        if (e is not MouseButtonEventArgs { ChangedButton: MouseButton.Left } mouseArgs) return;
+        if (e.ChangedButton != MouseButton.Left) return;
 
         Focus();
 
         _state = InteractionState.Pressed;
-        _pressStartPoint = mouseArgs.GetPosition((UIElement?)_switchTrack ?? this);
+        _pressStartPoint = e.GetPosition((UIElement?)_switchTrack ?? this);
         _pressStartProgress = _positionSpring.Position;
         _hasDragged = false;
 
@@ -405,13 +410,12 @@ public class ToggleSwitch : Control
         e.Handled = true;
     }
 
-    private void OnMouseMoveHandler(object sender, RoutedEventArgs e)
+    private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
         if (_state != InteractionState.Pressed && _state != InteractionState.Dragging)
             return;
-        if (e is not MouseEventArgs mouseArgs) return;
 
-        var trackPos = mouseArgs.GetPosition((UIElement?)_switchTrack ?? this);
+        var trackPos = e.GetPosition((UIElement?)_switchTrack ?? this);
 
         if (_state == InteractionState.Pressed)
         {
@@ -446,11 +450,11 @@ public class ToggleSwitch : Control
         e.Handled = true;
     }
 
-    private void OnMouseUpHandler(object sender, RoutedEventArgs e)
+    private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
         if (_state != InteractionState.Pressed && _state != InteractionState.Dragging)
             return;
-        if (e is not MouseButtonEventArgs { ChangedButton: MouseButton.Left }) return;
+        if (e.ChangedButton != MouseButton.Left) return;
 
         _state = IsMouseOver ? InteractionState.Hovered : InteractionState.Idle;
         ReleaseMouseCapture();
@@ -507,12 +511,11 @@ public class ToggleSwitch : Control
 
     #region Keyboard
 
-    private void OnKeyDownHandler(object sender, RoutedEventArgs e)
+    private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
         if (!IsEnabled) return;
-        if (e is not KeyEventArgs keyArgs) return;
 
-        if (keyArgs.Key == Key.Space || keyArgs.Key == Key.Enter)
+        if (e.Key == Key.Space || e.Key == Key.Enter)
         {
             IsOn = !IsOn;
             e.Handled = true;
