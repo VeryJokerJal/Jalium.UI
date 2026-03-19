@@ -9,47 +9,58 @@ using TextDecorationCollection = Jalium.UI.Media.TextDecorationCollection;
 /// </summary>
 public abstract class TextElement : DependencyObject
 {
-    #region Dependency Properties
+    #region Shared Typography Properties
+
+    // These properties are registered as attached+inheritable so that Control, TextBlock,
+    // and TextElement can share the same DependencyProperty instance via AddOwner.
+    // This mirrors the WPF pattern where TextElement.ForegroundProperty is the canonical
+    // source, and setting Foreground on a Control automatically propagates to child TextBlocks
+    // through the property inheritance system.
 
     /// <summary>
     /// Identifies the FontFamily dependency property.
+    /// Shared across Control, TextBlock, and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
-        DependencyProperty.Register(nameof(FontFamily), typeof(string), typeof(TextElement),
-            new PropertyMetadata("Segoe UI"));
+        DependencyProperty.RegisterAttached("FontFamily", typeof(string), typeof(TextElement),
+            new PropertyMetadata("Segoe UI", null, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontSize dependency property.
+    /// Shared across Control, TextBlock, and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
-        DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(TextElement),
-            new PropertyMetadata(14.0));
+        DependencyProperty.RegisterAttached("FontSize", typeof(double), typeof(TextElement),
+            new PropertyMetadata(14.0, null, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontWeight dependency property.
+    /// Shared across Control, TextBlock, and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontWeightProperty =
-        DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(TextElement),
-            new PropertyMetadata(FontWeights.Normal));
+        DependencyProperty.RegisterAttached("FontWeight", typeof(FontWeight), typeof(TextElement),
+            new PropertyMetadata(FontWeights.Normal, null, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontStyle dependency property.
+    /// Shared across Control, TextBlock, and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontStyleProperty =
-        DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(TextElement),
-            new PropertyMetadata(FontStyles.Normal));
+        DependencyProperty.RegisterAttached("FontStyle", typeof(FontStyle), typeof(TextElement),
+            new PropertyMetadata(FontStyles.Normal, null, null, inherits: true));
 
     /// <summary>
     /// Identifies the Foreground dependency property.
+    /// Shared across Control, TextBlock, and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
-        DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(TextElement),
-            new PropertyMetadata(null));
+        DependencyProperty.RegisterAttached("Foreground", typeof(Brush), typeof(TextElement),
+            new PropertyMetadata(new SolidColorBrush(Color.Black), null, null, inherits: true));
 
     /// <summary>
     /// Identifies the Background dependency property.
@@ -66,6 +77,25 @@ public abstract class TextElement : DependencyObject
     public static readonly DependencyProperty TextDecorationsProperty =
         DependencyProperty.Register(nameof(TextDecorations), typeof(TextDecorationCollection), typeof(TextElement),
             new PropertyMetadata(null));
+
+    #endregion
+
+    #region Attached Property Accessors
+
+    public static void SetForeground(DependencyObject element, Brush? value) => element.SetValue(ForegroundProperty, value);
+    public static Brush? GetForeground(DependencyObject element) => (Brush?)element.GetValue(ForegroundProperty);
+
+    public static void SetFontFamily(DependencyObject element, string value) => element.SetValue(FontFamilyProperty, value);
+    public static string GetFontFamily(DependencyObject element) => (string)(element.GetValue(FontFamilyProperty) ?? "Segoe UI");
+
+    public static void SetFontSize(DependencyObject element, double value) => element.SetValue(FontSizeProperty, value);
+    public static double GetFontSize(DependencyObject element) => (double)element.GetValue(FontSizeProperty)!;
+
+    public static void SetFontWeight(DependencyObject element, FontWeight value) => element.SetValue(FontWeightProperty, value);
+    public static FontWeight GetFontWeight(DependencyObject element) => element.GetValue(FontWeightProperty) is FontWeight fw ? fw : FontWeights.Normal;
+
+    public static void SetFontStyle(DependencyObject element, FontStyle value) => element.SetValue(FontStyleProperty, value);
+    public static FontStyle GetFontStyle(DependencyObject element) => element.GetValue(FontStyleProperty) is FontStyle fs ? fs : FontStyles.Normal;
 
     #endregion
 

@@ -157,7 +157,8 @@ bool D3D12RenderTarget::CreateSwapChain() {
         // Build a two-layer composition tree:
         // - root container visual
         // - swap chain visual (Jalium scene)
-        // WebView visuals are inserted as siblings above the swap chain visual.
+        // WebView visuals are inserted as siblings below the swap chain visual
+        // so the swap chain's transparent punch-through reveals them underneath.
         hr = dcompDevice_->CreateVisual(&dcompVisual_);
         if (FAILED(hr)) return false;
 
@@ -607,9 +608,9 @@ JaliumResult D3D12RenderTarget::CreateWebViewVisual(void** visualOut) {
         return JALIUM_ERROR_INVALID_STATE;
     }
 
-    // Keep WebView visuals below the Jalium swap chain visual so later UI drawing
-    // can naturally cover them after punching a transparent hole in the scene.
-    hr = dcompVisual_->AddVisual(containerVisual.Get(), FALSE, dcompSwapChainVisual_.Get());
+    // Place WebView visuals above the swap chain visual so the browser content
+    // renders on top of the Jalium scene within the clipped container bounds.
+    hr = dcompVisual_->AddVisual(containerVisual.Get(), TRUE, dcompSwapChainVisual_.Get());
     if (FAILED(hr)) {
         return JALIUM_ERROR_INVALID_STATE;
     }

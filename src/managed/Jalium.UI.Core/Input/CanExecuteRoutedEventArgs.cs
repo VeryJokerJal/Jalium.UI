@@ -1,3 +1,5 @@
+using System.Windows.Input;
+
 namespace Jalium.UI.Input;
 
 /// <summary>

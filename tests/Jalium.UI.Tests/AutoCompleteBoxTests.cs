@@ -97,7 +97,7 @@ public class AutoCompleteBoxTests
 
             var lostFocusHandler = typeof(AutoCompleteBox).GetMethod("OnLostFocusHandler", BindingFlags.Instance | BindingFlags.NonPublic);
             Assert.NotNull(lostFocusHandler);
-            lostFocusHandler!.Invoke(autoComplete, new object[] { autoComplete, new KeyboardFocusChangedEventArgs(UIElement.LostKeyboardFocusEvent) });
+            lostFocusHandler!.Invoke(autoComplete, new object[] { autoComplete, new KeyboardFocusChangedEventArgs(UIElement.LostKeyboardFocusEvent, autoComplete, null) });
 
             Assert.True(autoComplete.IsDropDownOpen);
         }

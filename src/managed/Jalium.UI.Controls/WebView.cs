@@ -246,7 +246,16 @@ public partial class WebView : FrameworkElement, IDisposable
                     await InitializeWebView2Async();
                     _isInitialized = _controller != null;
                     if (_isInitialized)
+                    {
                         InvalidateArrange();
+
+                        // The render target may have been swapped to a composition
+                        // target during initialization.  DXGI FLIP_SEQUENTIAL uses
+                        // two back buffers — force a full window invalidation so
+                        // BOTH buffers are repainted, preventing ghost images in
+                        // the sidebar or other areas outside the WebView dirty region.
+                        _parentWindow?.RequestFullInvalidation();
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -374,8 +383,26 @@ public partial class WebView : FrameworkElement, IDisposable
         var bg = DefaultBackgroundColor;
         _controller.DefaultBackgroundColor = System.Drawing.Color.FromArgb(bg.A, bg.R, bg.G, bg.B);
 
+        // Re-compute host placement now that the render target may have been
+        // swapped to composition mode (which triggers ForceRenderFrame → layout).
+        // The hostRect captured before TryAcquireCompositionRootVisualTarget may
+        // be stale or a (0,0,1,1) fallback that would strand the visual at the
+        // top-left corner.
+        if (!TryGetHostPlacement(out hostRect, out controllerBounds))
+        {
+            hostRect = new Rectangle(0, 0, 1, 1);
+            controllerBounds = new Rectangle(0, 0, 1, 1);
+        }
+
         UpdateCompositionVisualPlacement(hostRect, controllerBounds);
-        _controller.Bounds = new Rectangle(0, 0, controllerBounds.Width, controllerBounds.Height);
+        // Bounds tells WebView2 the screen-relative position of the content
+        // within the parent HWND.  This is used for popups, context menus and
+        // other windowed features.  The DComp visual handles the actual
+        // rendering position; Bounds only provides the coordinate reference.
+        _controller.Bounds = new Rectangle(
+            hostRect.X + controllerBounds.X,
+            hostRect.Y + controllerBounds.Y,
+            controllerBounds.Width, controllerBounds.Height);
         DebugLog("init", $"controller ready host={FormatRect(hostRect)} ctrl={FormatRect(controllerBounds)}");
 
         _controller.IsVisible = true;
@@ -391,6 +418,7 @@ public partial class WebView : FrameworkElement, IDisposable
         _parentWindow.SizeChanged += OnParentWindowSizeChanged;
         EnsurePositionSyncTimer();
         UpdateHostWindowPosition(force: true);
+
 
         // Navigate if Source was set before initialization
         if (Source != null)
@@ -476,9 +504,7 @@ public partial class WebView : FrameworkElement, IDisposable
 
         var visibleDip = ClipToVisibleAncestorBounds(rawDip);
         if (visibleDip.IsEmpty)
-        {
             return false;
-        }
 
         var dpi = _parentWindow.DpiScale;
         var rawPx = DipRectToPixelRect(rawDip, dpi);
@@ -707,9 +733,14 @@ public partial class WebView : FrameworkElement, IDisposable
 
         UpdateCompositionVisualPlacement(hostRect, controllerBounds);
 
-        var sizedControllerBounds = new Rectangle(0, 0, controllerBounds.Width, controllerBounds.Height);
-        if (force || _controller.Bounds != sizedControllerBounds)
-            _controller.Bounds = sizedControllerBounds;
+        // Bounds = position within parent HWND (for popup/screen coordinate calc).
+        // DComp visual handles the rendering position separately.
+        var positionedBounds = new Rectangle(
+            hostRect.X + controllerBounds.X,
+            hostRect.Y + controllerBounds.Y,
+            controllerBounds.Width, controllerBounds.Height);
+        if (force || _controller.Bounds != positionedBounds)
+            _controller.Bounds = positionedBounds;
 
         _controller.NotifyParentWindowPositionChanged();
         _lastHostRect = hostRect;
@@ -861,6 +892,9 @@ public partial class WebView : FrameworkElement, IDisposable
             SetValue(ZoomFactorProperty, _controller.ZoomFactor);
     }
 
+    [LibraryImport("user32.dll")]
+    private static partial nint SetCursor(nint hCursor);
+
     #endregion
 
     #region Input Forwarding
@@ -921,7 +955,22 @@ public partial class WebView : FrameworkElement, IDisposable
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
         if (TrySendCompositionMouseInput(CoreWebView2MouseEventKind.Move, e, 0))
+        {
             e.Handled = true;
+
+            // Poll the browser's cursor synchronously after forwarding the move.
+            // This only fires when the mouse is confirmed within the WebView bounds,
+            // avoiding cursor conflicts with other framework elements.
+            if (_compositionController != null)
+            {
+                var hr = Interop.BrowserInterop.GetCursor(
+                    _compositionController.NativeHandle, out var cursorHandle);
+                if (hr >= 0 && cursorHandle != nint.Zero)
+                {
+                    SetCursor(cursorHandle);
+                }
+            }
+        }
     }
 
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
@@ -948,7 +997,9 @@ public partial class WebView : FrameworkElement, IDisposable
 
     private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        var mouseData = ((uint)(ushort)(short)e.Delta) << 16;
+        // WebView2 SendMouseInput expects the raw wheel delta (e.g. ±120),
+        // matching GET_WHEEL_DELTA_WPARAM(wParam), NOT the shifted wParam format.
+        var mouseData = unchecked((uint)(short)e.Delta);
         if (TrySendCompositionMouseInput(CoreWebView2MouseEventKind.Wheel, e, mouseData))
             e.Handled = true;
     }
@@ -1000,8 +1051,9 @@ public partial class WebView : FrameworkElement, IDisposable
             or CoreWebView2MouseEventKind.XButtonUp
             or CoreWebView2MouseEventKind.XButtonDoubleClick)
         {
-            var xButton = e.ChangedButton == MouseButton.XButton2 ? 2u : 1u;
-            return xButton << 16;
+            // WebView2 expects the raw XBUTTON identifier (1 or 2),
+            // matching GET_XBUTTON_WPARAM(wParam), not the shifted wParam.
+            return e.ChangedButton == MouseButton.XButton2 ? 2u : 1u;
         }
 
         return 0;

@@ -18,49 +18,60 @@
         <Setter Property="RowBackground" Value="Transparent" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGrid">
-                <Grid>
-                    <Border Name="PART_OuterBorder"
-                            Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="4">
-                        <Grid>
-                            <Grid.RowDefinitions>
-                                <RowDefinition Height="Auto" />
-                                <RowDefinition Height="*" />
-                            </Grid.RowDefinitions>
-                            <!-- Column headers area (ClipToBounds to clip when synced with horizontal scroll) -->
-                            <Border Name="PART_ColumnHeadersBorder"
-                                    Grid.Row="0"
-                                    Background="{DynamicResource ControlBackground}"
-                                    BorderBrush="{DynamicResource ControlBorder}"
-                                    BorderThickness="0,0,0,1"
-                                    ClipToBounds="True">
+                <Border Name="PART_OuterBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="4">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+                        <!-- Column headers area: hidden ScrollViewer syncs horizontal offset with data -->
+                        <Border Name="PART_ColumnHeadersBorder"
+                                Grid.Row="0"
+                                Background="{DynamicResource ControlBackground}"
+                                BorderBrush="{DynamicResource ControlBorder}"
+                                BorderThickness="0,0,0,1">
+                            <ScrollViewer Name="PART_ColumnHeadersScrollViewer"
+                                          HorizontalScrollBarVisibility="Hidden"
+                                          VerticalScrollBarVisibility="Disabled"
+                                          Focusable="False">
                                 <StackPanel Name="PART_ColumnHeadersHost" Orientation="Horizontal" />
-                            </Border>
-                            <!-- Data rows area -->
-                            <ScrollViewer Name="PART_DataScrollViewer"
-                                          Grid.Row="1"
-                                          VerticalScrollBarVisibility="Auto"
-                                          HorizontalScrollBarVisibility="Auto">
-                                <StackPanel Name="PART_RowsHost" />
                             </ScrollViewer>
-                        </Grid>
-                    </Border>
-                    <Border Name="FocusOuter"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="1"
-                            CornerRadius="4"
-                            Opacity="0" />
-                    <Border Name="FocusInner"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                            BorderThickness="1"
-                            CornerRadius="4"
-                            Margin="2"
-                            Opacity="0" />
-                </Grid>
+                        </Border>
+                        <!-- Data rows area -->
+                        <ScrollViewer Name="PART_DataScrollViewer"
+                                      Grid.Row="1"
+                                      Focusable="False"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Auto">
+                            <StackPanel Name="PART_RowsHost" />
+                        </ScrollViewer>
+                        <!-- Drag overlay for column reorder ghost and drop indicator -->
+                        <Canvas Name="PART_DragOverlay"
+                                Grid.RowSpan="2"
+                                IsHitTestVisible="False"
+                                Visibility="Collapsed" />
+                        <!-- Focus rings inside outer border -->
+                        <Border Name="FocusOuter"
+                                Grid.RowSpan="2"
+                                IsHitTestVisible="False"
+                                BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Opacity="0" />
+                        <Border Name="FocusInner"
+                                Grid.RowSpan="2"
+                                IsHitTestVisible="False"
+                                BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Margin="2"
+                                Opacity="0" />
+                    </Grid>
+                </Border>
             </ControlTemplate>
         </Setter>
 

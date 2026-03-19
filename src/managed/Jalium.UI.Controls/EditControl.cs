@@ -1750,7 +1750,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     {
         if (_caretTimer != null) return;
 
-        _caretTimer = new DispatcherTimer();
+        _caretTimer = new DispatcherTimer(DispatcherPriority.Background);
         _caretTimer.Interval = _caret.BlinkInterval;
         _caretTimer.Tick += (_, _) => InvalidateVisual();
         _caretTimer.Start();

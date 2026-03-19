@@ -835,13 +835,9 @@ public class ScrollBar : RangeBase
 
     private static void OnThumbPresentationPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is ScrollBar scrollBar)
-        {
-            var targetProgress = scrollBar.IsThumbSlim ? 1.0 : 0.0;
-            scrollBar._autoHideCollapseProgress = targetProgress;
-            scrollBar.StopAutoHideVisualTimer();
-            scrollBar.ApplyAutoHideVisualState(targetProgress);
-        }
+        // Visual transition is now driven by ScrollViewer.ApplyScrollBarAutoHideVisualState
+        // which calls StartAutoHideVisualTransition directly after setting this property.
+        // No action needed here — avoids duplicate animation starts.
     }
 
     private void EnsureAutoHideVisualTimer()
@@ -856,7 +852,7 @@ public class ScrollBar : RangeBase
         _autoHideVisualTimer.Tick += OnAutoHideVisualTimerTick;
     }
 
-    private void StartAutoHideVisualTransition(double targetProgress)
+    internal void StartAutoHideVisualTransition(double targetProgress)
     {
         targetProgress = Math.Clamp(targetProgress, 0.0, 1.0);
 

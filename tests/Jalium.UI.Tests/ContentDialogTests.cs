@@ -75,7 +75,8 @@ public class ContentDialogTests
             ProcessUiQueue();
 
             Assert.False(showTask.IsCompleted);
-            Assert.Same(dialog, window.ActiveContentDialog);
+            Assert.Contains(dialog, window.ActiveInPlaceDialogs);
+            Assert.Null(window.ActiveContentDialog);
             Assert.Equal(Visibility.Visible, dialog.Visibility);
 
             dialog.Hide();
@@ -580,6 +581,68 @@ public class ContentDialogTests
             Assert.Contains("Only one ContentDialog", ex.Message);
 
             firstDialog.OnHostWindowClosed();
+        }
+        finally
+        {
+            ResetApplicationState();
+            ResetInputState();
+        }
+    }
+
+    [Fact]
+    public void MultipleInPlaceDialogs_ShouldCoexist()
+    {
+        ResetApplicationState();
+        ResetInputState();
+        var app = new Application();
+
+        try
+        {
+            var root = new Grid();
+            var dialog1 = new ContentDialog
+            {
+                Title = "Dialog 1",
+                PrimaryButtonText = "OK"
+            };
+            var dialog2 = new ContentDialog
+            {
+                Title = "Dialog 2",
+                CloseButtonText = "Cancel"
+            };
+            root.Children.Add(dialog1);
+            root.Children.Add(dialog2);
+
+            var window = CreateWindow(root);
+            app.MainWindow = window;
+
+            var task1 = dialog1.ShowAsync(ContentDialogPlacement.InPlace);
+            MeasureWindow(window);
+            ProcessUiQueue();
+
+            Assert.False(task1.IsCompleted);
+            Assert.Contains(dialog1, window.ActiveInPlaceDialogs);
+
+            var task2 = dialog2.ShowAsync(ContentDialogPlacement.InPlace);
+            MeasureWindow(window);
+            ProcessUiQueue();
+
+            Assert.False(task2.IsCompleted);
+            Assert.Contains(dialog2, window.ActiveInPlaceDialogs);
+            Assert.Equal(2, window.ActiveInPlaceDialogs.Count);
+
+            dialog1.Hide();
+            ProcessUiQueue();
+
+            Assert.True(task1.IsCompletedSuccessfully);
+            Assert.DoesNotContain(dialog1, window.ActiveInPlaceDialogs);
+            Assert.Contains(dialog2, window.ActiveInPlaceDialogs);
+            Assert.False(task2.IsCompleted);
+
+            dialog2.Hide();
+            ProcessUiQueue();
+
+            Assert.True(task2.IsCompletedSuccessfully);
+            Assert.Empty(window.ActiveInPlaceDialogs);
         }
         finally
         {

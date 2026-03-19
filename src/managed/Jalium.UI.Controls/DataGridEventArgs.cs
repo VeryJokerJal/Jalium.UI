@@ -96,7 +96,7 @@ public readonly struct DataGridCellInfo : IEquatable<DataGridCellInfo>
     public DataGridCellInfo(DataGridCell cell)
     {
         Item = cell.DataContext;
-        Column = null;
+        Column = cell.Column;
     }
 
     /// <summary>Gets the data item for the row that contains the cell.</summary>

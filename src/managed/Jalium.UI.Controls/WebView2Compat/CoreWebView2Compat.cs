@@ -523,10 +523,42 @@ public class CoreWebView2Controller : IDisposable
 public sealed class CoreWebView2CompositionController : CoreWebView2Controller
 {
     private object? _rootVisualTarget;
+    private BrowserInterop.CursorChangedCallback? _cursorChangedCallback;
+    private GCHandle _cursorCallbackHandle;
 
     internal CoreWebView2CompositionController(nint nativeHandle)
         : base(nativeHandle, isCompositionController: true)
     {
+    }
+
+    public event EventHandler<nint>? CursorChanged;
+
+    public void EnableCursorChangeNotifications()
+    {
+        ThrowIfClosed();
+
+        if (_cursorChangedCallback != null)
+            return;
+
+        _cursorChangedCallback = OnCursorChanged;
+        _cursorCallbackHandle = GCHandle.Alloc(this, GCHandleType.Normal);
+
+        var hr = BrowserInterop.SetCursorChangedCallback(
+            NativeHandle,
+            _cursorChangedCallback,
+            GCHandle.ToIntPtr(_cursorCallbackHandle));
+        if (hr < 0)
+        {
+            _cursorChangedCallback = null;
+            if (_cursorCallbackHandle.IsAllocated)
+                _cursorCallbackHandle.Free();
+        }
+    }
+
+    private void OnCursorChanged(nint userData, nint cursorHandle)
+    {
+        _ = userData;
+        CursorChanged?.Invoke(this, cursorHandle);
     }
 
     public object? RootVisualTarget

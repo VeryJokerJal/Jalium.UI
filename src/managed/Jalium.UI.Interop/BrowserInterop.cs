@@ -37,6 +37,9 @@ internal static class BrowserInterop
     [UnmanagedFunctionPointer(CallingConvention.StdCall)]
     internal delegate void ScriptCompletedCallback(nint userData, int result, nint resultJson);
 
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)]
+    internal delegate void CursorChangedCallback(nint userData, nint cursorHandle);
+
     internal static int Initialize() => s_backend.Initialize();
     internal static void Shutdown() => s_backend.Shutdown();
     internal static int GetAvailableBrowserVersionString(string? browserExecutableFolder, out nint version) => s_backend.GetAvailableBrowserVersionString(browserExecutableFolder, out version);
@@ -83,6 +86,8 @@ internal static class BrowserInterop
     internal static int SetRootVisualTarget(nint controller, nint visualTarget) => s_backend.SetRootVisualTarget(controller, visualTarget);
     internal static int SendMouseInput(nint controller, int eventKind, int virtualKeys, uint mouseData, int x, int y) => s_backend.SendMouseInput(controller, eventKind, virtualKeys, mouseData, x, y);
     internal static int OpenDevToolsWindow(nint controller) => s_backend.OpenDevToolsWindow(controller);
+    internal static int SetCursorChangedCallback(nint controller, CursorChangedCallback? callback, nint userData) => s_backend.SetCursorChangedCallback(controller, callback, userData);
+    internal static int GetCursor(nint controller, out nint cursor) => s_backend.GetCursor(controller, out cursor);
 
     private static IBrowserInteropBackend CreateBackend()
     {

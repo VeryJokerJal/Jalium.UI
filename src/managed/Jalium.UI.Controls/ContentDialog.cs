@@ -1,5 +1,6 @@
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Input;
 using Jalium.UI.Input;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
@@ -319,15 +320,25 @@ public class ContentDialog : ContentControl
         _hostWindow = ResolveHostWindow(effectivePlacement)
             ?? throw new InvalidOperationException("ContentDialog could not resolve a host window.");
 
-        if (_hostWindow.ActiveContentDialog != null && !ReferenceEquals(_hostWindow.ActiveContentDialog, this))
+        if (effectivePlacement != ContentDialogPlacement.InPlace)
         {
-            throw new InvalidOperationException("Only one ContentDialog can be open per Window.");
+            if (_hostWindow.ActiveContentDialog != null && !ReferenceEquals(_hostWindow.ActiveContentDialog, this))
+            {
+                throw new InvalidOperationException("Only one ContentDialog can be open per Window.");
+            }
         }
 
         _activePlacement = effectivePlacement;
         _showTaskSource = new TaskCompletionSource<ContentDialogResult>(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        _hostWindow.ActiveContentDialog = this;
+        if (effectivePlacement == ContentDialogPlacement.InPlace)
+        {
+            _hostWindow.ActiveInPlaceDialogs.Add(this);
+        }
+        else
+        {
+            _hostWindow.ActiveContentDialog = this;
+        }
         _hostWindow.OverlayLayer.CloseLightDismissPopups();
 
         if (_activePlacement == ContentDialogPlacement.Popup || _activePlacement == ContentDialogPlacement.UnconstrainedPopup)
@@ -384,6 +395,12 @@ public class ContentDialog : ContentControl
         var overlayAvailable = new Size(
             Math.Max(0, availableSize.Width - marginWidth),
             Math.Max(0, availableSize.Height - marginHeight));
+
+        // Ensure card constraints are up-to-date before the template tree is measured.
+        // UpdateCardLayout sets MaxWidth/MaxHeight on PART_DialogCard; doing it here
+        // guarantees the constraints are in place even during the very first measure
+        // pass (when OnApplyTemplate may not have run yet or ran during this measure).
+        UpdateCardLayout();
 
         var contentSize = MeasureOverride(overlayAvailable);
 
@@ -454,6 +471,7 @@ public class ContentDialog : ContentControl
 
         AttachButtonHandlers();
         UpdateVisualState();
+        UpdateCardLayout();
     }
 
     protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
@@ -691,7 +709,11 @@ public class ContentDialog : ContentControl
         _showTaskSource = null;
 
         var hostWindow = _hostWindow;
-        if (hostWindow?.ActiveContentDialog == this)
+        if (_activePlacement == ContentDialogPlacement.InPlace)
+        {
+            hostWindow?.ActiveInPlaceDialogs.Remove(this);
+        }
+        else if (hostWindow?.ActiveContentDialog == this)
         {
             hostWindow.ActiveContentDialog = null;
         }
@@ -956,6 +978,7 @@ public class ContentDialog : ContentControl
         _dialogCard.MinHeight = ClampMinimumToMaximum(requestedMinHeight, effectiveMaxHeight);
         _dialogCard.MaxWidth = effectiveMaxWidth;
         _dialogCard.MaxHeight = effectiveMaxHeight;
+        _dialogCard.ClipToBounds = true;
     }
 
     private void OnDialogSizeChanged(object sender, SizeChangedEventArgs e)

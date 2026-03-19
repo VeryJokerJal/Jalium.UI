@@ -1,4 +1,5 @@
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -50,43 +51,48 @@ public class TextBlock : FrameworkElement
 
     /// <summary>
     /// Identifies the Foreground dependency property.
+    /// Shared with Control and TextElement via AddOwner for cross-tree property inheritance.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
-        DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(TextBlock),
+        TextElement.ForegroundProperty.AddOwner(typeof(TextBlock),
             new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontFamily dependency property.
+    /// Shared with Control and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
-        DependencyProperty.Register(nameof(FontFamily), typeof(string), typeof(TextBlock),
-            new PropertyMetadata("Segoe UI", OnTextChanged));
+        TextElement.FontFamilyProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata("Segoe UI", OnTextChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontSize dependency property.
+    /// Shared with Control and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
-        DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(TextBlock),
-            new PropertyMetadata(14.0, OnTextChanged));
+        TextElement.FontSizeProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata(14.0, OnTextChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontStyle dependency property.
+    /// Shared with Control and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontStyleProperty =
-        DependencyProperty.Register(nameof(FontStyle), typeof(FontStyle), typeof(TextBlock),
-            new PropertyMetadata(FontStyles.Normal, OnTextChanged));
+        TextElement.FontStyleProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata(FontStyles.Normal, OnTextChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontWeight dependency property.
+    /// Shared with Control and TextElement via AddOwner.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontWeightProperty =
-        DependencyProperty.Register(nameof(FontWeight), typeof(FontWeight), typeof(TextBlock),
-            new PropertyMetadata(FontWeights.Normal, OnTextChanged));
+        TextElement.FontWeightProperty.AddOwner(typeof(TextBlock),
+            new PropertyMetadata(FontWeights.Normal, OnTextChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the TextWrapping dependency property.

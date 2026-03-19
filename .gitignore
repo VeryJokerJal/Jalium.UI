@@ -35,6 +35,9 @@ bld/
 [Ll]og/
 [Ll]ogs/
 
+# CMake build output
+build/
+
 # Jalium temporary build/test artifacts
 .tmp-build/
 .tmp*.log

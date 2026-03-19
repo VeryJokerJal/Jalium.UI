@@ -31,6 +31,8 @@ typedef void(__stdcall* jalium_webview2_new_window_requested_callback)(void* use
 typedef void(__stdcall* jalium_webview2_process_failed_callback)(void* user_data, int process_failed_kind);
 typedef void(__stdcall* jalium_webview2_zoom_factor_changed_callback)(void* user_data, double zoom_factor);
 
+typedef void(__stdcall* jalium_webview2_cursor_changed_callback)(void* user_data, intptr_t cursor_handle);
+
 typedef void(__stdcall* jalium_webview2_script_completed_callback)(void* user_data, int result, const wchar_t* result_json);
 
 JALIUM_BROWSER_API int jalium_webview2_initialize(void);
@@ -112,6 +114,12 @@ JALIUM_BROWSER_API int jalium_webview2_send_mouse_input(
     int y);
 
 JALIUM_BROWSER_API int jalium_webview2_open_devtools_window(JaliumWebView2ControllerHandle* controller);
+
+JALIUM_BROWSER_API int jalium_webview2_set_cursor_changed_callback(
+    JaliumWebView2ControllerHandle* controller,
+    jalium_webview2_cursor_changed_callback callback,
+    void* user_data);
+JALIUM_BROWSER_API int jalium_webview2_get_cursor(JaliumWebView2ControllerHandle* controller, intptr_t* cursor_out);
 
 #ifdef __cplusplus
 }

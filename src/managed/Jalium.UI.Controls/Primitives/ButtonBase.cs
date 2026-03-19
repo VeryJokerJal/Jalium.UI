@@ -1,3 +1,4 @@
+using System.Windows.Input;
 using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -21,6 +22,30 @@ public abstract class ButtonBase : ContentControl
     /// Identifies the IsPressed dependency property.
     /// </summary>
     public new static readonly DependencyProperty IsPressedProperty = UIElement.IsPressedProperty;
+
+    /// <summary>
+    /// Identifies the Command dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty CommandProperty =
+        DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(ButtonBase),
+            new PropertyMetadata(null, OnCommandChanged));
+
+    /// <summary>
+    /// Identifies the CommandParameter dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty CommandParameterProperty =
+        DependencyProperty.Register(nameof(CommandParameter), typeof(object), typeof(ButtonBase),
+            new PropertyMetadata(null, OnCommandParameterChanged));
+
+    /// <summary>
+    /// Identifies the CommandTarget dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty CommandTargetProperty =
+        DependencyProperty.Register(nameof(CommandTarget), typeof(IInputElement), typeof(ButtonBase),
+            new PropertyMetadata(null));
 
     /// <summary>
     /// Identifies the ClickMode dependency property.
@@ -58,6 +83,36 @@ public abstract class ButtonBase : ContentControl
     /// Gets a value indicating whether the button is currently pressed.
     /// </summary>
     public new bool IsPressed => base.IsPressed;
+
+    /// <summary>
+    /// Gets or sets the command to invoke when this button is pressed.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public ICommand? Command
+    {
+        get => (ICommand?)GetValue(CommandProperty);
+        set => SetValue(CommandProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the parameter to pass to the Command property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public object? CommandParameter
+    {
+        get => GetValue(CommandParameterProperty);
+        set => SetValue(CommandParameterProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the element on which to raise the specified command.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public IInputElement? CommandTarget
+    {
+        get => (IInputElement?)GetValue(CommandTargetProperty);
+        set => SetValue(CommandTargetProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets when the Click event should be raised.
@@ -223,11 +278,12 @@ public abstract class ButtonBase : ContentControl
     #region Click Handling
 
     /// <summary>
-    /// Raises the Click event.
+    /// Raises the Click event and executes the Command if set.
     /// </summary>
     protected virtual void OnClick()
     {
         RaiseEvent(new RoutedEventArgs(ClickEvent, this));
+        ExecuteCommand();
     }
 
     /// <summary>
@@ -247,6 +303,83 @@ public abstract class ButtonBase : ContentControl
     internal void SetIsPressed(bool value)
     {
         base.SetIsPressed(value);
+    }
+
+    private void ExecuteCommand()
+    {
+        var command = Command;
+        if (command == null) return;
+
+        var parameter = CommandParameter;
+
+        if (command is RoutedCommand routedCommand)
+        {
+            var target = CommandTarget ?? this;
+            if (routedCommand.CanExecute(parameter, target))
+            {
+                routedCommand.Execute(parameter, target);
+            }
+        }
+        else if (command.CanExecute(parameter))
+        {
+            command.Execute(parameter);
+        }
+    }
+
+    #endregion
+
+    #region Command Changed Callbacks
+
+    private static void OnCommandChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is not ButtonBase button) return;
+
+        if (e.OldValue is ICommand oldCommand)
+        {
+            oldCommand.CanExecuteChanged -= button.OnCanExecuteChanged;
+        }
+
+        if (e.NewValue is ICommand newCommand)
+        {
+            newCommand.CanExecuteChanged += button.OnCanExecuteChanged;
+        }
+
+        button.UpdateCanExecute();
+    }
+
+    private static void OnCommandParameterChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is ButtonBase button)
+        {
+            button.UpdateCanExecute();
+        }
+    }
+
+    private void OnCanExecuteChanged(object? sender, EventArgs e)
+    {
+        UpdateCanExecute();
+    }
+
+    private void UpdateCanExecute()
+    {
+        var command = Command;
+        if (command == null)
+        {
+            return;
+        }
+
+        bool canExecute;
+        if (command is RoutedCommand routedCommand)
+        {
+            var target = CommandTarget ?? this;
+            canExecute = routedCommand.CanExecute(CommandParameter, target);
+        }
+        else
+        {
+            canExecute = command.CanExecute(CommandParameter);
+        }
+
+        IsEnabled = canExecute;
     }
 
     #endregion

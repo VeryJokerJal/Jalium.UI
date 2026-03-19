@@ -846,7 +846,7 @@ internal static class MarkupExtensionParser
         var parameters = spaceIndex >= 0 ? content.Substring(spaceIndex + 1).Trim() : string.Empty;
 
         // Create the markup extension
-        var extension = CreateMarkupExtension(extensionName, parameters);
+        var extension = CreateMarkupExtension(extensionName, parameters, ambientProvider);
         if (extension == null)
             return false;
 
@@ -877,7 +877,7 @@ internal static class MarkupExtensionParser
         return true;
     }
 
-    private static MarkupExtension? CreateMarkupExtension(string name, string parameters)
+    private static MarkupExtension? CreateMarkupExtension(string name, string parameters, IAmbientResourceProvider? ambientProvider = null)
     {
         // Handle special x: namespace extensions
         if (name.StartsWith("x:", StringComparison.Ordinal))
@@ -887,7 +887,7 @@ internal static class MarkupExtensionParser
 
         return name.ToLowerInvariant() switch
         {
-            "binding" => CreateBindingExtension(parameters),
+            "binding" => CreateBindingExtension(parameters, ambientProvider),
             "staticresource" => CreateStaticResourceExtension(parameters),
             "dynamicresource" => CreateDynamicResourceExtension(parameters),
             "templatebinding" => CreateTemplateBindingExtension(parameters),
@@ -899,7 +899,7 @@ internal static class MarkupExtensionParser
         };
     }
 
-    private static BindingExtension CreateBindingExtension(string parameters)
+    private static BindingExtension CreateBindingExtension(string parameters, IAmbientResourceProvider? ambientProvider = null)
     {
         var extension = new BindingExtension();
 
@@ -921,14 +921,14 @@ internal static class MarkupExtensionParser
                 var paramName = part.Substring(0, equalsIndex).Trim();
                 var paramValue = part.Substring(equalsIndex + 1).Trim();
 
-                SetBindingParameter(extension, paramName, paramValue);
+                SetBindingParameter(extension, paramName, paramValue, ambientProvider);
             }
         }
 
         return extension;
     }
 
-    private static void SetBindingParameter(BindingExtension extension, string name, string value)
+    private static void SetBindingParameter(BindingExtension extension, string name, string value, IAmbientResourceProvider? ambientProvider = null)
     {
         switch (name.ToLowerInvariant())
         {
@@ -947,16 +947,22 @@ internal static class MarkupExtensionParser
                 extension.ElementName = value;
                 break;
             case "fallbackvalue":
-                extension.FallbackValue = value;
+                extension.FallbackValue = ResolveNestedValue(value, ambientProvider) ?? value;
                 break;
             case "targetnullvalue":
-                extension.TargetNullValue = value;
+                extension.TargetNullValue = ResolveNestedValue(value, ambientProvider) ?? value;
                 break;
             case "stringformat":
                 extension.StringFormat = value;
                 break;
+            case "converter":
+                extension.Converter = ResolveNestedValue(value, ambientProvider) as IValueConverter;
+                break;
             case "converterparameter":
-                extension.ConverterParameter = value;
+                extension.ConverterParameter = ResolveNestedValue(value, ambientProvider) ?? value;
+                break;
+            case "source":
+                extension.Source = ResolveNestedValue(value, ambientProvider) ?? value;
                 break;
             case "relativesource":
                 extension.RelativeSource = ParseRelativeSource(value);
@@ -974,6 +980,29 @@ internal static class MarkupExtensionParser
                     extension.NotifyOnValidationError = notifyOnValidationError;
                 break;
         }
+    }
+
+    /// <summary>
+    /// Resolves a nested markup extension value (e.g., {StaticResource BoolToVis}) or returns null if not a markup extension.
+    /// </summary>
+    private static object? ResolveNestedValue(string value, IAmbientResourceProvider? ambientProvider)
+    {
+        var trimmed = value.Trim();
+        if (!trimmed.StartsWith('{') || !trimmed.EndsWith('}'))
+            return null;
+
+        // Parse and resolve the nested markup extension
+        var serviceProvider = new MarkupExtensionServiceProvider();
+        if (ambientProvider != null)
+            serviceProvider.AddService(typeof(IAmbientResourceProvider), ambientProvider);
+
+        var content = trimmed.Substring(1, trimmed.Length - 2).Trim();
+        var spaceIndex = content.IndexOf(' ');
+        var extensionName = spaceIndex >= 0 ? content.Substring(0, spaceIndex) : content;
+        var parameters = spaceIndex >= 0 ? content.Substring(spaceIndex + 1).Trim() : string.Empty;
+
+        var nestedExtension = CreateMarkupExtension(extensionName, parameters);
+        return nestedExtension?.ProvideValue(serviceProvider);
     }
 
     private static RelativeSource? ParseRelativeSource(string value)

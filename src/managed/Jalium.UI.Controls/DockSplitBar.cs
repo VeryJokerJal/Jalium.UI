@@ -10,7 +10,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Internal splitter bar used between panes in a <see cref="DockSplitPanel"/>.
 /// </summary>
-internal sealed class DockSplitBar : Control
+public sealed class DockSplitBar : Control
 {
     private static readonly SolidColorBrush s_fallbackDraggingBrush = new(ThemeColors.Accent);
     private static readonly SolidColorBrush s_fallbackHoverBrush = new(ThemeColors.DockSplitterHover);

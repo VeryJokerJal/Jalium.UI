@@ -25,6 +25,17 @@ public sealed class DependencyProperty
     }
 
     /// <summary>
+    /// Per-type metadata for types that called <see cref="AddOwner"/> or <see cref="OverrideMetadata"/>.
+    /// Enables different types sharing the same DependencyProperty to have different callbacks and defaults.
+    /// </summary>
+    private readonly Dictionary<Type, PropertyMetadata> _typeMetadata = new();
+
+    /// <summary>
+    /// Cache for <see cref="GetMetadata"/> lookups to avoid repeated type-hierarchy walks.
+    /// </summary>
+    private readonly Dictionary<Type, PropertyMetadata> _metadataCache = new();
+
+    /// <summary>
     /// Gets the property name.
     /// </summary>
     public string Name { get; }
@@ -62,6 +73,9 @@ public sealed class DependencyProperty
         DefaultMetadata = metadata ?? new PropertyMetadata();
         ReadOnly = readOnly;
         GlobalIndex = Interlocked.Increment(ref _globalIndex);
+
+        // Store the initial owner's metadata for GetMetadata lookups
+        _typeMetadata[ownerType] = DefaultMetadata;
     }
 
     /// <summary>
@@ -128,6 +142,72 @@ public sealed class DependencyProperty
     {
         // For now, attached properties are implemented the same as regular properties
         return Register(name, propertyType, ownerType, metadata);
+    }
+
+    /// <summary>
+    /// Adds the specified type as an owner of this dependency property, optionally with type-specific metadata.
+    /// This enables the WPF-style shared property pattern where multiple types (e.g. Control, TextBlock)
+    /// share the same DependencyProperty instance so that property inheritance works across the visual tree.
+    /// </summary>
+    /// <param name="ownerType">The type to register as an additional owner.</param>
+    /// <param name="typeMetadata">Optional metadata for this owner type. If null, the DefaultMetadata is used.</param>
+    /// <returns>This DependencyProperty instance (for assignment to a static field).</returns>
+    public DependencyProperty AddOwner(Type ownerType, PropertyMetadata? typeMetadata = null)
+    {
+        ArgumentNullException.ThrowIfNull(ownerType);
+
+        var metadata = typeMetadata ?? DefaultMetadata;
+        _typeMetadata[ownerType] = metadata;
+
+        // Register under the new owner so the global registry can find it
+        _registered.TryAdd((ownerType, Name), this);
+
+        // Invalidate the lookup cache since a new type was added
+        _metadataCache.Clear();
+
+        return this;
+    }
+
+    /// <summary>
+    /// Overrides the metadata for this property when used by the specified type.
+    /// </summary>
+    /// <param name="forType">The type to override metadata for.</param>
+    /// <param name="typeMetadata">The new metadata.</param>
+    public void OverrideMetadata(Type forType, PropertyMetadata typeMetadata)
+    {
+        ArgumentNullException.ThrowIfNull(forType);
+        ArgumentNullException.ThrowIfNull(typeMetadata);
+
+        _typeMetadata[forType] = typeMetadata;
+        _metadataCache.Clear();
+    }
+
+    /// <summary>
+    /// Gets the metadata for this property as used by the specified type.
+    /// Walks up the type hierarchy to find the most specific metadata, falling back to DefaultMetadata.
+    /// </summary>
+    /// <param name="forType">The type to look up metadata for.</param>
+    /// <returns>The most specific PropertyMetadata for the given type.</returns>
+    public PropertyMetadata GetMetadata(Type forType)
+    {
+        // Fast path: check cache
+        if (_metadataCache.TryGetValue(forType, out var cached))
+            return cached;
+
+        // Walk up the type hierarchy
+        var type = forType;
+        while (type != null)
+        {
+            if (_typeMetadata.TryGetValue(type, out var metadata))
+            {
+                _metadataCache[forType] = metadata;
+                return metadata;
+            }
+            type = type.BaseType;
+        }
+
+        _metadataCache[forType] = DefaultMetadata;
+        return DefaultMetadata;
     }
 
     /// <inheritdoc />

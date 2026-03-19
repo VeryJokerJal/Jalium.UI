@@ -156,6 +156,17 @@ public partial class Application
 
         // Optional ultra-low visible memory mode (off by default).
         _workingSetTrimController = WorkingSetTrimController.TryCreateFromEnvironment();
+
+        // Auto-call InitializeComponent() on derived classes to load their JALXAML resources.
+        // This mirrors WPF behavior where Application subclass resources are loaded automatically.
+        // The source generator emits InitializeComponent() as a private method, so use reflection.
+        var initMethod = GetType().GetMethod("InitializeComponent",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
+            Type.EmptyTypes);
+        if (initMethod != null && initMethod.DeclaringType != typeof(Application))
+        {
+            initMethod.Invoke(this, null);
+        }
     }
 
     private static object? LookupApplicationResource(object resourceKey)

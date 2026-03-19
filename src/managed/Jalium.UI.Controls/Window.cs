@@ -506,9 +506,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     internal List<Popup> ActiveExternalPopups { get; } = [];
 
     /// <summary>
-    /// Gets or sets the active modal content dialog hosted by this window.
+    /// Gets or sets the active modal content dialog hosted by this window (Popup mode only).
     /// </summary>
     internal ContentDialog? ActiveContentDialog { get; set; }
+
+    /// <summary>
+    /// Tracks in-place content dialogs that are currently open in this window.
+    /// Multiple in-place dialogs can coexist because they each occupy their own
+    /// position in the visual tree.
+    /// </summary>
+    internal List<ContentDialog> ActiveInPlaceDialogs { get; } = [];
 
     public Window()
     {
@@ -1625,6 +1632,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             ActiveContentDialog = null;
         }
 
+        foreach (var inPlaceDialog in ActiveInPlaceDialogs.ToList())
+        {
+            inPlaceDialog.OnHostWindowClosed();
+        }
+        ActiveInPlaceDialogs.Clear();
+
         // Close all external popup windows
         foreach (var popup in ActiveExternalPopups.ToList())
             popup.IsOpen = false;
@@ -2086,6 +2099,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
             float dpi = (float)(_dpiScale * 96.0);
             RenderTarget.SetDpi(dpi, dpi);
+
+            // Composition swap chains use DXGI_ALPHA_MODE_PREMULTIPLIED, so
+            // any semi-transparent window Background becomes truly transparent
+            // (DWM blends with the desktop).  When there is no system backdrop
+            // this is almost certainly unintentional and causes ghost-image
+            // artifacts (sidebar text doubled, desktop bleeding through).
+            // Force the background to fully opaque to prevent the bleed-through.
+            if (SystemBackdrop == WindowBackdropType.None &&
+                Background is Media.SolidColorBrush bgBrush &&
+                bgBrush.Color.A < 255)
+            {
+                var c = bgBrush.Color;
+                Background = new Media.SolidColorBrush(Media.Color.FromArgb(255, c.R, c.G, c.B));
+            }
 
             ForceRenderFrame();
 
@@ -4048,7 +4075,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             {
                 if (key == Key.Enter)
                 {
-                    var buttonSearchRoot = (UIElement?)ActiveContentDialog ?? this;
+                    var buttonSearchRoot = (UIElement?)ActiveContentDialog ?? (UIElement?)FindContainingInPlaceDialog() ?? this;
                     var defaultButton = FindButton(buttonSearchRoot, b => b.IsDefault);
                     if (defaultButton != null)
                     {
@@ -4058,7 +4085,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 }
                 else if (key == Key.Escape)
                 {
-                    var buttonSearchRoot = (UIElement?)ActiveContentDialog ?? this;
+                    var buttonSearchRoot = (UIElement?)ActiveContentDialog ?? (UIElement?)FindContainingInPlaceDialog() ?? this;
                     var cancelButton = FindButton(buttonSearchRoot, b => b.IsCancel);
                     if (cancelButton != null)
                     {
@@ -4083,6 +4110,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         return dialogRoot != null && (focusedElement == null || !IsDescendantOf(focusedElement, dialogRoot))
             ? dialogRoot
             : focusedElement ?? this;
+    }
+
+    private ContentDialog? FindContainingInPlaceDialog()
+    {
+        var focused = Keyboard.FocusedElement as Visual;
+        for (var current = focused; current != null; current = current.VisualParent)
+        {
+            if (current is ContentDialog dialog && ActiveInPlaceDialogs.Contains(dialog))
+            {
+                return dialog;
+            }
+        }
+
+        return null;
     }
 
     private UIElement? GetTextInputTarget()
@@ -5092,7 +5133,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private HitTestResult? HitTestWithCache(Point windowPosition)
     {
-        if (ActiveContentDialog != null || OverlayLayer.HasModalRoots || OverlayLayer.HasLightDismissPopups || OverlayLayer.HasPopupRoots)
+        if (ActiveContentDialog != null || ActiveInPlaceDialogs.Count > 0 || OverlayLayer.HasModalRoots || OverlayLayer.HasLightDismissPopups || OverlayLayer.HasPopupRoots)
         {
             return HitTest(windowPosition);
         }

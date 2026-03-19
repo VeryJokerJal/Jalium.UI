@@ -38,6 +38,8 @@ internal interface IBrowserInteropBackend
     int SetRootVisualTarget(nint controller, nint visualTarget);
     int SendMouseInput(nint controller, int eventKind, int virtualKeys, uint mouseData, int x, int y);
     int OpenDevToolsWindow(nint controller);
+    int SetCursorChangedCallback(nint controller, BrowserInterop.CursorChangedCallback? callback, nint userData);
+    int GetCursor(nint controller, out nint cursor);
 }
 
 internal sealed class UnsupportedBrowserInteropBackend : IBrowserInteropBackend
@@ -78,6 +80,8 @@ internal sealed class UnsupportedBrowserInteropBackend : IBrowserInteropBackend
     public int SetRootVisualTarget(nint controller, nint visualTarget) => NotSupported;
     public int SendMouseInput(nint controller, int eventKind, int virtualKeys, uint mouseData, int x, int y) => NotSupported;
     public int OpenDevToolsWindow(nint controller) => NotSupported;
+    public int SetCursorChangedCallback(nint controller, BrowserInterop.CursorChangedCallback? callback, nint userData) => NotSupported;
+    public int GetCursor(nint controller, out nint cursor) { cursor = nint.Zero; return NotSupported; }
 }
 
 internal sealed class WindowsBrowserInteropBackend : IBrowserInteropBackend
@@ -116,6 +120,8 @@ internal sealed class WindowsBrowserInteropBackend : IBrowserInteropBackend
     public int SetRootVisualTarget(nint controller, nint visualTarget) => WindowsBrowserNativeMethods.SetRootVisualTarget(controller, visualTarget);
     public int SendMouseInput(nint controller, int eventKind, int virtualKeys, uint mouseData, int x, int y) => WindowsBrowserNativeMethods.SendMouseInput(controller, eventKind, virtualKeys, mouseData, x, y);
     public int OpenDevToolsWindow(nint controller) => WindowsBrowserNativeMethods.OpenDevToolsWindow(controller);
+    public int SetCursorChangedCallback(nint controller, BrowserInterop.CursorChangedCallback? callback, nint userData) => WindowsBrowserNativeMethods.SetCursorChangedCallback(controller, callback, userData);
+    public int GetCursor(nint controller, out nint cursor) => WindowsBrowserNativeMethods.GetCursor(controller, out cursor);
 }
 
 internal static class WindowsBrowserNativeMethods
@@ -190,4 +196,8 @@ internal static class WindowsBrowserNativeMethods
     internal static extern int SendMouseInput(nint controller, int eventKind, int virtualKeys, uint mouseData, int x, int y);
     [DllImport(BrowserLib, EntryPoint = "jalium_webview2_open_devtools_window", CallingConvention = CallingConvention.Cdecl)]
     internal static extern int OpenDevToolsWindow(nint controller);
+    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_set_cursor_changed_callback", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int SetCursorChangedCallback(nint controller, BrowserInterop.CursorChangedCallback? callback, nint userData);
+    [DllImport(BrowserLib, EntryPoint = "jalium_webview2_get_cursor", CallingConvention = CallingConvention.Cdecl)]
+    internal static extern int GetCursor(nint controller, out nint cursor);
 }

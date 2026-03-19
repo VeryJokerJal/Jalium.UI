@@ -111,6 +111,9 @@ struct JaliumWebView2ControllerHandle {
     EventRegistrationToken new_window_requested_token{};
     EventRegistrationToken process_failed_token{};
     EventRegistrationToken zoom_factor_changed_token{};
+    EventRegistrationToken cursor_changed_token{};
+    jalium_webview2_cursor_changed_callback cursor_changed = nullptr;
+    void* cursor_changed_user_data = nullptr;
 };
 
 void RemoveCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
@@ -163,6 +166,11 @@ void RemoveCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
     if (controller_handle->controller && controller_handle->zoom_factor_changed_token.value != 0) {
         controller_handle->controller->remove_ZoomFactorChanged(controller_handle->zoom_factor_changed_token);
         controller_handle->zoom_factor_changed_token.value = 0;
+    }
+
+    if (controller_handle->composition_controller && controller_handle->cursor_changed_token.value != 0) {
+        controller_handle->composition_controller->remove_CursorChanged(controller_handle->cursor_changed_token);
+        controller_handle->cursor_changed_token.value = 0;
     }
 }
 
@@ -969,4 +977,75 @@ int jalium_webview2_open_devtools_window(JaliumWebView2ControllerHandle* control
     }
 
     return controller->core->OpenDevToolsWindow();
+}
+
+int jalium_webview2_set_cursor_changed_callback(
+    JaliumWebView2ControllerHandle* controller,
+    jalium_webview2_cursor_changed_callback callback,
+    void* user_data) {
+    HRESULT hr = ValidateController(controller);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    if (!controller->composition_controller) {
+        return E_NOINTERFACE;
+    }
+
+    // Remove previous subscription
+    if (controller->cursor_changed_token.value != 0) {
+        controller->composition_controller->remove_CursorChanged(controller->cursor_changed_token);
+        controller->cursor_changed_token.value = 0;
+    }
+
+    controller->cursor_changed = callback;
+    controller->cursor_changed_user_data = user_data;
+
+    if (!callback) {
+        return S_OK;
+    }
+
+    hr = controller->composition_controller->add_CursorChanged(
+        Callback<ICoreWebView2CursorChangedEventHandler>(
+            [controller](ICoreWebView2CompositionController* /*sender*/, IUnknown* /*args*/) -> HRESULT {
+                if (!controller->cursor_changed || !controller->composition_controller) {
+                    return S_OK;
+                }
+
+                HCURSOR cursor = nullptr;
+                controller->composition_controller->get_Cursor(&cursor);
+                controller->cursor_changed(
+                    controller->cursor_changed_user_data,
+                    reinterpret_cast<intptr_t>(cursor));
+                return S_OK;
+            })
+            .Get(),
+        &controller->cursor_changed_token);
+
+    return hr;
+}
+
+int jalium_webview2_get_cursor(JaliumWebView2ControllerHandle* controller, intptr_t* cursor_out) {
+    if (!cursor_out) {
+        return E_POINTER;
+    }
+
+    *cursor_out = 0;
+
+    HRESULT hr = ValidateController(controller);
+    if (FAILED(hr)) {
+        return hr;
+    }
+
+    if (!controller->composition_controller) {
+        return E_NOINTERFACE;
+    }
+
+    HCURSOR cursor = nullptr;
+    hr = controller->composition_controller->get_Cursor(&cursor);
+    if (SUCCEEDED(hr)) {
+        *cursor_out = reinterpret_cast<intptr_t>(cursor);
+    }
+
+    return hr;
 }

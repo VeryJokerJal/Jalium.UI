@@ -162,7 +162,9 @@ public class ContentPresenter : FrameworkElement
 
     private FrameworkElement? CreateContentElement(object content)
     {
-        // If content is already a UIElement, use it directly
+        // If content is already a UIElement, use it directly.
+        // With shared properties (TextElement.ForegroundProperty via AddOwner),
+        // TextBlock inherits Foreground from ancestor Controls natively.
         if (content is FrameworkElement fe)
         {
             return fe;
@@ -209,8 +211,9 @@ public class ContentPresenter : FrameworkElement
         }
 
         // Find Foreground from TemplatedParent or visual parent chain.
-        // This is needed because TextBlock.ForegroundProperty is not inheritable
-        // in this framework (unlike WPF where TextElement.ForegroundProperty is shared).
+        // Even though TextBlock now shares ForegroundProperty with Control via AddOwner,
+        // we still set it explicitly here because the TextBlock is created detached
+        // and won't inherit from the visual tree until it's added as a child.
         var foreground = FindForegroundBrush();
 
         // Default: create a TextBlock for string content

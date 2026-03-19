@@ -2,6 +2,7 @@ using System.Reflection;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
+using System.Windows.Input;
 using Jalium.UI.Input;
 using Jalium.UI.Markup;
 

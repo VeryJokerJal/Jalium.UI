@@ -5,6 +5,9 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Shapes;
+using Jalium.UI.Data;
+using Jalium.UI.Documents;
+using Jalium.UI.Interactivity;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Markup;
@@ -2189,9 +2192,15 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
     public bool TryGetResource(object key, out object? value)
     {
         // Search through the parent stack for ResourceDictionaries
+        // and FrameworkElements that have their own Resources property
         foreach (var parent in _parentStack)
         {
             if (parent is ResourceDictionary rd && rd.TryGetValue(key, out value))
+            {
+                return true;
+            }
+
+            if (parent is FrameworkElement fe && fe.Resources != null && fe.Resources.TryGetValue(key, out value))
             {
                 return true;
             }
@@ -2432,8 +2441,48 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         DynamicallyAccessedMemberTypes.NonPublicFields)]
     private Type? ResolveTypeInNamespace(string clrNamespace, string typeName, string? assemblyName = null)
     {
-        // AOT-friendly: Use static type registry instead of Assembly.GetType
-        return XamlTypeRegistry.GetType(typeName);
+        // Try the AOT-friendly static type registry first
+        var registryType = XamlTypeRegistry.GetType(typeName);
+        if (registryType != null)
+            return registryType;
+
+        // Fall back to assembly-based resolution for user-defined types
+        // This supports clr-namespace: references to types not in the static registry
+        var fullName = $"{clrNamespace}.{typeName}";
+
+        if (assemblyName != null)
+        {
+            var assembly = AppDomain.CurrentDomain.GetAssemblies()
+                .FirstOrDefault(a => string.Equals(a.GetName().Name, assemblyName, StringComparison.OrdinalIgnoreCase));
+            if (assembly != null)
+            {
+                var type = assembly.GetType(fullName);
+                if (type != null)
+                {
+                    // Cache in registry for future lookups
+                    XamlTypeRegistry.RegisterType(typeName, type);
+                    return type;
+                }
+            }
+        }
+
+        // Search the source assembly first, then all loaded assemblies
+        var searchAssemblies = SourceAssembly != null
+            ? new[] { SourceAssembly }.Concat(AppDomain.CurrentDomain.GetAssemblies())
+            : AppDomain.CurrentDomain.GetAssemblies().AsEnumerable();
+
+        foreach (var asm in searchAssemblies)
+        {
+            var type = asm.GetType(fullName);
+            if (type != null)
+            {
+                // Cache in registry for future lookups
+                XamlTypeRegistry.RegisterType(typeName, type);
+                return type;
+            }
+        }
+
+        return null;
     }
 
     private readonly record struct PendingGridReference(Grid Grid, UIElement Element, string PropertyName, string Reference);
@@ -2461,6 +2510,9 @@ public static class XamlTypeRegistry
         RegisterControlTypes(types);
         RegisterMediaTypes(types);
         RegisterShapeTypes(types);
+        RegisterDataTypes(types);
+        RegisterDocumentTypes(types);
+        RegisterInteractivityTypes(types);
 
         return types;
     }
@@ -2668,6 +2720,57 @@ public static class XamlTypeRegistry
         Register<Line>(types);
     }
 
+    private static void RegisterDataTypes(Dictionary<string, Type> types)
+    {
+        // Jalium.UI.Data namespace - Converters
+        Register<BooleanToVisibilityConverter>(types);
+        Register<InverseBooleanConverter>(types);
+        Register<NullToBooleanConverter>(types);
+        Register<NullToVisibilityConverter>(types);
+        Register<StringCaseConverter>(types);
+        Register<EqualityConverter>(types);
+        Register<MultiplyConverter>(types);
+        Register<AddConverter>(types);
+        Register<EnumToBooleanConverter>(types);
+        Register<DateTimeFormatConverter>(types);
+
+        // Jalium.UI.Data namespace - Collection support
+        Register<CollectionViewSource>(types);
+    }
+
+    private static void RegisterDocumentTypes(Dictionary<string, Type> types)
+    {
+        // Jalium.UI.Documents namespace
+        Register<FlowDocument>(types);
+        Register<Paragraph>(types);
+        Register<Section>(types);
+        Register<Run>(types);
+        Register<Bold>(types);
+        Register<Italic>(types);
+        Register<Underline>(types);
+        Register<Span>(types);
+        Register<Hyperlink>(types);
+        Register<LineBreak>(types);
+        Register<InlineUIContainer>(types);
+        Register<BlockUIContainer>(types);
+        Register<Table>(types);
+        Register<TableColumn>(types);
+        Register<TableRowGroup>(types);
+        Register<TableRow>(types);
+        Register<TableCell>(types);
+        Register<Jalium.UI.Documents.AdornerDecorator>(types);
+        Register<Jalium.UI.Documents.Decorator>(types);
+    }
+
+    private static void RegisterInteractivityTypes(Dictionary<string, Type> types)
+    {
+        // Jalium.UI.Interactivity namespace
+        Register<Jalium.UI.Interactivity.EventTrigger>(types);
+        Register<InvokeCommandAction>(types);
+        Register<CallMethodAction>(types);
+        Register<ChangePropertyAction>(types);
+    }
+
     private static void Register<[DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicConstructors |
         DynamicallyAccessedMemberTypes.PublicProperties |
@@ -2717,6 +2820,18 @@ public static class XamlTypeRegistry
         DynamicallyAccessedMemberTypes.NonPublicFields)] T>(string name)
     {
         _types[name] = typeof(T);
+    }
+
+    /// <summary>
+    /// Registers a type by name for runtime-discovered types (e.g., from clr-namespace resolution).
+    /// </summary>
+    [UnconditionalSuppressMessage("AOT", "IL2026:RequiresUnreferencedCode",
+        Justification = "Used for runtime clr-namespace type resolution; types are kept alive by user reference")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Used for runtime clr-namespace type resolution")]
+    internal static void RegisterType(string name, Type type)
+    {
+        _types[name] = type;
     }
 
     /// <summary>

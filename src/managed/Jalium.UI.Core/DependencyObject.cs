@@ -399,7 +399,9 @@ public class DependencyObject : DispatcherObject
     /// <param name="e">Event arguments containing the changed property information.</param>
     protected virtual void OnPropertyChanged(DependencyPropertyChangedEventArgs e)
     {
-        e.Property.DefaultMetadata.PropertyChangedCallback?.Invoke(this, e);
+        // Use per-type metadata so that shared properties (e.g. TextElement.ForegroundProperty
+        // used by both Control and TextBlock via AddOwner) invoke the correct callback.
+        e.Property.GetMetadata(GetType()).PropertyChangedCallback?.Invoke(this, e);
 
         // Notify internal listeners (triggers, etc.)
         PropertyChangedInternal?.Invoke(e.Property, e.OldValue, e.NewValue);
@@ -561,7 +563,8 @@ public class DependencyObject : DispatcherObject
         }
 
         bool isCoerced = false;
-        if (dp.DefaultMetadata.CoerceValueCallback != null)
+        var metadata = dp.GetMetadata(GetType());
+        if (metadata.CoerceValueCallback != null)
         {
             var activeCoercions = t_activeCoercions ??= new HashSet<(DependencyObject owner, DependencyProperty property)>(CoercionKeyComparer.Instance);
             var coercionKey = (this, dp);
@@ -571,7 +574,7 @@ public class DependencyObject : DispatcherObject
             {
                 if (shouldInvokeCoerce)
                 {
-                    var coerced = dp.DefaultMetadata.CoerceValueCallback(this, effectiveValue);
+                    var coerced = metadata.CoerceValueCallback(this, effectiveValue);
                     if (forceCoerce || !Equals(coerced, effectiveValue))
                     {
                         effectiveValue = coerced;
@@ -617,7 +620,7 @@ public class DependencyObject : DispatcherObject
         if (_currentValues.TryGetValue(dp, out var current))
             return current;
 
-        return (dp.DefaultMetadata.DefaultValue, BaseValueSource.Default);
+        return (dp.GetMetadata(GetType()).DefaultValue, BaseValueSource.Default);
     }
 
     private ValueState GetBaseValueState(DependencyProperty dp, bool forceCoerce = false)

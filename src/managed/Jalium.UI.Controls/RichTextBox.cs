@@ -67,9 +67,9 @@ public class RichTextBox : Control, IImeSupport
     private DispatcherTimer? _caretTimer;
 
     /// <summary>
-    /// Interval for caret animation timer in milliseconds.
+    /// Tick interval during fade phases (ms). Hold phases use longer dynamic intervals.
     /// </summary>
-    private static int CaretTimerInterval => CompositionTarget.FrameIntervalMs;
+    private const int CaretAnimationTickMs = 33;
 
     /// <summary>
     /// Whether the user is currently selecting text.
@@ -891,6 +891,11 @@ public class RichTextBox : Control, IImeSupport
         _caretVisible = true;
         _caretOpacity = 1.0;
         _lastCaretBlink = DateTime.Now;
+
+        if (_caretTimer is { IsEnabled: true })
+        {
+            ScheduleNextCaretTick(_lastCaretBlink);
+        }
     }
 
     /// <summary>
@@ -1974,10 +1979,10 @@ public class RichTextBox : Control, IImeSupport
         if (_caretTimer == null)
         {
             _caretTimer = new DispatcherTimer(DispatcherPriority.Background);
-            _caretTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, CaretTimerInterval));
             _caretTimer.Tick += OnCaretTimerTick;
         }
 
+        ScheduleNextCaretTick(DateTime.Now);
         _caretTimer.Start();
     }
 
@@ -1988,10 +1993,58 @@ public class RichTextBox : Control, IImeSupport
 
     private void OnCaretTimerTick(object? sender, EventArgs e)
     {
-        if (IsKeyboardFocused && !IsReadOnly)
+        if (!IsKeyboardFocused || IsReadOnly)
         {
-            InvalidateVisual();
+            StopCaretTimer();
+            return;
         }
+
+        InvalidateVisual();
+        ScheduleNextCaretTick(DateTime.Now);
+    }
+
+    /// <summary>
+    /// Schedules the next caret timer tick based on the current blink/fade phase.
+    /// Uses longer intervals during hold phases to avoid unnecessary invalidations.
+    /// </summary>
+    private void ScheduleNextCaretTick(DateTime now)
+    {
+        if (_caretTimer == null)
+        {
+            return;
+        }
+
+        var elapsed = (now - _lastCaretBlink).TotalMilliseconds;
+        var fullCycleTime = (CaretBlinkInterval + CaretFadeDuration) * 2.0;
+        var timeInCycle = elapsed % fullCycleTime;
+
+        double visibleEnd = CaretBlinkInterval;
+        double fadeOutEnd = CaretBlinkInterval + CaretFadeDuration;
+        double hiddenEnd = fadeOutEnd + CaretBlinkInterval;
+
+        double intervalMs;
+        if (timeInCycle < visibleEnd)
+        {
+            // Fully visible hold phase.
+            intervalMs = visibleEnd - timeInCycle;
+        }
+        else if (timeInCycle < fadeOutEnd)
+        {
+            // Fade-out phase.
+            intervalMs = Math.Min(CaretAnimationTickMs, fadeOutEnd - timeInCycle);
+        }
+        else if (timeInCycle < hiddenEnd)
+        {
+            // Fully hidden hold phase.
+            intervalMs = hiddenEnd - timeInCycle;
+        }
+        else
+        {
+            // Fade-in phase.
+            intervalMs = Math.Min(CaretAnimationTickMs, fullCycleTime - timeInCycle);
+        }
+
+        _caretTimer.Interval = TimeSpan.FromMilliseconds(Math.Max(1, Math.Ceiling(intervalMs)));
     }
 
     #endregion

@@ -1111,10 +1111,18 @@ public partial class ScrollViewer : Control
 
         bool keepExpanded = _areAutoHideScrollBarsRevealed || ShouldKeepAutoHideScrollBarVisible(scrollBar);
         bool shouldUseSlimThumb = !keepExpanded;
+        var targetProgress = shouldUseSlimThumb ? 1.0 : 0.0;
+
+        // Update the logical flag (without triggering the property-change callback animation,
+        // since we drive the transition directly below).
         if (scrollBar.IsThumbSlim != shouldUseSlimThumb)
         {
             scrollBar.IsThumbSlim = shouldUseSlimThumb;
         }
+
+        // Always request a visual transition to the target progress.
+        // StartAutoHideVisualTransition is idempotent — it early-exits when already at target.
+        scrollBar.StartAutoHideVisualTransition(targetProgress);
     }
 
     private static bool SupportsAutoHide(ScrollBarVisibility visibilityMode)
