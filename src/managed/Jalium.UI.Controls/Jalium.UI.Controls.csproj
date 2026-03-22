@@ -1,34 +1,39 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <RootNamespace>Jalium.UI.Controls</RootNamespace>
-    <AssemblyName>Jalium.UI.Controls</AssemblyName>
-    <Description>Control library for Jalium.UI framework including Button, TextBox, Panel, and Window.</Description>
-    <IsPackable>true</IsPackable>
-    <PackageId>Jalium.UI.Controls</PackageId>
+	<PropertyGroup>
+		<RootNamespace>Jalium.UI.Controls</RootNamespace>
+		<AssemblyName>Jalium.UI.Controls</AssemblyName>
+		<Description>Control library for Jalium.UI framework including Button, TextBox, Panel, and Window.</Description>
+		<IsPackable>true</IsPackable>
+		<PackageId>Jalium.UI.Controls</PackageId>
 
-  </PropertyGroup>
+	</PropertyGroup>
 
-  <ItemGroup>
-    <InternalsVisibleTo Include="Jalium.UI.Xaml" />
-    <InternalsVisibleTo Include="Jalium.UI.Tests" />
-  </ItemGroup>
+	<ItemGroup>
+		<InternalsVisibleTo Include="Jalium.UI.Xaml" />
+		<InternalsVisibleTo Include="Jalium.UI.Tests" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
-    <ProjectReference Include="..\Jalium.UI.Media\Jalium.UI.Media.csproj" />
-    <ProjectReference Include="..\Jalium.UI.Input\Jalium.UI.Input.csproj" />
-    <ProjectReference Include="..\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
-  </ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+		<ProjectReference Include="..\Jalium.UI.Media\Jalium.UI.Media.csproj" />
+		<ProjectReference Include="..\Jalium.UI.Input\Jalium.UI.Input.csproj" />
+		<ProjectReference Include="..\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <PackageReference Include="QRCoder" Version="*" />
-    <PackageReference Include="System.Drawing.Common" Version="*" />
-  </ItemGroup>
+	<ItemGroup>
+		<PackageReference Include="OpenCvSharp4" Version="4.13.0.20260318" />
+		<PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
+		<PackageReference Include="SoundFlow" Version="*" />
+		<PackageReference Include="SoundFlow.Codecs.FFmpeg" Version="*" />
+		<PackageReference Include="QRCoder" Version="*" />
+		<PackageReference Include="System.Drawing.Common" Version="*" />
+		<PackageReference Include="OpenCvSharp4.Windows" Version="*" />
+	</ItemGroup>
 
-  <!-- Embed theme files as resources (default naming: Jalium.UI.Controls.Themes.{path}.{filename}.jalxaml) -->
-  <ItemGroup>
-    <EmbeddedResource Include="Themes\**\*.jalxaml" />
-  </ItemGroup>
+	<!-- Embed theme files as resources (default naming: Jalium.UI.Controls.Themes.{path}.{filename}.jalxaml) -->
+	<ItemGroup>
+		<EmbeddedResource Include="Themes\**\*.jalxaml" />
+	</ItemGroup>
 
 </Project>

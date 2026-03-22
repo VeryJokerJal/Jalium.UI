@@ -5,33 +5,33 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Specifies the load behavior for the MediaElement.
 /// </summary>
-public enum MediaState
-{
-    /// <summary>
-    /// The media is in manual control mode (uses Play, Pause, Stop methods).
-    /// </summary>
-    Manual,
+//public enum MediaState
+//{
+//    /// <summary>
+//    /// The media is in manual control mode (uses Play, Pause, Stop methods).
+//    /// </summary>
+//    Manual,
 
-    /// <summary>
-    /// The media is playing.
-    /// </summary>
-    Play,
+//    /// <summary>
+//    /// The media is playing.
+//    /// </summary>
+//    Play,
 
-    /// <summary>
-    /// The media is paused.
-    /// </summary>
-    Pause,
+//    /// <summary>
+//    /// The media is paused.
+//    /// </summary>
+//    Pause,
 
-    /// <summary>
-    /// The media is stopped.
-    /// </summary>
-    Stop,
+//    /// <summary>
+//    /// The media is stopped.
+//    /// </summary>
+//    Stop,
 
-    /// <summary>
-    /// The media is closed.
-    /// </summary>
-    Close
-}
+//    /// <summary>
+//    /// The media is closed.
+//    /// </summary>
+//    Close
+//}
 
 /// <summary>
 /// Represents a control that contains audio and/or video.
@@ -679,7 +679,7 @@ public class MediaElement : FrameworkElement
     protected void OnMediaFailed(Exception exception)
     {
         _isPlaying = false;
-        MediaFailed?.Invoke(this, new MediaFailedEventArgs(exception));
+        //MediaFailed?.Invoke(this, new MediaFailedEventArgs(exception));
     }
 
     /// <summary>
@@ -706,26 +706,26 @@ public class MediaElement : FrameworkElement
 /// <summary>
 /// Event arguments for media failure events.
 /// </summary>
-public sealed class MediaFailedEventArgs : EventArgs
-{
-    /// <summary>
-    /// Gets the exception that caused the failure.
-    /// </summary>
-    public Exception Exception { get; }
+//public sealed class MediaFailedEventArgs : EventArgs
+//{
+//    /// <summary>
+//    /// Gets the exception that caused the failure.
+//    /// </summary>
+//    public Exception Exception { get; }
 
-    /// <summary>
-    /// Gets the error message.
-    /// </summary>
-    public string ErrorMessage => Exception.Message;
+//    /// <summary>
+//    /// Gets the error message.
+//    /// </summary>
+//    public string ErrorMessage => Exception.Message;
 
-    /// <summary>
-    /// Initializes a new instance of the MediaFailedEventArgs class.
-    /// </summary>
-    public MediaFailedEventArgs(Exception exception)
-    {
-        Exception = exception;
-    }
-}
+//    /// <summary>
+//    /// Initializes a new instance of the MediaFailedEventArgs class.
+//    /// </summary>
+//    public MediaFailedEventArgs(Exception exception)
+//    {
+//        Exception = exception;
+//    }
+//}
 
 /// <summary>
 /// Event arguments for media script command events.
