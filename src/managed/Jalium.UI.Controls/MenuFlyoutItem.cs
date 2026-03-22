@@ -1,4 +1,3 @@
-using System.Windows.Input;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Primitives;
@@ -46,7 +45,7 @@ public class MenuFlyoutItem : Control
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
-        DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(MenuFlyoutItem),
+        DependencyProperty.Register(nameof(Command), typeof(System.Windows.Input.ICommand), typeof(MenuFlyoutItem),
             new PropertyMetadata(null, OnCommandChanged));
 
     /// <summary>
@@ -113,9 +112,9 @@ public class MenuFlyoutItem : Control
     /// Gets or sets the command to invoke when the item is pressed.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public ICommand? Command
+    public System.Windows.Input.ICommand? Command
     {
-        get => (ICommand?)GetValue(CommandProperty);
+        get => (System.Windows.Input.ICommand?)GetValue(CommandProperty);
         set => SetValue(CommandProperty, value);
     }
 
