@@ -1,7 +1,4 @@
 <Solution>
-  <Folder Name="/samples/">
-    <Project Path="samples/Jalium_Demo.csproj" />
-  </Folder>
   <Folder Name="/src/" />
   <Folder Name="/src/managed/">
     <Project Path="src/managed/Jalium.UI.Controls/Jalium.UI.Controls.csproj" />

@@ -1,5 +1,6 @@
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Input;
 using Jalium.UI.Input;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
@@ -82,17 +83,17 @@ public class ContentDialog : ContentControl
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PrimaryButtonCommandProperty =
-        DependencyProperty.Register(nameof(PrimaryButtonCommand), typeof(System.Windows.Input.ICommand), typeof(ContentDialog),
+        DependencyProperty.Register(nameof(PrimaryButtonCommand), typeof(ICommand), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonCommandChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SecondaryButtonCommandProperty =
-        DependencyProperty.Register(nameof(SecondaryButtonCommand), typeof(System.Windows.Input.ICommand), typeof(ContentDialog),
+        DependencyProperty.Register(nameof(SecondaryButtonCommand), typeof(ICommand), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonCommandChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty CloseButtonCommandProperty =
-        DependencyProperty.Register(nameof(CloseButtonCommand), typeof(System.Windows.Input.ICommand), typeof(ContentDialog),
+        DependencyProperty.Register(nameof(CloseButtonCommand), typeof(ICommand), typeof(ContentDialog),
             new PropertyMetadata(null, OnButtonCommandChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
@@ -215,23 +216,23 @@ public class ContentDialog : ContentControl
     }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public System.Windows.Input.ICommand? PrimaryButtonCommand
+    public ICommand? PrimaryButtonCommand
     {
-        get => (System.Windows.Input.ICommand?)GetValue(PrimaryButtonCommandProperty);
+        get => (ICommand?)GetValue(PrimaryButtonCommandProperty);
         set => SetValue(PrimaryButtonCommandProperty, value);
     }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public System.Windows.Input.ICommand? SecondaryButtonCommand
+    public ICommand? SecondaryButtonCommand
     {
-        get => (System.Windows.Input.ICommand?)GetValue(SecondaryButtonCommandProperty);
+        get => (ICommand?)GetValue(SecondaryButtonCommandProperty);
         set => SetValue(SecondaryButtonCommandProperty, value);
     }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public System.Windows.Input.ICommand? CloseButtonCommand
+    public ICommand? CloseButtonCommand
     {
-        get => (System.Windows.Input.ICommand?)GetValue(CloseButtonCommandProperty);
+        get => (ICommand?)GetValue(CloseButtonCommandProperty);
         set => SetValue(CloseButtonCommandProperty, value);
     }
 
@@ -511,12 +512,12 @@ public class ContentDialog : ContentControl
             return;
         }
 
-        if (e.OldValue is System.Windows.Input.ICommand oldCommand)
+        if (e.OldValue is ICommand oldCommand)
         {
             oldCommand.CanExecuteChanged -= dialog.OnButtonCommandCanExecuteChanged;
         }
 
-        if (e.NewValue is System.Windows.Input.ICommand newCommand)
+        if (e.NewValue is ICommand newCommand)
         {
             newCommand.CanExecuteChanged += dialog.OnButtonCommandCanExecuteChanged;
         }
@@ -898,7 +899,7 @@ public class ContentDialog : ContentControl
         return TryFindResource("ContentDialogAccentButtonStyle") as Style;
     }
 
-    private static bool CanExecute(System.Windows.Input.ICommand? command, object? parameter)
+    private static bool CanExecute(ICommand? command, object? parameter)
     {
         return command?.CanExecute(parameter) ?? true;
     }

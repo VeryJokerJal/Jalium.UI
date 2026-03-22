@@ -1,3 +1,4 @@
+using System.Windows.Input;
 using Jalium.UI.Controls;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -27,7 +28,7 @@ public abstract class ButtonBase : ContentControl
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
-        DependencyProperty.Register(nameof(Command), typeof(System.Windows.Input.ICommand), typeof(ButtonBase),
+        DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(ButtonBase),
             new PropertyMetadata(null, OnCommandChanged));
 
     /// <summary>
@@ -87,9 +88,9 @@ public abstract class ButtonBase : ContentControl
     /// Gets or sets the command to invoke when this button is pressed.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public System.Windows.Input.ICommand? Command
+    public ICommand? Command
     {
-        get => (System.Windows.Input.ICommand?)GetValue(CommandProperty);
+        get => (ICommand?)GetValue(CommandProperty);
         set => SetValue(CommandProperty, value);
     }
 
@@ -333,12 +334,12 @@ public abstract class ButtonBase : ContentControl
     {
         if (d is not ButtonBase button) return;
 
-        if (e.OldValue is System.Windows.Input.ICommand oldCommand)
+        if (e.OldValue is ICommand oldCommand)
         {
             oldCommand.CanExecuteChanged -= button.OnCanExecuteChanged;
         }
 
-        if (e.NewValue is System.Windows.Input.ICommand newCommand)
+        if (e.NewValue is ICommand newCommand)
         {
             newCommand.CanExecuteChanged += button.OnCanExecuteChanged;
         }

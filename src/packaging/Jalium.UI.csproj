@@ -34,7 +34,7 @@
 
   <!-- Include build tools as dependencies (PrivateAssets="none" forces DevelopmentDependency packages to be included) -->
   <ItemGroup>
-    <ProjectReference Include="..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" ReferenceOutputAssembly="false" BuildReference="false"/>
+    <ProjectReference Include="..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" PrivateAssets="none" />
     <ProjectReference Include="..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj" PrivateAssets="none" />
   </ItemGroup>
 

@@ -1,3 +1,4 @@
+using System.Windows.Input;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 
@@ -20,7 +21,7 @@ public class SplitButton : ContentControl
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty CommandProperty =
-        DependencyProperty.Register(nameof(Command), typeof(System.Windows.Input.ICommand), typeof(SplitButton),
+        DependencyProperty.Register(nameof(Command), typeof(ICommand), typeof(SplitButton),
             new PropertyMetadata(null));
 
     /// <summary>
@@ -47,9 +48,9 @@ public class SplitButton : ContentControl
     /// Gets or sets the command to invoke when the primary button is clicked.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public System.Windows.Input.ICommand? Command
+    public ICommand? Command
     {
-        get => (System.Windows.Input.ICommand?)GetValue(CommandProperty);
+        get => (ICommand?)GetValue(CommandProperty);
         set => SetValue(CommandProperty, value);
     }
 
