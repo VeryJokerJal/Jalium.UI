@@ -204,7 +204,7 @@ public interface ITextSelection : ITextRange
     /// </summary>
     /// <param name="anchorPosition">The anchor position.</param>
     /// <param name="movingPosition">The moving position.</param>
-    void Select(ITextPointer anchorPosition, ITextPointer movingPosition);
+    new void Select(ITextPointer anchorPosition, ITextPointer movingPosition);
 
     /// <summary>
     /// Extends the selection to the next insertion position in the specified direction.

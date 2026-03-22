@@ -188,11 +188,25 @@ public sealed class PointCollection : IList<Point>, IList, INotifyCollectionChan
             return collection;
 
         var parts = source.Split(new[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < parts.Length - 1; i += 2)
+        if (parts.Length % 2 != 0)
         {
-            if (double.TryParse(parts[i], out var x) && double.TryParse(parts[i + 1], out var y))
+            System.Diagnostics.Debug.WriteLine(
+                $"[PointCollection] Odd number of values ({parts.Length}) in point data, last value ignored");
+        }
+
+        for (int i = 0; i + 1 < parts.Length; i += 2)
+        {
+            if (double.TryParse(parts[i], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var x) &&
+                double.TryParse(parts[i + 1], System.Globalization.NumberStyles.Float,
+                    System.Globalization.CultureInfo.InvariantCulture, out var y))
             {
                 collection._points.Add(new Point(x, y));
+            }
+            else
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[PointCollection] Failed to parse point at index {i}: \"{parts[i]},{parts[i + 1]}\"");
             }
         }
 
@@ -210,7 +224,7 @@ public sealed class PointCollection : IList<Point>, IList, INotifyCollectionChan
     /// <summary>
     /// Raises the CollectionChanged event.
     /// </summary>
-    protected void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
+    private void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
     {
         CollectionChanged?.Invoke(this, e);
     }

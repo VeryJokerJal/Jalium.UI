@@ -96,7 +96,9 @@ public interface IStyleConnector
 public class XmlnsDictionary : IDictionary<string, string>, IDictionary
 {
     private readonly Dictionary<string, string> _dict = new();
+#pragma warning disable CS0169
     private readonly Stack<Dictionary<string, string>>? _scopeStack;
+#pragma warning restore CS0169
     private int _scopeCount;
 
     /// <summary>

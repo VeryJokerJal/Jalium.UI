@@ -86,7 +86,7 @@ public sealed class HwndSourceParameters
 /// </summary>
 public sealed class HwndSource : IDisposable
 {
-    private IntPtr _hwnd;
+    private IntPtr _hwnd = IntPtr.Zero;
     private bool _disposed;
 
     /// <summary>
@@ -159,7 +159,7 @@ public sealed class HwndSource : IDisposable
     /// <summary>
     /// Disposes the HwndSource.
     /// </summary>
-    protected void Dispose(bool disposing)
+    private void Dispose(bool disposing)
     {
         if (!_disposed)
         {
@@ -167,10 +167,9 @@ public sealed class HwndSource : IDisposable
         }
     }
 
-    /// <summary>
-    /// Raised when the HwndSource is disposed.
-    /// </summary>
+#pragma warning disable CS0067
     public event EventHandler? Disposed;
+#pragma warning restore CS0067
 }
 
 /// <summary>

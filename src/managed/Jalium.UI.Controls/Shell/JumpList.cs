@@ -105,7 +105,7 @@ public sealed class JumpList
     /// <summary>
     /// Applies the Jump List to the Windows shell.
     /// </summary>
-    protected void ApplyInternal()
+    private void ApplyInternal()
     {
         // Platform-specific implementation using ICustomDestinationList
         var removedItems = new List<JumpItem>();

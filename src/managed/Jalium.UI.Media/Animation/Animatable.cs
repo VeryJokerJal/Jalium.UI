@@ -73,7 +73,7 @@ public abstract class Animatable : Freezable, IAnimatable
     /// <summary>
     /// Retrieves the base value of the specified DependencyProperty, disregarding any animated value.
     /// </summary>
-    public object? GetAnimationBaseValue(DependencyProperty dp)
+    public new object? GetAnimationBaseValue(DependencyProperty dp)
     {
         return GetValue(dp);
     }

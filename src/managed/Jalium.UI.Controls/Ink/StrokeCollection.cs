@@ -190,7 +190,7 @@ public sealed class StrokeCollection : ObservableCollection<Stroke>
     /// <summary>
     /// Raises the <see cref="StrokesChanged"/> event.
     /// </summary>
-    protected void OnStrokesChanged(StrokeCollectionChangedEventArgs e)
+    private void OnStrokesChanged(StrokeCollectionChangedEventArgs e)
     {
         StrokesChanged?.Invoke(this, e);
     }

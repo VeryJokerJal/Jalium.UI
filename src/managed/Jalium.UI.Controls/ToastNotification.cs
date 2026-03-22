@@ -287,7 +287,7 @@ public sealed class ToastNotifier
     /// <summary>
     /// Shows the notification (platform-specific implementation).
     /// </summary>
-    protected void ShowInternal(ToastNotification notification)
+    private void ShowInternal(ToastNotification notification)
     {
         // Windows: Use Windows.UI.Notifications API
     }
@@ -295,7 +295,7 @@ public sealed class ToastNotifier
     /// <summary>
     /// Hides the notification (platform-specific implementation).
     /// </summary>
-    protected void HideInternal(ToastNotification notification)
+    private void HideInternal(ToastNotification notification)
     {
         // Platform-specific implementation
     }
@@ -303,7 +303,7 @@ public sealed class ToastNotifier
     /// <summary>
     /// Gets the notification setting (platform-specific implementation).
     /// </summary>
-    protected NotificationSetting GetSettingInternal()
+    private NotificationSetting GetSettingInternal()
     {
         return NotificationSetting.Enabled;
     }
@@ -311,7 +311,7 @@ public sealed class ToastNotifier
     /// <summary>
     /// Adds to schedule (platform-specific implementation).
     /// </summary>
-    protected void AddToScheduleInternal(ScheduledToastNotification notification)
+    private void AddToScheduleInternal(ScheduledToastNotification notification)
     {
         // Platform-specific implementation
     }
@@ -319,7 +319,7 @@ public sealed class ToastNotifier
     /// <summary>
     /// Removes from schedule (platform-specific implementation).
     /// </summary>
-    protected void RemoveFromScheduleInternal(ScheduledToastNotification notification)
+    private void RemoveFromScheduleInternal(ScheduledToastNotification notification)
     {
         // Platform-specific implementation
     }
@@ -327,7 +327,7 @@ public sealed class ToastNotifier
     /// <summary>
     /// Gets scheduled notifications (platform-specific implementation).
     /// </summary>
-    protected IReadOnlyList<ScheduledToastNotification> GetScheduledToastNotificationsInternal()
+    private IReadOnlyList<ScheduledToastNotification> GetScheduledToastNotificationsInternal()
     {
         return Array.Empty<ScheduledToastNotification>();
     }
@@ -432,7 +432,7 @@ public sealed class ToastNotificationHistory
     /// <summary>
     /// Clears all notifications (platform-specific implementation).
     /// </summary>
-    protected void ClearInternal()
+    private void ClearInternal()
     {
         // Platform-specific implementation
     }
@@ -440,7 +440,7 @@ public sealed class ToastNotificationHistory
     /// <summary>
     /// Removes notifications (platform-specific implementation).
     /// </summary>
-    protected void RemoveInternal(string tag, string? group)
+    private void RemoveInternal(string tag, string? group)
     {
         // Platform-specific implementation
     }
@@ -448,7 +448,7 @@ public sealed class ToastNotificationHistory
     /// <summary>
     /// Removes group notifications (platform-specific implementation).
     /// </summary>
-    protected void RemoveGroupInternal(string group)
+    private void RemoveGroupInternal(string group)
     {
         // Platform-specific implementation
     }

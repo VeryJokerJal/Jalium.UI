@@ -268,7 +268,7 @@ public sealed class SortDescriptionCollection : IList<SortDescription>, IList, I
     /// <summary>
     /// Raises the CollectionChanged event.
     /// </summary>
-    protected void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
+    private void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
     {
         CollectionChanged?.Invoke(this, e);
     }

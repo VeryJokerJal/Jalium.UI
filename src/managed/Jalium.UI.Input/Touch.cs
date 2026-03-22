@@ -6,7 +6,9 @@ namespace Jalium.UI.Input;
 public static class Touch
 {
     private static readonly Dictionary<int, TouchDevice> _touchDevices = new();
+#pragma warning disable CS0169
     private static int _nextDeviceId;
+#pragma warning restore CS0169
 
     /// <summary>
     /// Gets the collection of active touch devices.
@@ -317,7 +319,7 @@ public sealed class TouchEventArgs : InputEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is TouchEventHandler touchHandler)
         {

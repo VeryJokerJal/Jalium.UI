@@ -95,17 +95,17 @@ public class NotifyIcon : FrameworkElement, IDisposable
     /// <summary>
     /// Occurs when the mouse button is pressed while the pointer is over the icon.
     /// </summary>
-    public event MouseButtonEventHandler? MouseDown;
+    public new event MouseButtonEventHandler? MouseDown;
 
     /// <summary>
     /// Occurs when the mouse button is released while the pointer is over the icon.
     /// </summary>
-    public event MouseButtonEventHandler? MouseUp;
+    public new event MouseButtonEventHandler? MouseUp;
 
     /// <summary>
     /// Occurs when the mouse pointer moves while it is over the icon.
     /// </summary>
-    public event MouseEventHandler? MouseMove;
+    public new event MouseEventHandler? MouseMove;
 
     #endregion
 

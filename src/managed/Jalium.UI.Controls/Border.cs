@@ -404,7 +404,7 @@ public class Border : FrameworkElement
     }
 
     /// <inheritdoc />
-    protected internal override object? GetLayoutClip()
+    internal override object? GetLayoutClip()
     {
         if (!ClipToBounds)
             return null;

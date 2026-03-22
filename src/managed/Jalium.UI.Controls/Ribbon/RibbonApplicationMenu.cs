@@ -108,7 +108,7 @@ public class RibbonContextualTabGroup : Control
     /// <summary>
     /// Gets or sets the background brush for the group.
     /// </summary>
-    public Brush? Background { get; set; }
+    public new Brush? Background { get; set; }
 
     /// <summary>
     /// Gets or sets whether the contextual group should be shown.

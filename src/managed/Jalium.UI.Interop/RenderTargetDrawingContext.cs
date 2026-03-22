@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Linq;
 using Jalium.UI;
 using Jalium.UI.Media;
@@ -28,6 +29,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     private long _bitmapCacheBytes;
     private long _bitmapCacheSequence;
     private long _brushCacheSequence;
+    private long _textFormatCacheSequence;
     private bool _closed;
 
     private sealed class BitmapCacheEntry
@@ -114,6 +116,8 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         return (normalizedRadiusX, normalizedRadiusY);
     }
 
+    private const double SnapEpsilon = 0.0001;
+
     private static float SnapCoordinate(double value)
     {
         if (!double.IsFinite(value))
@@ -122,13 +126,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
 
         var rounded = Math.Round(value);
-        if (Math.Abs(value - rounded) < 0.0001)
+        if (Math.Abs(value - rounded) < SnapEpsilon)
         {
             return (float)rounded;
         }
 
         var halfPixel = Math.Floor(value) + 0.5;
-        if (Math.Abs(value - halfPixel) < 0.0001)
+        if (Math.Abs(value - halfPixel) < SnapEpsilon)
         {
             return (float)halfPixel;
         }
@@ -144,14 +148,56 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var brush = GetNativeBrush(pen.Brush);
         if (brush == null) return;
 
-        // Round to pixel boundaries to prevent sub-pixel jittering
-        _renderTarget.DrawLine(
-            (float)Math.Round(point0.X + Offset.X),
-            (float)Math.Round(point0.Y + Offset.Y),
-            (float)Math.Round(point1.X + Offset.X),
-            (float)Math.Round(point1.Y + Offset.Y),
-            brush,
-            (float)pen.Thickness);
+        var x0 = SnapCoordinate(point0.X + Offset.X);
+        var y0 = SnapCoordinate(point0.Y + Offset.Y);
+        var x1 = SnapCoordinate(point1.X + Offset.X);
+        var y1 = SnapCoordinate(point1.Y + Offset.Y);
+        var thickness = (float)pen.Thickness;
+
+        // Dashed line: split into segments
+        if (pen.DashStyle is { Dashes.Count: > 0 })
+        {
+            DrawDashedLine(x0, y0, x1, y1, brush, thickness, pen.DashStyle, pen.Thickness);
+            return;
+        }
+
+        _renderTarget.DrawLine(x0, y0, x1, y1, brush, thickness);
+    }
+
+    private void DrawDashedLine(float x0, float y0, float x1, float y1,
+        NativeBrush nativeBrush, float thickness, DashStyle dashStyle, double penThickness)
+    {
+        var dx = x1 - x0;
+        var dy = y1 - y0;
+        var lineLength = Math.Sqrt(dx * dx + dy * dy);
+        if (lineLength < 0.5) return;
+
+        var dashes = dashStyle.Dashes;
+        var offset = dashStyle.Offset * penThickness;
+        var ux = (float)(dx / lineLength);
+        var uy = (float)(dy / lineLength);
+
+        double pos = -offset;
+        int dashIndex = 0;
+        while (pos < lineLength)
+        {
+            var dashLen = dashes[dashIndex % dashes.Count] * penThickness;
+            var gapLen = dashes[(dashIndex + 1) % dashes.Count] * penThickness;
+
+            var start = Math.Max(0, pos);
+            var end = Math.Min(lineLength, pos + dashLen);
+
+            if (end > start)
+            {
+                _renderTarget.DrawLine(
+                    x0 + ux * (float)start, y0 + uy * (float)start,
+                    x0 + ux * (float)end, y0 + uy * (float)end,
+                    nativeBrush, thickness);
+            }
+
+            pos += dashLen + gapLen;
+            dashIndex += 2;
+        }
     }
 
     /// <inheritdoc />
@@ -235,19 +281,6 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         double bottomLeftRadius, double bottomRightRadius)
     {
         if (_closed) return;
-
-        var x = (float)Math.Round(rectangle.X + Offset.X);
-        var y = (float)Math.Round(rectangle.Y + Offset.Y);
-        var right = (float)Math.Round(rectangle.X + rectangle.Width + Offset.X);
-        var bottom = (float)Math.Round(rectangle.Y + rectangle.Height + Offset.Y);
-        var w = right - x;
-        var h = bottom - y;
-        var bl = (float)bottomLeftRadius;
-        var br = (float)bottomRightRadius;
-
-        var nativeFill = fillBrush != null ? GetNativeBrush(fillBrush, x, y, w, h) : null;
-        var nativeStroke = strokePen?.Brush != null ? GetNativeBrush(strokePen.Brush, x, y, w, h) : null;
-        var strokeWidth = strokePen != null ? (float)strokePen.Thickness : 0f;
 
         // Always use managed BezierSegment path (native D2D arc direction is inverted)
         base.DrawContentBorder(fillBrush, strokePen, rectangle, bottomLeftRadius, bottomRightRadius);
@@ -351,6 +384,28 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed || geometry == null) return;
 
+        // Apply Geometry.Transform if set
+        var geometryTransform = geometry.Transform;
+        bool pushedTransform = false;
+        if (geometryTransform != null && !geometryTransform.Value.IsIdentity)
+        {
+            PushTransform(geometryTransform);
+            pushedTransform = true;
+        }
+
+        try
+        {
+            DrawGeometryCore(brush, pen, geometry);
+        }
+        finally
+        {
+            if (pushedTransform)
+                Pop();
+        }
+    }
+
+    private void DrawGeometryCore(Brush? brush, Pen? pen, Geometry geometry)
+    {
         // Handle geometry types
         if (geometry is RectangleGeometry rectGeom)
         {
@@ -383,10 +438,37 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
         else if (geometry is CombinedGeometry combined)
         {
-            // For combined geometry, we can only render the union as approximation
-            // Full CSG operations would require native D2D geometry operations
-            if (combined.Geometry1 != null) DrawGeometry(brush, pen, combined.Geometry1);
-            if (combined.Geometry2 != null) DrawGeometry(brush, pen, combined.Geometry2);
+            switch (combined.GeometryCombineMode)
+            {
+                case GeometryCombineMode.Exclude:
+                    // Draw Geometry1 only; Geometry2 defines the excluded region.
+                    // A proper implementation requires native CSG; for now draw Geometry1
+                    // which is visually closer than drawing both.
+                    if (combined.Geometry1 != null) DrawGeometry(brush, pen, combined.Geometry1);
+                    break;
+                case GeometryCombineMode.Intersect:
+                    // Intersection is hard to approximate without native support.
+                    // Draw the smaller geometry as a rough approximation.
+                    if (combined.Geometry1 != null && combined.Geometry2 != null)
+                    {
+                        var b1 = combined.Geometry1.Bounds;
+                        var b2 = combined.Geometry2.Bounds;
+                        DrawGeometry(brush, pen,
+                            (b1.Width * b1.Height <= b2.Width * b2.Height) ? combined.Geometry1 : combined.Geometry2);
+                    }
+                    else
+                    {
+                        if (combined.Geometry1 != null) DrawGeometry(brush, pen, combined.Geometry1);
+                    }
+                    break;
+                case GeometryCombineMode.Xor:
+                case GeometryCombineMode.Union:
+                default:
+                    // Union / Xor: draw both geometries
+                    if (combined.Geometry1 != null) DrawGeometry(brush, pen, combined.Geometry1);
+                    if (combined.Geometry2 != null) DrawGeometry(brush, pen, combined.Geometry2);
+                    break;
+            }
         }
         else if (geometry is StreamGeometry streamGeom)
         {
@@ -405,7 +487,8 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         foreach (var segment in figure.Segments)
         {
             if (segment is BezierSegment or QuadraticBezierSegment
-                or PolyBezierSegment or PolyQuadraticBezierSegment)
+                or PolyBezierSegment or PolyQuadraticBezierSegment
+                or ArcSegment)
             {
                 return true;
             }
@@ -415,17 +498,256 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     private void DrawPathGeometry(Brush? brush, Pen? pen, PathGeometry pathGeom)
     {
+        // Check if we need managed dashed stroke rendering
+        bool hasDash = pen?.DashStyle?.Dashes is { Count: > 0 };
+        // Use managed widening only for non-Flat line caps (which the native
+        // DrawPolygon cannot render).  LineJoin differences (Miter vs Bevel)
+        // are handled natively — the managed widening + FillPolygon path
+        // cannot correctly render closed stroke outlines on D3D12 (triangle
+        // fan doesn't support concave/ring polygons).
+        bool needsWidening = pen != null && (
+            pen.StartLineCap != PenLineCap.Flat ||
+            pen.EndLineCap != PenLineCap.Flat);
+
         foreach (var figure in pathGeom.Figures)
         {
-            if (FigureHasCurves(figure))
+            // Fill always uses the normal path
+            if (brush != null && figure.IsFilled)
             {
-                DrawPathFigureNative(brush, pen, figure, pathGeom.FillRule);
+                if (FigureHasCurves(figure))
+                {
+                    DrawPathFigureNative(brush, null, figure, pathGeom.FillRule);
+                }
+                else
+                {
+                    DrawPathFigurePolygon(brush, null, figure, pathGeom.FillRule);
+                }
+            }
+
+            // Stroke rendering
+            if (pen?.Brush != null)
+            {
+                if (hasDash)
+                {
+                    DrawDashedPathFigure(pen, figure);
+                }
+                else if (needsWidening)
+                {
+                    // Use GetWidenedPathGeometry for accurate line caps/joins
+                    DrawWidenedStroke(pen, figure, pathGeom.FillRule);
+                }
+                else if (FigureHasCurves(figure))
+                {
+                    DrawPathFigureNative(null, pen, figure, pathGeom.FillRule);
+                }
+                else
+                {
+                    DrawPathFigurePolygon(null, pen, figure, pathGeom.FillRule);
+                }
+            }
+        }
+    }
+
+    private void DrawWidenedStroke(Pen pen, PathFigure figure, FillRule fillRule)
+    {
+        // Build a single-figure PathGeometry, widen it, then fill the result
+        var singleGeom = new PathGeometry { FillRule = fillRule };
+        singleGeom.Figures.Add(figure);
+
+        var widened = singleGeom.GetWidenedPathGeometry(pen);
+        if (widened.Figures.Count == 0) return;
+
+        var strokeBrush = pen.Brush;
+        foreach (var wFigure in widened.Figures)
+        {
+            DrawPathFigurePolygon(strokeBrush, null, wFigure, FillRule.Nonzero);
+        }
+    }
+
+    private void DrawDashedPathFigure(Pen pen, PathFigure figure)
+    {
+        // Flatten the figure to get all points
+        var points = new List<Point> { figure.StartPoint };
+        var currentPoint = figure.StartPoint;
+        foreach (var segment in figure.Segments)
+        {
+            switch (segment)
+            {
+                case LineSegment ls:
+                    points.Add(ls.Point);
+                    currentPoint = ls.Point;
+                    break;
+                case PolyLineSegment pls:
+                    points.AddRange(pls.Points);
+                    if (pls.Points.Count > 0) currentPoint = pls.Points[^1];
+                    break;
+                case BezierSegment bez:
+                    points.AddRange(GetBezierPoints(currentPoint, bez.Point1, bez.Point2, bez.Point3));
+                    currentPoint = bez.Point3;
+                    break;
+                case PolyBezierSegment pbez:
+                    var bpts = pbez.Points;
+                    for (int i = 0; i + 2 < bpts.Count; i += 3)
+                    {
+                        points.AddRange(GetBezierPoints(currentPoint, bpts[i], bpts[i + 1], bpts[i + 2]));
+                        currentPoint = bpts[i + 2];
+                    }
+                    break;
+                case QuadraticBezierSegment q:
+                    points.AddRange(GetQuadBezierPoints(currentPoint, q.Point1, q.Point2));
+                    currentPoint = q.Point2;
+                    break;
+                case PolyQuadraticBezierSegment pq:
+                    var qpts = pq.Points;
+                    for (int i = 0; i + 1 < qpts.Count; i += 2)
+                    {
+                        points.AddRange(GetQuadBezierPoints(currentPoint, qpts[i], qpts[i + 1]));
+                        currentPoint = qpts[i + 1];
+                    }
+                    break;
+                case ArcSegment arc:
+                    points.AddRange(GetArcPoints(currentPoint, arc));
+                    currentPoint = arc.Point;
+                    break;
+            }
+        }
+
+        if (figure.IsClosed && points.Count > 1)
+        {
+            var first = points[0];
+            var last = points[^1];
+            if (Math.Abs(first.X - last.X) > 1e-10 || Math.Abs(first.Y - last.Y) > 1e-10)
+                points.Add(first);
+        }
+
+        if (points.Count < 2) return;
+
+        // Compute cumulative distances
+        var dashes = pen.DashStyle!.Dashes;
+        var dashOffset = pen.DashStyle.Offset * pen.Thickness;
+        if (dashes.Count == 0) return;
+
+        // Build the dash pattern in absolute units
+        var pattern = new double[dashes.Count];
+        double patternLength = 0;
+        for (int i = 0; i < dashes.Count; i++)
+        {
+            pattern[i] = dashes[i] * pen.Thickness;
+            patternLength += pattern[i];
+        }
+        if (patternLength <= 0) return;
+
+        // Walk along the polyline, emitting dashed sub-segments
+        if (pen.Brush == null) return;
+        var strokeBrush = GetNativeBrush(pen.Brush);
+        if (strokeBrush == null) return;
+
+        int dashIndex = 0;
+        bool drawing = true; // true = dash (visible), false = gap
+        double remaining = pattern[0];
+
+        // Apply dash offset
+        double offset = dashOffset % patternLength;
+        if (offset < 0) offset += patternLength;
+        while (offset > 0)
+        {
+            if (offset >= remaining)
+            {
+                offset -= remaining;
+                dashIndex = (dashIndex + 1) % pattern.Length;
+                drawing = !drawing;
+                remaining = pattern[dashIndex];
             }
             else
             {
-                DrawPathFigurePolygon(brush, pen, figure, pathGeom.FillRule);
+                remaining -= offset;
+                offset = 0;
             }
         }
+
+        var dashStart = points[0];
+        int ptIndex = 0;
+
+        while (ptIndex < points.Count - 1)
+        {
+            var segStart = points[ptIndex];
+            var segEnd = points[ptIndex + 1];
+            var segDx = segEnd.X - segStart.X;
+            var segDy = segEnd.Y - segStart.Y;
+            var segLen = Math.Sqrt(segDx * segDx + segDy * segDy);
+
+            if (segLen < 1e-10)
+            {
+                ptIndex++;
+                continue;
+            }
+
+            double consumed = 0;
+            while (consumed < segLen - 1e-10)
+            {
+                var available = segLen - consumed;
+                if (remaining <= available)
+                {
+                    // Finish this dash/gap segment
+                    var t = (consumed + remaining) / segLen;
+                    var endPt = new Point(
+                        segStart.X + segDx * t,
+                        segStart.Y + segDy * t);
+
+                    if (drawing)
+                    {
+                        // Emit stroke from dashStart to endPt
+                        EmitStrokeLine(dashStart, endPt, strokeBrush, (float)pen.Thickness);
+                    }
+
+                    consumed += remaining;
+                    dashStart = endPt;
+                    dashIndex = (dashIndex + 1) % pattern.Length;
+                    drawing = !drawing;
+                    remaining = pattern[dashIndex];
+                }
+                else
+                {
+                    // This segment ends before the current dash/gap completes
+                    remaining -= available;
+                    if (drawing)
+                    {
+                        // dashStart to segEnd is part of a visible dash; don't emit yet
+                    }
+                    consumed = segLen;
+                }
+            }
+
+            ptIndex++;
+            if (ptIndex < points.Count && !drawing)
+            {
+                // In a gap, update dashStart to next point
+            }
+            else if (ptIndex < points.Count && drawing)
+            {
+                // Continuing a dash into the next segment, dashStart stays
+            }
+        }
+
+        // Emit final dash segment if we're still drawing
+        if (drawing && ptIndex > 0)
+        {
+            var lastPt = points[^1];
+            if (Math.Abs(dashStart.X - lastPt.X) > 1e-10 || Math.Abs(dashStart.Y - lastPt.Y) > 1e-10)
+            {
+                EmitStrokeLine(dashStart, lastPt, strokeBrush, (float)pen.Thickness);
+            }
+        }
+    }
+
+    private void EmitStrokeLine(Point from, Point to, NativeBrush brush, float strokeWidth)
+    {
+        var ox = Offset.X;
+        var oy = Offset.Y;
+        _renderTarget.DrawLine(
+            (float)(from.X + ox), (float)(from.Y + oy),
+            (float)(to.X + ox), (float)(to.Y + oy),
+            brush, strokeWidth);
     }
 
     /// <summary>
@@ -451,10 +773,15 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// <summary>
     /// Renders a path figure using the native FillPath/StrokePath API with real bezier curves.
     /// </summary>
+    // Reusable command buffer for path rendering to reduce GC pressure.
+    private List<float>? _pathCommandBuffer;
+
     private void DrawPathFigureNative(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule)
     {
         // Build command buffer: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey]
-        var cmds = new List<float>();
+        _pathCommandBuffer ??= new List<float>(128);
+        _pathCommandBuffer.Clear();
+        var cmds = _pathCommandBuffer;
         var ox = Offset.X;
         var oy = Offset.Y;
         var currentPoint = figure.StartPoint;
@@ -563,9 +890,15 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// <summary>
     /// Renders a path figure as a polygon (all segments flattened to line points).
     /// </summary>
+    // Reusable point buffer for polygon flattening to reduce GC pressure.
+    private List<Point>? _polygonPointBuffer;
+
     private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule)
     {
-        var points = new List<Point> { figure.StartPoint };
+        _polygonPointBuffer ??= new List<Point>(64);
+        _polygonPointBuffer.Clear();
+        var points = _polygonPointBuffer;
+        points.Add(figure.StartPoint);
         var currentPoint = figure.StartPoint;
         bool hasCurvedSegments = false;
 
@@ -642,20 +975,30 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         bool isAxisAligned = !hasCurvedSegments && IsAxisAlignedPath(points);
 
         var pointArray = new float[points.Count * 2];
-        for (int i = 0; i < points.Count; i++)
+        if (isAxisAligned && points.Count > 0)
         {
-            var px = points[i].X + Offset.X;
-            var py = points[i].Y + Offset.Y;
+            // Snap the first point to the nearest integer, then apply the
+            // same fractional offset to all subsequent points.  This preserves
+            // relative distances (lengths) between points while still aligning
+            // the path to the pixel grid for crisp rendering.
+            var baseX = points[0].X + Offset.X;
+            var baseY = points[0].Y + Offset.Y;
+            var snapDx = Math.Round(baseX) - baseX;
+            var snapDy = Math.Round(baseY) - baseY;
 
-            if (isAxisAligned)
+            for (int i = 0; i < points.Count; i++)
             {
-                // Round to nearest integer; native will add 0.5 → half-pixel → crisp.
-                px = Math.Round(px);
-                py = Math.Round(py);
+                pointArray[i * 2] = (float)(points[i].X + Offset.X + snapDx);
+                pointArray[i * 2 + 1] = (float)(points[i].Y + Offset.Y + snapDy);
             }
-
-            pointArray[i * 2] = (float)px;
-            pointArray[i * 2 + 1] = (float)py;
+        }
+        else
+        {
+            for (int i = 0; i < points.Count; i++)
+            {
+                pointArray[i * 2] = (float)(points[i].X + Offset.X);
+                pointArray[i * 2 + 1] = (float)(points[i].Y + Offset.Y);
+            }
         }
 
         if (brush != null && figure.IsFilled && points.Count >= 3)
@@ -694,34 +1037,68 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         return true;
     }
 
+    private const double FlatteningTolerance = 0.25;
+
     private List<Point> GetBezierPoints(Point p0, Point p1, Point p2, Point p3)
     {
-        const int segments = 16;
         var points = new List<Point>();
-        for (int i = 1; i <= segments; i++)
-        {
-            double t = i / (double)segments;
-            double u = 1 - t;
-            double x = u * u * u * p0.X + 3 * u * u * t * p1.X + 3 * u * t * t * p2.X + t * t * t * p3.X;
-            double y = u * u * u * p0.Y + 3 * u * u * t * p1.Y + 3 * u * t * t * p2.Y + t * t * t * p3.Y;
-            points.Add(new Point(x, y));
-        }
+        FlattenCubicBezier(points, p0.X, p0.Y, p1.X, p1.Y, p2.X, p2.Y, p3.X, p3.Y, 0);
         return points;
+    }
+
+    private static void FlattenCubicBezier(List<Point> points,
+        double x0, double y0, double x1, double y1,
+        double x2, double y2, double x3, double y3, int depth)
+    {
+        if (depth > 10)
+        {
+            points.Add(new Point(x3, y3));
+            return;
+        }
+
+        // Flatness test: distance of control points from the chord
+        double dx = x3 - x0, dy = y3 - y0;
+        double len2 = dx * dx + dy * dy;
+        double d1, d2;
+        if (len2 < 1e-10)
+        {
+            d1 = Math.Sqrt((x1 - x0) * (x1 - x0) + (y1 - y0) * (y1 - y0));
+            d2 = Math.Sqrt((x2 - x0) * (x2 - x0) + (y2 - y0) * (y2 - y0));
+        }
+        else
+        {
+            double invLen = 1.0 / Math.Sqrt(len2);
+            double nx = -dy * invLen, ny = dx * invLen;
+            d1 = Math.Abs(nx * (x1 - x0) + ny * (y1 - y0));
+            d2 = Math.Abs(nx * (x2 - x0) + ny * (y2 - y0));
+        }
+
+        if (d1 + d2 <= FlatteningTolerance)
+        {
+            points.Add(new Point(x3, y3));
+            return;
+        }
+
+        // De Casteljau subdivision at t=0.5
+        double m01x = (x0 + x1) * 0.5, m01y = (y0 + y1) * 0.5;
+        double m12x = (x1 + x2) * 0.5, m12y = (y1 + y2) * 0.5;
+        double m23x = (x2 + x3) * 0.5, m23y = (y2 + y3) * 0.5;
+        double m012x = (m01x + m12x) * 0.5, m012y = (m01y + m12y) * 0.5;
+        double m123x = (m12x + m23x) * 0.5, m123y = (m12y + m23y) * 0.5;
+        double mx = (m012x + m123x) * 0.5, my = (m012y + m123y) * 0.5;
+
+        FlattenCubicBezier(points, x0, y0, m01x, m01y, m012x, m012y, mx, my, depth + 1);
+        FlattenCubicBezier(points, mx, my, m123x, m123y, m23x, m23y, x3, y3, depth + 1);
     }
 
     private List<Point> GetQuadBezierPoints(Point p0, Point p1, Point p2)
     {
-        const int segments = 12;
-        var points = new List<Point>();
-        for (int i = 1; i <= segments; i++)
-        {
-            double t = i / (double)segments;
-            double u = 1 - t;
-            double x = u * u * p0.X + 2 * u * t * p1.X + t * t * p2.X;
-            double y = u * u * p0.Y + 2 * u * t * p1.Y + t * t * p2.Y;
-            points.Add(new Point(x, y));
-        }
-        return points;
+        // Promote to cubic: cp1 = p0 + 2/3*(p1-p0), cp2 = p2 + 2/3*(p1-p2)
+        var cp1x = p0.X + 2.0 / 3.0 * (p1.X - p0.X);
+        var cp1y = p0.Y + 2.0 / 3.0 * (p1.Y - p0.Y);
+        var cp2x = p2.X + 2.0 / 3.0 * (p1.X - p2.X);
+        var cp2y = p2.Y + 2.0 / 3.0 * (p1.Y - p2.Y);
+        return GetBezierPoints(p0, new Point(cp1x, cp1y), new Point(cp2x, cp2y), p2);
     }
 
     private List<Point> GetArcPoints(Point start, ArcSegment arc)
@@ -790,8 +1167,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         else if (arc.SweepDirection == SweepDirection.Counterclockwise && deltaAngle > 0)
             deltaAngle -= 2 * Math.PI;
 
-        // Generate arc points
-        const int segments = 8;
+        // Adaptive segment count based on arc size and sweep angle
+        var circumference = Math.Abs(deltaAngle) * Math.Max(rx, ry);
+        var segments = Math.Clamp((int)(circumference / FlatteningTolerance), 4, 256);
         for (int i = 1; i <= segments; i++)
         {
             var t = i / (double)segments;
@@ -1246,13 +1624,20 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// Applies the given element effect to the captured content and draws the result.
     /// Dispatches to the appropriate native rendering method based on concrete effect type.
     /// </summary>
-    public void ApplyElementEffect(IEffect effect, float x, float y, float w, float h)
+    public void ApplyElementEffect(IEffect effect, float x, float y, float w, float h,
+        float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
     {
         if (_closed || effect == null) return;
 
         if (effect is Media.Effects.BlurEffect blur)
         {
-            _renderTarget.DrawBlurEffect(x, y, w, h, (float)blur.Radius);
+            if (blur.Radius > 0.5)
+                _renderTarget.DrawBlurEffect(x, y, w, h, (float)blur.Radius);
+        }
+        else if (effect is Media.Effects.ElementBlurEffect elementBlur)
+        {
+            if (elementBlur.Radius > 0.5)
+                _renderTarget.DrawBlurEffect(x, y, w, h, (float)elementBlur.Radius);
         }
         else if (effect is Media.Effects.DropShadowEffect shadow)
         {
@@ -1262,7 +1647,55 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 (float)shadow.OffsetX,
                 (float)shadow.OffsetY,
                 color.R / 255f, color.G / 255f, color.B / 255f,
-                (float)shadow.Opacity);
+                (float)shadow.Opacity,
+                cornerTL, cornerTR, cornerBR, cornerBL);
+        }
+        else if (effect is Media.Effects.OuterGlowEffect glow)
+        {
+            var color = glow.GlowColor;
+            _renderTarget.DrawOuterGlowEffect(x, y, w, h,
+                (float)glow.EffectiveBlurRadius,
+                color.R / 255f, color.G / 255f, color.B / 255f,
+                (float)glow.Opacity, (float)glow.Intensity,
+                cornerTL, cornerTR, cornerBR, cornerBL);
+        }
+        else if (effect is Media.Effects.InnerShadowEffect innerShadow)
+        {
+            var color = innerShadow.Color;
+            _renderTarget.DrawInnerShadowEffect(x, y, w, h,
+                (float)innerShadow.BlurRadius,
+                (float)innerShadow.OffsetX,
+                (float)innerShadow.OffsetY,
+                color.R / 255f, color.G / 255f, color.B / 255f,
+                (float)innerShadow.Opacity,
+                cornerTL, cornerTR, cornerBR, cornerBL);
+        }
+        else if (effect is Media.Effects.EmbossEffect emboss)
+        {
+            _renderTarget.DrawEmbossEffect(x, y, w, h,
+                (float)emboss.Amount,
+                (float)emboss.LightDirectionX,
+                (float)emboss.LightDirectionY,
+                (float)emboss.Relief);
+        }
+        else if (effect is Media.Effects.ColorMatrixEffect colorMatrix)
+        {
+            var m = colorMatrix.Matrix;
+            Span<float> matrixData = stackalloc float[20];
+            matrixData[0] = m.M11; matrixData[1] = m.M12; matrixData[2] = m.M13; matrixData[3] = m.M14; matrixData[4] = m.M15;
+            matrixData[5] = m.M21; matrixData[6] = m.M22; matrixData[7] = m.M23; matrixData[8] = m.M24; matrixData[9] = m.M25;
+            matrixData[10] = m.M31; matrixData[11] = m.M32; matrixData[12] = m.M33; matrixData[13] = m.M34; matrixData[14] = m.M35;
+            matrixData[15] = m.M41; matrixData[16] = m.M42; matrixData[17] = m.M43; matrixData[18] = m.M44; matrixData[19] = m.M45;
+            _renderTarget.DrawColorMatrixEffect(x, y, w, h, matrixData);
+        }
+        else if (effect is Media.Effects.EffectGroup group)
+        {
+            // Apply the first active child effect
+            var activeEffects = group.ActiveEffects;
+            if (activeEffects.Count > 0)
+            {
+                ApplyElementEffect(activeEffects[0], x, y, w, h);
+            }
         }
     }
 
@@ -1374,7 +1807,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 _brushCache.Remove(brush);
             }
 
-            var nb = _context.CreateSolidBrush(color.ScR, color.ScG, color.ScB, color.ScA);
+            // Pass sRGB values to native: D2D expects sRGB, and the direct D3D12
+            // path converts to linear internally (SRGB RTV handles gamma).
+            var nb = _context.CreateSolidBrush(color.R / 255f, color.G / 255f, color.B / 255f, color.A / 255f);
             nb.CachedColor = color;
             nb.LastAccessSequence = ++_brushCacheSequence;
             _brushCache[brush] = nb;
@@ -1383,11 +1818,25 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (brush is LinearGradientBrush linear)
         {
+            // Cache gradient brushes when bounding box is (0,0,0,0) — i.e. Absolute mapping
+            // or when called without bounds. For RelativeToBoundingBox, bounds change per call.
+            if (linear.MappingMode != BrushMappingMode.RelativeToBoundingBox &&
+                _brushCache.TryGetValue(brush, out var cachedLinear))
+            {
+                cachedLinear.LastAccessSequence = ++_brushCacheSequence;
+                return cachedLinear;
+            }
             return CreateNativeLinearGradient(linear, bx, by, bw, bh);
         }
 
         if (brush is RadialGradientBrush radial)
         {
+            if (radial.MappingMode != BrushMappingMode.RelativeToBoundingBox &&
+                _brushCache.TryGetValue(brush, out var cachedRadial))
+            {
+                cachedRadial.LastAccessSequence = ++_brushCacheSequence;
+                return cachedRadial;
+            }
             return CreateNativeRadialGradient(radial, bx, by, bw, bh);
         }
 
@@ -1402,10 +1851,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             var s = stops[i];
             int off = i * 5;
             arr[off] = (float)s.Offset;
-            arr[off + 1] = s.Color.ScR;
-            arr[off + 2] = s.Color.ScG;
-            arr[off + 3] = s.Color.ScB;
-            arr[off + 4] = s.Color.ScA;
+            // Pass sRGB values: D2D D2D1_GAMMA_2_2 expects sRGB, and the
+            // software backend's InterpolateGradientStops handles sRGB↔linear.
+            arr[off + 1] = s.Color.R / 255f;
+            arr[off + 2] = s.Color.G / 255f;
+            arr[off + 3] = s.Color.B / 255f;
+            arr[off + 4] = s.Color.A / 255f;
         }
         return arr;
     }
@@ -1490,13 +1941,14 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (_textFormatCache.TryGetValue(key, out var cached) && cached.IsValid)
         {
-            cached.LastAccessSequence = ++_brushCacheSequence;
+            cached.LastAccessSequence = ++_textFormatCacheSequence;
             return cached;
         }
 
         var format = _context.CreateTextFormat(fontFamily, (float)fontSize, fontWeight, fontStyle);
         if (format != null)
         {
+            format.LastAccessSequence = ++_textFormatCacheSequence;
             _textFormatCache[key] = format;
         }
 
@@ -1539,9 +1991,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                     nativeBitmap = _context.CreateBitmap(bitmapImage.ImageData);
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Failed to create bitmap, return null
+                System.Diagnostics.Debug.WriteLine($"[RenderTargetDrawingContext] Failed to create bitmap: {ex.Message}");
             }
         }
 

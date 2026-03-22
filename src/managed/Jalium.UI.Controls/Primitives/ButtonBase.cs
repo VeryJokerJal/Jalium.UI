@@ -300,7 +300,7 @@ public abstract class ButtonBase : ContentControl
     /// <summary>
     /// Sets the IsPressed property value.
     /// </summary>
-    internal void SetIsPressed(bool value)
+    internal new void SetIsPressed(bool value)
     {
         base.SetIsPressed(value);
     }

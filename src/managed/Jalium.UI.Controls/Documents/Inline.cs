@@ -254,7 +254,7 @@ public sealed class Hyperlink : Span
     /// <summary>
     /// Raises the Click event.
     /// </summary>
-    protected internal void OnClick()
+    private void OnClick()
     {
         Click?.Invoke(this, EventArgs.Empty);
     }

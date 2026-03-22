@@ -106,7 +106,7 @@ public sealed class EventTrigger : TriggerBase<FrameworkElement>
     /// Called when the event occurs.
     /// </summary>
     /// <param name="eventArgs">The event arguments.</param>
-    protected void OnEvent(object? eventArgs)
+    private void OnEvent(object? eventArgs)
     {
         InvokeActions(eventArgs);
     }

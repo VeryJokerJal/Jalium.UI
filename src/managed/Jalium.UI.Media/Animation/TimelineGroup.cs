@@ -60,7 +60,7 @@ public abstract class TimelineGroup : Timeline
     /// <summary>
     /// Creates a ClockGroup for this TimelineGroup.
     /// </summary>
-    public new ClockGroup CreateClock()
+    public ClockGroup CreateClock()
     {
         var group = new ClockGroup(this);
 

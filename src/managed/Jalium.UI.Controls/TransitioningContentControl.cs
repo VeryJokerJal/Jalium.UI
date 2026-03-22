@@ -24,7 +24,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     /// Identifies the Transition dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static readonly DependencyProperty TransitionProperty =
+    public new static readonly DependencyProperty TransitionProperty =
         DependencyProperty.Register(nameof(Transition), typeof(ContentTransition), typeof(TransitioningContentControl),
             new PropertyMetadata(null));
 
@@ -33,7 +33,7 @@ public class TransitioningContentControl : ContentControl, TransitionHost
     /// Provides a shortcut to set common transitions without creating a ContentTransition instance.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
-    public static readonly DependencyProperty TransitionModeProperty =
+    public new static readonly DependencyProperty TransitionModeProperty =
         DependencyProperty.Register(nameof(TransitionMode), typeof(TransitionMode?), typeof(TransitioningContentControl),
             new PropertyMetadata(null));
 

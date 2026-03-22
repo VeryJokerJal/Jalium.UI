@@ -603,7 +603,7 @@ public sealed class BamlLocalizationDictionaryEnumerator : IDictionaryEnumerator
     /// <summary>
     /// Gets the value.
     /// </summary>
-    public BamlLocalizableResource Value => (BamlLocalizableResource)Entry.Value;
+    public BamlLocalizableResource Value => (BamlLocalizableResource)Entry.Value!;
 
     /// <summary>
     /// Gets the current entry.

@@ -217,7 +217,7 @@ public sealed class Stroke : INotifyPropertyChanged
     /// (single draw call) or cached DrawingGroup for particle brushes (replay).
     /// </summary>
     /// <param name="dc">The drawing context.</param>
-    protected void DrawCore(DrawingContext dc)
+    private void DrawCore(DrawingContext dc)
     {
         if (_stylusPoints.Count == 0)
             return;
@@ -242,20 +242,20 @@ public sealed class Stroke : INotifyPropertyChanged
         {
             if (dc is Jalium.UI.Interop.RenderTargetDrawingContext rtdc)
             {
-                // Direct native batch: single P/Invoke for all particles
+                // Direct native batch: single P/Invoke for all particles.
+                // Reuse a single SolidColorBrush to avoid per-particle allocation.
                 rtdc.BeginEllipseBatch(_cachedEllipseBatchCount);
-                // Push all cached data into the batch buffer
+                var reusableBrush = new SolidColorBrush();
                 for (int i = 0; i < _cachedEllipseBatchCount; i++)
                 {
                     var off = i * 5;
-                    // Reconstruct color from packed float
                     var packedBits = BitConverter.SingleToInt32Bits(_cachedEllipseBatchData[off + 4]);
-                    var r = (byte)(packedBits & 0xFF);
-                    var g = (byte)((packedBits >> 8) & 0xFF);
-                    var b = (byte)((packedBits >> 16) & 0xFF);
-                    var a = (byte)((packedBits >> 24) & 0xFF);
-                    var brush = new SolidColorBrush(Color.FromArgb(a, r, g, b));
-                    dc.DrawEllipse(brush, null,
+                    reusableBrush.Color = Color.FromArgb(
+                        (byte)((packedBits >> 24) & 0xFF),
+                        (byte)(packedBits & 0xFF),
+                        (byte)((packedBits >> 8) & 0xFF),
+                        (byte)((packedBits >> 16) & 0xFF));
+                    dc.DrawEllipse(reusableBrush, null,
                         new Point(_cachedEllipseBatchData[off], _cachedEllipseBatchData[off + 1]),
                         _cachedEllipseBatchData[off + 2], _cachedEllipseBatchData[off + 3]);
                 }
@@ -348,9 +348,18 @@ public sealed class Stroke : INotifyPropertyChanged
         using (var ctx = geometry.Open())
         {
             ctx.BeginFigure(_stylusPoints[0].ToPoint(), false, false);
-            for (int i = 1; i < _stylusPoints.Count; i++)
+
+            if (_drawingAttributes.FitToCurve && _stylusPoints.Count > 2)
             {
-                ctx.LineTo(_stylusPoints[i].ToPoint(), true, true);
+                // Catmull-Rom → cubic Bézier curve fitting for smooth strokes
+                EmitCatmullRomBeziers(ctx, i => _stylusPoints[i].ToPoint(), _stylusPoints.Count);
+            }
+            else
+            {
+                for (int i = 1; i < _stylusPoints.Count; i++)
+                {
+                    ctx.LineTo(_stylusPoints[i].ToPoint(), true, true);
+                }
             }
         }
 
@@ -368,13 +377,16 @@ public sealed class Stroke : INotifyPropertyChanged
         var radiusY = _drawingAttributes.Height / 2;
         var totalPoints = _stylusPoints.Count;
 
-        if (totalPoints == 1)
+        if (totalPoints <= 1)
         {
-            var point = _stylusPoints[0].ToPoint();
-            var animatedRadius = ApplyAnimationScale(radiusX, radiusY, 0.0);
-            var ellipse = new EllipseGeometry { Center = point, RadiusX = animatedRadius.X, RadiusY = animatedRadius.Y };
-            _cachedGeometry = ellipse;
-            _cachedBrush = new SolidColorBrush(color);
+            if (totalPoints == 1)
+            {
+                var point = _stylusPoints[0].ToPoint();
+                var animatedRadius = ApplyAnimationScale(radiusX, radiusY, 0.0);
+                var ellipse = new EllipseGeometry { Center = point, RadiusX = animatedRadius.X, RadiusY = animatedRadius.Y };
+                _cachedGeometry = ellipse;
+                _cachedBrush = new SolidColorBrush(color);
+            }
             return;
         }
 
@@ -438,19 +450,32 @@ public sealed class Stroke : INotifyPropertyChanged
         {
             ctx.BeginFigure(leftSide[0], true, true);
 
-            // Left side forward
-            for (int i = 1; i < totalPoints; i++)
-                ctx.LineTo(leftSide[i], true, true);
+            if (_drawingAttributes.FitToCurve && totalPoints > 2)
+            {
+                // Smooth left side forward with Catmull-Rom → Bézier
+                EmitCatmullRomBeziers(ctx, i => leftSide[i], totalPoints);
+            }
+            else
+            {
+                for (int i = 1; i < totalPoints; i++)
+                    ctx.LineTo(leftSide[i], true, true);
+            }
 
             // Round cap at end (semicircle from left to right)
-            var endPoint = _stylusPoints[totalPoints - 1].ToPoint();
             var endR = radii[totalPoints - 1];
             ctx.ArcTo(rightSide[totalPoints - 1],
                 new Size(endR, endR), 0, false, SweepDirection.Clockwise, true, true);
 
-            // Right side backward
-            for (int i = totalPoints - 2; i >= 0; i--)
-                ctx.LineTo(rightSide[i], true, true);
+            if (_drawingAttributes.FitToCurve && totalPoints > 2)
+            {
+                // Smooth right side backward with Catmull-Rom → Bézier
+                EmitCatmullRomBeziers(ctx, i => rightSide[totalPoints - 1 - i], totalPoints);
+            }
+            else
+            {
+                for (int i = totalPoints - 2; i >= 0; i--)
+                    ctx.LineTo(rightSide[i], true, true);
+            }
 
             // Round cap at start (semicircle from right to left)
             var startR = radii[0];
@@ -482,8 +507,16 @@ public sealed class Stroke : INotifyPropertyChanged
         using (var ctx = geometry.Open())
         {
             ctx.BeginFigure(_stylusPoints[0].ToPoint(), false, false);
-            for (int i = 1; i < _stylusPoints.Count; i++)
-                ctx.LineTo(_stylusPoints[i].ToPoint(), true, true);
+
+            if (_drawingAttributes.FitToCurve && _stylusPoints.Count > 2)
+            {
+                EmitCatmullRomBeziers(ctx, i => _stylusPoints[i].ToPoint(), _stylusPoints.Count);
+            }
+            else
+            {
+                for (int i = 1; i < _stylusPoints.Count; i++)
+                    ctx.LineTo(_stylusPoints[i].ToPoint(), true, true);
+            }
         }
 
         _cachedGeometry = geometry;
@@ -599,6 +632,102 @@ public sealed class Stroke : INotifyPropertyChanged
         public override void Close() => _inner.Close();
     }
 
+    /// <summary>
+    /// Emits Catmull-Rom spline segments as cubic Bézier curves into a StreamGeometryContext.
+    /// The first point (index 0) must already be set via BeginFigure.
+    /// </summary>
+    /// <param name="ctx">The geometry context to emit into.</param>
+    /// <param name="getPoint">Function returning the point at the given index.</param>
+    /// <param name="count">Total number of points.</param>
+    private static void EmitCatmullRomBeziers(StreamGeometryContext ctx, Func<int, Point> getPoint, int count)
+    {
+        // For each segment between points[i] and points[i+1], compute cubic Bézier
+        // control points from the Catmull-Rom tangents.
+        // Catmull-Rom tangent at point i: T_i = (P_{i+1} - P_{i-1}) / 2
+        // Bézier CP1 = P_i + T_i / 3
+        // Bézier CP2 = P_{i+1} - T_{i+1} / 3
+        for (int i = 0; i < count - 1; i++)
+        {
+            var p0 = getPoint(Math.Max(i - 1, 0));
+            var p1 = getPoint(i);
+            var p2 = getPoint(i + 1);
+            var p3 = getPoint(Math.Min(i + 2, count - 1));
+
+            // Tangents
+            var t1x = (p2.X - p0.X) / 2.0;
+            var t1y = (p2.Y - p0.Y) / 2.0;
+            var t2x = (p3.X - p1.X) / 2.0;
+            var t2y = (p3.Y - p1.Y) / 2.0;
+
+            // Bézier control points
+            var cp1 = new Point(p1.X + t1x / 3.0, p1.Y + t1y / 3.0);
+            var cp2 = new Point(p2.X - t2x / 3.0, p2.Y - t2y / 3.0);
+
+            ctx.BezierTo(cp1, cp2, p2, true, true);
+        }
+    }
+
+    /// <summary>
+    /// Catmull-Rom scalar interpolation: 0.5 * ((2*p1) + (-p0+p2)*t + (2*p0-5*p1+4*p2-p3)*t² + (-p0+3*p1-3*p2+p3)*t³)
+    /// </summary>
+    private static double CatmullRom(double t, double p0, double p1, double p2, double p3)
+    {
+        var t2 = t * t;
+        var t3 = t2 * t;
+        return 0.5 * (2.0 * p1
+            + (-p0 + p2) * t
+            + (2.0 * p0 - 5.0 * p1 + 4.0 * p2 - p3) * t2
+            + (-p0 + 3.0 * p1 - 3.0 * p2 + p3) * t3);
+    }
+
+    /// <summary>
+    /// Iterates smoothed points along the stroke path using Catmull-Rom interpolation.
+    /// Yields (x, y, pressure, segmentIndex, segmentT) for each interpolated sample.
+    /// Used by particle brushes to place particles along smooth curves instead of straight lines.
+    /// </summary>
+    private IEnumerable<(double X, double Y, double Pressure, int SegmentIndex, double SegmentT)>
+        EnumerateSmoothedPath(double stepSize)
+    {
+        if (_stylusPoints.Count < 2)
+            yield break;
+
+        var useCurve = _drawingAttributes.FitToCurve && _stylusPoints.Count > 2;
+        var count = _stylusPoints.Count;
+
+        for (int i = 0; i < count - 1; i++)
+        {
+            var p1 = _stylusPoints[i];
+            var p2 = _stylusPoints[i + 1];
+
+            var dx = p2.X - p1.X;
+            var dy = p2.Y - p1.Y;
+            var segLen = Math.Sqrt(dx * dx + dy * dy);
+            var steps = Math.Max(1, (int)(segLen / stepSize));
+
+            for (int j = 0; j <= steps; j++)
+            {
+                var t = (double)j / steps;
+                double x, y;
+
+                if (useCurve)
+                {
+                    var ip0 = Math.Max(i - 1, 0);
+                    var ip3 = Math.Min(i + 2, count - 1);
+                    x = CatmullRom(t, _stylusPoints[ip0].X, p1.X, p2.X, _stylusPoints[ip3].X);
+                    y = CatmullRom(t, _stylusPoints[ip0].Y, p1.Y, p2.Y, _stylusPoints[ip3].Y);
+                }
+                else
+                {
+                    x = p1.X + dx * t;
+                    y = p1.Y + dy * t;
+                }
+
+                var pressure = p1.PressureFactor + (p2.PressureFactor - p1.PressureFactor) * t;
+                yield return (x, y, pressure, i, t);
+            }
+        }
+    }
+
     private bool HasPressureVariation()
     {
         if (_stylusPoints.Count <= 1)
@@ -617,16 +746,14 @@ public sealed class Stroke : INotifyPropertyChanged
     /// </summary>
     private void DrawRoundBrush(DrawingContext dc)
     {
-        // Create brush
         var baseColor = _drawingAttributes.Color;
         var brush = new SolidColorBrush(_drawingAttributes.Color);
         if (_drawingAttributes.IsHighlighter)
-            brush = new SolidColorBrush(Color.FromArgb(128, _drawingAttributes.Color.R, _drawingAttributes.Color.G, _drawingAttributes.Color.B));
+            brush = new SolidColorBrush(Color.FromArgb(128, baseColor.R, baseColor.G, baseColor.B));
 
         var radiusX = _drawingAttributes.Width / 2;
         var radiusY = _drawingAttributes.Height / 2;
 
-        // For single point, just draw one ellipse
         if (_stylusPoints.Count == 1)
         {
             var point = _stylusPoints[0].ToPoint();
@@ -636,53 +763,22 @@ public sealed class Stroke : INotifyPropertyChanged
         }
 
         var totalPoints = _stylusPoints.Count;
+        var stepSize = Math.Max(0.5, Math.Min(radiusX, radiusY) * 0.25);
 
-        // Draw ellipses along the stroke path with interpolation for smooth appearance
-        for (int i = 0; i < _stylusPoints.Count - 1; i++)
+        foreach (var (x, y, pressure, segIdx, segT) in EnumerateSmoothedPath(stepSize))
         {
-            var p1 = _stylusPoints[i].ToPoint();
-            var p2 = _stylusPoints[i + 1].ToPoint();
+            var pointProgress = (segIdx + segT) / (totalPoints - 1);
 
-            // Calculate distance between points
-            var dx = p2.X - p1.X;
-            var dy = p2.Y - p1.Y;
-            var segmentLength = Math.Sqrt(dx * dx + dy * dy);
-
-            // Determine step size based on radius (smaller steps = smoother but slower)
-            // Use 0.25 multiplier to ensure ellipses overlap and create smooth continuous stroke
-            var stepSize = Math.Max(0.5, Math.Min(radiusX, radiusY) * 0.25);
-            var steps = Math.Max(1, (int)(segmentLength / stepSize));
-
-            // Draw interpolated ellipses along the segment
-            for (int j = 0; j <= steps; j++)
+            var currentRadiusX = radiusX;
+            var currentRadiusY = radiusY;
+            if (!_drawingAttributes.IgnorePressure)
             {
-                var t = (double)j / steps;
-                var x = p1.X + dx * t;
-                var y = p1.Y + dy * t;
-
-                // Calculate progress based on point index (0 = oldest/start, 1 = newest/tip)
-                // This creates real-time animation effect during drawing
-                var pointProgress = (i + t) / (totalPoints - 1);
-
-                // Get pressure factor if available (for variable width)
-                var pressure1 = _stylusPoints[i].PressureFactor;
-                var pressure2 = _stylusPoints[i + 1].PressureFactor;
-                var pressure = pressure1 + (pressure2 - pressure1) * t;
-
-                // Apply pressure to radius if not ignoring pressure
-                var currentRadiusX = radiusX;
-                var currentRadiusY = radiusY;
-                if (!_drawingAttributes.IgnorePressure)
-                {
-                    currentRadiusX *= pressure;
-                    currentRadiusY *= pressure;
-                }
-
-                // Apply animation scaling based on point progress
-                var animatedRadius = ApplyAnimationScale(currentRadiusX, currentRadiusY, pointProgress);
-
-                dc.DrawEllipse(brush, null, new Point(x, y), animatedRadius.X, animatedRadius.Y);
+                currentRadiusX *= pressure;
+                currentRadiusY *= pressure;
             }
+
+            var animatedRadius = ApplyAnimationScale(currentRadiusX, currentRadiusY, pointProgress);
+            dc.DrawEllipse(brush, null, new Point(x, y), animatedRadius.X, animatedRadius.Y);
         }
     }
 
@@ -800,43 +896,24 @@ public sealed class Stroke : INotifyPropertyChanged
     {
         var baseColor = _drawingAttributes.Color;
         var radiusX = _drawingAttributes.Width / 2;
-        var radiusY = _drawingAttributes.Height / 2;
-
         var random = new Random(_stylusPoints.GetHashCode());
+        var stepSize = Math.Max(2.0, radiusX * 0.5);
 
-        for (int i = 0; i < _stylusPoints.Count - 1; i++)
+        foreach (var (cx, cy, _, _, _) in EnumerateSmoothedPath(stepSize))
         {
-            var p1 = _stylusPoints[i].ToPoint();
-            var p2 = _stylusPoints[i + 1].ToPoint();
-
-            var dx = p2.X - p1.X;
-            var dy = p2.Y - p1.Y;
-            var segmentLength = Math.Sqrt(dx * dx + dy * dy);
-
-            var stepSize = Math.Max(2.0, radiusX * 0.5);
-            var steps = Math.Max(1, (int)(segmentLength / stepSize));
-
-            for (int j = 0; j <= steps; j++)
+            int particleCount = 15;
+            for (int k = 0; k < particleCount; k++)
             {
-                var t = (double)j / steps;
-                var centerX = p1.X + dx * t;
-                var centerY = p1.Y + dy * t;
+                var angle = random.NextDouble() * Math.PI * 2;
+                var distance = random.NextDouble() * radiusX * 1.5;
+                var x = cx + Math.Cos(angle) * distance;
+                var y = cy + Math.Sin(angle) * distance;
 
-                // Draw multiple particles for spray effect
-                int particleCount = 15;
-                for (int k = 0; k < particleCount; k++)
-                {
-                    var angle = random.NextDouble() * Math.PI * 2;
-                    var distance = random.NextDouble() * radiusX * 1.5;
-                    var x = centerX + Math.Cos(angle) * distance;
-                    var y = centerY + Math.Sin(angle) * distance;
+                var alpha = (byte)(20 + random.Next(40));
+                var particleBrush = new SolidColorBrush(Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B));
+                var particleSize = random.NextDouble() * 1.5 + 0.5;
 
-                    var alpha = (byte)(20 + random.Next(40)); // Varied transparency
-                    var particleBrush = new SolidColorBrush(Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B));
-                    var particleSize = random.NextDouble() * 1.5 + 0.5;
-
-                    dc.DrawEllipse(particleBrush, null, new Point(x, y), particleSize, particleSize);
-                }
+                dc.DrawEllipse(particleBrush, null, new Point(x, y), particleSize, particleSize);
             }
         }
     }
@@ -849,37 +926,19 @@ public sealed class Stroke : INotifyPropertyChanged
         var baseColor = _drawingAttributes.Color;
         var radiusX = _drawingAttributes.Width / 2;
         var radiusY = _drawingAttributes.Height / 2;
-
         var random = new Random(_stylusPoints.GetHashCode());
+        var stepSize = Math.Max(0.5, radiusX * 0.2);
 
-        for (int i = 0; i < _stylusPoints.Count - 1; i++)
+        foreach (var (x, y, _, _, _) in EnumerateSmoothedPath(stepSize))
         {
-            var p1 = _stylusPoints[i].ToPoint();
-            var p2 = _stylusPoints[i + 1].ToPoint();
+            var offsetX = (random.NextDouble() - 0.5) * radiusX * 0.5;
+            var offsetY = (random.NextDouble() - 0.5) * radiusY * 0.5;
+            var alpha = (byte)(180 + random.Next(75));
 
-            var dx = p2.X - p1.X;
-            var dy = p2.Y - p1.Y;
-            var segmentLength = Math.Sqrt(dx * dx + dy * dy);
+            var brush = new SolidColorBrush(Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B));
+            var size = radiusX * (0.8 + random.NextDouble() * 0.4);
 
-            var stepSize = Math.Max(0.5, radiusX * 0.2);
-            var steps = Math.Max(1, (int)(segmentLength / stepSize));
-
-            for (int j = 0; j <= steps; j++)
-            {
-                var t = (double)j / steps;
-                var x = p1.X + dx * t;
-                var y = p1.Y + dy * t;
-
-                // Add randomness for crayon texture
-                var offsetX = (random.NextDouble() - 0.5) * radiusX * 0.5;
-                var offsetY = (random.NextDouble() - 0.5) * radiusY * 0.5;
-                var alpha = (byte)(180 + random.Next(75)); // Varied opacity
-
-                var brush = new SolidColorBrush(Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B));
-                var size = radiusX * (0.8 + random.NextDouble() * 0.4);
-
-                dc.DrawEllipse(brush, null, new Point(x + offsetX, y + offsetY), size, size);
-            }
+            dc.DrawEllipse(brush, null, new Point(x + offsetX, y + offsetY), size, size);
         }
     }
 
@@ -903,30 +962,13 @@ public sealed class Stroke : INotifyPropertyChanged
         }
 
         var totalPoints = _stylusPoints.Count;
+        var stepSize = Math.Max(0.5, Math.Min(radiusX, radiusY) * 0.3);
 
-        for (int i = 0; i < _stylusPoints.Count - 1; i++)
+        foreach (var (x, y, _, segIdx, segT) in EnumerateSmoothedPath(stepSize))
         {
-            var p1 = _stylusPoints[i].ToPoint();
-            var p2 = _stylusPoints[i + 1].ToPoint();
-
-            var dx = p2.X - p1.X;
-            var dy = p2.Y - p1.Y;
-            var segmentLength = Math.Sqrt(dx * dx + dy * dy);
-
-            var stepSize = Math.Max(0.5, Math.Min(radiusX, radiusY) * 0.3);
-            var steps = Math.Max(1, (int)(segmentLength / stepSize));
-
-            for (int j = 0; j <= steps; j++)
-            {
-                var t = (double)j / steps;
-                var x = p1.X + dx * t;
-                var y = p1.Y + dy * t;
-
-                var pointProgress = (i + t) / (totalPoints - 1);
-                var animatedRadius = ApplyAnimationScale(radiusX, radiusY, pointProgress);
-
-                dc.DrawEllipse(brush, null, new Point(x, y), animatedRadius.X, animatedRadius.Y);
-            }
+            var pointProgress = (segIdx + segT) / (totalPoints - 1);
+            var animatedRadius = ApplyAnimationScale(radiusX, radiusY, pointProgress);
+            dc.DrawEllipse(brush, null, new Point(x, y), animatedRadius.X, animatedRadius.Y);
         }
     }
 
@@ -938,37 +980,19 @@ public sealed class Stroke : INotifyPropertyChanged
         var baseColor = _drawingAttributes.Color;
         var radiusX = _drawingAttributes.Width / 2;
         var radiusY = _drawingAttributes.Height / 2;
-
         var random = new Random(_stylusPoints.GetHashCode());
+        var stepSize = Math.Max(0.3, radiusX * 0.15);
 
-        for (int i = 0; i < _stylusPoints.Count - 1; i++)
+        foreach (var (x, y, _, _, _) in EnumerateSmoothedPath(stepSize))
         {
-            var p1 = _stylusPoints[i].ToPoint();
-            var p2 = _stylusPoints[i + 1].ToPoint();
+            var offsetX = (random.NextDouble() - 0.5) * radiusX * 0.3;
+            var offsetY = (random.NextDouble() - 0.5) * radiusY * 0.3;
+            var alpha = (byte)(200 + random.Next(55));
 
-            var dx = p2.X - p1.X;
-            var dy = p2.Y - p1.Y;
-            var segmentLength = Math.Sqrt(dx * dx + dy * dy);
+            var brush = new SolidColorBrush(Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B));
+            var size = radiusX * 0.5 * (0.9 + random.NextDouble() * 0.2);
 
-            var stepSize = Math.Max(0.3, radiusX * 0.15);
-            var steps = Math.Max(1, (int)(segmentLength / stepSize));
-
-            for (int j = 0; j <= steps; j++)
-            {
-                var t = (double)j / steps;
-                var x = p1.X + dx * t;
-                var y = p1.Y + dy * t;
-
-                // Add slight randomness for pencil grain
-                var offsetX = (random.NextDouble() - 0.5) * radiusX * 0.3;
-                var offsetY = (random.NextDouble() - 0.5) * radiusY * 0.3;
-                var alpha = (byte)(200 + random.Next(55)); // Varied opacity for grain
-
-                var brush = new SolidColorBrush(Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B));
-                var size = radiusX * 0.5 * (0.9 + random.NextDouble() * 0.2);
-
-                dc.DrawEllipse(brush, null, new Point(x + offsetX, y + offsetY), size, size);
-            }
+            dc.DrawEllipse(brush, null, new Point(x + offsetX, y + offsetY), size, size);
         }
     }
 
@@ -980,46 +1004,27 @@ public sealed class Stroke : INotifyPropertyChanged
         var baseColor = _drawingAttributes.Color;
         var radiusX = _drawingAttributes.Width / 2;
         var radiusY = _drawingAttributes.Height / 2;
-
         var random = new Random(_stylusPoints.GetHashCode());
+        var stepSize = Math.Max(0.5, radiusX * 0.2);
 
-        for (int i = 0; i < _stylusPoints.Count - 1; i++)
+        foreach (var (x, y, _, _, _) in EnumerateSmoothedPath(stepSize))
         {
-            var p1 = _stylusPoints[i].ToPoint();
-            var p2 = _stylusPoints[i + 1].ToPoint();
-
-            var dx = p2.X - p1.X;
-            var dy = p2.Y - p1.Y;
-            var segmentLength = Math.Sqrt(dx * dx + dy * dy);
-
-            var stepSize = Math.Max(0.5, radiusX * 0.2);
-            var steps = Math.Max(1, (int)(segmentLength / stepSize));
-
-            for (int j = 0; j <= steps; j++)
+            int layers = 5;
+            for (int layer = 0; layer < layers; layer++)
             {
-                var t = (double)j / steps;
-                var x = p1.X + dx * t;
-                var y = p1.Y + dy * t;
+                var offsetX = (random.NextDouble() - 0.5) * radiusX * 0.6;
+                var offsetY = (random.NextDouble() - 0.5) * radiusY * 0.6;
 
-                // Draw multiple overlapping strokes for thick paint texture
-                int layers = 5;
-                for (int layer = 0; layer < layers; layer++)
-                {
-                    var offsetX = (random.NextDouble() - 0.5) * radiusX * 0.6;
-                    var offsetY = (random.NextDouble() - 0.5) * radiusY * 0.6;
+                var colorVariation = (int)((random.NextDouble() - 0.5) * 20);
+                var r = (byte)Math.Clamp(baseColor.R + colorVariation, 0, 255);
+                var g = (byte)Math.Clamp(baseColor.G + colorVariation, 0, 255);
+                var b = (byte)Math.Clamp(baseColor.B + colorVariation, 0, 255);
 
-                    // Vary color slightly for oil paint mixing effect
-                    var colorVariation = (int)((random.NextDouble() - 0.5) * 20);
-                    var r = (byte)Math.Clamp(baseColor.R + colorVariation, 0, 255);
-                    var g = (byte)Math.Clamp(baseColor.G + colorVariation, 0, 255);
-                    var b = (byte)Math.Clamp(baseColor.B + colorVariation, 0, 255);
+                var alpha = (byte)(150 + random.Next(50));
+                var brush = new SolidColorBrush(Color.FromArgb(alpha, r, g, b));
 
-                    var alpha = (byte)(150 + random.Next(50)); // Thick, semi-opaque
-                    var brush = new SolidColorBrush(Color.FromArgb(alpha, r, g, b));
-
-                    var size = radiusX * 0.9 * (0.8 + random.NextDouble() * 0.4);
-                    dc.DrawEllipse(brush, null, new Point(x + offsetX, y + offsetY), size, size * 0.8);
-                }
+                var size = radiusX * 0.9 * (0.8 + random.NextDouble() * 0.4);
+                dc.DrawEllipse(brush, null, new Point(x + offsetX, y + offsetY), size, size * 0.8);
             }
         }
     }
@@ -1031,46 +1036,26 @@ public sealed class Stroke : INotifyPropertyChanged
     {
         var baseColor = _drawingAttributes.Color;
         var radiusX = _drawingAttributes.Width / 2;
-        var radiusY = _drawingAttributes.Height / 2;
-
         var random = new Random(_stylusPoints.GetHashCode());
+        var stepSize = Math.Max(1.0, radiusX * 0.4);
 
-        for (int i = 0; i < _stylusPoints.Count - 1; i++)
+        foreach (var (x, y, _, _, _) in EnumerateSmoothedPath(stepSize))
         {
-            var p1 = _stylusPoints[i].ToPoint();
-            var p2 = _stylusPoints[i + 1].ToPoint();
-
-            var dx = p2.X - p1.X;
-            var dy = p2.Y - p1.Y;
-            var segmentLength = Math.Sqrt(dx * dx + dy * dy);
-
-            var stepSize = Math.Max(1.0, radiusX * 0.4);
-            var steps = Math.Max(1, (int)(segmentLength / stepSize));
-
-            for (int j = 0; j <= steps; j++)
+            int layers = 8;
+            for (int layer = 0; layer < layers; layer++)
             {
-                var t = (double)j / steps;
-                var x = p1.X + dx * t;
-                var y = p1.Y + dy * t;
+                var layerRadius = radiusX * (1.0 + layer * 0.15);
+                var angle = random.NextDouble() * Math.PI * 2;
+                var distance = random.NextDouble() * radiusX * 0.4;
 
-                // Draw multiple layers with decreasing opacity for watercolor effect
-                int layers = 8;
-                for (int layer = 0; layer < layers; layer++)
-                {
-                    var layerRadius = radiusX * (1.0 + layer * 0.15); // Expand outward
-                    var angle = random.NextDouble() * Math.PI * 2;
-                    var distance = random.NextDouble() * radiusX * 0.4;
+                var offsetX = Math.Cos(angle) * distance;
+                var offsetY = Math.Sin(angle) * distance;
 
-                    var offsetX = Math.Cos(angle) * distance;
-                    var offsetY = Math.Sin(angle) * distance;
+                var alpha = (byte)(15 + (layers - layer) * 8);
+                var brush = new SolidColorBrush(Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B));
 
-                    // Fade out as we go outward (watercolor diffusion)
-                    var alpha = (byte)(15 + (layers - layer) * 8);
-                    var brush = new SolidColorBrush(Color.FromArgb(alpha, baseColor.R, baseColor.G, baseColor.B));
-
-                    var size = layerRadius * (0.7 + random.NextDouble() * 0.3);
-                    dc.DrawEllipse(brush, null, new Point(x + offsetX, y + offsetY), size, size);
-                }
+                var size = layerRadius * (0.7 + random.NextDouble() * 0.3);
+                dc.DrawEllipse(brush, null, new Point(x + offsetX, y + offsetY), size, size);
             }
         }
     }
@@ -1096,20 +1081,24 @@ public sealed class Stroke : INotifyPropertyChanged
         if (_stylusPoints.Count < 2)
             return new PathGeometry();
 
-        var geometry = new PathGeometry();
-        var figure = new PathFigure
+        var geometry = new StreamGeometry();
+        using (var ctx = geometry.Open())
         {
-            StartPoint = _stylusPoints[0].ToPoint(),
-            IsClosed = false,
-            IsFilled = false
-        };
+            ctx.BeginFigure(_stylusPoints[0].ToPoint(), false, false);
 
-        for (int i = 1; i < _stylusPoints.Count; i++)
-        {
-            figure.Segments.Add(new LineSegment(_stylusPoints[i].ToPoint()));
+            if (attributes.FitToCurve && _stylusPoints.Count > 2)
+            {
+                EmitCatmullRomBeziers(ctx, i => _stylusPoints[i].ToPoint(), _stylusPoints.Count);
+            }
+            else
+            {
+                for (int i = 1; i < _stylusPoints.Count; i++)
+                {
+                    ctx.LineTo(_stylusPoints[i].ToPoint(), true, true);
+                }
+            }
         }
 
-        geometry.Figures.Add(figure);
         return geometry;
     }
 
@@ -1157,7 +1146,7 @@ public sealed class Stroke : INotifyPropertyChanged
     /// <summary>
     /// Raises the <see cref="PropertyChanged"/> event.
     /// </summary>
-    protected void OnPropertyChanged(string propertyName)
+    private void OnPropertyChanged(string propertyName)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
@@ -1165,7 +1154,7 @@ public sealed class Stroke : INotifyPropertyChanged
     /// <summary>
     /// Raises the <see cref="Invalidated"/> event.
     /// </summary>
-    protected void OnInvalidated()
+    private void OnInvalidated()
     {
         _renderCacheDirty = true;
         _cachedGeometry = null;

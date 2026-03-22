@@ -202,7 +202,7 @@ public class InfoBar : ContentControl
     private const double IconSize = 20;
     private const double IconMargin = 12;
     private const double CloseButtonSize = 32;
-    private const double MinHeight = 48;
+    private new const double MinHeight = 48;
     private Rect _closeButtonRect;
 
     #endregion
@@ -390,10 +390,19 @@ public class InfoBar : ContentControl
         }
     }
 
+    private Pen? _iconPen;
+    private Color _iconPenColor;
+    private Pen? _closePen;
+    private Color _closePenColor;
+
     private void DrawIcon(DrawingContext dc, double x, double y, Color color)
     {
-        var iconBrush = new SolidColorBrush(color);
-        var iconPen = new Pen(iconBrush, 2);
+        if (_iconPen == null || _iconPenColor != color)
+        {
+            _iconPenColor = color;
+            _iconPen = new Pen(new SolidColorBrush(color), 2);
+        }
+        var iconPen = _iconPen;
         var centerX = x + IconSize / 2;
         var centerY = y + IconSize / 2;
         var radius = IconSize / 2 - 2;
@@ -432,8 +441,13 @@ public class InfoBar : ContentControl
 
     private void DrawCloseButton(DrawingContext dc, double x, double y, Color color)
     {
-        var closeBrush = new SolidColorBrush(Color.FromArgb(128, color.R, color.G, color.B));
-        var closePen = new Pen(closeBrush, 1.5);
+        var closeColor = Color.FromArgb(128, color.R, color.G, color.B);
+        if (_closePen == null || _closePenColor != closeColor)
+        {
+            _closePenColor = closeColor;
+            _closePen = new Pen(new SolidColorBrush(closeColor), 1.5);
+        }
+        var closePen = _closePen;
 
         var centerX = x + CloseButtonSize / 2;
         var centerY = y + CloseButtonSize / 2;

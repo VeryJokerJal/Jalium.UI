@@ -190,7 +190,7 @@ public sealed class DrawingAttributes : INotifyPropertyChanged
     /// <summary>
     /// Raises the <see cref="PropertyChanged"/> event.
     /// </summary>
-    protected void OnPropertyChanged(string propertyName)
+    private void OnPropertyChanged(string propertyName)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
         AttributeChanged?.Invoke(this, EventArgs.Empty);

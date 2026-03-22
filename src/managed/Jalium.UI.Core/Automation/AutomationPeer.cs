@@ -576,7 +576,7 @@ public sealed class UIElementAutomationPeer : AutomationPeer
     /// <summary>
     /// Gets the existing peer for the specified element, or creates a new one.
     /// </summary>
-    public static AutomationPeer? FromElement(UIElement element)
+    public new static AutomationPeer? FromElement(UIElement element)
     {
         return CreatePeerForElement(element);
     }

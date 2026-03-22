@@ -256,7 +256,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// Gets or sets the text in the text box.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public new string Text
+    public string Text
     {
         get => _text;
         set

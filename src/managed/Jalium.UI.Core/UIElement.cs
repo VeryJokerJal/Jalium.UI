@@ -820,7 +820,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// When ClipToBounds is true, returns a Rect matching the element's RenderSize.
     /// </summary>
     /// <returns>The clipping geometry (Media.Geometry or Rect), or null if no clipping should be applied.</returns>
-    protected internal virtual object? GetLayoutClip()
+    internal virtual object? GetLayoutClip()
     {
         // Explicit Clip geometry takes precedence
         var clip = Clip;

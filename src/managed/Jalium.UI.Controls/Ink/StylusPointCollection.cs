@@ -264,7 +264,7 @@ public sealed class StylusPointCollection : IList<StylusPoint>, IList, INotifyCo
     /// <summary>
     /// Raises the <see cref="CollectionChanged"/> event.
     /// </summary>
-    protected void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
+    private void OnCollectionChanged(NotifyCollectionChangedEventArgs e)
     {
         CollectionChanged?.Invoke(this, e);
         Changed?.Invoke(this, EventArgs.Empty);

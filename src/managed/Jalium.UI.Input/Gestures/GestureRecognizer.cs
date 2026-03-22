@@ -112,6 +112,7 @@ public sealed class GestureRecognizer
 
     #region Events
 
+#pragma warning disable CS0067
     /// <summary>
     /// Occurs when a tap gesture is recognized.
     /// </summary>
@@ -136,6 +137,7 @@ public sealed class GestureRecognizer
     /// Occurs when dragging starts.
     /// </summary>
     public event EventHandler<DraggingEventArgs>? Dragging;
+#pragma warning restore CS0067
 
     /// <summary>
     /// Occurs when manipulation starts.
@@ -152,10 +154,12 @@ public sealed class GestureRecognizer
     /// </summary>
     public event EventHandler<ManipulationCompletedEventArgs>? ManipulationCompleted;
 
+#pragma warning disable CS0067
     /// <summary>
     /// Occurs during inertia.
     /// </summary>
     public event EventHandler<ManipulationInertiaStartingEventArgs>? ManipulationInertiaStarting;
+#pragma warning restore CS0067
 
     #endregion
 

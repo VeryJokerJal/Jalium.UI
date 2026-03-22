@@ -60,7 +60,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("StandardLigatures", typeof(bool), typeof(Typography),
             new PropertyMetadata(true));
 
-    public static bool GetStandardLigatures(DependencyObject element) => (bool)element.GetValue(StandardLigaturesProperty);
+    public static bool GetStandardLigatures(DependencyObject element) => (bool)element.GetValue(StandardLigaturesProperty)!;
     public static void SetStandardLigatures(DependencyObject element, bool value) => element.SetValue(StandardLigaturesProperty, value);
 
     // Contextual Ligatures
@@ -68,7 +68,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("ContextualLigatures", typeof(bool), typeof(Typography),
             new PropertyMetadata(true));
 
-    public static bool GetContextualLigatures(DependencyObject element) => (bool)element.GetValue(ContextualLigaturesProperty);
+    public static bool GetContextualLigatures(DependencyObject element) => (bool)element.GetValue(ContextualLigaturesProperty)!;
     public static void SetContextualLigatures(DependencyObject element, bool value) => element.SetValue(ContextualLigaturesProperty, value);
 
     // Discretionary Ligatures
@@ -76,7 +76,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("DiscretionaryLigatures", typeof(bool), typeof(Typography),
             new PropertyMetadata(false));
 
-    public static bool GetDiscretionaryLigatures(DependencyObject element) => (bool)element.GetValue(DiscretionaryLigaturesProperty);
+    public static bool GetDiscretionaryLigatures(DependencyObject element) => (bool)element.GetValue(DiscretionaryLigaturesProperty)!;
     public static void SetDiscretionaryLigatures(DependencyObject element, bool value) => element.SetValue(DiscretionaryLigaturesProperty, value);
 
     // Historical Ligatures
@@ -84,7 +84,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("HistoricalLigatures", typeof(bool), typeof(Typography),
             new PropertyMetadata(false));
 
-    public static bool GetHistoricalLigatures(DependencyObject element) => (bool)element.GetValue(HistoricalLigaturesProperty);
+    public static bool GetHistoricalLigatures(DependencyObject element) => (bool)element.GetValue(HistoricalLigaturesProperty)!;
     public static void SetHistoricalLigatures(DependencyObject element, bool value) => element.SetValue(HistoricalLigaturesProperty, value);
 
     // Kerning
@@ -92,7 +92,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("Kerning", typeof(bool), typeof(Typography),
             new PropertyMetadata(true));
 
-    public static bool GetKerning(DependencyObject element) => (bool)element.GetValue(KerningProperty);
+    public static bool GetKerning(DependencyObject element) => (bool)element.GetValue(KerningProperty)!;
     public static void SetKerning(DependencyObject element, bool value) => element.SetValue(KerningProperty, value);
 
     // Capital Spacing
@@ -100,7 +100,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("CapitalSpacing", typeof(bool), typeof(Typography),
             new PropertyMetadata(false));
 
-    public static bool GetCapitalSpacing(DependencyObject element) => (bool)element.GetValue(CapitalSpacingProperty);
+    public static bool GetCapitalSpacing(DependencyObject element) => (bool)element.GetValue(CapitalSpacingProperty)!;
     public static void SetCapitalSpacing(DependencyObject element, bool value) => element.SetValue(CapitalSpacingProperty, value);
 
     // Numeral Style
@@ -108,7 +108,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("NumeralStyle", typeof(FontNumeralStyle), typeof(Typography),
             new PropertyMetadata(FontNumeralStyle.Normal));
 
-    public static FontNumeralStyle GetNumeralStyle(DependencyObject element) => (FontNumeralStyle)element.GetValue(NumeralStyleProperty);
+    public static FontNumeralStyle GetNumeralStyle(DependencyObject element) => (FontNumeralStyle)element.GetValue(NumeralStyleProperty)!;
     public static void SetNumeralStyle(DependencyObject element, FontNumeralStyle value) => element.SetValue(NumeralStyleProperty, value);
 
     // Numeral Alignment
@@ -116,7 +116,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("NumeralAlignment", typeof(FontNumeralAlignment), typeof(Typography),
             new PropertyMetadata(FontNumeralAlignment.Normal));
 
-    public static FontNumeralAlignment GetNumeralAlignment(DependencyObject element) => (FontNumeralAlignment)element.GetValue(NumeralAlignmentProperty);
+    public static FontNumeralAlignment GetNumeralAlignment(DependencyObject element) => (FontNumeralAlignment)element.GetValue(NumeralAlignmentProperty)!;
     public static void SetNumeralAlignment(DependencyObject element, FontNumeralAlignment value) => element.SetValue(NumeralAlignmentProperty, value);
 
     // Variants
@@ -124,7 +124,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("Variants", typeof(FontVariants), typeof(Typography),
             new PropertyMetadata(FontVariants.Normal));
 
-    public static FontVariants GetVariants(DependencyObject element) => (FontVariants)element.GetValue(VariantsProperty);
+    public static FontVariants GetVariants(DependencyObject element) => (FontVariants)element.GetValue(VariantsProperty)!;
     public static void SetVariants(DependencyObject element, FontVariants value) => element.SetValue(VariantsProperty, value);
 
     // Capitals
@@ -132,7 +132,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("Capitals", typeof(FontCapitals), typeof(Typography),
             new PropertyMetadata(FontCapitals.Normal));
 
-    public static FontCapitals GetCapitals(DependencyObject element) => (FontCapitals)element.GetValue(CapitalsProperty);
+    public static FontCapitals GetCapitals(DependencyObject element) => (FontCapitals)element.GetValue(CapitalsProperty)!;
     public static void SetCapitals(DependencyObject element, FontCapitals value) => element.SetValue(CapitalsProperty, value);
 
     // Slashed Zero
@@ -140,7 +140,7 @@ public static class Typography
         DependencyProperty.RegisterAttached("SlashedZero", typeof(bool), typeof(Typography),
             new PropertyMetadata(false));
 
-    public static bool GetSlashedZero(DependencyObject element) => (bool)element.GetValue(SlashedZeroProperty);
+    public static bool GetSlashedZero(DependencyObject element) => (bool)element.GetValue(SlashedZeroProperty)!;
     public static void SetSlashedZero(DependencyObject element, bool value) => element.SetValue(SlashedZeroProperty, value);
 }
 

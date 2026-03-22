@@ -58,7 +58,7 @@ public class Rectangle : Shape
     {
         if (Stretch == Stretch.None)
         {
-            return new Size(0, 0);
+            return Size.Empty;
         }
 
         // Return available size, constrained by Width/Height if set
@@ -69,6 +69,12 @@ public class Rectangle : Shape
         if (double.IsPositiveInfinity(height)) height = 0;
 
         return new Size(width, height);
+    }
+
+    /// <inheritdoc />
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        return finalSize;
     }
 
     #endregion
@@ -104,8 +110,14 @@ public class Rectangle : Shape
             {
                 StartLineCap = StrokeStartLineCap,
                 EndLineCap = StrokeEndLineCap,
-                LineJoin = StrokeLineJoin
+                LineJoin = StrokeLineJoin,
+                MiterLimit = StrokeMiterLimit
             };
+            var dashArray = StrokeDashArray;
+            if (dashArray is { Count: > 0 })
+            {
+                pen.DashStyle = new DashStyle(dashArray, StrokeDashOffset);
+            }
         }
 
         if (RadiusX > 0 || RadiusY > 0)
@@ -122,7 +134,7 @@ public class Rectangle : Shape
 
     #region Property Changed
 
-    private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is Rectangle rect)
         {

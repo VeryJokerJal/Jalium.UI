@@ -34,6 +34,10 @@ public static class XamlReader
     {
         ArgumentNullException.ThrowIfNull(xaml);
 
+        // Expand @{ } code blocks for dynamically provided JALXAML (not build-processed)
+        if (RazorScriptingFeature.IsSupported)
+            xaml = RazorCodeBlockPreprocessor.Process(xaml);
+
         using var reader = new StringReader(xaml);
         return Load(reader);
     }
@@ -907,7 +911,7 @@ public static class XamlReader
                     else
                     {
                         // Add to collection
-                        AddToCollection(propertyValue, childValue);
+                        AddToCollection(propertyValue, childValue!);
                     }
                 }
                 else

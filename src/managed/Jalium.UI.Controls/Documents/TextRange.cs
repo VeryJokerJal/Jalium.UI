@@ -550,7 +550,7 @@ public sealed class TextRange
     /// <summary>
     /// Raises the Changed event.
     /// </summary>
-    protected void OnChanged()
+    private void OnChanged()
     {
         Changed?.Invoke(this, EventArgs.Empty);
     }

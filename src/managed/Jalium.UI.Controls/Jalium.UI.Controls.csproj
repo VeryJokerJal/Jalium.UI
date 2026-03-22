@@ -22,7 +22,11 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260318" />
+    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
     <PackageReference Include="QRCoder" Version="*" />
+    <PackageReference Include="SoundFlow" Version="1.4.0" />
+    <PackageReference Include="SoundFlow.Codecs.FFMpeg" Version="1.4.0" />
     <PackageReference Include="System.Drawing.Common" Version="*" />
   </ItemGroup>
 

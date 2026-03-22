@@ -163,7 +163,7 @@ public sealed class PrintDialog
     /// <summary>
     /// Shows the dialog internally.
     /// </summary>
-    protected bool ShowDialogInternal(Window? owner = null)
+    private bool ShowDialogInternal(Window? owner = null)
     {
         // Platform-specific implementation
         // Would use Windows PrintDlg or Common Print Dialog
@@ -173,7 +173,7 @@ public sealed class PrintDialog
     /// <summary>
     /// Prints a visual internally.
     /// </summary>
-    protected void PrintVisualInternal(Visual visual, string description)
+    private void PrintVisualInternal(Visual visual, string description)
     {
         // Platform-specific implementation
     }
@@ -181,7 +181,7 @@ public sealed class PrintDialog
     /// <summary>
     /// Prints a document internally.
     /// </summary>
-    protected void PrintDocumentInternal(DocumentPaginator documentPaginator, string description)
+    private void PrintDocumentInternal(DocumentPaginator documentPaginator, string description)
     {
         // Platform-specific implementation
     }
@@ -1153,7 +1153,7 @@ public sealed class PrintServer : IDisposable
     /// <summary>
     /// Disposes resources.
     /// </summary>
-    protected void Dispose(bool disposing)
+    private void Dispose(bool disposing)
     {
         if (!_disposed)
         {
@@ -1283,7 +1283,7 @@ public sealed class XpsDocumentWriter
     /// <summary>
     /// Raises the WritingCompleted event.
     /// </summary>
-    protected void OnWritingCompleted(Exception? error, bool cancelled)
+    private void OnWritingCompleted(Exception? error, bool cancelled)
     {
         WritingCompleted?.Invoke(this, new WritingCompletedEventArgs(error, cancelled));
     }
@@ -1291,7 +1291,7 @@ public sealed class XpsDocumentWriter
     /// <summary>
     /// Raises the WritingProgressChanged event.
     /// </summary>
-    protected void OnWritingProgressChanged(int currentPage, int totalPages)
+    private void OnWritingProgressChanged(int currentPage, int totalPages)
     {
         WritingProgressChanged?.Invoke(this, new WritingProgressChangedEventArgs(currentPage, totalPages));
     }

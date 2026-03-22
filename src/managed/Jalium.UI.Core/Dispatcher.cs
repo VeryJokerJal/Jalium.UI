@@ -335,6 +335,7 @@ public sealed partial class Dispatcher : IDisposable
         NotifyDispatcherThread();
     }
 
+#pragma warning disable CS0067
     /// <summary>
     /// Occurs when the dispatcher begins to shut down.
     /// </summary>
@@ -344,6 +345,7 @@ public sealed partial class Dispatcher : IDisposable
     /// Occurs when the dispatcher finishes shutting down.
     /// </summary>
     public event EventHandler? ShutdownFinished;
+#pragma warning restore CS0067
 
     #region Message Window
 

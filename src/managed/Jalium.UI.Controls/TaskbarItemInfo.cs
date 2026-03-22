@@ -225,7 +225,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the progress state on the taskbar.
     /// </summary>
-    protected void UpdateProgressStateInternal(TaskbarItemProgressState state)
+    private void UpdateProgressStateInternal(TaskbarItemProgressState state)
     {
         // Platform-specific implementation using ITaskbarList3
     }
@@ -233,7 +233,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the progress value on the taskbar.
     /// </summary>
-    protected void UpdateProgressValueInternal(double value)
+    private void UpdateProgressValueInternal(double value)
     {
         // Platform-specific implementation
     }
@@ -241,7 +241,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the overlay icon on the taskbar.
     /// </summary>
-    protected void UpdateOverlayInternal(ImageSource? icon)
+    private void UpdateOverlayInternal(ImageSource? icon)
     {
         // Platform-specific implementation
     }
@@ -249,7 +249,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the description tooltip on the taskbar.
     /// </summary>
-    protected void UpdateDescriptionInternal(string description)
+    private void UpdateDescriptionInternal(string description)
     {
         // Platform-specific implementation
     }
@@ -257,7 +257,7 @@ public sealed class TaskbarItemInfo : DependencyObject
     /// <summary>
     /// Updates the thumbnail clip margin.
     /// </summary>
-    protected void UpdateThumbnailClipMarginInternal(Thickness margin)
+    private void UpdateThumbnailClipMarginInternal(Thickness margin)
     {
         // Platform-specific implementation
     }
@@ -391,7 +391,7 @@ public sealed class ThumbButtonInfo : DependencyObject
     /// Gets or sets the visibility of the button.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public new Visibility Visibility
+    public Visibility Visibility
     {
         get => (Visibility)GetValue(VisibilityProperty)!;
         set => SetValue(VisibilityProperty, value);

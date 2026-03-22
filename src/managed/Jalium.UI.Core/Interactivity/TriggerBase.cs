@@ -47,7 +47,7 @@ public abstract class TriggerBase : DependencyObject, IAttachedObject
             throw new InvalidOperationException($"Object is not of type {AssociatedObjectTypeConstraint.Name}.");
 
         _associatedObject = dependencyObject;
-        _actions.Attach(dependencyObject);
+        _actions.Attach(dependencyObject!);
         OnAttached();
     }
 

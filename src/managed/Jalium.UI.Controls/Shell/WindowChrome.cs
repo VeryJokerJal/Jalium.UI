@@ -291,7 +291,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Applies the chrome settings to the window.
     /// </summary>
-    protected void ApplyChromeToWindow(Window window)
+    private void ApplyChromeToWindow(Window window)
     {
         // Platform-specific implementation would use DWM APIs
         // to customize the window frame
@@ -301,7 +301,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Removes the chrome settings from the window.
     /// </summary>
-    protected void RemoveChromeFromWindow(Window window)
+    private void RemoveChromeFromWindow(Window window)
     {
         // Platform-specific implementation would restore default window frame
         RestoreWindowStyleInternal(window);
@@ -310,7 +310,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Updates the window style based on chrome settings.
     /// </summary>
-    protected void UpdateWindowStyleInternal(Window window)
+    private void UpdateWindowStyleInternal(Window window)
     {
         // Platform-specific implementation using DwmExtendFrameIntoClientArea
         // and WM_NCCALCSIZE handling
@@ -319,7 +319,7 @@ public sealed class WindowChrome : DependencyObject
     /// <summary>
     /// Restores the original window style.
     /// </summary>
-    protected void RestoreWindowStyleInternal(Window window)
+    private void RestoreWindowStyleInternal(Window window)
     {
         // Platform-specific implementation
     }

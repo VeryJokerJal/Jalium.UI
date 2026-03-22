@@ -100,7 +100,7 @@ public sealed class ColorConverter : TypeConverter
     /// <summary>
     /// Converts a string representation of a color to a Color.
     /// </summary>
-    public static object? ConvertFromString(string colorString)
+    public new static object? ConvertFromString(string colorString)
     {
         if (string.IsNullOrEmpty(colorString))
             return null;
@@ -408,7 +408,7 @@ public sealed class GeometryValueSerializer : ValueSerializer
     public override string ConvertToString(object value, IValueSerializerContext? context)
     {
         if (value is Geometry geometry)
-            return geometry.ToString();
+            return geometry.ToString()!;
 
         throw new NotSupportedException($"Cannot convert {value?.GetType().Name ?? "null"} to string.");
     }

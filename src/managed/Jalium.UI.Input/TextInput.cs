@@ -93,8 +93,10 @@ public sealed class InputLanguageManager
     public System.Globalization.CultureInfo? CurrentInputLanguage { get; set; }
     public IEnumerable<System.Globalization.CultureInfo> AvailableInputLanguages => Array.Empty<System.Globalization.CultureInfo>();
 
+#pragma warning disable CS0067
     public event EventHandler<InputLanguageEventArgs>? InputLanguageChanged;
     public event EventHandler<InputLanguageEventArgs>? InputLanguageChanging;
+#pragma warning restore CS0067
 }
 
 /// <summary>

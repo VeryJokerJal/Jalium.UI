@@ -14,6 +14,8 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 {
+    private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -75,7 +77,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private bool _fullInvalidation = true;  // First frame is always full
     private Rect _previousDirtyRegion = Rect.Empty;  // Previous frame's dirty region (for clearing old positions)
     private long _lastRenderTicks;          // Timestamp of last completed render (for rate-limiting)
-    private Timer? _renderThrottleTimer;    // Deferred render when rate-limited
+    private Timer? _renderThrottleTimer;    // Deferred render when rate-limited or waiting for the GPU
     private long _suppressEscapeUntilTick;
     // Maps dirty element 鈫?pre-layout bounds (captured when AddDirtyElement is called).
     // After UpdateLayout, we also compute post-layout bounds.
@@ -85,7 +87,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private int _appliedDwmTopMarginPhysical = -1;
     private bool _attemptedAutoWindowIcon;
     private const double DefaultTitleBarHeightDip = 32.0;
+    private const int GpuBusyRetryDelayMs = 1;
     private const int RenderRecoveryRetryDelayMs = 120;
+
+    private static bool IsEnvironmentSwitchEnabled(string variableName)
+    {
+        var value = Environment.GetEnvironmentVariable(variableName);
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        return value.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("yes", StringComparison.OrdinalIgnoreCase)
+            || value.Equals("on", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// Gets the layout manager for this window.
@@ -466,7 +483,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Occurs when the window is loaded.
     /// </summary>
-    public event EventHandler? Loaded;
+    public new event EventHandler? Loaded;
 
     /// <summary>
     /// Occurs when the window is closing. Set Cancel to true to prevent closing.
@@ -1786,6 +1803,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         int cornerPreference = DWMWCP_ROUND;
         _ = DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref cornerPreference, sizeof(int));
 
+        // Set DWM caption/border color to dark to prevent white flash during resize.
+        // DWMWA_CAPTION_COLOR = 35, DWMWA_BORDER_COLOR = 34
+        // COLORREF format: 0x00BBGGRR
+        int darkColor = 0x00282828; // #282828 in BGR
+        _ = DwmSetWindowAttribute(Handle, 35, ref darkColor, sizeof(int));
+        _ = DwmSetWindowAttribute(Handle, 34, ref darkColor, sizeof(int));
+
         // Extend frame into client area covering the effective title bar/button hit-test height.
         UpdateCustomTitleBarFrameMargins();
     }
@@ -2011,33 +2035,48 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
+        // Swap chain uses physical pixel dimensions — bail if the window hasn't
+        // been sized yet (0×0 swap chains are rejected by DXGI).
+        int physicalWidth = (int)(Width * _dpiScale);
+        int physicalHeight = (int)(Height * _dpiScale);
+        if (physicalWidth <= 0 || physicalHeight <= 0 || Handle == nint.Zero)
+        {
+            return;
+        }
+
+        var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceNewContext);
+
         try
         {
-            var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceNewContext);
-
-            // Swap chain uses physical pixel dimensions
-            int physicalWidth = (int)(Width * _dpiScale);
-            int physicalHeight = (int)(Height * _dpiScale);
-
-            if (ShouldUseCompositionRenderTarget())
+            bool useComposition = ShouldUseCompositionRenderTarget();
+            if (useComposition)
             {
-                // Composition swap chains are reserved for scenarios that need child composition visuals
-                // (for example WebView composition controller hosting).
                 RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
             }
             else
             {
                 RenderTarget = context.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
             }
-
-            // Set D2D DPI so DIP coordinates map correctly to physical pixels
-            float dpi = (float)(_dpiScale * 96.0);
-            RenderTarget.SetDpi(dpi, dpi);
         }
-        catch
+        catch (Exception) when (context.GpuPreference != GpuPreference.Auto)
         {
-            throw;
+            // The preferred GPU (e.g. integrated) couldn't create a render target
+            // for this window. Fall back to a new context with default GPU selection.
+            context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, GpuPreference.Auto, forceReplace: true);
+
+            if (ShouldUseCompositionRenderTarget())
+            {
+                RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
+            }
+            else
+            {
+                RenderTarget = context.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
+            }
         }
+
+        // Set D2D DPI so DIP coordinates map correctly to physical pixels
+        float dpi = (float)(_dpiScale * 96.0);
+        RenderTarget.SetDpi(dpi, dpi);
     }
 
     /// <summary>
@@ -2609,7 +2648,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             return WndProcCore(hWnd, msg, wParam, lParam);
         }
-        catch (Exception ex)
+        catch (Exception)
         {
             // Never allow managed exceptions to escape the native window procedure.
             // If they do, the OS callback chain can become unstable and future
@@ -3384,31 +3423,48 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         _renderThrottleTimer = null;
         throttleTimer?.Dispose();
 
-        // Rate-limit to display refresh rate when no animation timer is driving frames.
-        // During animations, CompositionTarget already controls frame pacing (re-arm after render).
-        // Without this, rapid input events (scrolling, mouse drag) can saturate the GPU
-        // with back-to-back full renders on integrated graphics.
-        if (!CompositionTarget.IsActive && _lastRenderTicks > 0)
-        {
-            long now = Environment.TickCount64;
-            long elapsed = now - _lastRenderTicks;
-            int minIntervalMs = 1000 / Math.Max(CompositionTarget.RefreshRate, 30);
+        // No rate-limiting — render as fast as possible.
+        RenderFrame();
+    }
 
-            if (elapsed < minIntervalMs)
-            {
-                // Too soon — defer this render. Dirty elements continue accumulating
-                // via AddDirtyElement and will all be rendered in the deferred frame.
-                TrySetRenderFlag(RenderFlag_Scheduled);
-                int delay = Math.Max(1, minIntervalMs - (int)elapsed);
-                _renderThrottleTimer = new Timer(_ =>
-                {
-                    _dispatcher?.BeginInvokeCritical(ProcessRender);
-                }, null, delay, Timeout.Infinite);
-                return;
-            }
+    private void ScheduleDeferredRender(int delayMs)
+    {
+        if (Handle == nint.Zero || _dispatcher == null)
+        {
+            return;
         }
 
-        RenderFrame();
+        if (!TrySetRenderFlag(RenderFlag_Scheduled))
+        {
+            return;
+        }
+
+        var deferredTimer = new Timer(_ =>
+        {
+            _dispatcher?.BeginInvokeCritical(ProcessRender);
+        }, null, Math.Max(1, delayMs), Timeout.Infinite);
+
+        var previousTimer = Interlocked.Exchange(ref _renderThrottleTimer, deferredTimer);
+        previousTimer?.Dispose();
+    }
+
+    private bool TryBeginDrawOrScheduleRetry()
+    {
+        if (RenderTarget?.TryBeginDraw() == true)
+        {
+            return true;
+        }
+
+        if (CompositionTarget.IsActive)
+        {
+            SetRenderFlag(RenderFlag_DirtyBetween);
+        }
+        else
+        {
+            ScheduleDeferredRender(GpuBusyRetryDelayMs);
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -3431,7 +3487,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         if (HasRenderFlag(RenderFlag_Rendering)) return;
         SetRenderFlag(RenderFlag_Rendering);
         ClearRenderFlag(RenderFlag_Requested);
-        _lastRenderTicks = Environment.TickCount64;
 
         try
         {
@@ -3453,41 +3508,57 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             // Check dirty AFTER UpdateLayout so layout-triggered invalidations are included.
             bool fullInvalidation;
             Rect dirtyRegion = Rect.Empty;
+            // D3D12 now uses retained-mode dirty rects by default.
+            // If a specific driver shows stale-buffer artifacts, the old behavior can be
+            // restored with JALIUM_D3D12_FORCE_FULL_REPLAY=1.
+            bool requiresFullReplay = RenderTarget.Backend == RenderBackend.D3D12 && ForceFullReplayForD3D12;
             lock (_dirtyLock)
             {
-                fullInvalidation = _fullInvalidation;
-
-                if (!fullInvalidation && _dirtyElements.Count == 0)
+                // Idle frame skip: if nothing is dirty and no explicit full invalidation,
+                // skip the frame entirely regardless of backend.  requiresFullReplay means
+                // "when we DO render, repaint everything" — it must NOT prevent skipping
+                // frames where there is genuinely nothing to render.
+                if (!_fullInvalidation && _dirtyElements.Count == 0)
                 {
-                    // Nothing dirty after layout — GPU fully idle.
-                    _fullInvalidation = false;
                     return;
                 }
+
+                fullInvalidation = _fullInvalidation || requiresFullReplay;
 
                 if (!fullInvalidation)
                 {
                     dirtyRegion = ComputeDirtyRegion();
                 }
 
-                _dirtyElements.Clear();
-                _fullInvalidation = false;
+                // NOTE: do NOT clear _dirtyElements here.  BeginDraw may fail
+                // (GPU still busy with the previous frame) and we need to preserve
+                // dirty state so the next attempt can render them.
             }
 
             var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
             _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
 
+            // VSync disabled — no frame rate limiting.
+            RenderTarget.SetVSyncEnabled(false);
+
             if (fullInvalidation)
             {
                 // ── Full render path (first frame, resize, theme change) ──
-                // After full render, mark the entire window as "previous dirty" so the
-                // next partial render also repaints everything.  DXGI FLIP_SEQUENTIAL uses
-                // two buffers — the full render only updates the current back buffer.  The
-                // other buffer still holds content from 2 frames ago.  Without this, the
-                // next partial render leaves stale pixels on the alternate buffer, causing
-                // persistent ghost images that can't be refreshed away.
                 _previousDirtyRegion = new Rect(0, 0, ActualWidth, ActualHeight);
                 RenderTarget.SetFullInvalidation();
-                RenderTarget.BeginDraw();
+
+                // TryBeginDraw: non-blocking.  If the GPU hasn't finished the
+                // previous frame for this swap chain buffer, skip this frame
+                // and let the UI thread process input messages instead.
+                // Dirty elements are preserved and will be rendered next time.
+                if (!TryBeginDrawOrScheduleRetry())
+                {
+                    return;
+                }
+
+                // GPU is ready — commit dirty state now.
+                lock (_dirtyLock) { _dirtyElements.Clear(); _fullInvalidation = false; }
+
                 try
                 {
                     ClearBackground();
@@ -3496,12 +3567,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     DevToolsOverlay?.DrawOverlay(_drawingContext);
                     OnRender(RenderTarget);
                     RenderTarget.EndDraw();
+                    _lastRenderTicks = Environment.TickCount64;
                 }
                 catch
                 {
-                    // Ensure the draw session is closed so the next frame can start
-                    // a fresh BeginDraw.  Without this, _isDrawing stays true and
-                    // the stale error frame is permanently displayed.
                     if (RenderTarget.IsDrawing)
                         try { RenderTarget.EndDraw(); } catch { }
                     throw;
@@ -3511,14 +3580,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             {
                 // Dirty elements exist but their visible bounds are outside the window
                 // (e.g., ProgressBar animating off-screen). Nothing to render — GPU idle.
+                lock (_dirtyLock) { _dirtyElements.Clear(); _fullInvalidation = false; }
                 return;
             }
             else
             {
                 // ── Retained mode partial render ──
-                // Union with previous frame's dirty region so moving elements have
-                // their old position cleared. Without this, DXGI copies stale content
-                // from the previous buffer at the old position → ghost images.
                 var rawDirtyRegion = dirtyRegion;
                 if (!_previousDirtyRegion.IsEmpty)
                 {
@@ -3526,12 +3593,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 }
                 _previousDirtyRegion = rawDirtyRegion;
 
-                // Expand by DirtyRectMargin (2px) for the D2D clip region.
-                // Native AddDirtyRect also expands by the same 2px, so passing the
-                // RAW dirty region to native makes the Present1 rect match our clip.
-                // Previously we passed the EXPANDED rect to native → native expanded
-                // AGAIN → Present1 was 2px larger than D2D clip → gap showed stale
-                // buffer content from 2 frames ago (visible on iGPU).
                 const double DirtyRectMargin = 2.0;
                 var clipRegion = new Rect(
                     dirtyRegion.X - DirtyRectMargin,
@@ -3542,20 +3603,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 clipRegion = clipRegion.Intersect(windowBounds);
                 if (clipRegion.IsEmpty)
                 {
+                    lock (_dirtyLock) { _dirtyElements.Clear(); _fullInvalidation = false; }
                     return;
                 }
 
-                // If clip region > 50% of window, native AddDirtyRect upgrades to
-                // full invalidation (DirtyRectsCount=0). Must match in managed —
-                // otherwise D2D clip is partial but Present1 is full → stale pixels.
                 double windowArea = ActualWidth * ActualHeight;
                 if (windowArea > 0 &&
                     clipRegion.Width * clipRegion.Height > windowArea * 0.5)
                 {
-                    // Auto-upgraded to full — same double-buffer sync as above.
                     _previousDirtyRegion = new Rect(0, 0, ActualWidth, ActualHeight);
                     RenderTarget.SetFullInvalidation();
-                    RenderTarget.BeginDraw();
+                    if (!TryBeginDrawOrScheduleRetry()) { return; }
+                    lock (_dirtyLock) { _dirtyElements.Clear(); _fullInvalidation = false; }
                     try
                     {
                         ClearBackground();
@@ -3564,6 +3623,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                         DevToolsOverlay?.DrawOverlay(_drawingContext);
                         OnRender(RenderTarget);
                         RenderTarget.EndDraw();
+                        _lastRenderTicks = Environment.TickCount64;
                     }
                     catch
                     {
@@ -3574,17 +3634,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 }
                 else
                 {
-                    // Pass RAW dirty region to native — native expands by 2px
-                    // to match our clipRegion exactly.
                     RenderTarget.AddDirtyRect(
                         (float)dirtyRegion.X, (float)dirtyRegion.Y,
                         (float)dirtyRegion.Width, (float)dirtyRegion.Height);
 
-                    RenderTarget.BeginDraw();
+                    if (!TryBeginDrawOrScheduleRetry()) { return; }
+                    lock (_dirtyLock) { _dirtyElements.Clear(); _fullInvalidation = false; }
                     try
                     {
-                        // Push ALIASED D2D clip — hard pixel boundary, no semi-transparent
-                        // edge artifacts. Matches the Present1 dirty rect exactly.
                         _drawingContext.Offset = Point.Zero;
                         _drawingContext.PushDirtyRegionClip(clipRegion);
 
@@ -3595,6 +3652,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                         DevToolsOverlay?.DrawOverlay(_drawingContext);
                         OnRender(RenderTarget);
                         RenderTarget.EndDraw();
+                        _lastRenderTicks = Environment.TickCount64;
                     }
                     catch
                     {
@@ -3606,6 +3664,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             }
 
             _drawingContext?.TrimCacheIfNeeded();
+
         }
         catch (RenderPipelineException ex)
         {
@@ -3713,15 +3772,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             if (Background is SolidColorBrush solidFull)
             {
                 var c = solidFull.Color;
-                RenderTarget.Clear(c.ScR, c.ScG, c.ScB, c.ScA);
+                RenderTarget!.Clear(c.R / 255f, c.G / 255f, c.B / 255f, c.A / 255f);
             }
             else if (SystemBackdrop != WindowBackdropType.None)
             {
-                RenderTarget.Clear(0.0f, 0.0f, 0.0f, 0.0f);
+                RenderTarget!.Clear(0.0f, 0.0f, 0.0f, 0.0f);
             }
             else
             {
-                RenderTarget.Clear(1.0f, 1.0f, 1.0f, 1.0f);
+                RenderTarget!.Clear(0.0f, 0.0f, 0.0f, 1.0f);
             }
             return;
         }
@@ -3739,29 +3798,29 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             {
                 var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
                 using var brush = context.CreateSolidBrush(
-                    solidPartial.Color.ScR,
-                    solidPartial.Color.ScG,
-                    solidPartial.Color.ScB,
-                    solidPartial.Color.ScA);
-                RenderTarget.FillRectangle(
+                    solidPartial.Color.R / 255f,
+                    solidPartial.Color.G / 255f,
+                    solidPartial.Color.B / 255f,
+                    solidPartial.Color.A / 255f);
+                RenderTarget!.FillRectangle(
                     (float)r.X, (float)r.Y,
                     (float)r.Width, (float)r.Height,
                     brush);
             }
             else
             {
-                RenderTarget.PunchTransparentRect(
+                RenderTarget!.PunchTransparentRect(
                     (float)r.X, (float)r.Y,
                     (float)r.Width, (float)r.Height);
                 if (solidPartial.Color.A > 0)
                 {
                     var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
                     using var brush = context.CreateSolidBrush(
-                        solidPartial.Color.ScR,
-                        solidPartial.Color.ScG,
-                        solidPartial.Color.ScB,
-                        solidPartial.Color.ScA);
-                    RenderTarget.FillRectangle(
+                        solidPartial.Color.R / 255f,
+                        solidPartial.Color.G / 255f,
+                        solidPartial.Color.B / 255f,
+                        solidPartial.Color.A / 255f);
+                    RenderTarget!.FillRectangle(
                         (float)r.X, (float)r.Y,
                         (float)r.Width, (float)r.Height,
                         brush);
@@ -3770,15 +3829,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
         else if (SystemBackdrop != WindowBackdropType.None)
         {
-            RenderTarget.PunchTransparentRect(
+            RenderTarget!.PunchTransparentRect(
                 (float)r.X, (float)r.Y,
                 (float)r.Width, (float)r.Height);
         }
         else
         {
             var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
-            using var brush = context.CreateSolidBrush(1.0f, 1.0f, 1.0f, 1.0f);
-            RenderTarget.FillRectangle(
+            using var brush = context.CreateSolidBrush(0.0f, 0.0f, 0.0f, 1.0f);
+            RenderTarget!.FillRectangle(
                 (float)r.X, (float)r.Y,
                 (float)r.Width, (float)r.Height,
                 brush);
