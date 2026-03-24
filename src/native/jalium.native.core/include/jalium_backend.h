@@ -99,6 +99,7 @@ public:
         (void)stride;
         return nullptr;
     }
+
 };
 
 /// Abstract base class for render targets.
@@ -196,14 +197,15 @@ public:
     /// @param brush Brush for stroke.
     /// @param strokeWidth Width of stroke.
     /// @param closed Whether to close the polygon.
-    virtual void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed) = 0;
+    virtual void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f) = 0;
 
     /// Fills a path defined by a command buffer (lines + bezier curves).
     /// Command encoding: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey].
     virtual void FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule) = 0;
 
     /// Strokes a path defined by a command buffer (lines + bezier curves).
-    virtual void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed) = 0;
+    /// lineCap: 0 = Butt, 1 = Square, 2 = Round.
+    virtual void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0) = 0;
 
     /// Draws a content area border: fills a rect with bottom-only rounded corners,
     /// then strokes a U-shape (left + bottom + right, no top) with the same radii.
@@ -252,6 +254,10 @@ public:
     /// Pops an opacity.
     virtual void PopOpacity() = 0;
 
+    /// Sets the current shape type for SDF rect rendering.
+    /// type: 0 = RoundedRect, 1 = SuperEllipse.  n: exponent (e.g. 4 for squircle).
+    virtual void SetShapeType(int type, float n) = 0;
+
     /// Sets whether VSync is enabled.
     /// When disabled, Present returns immediately for faster frame updates during resize.
     virtual void SetVSyncEnabled(bool enabled) = 0;
@@ -272,6 +278,10 @@ public:
 
     /// Marks the entire render target as dirty, forcing a full redraw.
     virtual void SetFullInvalidation() = 0;
+
+    /// Returns whether this render target preserves back-buffer contents across presents,
+    /// allowing partial redraw + dirty-rect presentation.
+    virtual bool SupportsPartialPresentation() const { return true; }
 
     /// Draws a bitmap.
     virtual void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity) = 0;
@@ -439,7 +449,8 @@ public:
     /// @param w Width of the draw area (in DIPs).
     /// @param h Height of the draw area (in DIPs).
     /// @param radius Blur radius (in DIPs).
-    virtual void DrawBlurEffect(float x, float y, float w, float h, float radius) {}
+    virtual void DrawBlurEffect(float x, float y, float w, float h, float radius,
+        float uvOffsetX = 0, float uvOffsetY = 0) {}
 
     /// Applies a drop shadow effect to the captured element content and draws it.
     /// Draws the shadow first (offset + blurred alpha), then the original content on top.
@@ -456,7 +467,42 @@ public:
     /// @param a Shadow opacity (0-1).
     virtual void DrawDropShadowEffect(float x, float y, float w, float h,
         float blurRadius, float offsetX, float offsetY,
-        float r, float g, float b, float a) {}
+        float r, float g, float b, float a,
+        float uvOffsetX = 0, float uvOffsetY = 0,
+        float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0) {}
+
+    /// Applies an outer glow effect around the element.
+    /// @param glowSize Size of the glow spread.
+    /// @param r,g,b,a Glow color (premultiplied alpha).
+    /// @param intensity Glow brightness multiplier.
+    virtual void DrawOuterGlowEffect(float x, float y, float w, float h,
+        float glowSize, float r, float g, float b, float a, float intensity,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) {}
+
+    /// Applies an inner shadow effect inside the element bounds.
+    virtual void DrawInnerShadowEffect(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) {}
+
+    /// Applies a 5x4 color matrix transformation to the element content.
+    /// @param matrix 20 floats in row-major order (5x4 matrix).
+    virtual void DrawColorMatrixEffect(float x, float y, float w, float h,
+        const float* matrix) {}
+
+    /// Applies an emboss effect to the element content.
+    /// @param amount Emboss strength.
+    /// @param lightDirX,lightDirY Light direction.
+    /// @param relief Depth of the emboss.
+    virtual void DrawEmbossEffect(float x, float y, float w, float h,
+        float amount, float lightDirX, float lightDirY, float relief) {}
+
+    /// Applies a custom pixel shader effect to the captured element content.
+    /// The captured content is exposed to the shader as t0/s0 and the constants
+    /// buffer is bound to b0.
+    virtual void DrawShaderEffect(float x, float y, float w, float h,
+        const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
+        const float* constants, uint32_t constantFloatCount) {}
 
     /// Draws a liquid glass effect with SDF-based refraction, highlight, and inner shadow.
     /// Captures current render target content, applies blur, then renders the full
@@ -496,14 +542,10 @@ public:
     virtual void SetAlignment(int32_t alignment) = 0;
     virtual void SetParagraphAlignment(int32_t alignment) = 0;
     virtual void SetTrimming(int32_t trimming) = 0;
+    virtual void SetWordWrapping(int32_t wrapping) = 0;
+    virtual void SetLineSpacing(int32_t method, float spacing, float baseline) = 0;
+    virtual void SetMaxLines(uint32_t maxLines) = 0;
 
-    /// Measures text and fills out the metrics structure.
-    /// @param text The text to measure.
-    /// @param textLength The length of the text.
-    /// @param maxWidth Maximum layout width.
-    /// @param maxHeight Maximum layout height.
-    /// @param metrics Output metrics.
-    /// @return JALIUM_OK on success.
     virtual JaliumResult MeasureText(
         const wchar_t* text,
         uint32_t textLength,
@@ -511,10 +553,21 @@ public:
         float maxHeight,
         JaliumTextMetrics* metrics) = 0;
 
-    /// Gets font metrics without text.
-    /// @param metrics Output metrics (only font-related fields are filled).
-    /// @return JALIUM_OK on success.
     virtual JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) = 0;
+
+    /// Hit-tests a point against the text layout to find the character position.
+    virtual JaliumResult HitTestPoint(
+        const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight,
+        float pointX, float pointY,
+        JaliumTextHitTestResult* result) = 0;
+
+    /// Gets the caret position and bounding rect for a given text position.
+    virtual JaliumResult HitTestTextPosition(
+        const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight,
+        uint32_t textPosition, int32_t isTrailingHit,
+        JaliumTextHitTestResult* result) = 0;
 };
 
 /// Abstract base class for bitmaps.

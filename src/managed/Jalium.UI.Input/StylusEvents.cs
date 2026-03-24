@@ -24,7 +24,7 @@ public class StylusEventArgs : InputEventArgs
     public StylusPointCollection GetStylusPoints(UIElement? relativeTo)
         => StylusDevice?.GetStylusPoints(relativeTo) ?? new StylusPointCollection();
 
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is StylusEventHandler stylusHandler)
         {
@@ -43,7 +43,7 @@ public sealed class StylusDownEventArgs : StylusEventArgs
 
     public int TapCount { get; init; } = 1;
 
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is StylusDownEventHandler stylusHandler)
         {
@@ -65,7 +65,7 @@ public sealed class StylusButtonEventArgs : StylusEventArgs
 
     public StylusButton StylusButton { get; }
 
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is StylusButtonEventHandler stylusHandler)
         {
@@ -87,7 +87,7 @@ public sealed class StylusSystemGestureEventArgs : StylusEventArgs
 
     public SystemGesture SystemGesture { get; }
 
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is StylusSystemGestureEventHandler stylusHandler)
         {

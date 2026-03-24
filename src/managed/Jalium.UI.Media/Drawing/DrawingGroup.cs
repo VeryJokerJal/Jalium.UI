@@ -66,8 +66,17 @@ public sealed class DrawingGroup : Drawing
             // Apply transform to bounds if present
             if (Transform != null && !bounds.IsEmpty)
             {
-                // For simplicity, we don't transform the bounds here
-                // A full implementation would apply the transform matrix
+                var m = Transform.Value;
+                // Transform all four corners and compute the axis-aligned bounding box
+                var tl = m.Transform(new Point(bounds.X, bounds.Y));
+                var tr = m.Transform(new Point(bounds.X + bounds.Width, bounds.Y));
+                var bl = m.Transform(new Point(bounds.X, bounds.Y + bounds.Height));
+                var br = m.Transform(new Point(bounds.X + bounds.Width, bounds.Y + bounds.Height));
+                var minX = Math.Min(Math.Min(tl.X, tr.X), Math.Min(bl.X, br.X));
+                var minY = Math.Min(Math.Min(tl.Y, tr.Y), Math.Min(bl.Y, br.Y));
+                var maxX = Math.Max(Math.Max(tl.X, tr.X), Math.Max(bl.X, br.X));
+                var maxY = Math.Max(Math.Max(tl.Y, tr.Y), Math.Max(bl.Y, br.Y));
+                bounds = new Rect(minX, minY, maxX - minX, maxY - minY);
             }
 
             // Apply clip if present

@@ -92,11 +92,12 @@ public sealed class ShatterTransition : ContentTransition
             host.NewContentOpacity = Math.Min(1.0, rawProgress * 2.0);
 
             // Update each particle with physics
-            var dt = 1.0 / 60.0; // Approximate frame time
+            var dt = Math.Max(1.0 / 240.0, Math.Min(1.0 / 15.0, CompositionTarget.FrameInterval.TotalSeconds));
+            if (dt <= 0) dt = 1.0 / 60.0;
             for (int i = 0; i < particles.Length; i++)
             {
                 ref var p = ref particles[i];
-                var localProgress = Math.Max(0, (rawProgress - p.Delay) / (1.0 - p.Delay));
+                var localProgress = p.Delay >= 1.0 ? 1.0 : Math.Clamp((rawProgress - p.Delay) / (1.0 - p.Delay), 0.0, 1.0);
                 if (localProgress <= 0) continue;
 
                 p.VelocityY += gravity * dt;

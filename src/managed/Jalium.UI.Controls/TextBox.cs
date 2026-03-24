@@ -44,6 +44,11 @@ public class TextBox : TextBoxBase, IImeSupport
     private int _imeCompositionCursor;
     private int _imeCompositionStart;
 
+    // Cached caret pen
+    private Pen? _caretPen;
+    private Brush? _caretPenBrush;
+    private double _caretPenOpacity;
+
     // Spell checking
     private List<SpellingError> _spellingErrors = new();
     private bool _spellCheckDirty = true;
@@ -1205,8 +1210,13 @@ public class TextBox : TextBoxBase, IImeSupport
             caretBrushWithOpacity = caretBrush;
         }
 
-        var caretPen = new Pen(caretBrushWithOpacity, 1.5);
-        dc.DrawLine(caretPen, new Point(x, y), new Point(x, y + lineHeight));
+        if (_caretPen == null || _caretPenBrush != caretBrushWithOpacity || _caretPenOpacity != caretOpacity)
+        {
+            _caretPen = new Pen(caretBrushWithOpacity, 1.5);
+            _caretPenBrush = caretBrushWithOpacity;
+            _caretPenOpacity = caretOpacity;
+        }
+        dc.DrawLine(_caretPen, new Point(x, y), new Point(x, y + lineHeight));
     }
 
     #endregion

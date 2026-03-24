@@ -14,6 +14,7 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
     private IReadOnlyList<MarkdownTextSpan> _spans = Array.Empty<MarkdownTextSpan>();
     private MarkdownTextLayout? _cachedLayout;
     private double _cachedWidth = double.NaN;
+    private Pen? _cachedLinkUnderlinePen;
 
     public MarkdownTextRenderer()
     {
@@ -99,9 +100,9 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
                 if (placement.Style.LinkUri != null)
                 {
                     var underlineBrush = LinkForegroundBrush ?? ForegroundBrush ?? new SolidColorBrush(Color.FromRgb(0, 102, 204));
-                    var underlinePen = new Pen(underlineBrush, 1);
+                    _cachedLinkUnderlinePen ??= new Pen(underlineBrush, 1);
                     var underlineY = placement.Bounds.Y + placement.Bounds.Height - 2;
-                    dc.DrawLine(underlinePen, new Point(textX, underlineY), new Point(textX + placement.TextWidth, underlineY));
+                    dc.DrawLine(_cachedLinkUnderlinePen, new Point(textX, underlineY), new Point(textX + placement.TextWidth, underlineY));
                 }
             }
         }

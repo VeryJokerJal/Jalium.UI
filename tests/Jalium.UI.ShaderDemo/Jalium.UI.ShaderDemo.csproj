@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <RootNamespace>Jalium.UI.ShaderDemo</RootNamespace>
+    <AssemblyName>Jalium.UI.ShaderDemo</AssemblyName>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" />
+    <ProjectReference Include="..\..\src\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+  </ItemGroup>
+
+</Project>

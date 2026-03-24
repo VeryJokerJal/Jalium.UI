@@ -120,6 +120,15 @@ internal static class DynamicResourceBindingOperations
     {
         // Theme switches are infrequent; a full sweep is acceptable and avoids
         // missing updates when subtree resource notifications are skipped.
+        RefreshForKeys(changedKeys: null);
+    }
+
+    /// <summary>
+    /// Refreshes only subscriptions whose resource key is in <paramref name="changedKeys"/>.
+    /// Pass null to refresh ALL subscriptions (theme switch).
+    /// </summary>
+    internal static void RefreshForKeys(IReadOnlySet<object>? changedKeys)
+    {
         foreach (var entry in Subscriptions)
         {
             var target = entry.Key;
@@ -129,6 +138,14 @@ internal static class DynamicResourceBindingOperations
             var properties = entry.Value.Keys.ToArray();
             foreach (var property in properties)
             {
+                if (changedKeys != null)
+                {
+                    // Only refresh if this subscription's key was actually changed
+                    if (!entry.Value.TryGetValue(property, out var sub) ||
+                        !changedKeys.Contains(sub.ResourceKey))
+                        continue;
+                }
+
                 RefreshDynamicResource(target, property);
             }
         }

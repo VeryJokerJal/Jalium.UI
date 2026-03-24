@@ -44,6 +44,9 @@ public sealed class RenderGraphBuilder
         BuildEffectPasses(graph, bundle, transientTextures, viewportWidth, viewportHeight, analysis);
         BuildCompositePasses(graph, bundle, backbufferId, transientTextures, viewportWidth, viewportHeight, analysis);
 
+        // Transient textures are automatically managed by the RenderGraph lifecycle.
+        // No explicit release needed — they are reclaimed after execution.
+
         // Present Pass
         graph.AddPass("Present", RenderPassType.Present)
             .Read(backbufferId, ResourceState.Present)
@@ -217,7 +220,7 @@ public sealed class RenderGraphBuilder
                         .Read(sourceId, ResourceState.ShaderResource)
                         .Write(tempId, ResourceState.UnorderedAccess)
                         .SetPipeline(UIPipelines.GaussianBlurH)
-                        .SetDispatch((uint)((vpWidth + 255) / 256), (uint)vpHeight)
+                        .SetDispatch((uint)((vpWidth + 63) / 64), (uint)vpHeight)
                         .Build();
 
                     // 垂直 blur
@@ -225,8 +228,10 @@ public sealed class RenderGraphBuilder
                         .Read(tempId, ResourceState.ShaderResource)
                         .Write(outputId, ResourceState.UnorderedAccess)
                         .SetPipeline(UIPipelines.GaussianBlurV)
-                        .SetDispatch((uint)vpWidth, (uint)((vpHeight + 255) / 256))
+                        .SetDispatch((uint)vpWidth, (uint)((vpHeight + 63) / 64))
                         .Build();
+
+                    // Temporary blur texture lifetime managed by RenderGraph.
                 }
             }
         }

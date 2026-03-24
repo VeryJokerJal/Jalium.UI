@@ -12,7 +12,7 @@ namespace Jalium.UI.Gpu.Commands;
 /// </summary>
 public sealed class GpuCommandBuffer
 {
-    private readonly List<GpuCommand> _commands = new();
+    private readonly List<GpuCommand> _commands = new(256);
 
     /// <summary>
     /// 已录制的命令数

@@ -72,7 +72,8 @@ public sealed class ParticleDissolveTransition : ContentTransition
 
             host.NewContentOpacity = Math.Min(1.0, rawProgress * 1.5);
 
-            var dt = 1.0 / 60.0;
+            var dt = Math.Max(1.0 / 240.0, Math.Min(1.0 / 15.0, CompositionTarget.FrameInterval.TotalSeconds));
+            if (dt <= 0) dt = 1.0 / 60.0;
             for (int i = 0; i < particles.Length; i++)
             {
                 ref var p = ref particles[i];

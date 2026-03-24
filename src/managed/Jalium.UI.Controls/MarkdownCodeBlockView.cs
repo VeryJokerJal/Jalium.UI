@@ -20,6 +20,11 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement
     private double _lineHeight = 20;
     private double _gutterWidth = 24;
 
+    // Cached pen/brush
+    private Pen? _separatorPen;
+    private Brush? _separatorPenBrush;
+    private Brush? _lineNumberBrush;
+
     public string Text
     {
         get => _text;
@@ -89,13 +94,21 @@ internal sealed class MarkdownCodeBlockView : FrameworkElement
         var separatorBrush = TryFindResource("ControlBorder") as Brush;
         if (separatorBrush != null)
         {
-            var separatorPen = new Pen(separatorBrush, 1);
-            dc.DrawLine(separatorPen, new Point(separatorX, 0), new Point(separatorX, RenderSize.Height));
+            if (_separatorPen == null || _separatorPenBrush != separatorBrush)
+            {
+                _separatorPenBrush = separatorBrush;
+                _separatorPen = new Pen(separatorBrush, 1);
+            }
+            dc.DrawLine(_separatorPen, new Point(separatorX, 0), new Point(separatorX, RenderSize.Height));
         }
 
         var lineNumberBrush = LineNumberForegroundBrush
-            ?? TryFindResource("TextSecondary") as Brush
-            ?? new SolidColorBrush(Color.FromRgb(128, 128, 128));
+            ?? TryFindResource("TextSecondary") as Brush;
+        if (lineNumberBrush == null)
+        {
+            _lineNumberBrush ??= new SolidColorBrush(Color.FromRgb(128, 128, 128));
+            lineNumberBrush = _lineNumberBrush;
+        }
 
         var contentX = separatorX + GutterGap;
         for (var index = 0; index < _lines.Count; index++)

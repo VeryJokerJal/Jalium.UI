@@ -151,16 +151,24 @@ public abstract class ContentTransition : DependencyObject
         var timer = new DispatcherTimer { Interval = CompositionTarget.FrameInterval };
         timer.Tick += (_, _) =>
         {
-            var elapsed = Environment.TickCount64 - startTime;
-            var rawProgress = durationMs > 0 ? Math.Min(1.0, elapsed / durationMs) : 1.0;
-            var easedProgress = easing.Ease(rawProgress);
+            try
+            {
+                var elapsed = Environment.TickCount64 - startTime;
+                var rawProgress = durationMs > 0 ? Math.Min(1.0, elapsed / durationMs) : 1.0;
+                var easedProgress = easing.Ease(rawProgress);
 
-            onFrame(easedProgress);
+                onFrame(easedProgress);
 
-            if (rawProgress >= 1.0)
+                if (rawProgress >= 1.0)
+                {
+                    timer.Stop();
+                    onComplete();
+                }
+            }
+            catch (Exception ex)
             {
                 timer.Stop();
-                onComplete();
+                System.Diagnostics.Debug.WriteLine($"[ContentTransition] Animation frame error: {ex}");
             }
         };
         timer.Start();

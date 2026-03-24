@@ -321,6 +321,15 @@ public abstract partial class UIElement : Visual, IInputElement
             new PropertyMetadata(null, OnRenderPropertyChanged));
 
     /// <summary>
+    /// Identifies the RenderTransformOrigin dependency property.
+    /// The origin is specified as a normalized point (0-1 range) relative to the element's render size.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public static readonly DependencyProperty RenderTransformOriginProperty =
+        DependencyProperty.Register(nameof(RenderTransformOrigin), typeof(Point), typeof(UIElement),
+            new PropertyMetadata(new Point(0, 0), OnRenderPropertyChanged));
+
+    /// <summary>
     /// Identifies the Focusable dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
@@ -518,6 +527,17 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         get => GetValue(RenderTransformProperty);
         set => SetValue(RenderTransformProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the origin point for the render transform, relative to the element's bounds.
+    /// Values are normalized (0-1), where (0.5, 0.5) is the center.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Point RenderTransformOrigin
+    {
+        get => (Point)GetValue(RenderTransformOriginProperty)!;
+        set => SetValue(RenderTransformOriginProperty, value);
     }
 
     /// <summary>
@@ -927,15 +947,14 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Requests a full window repaint for layout changes.
     /// Layout changes (measure/arrange) can move elements arbitrarily,
     /// so dirty rects for individual elements are unreliable.
-    /// Full invalidation is acceptable because layout changes are infrequent
-    /// (expand/collapse, content switch) — not per-frame like hover effects.
+    /// Marks this element dirty so its region is repainted.
     /// </summary>
     private void InvalidateLayoutVisual()
     {
         var windowHost = GetWindowHost();
         if (windowHost == null) return;
 
-        windowHost.RequestFullInvalidation();
+        windowHost.AddDirtyElement(this);
         windowHost.InvalidateWindow();
     }
 

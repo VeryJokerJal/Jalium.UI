@@ -53,7 +53,7 @@ public sealed class TextCompositionEventArgs : InputEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is TextCompositionEventHandler textHandler)
         {

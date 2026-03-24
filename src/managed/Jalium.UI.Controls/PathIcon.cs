@@ -71,9 +71,12 @@ public class PathIcon : IconElement
             var renderMatrix = renderTransform.Value;
             if (!renderMatrix.IsIdentity)
             {
+                var origin = RenderTransformOrigin;
+                var cx = origin.X * RenderSize.Width;
+                var cy = origin.Y * RenderSize.Height;
                 finalMatrix = Matrix.Multiply(
                     finalMatrix,
-                    CreateCenteredMatrix(renderMatrix, RenderSize.Width / 2, RenderSize.Height / 2));
+                    MatrixHelper.CreateCenteredMatrix(renderMatrix, cx, cy));
             }
         }
 
@@ -153,14 +156,4 @@ public class PathIcon : IconElement
             targetSize.Height / 2 - bounds.Y);
     }
 
-    private static Matrix CreateCenteredMatrix(Matrix matrix, double centerX, double centerY)
-    {
-        return new Matrix(
-            matrix.M11,
-            matrix.M12,
-            matrix.M21,
-            matrix.M22,
-            matrix.OffsetX + centerX - centerX * matrix.M11 - centerY * matrix.M21,
-            matrix.OffsetY + centerY - centerX * matrix.M12 - centerY * matrix.M22);
-    }
 }

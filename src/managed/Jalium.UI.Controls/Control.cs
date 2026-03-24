@@ -707,9 +707,10 @@ public class Control : FrameworkElement
             control._templateApplied = false;
             control.ClearTemplateContent();
 
-            // Apply template immediately if we have a new template
-            // This ensures visual children are available right away
-            if (e.NewValue != null)
+            // Apply template immediately if we have a new template.
+            // TreeViewItem overrides ShouldDeferTemplateApplication to return true
+            // for items in collapsed subtrees, deferring to MeasureOverride instead.
+            if (e.NewValue != null && !control.ShouldDeferTemplateApplication())
             {
                 control.ApplyTemplate();
             }
@@ -717,6 +718,13 @@ public class Control : FrameworkElement
             control.InvalidateMeasure();
         }
     }
+
+    /// <summary>
+    /// Returns true to defer template application to MeasureOverride instead of
+    /// applying eagerly in OnTemplateChanged. Override in controls that participate
+    /// in large deferred trees (e.g. TreeViewItem in collapsed subtrees).
+    /// </summary>
+    internal virtual bool ShouldDeferTemplateApplication() => false;
 
     #endregion
 }

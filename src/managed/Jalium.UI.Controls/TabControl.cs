@@ -31,6 +31,8 @@ public class TabControl : Selector
     // Cached brushes for OnRender fallback paths
     private static readonly SolidColorBrush s_tabStripBackgroundBrush = new(ThemeColors.TabStripBackground);
     private static readonly SolidColorBrush s_tabStripBorderBrush = new(ThemeColors.TabStripBorder);
+    private Pen? _borderPenCached;
+    private Brush? _borderPenBrush;
 
     #region Dependency Properties
 
@@ -535,7 +537,12 @@ public class TabControl : Selector
 
         // Draw border line
         var borderBrush = ResolveTabStripBorderBrush();
-        var borderPen = new Pen(borderBrush, 1);
+        if (_borderPenCached == null || _borderPenBrush != borderBrush)
+        {
+            _borderPenBrush = borderBrush;
+            _borderPenCached = new Pen(borderBrush, 1);
+        }
+        var borderPen = _borderPenCached;
         switch (TabStripPlacement)
         {
             case Dock.Bottom:

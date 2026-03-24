@@ -288,12 +288,13 @@ public class Slider : Control
         UpdateSliderLayout();
     }
 
-    private void UpdateSliderLayout()
+    private void UpdateSliderLayout(double? currentValue = null)
     {
         if (_thumbBorder == null) return;
 
+        var val = currentValue ?? Value;
         var range = Maximum - Minimum;
-        var percentage = range > 0 ? (Value - Minimum) / range : 0;
+        var percentage = range > 0 ? (val - Minimum) / range : 0;
 
         if (Orientation == Orientation.Horizontal)
         {
@@ -464,11 +465,13 @@ public class Slider : Control
         if (Orientation == Orientation.Horizontal)
         {
             var trackWidth = RenderSize.Width - ThumbSize;
+            if (trackWidth <= 0) return;
             percentage = (position.X - ThumbSize / 2) / trackWidth;
         }
         else
         {
             var trackHeight = RenderSize.Height - ThumbSize;
+            if (trackHeight <= 0) return;
             percentage = 1 - (position.Y - ThumbSize / 2) / trackHeight;
         }
 
@@ -683,7 +686,7 @@ public class Slider : Control
     /// </summary>
     protected void OnValueChanged(double oldValue, double newValue)
     {
-        UpdateSliderLayout();
+        UpdateSliderLayout(newValue);
         InvalidateVisual();
         RaiseEvent(new RoutedPropertyChangedEventArgs<double>(oldValue, newValue, ValueChangedEvent));
     }

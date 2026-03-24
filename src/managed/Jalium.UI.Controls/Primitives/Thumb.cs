@@ -22,6 +22,12 @@ public class Thumb : Control
     private static readonly SolidColorBrush s_defaultBgBrush = new(Color.FromRgb(100, 100, 100));
     private static readonly SolidColorBrush s_gripBrush = new(Color.FromRgb(60, 60, 60));
     private static readonly Pen s_gripPen = new(s_gripBrush, 1);
+
+    // Cached border pen
+    private Pen? _borderPen;
+    private Brush? _borderPenBrush;
+    private double _borderPenThickness;
+
     private const string DefaultBackgroundKey = "ControlBackground";
     private const string DraggingBackgroundKey = "ControlBackgroundPressed";
     private const string GripBrushKey = "TextTertiary";
@@ -360,8 +366,13 @@ public class Thumb : Control
         // Draw border
         if (borderBrush != null && BorderThickness.TotalWidth > 0)
         {
-            var pen = new Pen(borderBrush, BorderThickness.Left);
-            dc.DrawRoundedRectangle(null, pen, rect, cornerRadius);
+            if (_borderPen == null || _borderPenBrush != borderBrush || _borderPenThickness != BorderThickness.Left)
+            {
+                _borderPen = new Pen(borderBrush, BorderThickness.Left);
+                _borderPenBrush = borderBrush;
+                _borderPenThickness = BorderThickness.Left;
+            }
+            dc.DrawRoundedRectangle(null, _borderPen, rect, cornerRadius);
         }
 
         // Draw grip lines for visual feedback when requested.

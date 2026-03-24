@@ -23,14 +23,8 @@
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}" />
-                    <Border Name="HoverOverlay"
+                    <Border Name="StateOverlay"
                             IsHitTestVisible="False"
-                            Background="{DynamicResource AccentBrushHover}"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Opacity="0" />
-                    <Border Name="PressedOverlay"
-                            IsHitTestVisible="False"
-                            Background="{DynamicResource AccentBrushPressed}"
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Opacity="0" />
                     <ContentPresenter
@@ -43,15 +37,15 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="HoverOverlay" Property="Opacity" Value="1" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource AccentBrushHover}" />
+                <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter TargetName="HoverOverlay" Property="Opacity" Value="0" />
-                <Setter TargetName="PressedOverlay" Property="Opacity" Value="1" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource AccentBrushPressed}" />
+                <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="HoverOverlay" Property="Opacity" Value="0" />
-                <Setter TargetName="PressedOverlay" Property="Opacity" Value="0" />
+                <Setter TargetName="StateOverlay" Property="Opacity" Value="0" />
                 <Setter Property="Background" Value="{DynamicResource AccentBrushDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource AccentBrushDisabled}" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />

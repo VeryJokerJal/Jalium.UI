@@ -353,10 +353,39 @@ public abstract class Visual : DependencyObject
         if (activeEffect != null && effectDc != null)
         {
             effectDc.EndEffectCapture();
-            effectDc.ApplyElementEffect(activeEffect, captureX, captureY, captureW, captureH);
+            var elemOffset = (drawingContext is IOffsetDrawingContext odc2) ? odc2.Offset : new Point(captureX, captureY);
+            var elemSize = (this is UIElement ue) ? ue.RenderSize : new Size(captureW, captureH);
+
+            // Corner radii for the element content clip (shadows render outside, unclipped).
+            var cr = (this is UIElement cornerElem) ? GetCornerRadius(cornerElem) : new CornerRadius(0);
+            float maxR = (float)Math.Max(Math.Max(cr.TopLeft, cr.TopRight),
+                                         Math.Max(cr.BottomRight, cr.BottomLeft));
+
+            effectDc.ApplyElementEffect(activeEffect,
+                (float)elemOffset.X, (float)elemOffset.Y,
+                (float)elemSize.Width, (float)elemSize.Height,
+                captureX, captureY,
+                (float)cr.TopLeft, (float)cr.TopRight,
+                (float)cr.BottomRight, (float)cr.BottomLeft);
         }
         _isRenderDirty = false;
         _isSubtreeDirty = false;
+    }
+
+    /// <summary>
+    /// Extracts the CornerRadius from an element by looking for the CLR property.
+    /// Returns zero radii if the element doesn't have one.
+    /// </summary>
+    private static CornerRadius GetCornerRadius(UIElement element)
+    {
+        // Look for CornerRadiusProperty static field on the element's type
+        var field = element.GetType().GetField("CornerRadiusProperty",
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static |
+            System.Reflection.BindingFlags.FlattenHierarchy);
+        if (field?.GetValue(null) is DependencyProperty dp &&
+            element.GetValue(dp) is CornerRadius cr)
+            return cr;
+        return new CornerRadius(0);
     }
 
     private static bool ShouldRenderChild(object drawingContext, UIElement child, Point childOffset)

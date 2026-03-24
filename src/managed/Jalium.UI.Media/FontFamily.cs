@@ -42,7 +42,7 @@ public sealed class FontFamily
     /// The baseline value is expressed as a proportion of the font em size.
     /// A typical value for Western fonts is approximately 0.8.
     /// </remarks>
-    public double Baseline => 0.8;
+    public double Baseline { get; init; } = 0.8;
 
     /// <summary>
     /// Gets the line spacing value for the <see cref="FontFamily"/> object.
@@ -51,7 +51,7 @@ public sealed class FontFamily
     /// The line spacing is the recommended baseline-to-baseline distance for the text in this font,
     /// expressed as a proportion of the font em size.
     /// </remarks>
-    public double LineSpacing => 1.2;
+    public double LineSpacing { get; init; } = 1.2;
 
     /// <summary>
     /// Gets the collection of typefaces that make up this font family.

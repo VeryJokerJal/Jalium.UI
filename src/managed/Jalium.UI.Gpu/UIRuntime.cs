@@ -41,6 +41,13 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
     private nint _indexBuffer;
     private nint _instanceBuffer;
     private nint _uniformBuffer;
+
+    // 绑定状态缓存 - 避免冗余 GPU 绑定调用
+    private nint _boundVertexBuffer;
+    private nint _boundIndexBuffer;
+    private nint _boundInstanceBuffer;
+    private nint _boundUniformBuffer;
+    private nint _boundTexture0;
     private readonly Dictionary<uint, nint> _textureHandles = new();
     private readonly Dictionary<uint, nint> _glyphAtlasHandles = new();
 
@@ -131,17 +138,25 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
         if (_instanceBuffer != nint.Zero) { _backend.DestroyBuffer(_instanceBuffer); _instanceBuffer = nint.Zero; }
         if (_uniformBuffer != nint.Zero) { _backend.DestroyBuffer(_uniformBuffer); _uniformBuffer = nint.Zero; }
 
-        foreach (var handle in _textureHandles.Values)
+        try
         {
-            _backend.DestroyTexture(handle);
+            foreach (var handle in _textureHandles.Values)
+                _backend.DestroyTexture(handle);
         }
-        _textureHandles.Clear();
+        finally
+        {
+            _textureHandles.Clear();
+        }
 
-        foreach (var handle in _glyphAtlasHandles.Values)
+        try
         {
-            _backend.DestroyTexture(handle);
+            foreach (var handle in _glyphAtlasHandles.Values)
+                _backend.DestroyTexture(handle);
         }
-        _glyphAtlasHandles.Clear();
+        finally
+        {
+            _glyphAtlasHandles.Clear();
+        }
     }
 
     private void UploadResources()
@@ -209,6 +224,8 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
                 writer.Write(1f); writer.Write(1f);
 
                 // 颜色（从材质获取）
+                if (rect.MaterialIndex < 0 || rect.MaterialIndex >= _currentBundle.Materials.Length)
+                    continue;
                 var material = _currentBundle.Materials[rect.MaterialIndex];
                 writer.Write(material.BackgroundColor);
 
@@ -290,17 +307,14 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
     /// </summary>
     public void Update(double deltaTime)
     {
-        // 更新动画
-        if (_animationController.Update(deltaTime))
-        {
-            _isDirty = true;
-        }
+        // 动画通过 UpdateNodeProperty() 直接更新 Instance Buffer 并设置细粒度脏标记，
+        // 不需要在此处设置全局 _isDirty。
+        _animationController.Update(deltaTime);
 
-        // 处理状态转换
+        // 状态转换同理，通过动画系统更新属性。
         if (_stateManager.HasPendingTransitions)
         {
             _stateManager.ProcessTransitions();
-            _isDirty = true;
         }
 
         FlushReactiveInvalidations();
@@ -320,12 +334,17 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
             return;
         }
 
-        // 更新 Uniform（视口尺寸、时间）
-        if (_isDirty)
-        {
-            UpdateUniformBuffer(viewportWidth, viewportHeight);
-            _isDirty = false;
-        }
+        // 重置绑定状态缓存
+        _boundVertexBuffer = 0;
+        _boundIndexBuffer = 0;
+        _boundInstanceBuffer = 0;
+        _boundUniformBuffer = 0;
+        _boundTexture0 = 0;
+
+        // 更新 Uniform（视口尺寸、时间）—— 每帧都需要更新，
+        // 因为 Time 用于 shader 动画效果（发光、脉冲等）。
+        UpdateUniformBuffer(viewportWidth, viewportHeight);
+        _isDirty = false;
 
         if (_displayListDirty)
         {
@@ -404,15 +423,11 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
                     break;
 
                 case DrawRectBatchCommand rectBatch:
-                    for (uint i = 0; i < rectBatch.InstanceCount; i++)
-                    {
-                        var instanceOffset = rectBatch.InstanceBufferOffset + i;
-                        _displayList.Add(DisplayCommand.DrawRect(
-                            ResolveNodeId((int)instanceOffset),
-                            instanceOffset,
-                            1,
-                            rectBatch.TextureIndex));
-                    }
+                    _displayList.Add(DisplayCommand.DrawRect(
+                        0,
+                        rectBatch.InstanceBufferOffset,
+                        rectBatch.InstanceCount,
+                        rectBatch.TextureIndex));
                     break;
 
                 case DrawTextBatchCommand textBatch:
@@ -424,15 +439,11 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
                     break;
 
                 case DrawImageBatchCommand imageBatch:
-                    for (uint i = 0; i < imageBatch.InstanceCount; i++)
-                    {
-                        var instanceOffset = imageBatch.InstanceBufferOffset + i;
-                        _displayList.Add(DisplayCommand.DrawImage(
-                            ResolveNodeId((int)instanceOffset),
-                            instanceOffset,
-                            1,
-                            imageBatch.TextureIndex));
-                    }
+                    _displayList.Add(DisplayCommand.DrawImage(
+                        0,
+                        imageBatch.InstanceBufferOffset,
+                        imageBatch.InstanceCount,
+                        imageBatch.TextureIndex));
                     break;
 
                 default:
@@ -452,18 +463,61 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
         }
     }
 
+    /// <summary>
+    /// Precomputes a boolean array marking which node indices are dirty,
+    /// enabling O(1) per-index lookup instead of O(1) HashSet per node ID.
+    /// </summary>
+    private bool[]? PrecomputeDirtyIndexMap(IReadOnlySet<uint> dirtyRenderNodes)
+    {
+        if (_currentBundle == null || dirtyRenderNodes.Count == 0) return null;
+
+        var nodes = _currentBundle.Nodes;
+        var map = new bool[nodes.Length];
+        foreach (var nodeId in dirtyRenderNodes)
+        {
+            if (_nodeIndexById.TryGetValue(nodeId, out var index) && index < map.Length)
+            {
+                map[index] = true;
+            }
+        }
+        return map;
+    }
+
+    private static bool IsBatchDirty(bool[]? dirtyIndexMap, uint instanceOffset, uint instanceCount)
+    {
+        if (dirtyIndexMap == null) return true;
+        var end = (int)(instanceOffset + instanceCount);
+        if (end > dirtyIndexMap.Length) end = dirtyIndexMap.Length;
+        for (int i = (int)instanceOffset; i < end; i++)
+        {
+            if (dirtyIndexMap[i])
+                return true;
+        }
+        return false;
+    }
+
     private void RenderDisplayList(IReadOnlySet<uint> dirtyRenderNodes, int viewportWidth, int viewportHeight)
     {
         var shouldFilterByNode = dirtyRenderNodes.Count > 0;
+        var dirtyIndexMap = shouldFilterByNode ? PrecomputeDirtyIndexMap(dirtyRenderNodes) : null;
         var hasDrawnAnything = false;
 
         foreach (var displayCommand in _displayList.Commands)
         {
-            if (shouldFilterByNode &&
-                displayCommand.NodeId != 0 &&
-                !dirtyRenderNodes.Contains(displayCommand.NodeId))
+            if (shouldFilterByNode)
             {
-                continue;
+                if (displayCommand.NodeId != 0)
+                {
+                    // 单节点命令（文本等）
+                    if (!dirtyRenderNodes.Contains(displayCommand.NodeId))
+                        continue;
+                }
+                else if (displayCommand.Type is DisplayCommandType.DrawRect or DisplayCommandType.DrawImage)
+                {
+                    // 批次命令 - 使用预计算的脏索引位图检查
+                    if (!IsBatchDirty(dirtyIndexMap, displayCommand.InstanceOffset, displayCommand.InstanceCount))
+                        continue;
+                }
             }
 
             switch (displayCommand.Type)
@@ -586,23 +640,49 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
         }
     }
 
+    private void BindCommonBuffers()
+    {
+        if (_boundVertexBuffer != _vertexBuffer)
+        {
+            _backend.BindVertexBuffer(_vertexBuffer);
+            _boundVertexBuffer = _vertexBuffer;
+        }
+        if (_boundIndexBuffer != _indexBuffer)
+        {
+            _backend.BindIndexBuffer(_indexBuffer);
+            _boundIndexBuffer = _indexBuffer;
+        }
+        if (_boundInstanceBuffer != _instanceBuffer)
+        {
+            _backend.BindInstanceBuffer(_instanceBuffer);
+            _boundInstanceBuffer = _instanceBuffer;
+        }
+        if (_boundUniformBuffer != _uniformBuffer)
+        {
+            _backend.BindUniformBuffer(_uniformBuffer);
+            _boundUniformBuffer = _uniformBuffer;
+        }
+    }
+
+    private void BindTextureIfNeeded(uint textureIndex, Dictionary<uint, nint> handles)
+    {
+        if (textureIndex > 0 && handles.TryGetValue(textureIndex, out var textureHandle))
+        {
+            if (_boundTexture0 != textureHandle)
+            {
+                _backend.BindTexture(0, textureHandle);
+                _boundTexture0 = textureHandle;
+            }
+        }
+    }
+
     private void ExecuteRectBatch(DrawRectBatchCommand batch)
     {
-        // 绑定资源
-        _backend.BindVertexBuffer(_vertexBuffer);
-        _backend.BindIndexBuffer(_indexBuffer);
-        _backend.BindInstanceBuffer(_instanceBuffer);
-        _backend.BindUniformBuffer(_uniformBuffer);
+        BindCommonBuffers();
+        BindTextureIfNeeded(batch.TextureIndex, _textureHandles);
 
-        // 绑定纹理（如果有）
-        if (batch.TextureIndex > 0 && _textureHandles.TryGetValue(batch.TextureIndex, out var textureHandle))
-        {
-            _backend.BindTexture(0, textureHandle);
-        }
-
-        // 实例化绘制
         _backend.DrawIndexedInstanced(
-            indexCount: 6, // 矩形的 6 个索引
+            indexCount: 6,
             instanceCount: batch.InstanceCount,
             firstIndex: 0,
             baseVertex: 0,
@@ -612,15 +692,8 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
 
     private void ExecuteImageBatch(DrawImageBatchCommand batch)
     {
-        _backend.BindVertexBuffer(_vertexBuffer);
-        _backend.BindIndexBuffer(_indexBuffer);
-        _backend.BindInstanceBuffer(_instanceBuffer);
-        _backend.BindUniformBuffer(_uniformBuffer);
-
-        if (batch.TextureIndex > 0 && _textureHandles.TryGetValue(batch.TextureIndex, out var textureHandle))
-        {
-            _backend.BindTexture(0, textureHandle);
-        }
+        BindCommonBuffers();
+        BindTextureIfNeeded(batch.TextureIndex, _textureHandles);
 
         _backend.DrawIndexedInstanced(
             indexCount: 6,
@@ -793,10 +866,12 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
 
         _propertyStore.SetFloat(nodeId, metadata.PropertyId, value, metadata);
         _reactiveGraph.Invalidate(nodeId, metadata.DirtyFlags);
-        _displayListDirty |= (metadata.DirtyFlags &
-            (DirtyFlags.Layout | DirtyFlags.Render | DirtyFlags.Transform | DirtyFlags.Clip)) != 0;
 
-        _isDirty = true;
+        // DisplayList 仅在 Layout/Transform/Clip 变化时重建（影响绘制命令结构）。
+        // Render-only 变化（Opacity、Color、CornerRadius）只更新 Instance Buffer 数据，
+        // DisplayList 结构不变，无需重建。
+        _displayListDirty |= (metadata.DirtyFlags &
+            (DirtyFlags.Layout | DirtyFlags.Transform | DirtyFlags.Clip)) != 0;
     }
 
     private static RenderPropertyMetadata GetPropertyMetadata(AnimatableProperty property)
@@ -842,6 +917,8 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
         if (_currentBundle == null) return [];
 
         var node = _currentBundle.Nodes[nodeIndex];
+        if (node.MaterialIndex < 0 || node.MaterialIndex >= _currentBundle.Materials.Length)
+            return [];
         var material = _currentBundle.Materials[node.MaterialIndex];
 
         // 从现有颜色获取RGB，用新的opacity替换Alpha
@@ -2622,6 +2699,11 @@ public interface IRenderBackendEx : IRenderBackend
     nint CreateBuffer(int size, Resources.BufferUsage usage);
 
     /// <summary>
+    /// 获取缓冲区的 CPU 映射指针（上传堆缓冲区创建时即映射）
+    /// </summary>
+    nint GetBufferMappedPointer(nint buffer);
+
+    /// <summary>
     /// 创建 2D 纹理
     /// </summary>
     nint CreateTexture2D(int width, int height, TextureFormat format, Resources.TextureUsage usage);
@@ -2640,6 +2722,11 @@ public interface IRenderBackendEx : IRenderBackend
     /// 创建 Unordered Access View
     /// </summary>
     Resources.DescriptorHandle CreateUav(nint resource);
+
+    /// <summary>
+    /// 释放描述符索引，使其可被后续分配复用
+    /// </summary>
+    void FreeDescriptor(Resources.DescriptorHandle handle);
 
     // ===== 命令缓冲区执行 =====
 

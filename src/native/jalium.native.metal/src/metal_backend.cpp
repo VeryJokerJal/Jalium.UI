@@ -179,7 +179,7 @@ bool MetalRenderTarget::Initialize(void* nsWindow)
         metalLayer_ = (__bridge_retained void*)layer;
 
         // Create CGContext for 2D rendering
-        CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+        CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         cgContext_ = CGBitmapContextCreate(
             framebuffer_.data(), width_, height_, 8, width_ * 4,
             colorSpace,
@@ -212,7 +212,7 @@ JaliumResult MetalRenderTarget::Resize(int32_t width, int32_t height)
         cgContext_ = nullptr;
     }
 
-    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     cgContext_ = CGBitmapContextCreate(
         framebuffer_.data(), width_, height_, 8, width_ * 4,
         colorSpace,
@@ -294,11 +294,20 @@ void MetalRenderTarget::Clear(float r, float g, float b, float a)
     uint8_t gb = (uint8_t)(std::clamp(g, 0.0f, 1.0f) * 255.0f);
     uint8_t bb = (uint8_t)(std::clamp(b, 0.0f, 1.0f) * 255.0f);
     uint8_t ab = (uint8_t)(std::clamp(a, 0.0f, 1.0f) * 255.0f);
-    for (size_t i = 0; i < framebuffer_.size(); i += 4) {
-        framebuffer_[i + 0] = bb;
-        framebuffer_[i + 1] = gb;
-        framebuffer_[i + 2] = rb;
-        framebuffer_[i + 3] = ab;
+    if (rb == 0 && gb == 0 && bb == 0 && ab == 0) {
+        memset(framebuffer_.data(), 0, framebuffer_.size());
+    } else {
+        // Fill the first row, then memcpy to all remaining rows
+        size_t stride = (size_t)width_ * 4;
+        for (size_t i = 0; i < stride; i += 4) {
+            framebuffer_[i + 0] = bb;
+            framebuffer_[i + 1] = gb;
+            framebuffer_[i + 2] = rb;
+            framebuffer_[i + 3] = ab;
+        }
+        for (size_t row = 1; row < height_; ++row) {
+            memcpy(framebuffer_.data() + row * stride, framebuffer_.data(), stride);
+        }
     }
 #endif
 }
@@ -332,7 +341,7 @@ void MetalRenderTarget::ApplyGradientFill(CGContextRef ctx, Brush* brush)
             components[i * 4 + 3] = linear->stops[i].a * currentOpacity_;
             locations[i] = linear->stops[i].position;
         }
-        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGGradientRef gradient = CGGradientCreateWithColorComponents(
             cs, components.data(), locations.data(), count);
         CGContextDrawLinearGradient(ctx, gradient,
@@ -352,7 +361,7 @@ void MetalRenderTarget::ApplyGradientFill(CGContextRef ctx, Brush* brush)
             components[i * 4 + 3] = radial->stops[i].a * currentOpacity_;
             locations[i] = radial->stops[i].position;
         }
-        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGGradientRef gradient = CGGradientCreateWithColorComponents(
             cs, components.data(), locations.data(), count);
         float maxRadius = std::max(radial->radiusX, radial->radiusY);
@@ -405,6 +414,20 @@ CGPathRef MetalRenderTarget::BuildCommandPath(float startX, float startY,
                 commands[i + 3], commands[i + 4],
                 commands[i + 5], commands[i + 6]);
             i += 7;
+        } else if (tag == 2 && i + 2 < commandLength) {
+            // MoveTo: new sub-path
+            CGPathMoveToPoint(path, nullptr, commands[i + 1], commands[i + 2]);
+            i += 3;
+        } else if (tag == 3 && i + 4 < commandLength) {
+            // QuadTo
+            CGPathAddQuadCurveToPoint(path, nullptr,
+                commands[i + 1], commands[i + 2],
+                commands[i + 3], commands[i + 4]);
+            i += 5;
+        } else if (tag == 5) {
+            // ClosePath
+            CGPathCloseSubpath(path);
+            i += 1;
         } else {
             break;
         }
@@ -568,7 +591,7 @@ void MetalRenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
 #endif
 }
 
-void MetalRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed)
+void MetalRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit)
 {
 #ifdef __APPLE__
     if (!cgContext_ || !brush || pointCount < 2) return;
@@ -618,7 +641,7 @@ void MetalRenderTarget::FillPath(float startX, float startY, const float* comman
 #endif
 }
 
-void MetalRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed)
+void MetalRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap)
 {
 #ifdef __APPLE__
     if (!cgContext_ || !brush) return;
@@ -717,7 +740,7 @@ void MetalRenderTarget::RenderText(
 
     // Set text color
     if (auto* solid = dynamic_cast<MetalSolidBrush*>(brush)) {
-        CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGFloat components[] = { solid->r, solid->g, solid->b, solid->a * currentOpacity_ };
         CGColorRef color = CGColorCreate(cs, components);
         CFDictionarySetValue(attrs, kCTForegroundColorAttributeName, color);
@@ -890,6 +913,8 @@ void MetalRenderTarget::PopOpacity()
     currentOpacity_ = opacityStack_.top();
     opacityStack_.pop();
 }
+
+void MetalRenderTarget::SetShapeType(int /*type*/, float /*n*/) {}
 
 void MetalRenderTarget::SetVSyncEnabled(bool enabled)
 {
@@ -1238,7 +1263,7 @@ Bitmap* MetalBackend::CreateBitmapFromMemory(const uint8_t* data, uint32_t dataS
 
     // Decode to BGRA8
     std::vector<uint8_t> pixels(width * height * 4);
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGContextRef ctx = CGBitmapContextCreate(
         pixels.data(), width, height, 8, width * 4,
         cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);
@@ -1247,7 +1272,7 @@ Bitmap* MetalBackend::CreateBitmapFromMemory(const uint8_t* data, uint32_t dataS
     CGColorSpaceRelease(cs);
 
     auto* bitmap = new MetalBitmap(width, height, std::move(pixels), cgImage);
-    CGImageRelease(cgImage);
+    CGImageRelease(cgImage);  // MetalBitmap retains cgImage in its constructor, safe to release here
     CFRelease(imageSource);
     CFRelease(cfData);
 
@@ -1274,7 +1299,7 @@ Bitmap* MetalBackend::CreateBitmapFromPixels(
                     width * 4);
     }
 
-    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
     CGContextRef ctx = CGBitmapContextCreate(
         pixelData.data(), width, height, 8, width * 4,
         cs, kCGImageAlphaPremultipliedFirst | kCGBitmapByteOrder32Little);

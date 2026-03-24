@@ -227,6 +227,12 @@ public class Calendar : Control
     private bool _isHoveringPrev;
     private bool _isHoveringNext;
 
+    // Cached pens
+    private Pen? _arrowPen;
+    private Brush? _arrowPenBrush;
+    private Pen? _accentPen;
+    private Brush? _accentPenBrush;
+
     #endregion
 
     #region Constructor
@@ -557,6 +563,10 @@ public class Calendar : Control
         _monthYearRect = new Rect(textX, textY, formattedText.Width, formattedText.Height);
     }
 
+    // Chevron paths in 8×12 design space, cached once
+    private static readonly PathGeometry s_chevronRight = (PathGeometry)Geometry.Parse("M 0,0 L 4,6 L 0,12");
+    private static readonly PathGeometry s_chevronLeft = (PathGeometry)Geometry.Parse("M 4,0 L 0,6 L 4,12");
+
     private void DrawNavigationButton(DrawingContext dc, Rect rect, bool isNext, bool isHovered)
     {
         if (isHovered)
@@ -564,22 +574,36 @@ public class Calendar : Control
             dc.DrawRoundedRectangle(ResolveCalendarBrush("HighlightBackground", s_hoverBrush), null, rect, new CornerRadius(4));
         }
 
-        var arrowPen = isHovered
-            ? new Pen(ResolvePrimaryTextBrush(), 2)
-            : new Pen(ResolveCalendarBrush("TextSecondary", s_arrowNormalBrush), 2);
-
-        var centerX = rect.X + rect.Width / 2;
-        var centerY = rect.Y + rect.Height / 2;
-
-        if (isNext)
+        var arrowBrush = isHovered
+            ? ResolvePrimaryTextBrush()
+            : ResolveCalendarBrush("TextSecondary", s_arrowNormalBrush);
+        if (_arrowPen == null || _arrowPenBrush != arrowBrush)
         {
-            dc.DrawLine(arrowPen, new Point(centerX - 4, centerY - 6), new Point(centerX + 4, centerY));
-            dc.DrawLine(arrowPen, new Point(centerX + 4, centerY), new Point(centerX - 4, centerY + 6));
+            _arrowPenBrush = arrowBrush;
+            _arrowPen = new Pen(arrowBrush, 2);
         }
-        else
+
+        var source = isNext ? s_chevronRight : s_chevronLeft;
+        var cx = rect.X + rect.Width / 2;
+        var cy = rect.Y + rect.Height / 2;
+        var bounds = source.Bounds;
+        var ox = cx - bounds.X - bounds.Width / 2;
+        var oy = cy - bounds.Y - bounds.Height / 2;
+
+        foreach (var figure in source.Figures)
         {
-            dc.DrawLine(arrowPen, new Point(centerX + 4, centerY - 6), new Point(centerX - 4, centerY));
-            dc.DrawLine(arrowPen, new Point(centerX - 4, centerY), new Point(centerX + 4, centerY + 6));
+            var tf = new PathFigure
+            {
+                StartPoint = new Point(figure.StartPoint.X + ox, figure.StartPoint.Y + oy),
+                IsClosed = figure.IsClosed,
+                IsFilled = false
+            };
+            foreach (var seg in figure.Segments)
+                if (seg is LineSegment ls)
+                    tf.Segments.Add(new LineSegment(new Point(ls.Point.X + ox, ls.Point.Y + oy), ls.IsStroked));
+            var geo = new PathGeometry();
+            geo.Figures.Add(tf);
+            dc.DrawGeometry(null, _arrowPen, geo);
         }
     }
 
@@ -650,7 +674,13 @@ public class Calendar : Control
         }
         else if (isToday && IsTodayHighlighted)
         {
-            var accentPen = new Pen(ResolveCalendarBrush("AccentBrush", s_accentBrush), 2);
+            var accentBrush = ResolveCalendarBrush("AccentBrush", s_accentBrush);
+            if (_accentPen == null || _accentPenBrush != accentBrush)
+            {
+                _accentPenBrush = accentBrush;
+                _accentPen = new Pen(accentBrush, 2);
+            }
+            var accentPen = _accentPen;
             dc.DrawEllipse(null, accentPen,
                 new Point(rect.X + rect.Width / 2, rect.Y + rect.Height / 2),
                 rect.Width / 2 - 2, rect.Height / 2 - 2);

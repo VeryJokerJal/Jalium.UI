@@ -101,7 +101,20 @@ public sealed class StreamGeometry : Geometry
     /// <summary>
     /// Gets the underlying PathGeometry.
     /// </summary>
-    internal PathGeometry? GetPathGeometry() => _pathGeometry;
+    public PathGeometry? GetPathGeometry() => _pathGeometry;
+
+    /// <inheritdoc />
+    public override Geometry Clone()
+    {
+        var clone = new StreamGeometry();
+        if (_pathGeometry != null)
+        {
+            var clonedPath = _pathGeometry.ClonePathGeometry();
+            clone._pathGeometry = clonedPath;
+        }
+        clone.Transform = Transform;
+        return clone;
+    }
 
     /// <summary>
     /// Called by StreamGeometryContext when it is closed.

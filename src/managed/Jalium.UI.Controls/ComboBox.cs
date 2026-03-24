@@ -265,6 +265,7 @@ public class ComboBox : Selector
         if (_arrowPath != null)
         {
             _arrowRotate = new RotateTransform();
+            _arrowPath.RenderTransformOrigin = new Point(0.5, 0.5);
             _arrowPath.RenderTransform = _arrowRotate;
         }
 

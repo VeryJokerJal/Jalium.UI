@@ -14,42 +14,31 @@
 using Microsoft::WRL::Callback;
 using Microsoft::WRL::ComPtr;
 
+#ifndef JALIUM_STATIC
+// DLL 模式：运行时动态加载 WebView2Loader.dll
 using CreateCoreWebView2EnvironmentWithOptionsFn = HRESULT(STDAPICALLTYPE*)(
-    PCWSTR,
-    PCWSTR,
-    ICoreWebView2EnvironmentOptions*,
+    PCWSTR, PCWSTR, ICoreWebView2EnvironmentOptions*,
     ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler*);
-
 using GetAvailableCoreWebView2BrowserVersionStringFn = HRESULT(STDAPICALLTYPE*)(
-    PCWSTR,
-    LPWSTR*);
+    PCWSTR, LPWSTR*);
 
 HMODULE g_webview2_loader = nullptr;
 CreateCoreWebView2EnvironmentWithOptionsFn g_create_environment = nullptr;
 GetAvailableCoreWebView2BrowserVersionStringFn g_get_browser_version = nullptr;
-std::atomic<int> g_com_initialized_count = 0;
 
 HRESULT EnsureWebView2Loader() {
-    if (g_webview2_loader != nullptr && g_create_environment != nullptr && g_get_browser_version != nullptr) {
-        return S_OK;
-    }
-
+    if (g_webview2_loader && g_create_environment && g_get_browser_version) return S_OK;
     g_webview2_loader = LoadLibraryW(L"WebView2Loader.dll");
-    if (!g_webview2_loader) {
-        return HRESULT_FROM_WIN32(GetLastError());
-    }
-
+    if (!g_webview2_loader) return HRESULT_FROM_WIN32(GetLastError());
     g_create_environment = reinterpret_cast<CreateCoreWebView2EnvironmentWithOptionsFn>(
         GetProcAddress(g_webview2_loader, "CreateCoreWebView2EnvironmentWithOptions"));
     g_get_browser_version = reinterpret_cast<GetAvailableCoreWebView2BrowserVersionStringFn>(
         GetProcAddress(g_webview2_loader, "GetAvailableCoreWebView2BrowserVersionString"));
-
-    if (!g_create_environment || !g_get_browser_version) {
-        return E_NOINTERFACE;
-    }
-
-    return S_OK;
+    return (g_create_environment && g_get_browser_version) ? S_OK : E_NOINTERFACE;
 }
+#endif
+
+std::atomic<int> g_com_initialized_count = 0;
 
 HRESULT WaitForEventWithMessagePump(HANDLE event_handle) {
     if (event_handle == nullptr) {
@@ -179,6 +168,13 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
         return E_POINTER;
     }
 
+    // Helper: on any add_* failure, remove all previously added callbacks
+    // to avoid partial registration that could leak or cause inconsistency.
+    auto rollback = [controller_handle](HRESULT failHr) {
+        RemoveCallbacks(controller_handle);
+        return failHr;
+    };
+
     HRESULT hr = S_OK;
 
     hr = controller_handle->core->add_NavigationStarting(
@@ -207,7 +203,7 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
             .Get(),
         &controller_handle->navigation_starting_token);
     if (FAILED(hr)) {
-        return hr;
+        return rollback(hr);
     }
 
     hr = controller_handle->core->add_NavigationCompleted(
@@ -239,7 +235,7 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
             .Get(),
         &controller_handle->navigation_completed_token);
     if (FAILED(hr)) {
-        return hr;
+        return rollback(hr);
     }
 
     hr = controller_handle->core->add_SourceChanged(
@@ -257,7 +253,7 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
             .Get(),
         &controller_handle->source_changed_token);
     if (FAILED(hr)) {
-        return hr;
+        return rollback(hr);
     }
 
     hr = controller_handle->core->add_ContentLoading(
@@ -275,7 +271,7 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
             .Get(),
         &controller_handle->content_loading_token);
     if (FAILED(hr)) {
-        return hr;
+        return rollback(hr);
     }
 
     hr = controller_handle->core->add_DocumentTitleChanged(
@@ -294,7 +290,7 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
             .Get(),
         &controller_handle->document_title_changed_token);
     if (FAILED(hr)) {
-        return hr;
+        return rollback(hr);
     }
 
     hr = controller_handle->core->add_WebMessageReceived(
@@ -318,7 +314,7 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
             .Get(),
         &controller_handle->web_message_received_token);
     if (FAILED(hr)) {
-        return hr;
+        return rollback(hr);
     }
 
     hr = controller_handle->core->add_NewWindowRequested(
@@ -347,7 +343,7 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
             .Get(),
         &controller_handle->new_window_requested_token);
     if (FAILED(hr)) {
-        return hr;
+        return rollback(hr);
     }
 
     hr = controller_handle->core->add_ProcessFailed(
@@ -365,7 +361,7 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
             .Get(),
         &controller_handle->process_failed_token);
     if (FAILED(hr)) {
-        return hr;
+        return rollback(hr);
     }
 
     hr = controller_handle->controller->add_ZoomFactorChanged(
@@ -383,6 +379,10 @@ HRESULT AddCallbacks(JaliumWebView2ControllerHandle* controller_handle) {
             .Get(),
         &controller_handle->zoom_factor_changed_token);
 
+    if (FAILED(hr)) {
+        return rollback(hr);
+    }
+
     return hr;
 }
 
@@ -395,12 +395,11 @@ HRESULT ValidateController(JaliumWebView2ControllerHandle* controller_handle) {
 }
 
 int jalium_webview2_initialize(void) {
-    HRESULT hr = EnsureWebView2Loader();
-    if (FAILED(hr)) {
-        return hr;
-    }
-
-    hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+#ifndef JALIUM_STATIC
+    HRESULT loader_hr = EnsureWebView2Loader();
+    if (FAILED(loader_hr)) return loader_hr;
+#endif
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     if (SUCCEEDED(hr) || hr == S_FALSE) {
         g_com_initialized_count.fetch_add(1);
         return S_OK;
@@ -430,12 +429,13 @@ int jalium_webview2_get_available_browser_version_string(
 
     *version_out = nullptr;
 
+#ifdef JALIUM_STATIC
+    return GetAvailableCoreWebView2BrowserVersionString(browser_executable_folder, version_out);
+#else
     HRESULT hr = EnsureWebView2Loader();
-    if (FAILED(hr)) {
-        return hr;
-    }
-
+    if (FAILED(hr)) return hr;
     return g_get_browser_version(browser_executable_folder, version_out);
+#endif
 }
 
 void jalium_webview2_free_string(wchar_t* value) {
@@ -451,11 +451,6 @@ int jalium_webview2_create_environment(
     }
 
     *environment_out = nullptr;
-
-    HRESULT hr = EnsureWebView2Loader();
-    if (FAILED(hr)) {
-        return hr;
-    }
 
     HANDLE completed = CreateEventW(nullptr, TRUE, FALSE, nullptr);
     if (!completed) {
@@ -473,7 +468,13 @@ int jalium_webview2_create_environment(
             return S_OK;
         });
 
-    hr = g_create_environment(browser_executable_folder, user_data_folder, nullptr, callback.Get());
+#ifdef JALIUM_STATIC
+    HRESULT hr = CreateCoreWebView2EnvironmentWithOptions(browser_executable_folder, user_data_folder, nullptr, callback.Get());
+#else
+    HRESULT loader_hr = EnsureWebView2Loader();
+    if (FAILED(loader_hr)) { CloseHandle(completed); return loader_hr; }
+    HRESULT hr = g_create_environment(browser_executable_folder, user_data_folder, nullptr, callback.Get());
+#endif
     if (SUCCEEDED(hr)) {
         hr = WaitForEventWithMessagePump(completed);
     }

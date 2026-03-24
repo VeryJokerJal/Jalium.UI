@@ -5,10 +5,16 @@ namespace Jalium.UI.Media;
 /// </summary>
 public abstract class Brush
 {
+    private double _opacity = 1.0;
+
     /// <summary>
     /// Gets or sets the opacity of the brush (0.0 - 1.0).
     /// </summary>
-    public double Opacity { get; set; } = 1.0;
+    public double Opacity
+    {
+        get => _opacity;
+        set => _opacity = Math.Clamp(value, 0.0, 1.0);
+    }
 
     /// <summary>
     /// Gets or sets the transform applied to the brush.
@@ -126,15 +132,26 @@ public sealed class RadialGradientBrush : GradientBrush
     /// </summary>
     public Point GradientOrigin { get; set; } = new(0.5, 0.5);
 
-    /// <summary>
-    /// Gets or sets the horizontal radius of the gradient.
-    /// </summary>
-    public double RadiusX { get; set; } = 0.5;
+    private double _radiusX = 0.5;
+    private double _radiusY = 0.5;
 
     /// <summary>
-    /// Gets or sets the vertical radius of the gradient.
+    /// Gets or sets the horizontal radius of the gradient. Must be non-negative.
     /// </summary>
-    public double RadiusY { get; set; } = 0.5;
+    public double RadiusX
+    {
+        get => _radiusX;
+        set => _radiusX = Math.Max(0, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the vertical radius of the gradient. Must be non-negative.
+    /// </summary>
+    public double RadiusY
+    {
+        get => _radiusY;
+        set => _radiusY = Math.Max(0, value);
+    }
 }
 
 /// <summary>

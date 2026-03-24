@@ -18,6 +18,7 @@ public class TreeView : ItemsControl
     }
 
     private TreeViewItem? _selectedItem;
+    internal Style? _cachedTreeViewItemStyle;
 
     #region Dependency Properties
 
@@ -131,6 +132,18 @@ public class TreeView : ItemsControl
         if (element is not TreeViewItem tvi)
         {
             return;
+        }
+
+        // Pre-apply cached TreeViewItem style to avoid expensive implicit style lookup
+        // when the container enters the visual tree. The first container resolves the
+        // style; subsequent containers reuse the cached result.
+        if (tvi.Style == null)
+        {
+            _cachedTreeViewItemStyle ??= tvi.TryFindResource(typeof(TreeViewItem)) as Style;
+            if (_cachedTreeViewItemStyle != null)
+            {
+                tvi.Style = _cachedTreeViewItemStyle;
+            }
         }
 
         tvi.ParentTreeView = this;
@@ -339,13 +352,18 @@ public class TreeViewItem : HeaderedItemsControl
     private int _level;
     private bool _isHeaderMouseOver;
 
+    // Deferred child loading: store data source + template, create children only on expand
+    private object? _deferredItemsSource;
+    private HierarchicalDataTemplate? _deferredTemplate;
+    private bool _childrenRealized;
+
     #region Template Parts
 
     private Border? _headerBorder;
     private Border? _indentSpacer;
     private Border? _expanderBorder;
     private Shapes.Path? _expanderArrow;
-    private StackPanel? _itemsHost;
+    private FrameworkElement? _itemsHost; // ItemsPresenter from template (controls visibility/clipping)
     private Threading.DispatcherTimer? _expandAnimTimer;
     private bool _suppressChildItemsChanged;
     private long _expandAnimationStartTick;
@@ -415,9 +433,9 @@ public class TreeViewItem : HeaderedItemsControl
     }
 
     /// <summary>
-    /// Gets whether this item has child items.
+    /// Gets whether this item has child items (including deferred/not-yet-realized children).
     /// </summary>
-    public bool HasItems => Items.Count > 0;
+    public bool HasItems => Items.Count > 0 || _deferredItemsSource != null;
 
     /// <summary>
     /// Gets or sets the indentation level.
@@ -486,12 +504,107 @@ public class TreeViewItem : HeaderedItemsControl
     }
 
     /// <summary>
-    /// Override to prevent ItemsControl's fallback panel from interfering.
-    /// TreeViewItem manages children via PART_ItemsHost in the template.
+    /// Defer template application when this TreeViewItem is inside a collapsed
+    /// parent (i.e. it hasn't been measured yet). This prevents cascading template
+    /// instantiation through entire collapsed subtrees during initial load.
+    /// The template will be applied on the first MeasureOverride instead.
+    /// </summary>
+    internal override bool ShouldDeferTemplateApplication()
+    {
+        // If we don't have a visual parent yet (not in visual tree), defer.
+        // If our parent's items host is collapsed, defer.
+        // Otherwise apply eagerly (e.g. root items, items being expanded).
+        if (VisualParent == null)
+        {
+            return true;
+        }
+
+        // Walk up to find the items host container (ItemsPresenter) and check its visibility.
+        for (var ancestor = VisualParent; ancestor != null; ancestor = ancestor.VisualParent)
+        {
+            if (ancestor is FrameworkElement fe && fe.Visibility == Visibility.Collapsed)
+            {
+                return true;
+            }
+
+            // Stop at the parent TreeViewItem — no need to walk further
+            if (ancestor is TreeViewItem)
+            {
+                break;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Like WPF, only populate the items panel when the node is expanded.
+    /// Collapsed nodes defer panel population until first expand, preventing
+    /// cascading container creation through the entire tree.
     /// </summary>
     protected override void RefreshItems()
     {
-        // No-op: TreeViewItem manages children via _itemsHost (template part)
+        if (!IsExpanded)
+        {
+            return; // Defer population until expand
+        }
+
+        base.RefreshItems();
+    }
+
+    /// <inheritdoc />
+    protected override FrameworkElement GetContainerForItem(object item)
+    {
+        return item is TreeViewItem ? (FrameworkElement)item : new TreeViewItem();
+    }
+
+    /// <inheritdoc />
+    protected override bool IsItemItsOwnContainer(object item)
+    {
+        return item is TreeViewItem;
+    }
+
+    /// <inheritdoc />
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
+    {
+        base.PrepareContainerForItem(element, item);
+        if (element is not TreeViewItem childTvi)
+        {
+            return;
+        }
+
+        // Set hierarchy metadata (like WPF's PrepareItemContainer)
+        childTvi.ParentTreeView = ParentTreeView;
+        childTvi.ParentItem = this;
+        childTvi.Level = Level + 1;
+
+        // Pre-apply cached style to avoid per-item implicit style lookup
+        if (childTvi.Style == null && ParentTreeView?._cachedTreeViewItemStyle != null)
+        {
+            childTvi.Style = ParentTreeView._cachedTreeViewItemStyle;
+        }
+
+        if (item is TreeViewItem)
+        {
+            return;
+        }
+
+        childTvi.Header = item;
+        childTvi.DataContext = item;
+
+        if (ItemTemplate is HierarchicalDataTemplate hdt)
+        {
+            TreeViewItem.ApplyHierarchicalDataTemplate(childTvi, item, hdt);
+        }
+        else if (ParentTreeView?.ItemTemplate is HierarchicalDataTemplate parentHdt)
+        {
+            var childTemplate = parentHdt.ItemTemplate as HierarchicalDataTemplate ?? parentHdt;
+            TreeViewItem.ApplyHierarchicalDataTemplate(childTvi, item, childTemplate);
+        }
+        else if (ItemTemplate != null)
+        {
+            childTvi.HeaderTemplate = ItemTemplate;
+        }
     }
 
     #region Template
@@ -513,7 +626,7 @@ public class TreeViewItem : HeaderedItemsControl
         _indentSpacer = GetTemplateChild("PART_IndentSpacer") as Border;
         _expanderBorder = GetTemplateChild("PART_ExpanderBorder") as Border;
         _expanderArrow = GetTemplateChild("PART_ExpanderArrow") as Shapes.Path;
-        _itemsHost = GetTemplateChild("PART_ItemsHost") as StackPanel;
+        _itemsHost = GetTemplateChild("PART_ItemsHost") as FrameworkElement;
 
         // Attach click handler to header border only (not the whole item)
         // so child item clicks don't bubble up to parent items
@@ -528,27 +641,13 @@ public class TreeViewItem : HeaderedItemsControl
         UpdateIndent();
         UpdateExpanderVisibility();
 
-        // Add existing items to the items host panel
-        if (_itemsHost != null)
-        {
-            foreach (var item in Items)
-            {
-                if (item is TreeViewItem childTvi)
-                {
-                    childTvi.ParentTreeView = ParentTreeView;
-                    childTvi.ParentItem = this;
-                    childTvi.Level = Level + 1;
-                    _itemsHost.Children.Add(childTvi);
-                }
-            }
+        // Sync expanded visuals (IsExpanded may have been set before template was applied)
+        SyncExpandedVisualState();
 
-            // Sync expanded visuals (IsExpanded may have been set before template was applied)
-            SyncExpandedVisualState();
-        }
-        else
-        {
-            SyncExpandedVisualState();
-        }
+        // If expanded, populate children through the standard pipeline.
+        // ItemsPresenter (PART_ItemsHost) will call SetItemsPresenter which
+        // triggers RefreshItems — but only if IsExpanded (our override).
+        // For collapsed items, children remain deferred until first expand.
 
         UpdateHeaderVisualState();
     }
@@ -601,66 +700,26 @@ public class TreeViewItem : HeaderedItemsControl
             return;
         }
 
-        try
+        // Clean up removed items' hierarchy metadata
+        if (e.OldItems != null)
         {
-            var needsDescendantRefresh = e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset;
-
-            // Handle removed items
-            if (e.OldItems != null)
+            foreach (var item in e.OldItems)
             {
-                foreach (var item in e.OldItems)
+                if (item is TreeViewItem childTvi)
                 {
-                    if (item is TreeViewItem childTvi)
-                    {
-                        _itemsHost?.Children.Remove(childTvi);
-                        childTvi.ParentTreeView = null;
-                        childTvi.ParentItem = null;
-                    }
+                    childTvi.ParentTreeView = null;
+                    childTvi.ParentItem = null;
                 }
             }
-
-            // Handle added items
-            if (e.NewItems != null)
-            {
-                foreach (var item in e.NewItems)
-                {
-                    if (item is TreeViewItem childTvi)
-                    {
-                        childTvi.ParentTreeView = ParentTreeView;
-                        childTvi.ParentItem = this;
-                        childTvi.Level = Level + 1;
-                        _itemsHost?.Children.Add(childTvi);
-                    }
-                }
-            }
-
-            // Handle reset
-            if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
-            {
-                _itemsHost?.Children.Clear();
-                foreach (var item in Items)
-                {
-                    if (item is TreeViewItem childTvi)
-                    {
-                        childTvi.ParentTreeView = ParentTreeView;
-                        childTvi.ParentItem = this;
-                        childTvi.Level = Level + 1;
-                        _itemsHost?.Children.Add(childTvi);
-                    }
-                }
-            }
-
-            UpdateExpanderVisibility();
-            if (needsDescendantRefresh)
-            {
-                UpdateDescendantLevels();
-            }
-
-            InvalidateMeasure();
         }
-        catch
+
+        // Panel child management is handled by the standard ItemsControl pipeline
+        // (base.OnItemsCollectionChanged → RefreshItems / AddItemToPanel).
+        // We only need to maintain metadata here.
+        UpdateExpanderVisibility();
+        if (e.Action == System.Collections.Specialized.NotifyCollectionChangedAction.Reset)
         {
-            // Ignored
+            UpdateDescendantLevels();
         }
     }
 
@@ -677,29 +736,37 @@ public class TreeViewItem : HeaderedItemsControl
             return;
         }
 
+        // Use AddRange to fire a single Reset notification instead of N Add notifications.
         _suppressChildItemsChanged = true;
         try
         {
+            var boxed = new List<object>(bufferedItems.Count);
             foreach (var childItem in bufferedItems)
             {
-                Items.Add(childItem);
+                boxed.Add(childItem);
             }
+            Items.AddRange(boxed);
         }
         finally
         {
             _suppressChildItemsChanged = false;
         }
 
+        // Set parent/level for all children
         foreach (var childItem in bufferedItems)
         {
             childItem.ParentTreeView = ParentTreeView;
             childItem.ParentItem = this;
             childItem.Level = Level + 1;
-            _itemsHost?.Children.Add(childItem);
         }
 
+        // Standard pipeline handles panel population via RefreshItems
+        // (which only runs when expanded)
         UpdateExpanderVisibility();
-        InvalidateMeasure();
+        if (IsExpanded)
+        {
+            RefreshItems();
+        }
     }
 
     private void UpdateDescendantLevels()
@@ -1092,19 +1159,21 @@ public class TreeViewItem : HeaderedItemsControl
 
         var rotateTransform = _expanderArrow.RenderTransform as RotateTransform ?? new RotateTransform();
         rotateTransform.Angle = angle;
+        _expanderArrow.RenderTransformOrigin = new Point(0.5, 0.5);
         _expanderArrow.RenderTransform = rotateTransform;
         _expanderArrow.InvalidateVisual();
     }
 
     private ClothChild[] CollectClothChildren(double targetHeight)
     {
-        if (_itemsHost == null || _itemsHost.Children.Count == 0)
+        var panel = ItemsHost;
+        if (panel == null || panel.Children.Count == 0)
         {
             return [];
         }
 
         var children = new List<UIElement>();
-        foreach (var child in _itemsHost.Children)
+        foreach (var child in panel.Children)
         {
             if (child is UIElement uiElement && uiElement.Visibility == Visibility.Visible)
             {
@@ -1207,14 +1276,14 @@ public class TreeViewItem : HeaderedItemsControl
         UpdateHeaderVisualState();
     }
 
-    internal StackPanel? GetItemsHostPanel()
+    internal Panel? GetItemsHostPanel()
     {
-        if (_itemsHost == null)
+        if (ItemsHost == null)
         {
             ApplyTemplate();
         }
 
-        return _itemsHost;
+        return ItemsHost;
     }
 
     private TreeViewItem? FindParentTreeViewItem()
@@ -1274,6 +1343,16 @@ public class TreeViewItem : HeaderedItemsControl
         {
             var expanded = (bool)e.NewValue;
 
+            // Realize deferred children on first expand
+            if (expanded)
+            {
+                tvi.EnsureChildrenRealized();
+
+                // Populate the items panel through the standard ItemsControl pipeline.
+                // RefreshItems was deferred while collapsed (returns early when !IsExpanded).
+                tvi.RefreshItems();
+            }
+
             if (expanded)
                 tvi.RaiseEvent(new RoutedEventArgs(ExpandedEvent, tvi));
             else
@@ -1318,8 +1397,8 @@ public class TreeViewItem : HeaderedItemsControl
     #region HierarchicalDataTemplate Support
 
     /// <summary>
-    /// Applies a HierarchicalDataTemplate to a TreeViewItem, setting up header template
-    /// and populating child items from the ItemsSource binding.
+    /// Applies a HierarchicalDataTemplate to a TreeViewItem, setting up header template.
+    /// Child items are deferred until the node is expanded to avoid recursive tree creation.
     /// </summary>
     internal static void ApplyHierarchicalDataTemplate(TreeViewItem tvi, object dataItem, HierarchicalDataTemplate hdt)
     {
@@ -1333,35 +1412,130 @@ public class TreeViewItem : HeaderedItemsControl
         else
             tvi.ItemTemplate = hdt; // Recursive: same template for children
 
-        // Resolve ItemsSource binding to populate children
+        // Defer child creation: only resolve whether children exist (for the expander arrow),
+        // but don't create TreeViewItem containers until the node is expanded.
         if (hdt.ItemsSource is Jalium.UI.Binding binding && !string.IsNullOrEmpty(binding.Path?.Path))
         {
             var childItems = ResolvePropertyPath(dataItem, binding.Path.Path);
             if (childItems is IEnumerable enumerable)
             {
-                foreach (var childItem in enumerable)
+                // Check if there are any children without enumerating everything
+                var enumerator = enumerable.GetEnumerator();
+                try
                 {
-                    if (childItem is TreeViewItem childTvi)
+                    if (enumerator.MoveNext())
                     {
-                        tvi.Items.Add(childTvi);
+                        // Has children — store for deferred realization
+                        tvi._deferredItemsSource = childItems;
+                        tvi._deferredTemplate = hdt.ItemTemplate as HierarchicalDataTemplate ?? hdt;
+                        tvi._childrenRealized = false;
                     }
-                    else
-                    {
-                        var childContainer = new TreeViewItem
-                        {
-                            Header = childItem,
-                            DataContext = childItem
-                        };
-
-                        // Recursively apply the template to children
-                        var childTemplate = hdt.ItemTemplate as HierarchicalDataTemplate ?? hdt;
-                        ApplyHierarchicalDataTemplate(childContainer, childItem, childTemplate);
-
-                        tvi.Items.Add(childContainer);
-                    }
+                }
+                finally
+                {
+                    (enumerator as IDisposable)?.Dispose();
                 }
             }
         }
+
+        // If the item is already expanded, realize children immediately
+        if (tvi.IsExpanded)
+        {
+            tvi.EnsureChildrenRealized();
+        }
+    }
+
+    /// <summary>
+    /// Realizes deferred child items. Called when the node is first expanded.
+    /// Uses batch operations to minimize notifications, style lookups, and layout invalidations.
+    /// </summary>
+    internal void EnsureChildrenRealized()
+    {
+        if (_childrenRealized || _deferredItemsSource == null)
+        {
+            return;
+        }
+
+        _childrenRealized = true;
+        var itemsSource = _deferredItemsSource;
+        var template = _deferredTemplate;
+        _deferredItemsSource = null;
+        _deferredTemplate = null;
+
+        if (itemsSource is not IEnumerable enumerable)
+        {
+            return;
+        }
+
+        // Pre-resolve the TreeViewItem style once to avoid per-item resource lookups
+        var cachedStyle = ParentTreeView?._cachedTreeViewItemStyle
+            ?? TryFindResource(typeof(TreeViewItem)) as Style;
+        if (cachedStyle != null && ParentTreeView != null)
+        {
+            ParentTreeView._cachedTreeViewItemStyle = cachedStyle;
+        }
+
+        // Build all child containers first, without adding to any collection
+        var childContainers = new List<object>();
+        foreach (var childItem in enumerable)
+        {
+            if (childItem is TreeViewItem childTvi)
+            {
+                childContainers.Add(childTvi);
+            }
+            else
+            {
+                var childContainer = new TreeViewItem
+                {
+                    Header = childItem,
+                    DataContext = childItem
+                };
+
+                // Pre-apply cached style to avoid implicit style lookup overhead
+                if (cachedStyle != null && childContainer.Style == null)
+                {
+                    childContainer.Style = cachedStyle;
+                }
+
+                if (template != null)
+                {
+                    ApplyHierarchicalDataTemplate(childContainer, childItem, template);
+                }
+
+                childContainers.Add(childContainer);
+            }
+        }
+
+        if (childContainers.Count == 0)
+        {
+            return;
+        }
+
+        // Batch add to Items collection — fires a single Reset notification
+        _suppressChildItemsChanged = true;
+        try
+        {
+            Items.AddRange(childContainers);
+        }
+        finally
+        {
+            _suppressChildItemsChanged = false;
+        }
+
+        // Set parent/level metadata
+        for (int i = 0; i < childContainers.Count; i++)
+        {
+            if (childContainers[i] is TreeViewItem childTvi)
+            {
+                childTvi.ParentTreeView = ParentTreeView;
+                childTvi.ParentItem = this;
+                childTvi.Level = Level + 1;
+            }
+        }
+
+        // Standard pipeline handles panel population via RefreshItems
+        UpdateExpanderVisibility();
+        InvalidateMeasure();
     }
 
     private static object? ResolvePropertyPath(object obj, string path)

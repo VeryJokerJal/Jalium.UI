@@ -97,6 +97,9 @@ public:
     void SetAlignment(int32_t alignment) override;
     void SetParagraphAlignment(int32_t alignment) override;
     void SetTrimming(int32_t trimming) override;
+    void SetWordWrapping(int32_t wrapping) override;
+    void SetLineSpacing(int32_t method, float spacing, float baseline) override;
+    void SetMaxLines(uint32_t maxLines) override;
 
     JaliumResult MeasureText(
         const wchar_t* text,
@@ -106,6 +109,18 @@ public:
         JaliumTextMetrics* metrics) override;
 
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
+
+    JaliumResult HitTestPoint(
+        const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight,
+        float pointX, float pointY,
+        JaliumTextHitTestResult* result) override;
+
+    JaliumResult HitTestTextPosition(
+        const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight,
+        uint32_t textPosition, int32_t isTrailingHit,
+        JaliumTextHitTestResult* result) override;
 
     const std::wstring& GetFontFamily() const { return fontFamily_; }
     float GetFontSize() const { return fontSize_; }

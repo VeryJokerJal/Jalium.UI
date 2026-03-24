@@ -81,10 +81,10 @@
   <!-- Register source files for the source generator. -->
   <Target Name="PrepareJalxamlForSourceGenerator"
           BeforeTargets="CoreCompile"
+          DependsOnTargets="ResolveEffectiveJalxamlSources"
           Condition="'$(EnableJalxamlCodeGeneration)' == 'false' and ('@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != '')">
     <ItemGroup>
-      <AdditionalFiles Include="@(JalxamlPage)" />
-      <AdditionalFiles Include="@(JalxamlApplicationDefinition)" />
+      <AdditionalFiles Include="@(_EffectiveJalxamlSources)" />
       <AdditionalFiles Include="$(JalxamlIntermediateOutputPath)*.uic.base64" />
     </ItemGroup>
     <Message Text="Added JALXAML files to AdditionalFiles for the source generator." Importance="low" />
@@ -148,7 +148,7 @@
   <!-- Generate code-behind files when the source generator is disabled. -->
   <Target Name="GenerateJalxamlCodeBehind"
           BeforeTargets="CoreCompile"
-          DependsOnTargets="PrepareForBuild"
+          DependsOnTargets="PrepareForBuild;ResolveEffectiveJalxamlSources"
           Inputs="@(JalxamlPage);@(JalxamlApplicationDefinition)"
           Outputs="@(JalxamlPage->'$(JalxamlIntermediateOutputPath)%(Filename).g.cs');@(JalxamlApplicationDefinition->'$(JalxamlIntermediateOutputPath)%(Filename).g.cs');$(JalxamlIntermediateOutputPath)Jalxaml.ViewAliases.g.cs"
           Condition="'$(EnableJalxamlCodeGeneration)' == 'true' and ('@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != '')">
@@ -156,7 +156,7 @@
     <MakeDir Directories="$(JalxamlIntermediateOutputPath)" />
 
     <GenerateJalxamlCodeBehindTask
-        SourceFiles="@(JalxamlPage);@(JalxamlApplicationDefinition)"
+        SourceFiles="@(_EffectiveJalxamlSources)"
         OutputDirectory="$(JalxamlIntermediateOutputPath)"
         RootNamespace="$(RootNamespace)"
         CompilerPath="$(JalxamlCompilerPath)"

@@ -299,8 +299,11 @@ public static class PathMarkupParser
             if (_pos < _data.Length)
             {
                 char c = _data[_pos];
-                _pos++;
-                return c == '1';
+                if (c == '0' || c == '1')
+                {
+                    _pos++;
+                    return c == '1';
+                }
             }
             return false;
         }

@@ -203,7 +203,10 @@ public sealed class PriorityBindingExpression : BindingExpressionBase
             {
                 try
                 {
-                    activeValue = string.Format(_priorityBinding.StringFormat, activeValue);
+                    activeValue = string.Format(
+                        CultureInfo.CurrentCulture,
+                        _priorityBinding.StringFormat,
+                        activeValue);
                 }
                 catch (FormatException)
                 {

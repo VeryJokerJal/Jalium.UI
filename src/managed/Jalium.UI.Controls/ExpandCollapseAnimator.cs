@@ -129,6 +129,7 @@ internal static class ExpandCollapseAnimator
             return existing;
 
         var rt = new RotateTransform();
+        arrow.RenderTransformOrigin = new Point(0.5, 0.5);
         arrow.RenderTransform = rt;
         return rt;
     }

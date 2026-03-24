@@ -38,7 +38,7 @@ public sealed class ManipulationStartedEventArgs : InputEventArgs
     public void Complete() { }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is ManipulationStartedEventHandler typedHandler)
         {
@@ -69,7 +69,7 @@ public sealed class ManipulationDeltaEventArgs : InputEventArgs
     public void ReportBoundaryFeedback(ManipulationDelta unusedManipulation) { }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is ManipulationDeltaEventHandler typedHandler)
         {
@@ -94,7 +94,7 @@ public sealed class ManipulationCompletedEventArgs : InputEventArgs
     public bool IsInertial { get; init; }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is ManipulationCompletedEventHandler typedHandler)
         {
@@ -124,7 +124,7 @@ public sealed class ManipulationInertiaStartingEventArgs : InputEventArgs
     public void Cancel() { }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is ManipulationInertiaStartingEventHandler typedHandler)
         {

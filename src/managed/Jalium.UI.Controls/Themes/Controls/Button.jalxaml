@@ -27,31 +27,17 @@
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}" />
-                    <Border Name="HoverOverlay"
+                    <Border Name="StateOverlay"
                             TransitionProperty="Opacity"
                             IsHitTestVisible="False"
-                            Background="{DynamicResource ControlBackgroundHover}"
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Opacity="0" />
-                    <Border Name="PressedOverlay"
-                            TransitionProperty="Opacity"
-                            IsHitTestVisible="False"
-                            Background="{DynamicResource ButtonBackgroundPressed}"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Opacity="0" />
-                    <Border Name="FocusOuter"
+                    <Border Name="FocusBorder"
                             IsHitTestVisible="False"
                             BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="1"
+                            BorderThickness="2"
                             CornerRadius="{TemplateBinding CornerRadius}"
-                            Opacity="0" />
-                    <Border Name="FocusInner"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                            BorderThickness="1"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Margin="2"
-                            Opacity="0" />
+                            Visibility="Collapsed" />
                     <ContentPresenter
                         Margin="{TemplateBinding Padding}"
                         HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
@@ -73,22 +59,20 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="HoverOverlay" Property="Opacity" Value="1" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
+                <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter TargetName="HoverOverlay" Property="Opacity" Value="0" />
-                <Setter TargetName="PressedOverlay" Property="Opacity" Value="1" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource ButtonBackgroundPressed}" />
+                <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="HoverOverlay" Property="Opacity" Value="0" />
-                <Setter TargetName="PressedOverlay" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter TargetName="StateOverlay" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
                 <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
@@ -115,19 +99,12 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="SplitButton">
                 <Grid>
-                    <Border Name="FocusOuter"
+                    <Border Name="FocusBorder"
                             IsHitTestVisible="False"
                             BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="1"
+                            BorderThickness="2"
                             CornerRadius="{TemplateBinding CornerRadius}"
-                            Opacity="0" />
-                    <Border Name="FocusInner"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                            BorderThickness="1"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Margin="2"
-                            Opacity="0" />
+                            Visibility="Collapsed" />
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="32" />
@@ -167,12 +144,10 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
                 <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
@@ -203,31 +178,17 @@
                             BorderBrush="{TemplateBinding BorderBrush}"
                             BorderThickness="{TemplateBinding BorderThickness}"
                             CornerRadius="{TemplateBinding CornerRadius}" />
-                    <Border Name="HoverOverlay"
+                    <Border Name="StateOverlay"
                             TransitionProperty="Opacity"
                             IsHitTestVisible="False"
-                            Background="{DynamicResource ControlBackgroundHover}"
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Opacity="0" />
-                    <Border Name="PressedOverlay"
-                            TransitionProperty="Opacity"
-                            IsHitTestVisible="False"
-                            Background="{DynamicResource ButtonBackgroundPressed}"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Opacity="0" />
-                    <Border Name="FocusOuter"
+                    <Border Name="FocusBorder"
                             IsHitTestVisible="False"
                             BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="1"
+                            BorderThickness="2"
                             CornerRadius="{TemplateBinding CornerRadius}"
-                            Opacity="0" />
-                    <Border Name="FocusInner"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                            BorderThickness="1"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Margin="2"
-                            Opacity="0" />
+                            Visibility="Collapsed" />
                     <ContentPresenter
                         Margin="{TemplateBinding Padding}"
                         HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
@@ -249,22 +210,20 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="HoverOverlay" Property="Opacity" Value="1" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
+                <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter TargetName="HoverOverlay" Property="Opacity" Value="0" />
-                <Setter TargetName="PressedOverlay" Property="Opacity" Value="1" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource ButtonBackgroundPressed}" />
+                <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="HoverOverlay" Property="Opacity" Value="0" />
-                <Setter TargetName="PressedOverlay" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter TargetName="StateOverlay" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
                 <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
@@ -306,17 +265,11 @@
                                     Background="{TemplateBinding Foreground}" />
                         </Grid>
                     </Border>
-                    <Border Name="FocusOuter"
+                    <Border Name="FocusBorder"
                             IsHitTestVisible="False"
                             BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="1"
-                            Opacity="0" />
-                    <Border Name="FocusInner"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                            BorderThickness="1"
-                            Margin="2"
-                            Opacity="0" />
+                            BorderThickness="2"
+                            Visibility="Collapsed" />
                 </Grid>
             </ControlTemplate>
         </Setter>
@@ -329,12 +282,10 @@
                 <Setter Property="Foreground" Value="{DynamicResource HyperlinkForegroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsUnderlined" Value="False">

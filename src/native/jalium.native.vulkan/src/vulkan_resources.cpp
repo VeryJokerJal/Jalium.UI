@@ -37,10 +37,15 @@ VulkanRadialGradientBrush::VulkanRadialGradientBrush(
 }
 
 VulkanBitmap::VulkanBitmap(uint32_t width, uint32_t height, std::vector<uint8_t> pixelData)
-    : width_(width)
-    , height_(height)
+    : width_(width > 0 ? width : 1)
+    , height_(height > 0 ? height : 1)
     , pixelData_(std::move(pixelData))
 {
+    // Ensure pixel data matches expected size (4 bytes per RGBA pixel)
+    size_t expected = static_cast<size_t>(width_) * height_ * 4;
+    if (pixelData_.size() < expected) {
+        pixelData_.resize(expected, 0);
+    }
 }
 
 #ifdef _WIN32
@@ -156,6 +161,88 @@ void VulkanTextFormat::SetTrimming(int32_t trimming)
 
     format_->SetTrimming(&trimmingOptions, ellipsis.Get());
 #endif
+}
+
+void VulkanTextFormat::SetWordWrapping(int32_t wrapping)
+{
+#ifdef _WIN32
+    if (format_) {
+        DWRITE_WORD_WRAPPING dw;
+        switch (wrapping) {
+            case 1: dw = DWRITE_WORD_WRAPPING_NO_WRAP; break;
+            case 2: dw = DWRITE_WORD_WRAPPING_CHARACTER; break;
+            case 3: dw = DWRITE_WORD_WRAPPING_EMERGENCY_BREAK; break;
+            default: dw = DWRITE_WORD_WRAPPING_WRAP; break;
+        }
+        format_->SetWordWrapping(dw);
+    }
+#endif
+}
+
+void VulkanTextFormat::SetLineSpacing(int32_t method, float spacing, float baseline)
+{
+#ifdef _WIN32
+    if (format_) {
+        DWRITE_LINE_SPACING_METHOD dwMethod;
+        switch (method) {
+            case 1: dwMethod = DWRITE_LINE_SPACING_METHOD_UNIFORM; break;
+            case 2: dwMethod = DWRITE_LINE_SPACING_METHOD_PROPORTIONAL; break;
+            default: dwMethod = DWRITE_LINE_SPACING_METHOD_DEFAULT; break;
+        }
+        format_->SetLineSpacing(dwMethod, spacing, baseline);
+    }
+#endif
+}
+
+void VulkanTextFormat::SetMaxLines(uint32_t) {}
+
+JaliumResult VulkanTextFormat::HitTestPoint(
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    float pointX, float pointY,
+    JaliumTextHitTestResult* result)
+{
+    if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
+    memset(result, 0, sizeof(*result));
+#ifdef _WIN32
+    if (!format_ || !factory_ || !text) return JALIUM_ERROR_INVALID_ARGUMENT;
+    ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(factory_->CreateTextLayout(text, textLength, format_.Get(), maxWidth, maxHeight, &layout)))
+        return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    BOOL trailing = FALSE, inside = FALSE;
+    DWRITE_HIT_TEST_METRICS m = {};
+    layout->HitTestPoint(pointX, pointY, &trailing, &inside, &m);
+    result->textPosition = m.textPosition;
+    result->isTrailingHit = trailing;
+    result->isInside = inside;
+    float cx, cy; DWRITE_HIT_TEST_METRICS cm = {};
+    layout->HitTestTextPosition(m.textPosition, trailing, &cx, &cy, &cm);
+    result->caretX = cx; result->caretY = cy; result->caretHeight = cm.height;
+#endif
+    return JALIUM_OK;
+}
+
+JaliumResult VulkanTextFormat::HitTestTextPosition(
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    uint32_t textPosition, int32_t isTrailingHit,
+    JaliumTextHitTestResult* result)
+{
+    if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
+    memset(result, 0, sizeof(*result));
+#ifdef _WIN32
+    if (!format_ || !factory_ || !text) return JALIUM_ERROR_INVALID_ARGUMENT;
+    ComPtr<IDWriteTextLayout> layout;
+    if (FAILED(factory_->CreateTextLayout(text, textLength, format_.Get(), maxWidth, maxHeight, &layout)))
+        return JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+    float cx, cy; DWRITE_HIT_TEST_METRICS m = {};
+    layout->HitTestTextPosition(textPosition, isTrailingHit ? TRUE : FALSE, &cx, &cy, &m);
+    result->textPosition = textPosition;
+    result->isTrailingHit = isTrailingHit;
+    result->isInside = 1;
+    result->caretX = cx; result->caretY = cy; result->caretHeight = m.height;
+#endif
+    return JALIUM_OK;
 }
 
 JaliumResult VulkanTextFormat::MeasureText(

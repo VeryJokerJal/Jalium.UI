@@ -8,7 +8,7 @@ namespace Jalium.UI.Gpu;
 public sealed class PathTessellator
 {
     private readonly List<Vector2> _vertices = new();
-    private readonly List<ushort> _indices = new();
+    private readonly List<uint> _indices = new();
     private readonly List<List<Vector2>> _contours = new();
     private List<Vector2> _currentContour = new();
     private Vector2 _currentPoint;
@@ -16,10 +16,16 @@ public sealed class PathTessellator
     private Vector2 _lastControlPoint;
     private char _lastCommandUpper;
 
+    private float _tolerance = 0.25f;
+
     /// <summary>
-    /// 细分精度（较小的值产生更多三角形但更平滑）
+    /// 细分精度（较小的值产生更多三角形但更平滑）。最小值 0.01。
     /// </summary>
-    public float Tolerance { get; set; } = 0.25f;
+    public float Tolerance
+    {
+        get => _tolerance;
+        set => _tolerance = MathF.Max(value, 0.01f);
+    }
 
     /// <summary>
     /// 将 SVG 路径数据转换为三角形网格
@@ -29,7 +35,7 @@ public sealed class PathTessellator
         Reset();
 
         if (string.IsNullOrEmpty(pathData))
-            return new TessellationResult([], []);
+            return TessellationResult.Empty;
 
         ParseAndTessellate(pathData);
 
@@ -49,25 +55,27 @@ public sealed class PathTessellator
         var circumference = 2 * MathF.PI * MathF.Max(rx, ry);
         var segments = Math.Max(8, (int)(circumference / Tolerance));
 
+        if (rx <= 0 || ry <= 0)
+            return TessellationResult.Empty;
+
         // 生成椭圆顶点
         var center = new Vector2(cx, cy);
         _vertices.Add(center);
 
-        for (int i = 0; i <= segments; i++)
+        for (int i = 0; i < segments; i++)
         {
             var angle = 2 * MathF.PI * i / segments;
-            var point = new Vector2(
+            _vertices.Add(new Vector2(
                 cx + rx * MathF.Cos(angle),
-                cy + ry * MathF.Sin(angle));
-            _vertices.Add(point);
+                cy + ry * MathF.Sin(angle)));
         }
 
         // 生成三角形扇形索引
-        for (int i = 1; i <= segments; i++)
+        for (int i = 0; i < segments; i++)
         {
             _indices.Add(0);
-            _indices.Add((ushort)i);
-            _indices.Add((ushort)(i % segments + 1));
+            _indices.Add((uint)(i + 1));
+            _indices.Add((uint)(i + 1) % (uint)segments + 1);
         }
 
         return new TessellationResult(
@@ -82,12 +90,15 @@ public sealed class PathTessellator
     {
         Reset();
 
+        if (width <= 0 || height <= 0)
+            return TessellationResult.Empty;
+
         _vertices.Add(new Vector2(x, y));
         _vertices.Add(new Vector2(x + width, y));
         _vertices.Add(new Vector2(x + width, y + height));
         _vertices.Add(new Vector2(x, y + height));
 
-        _indices.AddRange(new ushort[] { 0, 1, 2, 0, 2, 3 });
+        _indices.AddRange(new uint[] { 0, 1, 2, 0, 2, 3 });
 
         return new TessellationResult(
             _vertices.ToArray(),
@@ -113,7 +124,7 @@ public sealed class PathTessellator
         var segments = Math.Max(4, (int)(MathF.PI * MathF.Max(MathF.Max(radiusTL, radiusTR), MathF.Max(radiusBR, radiusBL)) / 2 / Tolerance));
 
         // 添加中心点
-        var centerIndex = (ushort)_vertices.Count;
+        var centerIndex = (uint)_vertices.Count;
         _vertices.Add(new Vector2(x + width / 2, y + height / 2));
 
         // 生成边界顶点（从左上角顺时针）
@@ -140,8 +151,8 @@ public sealed class PathTessellator
         for (int i = 1; i < vertexCount; i++)
         {
             _indices.Add(centerIndex);
-            _indices.Add((ushort)i);
-            _indices.Add((ushort)(i % (vertexCount - 1) + 1));
+            _indices.Add((uint)i);
+            _indices.Add((uint)(i % (vertexCount - 1) + 1));
         }
 
         return new TessellationResult(
@@ -372,6 +383,7 @@ public sealed class PathTessellator
     {
         var tokens = new List<string>(pathData.Length);
         var current = new System.Text.StringBuilder();
+        bool hasDecimalPoint = false;
 
         for (int i = 0; i < pathData.Length; i++)
         {
@@ -385,6 +397,7 @@ public sealed class PathTessellator
                     current.Clear();
                 }
                 tokens.Add(c.ToString());
+                hasDecimalPoint = false;
             }
             else if (c == ',' || c == ' ' || c == '\t' || c == '\n' || c == '\r')
             {
@@ -393,6 +406,7 @@ public sealed class PathTessellator
                     tokens.Add(current.ToString());
                     current.Clear();
                 }
+                hasDecimalPoint = false;
             }
             else if (c == '-' && current.Length > 0 && current[^1] != 'e' && current[^1] != 'E')
             {
@@ -400,9 +414,20 @@ public sealed class PathTessellator
                 tokens.Add(current.ToString());
                 current.Clear();
                 current.Append(c);
+                hasDecimalPoint = false;
+            }
+            else if (c == '.' && hasDecimalPoint)
+            {
+                // 第二个小数点表示新数字的开始，如 "1.5.3" → "1.5", ".3"
+                tokens.Add(current.ToString());
+                current.Clear();
+                current.Append(c);
+                // hasDecimalPoint 保持 true，因为新 token 已经包含小数点
             }
             else
             {
+                if (c == '.')
+                    hasDecimalPoint = true;
                 current.Append(c);
             }
         }
@@ -606,7 +631,7 @@ public sealed class PathTessellator
             return;
 
         // 使用耳切法（Ear Clipping）进行三角化
-        var baseIndex = (ushort)_vertices.Count;
+        var baseIndex = (uint)_vertices.Count;
 
         // 添加顶点
         _vertices.AddRange(contour);
@@ -634,9 +659,9 @@ public sealed class PathTessellator
                 if (IsEar(contour, indices, prev, curr, next))
                 {
                     // 添加三角形
-                    _indices.Add((ushort)(baseIndex + prev));
-                    _indices.Add((ushort)(baseIndex + curr));
-                    _indices.Add((ushort)(baseIndex + next));
+                    _indices.Add((uint)(baseIndex + prev));
+                    _indices.Add((uint)(baseIndex + curr));
+                    _indices.Add((uint)(baseIndex + next));
 
                     // 移除当前顶点
                     indices.RemoveAt(i);
@@ -646,15 +671,28 @@ public sealed class PathTessellator
             }
 
             if (!earFound)
-                break; // 无法继续（可能是自相交的路径）
+            {
+                // 自相交或退化路径 — 尝试强制三角化剩余顶点作为 fan
+                // 这比丢弃它们产生更好的视觉效果
+                System.Diagnostics.Debug.WriteLine(
+                    $"[PathTessellator] Ear-clipping stuck with {indices.Count} remaining vertices, using fan fallback");
+                while (indices.Count > 2)
+                {
+                    _indices.Add((uint)(baseIndex + indices[0]));
+                    _indices.Add((uint)(baseIndex + indices[1]));
+                    _indices.Add((uint)(baseIndex + indices[2]));
+                    indices.RemoveAt(1);
+                }
+                break;
+            }
         }
 
         // 添加最后一个三角形
         if (indices.Count == 3)
         {
-            _indices.Add((ushort)(baseIndex + indices[0]));
-            _indices.Add((ushort)(baseIndex + indices[1]));
-            _indices.Add((ushort)(baseIndex + indices[2]));
+            _indices.Add((uint)(baseIndex + indices[0]));
+            _indices.Add((uint)(baseIndex + indices[1]));
+            _indices.Add((uint)(baseIndex + indices[2]));
         }
     }
 
@@ -709,7 +747,7 @@ public sealed class PathTessellator
         var dot12 = Vector2.Dot(v1, v2);
 
         var denom = dot00 * dot11 - dot01 * dot01;
-        if (MathF.Abs(denom) < 1e-10f)
+        if (MathF.Abs(denom) < 1e-6f)
             return false; // Degenerate triangle — no point can be "inside"
 
         var invDenom = 1 / denom;
@@ -737,7 +775,8 @@ public sealed class PathTessellator
 /// <summary>
 /// 三角化结果
 /// </summary>
-public readonly record struct TessellationResult(Vector2[] Vertices, ushort[] Indices)
+public readonly record struct TessellationResult(Vector2[] Vertices, uint[] Indices)
 {
+    public static readonly TessellationResult Empty = new([], []);
     public bool IsEmpty => Vertices.Length == 0;
 }

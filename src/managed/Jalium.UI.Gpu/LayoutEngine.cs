@@ -6,17 +6,31 @@ namespace Jalium.UI.Gpu;
 public sealed class LayoutEngine
 {
     private readonly Dictionary<ElementNode, LayoutSlot> _layoutSlots = new();
+    // Cache parsed grid definitions to avoid repeated string parsing in Measure+Arrange
+    private readonly Dictionary<ElementNode, (List<GridLength> Rows, List<GridLength> Cols)> _gridDefCache = new();
 
     /// <summary>
     /// 计算整个元素树的布局
     /// </summary>
     public void ComputeLayout(ElementNode root, double availableWidth, double availableHeight)
     {
+        _gridDefCache.Clear();
+
         // 第一遍：测量（自下而上）
         var desiredSize = Measure(root, availableWidth, availableHeight);
 
         // 第二遍：排列（自上而下）
         Arrange(root, new LayoutRect(0, 0, availableWidth, availableHeight));
+    }
+
+    private (List<GridLength> Rows, List<GridLength> Cols) GetGridDefs(ElementNode element)
+    {
+        if (!_gridDefCache.TryGetValue(element, out var defs))
+        {
+            defs = (ParseRowDefinitions(element), ParseColumnDefinitions(element));
+            _gridDefCache[element] = defs;
+        }
+        return defs;
     }
 
     /// <summary>
@@ -83,13 +97,23 @@ public sealed class LayoutEngine
 
     private LayoutSize MeasureGrid(ElementNode element, double availableWidth, double availableHeight)
     {
-        // 解析行列定义
-        var rowDefs = ParseRowDefinitions(element);
-        var colDefs = ParseColumnDefinitions(element);
+        // 使用缓存的行列定义（避免重复字符串解析）
+        var (rowDefs, colDefs) = GetGridDefs(element);
 
-        // 计算固定行列的尺寸
-        var fixedRowHeight = rowDefs.Where(r => r.Type == GridLengthType.Pixel).Sum(r => r.Value);
-        var fixedColWidth = colDefs.Where(c => c.Type == GridLengthType.Pixel).Sum(c => c.Value);
+        // 预计算固定尺寸和 star 计数（避免多次 LINQ 遍历）
+        double fixedRowHeight = 0, fixedColWidth = 0;
+        int starRowCount = 0, starColCount = 0;
+
+        for (int i = 0; i < rowDefs.Count; i++)
+        {
+            if (rowDefs[i].Type == GridLengthType.Pixel) fixedRowHeight += rowDefs[i].Value;
+            else if (rowDefs[i].Type == GridLengthType.Star) starRowCount++;
+        }
+        for (int i = 0; i < colDefs.Count; i++)
+        {
+            if (colDefs[i].Type == GridLengthType.Pixel) fixedColWidth += colDefs[i].Value;
+            else if (colDefs[i].Type == GridLengthType.Star) starColCount++;
+        }
 
         // 测量子元素
         foreach (var child in element.Children)
@@ -99,16 +123,12 @@ public sealed class LayoutEngine
             var rowSpan = GetGridRowSpan(child);
             var colSpan = GetGridColumnSpan(child);
 
-            // 计算可用空间
-            var cellWidth = CalculateCellSize(colDefs, col, colSpan, availableWidth);
-            var cellHeight = CalculateCellSize(rowDefs, row, rowSpan, availableHeight);
+            // 计算可用空间（传入预计算的 star 数量）
+            var cellWidth = CalculateCellSize(colDefs, col, colSpan, availableWidth, starColCount);
+            var cellHeight = CalculateCellSize(rowDefs, row, rowSpan, availableHeight, starRowCount);
 
             Measure(child, cellWidth, cellHeight);
         }
-
-        // 返回期望尺寸
-        var starRowCount = rowDefs.Count(r => r.Type == GridLengthType.Star);
-        var starColCount = colDefs.Count(c => c.Type == GridLengthType.Star);
 
         var desiredWidth = starColCount > 0 ? availableWidth : fixedColWidth;
         var desiredHeight = starRowCount > 0 ? availableHeight : fixedRowHeight;
@@ -339,8 +359,7 @@ public sealed class LayoutEngine
 
     private void ArrangeGrid(ElementNode element, LayoutRect finalRect)
     {
-        var rowDefs = ParseRowDefinitions(element);
-        var colDefs = ParseColumnDefinitions(element);
+        var (rowDefs, colDefs) = GetGridDefs(element);
 
         // 计算实际行高和列宽
         var rowHeights = CalculateGridSizes(rowDefs, finalRect.Height);
@@ -446,8 +465,8 @@ public sealed class LayoutEngine
                 childRect = new LayoutRect(
                     finalRect.X + leftUsed,
                     finalRect.Y + topUsed,
-                    finalRect.Width - leftUsed - rightUsed,
-                    finalRect.Height - topUsed - bottomUsed);
+                    Math.Max(0, finalRect.Width - leftUsed - rightUsed),
+                    Math.Max(0, finalRect.Height - topUsed - bottomUsed));
             }
             else
             {
@@ -458,7 +477,7 @@ public sealed class LayoutEngine
                             finalRect.X + leftUsed,
                             finalRect.Y + topUsed,
                             slot.DesiredSize.Width,
-                            finalRect.Height - topUsed - bottomUsed);
+                            Math.Max(0, finalRect.Height - topUsed - bottomUsed));
                         leftUsed += slot.DesiredSize.Width;
                         break;
                     case Dock.Right:
@@ -466,14 +485,14 @@ public sealed class LayoutEngine
                             finalRect.X + finalRect.Width - rightUsed - slot.DesiredSize.Width,
                             finalRect.Y + topUsed,
                             slot.DesiredSize.Width,
-                            finalRect.Height - topUsed - bottomUsed);
+                            Math.Max(0, finalRect.Height - topUsed - bottomUsed));
                         rightUsed += slot.DesiredSize.Width;
                         break;
                     case Dock.Top:
                         childRect = new LayoutRect(
                             finalRect.X + leftUsed,
                             finalRect.Y + topUsed,
-                            finalRect.Width - leftUsed - rightUsed,
+                            Math.Max(0, finalRect.Width - leftUsed - rightUsed),
                             slot.DesiredSize.Height);
                         topUsed += slot.DesiredSize.Height;
                         break;
@@ -481,7 +500,7 @@ public sealed class LayoutEngine
                         childRect = new LayoutRect(
                             finalRect.X + leftUsed,
                             finalRect.Y + finalRect.Height - bottomUsed - slot.DesiredSize.Height,
-                            finalRect.Width - leftUsed - rightUsed,
+                            Math.Max(0, finalRect.Width - leftUsed - rightUsed),
                             slot.DesiredSize.Height);
                         bottomUsed += slot.DesiredSize.Height;
                         break;
@@ -637,7 +656,7 @@ public sealed class LayoutEngine
         return element.Dock;
     }
 
-    private static double CalculateCellSize(List<GridLength> definitions, int start, int span, double available)
+    private static double CalculateCellSize(List<GridLength> definitions, int start, int span, double available, int starCount)
     {
         double size = 0;
         var end = Math.Min(start + span, definitions.Count);
@@ -648,7 +667,7 @@ public sealed class LayoutEngine
             size += def.Type switch
             {
                 GridLengthType.Pixel => def.Value,
-                GridLengthType.Star => available / definitions.Count(d => d.Type == GridLengthType.Star) * def.Value,
+                GridLengthType.Star => starCount > 0 ? available / starCount * def.Value : 0,
                 GridLengthType.Auto => double.PositiveInfinity,
                 _ => 0
             };

@@ -113,6 +113,23 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
                 Directory.CreateDirectory(outputDir);
 
             var content = File.ReadAllText(sourcePath);
+
+            // Expand @{ } Razor code blocks at build time
+            try
+            {
+                var expanded = RazorCodeBlockExpander.Expand(content);
+                if (expanded != null)
+                {
+                    Log.LogMessage(MessageImportance.Normal, "Expanded Razor code blocks in: {0}", sourcePath);
+                    content = expanded;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.LogError("Failed to expand @{{ }} code blocks in '{0}': {1}", sourcePath, ex.Message);
+                continue;
+            }
+
             File.WriteAllText(outputPath, content, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
 
             var relativeLogicalPath = BuildRelativeLogicalPath(sourceItem, sourcePath);

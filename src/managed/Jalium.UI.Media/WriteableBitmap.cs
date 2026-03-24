@@ -126,10 +126,19 @@ public sealed class WriteableBitmap : BitmapSource
     {
         if (_isLocked) return false;
 
-        _pinnedHandle = GCHandle.Alloc(_backBuffer, GCHandleType.Pinned);
-        _backBufferPointer = _pinnedHandle.AddrOfPinnedObject();
-        _isLocked = true;
-        return true;
+        var handle = GCHandle.Alloc(_backBuffer, GCHandleType.Pinned);
+        try
+        {
+            _backBufferPointer = handle.AddrOfPinnedObject();
+            _pinnedHandle = handle;
+            _isLocked = true;
+            return true;
+        }
+        catch
+        {
+            handle.Free();
+            throw;
+        }
     }
 
     /// <summary>
@@ -140,9 +149,18 @@ public sealed class WriteableBitmap : BitmapSource
         if (_isLocked)
             throw new InvalidOperationException("The bitmap is already locked.");
 
-        _pinnedHandle = GCHandle.Alloc(_backBuffer, GCHandleType.Pinned);
-        _backBufferPointer = _pinnedHandle.AddrOfPinnedObject();
-        _isLocked = true;
+        var handle = GCHandle.Alloc(_backBuffer, GCHandleType.Pinned);
+        try
+        {
+            _backBufferPointer = handle.AddrOfPinnedObject();
+            _pinnedHandle = handle;
+            _isLocked = true;
+        }
+        catch
+        {
+            handle.Free();
+            throw;
+        }
     }
 
     /// <summary>
@@ -254,12 +272,27 @@ public sealed class WriteableBitmap : BitmapSource
     {
         var bytesPerPixel = GetBytesPerPixel(_format);
 
-        for (var y = 0; y < _pixelHeight; y++)
+        // Build a single pixel value, then fill the entire row and replicate
+        var pixel = new byte[bytesPerPixel];
+        if (bytesPerPixel >= 4)
         {
-            for (var x = 0; x < _pixelWidth; x++)
-            {
-                SetPixel(x, y, color);
-            }
+            pixel[0] = color.B;
+            pixel[1] = color.G;
+            pixel[2] = color.R;
+            pixel[3] = color.A;
+        }
+
+        // Fill the first row
+        for (var x = 0; x < _pixelWidth; x++)
+        {
+            Array.Copy(pixel, 0, _backBuffer, x * bytesPerPixel, bytesPerPixel);
+        }
+
+        // Copy first row to all subsequent rows
+        var rowBytes = _pixelWidth * bytesPerPixel;
+        for (var y = 1; y < _pixelHeight; y++)
+        {
+            Array.Copy(_backBuffer, 0, _backBuffer, y * _stride, rowBytes);
         }
     }
 

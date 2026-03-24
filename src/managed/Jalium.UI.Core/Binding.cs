@@ -697,8 +697,26 @@ public sealed class BindingExpression : BindingExpressionBase
             _isUpdating = true;
 
             var sourceValue = GetSourceValue();
+            var convertedValue = Convert(sourceValue);
+
+            // Apply StringFormat if specified
+            if (convertedValue != null && !string.IsNullOrEmpty(_binding.StringFormat))
+            {
+                try
+                {
+                    convertedValue = string.Format(
+                        _binding.ConverterCulture ?? CultureInfo.CurrentCulture,
+                        _binding.StringFormat,
+                        convertedValue);
+                }
+                catch (FormatException)
+                {
+                    // Invalid StringFormat — use unconverted value rather than crashing
+                }
+            }
+
             var targetValue = BindingValueCoercion.Coerce(
-                Convert(sourceValue),
+                convertedValue,
                 TargetProperty.PropertyType,
                 _binding.ConverterCulture ?? CultureInfo.CurrentCulture);
 

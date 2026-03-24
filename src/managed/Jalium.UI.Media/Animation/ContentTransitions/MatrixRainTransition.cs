@@ -81,7 +81,7 @@ public sealed class MatrixRainTransition : ContentTransition
             for (int i = 0; i < particles.Length; i++)
             {
                 ref var p = ref particles[i];
-                var localProgress = Math.Max(0, (rawProgress - p.Delay) / (1.0 - p.Delay));
+                var localProgress = p.Delay >= 1.0 ? 1.0 : Math.Clamp((rawProgress - p.Delay) / (1.0 - p.Delay), 0.0, 1.0);
                 if (localProgress <= 0) continue;
 
                 // Column falls down

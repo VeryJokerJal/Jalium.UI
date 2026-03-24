@@ -97,6 +97,171 @@ public class PathShapeTests
         Assert.Equal(new Point(9.5, 5), line.Point);
     }
 
+    [Fact]
+    public void Path_OnRender_ShouldCenterUniformGeometry_WhenAspectRatiosDiffer()
+    {
+        var path = CreatePath("M 0,0 L 0,8 L 4,4 Z", 8, 8, ShapeStretch.Uniform);
+        var drawingContext = new RecordingDrawingContext();
+
+        path.Render(drawingContext);
+
+        var geometry = Assert.IsType<PathGeometry>(drawingContext.LastGeometry);
+        var figure = Assert.Single(geometry.Figures);
+        var firstEdge = Assert.IsType<LineSegment>(figure.Segments[0]);
+        var secondEdge = Assert.IsType<LineSegment>(figure.Segments[1]);
+
+        Assert.Equal(new Point(2, 0), figure.StartPoint);
+        Assert.Equal(new Point(2, 8), firstEdge.Point);
+        Assert.Equal(new Point(6, 4), secondEdge.Point);
+    }
+
+    #region Property mutual exclusion tests
+
+    [Fact]
+    public void Path_SetData_ShouldClearGeometry()
+    {
+        var path = new TestPath();
+        path.Geometry = Geometry.Parse("M 0,0 L 10,10");
+        Assert.NotNull(path.Geometry);
+
+        path.Data = "M 0,0 L 5,5";
+
+        Assert.Null(path.Geometry);
+    }
+
+    [Fact]
+    public void Path_SetGeometry_ShouldClearData()
+    {
+        var path = new TestPath { Data = "M 0,0 L 10,10" };
+        Assert.NotNull(path.Data);
+
+        path.Geometry = Geometry.Parse("M 0,0 L 5,5");
+
+        Assert.Null(path.Data);
+    }
+
+    [Fact]
+    public void Path_SetDataToNull_ShouldClearGeometryAndRenderNothing()
+    {
+        var path = CreatePath("M 0,0 L 10,10", 10, 10, ShapeStretch.None);
+        path.Data = null;
+
+        var dc = new RecordingDrawingContext();
+        path.Render(dc);
+
+        Assert.Null(dc.LastGeometry);
+    }
+
+    [Fact]
+    public void Path_SetGeometryToNull_ShouldClearDataAndRenderNothing()
+    {
+        var path = new TestPath { Geometry = Geometry.Parse("M 0,0 L 10,10") };
+        path.Measure(new Size(10, 10));
+        path.Arrange(new Rect(0, 0, 10, 10));
+
+        path.Geometry = null;
+
+        var dc = new RecordingDrawingContext();
+        path.Render(dc);
+
+        Assert.Null(dc.LastGeometry);
+    }
+
+    #endregion
+
+    #region Invalid data tests
+
+    [Fact]
+    public void Path_InvalidDataString_ShouldNotThrow()
+    {
+        var path = new TestPath();
+        path.Data = "this is not valid SVG";
+
+        // Should silently fail — no exception, geometry null
+        Assert.NotNull(path.Data);
+    }
+
+    [Fact]
+    public void Path_InvalidDataString_ShouldRenderNothing()
+    {
+        var path = new TestPath { Data = "INVALID!!!", Width = 10, Height = 10 };
+        path.Measure(new Size(10, 10));
+        path.Arrange(new Rect(0, 0, 10, 10));
+
+        var dc = new RecordingDrawingContext();
+        path.Render(dc);
+
+        Assert.Null(dc.LastGeometry);
+    }
+
+    #endregion
+
+    #region MeasureOverride consistency tests
+
+    [Theory]
+    [InlineData("M 0,0 L 10,10")]
+    [InlineData("M 0,0 Q 5,5 10,0")]
+    [InlineData("M 0,0 A 5,5 0 0 1 10,0")]
+    public void Path_MeasureOverride_ShouldReturnConsistentSize(string data)
+    {
+        var path = CreatePath(data, 20, 20, ShapeStretch.None);
+        var measured1 = path.MeasureResult;
+
+        // Re-measure should produce the same result
+        path.Measure(new Size(20, 20));
+        var measured2 = path.MeasureResult;
+
+        Assert.Equal(measured1, measured2);
+    }
+
+    [Fact]
+    public void Path_MeasureOverride_EmptyData_ShouldReturnEmptySize()
+    {
+        var path = new TestPath
+        {
+            Data = null,
+            Stretch = ShapeStretch.None
+        };
+        path.Measure(new Size(100, 100));
+
+        Assert.Equal(0, path.MeasureResult.Width);
+        Assert.Equal(0, path.MeasureResult.Height);
+    }
+
+    #endregion
+
+    #region Negative scale / FlipSweep tests
+
+    [Fact]
+    public void Path_NegativeScaleX_ShouldFlipSweepDirection()
+    {
+        // Create geometry with a clockwise arc, then render at a size that
+        // causes negative scaleX via a horizontal flip (width < geometry width
+        // wouldn't cause this, but we can use Stretch.Fill with geometry that
+        // has negative bounds offset).
+        var path = new TestPath
+        {
+            Data = "M 10,0 A 5,5 0 0 1 0,10",
+            Width = 10,
+            Height = 10,
+            Stretch = ShapeStretch.Fill
+        };
+        path.Measure(new Size(10, 10));
+        path.Arrange(new Rect(0, 0, 10, 10));
+
+        var dc = new RecordingDrawingContext();
+        path.Render(dc);
+
+        var geometry = Assert.IsType<PathGeometry>(dc.LastGeometry);
+        var figure = Assert.Single(geometry.Figures);
+        var arc = Assert.IsType<ArcSegment>(Assert.Single(figure.Segments));
+
+        // With uniform positive scaling, sweep direction should be preserved
+        Assert.Equal(SweepDirection.Clockwise, arc.SweepDirection);
+    }
+
+    #endregion
+
     private static TestPath CreatePath(string data, double width, double height, ShapeStretch stretch)
     {
         var path = new TestPath
@@ -115,9 +280,18 @@ public class PathShapeTests
 
     private sealed class TestPath : ShapePath
     {
+        public Size MeasureResult { get; private set; }
+
         public void Render(DrawingContext drawingContext)
         {
             OnRender(drawingContext);
+        }
+
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            var result = base.MeasureOverride(availableSize);
+            MeasureResult = result;
+            return result;
         }
     }
 

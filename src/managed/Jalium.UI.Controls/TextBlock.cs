@@ -26,6 +26,8 @@ public class TextBlock : FrameworkElement
     private bool _layoutDirty = true;
     private double _layoutConstraintWidth = double.NaN;
     private string? _layoutText;
+    private List<FormattedText>? _cachedFormattedLines;
+    private bool _formattedLinesCacheDirty = true;
 
     private string? _cachedFontFamily;
     private double _cachedFontSize;
@@ -439,31 +441,48 @@ public class TextBlock : FrameworkElement
     {
         var lineHeight = GetLineHeight();
         var renderWidth = RenderSize.Width;
-        var fontFamily = FontFamily;
-        var fontSize = FontSize;
-        var fontWeight = FontWeight.ToOpenTypeWeight();
-        var fontStyle = FontStyle.ToOpenTypeStyle();
 
-        for (int i = 0; i < _layoutLines.Count; i++)
+        // Rebuild formatted text cache only when layout or text properties changed
+        if (_formattedLinesCacheDirty || _cachedFormattedLines == null ||
+            _cachedFormattedLines.Count != _layoutLines.Count)
         {
-            var line = _layoutLines[i];
-            if (line.Length == 0)
+            var fontFamily = FontFamily;
+            var fontSize = FontSize;
+            var fontWeight = FontWeight.ToOpenTypeWeight();
+            var fontStyle = FontStyle.ToOpenTypeStyle();
+
+            _cachedFormattedLines ??= new List<FormattedText>(_layoutLines.Count);
+            _cachedFormattedLines.Clear();
+
+            for (int i = 0; i < _layoutLines.Count; i++)
             {
-                continue;
+                var line = _layoutLines[i];
+                if (line.Length == 0)
+                {
+                    _cachedFormattedLines.Add(null!);
+                    continue;
+                }
+
+                var lineText = Text.Substring(line.StartIndex, line.Length);
+                var formattedText = new FormattedText(lineText, fontFamily, fontSize)
+                {
+                    Foreground = Foreground,
+                    MaxTextWidth = TextWrapping == TextWrapping.NoWrap ? double.MaxValue : Math.Max(renderWidth, line.Width),
+                    MaxTextHeight = lineHeight,
+                    FontWeight = fontWeight,
+                    FontStyle = fontStyle,
+                    Trimming = TextWrapping == TextWrapping.NoWrap ? TextTrimming : TextTrimming.None
+                };
+                _cachedFormattedLines.Add(formattedText);
             }
+            _formattedLinesCacheDirty = false;
+        }
 
-            var lineText = Text.Substring(line.StartIndex, line.Length);
-            var formattedText = new FormattedText(lineText, fontFamily, fontSize)
-            {
-                Foreground = Foreground,
-                MaxTextWidth = TextWrapping == TextWrapping.NoWrap ? double.MaxValue : Math.Max(renderWidth, line.Width),
-                MaxTextHeight = lineHeight,
-                FontWeight = fontWeight,
-                FontStyle = fontStyle,
-                Trimming = TextWrapping == TextWrapping.NoWrap ? TextTrimming : TextTrimming.None
-            };
-
-            dc.DrawText(formattedText, new Point(GetLineOriginX(line, renderWidth), i * lineHeight));
+        for (int i = 0; i < _cachedFormattedLines.Count; i++)
+        {
+            var ft = _cachedFormattedLines[i];
+            if (ft == null) continue;
+            dc.DrawText(ft, new Point(GetLineOriginX(_layoutLines[i], renderWidth), i * lineHeight));
         }
     }
 
@@ -1162,6 +1181,7 @@ public class TextBlock : FrameworkElement
     private void InvalidateCaches()
     {
         _layoutDirty = true;
+        _formattedLinesCacheDirty = true;
         _layoutText = null;
         _layoutConstraintWidth = double.NaN;
         _textWidthCache.Clear();

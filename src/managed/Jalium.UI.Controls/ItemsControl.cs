@@ -291,13 +291,22 @@ public class ItemsControl : Control
         // Non-virtualizing path: materialize all containers.
         panel.Children.Clear();
 
-        // Add items from ItemsSource or Items collection
+        // Add items from ItemsSource or Items collection.
+        // Batch-add to avoid per-item layout invalidation.
         var source = ItemsSource ?? Items;
         if (source != null)
         {
-            foreach (var item in source)
+            panel.Children.BeginBatchUpdate();
+            try
             {
-                AddItemToPanel(item);
+                foreach (var item in source)
+                {
+                    AddItemToPanel(item);
+                }
+            }
+            finally
+            {
+                panel.Children.EndBatchUpdate();
             }
         }
 
@@ -785,6 +794,21 @@ public sealed class ItemCollection : IList<object>, INotifyCollectionChanged
         _items.RemoveAt(index);
         CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
             NotifyCollectionChangedAction.Remove, item, index));
+    }
+
+    /// <summary>
+    /// Adds multiple items to the collection, firing a single Reset notification.
+    /// </summary>
+    public void AddRange(IList<object> items)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        _items.AddRange(items);
+        CollectionChanged?.Invoke(this, new NotifyCollectionChangedEventArgs(
+            NotifyCollectionChangedAction.Reset));
     }
 
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();

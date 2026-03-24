@@ -605,20 +605,39 @@ public class FrameworkElement : UIElement
 
     private void RaiseResourcesChangedInSubtree()
     {
-        ResourcesChanged?.Invoke(this, EventArgs.Empty);
+        // Use iterative BFS with an explicit stack to avoid deep recursion overhead
+        // and to allow early pruning of subtrees that don't need notification.
+        var stack = s_subtreeStack ??= new List<FrameworkElement>(32);
+        stack.Add(this);
 
-        // Re-evaluate implicit style for this element in case a closer-scope
-        // style was added to (or removed from) an ancestor's resources.
-        ReEvaluateImplicitStyle();
-
-        for (int i = 0; i < VisualChildrenCount; i++)
+        while (stack.Count > 0)
         {
-            if (GetVisualChild(i) is FrameworkElement child)
+            var current = stack[stack.Count - 1];
+            stack.RemoveAt(stack.Count - 1);
+
+            if (current.ResourcesChanged != null)
             {
-                child.RaiseResourcesChangedInSubtree();
+                current.ResourcesChanged.Invoke(current, EventArgs.Empty);
+            }
+
+            if (current.Style == null)
+            {
+                current.ReEvaluateImplicitStyle();
+            }
+
+            var childCount = current.VisualChildrenCount;
+            for (int i = 0; i < childCount; i++)
+            {
+                if (current.GetVisualChild(i) is FrameworkElement child)
+                {
+                    stack.Add(child);
+                }
             }
         }
     }
+
+    [ThreadStatic]
+    private static List<FrameworkElement>? s_subtreeStack;
 
     /// <summary>
     /// Searches for a resource with the specified key, and throws an exception if not found.

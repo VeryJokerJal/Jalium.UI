@@ -108,9 +108,6 @@ public class InkCanvas : FrameworkElement
         StylusPlugIns.Add(_dynamicRenderer);
         StylusPlugIns.Add(_inkCollectionStylusPlugIn);
 
-        // Reduce anti-aliasing for sharper strokes
-        RenderOptions.SetEdgeMode(this, EdgeMode.Aliased);
-
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
         AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));

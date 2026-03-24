@@ -99,7 +99,21 @@ public sealed class RenderTargetBitmap : BitmapSource
         Transform? transform = null;
         if (visual is UIElement uiElement && uiElement.RenderTransform is Transform t)
         {
-            transform = t;
+            var origin = uiElement.RenderTransformOrigin;
+            if (origin.X != 0 || origin.Y != 0)
+            {
+                var size = uiElement.RenderSize;
+                var originX = origin.X * size.Width;
+                var originY = origin.Y * size.Height;
+                var m = t.Value;
+                var pre = new Matrix(1, 0, 0, 1, -originX, -originY);
+                var post = new Matrix(1, 0, 0, 1, originX, originY);
+                transform = new MatrixTransform(pre * m * post);
+            }
+            else
+            {
+                transform = t;
+            }
             drawingContext.PushTransform(transform);
         }
 
@@ -147,6 +161,9 @@ public sealed class RenderTargetBitmap : BitmapSource
         var startY = sourceRect.Y;
         var width = sourceRect.Width == 0 ? _pixelWidth : sourceRect.Width;
         var height = sourceRect.Height == 0 ? _pixelHeight : sourceRect.Height;
+
+        if (startX < 0 || startY < 0 || startX + width > _pixelWidth || startY + height > _pixelHeight)
+            throw new ArgumentOutOfRangeException(nameof(sourceRect), "Source rectangle exceeds bitmap dimensions.");
 
         for (var y = 0; y < height; y++)
         {

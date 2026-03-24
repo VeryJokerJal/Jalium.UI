@@ -83,6 +83,8 @@ public abstract class Panel : FrameworkElement
         InvalidateVisual();
     }
 
+    private int[]? _zIndexValues;
+
     private void EnsureZOrderMap()
     {
         if (!_zOrderDirty && _zOrderMap != null && _zOrderMap.Length == Children.Count)
@@ -90,14 +92,22 @@ public abstract class Panel : FrameworkElement
 
         var count = Children.Count;
         _zOrderMap = new int[count];
-        for (int i = 0; i < count; i++)
-            _zOrderMap[i] = i;
 
-        // Sort indices by ZIndex (stable sort preserves insertion order for equal ZIndex)
+        // Pre-fetch all ZIndex values to avoid repeated DP reads during sort
+        if (_zIndexValues == null || _zIndexValues.Length < count)
+            _zIndexValues = new int[count];
+
+        for (int i = 0; i < count; i++)
+        {
+            _zOrderMap[i] = i;
+            _zIndexValues[i] = GetZIndex(Children[i]);
+        }
+
+        var zValues = _zIndexValues;
         Array.Sort(_zOrderMap, (a, b) =>
         {
-            var za = GetZIndex(Children[a]);
-            var zb = GetZIndex(Children[b]);
+            var za = zValues[a];
+            var zb = zValues[b];
             return za != zb ? za.CompareTo(zb) : a.CompareTo(b);
         });
 
@@ -173,6 +183,23 @@ public abstract class Panel : FrameworkElement
     }
 
     /// <summary>
+    /// Adds a child to the visual tree without triggering z-order invalidation.
+    /// Used during batch updates to avoid repeated <see cref="InvalidateVisual"/> calls.
+    /// </summary>
+    internal void AddVisualChildBatch(UIElement child)
+    {
+        AddVisualChild(child);
+    }
+
+    /// <summary>
+    /// Finalizes a batch visual-child addition by invalidating z-order once.
+    /// </summary>
+    internal void EndVisualChildBatch()
+    {
+        InvalidateZOrder();
+    }
+
+    /// <summary>
     /// Removes a child from the visual tree. Called by UIElementCollection.
     /// </summary>
     internal void RemoveVisualChildInternal(UIElement child)
@@ -189,6 +216,7 @@ public sealed class UIElementCollection : IList<UIElement>
 {
     private readonly List<UIElement> _items = new();
     private readonly Panel _parent;
+    private int _batchUpdateCount;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="UIElementCollection"/> class.
@@ -209,6 +237,38 @@ public sealed class UIElementCollection : IList<UIElement>
     public bool IsReadOnly => false;
 
     /// <summary>
+    /// Gets a value indicating whether a batch update is in progress.
+    /// </summary>
+    public bool IsBatchUpdating => _batchUpdateCount > 0;
+
+    /// <summary>
+    /// Begins a batch update. While active, <see cref="Add"/>, <see cref="Insert"/>,
+    /// <see cref="Remove"/>, <see cref="RemoveAt"/>, and <see cref="Clear"/> will defer
+    /// layout invalidation until <see cref="EndBatchUpdate"/> is called.
+    /// Calls may be nested; only the outermost <see cref="EndBatchUpdate"/> triggers invalidation.
+    /// </summary>
+    public void BeginBatchUpdate()
+    {
+        _batchUpdateCount++;
+    }
+
+    /// <summary>
+    /// Ends a batch update. When the outermost batch ends, a single
+    /// <see cref="UIElement.InvalidateMeasure"/> is triggered on the parent panel.
+    /// </summary>
+    public void EndBatchUpdate()
+    {
+        if (_batchUpdateCount <= 0) return;
+
+        _batchUpdateCount--;
+        if (_batchUpdateCount == 0)
+        {
+            _parent.EndVisualChildBatch();
+            _parent.InvalidateMeasure();
+        }
+    }
+
+    /// <summary>
     /// Gets or sets the element at the specified index.
     /// </summary>
     public UIElement this[int index]
@@ -221,8 +281,11 @@ public sealed class UIElementCollection : IList<UIElement>
             {
                 _parent.RemoveVisualChildInternal(oldItem);
                 _items[index] = value;
-                _parent.AddVisualChildInternal(value);
-                _parent.InvalidateMeasure();
+                if (IsBatchUpdating)
+                    _parent.AddVisualChildBatch(value);
+                else
+                    _parent.AddVisualChildInternal(value);
+                if (!IsBatchUpdating) _parent.InvalidateMeasure();
             }
         }
     }
@@ -234,8 +297,16 @@ public sealed class UIElementCollection : IList<UIElement>
     {
         ArgumentNullException.ThrowIfNull(item);
         _items.Add(item);
-        _parent.AddVisualChildInternal(item);
-        _parent.InvalidateMeasure();
+
+        if (IsBatchUpdating)
+        {
+            _parent.AddVisualChildBatch(item);
+        }
+        else
+        {
+            _parent.AddVisualChildInternal(item);
+            _parent.InvalidateMeasure();
+        }
     }
 
     /// <summary>
@@ -248,7 +319,7 @@ public sealed class UIElementCollection : IList<UIElement>
             _parent.RemoveVisualChildInternal(item);
         }
         _items.Clear();
-        _parent.InvalidateMeasure();
+        if (!IsBatchUpdating) _parent.InvalidateMeasure();
     }
 
     /// <summary>
@@ -269,6 +340,27 @@ public sealed class UIElementCollection : IList<UIElement>
     System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
 
     /// <summary>
+    /// Adds multiple elements to the collection, invalidating measure only once.
+    /// </summary>
+    public void AddRange(IList<UIElement> items)
+    {
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        for (int i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            _items.Add(item);
+            _parent.AddVisualChildBatch(item);
+        }
+
+        _parent.EndVisualChildBatch();
+        _parent.InvalidateMeasure();
+    }
+
+    /// <summary>
     /// Returns the index of a specific element.
     /// </summary>
     public int IndexOf(UIElement item) => _items.IndexOf(item);
@@ -280,8 +372,16 @@ public sealed class UIElementCollection : IList<UIElement>
     {
         ArgumentNullException.ThrowIfNull(item);
         _items.Insert(index, item);
-        _parent.AddVisualChildInternal(item);
-        _parent.InvalidateMeasure();
+
+        if (IsBatchUpdating)
+        {
+            _parent.AddVisualChildBatch(item);
+        }
+        else
+        {
+            _parent.AddVisualChildInternal(item);
+            _parent.InvalidateMeasure();
+        }
     }
 
     /// <summary>
@@ -292,7 +392,7 @@ public sealed class UIElementCollection : IList<UIElement>
         if (_items.Remove(item))
         {
             _parent.RemoveVisualChildInternal(item);
-            _parent.InvalidateMeasure();
+            if (!IsBatchUpdating) _parent.InvalidateMeasure();
             return true;
         }
         return false;
@@ -306,6 +406,6 @@ public sealed class UIElementCollection : IList<UIElement>
         var item = _items[index];
         _items.RemoveAt(index);
         _parent.RemoveVisualChildInternal(item);
-        _parent.InvalidateMeasure();
+        if (!IsBatchUpdating) _parent.InvalidateMeasure();
     }
 }

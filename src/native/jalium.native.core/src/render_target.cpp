@@ -1,4 +1,7 @@
 #include "jalium_internal.h"
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 // ============================================================================
 // C API Implementation
@@ -154,6 +157,14 @@ JALIUM_API void jalium_render_target_set_full_invalidation(JaliumRenderTarget* r
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->SetFullInvalidation();
     }
+}
+
+JALIUM_API int32_t jalium_render_target_supports_partial_presentation(JaliumRenderTarget* rt) {
+    if (!rt) {
+        return 0;
+    }
+
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->SupportsPartialPresentation() ? 1 : 0;
 }
 
 JALIUM_API JaliumResult jalium_render_target_create_webview_visual(
@@ -328,14 +339,16 @@ JALIUM_API void jalium_draw_polygon(
     uint32_t pointCount,
     JaliumBrush* brush,
     float strokeWidth,
-    int32_t closed)
+    int32_t closed,
+    int32_t lineJoin,
+    float miterLimit)
 {
     if (rt && brush && points && pointCount >= 2) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->DrawPolygon(
             points, pointCount,
             reinterpret_cast<jalium::Brush*>(brush),
             strokeWidth,
-            closed != 0);
+            closed != 0, lineJoin, miterLimit);
     }
 }
 
@@ -362,13 +375,16 @@ JALIUM_API void jalium_stroke_path(
     uint32_t commandLength,
     JaliumBrush* brush,
     float strokeWidth,
-    int32_t closed)
+    int32_t closed,
+    int32_t lineJoin,
+    float miterLimit,
+    int32_t lineCap)
 {
     if (rt && brush && commands && commandLength > 0) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->StrokePath(
             startX, startY, commands, commandLength,
             reinterpret_cast<jalium::Brush*>(brush),
-            strokeWidth, closed != 0);
+            strokeWidth, closed != 0, lineJoin, miterLimit, lineCap);
     }
 }
 
@@ -456,6 +472,12 @@ JALIUM_API void jalium_push_opacity(JaliumRenderTarget* rt, float opacity) {
 JALIUM_API void jalium_pop_opacity(JaliumRenderTarget* rt) {
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->PopOpacity();
+    }
+}
+
+JALIUM_API void jalium_set_shape_type(JaliumRenderTarget* rt, int type, float n) {
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->SetShapeType(type, n);
     }
 }
 
@@ -631,6 +653,7 @@ JALIUM_API void jalium_effect_begin_capture(
     JaliumRenderTarget* rt,
     float x, float y, float w, float h)
 {
+    OutputDebugStringA("[C API] jalium_effect_begin_capture CALLED\n");
     if (rt && w > 0 && h > 0) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->BeginEffectCapture(x, y, w, h);
     }
@@ -638,6 +661,7 @@ JALIUM_API void jalium_effect_begin_capture(
 
 JALIUM_API void jalium_effect_end_capture(JaliumRenderTarget* rt)
 {
+    OutputDebugStringA("[C API] jalium_effect_end_capture CALLED\n");
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->EndEffectCapture();
     }
@@ -645,10 +669,12 @@ JALIUM_API void jalium_effect_end_capture(JaliumRenderTarget* rt)
 
 JALIUM_API void jalium_draw_blur_effect(
     JaliumRenderTarget* rt,
-    float x, float y, float w, float h, float radius)
+    float x, float y, float w, float h, float radius,
+    float uvOffsetX, float uvOffsetY)
 {
     if (rt && w > 0 && h > 0) {
-        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawBlurEffect(x, y, w, h, radius);
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawBlurEffect(
+            x, y, w, h, radius, uvOffsetX, uvOffsetY);
     }
 }
 
@@ -656,11 +682,78 @@ JALIUM_API void jalium_draw_drop_shadow_effect(
     JaliumRenderTarget* rt,
     float x, float y, float w, float h,
     float blurRadius, float offsetX, float offsetY,
-    float r, float g, float b, float a)
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL)
 {
     if (rt && w > 0 && h > 0) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->DrawDropShadowEffect(
-            x, y, w, h, blurRadius, offsetX, offsetY, r, g, b, a);
+            x, y, w, h, blurRadius, offsetX, offsetY, r, g, b, a,
+            uvOffsetX, uvOffsetY,
+            cornerTL, cornerTR, cornerBR, cornerBL);
+    }
+}
+
+JALIUM_API void jalium_draw_outer_glow_effect(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float glowSize, float r, float g, float b, float a, float intensity,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+{
+    if (rt && w > 0 && h > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawOuterGlowEffect(
+            x, y, w, h, glowSize, r, g, b, a, intensity,
+            cornerTL, cornerTR, cornerBR, cornerBL);
+    }
+}
+
+JALIUM_API void jalium_draw_inner_shadow_effect(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+{
+    if (rt && w > 0 && h > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawInnerShadowEffect(
+            x, y, w, h, blurRadius, offsetX, offsetY, r, g, b, a,
+            cornerTL, cornerTR, cornerBR, cornerBL);
+    }
+}
+
+JALIUM_API void jalium_draw_color_matrix_effect(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    const float* matrix)
+{
+    if (rt && w > 0 && h > 0 && matrix) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawColorMatrixEffect(
+            x, y, w, h, matrix);
+    }
+}
+
+JALIUM_API void jalium_draw_emboss_effect(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float amount, float lightDirX, float lightDirY, float relief)
+{
+    if (rt && w > 0 && h > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawEmbossEffect(
+            x, y, w, h, amount, lightDirX, lightDirY, relief);
+    }
+}
+
+JALIUM_API void jalium_draw_shader_effect(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    const uint8_t* shaderBytecode,
+    uint32_t shaderBytecodeSize,
+    const float* constants,
+    uint32_t constantFloatCount)
+{
+    if (rt && w > 0 && h > 0 && shaderBytecode && shaderBytecodeSize > 0) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawShaderEffect(
+            x, y, w, h, shaderBytecode, shaderBytecodeSize, constants, constantFloatCount);
     }
 }
 

@@ -70,39 +70,32 @@ public static class VisualTreeHelper
         ArgumentNullException.ThrowIfNull(reference);
 
         var bounds = Rect.Empty;
+        GetDescendantBoundsCore(reference, 0, 0, ref bounds);
+        return bounds;
+    }
 
-        for (int i = 0; i < reference.VisualChildrenCount; i++)
+    private static void GetDescendantBoundsCore(Visual parent, double offsetX, double offsetY, ref Rect bounds)
+    {
+        for (int i = 0; i < parent.VisualChildrenCount; i++)
         {
-            var child = reference.GetVisualChild(i);
-            if (child is UIElement element)
+            var child = parent.GetVisualChild(i);
+            if (child == null) continue;
+
+            double childOffsetX = offsetX, childOffsetY = offsetY;
+            if (child is UIElement uiChild)
             {
-                var childBounds = new Rect(element.RenderSize);
-                // Transform child bounds to parent space
-                var transform = child?.TransformToVisual(reference);
-                if (transform != null)
-                {
-                    childBounds = transform.TransformBounds(childBounds);
-                }
+                var cb = uiChild.VisualBounds;
+                var ro = uiChild.RenderOffset;
+                childOffsetX += cb.X + ro.X;
+                childOffsetY += cb.Y + ro.Y;
+
+                var childBounds = new Rect(childOffsetX, childOffsetY, uiChild.RenderSize.Width, uiChild.RenderSize.Height);
                 bounds.Union(childBounds);
             }
 
-            // Recursively include descendants
-            if (child != null)
-            {
-                var descendantBounds = GetDescendantBounds(child);
-                if (!descendantBounds.IsEmpty)
-                {
-                    var transform = child.TransformToVisual(reference);
-                    if (transform != null)
-                    {
-                        descendantBounds = transform.TransformBounds(descendantBounds);
-                    }
-                    bounds.Union(descendantBounds);
-                }
-            }
+            // Recursively include descendants with accumulated offset
+            GetDescendantBoundsCore(child, childOffsetX, childOffsetY, ref bounds);
         }
-
-        return bounds;
     }
 
     /// <summary>
@@ -119,19 +112,23 @@ public static class VisualTreeHelper
         }
 
         // Walk the visual tree from top to bottom (reverse child order)
+        // Use incremental coordinate transform instead of TransformToVisual per child
         for (int i = reference.VisualChildrenCount - 1; i >= 0; i--)
         {
             var child = reference.GetVisualChild(i);
             if (child == null) continue;
 
-            // Transform point to child coordinate space
-            var transform = child.TransformToVisual(reference);
-            if (transform == null) continue;
+            // Compute child offset directly instead of TransformToVisual + Inverse
+            var childPoint = point;
+            if (child is UIElement uiChild)
+            {
+                var bounds = uiChild.VisualBounds;
+                var ro = uiChild.RenderOffset;
+                childPoint = new Point(
+                    point.X - bounds.X - ro.X,
+                    point.Y - bounds.Y - ro.Y);
+            }
 
-            var inverse = transform.Inverse;
-            if (inverse == null) continue;
-
-            var childPoint = inverse.Transform(point);
             var result = HitTest(child, childPoint);
             if (result != null)
                 return result;
@@ -193,7 +190,8 @@ public static class VisualTreeHelper
                     return HitTestFilterBehavior.Continue;
                 case HitTestFilterBehavior.ContinueSkipChildren:
                     // Test self only, skip children
-                    TestSelf(visual, resultCallback, point);
+                    if (TestSelf(visual, resultCallback, point) == HitTestResultBehavior.Stop)
+                        return HitTestFilterBehavior.Stop;
                     return HitTestFilterBehavior.Continue;
                 case HitTestFilterBehavior.ContinueSkipSelf:
                     // Test children only, skip self
@@ -205,12 +203,24 @@ public static class VisualTreeHelper
         }
 
         // Test children (reverse order for z-order)
+        // Use incremental coordinate transform instead of TransformToVisual per child
         for (int i = visual.VisualChildrenCount - 1; i >= 0; i--)
         {
             var child = visual.GetVisualChild(i);
             if (child == null) continue;
 
-            var result = HitTestWithFilter(child, filterCallback, resultCallback, point);
+            // Compute child offset directly
+            var childPoint = point;
+            if (child is UIElement uiChild)
+            {
+                var bounds = uiChild.VisualBounds;
+                var ro = uiChild.RenderOffset;
+                childPoint = new Point(
+                    point.X - bounds.X - ro.X,
+                    point.Y - bounds.Y - ro.Y);
+            }
+
+            var result = HitTestWithFilter(child, filterCallback, resultCallback, childPoint);
             if (result == HitTestFilterBehavior.Stop)
                 return HitTestFilterBehavior.Stop;
         }
@@ -218,13 +228,14 @@ public static class VisualTreeHelper
         // Test self (unless filter said to skip)
         if (!skipSelf)
         {
-            TestSelf(visual, resultCallback, point);
+            if (TestSelf(visual, resultCallback, point) == HitTestResultBehavior.Stop)
+                return HitTestFilterBehavior.Stop;
         }
 
         return HitTestFilterBehavior.Continue;
     }
 
-    private static void TestSelf(Visual visual, HitTestResultCallback resultCallback, Point point)
+    private static HitTestResultBehavior TestSelf(Visual visual, HitTestResultCallback resultCallback, Point point)
     {
         if (visual is UIElement element &&
             element.IsHitTestVisible &&
@@ -234,8 +245,9 @@ public static class VisualTreeHelper
             point.Y <= element.RenderSize.Height)
         {
             var hitResult = new HitTestResult(visual);
-            resultCallback(hitResult);
+            return resultCallback(hitResult);
         }
+        return HitTestResultBehavior.Continue;
     }
 }
 

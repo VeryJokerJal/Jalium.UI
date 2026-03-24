@@ -5,6 +5,7 @@ namespace Jalium.UI.Interop;
 internal static class RenderBackendSelector
 {
     internal const string BackendOverrideEnvironmentVariable = "JALIUM_RENDER_BACKEND";
+    internal const string GpuPreferenceEnvironmentVariable = "JALIUM_GPU_PREFERENCE";
 
     internal static RenderBackend GetPreferredBackend()
         => ResolvePreferredBackend();
@@ -17,7 +18,7 @@ internal static class RenderBackendSelector
         bool? isLinux = null)
     {
         isAvailable ??= backend => NativeMethods.IsBackendAvailable(backend) != 0;
-        backendOverride ??= Environment.GetEnvironmentVariable(BackendOverrideEnvironmentVariable);
+        backendOverride ??= Environment.GetEnvironmentVariable(BackendOverrideEnvironmentVariable)?.Trim();
         isWindows ??= RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         isMacOS ??= RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
         isLinux ??= RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
@@ -72,6 +73,23 @@ internal static class RenderBackendSelector
                 backend = RenderBackend.Auto;
                 return false;
         }
+    }
+
+    internal static GpuPreference GetPreferredGpuPreference()
+        => ResolveGpuPreference();
+
+    internal static GpuPreference ResolveGpuPreference(string? preferenceOverride = null)
+    {
+        preferenceOverride ??= Environment.GetEnvironmentVariable(GpuPreferenceEnvironmentVariable)?.Trim();
+
+        var result = preferenceOverride?.Trim().ToLowerInvariant() switch
+        {
+            "high" or "high_performance" or "discrete" => GpuPreference.HighPerformance,
+            "low" or "minimum_power" or "integrated" or "igpu" => GpuPreference.MinimumPower,
+            _ => GpuPreference.Auto,
+        };
+
+        return result;
     }
 
     private static RenderBackend[] GetPreferredOrder(bool isWindows, bool isMacOS, bool isLinux)

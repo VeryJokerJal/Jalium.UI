@@ -367,6 +367,7 @@ public sealed class CompositeBackdropEffect : BackdropEffect
 
             // For hue rotation, add
             HueRotation += effect.HueRotation;
+            HueRotation = HueRotation % (2.0f * MathF.PI);
 
             // For grayscale/sepia/invert, use maximum
             Grayscale = Math.Max(Grayscale, effect.Grayscale);

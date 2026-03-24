@@ -667,30 +667,68 @@ public class Border : FrameworkElement
         {
             var seN = SuperEllipseN;
 
-            // Skip Background fill when LiquidGlass is enabled 閳?the shader handles
-            // tint via the Background color. Drawing it on top would create a visible
-            // boundary at the panel's original shape, breaking fusion bridge continuity.
-            if (Background != null && !LiquidGlass)
+            // Use SDF super ellipse rendering via the direct renderer for pixel-perfect AA.
+            // Set shape type to SuperEllipse (1) before drawing, then reset to RoundedRect (0).
+            if (dc is Interop.RenderTargetDrawingContext seDc)
             {
-                var backgroundRect = new Rect(
-                    rect.X + halfBorder,
-                    rect.Y + halfBorder,
-                    Math.Max(0, rect.Width - borderWidth),
-                    Math.Max(0, rect.Height - borderWidth));
-                var bgGeo = CreateSuperEllipseGeometry(backgroundRect, seN);
-                dc.DrawGeometry(Background, null, bgGeo);
-            }
+                seDc.SetShapeType(1, (float)seN);
 
-            if (BorderBrush != null && borderWidth > 0)
+                if (Background != null && !LiquidGlass)
+                {
+                    var backgroundRect = new Rect(
+                        rect.X + halfBorder,
+                        rect.Y + halfBorder,
+                        Math.Max(0, rect.Width - borderWidth),
+                        Math.Max(0, rect.Height - borderWidth));
+
+                    // Use a single average corner radius — the SDF super ellipse shape
+                    // is defined by the exponent N, not by per-corner radii.
+                    var avgRadius = Math.Min(backgroundRect.Width, backgroundRect.Height) / 2.0;
+                    dc.DrawRoundedRectangle(Background, null, backgroundRect,
+                        new CornerRadius(avgRadius));
+                }
+
+                if (BorderBrush != null && borderWidth > 0)
+                {
+                    var pen = GetOrCreateBorderPen(BorderBrush, borderWidth);
+                    var borderRect = new Rect(
+                        rect.X + halfBorder,
+                        rect.Y + halfBorder,
+                        Math.Max(0, rect.Width - borderWidth),
+                        Math.Max(0, rect.Height - borderWidth));
+
+                    var avgRadius = Math.Min(borderRect.Width, borderRect.Height) / 2.0;
+                    dc.DrawRoundedRectangle(null, pen, borderRect,
+                        new CornerRadius(avgRadius));
+                }
+
+                seDc.SetShapeType(0, 4.0f);
+            }
+            else
             {
-                var pen = GetOrCreateBorderPen(BorderBrush, borderWidth);
-                var borderRect = new Rect(
-                    rect.X + halfBorder,
-                    rect.Y + halfBorder,
-                    Math.Max(0, rect.Width - borderWidth),
-                    Math.Max(0, rect.Height - borderWidth));
-                var borderGeo = CreateSuperEllipseGeometry(borderRect, seN);
-                dc.DrawGeometry(null, pen, borderGeo);
+                // Fallback for non-D3D12 drawing contexts: use Bezier geometry
+                if (Background != null && !LiquidGlass)
+                {
+                    var backgroundRect = new Rect(
+                        rect.X + halfBorder,
+                        rect.Y + halfBorder,
+                        Math.Max(0, rect.Width - borderWidth),
+                        Math.Max(0, rect.Height - borderWidth));
+                    var bgGeo = CreateSuperEllipseGeometry(backgroundRect, seN);
+                    dc.DrawGeometry(Background, null, bgGeo);
+                }
+
+                if (BorderBrush != null && borderWidth > 0)
+                {
+                    var pen = GetOrCreateBorderPen(BorderBrush, borderWidth);
+                    var borderRect = new Rect(
+                        rect.X + halfBorder,
+                        rect.Y + halfBorder,
+                        Math.Max(0, rect.Width - borderWidth),
+                        Math.Max(0, rect.Height - borderWidth));
+                    var borderGeo = CreateSuperEllipseGeometry(borderRect, seN);
+                    dc.DrawGeometry(null, pen, borderGeo);
+                }
             }
         }
         else

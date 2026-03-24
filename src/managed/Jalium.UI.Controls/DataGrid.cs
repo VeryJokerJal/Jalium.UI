@@ -701,23 +701,31 @@ public class DataGrid : Control
 
         _rowsHost.Children.Clear();
 
-        var topHeight = Math.Max(0, startIndex * rowHeight);
-        _topSpacer.Height = topHeight;
-        _topSpacer.Visibility = topHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
-        _rowsHost.Children.Add(_topSpacer);
-
-        for (var i = startIndex; i <= endIndex; i++)
+        _rowsHost.Children.BeginBatchUpdate();
+        try
         {
-            if (_realizedRows.TryGetValue(i, out var row))
-            {
-                _rowsHost.Children.Add(row);
-            }
-        }
+            var topHeight = Math.Max(0, startIndex * rowHeight);
+            _topSpacer.Height = topHeight;
+            _topSpacer.Visibility = topHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
+            _rowsHost.Children.Add(_topSpacer);
 
-        var bottomHeight = Math.Max(0, (_items.Count - endIndex - 1) * rowHeight);
-        _bottomSpacer.Height = bottomHeight;
-        _bottomSpacer.Visibility = bottomHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
-        _rowsHost.Children.Add(_bottomSpacer);
+            for (var i = startIndex; i <= endIndex; i++)
+            {
+                if (_realizedRows.TryGetValue(i, out var row))
+                {
+                    _rowsHost.Children.Add(row);
+                }
+            }
+
+            var bottomHeight = Math.Max(0, (_items.Count - endIndex - 1) * rowHeight);
+            _bottomSpacer.Height = bottomHeight;
+            _bottomSpacer.Visibility = bottomHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
+            _rowsHost.Children.Add(_bottomSpacer);
+        }
+        finally
+        {
+            _rowsHost.Children.EndBatchUpdate();
+        }
     }
 
     private (int start, int end) GetVisibleColumnRange()
@@ -2250,11 +2258,19 @@ public class DataGridRow : Control
 
         _cellsPanel = GetTemplateChild("PART_CellsPanel") as StackPanel;
 
-        if (_cellsPanel != null)
+        if (_cellsPanel != null && Cells.Count > 0)
         {
-            foreach (var cell in Cells)
+            _cellsPanel.Children.BeginBatchUpdate();
+            try
             {
-                _cellsPanel.Children.Add(cell);
+                foreach (var cell in Cells)
+                {
+                    _cellsPanel.Children.Add(cell);
+                }
+            }
+            finally
+            {
+                _cellsPanel.Children.EndBatchUpdate();
             }
         }
 

@@ -68,8 +68,11 @@ public sealed class UIRuntimeV2 : IDisposable, IUIRuntimeHost
     private CompiledUIBundle? _currentBundle;
     private CompiledRenderGraph? _compiledGraph;
     private MaterialDescriptor[]? _materialDescriptors;
-    private bool _isDirty = true;
+    private bool _graphDirty = true;    // 结构性变化：需要重建 RenderGraph（bundle加载、视口变化）
+    private bool _hasInstanceUpdates; // 实例数据变化：仅需 GPU 缓冲更新（Opacity、Color 等）
     private bool _disposed;
+    private int _lastViewportWidth;
+    private int _lastViewportHeight;
 
     // GPU 资源句柄
     private nint _vertexBuffer;
@@ -94,18 +97,40 @@ public sealed class UIRuntimeV2 : IDisposable, IUIRuntimeHost
     public UIRuntimeV2(IRenderBackendEx backend)
     {
         _backend = backend;
-        _resourceManager = new GpuResourceManager(backend);
-        _descriptorHeap = new DescriptorHeapManager(backend);
-        _textureManager = new TextureManager(backend, _descriptorHeap);
-        _pipelineCache = new PipelineCache(backend);
-        _materialCompiler = new MaterialCompiler();
-        _graphBuilder = new RenderGraphBuilder();
-        _commandBuffer = new GpuCommandBuffer();
 
-        // 初始化共享子系统（复用 V1 的设计，通过 IUIRuntimeHost 接口）
-        _animationController = new AnimationController(this);
-        _inputHandler = new InputHandler(this);
-        _stateManager = new StateManager(this);
+        GpuResourceManager? resourceManager = null;
+        DescriptorHeapManager? descriptorHeap = null;
+        TextureManager? textureManager = null;
+        PipelineCache? pipelineCache = null;
+
+        try
+        {
+            resourceManager = new GpuResourceManager(backend);
+            descriptorHeap = new DescriptorHeapManager(backend);
+            textureManager = new TextureManager(backend, descriptorHeap);
+            pipelineCache = new PipelineCache(backend);
+
+            _resourceManager = resourceManager;
+            _descriptorHeap = descriptorHeap;
+            _textureManager = textureManager;
+            _pipelineCache = pipelineCache;
+            _materialCompiler = new MaterialCompiler();
+            _graphBuilder = new RenderGraphBuilder();
+            _commandBuffer = new GpuCommandBuffer();
+
+            // 初始化共享子系统（复用 V1 的设计，通过 IUIRuntimeHost 接口）
+            _animationController = new AnimationController(this);
+            _inputHandler = new InputHandler(this);
+            _stateManager = new StateManager(this);
+        }
+        catch
+        {
+            pipelineCache?.Dispose();
+            textureManager?.Dispose();
+            descriptorHeap?.Dispose();
+            resourceManager?.Dispose();
+            throw;
+        }
     }
 
     /// <summary>
@@ -137,7 +162,7 @@ public sealed class UIRuntimeV2 : IDisposable, IUIRuntimeHost
         _stateManager.Initialize(bundle.StateTransitions);
         _animationController.Initialize(bundle.Curves, bundle.AnimationTargets, bundle.AnimationValues);
 
-        _isDirty = true;
+        _graphDirty = true;
     }
 
     /// <summary>
@@ -154,15 +179,14 @@ public sealed class UIRuntimeV2 : IDisposable, IUIRuntimeHost
     /// </summary>
     public void Update(double deltaTime)
     {
-        if (_animationController.Update(deltaTime))
-        {
-            _isDirty = true;
-        }
+        // AnimationController.Update() 内部通过 UpdateNodeProperty() 直接更新 Instance Buffer，
+        // 不需要重建 RenderGraph。
+        _animationController.Update(deltaTime);
 
         if (_stateManager.HasPendingTransitions)
         {
+            // 状态转换通过动画系统更新属性，同样不需要重建 RenderGraph。
             _stateManager.ProcessTransitions();
-            _isDirty = true;
         }
     }
 
@@ -173,26 +197,43 @@ public sealed class UIRuntimeV2 : IDisposable, IUIRuntimeHost
     {
         if (_currentBundle == null) return;
 
+        // 检测视口变化 → 需要重建 RenderGraph（瞬态纹理尺寸依赖视口）
+        if (viewportWidth != _lastViewportWidth || viewportHeight != _lastViewportHeight)
+        {
+            _graphDirty = true;
+            _lastViewportWidth = viewportWidth;
+            _lastViewportHeight = viewportHeight;
+        }
+
+        // 如果没有任何变化（无结构变化、无实例数据更新），跳过渲染
+        if (!_graphDirty && !_hasInstanceUpdates && _compiledGraph != null)
+        {
+            return;
+        }
+
         _resourceManager.BeginFrame();
 
         // 更新帧常量（视口、时间、DPI）
         UpdateFrameConstants(viewportWidth, viewportHeight);
 
-        // 如果 bundle 或视口改变，重新构建 RenderGraph
-        if (_isDirty || _compiledGraph == null)
+        // 仅在结构性变化时重建 RenderGraph
+        // 属性动画（Opacity、Color 等）只更新 Instance Buffer，
+        // RenderGraph 结构不变，无需重建。
+        if (_graphDirty || _compiledGraph == null)
         {
             var graph = _graphBuilder.Build(_currentBundle, viewportWidth, viewportHeight);
             _compiledGraph = graph.Compile();
-            _isDirty = false;
+            _graphDirty = false;
         }
 
-        // 录制命令缓冲区
+        // 录制命令缓冲区（复用已编译的 RenderGraph）
         _commandBuffer.Reset();
         RecordCommands(viewportWidth, viewportHeight);
 
         // 执行
         _backend.ExecuteCommandBuffer(_commandBuffer);
 
+        _hasInstanceUpdates = false;
         _resourceManager.EndFrame();
     }
 
@@ -258,13 +299,22 @@ public sealed class UIRuntimeV2 : IDisposable, IUIRuntimeHost
     private static readonly int OffsetBorderRight = (int)Marshal.OffsetOf<GpuInstanceData>(nameof(GpuInstanceData.BorderThicknessRight));
     private static readonly int OffsetBorderBottom = (int)Marshal.OffsetOf<GpuInstanceData>(nameof(GpuInstanceData.BorderThicknessBottom));
 
-    // 复用的 4 字节写入缓冲区，避免每帧 BitConverter.GetBytes 分配
+    // 复用的 4 字节写入缓冲区，避免每帧 BitConverter.GetBytes 分配。
+    // 注意：此缓冲区不可重入 —— 调用 WriteFloat 后必须在再次调用前消费返回的数据。
     [ThreadStatic]
     private static byte[]? t_floatBuffer;
 
+    [ThreadStatic]
+    private static bool t_floatBufferInUse;
+
     private static byte[] WriteFloat(float value)
     {
+        System.Diagnostics.Debug.Assert(!t_floatBufferInUse,
+            "t_floatBuffer is already in use. WriteFloat is not reentrant; " +
+            "consume the returned buffer before calling WriteFloat again.");
+
         var buf = t_floatBuffer ??= new byte[4];
+        t_floatBufferInUse = true;
         BitConverter.TryWriteBytes(buf, value);
         return buf;
     }
@@ -307,10 +357,14 @@ public sealed class UIRuntimeV2 : IDisposable, IUIRuntimeHost
 
         if (offset >= 0 && data.Length > 0)
         {
+            // 直接更新 GPU Instance Buffer —— 编译后的 RenderGraph 引用同一个缓冲区，
+            // 下次执行绘制命令时自动拾取新数据，无需重建 RenderGraph。
             _backend.UpdateBuffer(_instanceBuffer, offset, data);
+            _hasInstanceUpdates = true;
         }
 
-        _isDirty = true;
+        // Mark the thread-static float buffer as no longer in use
+        t_floatBufferInUse = false;
     }
 
     #region Private Methods
@@ -368,16 +422,36 @@ public sealed class UIRuntimeV2 : IDisposable, IUIRuntimeHost
         _frameConstantsBuffer = _resourceManager.AcquireBuffer(256, BufferUsage.Uniform);
 
         // 纹理
-        foreach (var (index, texRef) in _currentBundle.Textures.Select((t, i) => ((uint)i, t)))
+        try
         {
-            _textures[index] = _textureManager.LoadTexture(texRef.Path, texRef.Format);
-        }
+            foreach (var (index, texRef) in _currentBundle.Textures.Select((t, i) => ((uint)i, t)))
+            {
+                _textures[index] = _textureManager.LoadTexture(texRef.Path, texRef.Format);
+            }
 
-        // 字形图集
-        foreach (var (index, atlas) in _currentBundle.GlyphAtlases.Select((a, i) => ((uint)i, a)))
+            // 字形图集
+            foreach (var (index, atlas) in _currentBundle.GlyphAtlases.Select((a, i) => ((uint)i, a)))
+            {
+                _glyphAtlases[index] = _textureManager.CreateGlyphAtlas(
+                    atlas.FontId, atlas.FontSize, atlas.Width, atlas.Height);
+            }
+        }
+        catch
         {
-            _glyphAtlases[index] = _textureManager.CreateGlyphAtlas(
-                atlas.FontId, atlas.FontSize, atlas.Width, atlas.Height);
+            // 销毁已加载的纹理和字形图集，防止部分失败时泄漏
+            foreach (var handle in _textures.Values)
+            {
+                _textureManager.Destroy(handle);
+            }
+            _textures.Clear();
+
+            foreach (var handle in _glyphAtlases.Values)
+            {
+                _textureManager.Destroy(handle);
+            }
+            _glyphAtlases.Clear();
+
+            throw;
         }
     }
 

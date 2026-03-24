@@ -53,6 +53,12 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     public int Height { get; private set; }
 
+    /// <summary>
+    /// Gets whether the native backend preserves back-buffer contents across presents,
+    /// allowing partial redraw + dirty-rect presentation.
+    /// </summary>
+    public bool SupportsPartialPresentation { get; }
+
     internal RenderTarget(RenderContext context, NativeSurfaceDescriptor surface, int width, int height, bool useComposition = false)
         : this(
             context.Backend,
@@ -95,6 +101,8 @@ public sealed class RenderTarget : IDisposable
                 int resultCode = _native.GetContextLastError(contextHandle);
                 ThrowRenderPipelineException("Create", resultCode);
             }
+
+            SupportsPartialPresentation = _native.SupportsPartialPresentation(_handle);
         }
         catch
         {
@@ -134,6 +142,34 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Attempts to begin a drawing session.  Returns false if the GPU is still
+    /// processing the previous frame for this buffer, allowing the caller to
+    /// skip the frame without blocking the UI thread.
+    /// </summary>
+    public bool TryBeginDraw()
+    {
+        ThrowIfDisposed();
+        if (_isDrawing) return true;
+
+        int resultCode = _native.BeginDraw(_handle);
+        if (resultCode == (int)JaliumResult.Ok)
+        {
+            _isDrawing = true;
+            return true;
+        }
+
+        // D3D12 uses InvalidState here when the GPU is still presenting the
+        // previous back buffer. Callers can skip the frame and retry later.
+        if (resultCode == (int)JaliumResult.InvalidState)
+        {
+            return false;
+        }
+
+        ThrowIfNativeFailure("Begin", resultCode);
+        return false;
+    }
+
+    /// <summary>
     /// Ends a drawing session and presents the content.
     /// </summary>
     public void EndDraw()
@@ -152,6 +188,27 @@ public sealed class RenderTarget : IDisposable
         }
 
         ThrowIfNativeFailure("End", resultCode);
+    }
+
+    /// <summary>
+    /// Ends a drawing session without throwing on recoverable errors.
+    /// Returns <see cref="JaliumResult.Ok"/> on success, or the failure result.
+    /// </summary>
+    public JaliumResult TryEndDraw()
+    {
+        if (_disposed || !_isDrawing) return JaliumResult.Ok;
+
+        int resultCode;
+        try
+        {
+            resultCode = _native.EndDraw(_handle);
+        }
+        finally
+        {
+            _isDrawing = false;
+        }
+
+        return JaliumResultMapper.FromCode(resultCode);
     }
 
     /// <summary>
@@ -269,11 +326,11 @@ public sealed class RenderTarget : IDisposable
     /// <param name="brush">Brush for stroke.</param>
     /// <param name="strokeWidth">Width of stroke.</param>
     /// <param name="closed">Whether to close the polygon.</param>
-    public void DrawPolygon(float[] points, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true)
+    public void DrawPolygon(float[] points, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true, int lineJoin = 0, float miterLimit = 10.0f)
     {
         ThrowIfDisposed();
         if (brush == null || !brush.IsValid || points == null || points.Length < 4) return;
-        NativeMethods.DrawPolygon(_handle, points, points.Length / 2, brush.Handle, strokeWidth, closed ? 1 : 0);
+        NativeMethods.DrawPolygon(_handle, points, points.Length / 2, brush.Handle, strokeWidth, closed ? 1 : 0, lineJoin, miterLimit);
     }
 
     /// <summary>
@@ -288,12 +345,13 @@ public sealed class RenderTarget : IDisposable
 
     /// <summary>
     /// Strokes a path with native bezier curve support.
+    /// lineCap: 0 = Butt, 1 = Square, 2 = Round.
     /// </summary>
-    public void StrokePath(float startX, float startY, float[] commands, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true)
+    public void StrokePath(float startX, float startY, float[] commands, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true, int lineJoin = 0, float miterLimit = 10.0f, int lineCap = 0)
     {
         ThrowIfDisposed();
         if (brush == null || !brush.IsValid || commands == null || commands.Length == 0) return;
-        NativeMethods.StrokePath(_handle, startX, startY, commands, commands.Length, brush.Handle, strokeWidth, closed ? 1 : 0);
+        NativeMethods.StrokePath(_handle, startX, startY, commands, commands.Length, brush.Handle, strokeWidth, closed ? 1 : 0, lineJoin, miterLimit, lineCap);
     }
 
     /// <summary>
@@ -427,6 +485,17 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Sets the current shape type for SDF rect rendering.
+    /// </summary>
+    /// <param name="type">0 = RoundedRect, 1 = SuperEllipse.</param>
+    /// <param name="n">SuperEllipse exponent (e.g. 4.0 for squircle).</param>
+    public void SetShapeType(int type, float n)
+    {
+        ThrowIfDisposed();
+        NativeMethods.SetShapeType(_handle, type, n);
+    }
+
+    /// <summary>
     /// Sets whether VSync is enabled.
     /// When disabled, Present returns immediately for faster frame updates during resize.
     /// </summary>
@@ -434,7 +503,7 @@ public sealed class RenderTarget : IDisposable
     public void SetVSyncEnabled(bool enabled)
     {
         ThrowIfDisposed();
-        NativeMethods.RenderTargetSetVSync(_handle, enabled ? 1 : 0);
+        _native.SetVSyncEnabled(_handle, enabled);
     }
 
     /// <summary>
@@ -793,10 +862,11 @@ public sealed class RenderTarget : IDisposable
     /// <summary>
     /// Applies a Gaussian blur effect to the captured element content and draws it.
     /// </summary>
-    public void DrawBlurEffect(float x, float y, float w, float h, float radius)
+    public void DrawBlurEffect(float x, float y, float w, float h, float radius,
+        float uvOffsetX = 0, float uvOffsetY = 0)
     {
         ThrowIfDisposed();
-        NativeMethods.DrawBlurEffect(_handle, x, y, w, h, radius);
+        NativeMethods.DrawBlurEffect(_handle, x, y, w, h, radius, uvOffsetX, uvOffsetY);
     }
 
     /// <summary>
@@ -804,11 +874,64 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     public void DrawDropShadowEffect(float x, float y, float w, float h,
         float blurRadius, float offsetX, float offsetY,
-        float r, float g, float b, float a)
+        float r, float g, float b, float a,
+        float uvOffsetX = 0, float uvOffsetY = 0,
+        float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
     {
         ThrowIfDisposed();
         NativeMethods.DrawDropShadowEffect(_handle, x, y, w, h,
-            blurRadius, offsetX, offsetY, r, g, b, a);
+            blurRadius, offsetX, offsetY, r, g, b, a,
+            uvOffsetX, uvOffsetY,
+            cornerTL, cornerTR, cornerBR, cornerBL);
+    }
+
+    public void DrawOuterGlowEffect(float x, float y, float w, float h,
+        float glowSize, float r, float g, float b, float a, float intensity,
+        float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
+    {
+        ThrowIfDisposed();
+        NativeMethods.DrawOuterGlowEffect(_handle, x, y, w, h,
+            glowSize, r, g, b, a, intensity, cornerTL, cornerTR, cornerBR, cornerBL);
+    }
+
+    public void DrawInnerShadowEffect(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
+    {
+        ThrowIfDisposed();
+        NativeMethods.DrawInnerShadowEffect(_handle, x, y, w, h,
+            blurRadius, offsetX, offsetY, r, g, b, a, cornerTL, cornerTR, cornerBR, cornerBL);
+    }
+
+    public void DrawColorMatrixEffect(float x, float y, float w, float h,
+        ReadOnlySpan<float> matrix)
+    {
+        ThrowIfDisposed();
+        NativeMethods.DrawColorMatrixEffect(_handle, x, y, w, h, matrix);
+    }
+
+    public void DrawEmbossEffect(float x, float y, float w, float h,
+        float amount, float lightDirX, float lightDirY, float relief)
+    {
+        ThrowIfDisposed();
+        NativeMethods.DrawEmbossEffect(_handle, x, y, w, h,
+            amount, lightDirX, lightDirY, relief);
+    }
+
+    /// <summary>
+    /// Applies a custom pixel shader effect to the captured element content and draws it.
+    /// </summary>
+    public void DrawShaderEffect(float x, float y, float w, float h,
+        byte[] shaderBytecode, float[] constants)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(shaderBytecode);
+        ArgumentNullException.ThrowIfNull(constants);
+
+        NativeMethods.DrawShaderEffect(_handle, x, y, w, h,
+            shaderBytecode, (uint)shaderBytecode.Length,
+            constants, (uint)constants.Length);
     }
 
     /// <summary>
@@ -831,6 +954,8 @@ public sealed class RenderTarget : IDisposable
         ReadOnlySpan<float> neighborData = default)
     {
         ThrowIfDisposed();
+        if (neighborCount > 0 && neighborData.Length < neighborCount * 5)
+            throw new ArgumentException("neighborData too small for neighborCount");
         fixed (float* pNeighbor = neighborData)
         {
             NativeMethods.DrawLiquidGlass(
@@ -908,7 +1033,10 @@ public sealed class RenderTarget : IDisposable
 
     ~RenderTarget()
     {
-        ReleaseOwnerContextReference();
+        if (_handle != nint.Zero)
+        {
+            NativeMethods.RenderTargetDestroy(_handle);
+        }
         _isDrawing = false;
         _disposed = true;
         _handle = nint.Zero;
@@ -933,7 +1061,9 @@ internal interface IRenderTargetNative
     int Resize(nint renderTarget, int width, int height);
     int BeginDraw(nint renderTarget);
     int EndDraw(nint renderTarget);
+    void SetVSyncEnabled(nint renderTarget, bool enabled);
     void SetFullInvalidation(nint renderTarget);
+    bool SupportsPartialPresentation(nint renderTarget);
     void Destroy(nint renderTarget);
 }
 
@@ -963,8 +1093,14 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
     public int EndDraw(nint renderTarget)
         => NativeMethods.RenderTargetEndDraw(renderTarget);
 
+    public void SetVSyncEnabled(nint renderTarget, bool enabled)
+        => NativeMethods.RenderTargetSetVSync(renderTarget, enabled ? 1 : 0);
+
     public void SetFullInvalidation(nint renderTarget)
         => NativeMethods.RenderTargetSetFullInvalidation(renderTarget);
+
+    public bool SupportsPartialPresentation(nint renderTarget)
+        => NativeMethods.RenderTargetSupportsPartialPresentation(renderTarget) != 0;
 
     public void Destroy(nint renderTarget)
         => NativeMethods.RenderTargetDestroy(renderTarget);

@@ -27,6 +27,8 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
     private const int RenderFlag_Rendering = 2;
     private const int RenderFlag_Requested = 4;
     private bool _renderRecoveryInProgress;
+    private int _renderRecoveryAttempts;
+    private const int MaxRenderRecoveryAttempts = 3;
     private DispatcherTimer? _renderRecoveryRetryTimer;
     private bool _disposed;
     private int _screenX;
@@ -308,6 +310,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
                 _renderTarget.EndDraw();
                 drawSessionActive = false;
+                _renderRecoveryAttempts = 0;
             }
             finally
             {
@@ -405,10 +408,18 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         if (!IsRecoverableRenderPipelineException(exception) ||
             _hwnd == nint.Zero ||
             _disposed ||
-            _renderRecoveryInProgress)
+            _renderRecoveryInProgress ||
+            _renderRecoveryAttempts >= MaxRenderRecoveryAttempts)
         {
+            if (_renderRecoveryAttempts >= MaxRenderRecoveryAttempts)
+            {
+                LogRenderFailure(exception, $"{stage}:MaxRetriesExceeded");
+                _renderRecoveryAttempts = 0;
+            }
             return false;
         }
+
+        _renderRecoveryAttempts++;
 
         _renderRecoveryInProgress = true;
         try
@@ -1773,7 +1784,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                     break; // Stop at common ancestor
 
                 uiElement.SetIsMouseOver(false);
-                RoutedEventArgs args = new(MouseLeaveEvent, uiElement);
+                MouseEventArgs args = new(MouseLeaveEvent) { Source = uiElement };
                 uiElement.RaiseEvent(args);
             }
             current = current.VisualParent;
@@ -1812,7 +1823,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         {
             var uiElement = enterElements[i];
             uiElement.SetIsMouseOver(true);
-            RoutedEventArgs args = new(MouseEnterEvent, uiElement);
+            MouseEventArgs args = new(MouseEnterEvent) { Source = uiElement };
             uiElement.RaiseEvent(args);
         }
     }

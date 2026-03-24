@@ -8,7 +8,7 @@ namespace Jalium.UI.Interop;
 /// <summary>
 /// A DrawingContext implementation that renders to a RenderTarget.
 /// </summary>
-public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext
+public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext, ITransformDrawingContext
 {
     private const int MaxBrushCacheSize = 256;
     private const int MaxTextFormatCacheSize = 64;
@@ -65,6 +65,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     public Rect? CurrentClipBounds => _clipBoundsStack.Count > 0 ? _clipBoundsStack.Peek() : null;
 
     /// <summary>
+    /// When true, temporarily replaces GPU-expensive effects with cheap overlays.
+    /// Intended for interactive resize / recovery scenarios where stability matters
+    /// more than perfect visual fidelity.
+    /// </summary>
+    internal bool SimplifyGpuEffects { get; set; }
+
+    /// <summary>
     /// Begins batching ellipse draw calls. While batching is active, DrawEllipse calls
     /// with solid color brushes are accumulated and flushed as a single native call.
     /// </summary>
@@ -117,6 +124,45 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     }
 
     private const double SnapEpsilon = 0.0001;
+
+    private void FillTransientOverlay(float x, float y, float width, float height, float radiusX, float radiusY,
+        float r, float g, float b, float a)
+    {
+        if (width <= 0 || height <= 0 || a <= 0) return;
+
+        using var brush = _context.CreateSolidBrush(r, g, b, a);
+        if (radiusX > 0 || radiusY > 0)
+        {
+            _renderTarget.FillRoundedRectangle(x, y, width, height, radiusX, radiusY, brush);
+        }
+        else
+        {
+            _renderTarget.FillRectangle(x, y, width, height, brush);
+        }
+    }
+
+    private void DrawSimplifiedBackdropEffect(float x, float y, float width, float height,
+        CornerRadius cornerRadius, IBackdropEffect effect)
+    {
+        var normalizedCornerRadius = cornerRadius.Normalize(width, height);
+        float radiusX = (float)Math.Max(normalizedCornerRadius.TopLeft, normalizedCornerRadius.TopRight);
+        float radiusY = (float)Math.Max(normalizedCornerRadius.TopLeft, normalizedCornerRadius.BottomLeft);
+
+        uint tintColorArgb = effect.TintColorArgb;
+        float overlayAlpha = Math.Clamp(effect.TintOpacity > 0 ? effect.TintOpacity : 0.14f, 0.08f, 0.45f);
+        float r = 0.12f;
+        float g = 0.12f;
+        float b = 0.12f;
+
+        if (tintColorArgb != 0)
+        {
+            r = ((tintColorArgb >> 16) & 0xFF) / 255f;
+            g = ((tintColorArgb >> 8) & 0xFF) / 255f;
+            b = (tintColorArgb & 0xFF) / 255f;
+        }
+
+        FillTransientOverlay(x, y, width, height, radiusX, radiusY, r, g, b, overlayAlpha);
+    }
 
     private static float SnapCoordinate(double value)
     {
@@ -500,40 +546,47 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         // Check if we need managed dashed stroke rendering
         bool hasDash = pen?.DashStyle?.Dashes is { Count: > 0 };
-        // Use managed widening only for non-Flat line caps (which the native
-        // DrawPolygon cannot render).  LineJoin differences (Miter vs Bevel)
-        // are handled natively — the managed widening + FillPolygon path
-        // cannot correctly render closed stroke outlines on D3D12 (triangle
-        // fan doesn't support concave/ring polygons).
-        bool needsWidening = pen != null && (
-            pen.StartLineCap != PenLineCap.Flat ||
-            pen.EndLineCap != PenLineCap.Flat);
+        // Use managed widening only for Triangle line caps (not natively supported).
+        // Flat (Butt), Round, and Square caps are handled natively.
+        // Closed figures have no endpoints, so line caps don't apply.
+        bool hasNonFlatCaps = pen != null && (
+            pen.StartLineCap == PenLineCap.Triangle ||
+            pen.EndLineCap == PenLineCap.Triangle);
 
-        foreach (var figure in pathGeom.Figures)
+        // For fill: use compound path rendering when there are multiple figures
+        // (enables proper hole/fill rule handling in the native triangulator)
+        var fillFigures = brush != null
+            ? pathGeom.Figures.Where(f => f.IsFilled).ToList()
+            : null;
+
+        if (fillFigures != null && fillFigures.Count > 1)
         {
-            // Fill always uses the normal path
-            if (brush != null && figure.IsFilled)
-            {
-                if (FigureHasCurves(figure))
-                {
-                    DrawPathFigureNative(brush, null, figure, pathGeom.FillRule);
-                }
-                else
-                {
-                    DrawPathFigurePolygon(brush, null, figure, pathGeom.FillRule);
-                }
-            }
+            // Send all figures as a single compound path with MoveTo separators
+            DrawCompoundPathFill(brush!, fillFigures, pathGeom.FillRule);
+        }
+        else if (fillFigures != null && fillFigures.Count == 1)
+        {
+            var figure = fillFigures[0];
+            if (FigureHasCurves(figure))
+                DrawPathFigureNative(brush, null, figure, pathGeom.FillRule);
+            else
+                DrawPathFigurePolygon(brush, null, figure, pathGeom.FillRule);
+        }
 
-            // Stroke rendering
-            if (pen?.Brush != null)
+        // Stroke rendering: each figure stroked individually
+        if (pen?.Brush != null)
+        {
+            foreach (var figure in pathGeom.Figures)
             {
+                bool needsWidening = hasNonFlatCaps && !figure.IsClosed;
+
                 if (hasDash)
                 {
                     DrawDashedPathFigure(pen, figure);
                 }
                 else if (needsWidening)
                 {
-                    // Use GetWidenedPathGeometry for accurate line caps/joins
+                    // Use GetWidenedPathGeometry for accurate line caps on open paths
                     DrawWidenedStroke(pen, figure, pathGeom.FillRule);
                 }
                 else if (FigureHasCurves(figure))
@@ -545,6 +598,49 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                     DrawPathFigurePolygon(null, pen, figure, pathGeom.FillRule);
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// Sends multiple path figures as a single compound path to native FillPath,
+    /// using tag 2 (MoveTo) to separate contours.  This enables the native
+    /// triangulator to handle holes and fill rules correctly.
+    /// </summary>
+    private void DrawCompoundPathFill(Brush brush, List<PathFigure> figures, FillRule fillRule)
+    {
+        _pathCommandBuffer ??= new List<float>(256);
+        _pathCommandBuffer.Clear();
+        var cmds = _pathCommandBuffer;
+        var ox = Offset.X;
+        var oy = Offset.Y;
+
+        // First figure: use the normal startX/startY
+        var firstFigure = figures[0];
+        float startX = (float)(firstFigure.StartPoint.X + ox);
+        float startY = (float)(firstFigure.StartPoint.Y + oy);
+
+        AppendFigureSegments(cmds, firstFigure, firstFigure.StartPoint, ox, oy);
+        if (firstFigure.IsClosed) cmds.Add(5f); // ClosePath tag
+
+        // Subsequent figures: use MoveTo (tag 2) to start new contours
+        for (int f = 1; f < figures.Count; f++)
+        {
+            var figure = figures[f];
+            cmds.Add(2f); // MoveTo tag
+            cmds.Add((float)(figure.StartPoint.X + ox));
+            cmds.Add((float)(figure.StartPoint.Y + oy));
+
+            AppendFigureSegments(cmds, figure, figure.StartPoint, ox, oy);
+            if (figure.IsClosed) cmds.Add(5f); // ClosePath tag
+        }
+
+        if (cmds.Count == 0) return;
+
+        var nativeBrush = GetNativeBrush(brush);
+        if (nativeBrush != null)
+        {
+            int rule = fillRule == FillRule.Nonzero ? 1 : 0;
+            _renderTarget.FillPath(startX, startY, cmds.ToArray(), nativeBrush, rule);
         }
     }
 
@@ -771,21 +867,131 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     }
 
     /// <summary>
-    /// Renders a path figure using the native FillPath/StrokePath API with real bezier curves.
+    /// Converts an SVG-style arc to cubic bezier curves appended to the command buffer.
+    /// Uses the standard endpoint-to-center parameterization, then approximates each
+    /// arc segment (≤ π/2) with a single cubic bezier.
     /// </summary>
-    // Reusable command buffer for path rendering to reduce GC pressure.
-    private List<float>? _pathCommandBuffer;
-
-    private void DrawPathFigureNative(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule)
+    private static void AppendArcAsCubicBeziers(List<float> cmds, Point start, ArcSegment arc, double ox, double oy)
     {
-        // Build command buffer: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey]
-        _pathCommandBuffer ??= new List<float>(128);
-        _pathCommandBuffer.Clear();
-        var cmds = _pathCommandBuffer;
-        var ox = Offset.X;
-        var oy = Offset.Y;
-        var currentPoint = figure.StartPoint;
+        var end = arc.Point;
+        var rx = arc.Size.Width;
+        var ry = arc.Size.Height;
 
+        // Handle degenerate cases
+        if (rx == 0 || ry == 0 || (start.X == end.X && start.Y == end.Y))
+        {
+            cmds.Add(0f);
+            cmds.Add((float)(end.X + ox));
+            cmds.Add((float)(end.Y + oy));
+            return;
+        }
+
+        // Convert endpoint parameterization to center parameterization (SVG spec F.6.5-F.6.6)
+        var rotAngle = arc.RotationAngle * Math.PI / 180.0;
+        var cosA = Math.Cos(rotAngle);
+        var sinA = Math.Sin(rotAngle);
+
+        var dx2 = (start.X - end.X) / 2.0;
+        var dy2 = (start.Y - end.Y) / 2.0;
+        var x1p = cosA * dx2 + sinA * dy2;
+        var y1p = -sinA * dx2 + cosA * dy2;
+
+        // Ensure radii are large enough
+        var x1pSq = x1p * x1p;
+        var y1pSq = y1p * y1p;
+        var rxSq = rx * rx;
+        var rySq = ry * ry;
+        var lambda = x1pSq / rxSq + y1pSq / rySq;
+        if (lambda > 1)
+        {
+            var sqrtLam = Math.Sqrt(lambda);
+            rx *= sqrtLam;
+            ry *= sqrtLam;
+            rxSq = rx * rx;
+            rySq = ry * ry;
+        }
+
+        // Calculate center point
+        var sign = (arc.IsLargeArc != (arc.SweepDirection == SweepDirection.Clockwise)) ? 1.0 : -1.0;
+        var sq = Math.Max(0, (rxSq * rySq - rxSq * y1pSq - rySq * x1pSq) / (rxSq * y1pSq + rySq * x1pSq));
+        var coef = sign * Math.Sqrt(sq);
+        var cxp = coef * rx * y1p / ry;
+        var cyp = -coef * ry * x1p / rx;
+        var cx = cosA * cxp - sinA * cyp + (start.X + end.X) / 2.0;
+        var cy = sinA * cxp + cosA * cyp + (start.Y + end.Y) / 2.0;
+
+        // Calculate start and sweep angles
+        var startAngle = Math.Atan2((y1p - cyp) / ry, (x1p - cxp) / rx);
+        var endAngle = Math.Atan2((-y1p - cyp) / ry, (-x1p - cxp) / rx);
+        var deltaAngle = endAngle - startAngle;
+
+        if (arc.SweepDirection == SweepDirection.Clockwise && deltaAngle < 0)
+            deltaAngle += 2 * Math.PI;
+        else if (arc.SweepDirection == SweepDirection.Counterclockwise && deltaAngle > 0)
+            deltaAngle -= 2 * Math.PI;
+
+        // Split into segments of at most π/2 and approximate each with a cubic bezier
+        int segCount = (int)Math.Ceiling(Math.Abs(deltaAngle) / (Math.PI / 2.0));
+        segCount = Math.Max(1, segCount);
+        var segAngle = deltaAngle / segCount;
+
+        for (int i = 0; i < segCount; i++)
+        {
+            var a1 = startAngle + segAngle * i;
+            var a2 = a1 + segAngle;
+
+            // Cubic bezier approximation of a unit circle arc from a1 to a2:
+            // alpha = sin(da) * (sqrt(4 + 3*tan(da/2)^2) - 1) / 3
+            var da = a2 - a1;
+            var halfTan = Math.Tan(da / 2.0);
+            var alpha = Math.Sin(da) * (Math.Sqrt(4 + 3 * halfTan * halfTan) - 1) / 3.0;
+
+            var cos1 = Math.Cos(a1);
+            var sin1 = Math.Sin(a1);
+            var cos2 = Math.Cos(a2);
+            var sin2 = Math.Sin(a2);
+
+            // Points on the unit ellipse (before rotation/translation)
+            var ep1x = rx * cos1;
+            var ep1y = ry * sin1;
+            var ep2x = rx * cos2;
+            var ep2y = ry * sin2;
+
+            // Control point tangent directions
+            var d1x = -rx * sin1;
+            var d1y = ry * cos1;
+            var d2x = -rx * sin2;
+            var d2y = ry * cos2;
+
+            var cp1x = ep1x + alpha * d1x;
+            var cp1y = ep1y + alpha * d1y;
+            var cp2x = ep2x - alpha * d2x;
+            var cp2y = ep2y - alpha * d2y;
+
+            // Apply rotation and translation
+            var fcp1x = cosA * cp1x - sinA * cp1y + cx;
+            var fcp1y = sinA * cp1x + cosA * cp1y + cy;
+            var fcp2x = cosA * cp2x - sinA * cp2y + cx;
+            var fcp2y = sinA * cp2x + cosA * cp2y + cy;
+            var fep2x = cosA * ep2x - sinA * ep2y + cx;
+            var fep2y = sinA * ep2x + cosA * ep2y + cy;
+
+            cmds.Add(1f); // BezierTo
+            cmds.Add((float)(fcp1x + ox));
+            cmds.Add((float)(fcp1y + oy));
+            cmds.Add((float)(fcp2x + ox));
+            cmds.Add((float)(fcp2y + oy));
+            cmds.Add((float)(fep2x + ox));
+            cmds.Add((float)(fep2y + oy));
+        }
+    }
+
+    /// <summary>
+    /// Appends all segments of a PathFigure to the command buffer.
+    /// Used by both single-figure and compound-path rendering.
+    /// </summary>
+    private static Point AppendFigureSegments(List<float> cmds, PathFigure figure, Point currentPoint, double ox, double oy)
+    {
         foreach (var segment in figure.Segments)
         {
             if (segment is LineSegment lineSeg)
@@ -818,7 +1024,6 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             }
             else if (segment is PolyBezierSegment polyBezier)
             {
-                // Points come in groups of 3: cp1, cp2, endpoint
                 var pts = polyBezier.Points;
                 for (int i = 0; i + 2 < pts.Count; i += 3)
                 {
@@ -834,32 +1039,55 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             }
             else if (segment is QuadraticBezierSegment quad)
             {
-                AppendQuadAsCubic(cmds, currentPoint, quad.Point1, quad.Point2, ox, oy);
+                // Native QuadTo tag 3: [3, cpx, cpy, ex, ey]
+                cmds.Add(3f);
+                cmds.Add((float)(quad.Point1.X + ox));
+                cmds.Add((float)(quad.Point1.Y + oy));
+                cmds.Add((float)(quad.Point2.X + ox));
+                cmds.Add((float)(quad.Point2.Y + oy));
                 currentPoint = quad.Point2;
             }
             else if (segment is PolyQuadraticBezierSegment polyQuad)
             {
-                // Points come in groups of 2: control, endpoint
                 var pts = polyQuad.Points;
                 for (int i = 0; i + 1 < pts.Count; i += 2)
                 {
-                    AppendQuadAsCubic(cmds, currentPoint, pts[i], pts[i + 1], ox, oy);
+                    // Native QuadTo tag 3: [3, cpx, cpy, ex, ey]
+                    cmds.Add(3f);
+                    cmds.Add((float)(pts[i].X + ox));
+                    cmds.Add((float)(pts[i].Y + oy));
+                    cmds.Add((float)(pts[i + 1].X + ox));
+                    cmds.Add((float)(pts[i + 1].Y + oy));
                     currentPoint = pts[i + 1];
                 }
             }
             else if (segment is ArcSegment arc)
             {
-                // Fall back to line approximation for arcs
-                var arcPoints = GetArcPoints(currentPoint, arc);
-                foreach (var pt in arcPoints)
-                {
-                    cmds.Add(0f);
-                    cmds.Add((float)(pt.X + ox));
-                    cmds.Add((float)(pt.Y + oy));
-                }
+                // Convert arc to cubic bezier curves that native can render (tag 1).
+                // Native backends don't support raw arc commands.
+                AppendArcAsCubicBeziers(cmds, currentPoint, arc, ox, oy);
                 currentPoint = arc.Point;
             }
         }
+        return currentPoint;
+    }
+
+    /// <summary>
+    /// Renders a path figure using the native FillPath/StrokePath API with real bezier curves.
+    /// </summary>
+    // Reusable command buffer for path rendering to reduce GC pressure.
+    private List<float>? _pathCommandBuffer;
+
+    private void DrawPathFigureNative(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule)
+    {
+        // Build command buffer: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey]
+        _pathCommandBuffer ??= new List<float>(128);
+        _pathCommandBuffer.Clear();
+        var cmds = _pathCommandBuffer;
+        var ox = Offset.X;
+        var oy = Offset.Y;
+
+        AppendFigureSegments(cmds, figure, figure.StartPoint, ox, oy);
 
         if (cmds.Count == 0) return;
 
@@ -882,7 +1110,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             var strokeBrush = GetNativeBrush(pen.Brush);
             if (strokeBrush != null)
             {
-                _renderTarget.StrokePath(startX, startY, cmdArray, strokeBrush, (float)pen.Thickness, figure.IsClosed);
+                int nativeLineCap = pen.StartLineCap switch
+                {
+                    PenLineCap.Round => 2,    // kLineCapRound
+                    PenLineCap.Square => 1,   // kLineCapSquare
+                    _ => 0                    // kLineCapButt (Flat, Triangle)
+                };
+                _renderTarget.StrokePath(startX, startY, cmdArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit, nativeLineCap);
             }
         }
     }
@@ -1016,7 +1250,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             var strokeBrush = GetNativeBrush(pen.Brush);
             if (strokeBrush != null)
             {
-                _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed);
+                _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit);
             }
         }
     }
@@ -1222,6 +1456,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var height = (float)rectangle.Height;
         var normalizedCornerRadius = cornerRadius.Normalize(rectangle.Width, rectangle.Height);
 
+        if (SimplifyGpuEffects)
+        {
+            DrawSimplifiedBackdropEffect(x, y, width, height, cornerRadius, effect);
+            return;
+        }
+
         // Convert IBackdropEffect to native parameters
         // Build backdrop filter string based on effect properties
         var backdropFilter = BuildBackdropFilterString(effect);
@@ -1330,6 +1570,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var y = (float)Math.Round(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
         var height = (float)rectangle.Height;
+
+        if (SimplifyGpuEffects)
+        {
+            float overlayAlpha = Math.Clamp(tintOpacity > 0 ? tintOpacity : 0.22f, 0.14f, 0.42f);
+            FillTransientOverlay(x, y, width, height, cornerRadius, cornerRadius, tintR, tintG, tintB, overlayAlpha);
+            return;
+        }
 
         _renderTarget.DrawLiquidGlass(
             x, y, width, height,
@@ -1440,6 +1687,38 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
     }
 
+    /// <summary>
+    /// Explicit implementation of ITransformDrawingContext.PushTransform.
+    /// Accepts an object and delegates to the typed PushTransform, composing with origin offset.
+    /// </summary>
+    void ITransformDrawingContext.PushTransform(object transform, double originX, double originY)
+    {
+        if (transform is Transform t)
+        {
+            if (originX != 0 || originY != 0)
+            {
+                // Compose: T(-origin) * transform * T(+origin)
+                var m = t.Value;
+                var pre = new Matrix(1, 0, 0, 1, -originX, -originY);
+                var post = new Matrix(1, 0, 0, 1, originX, originY);
+                var combined = Matrix.Multiply(Matrix.Multiply(pre, m), post);
+                PushTransform(new MatrixTransform(combined));
+            }
+            else
+            {
+                PushTransform(t);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Explicit implementation of ITransformDrawingContext.PopTransform.
+    /// </summary>
+    void ITransformDrawingContext.PopTransform()
+    {
+        Pop();
+    }
+
     /// <inheritdoc />
     public override void PushClip(Geometry clipGeometry)
     {
@@ -1483,6 +1762,33 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
     }
 
+    /// <summary>
+    /// Pushes a rounded-rect clip using element bounds and corner radius.
+    /// </summary>
+    public void PushRoundedRectClip(Rect bounds, CornerRadius cornerRadius)
+    {
+        if (_closed) return;
+
+        var x = (float)(bounds.X + Offset.X);
+        var y = (float)(bounds.Y + Offset.Y);
+        var w = (float)bounds.Width;
+        var h = (float)bounds.Height;
+        var r = (float)Math.Max(Math.Max(cornerRadius.TopLeft, cornerRadius.TopRight),
+                                Math.Max(cornerRadius.BottomRight, cornerRadius.BottomLeft));
+
+        var clipRect = new Rect(x, y, w, h);
+        Rect? effectiveClip = clipRect;
+        if (_clipBoundsStack.Count > 0)
+        {
+            var parentClip = _clipBoundsStack.Peek();
+            effectiveClip = parentClip.HasValue ? parentClip.Value.Intersect(clipRect) : clipRect;
+        }
+        _clipBoundsStack.Push(effectiveClip);
+
+        _renderTarget.PushRoundedRectClip(x, y, w, h, r, r);
+        _stateStack.Push(new DrawingState(DrawingStateType.Clip, Point.Zero));
+    }
+
     /// <inheritdoc />
     public override void PushOpacity(double opacity)
     {
@@ -1490,6 +1796,18 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         _renderTarget.PushOpacity((float)opacity);
         _stateStack.Push(new DrawingState(DrawingStateType.Opacity, Point.Zero));
+    }
+
+    /// <summary>
+    /// Sets the current shape type for subsequent SDF rect draw calls.
+    /// Call with (0, 0) to reset to default rounded rectangle mode.
+    /// </summary>
+    /// <param name="type">0 = RoundedRect, 1 = SuperEllipse.</param>
+    /// <param name="n">SuperEllipse exponent (e.g. 4.0 for squircle).</param>
+    public void SetShapeType(int type, float n)
+    {
+        if (_closed) return;
+        _renderTarget.SetShapeType(type, n);
     }
 
     /// <summary>
@@ -1625,29 +1943,54 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// Dispatches to the appropriate native rendering method based on concrete effect type.
     /// </summary>
     public void ApplyElementEffect(IEffect effect, float x, float y, float w, float h,
+        float captureOriginX = 0, float captureOriginY = 0,
         float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
     {
         if (_closed || effect == null) return;
 
+        // UV offset: difference between element position and capture origin.
+        // The offscreen texture starts at captureOrigin; the element content sits
+        // at (x - captureOriginX, y - captureOriginY) inside the texture.
+        float uvOffX = x - captureOriginX;
+        float uvOffY = y - captureOriginY;
+
+        if (SimplifyGpuEffects)
+        {
+            _renderTarget.DrawCapturedTransition(0, x, y, w, h, 1.0f);
+            return;
+        }
+
         if (effect is Media.Effects.BlurEffect blur)
         {
-            if (blur.Radius > 0.5)
-                _renderTarget.DrawBlurEffect(x, y, w, h, (float)blur.Radius);
+            // Blur content should be clipped to element's rounded corners.
+            // x,y already contain the element's screen position (= Offset).
+            bool hasCorners = cornerTL > 0 || cornerTR > 0 || cornerBR > 0 || cornerBL > 0;
+            if (hasCorners)
+            {
+                float maxR = Math.Max(Math.Max(cornerTL, cornerTR), Math.Max(cornerBR, cornerBL));
+                _renderTarget.PushRoundedRectClip(x, y, w, h, maxR, maxR);
+            }
+            _renderTarget.DrawBlurEffect(x, y, w, h, (float)blur.Radius, uvOffX, uvOffY);
+            if (hasCorners)
+            {
+                _renderTarget.PopClip();
+            }
         }
         else if (effect is Media.Effects.ElementBlurEffect elementBlur)
         {
-            if (elementBlur.Radius > 0.5)
-                _renderTarget.DrawBlurEffect(x, y, w, h, (float)elementBlur.Radius);
+            _renderTarget.DrawBlurEffect(x, y, w, h, (float)elementBlur.Radius, uvOffX, uvOffY);
         }
         else if (effect is Media.Effects.DropShadowEffect shadow)
         {
             var color = shadow.Color;
+            var effectiveAlpha = (color.A / 255f) * (float)shadow.Opacity;
             _renderTarget.DrawDropShadowEffect(x, y, w, h,
                 (float)shadow.BlurRadius,
                 (float)shadow.OffsetX,
                 (float)shadow.OffsetY,
                 color.R / 255f, color.G / 255f, color.B / 255f,
-                (float)shadow.Opacity,
+                effectiveAlpha,
+                uvOffX, uvOffY,
                 cornerTL, cornerTR, cornerBR, cornerBL);
         }
         else if (effect is Media.Effects.OuterGlowEffect glow)
@@ -1687,6 +2030,20 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             matrixData[10] = m.M31; matrixData[11] = m.M32; matrixData[12] = m.M33; matrixData[13] = m.M34; matrixData[14] = m.M35;
             matrixData[15] = m.M41; matrixData[16] = m.M42; matrixData[17] = m.M43; matrixData[18] = m.M44; matrixData[19] = m.M45;
             _renderTarget.DrawColorMatrixEffect(x, y, w, h, matrixData);
+        }
+        else if (effect is Media.Effects.ShaderEffect shaderEffect)
+        {
+            var shaderBytecode = shaderEffect.PixelShader?.ShaderBytecode;
+            if (shaderBytecode is { Length: > 0 })
+            {
+                _renderTarget.DrawShaderEffect(x, y, w, h,
+                    shaderBytecode,
+                    shaderEffect.BuildConstantBuffer());
+            }
+            else
+            {
+                _renderTarget.DrawBlurEffect(x, y, w, h, 0);
+            }
         }
         else if (effect is Media.Effects.EffectGroup group)
         {

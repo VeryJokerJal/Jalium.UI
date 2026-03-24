@@ -127,7 +127,11 @@ public readonly struct PipelineStateDesc : IEquatable<PipelineStateDesc>
         hash = (hash ^ (ulong)PixelShader) * prime;
         hash = (hash ^ (ulong)InputLayout) * prime;
         hash = (hash ^ (ulong)BlendState.Mode) * prime;
+        hash = (hash ^ (ulong)(BlendState.AlphaToCoverage ? 1 : 0)) * prime;
         hash = (hash ^ (ulong)RasterizerState.CullMode) * prime;
+        hash = (hash ^ (ulong)RasterizerState.FillMode) * prime;
+        hash = (hash ^ (ulong)(RasterizerState.ScissorEnable ? 1 : 0)) * prime;
+        hash = (hash ^ (ulong)(RasterizerState.MultisampleEnable ? 1 : 0)) * prime;
         hash = (hash ^ (ulong)(DepthStencilState.EnableDepth ? 1 : 0)) * prime;
         hash = (hash ^ (ulong)RtFormat) * prime;
         hash = (hash ^ SampleCount) * prime;

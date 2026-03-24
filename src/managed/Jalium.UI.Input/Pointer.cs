@@ -314,7 +314,7 @@ public class PointerEventArgs : InputEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerEventHandler pointerHandler)
         {
@@ -346,7 +346,7 @@ public class PointerDownEventArgs : PointerEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerDownEventHandler downHandler)
         {
@@ -373,7 +373,7 @@ public class PointerUpEventArgs : PointerEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerUpEventHandler upHandler)
         {
@@ -400,7 +400,7 @@ public class PointerMoveEventArgs : PointerEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerMoveEventHandler moveHandler)
         {
@@ -427,7 +427,7 @@ public class PointerCancelEventArgs : PointerEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerCancelEventHandler cancelHandler)
         {
@@ -454,7 +454,7 @@ public sealed class PointerPressedEventArgs : PointerDownEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerPressedEventHandler pressedHandler)
         {
@@ -481,7 +481,7 @@ public sealed class PointerReleasedEventArgs : PointerUpEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerReleasedEventHandler releasedHandler)
         {
@@ -508,7 +508,7 @@ public sealed class PointerMovedEventArgs : PointerMoveEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerMovedEventHandler movedHandler)
         {
@@ -540,7 +540,7 @@ public sealed class PointerWheelChangedEventArgs : PointerEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerWheelChangedEventHandler wheelHandler)
         {
@@ -567,7 +567,7 @@ public sealed class PointerCaptureLostEventArgs : PointerEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is PointerCaptureLostEventHandler captureLostHandler)
         {

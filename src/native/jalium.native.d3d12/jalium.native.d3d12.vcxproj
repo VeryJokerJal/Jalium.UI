@@ -65,7 +65,8 @@
     <Link>
       <SubSystem>Windows</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxguid.lib;d3dcompiler.lib;dwrite.lib;d2d1.lib;d3d11.lib;dcomp.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <ProgramDatabaseFile>$(ProjectDir)$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxguid.lib;d3dcompiler.lib;dwrite.lib;dcomp.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -85,15 +86,18 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxguid.lib;d3dcompiler.lib;dwrite.lib;d2d1.lib;d3d11.lib;dcomp.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <ProgramDatabaseFile>$(ProjectDir)$(IntDir)$(TargetName).pdb</ProgramDatabaseFile>
+      <AdditionalDependencies>d3d12.lib;dxgi.lib;dxguid.lib;d3dcompiler.lib;dwrite.lib;dcomp.lib;$(SolutionDir)bin\native\$(Configuration)\jalium.native.core.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\d3d12_backend.h" />
+    <ClInclude Include="include\d3d12_direct_renderer.h" />
+    <ClInclude Include="include\d3d12_shader_source.h" />
+    <ClInclude Include="include\d3d12_glyph_atlas.h" />
     <ClInclude Include="include\d3d12_render_target.h" />
     <ClInclude Include="include\d3d12_resources.h" />
-    <ClInclude Include="include\liquid_glass_effects.h" />
-    <ClInclude Include="include\transition_shader_effect.h" />
+    <ClInclude Include="include\d3d12_triangulate.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\d3d12_backend.cpp" />
@@ -102,8 +106,8 @@
     <ClCompile Include="src\d3d12_bitmap.cpp" />
     <ClCompile Include="src\d3d12_text.cpp" />
     <ClCompile Include="src\d3d12_init.cpp" />
-    <ClCompile Include="src\liquid_glass_effects.cpp" />
-    <ClCompile Include="src\transition_shader_effect.cpp" />
+    <ClCompile Include="src\d3d12_direct_renderer.cpp" />
+    <ClCompile Include="src\d3d12_glyph_atlas.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\jalium.native.core\jalium.native.core.vcxproj">

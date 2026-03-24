@@ -296,6 +296,41 @@ public abstract class ShaderEffect : Effect
     /// </summary>
     internal IReadOnlyDictionary<int, SamplerData> Samplers => _samplerData;
 
+    /// <summary>
+    /// Builds a tightly packed float constant buffer where each register occupies
+    /// four floats in register order (c0, c1, ...).
+    /// </summary>
+    internal float[] BuildConstantBuffer()
+    {
+        int maxRegister = -1;
+
+        foreach (var registerIndex in _floatRegisters.Keys)
+        {
+            if (registerIndex > maxRegister)
+            {
+                maxRegister = registerIndex;
+            }
+        }
+
+        if (maxRegister < 0)
+        {
+            // D3D constant buffers still expect at least one float4 slot.
+            return new float[4];
+        }
+
+        var buffer = new float[(maxRegister + 1) * 4];
+        foreach (var (registerIndex, constant) in _floatRegisters)
+        {
+            var offset = registerIndex * 4;
+            buffer[offset] = constant.X;
+            buffer[offset + 1] = constant.Y;
+            buffer[offset + 2] = constant.Z;
+            buffer[offset + 3] = constant.W;
+        }
+
+        return buffer;
+    }
+
     #endregion
 
     #region Private Methods

@@ -182,6 +182,16 @@ public sealed class PixelShader : DependencyObject
 
             var len = (int)source.Length;
 
+            if (len < 0)
+            {
+                throw new InvalidOperationException("Shader stream length is negative.");
+            }
+
+            if (len > 64 * 1024 * 1024)
+            {
+                throw new InvalidOperationException("Shader bytecode exceeds maximum allowed size of 64 MB.");
+            }
+
             if (len % sizeof(int) != 0)
             {
                 throw new InvalidOperationException("Shader bytecode size must be a multiple of 4.");
@@ -190,7 +200,10 @@ public sealed class PixelShader : DependencyObject
             using var br = new BinaryReader(source);
             _shaderBytecode = br.ReadBytes(len);
 
-            // The first 4 bytes contain version info: [Minor][Major][xx][xx]
+            // DXBC compiled shader bytecode version token layout:
+            // byte[0] = minor version, byte[1] = major version, byte[2..3] = shader type
+            // This matches the DXBC spec where the version token is encoded as:
+            //   bits [0:3] = minor version, bits [4:7] = major version
             if (_shaderBytecode != null && _shaderBytecode.Length > 3)
             {
                 _shaderMajorVersion = _shaderBytecode[1];

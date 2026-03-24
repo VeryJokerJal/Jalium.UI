@@ -293,8 +293,18 @@ public sealed class StaticResourceExtension : MarkupExtension
                 return resolvedAppValue;
         }
 
-        // Resource not found - throw exception like WPF does
-        throw new XamlParseException($"Cannot find resource named '{ResourceKey}'. Resource names are case sensitive.");
+        // Resource not found - log and return null to prevent AOT __fastfail crash
+        var msg = $"[StaticResource FAIL] Cannot find resource named '{ResourceKey}' (type: {ResourceKey?.GetType().Name}). " +
+                  $"targetElement: {(targetElement != null ? targetElement.GetType().Name : "null")}, " +
+                  $"ambientProvider: {(ambientProvider != null ? "available" : "null")}, " +
+                  $"appResources: {(Jalium.UI.Application.Current?.Resources != null ? $"{Jalium.UI.Application.Current.Resources.Count} entries" : "null")}";
+        System.Diagnostics.Debug.WriteLine(msg);
+        Console.Error.WriteLine(msg);
+#if DEBUG
+        throw new XamlParseException(msg);
+#else
+        return null;
+#endif
     }
 
     private static object? ResolveDeferredResourceReference(
@@ -953,7 +963,11 @@ internal static class MarkupExtensionParser
                 extension.TargetNullValue = ResolveNestedValue(value, ambientProvider) ?? value;
                 break;
             case "stringformat":
-                extension.StringFormat = value;
+                var fmt = value.Trim('\'', '"');
+                // Strip leading {} XAML escape sequence so "{}{0:F0}" becomes "{0:F0}"
+                if (fmt.StartsWith("{}", StringComparison.Ordinal))
+                    fmt = fmt.Substring(2);
+                extension.StringFormat = fmt;
                 break;
             case "converter":
                 extension.Converter = ResolveNestedValue(value, ambientProvider) as IValueConverter;

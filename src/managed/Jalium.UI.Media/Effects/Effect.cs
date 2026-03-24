@@ -67,5 +67,30 @@ public enum EffectType
     /// <summary>
     /// Custom shader effect.
     /// </summary>
-    Shader
+    Shader,
+
+    /// <summary>
+    /// Outer glow effect around the element.
+    /// </summary>
+    OuterGlow,
+
+    /// <summary>
+    /// Inner shadow effect inside the element bounds.
+    /// </summary>
+    InnerShadow,
+
+    /// <summary>
+    /// Emboss effect that creates a raised or sunken appearance.
+    /// </summary>
+    Emboss,
+
+    /// <summary>
+    /// Color matrix transformation effect.
+    /// </summary>
+    ColorMatrix,
+
+    /// <summary>
+    /// Group of multiple effects composed together.
+    /// </summary>
+    EffectGroup
 }

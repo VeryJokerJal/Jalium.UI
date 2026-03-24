@@ -55,7 +55,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 
     #region Private Fields
 
-    private readonly Dictionary<int, UIElement> _realizedContainers = new();
+    private readonly SortedList<int, UIElement> _realizedContainers = new();
     private ItemHeightIndex _heightIndex = new(28);
     private RealizationWindow _currentWindow = RealizationWindow.Empty;
     private double _scrollOffset;
@@ -63,6 +63,9 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
     private Size _viewport;
     private double _maxCrossAxis;
     private int _lastKnownItemCount = -1;
+
+    // Reusable buffer to avoid allocations in RecycleOutsideWindow
+    private readonly List<int> _recycleBuffer = new();
 
     #endregion
 
@@ -293,7 +296,21 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         var windowEndOffset = _scrollOffset + viewportAxisSize + cacheAfter;
 
         var startIndex = Math.Max(0, _heightIndex.GetIndexAtOffset(windowStartOffset));
-        var endIndex = RealizeWindow(startIndex, windowEndOffset, availableSize);
+        var endIndex = Math.Min(itemCount - 1,
+            Math.Max(startIndex, _heightIndex.GetIndexAtOffset(windowEndOffset)));
+
+        var newWindow = endIndex >= startIndex
+            ? new RealizationWindow(startIndex, endIndex)
+            : RealizationWindow.Empty;
+
+        // Fast path: if the realization window hasn't changed, skip re-realize and recycle
+        if (newWindow.Equals(_currentWindow) && _realizedContainers.Count > 0)
+        {
+            UpdateExtent(itemCount, availableSize);
+            return CoerceDesiredSize(availableSize);
+        }
+
+        endIndex = RealizeWindow(startIndex, windowEndOffset, availableSize);
         _currentWindow = endIndex >= startIndex
             ? new RealizationWindow(startIndex, endIndex)
             : RealizationWindow.Empty;
@@ -315,9 +332,11 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         _viewport = CoerceViewport(finalSize);
         _scrollOffset = CoerceOffset(_scrollOffset);
 
-        foreach (var index in _realizedContainers.Keys.OrderBy(i => i))
+        // SortedList iterates in key order — no allocation needed
+        for (int i = 0; i < _realizedContainers.Count; i++)
         {
-            var child = _realizedContainers[index];
+            var index = _realizedContainers.Keys[i];
+            var child = _realizedContainers.Values[i];
             var itemOffset = _heightIndex.GetOffsetForIndex(index) - _scrollOffset;
             var itemExtent = _heightIndex.GetHeightAt(index);
 
@@ -521,16 +540,10 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             ItemContainerGenerator.PrepareItemContainer(container);
         }
 
-        var insertPosition = 0;
-        foreach (var realizedIndex in _realizedContainers.Keys)
-        {
-            if (realizedIndex < index)
-            {
-                insertPosition++;
-            }
-        }
-
         _realizedContainers[index] = child;
+
+        // SortedList.IndexOfKey gives us the sorted position directly — O(log n)
+        var insertPosition = _realizedContainers.IndexOfKey(index);
 
         if (Children.IndexOf(child) < 0)
         {
@@ -576,10 +589,25 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             return;
         }
 
-        var toRecycle = _realizedContainers.Keys.Where(index => !window.Contains(index)).ToArray();
-        foreach (var index in toRecycle)
+        // Collect indices to recycle using a reusable buffer — zero allocations
+        _recycleBuffer.Clear();
+        for (int i = 0; i < _realizedContainers.Count; i++)
         {
+            var index = _realizedContainers.Keys[i];
+            if (!window.Contains(index))
+            {
+                _recycleBuffer.Add(index);
+            }
+        }
+
+        var isRecycling = VirtualizationMode == VirtualizationMode.Recycling;
+        for (int i = 0; i < _recycleBuffer.Count; i++)
+        {
+            var index = _recycleBuffer[i];
             var child = _realizedContainers[index];
+
+            // SortedList keeps children in order — the visual index matches the sorted position
+            // before removal, so find it by position rather than scanning Children
             var visualIndex = Children.IndexOf(child);
             if (visualIndex >= 0)
             {
@@ -590,7 +618,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
 
             if (ItemContainerGenerator != null)
             {
-                if (VirtualizationMode == VirtualizationMode.Recycling)
+                if (isRecycling)
                 {
                     ItemContainerGenerator.RecycleIndex(index);
                 }
@@ -610,21 +638,14 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             return;
         }
 
-        var realized = _realizedContainers.Keys.ToArray();
-        foreach (var index in realized)
+        var isRecycling = recycle && VirtualizationMode == VirtualizationMode.Recycling;
+        for (int i = _realizedContainers.Count - 1; i >= 0; i--)
         {
-            if (_realizedContainers.TryGetValue(index, out var child))
-            {
-                var visualIndex = Children.IndexOf(child);
-                if (visualIndex >= 0)
-                {
-                    RemoveInternalChildRange(visualIndex, 1);
-                }
-            }
+            var index = _realizedContainers.Keys[i];
 
             if (ItemContainerGenerator != null)
             {
-                if (recycle && VirtualizationMode == VirtualizationMode.Recycling)
+                if (isRecycling)
                 {
                     ItemContainerGenerator.RecycleIndex(index);
                 }
@@ -636,10 +657,7 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
         }
 
         _realizedContainers.Clear();
-        if (Children.Count > 0)
-        {
-            Children.Clear();
-        }
+        Children.Clear();
     }
 
     private void ScrollByLine(int direction)

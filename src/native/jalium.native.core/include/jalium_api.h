@@ -28,6 +28,15 @@ extern "C" {
 /// @return A handle to the created context, or nullptr on failure.
 JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend);
 
+/// Sets the GPU adapter preference on a context before initialization.
+/// Must be called before any render target is created on this context.
+/// @param ctx The context.
+/// @param gpuPreference GPU adapter preference.
+/// @return JALIUM_OK on success.
+JALIUM_API JaliumResult jalium_context_set_gpu_preference(
+    JaliumContext* ctx,
+    JaliumGpuPreference gpuPreference);
+
 /// Destroys a Jalium rendering context and releases all associated resources.
 /// @param ctx The context to destroy.
 JALIUM_API void jalium_context_destroy(JaliumContext* ctx);
@@ -51,6 +60,14 @@ JALIUM_API const wchar_t* jalium_context_get_error_message(JaliumContext* ctx);
 /// @param ctx The context.
 /// @return 0 if OK, non-zero if device lost.
 JALIUM_API JaliumResult jalium_context_check_device_status(JaliumContext* ctx);
+
+/// Gets information about the GPU adapter selected by this context.
+/// @param ctx The context.
+/// @param info Output structure to receive adapter information.
+/// @return JALIUM_OK on success, or an error code.
+JALIUM_API JaliumResult jalium_context_get_adapter_info(
+    JaliumContext* ctx,
+    JaliumAdapterInfo* info);
 
 // ============================================================================
 // Render Target Management
@@ -162,6 +179,10 @@ JALIUM_API void jalium_render_target_add_dirty_rect(JaliumRenderTarget* rt, floa
 /// Marks the entire render target as needing full redraw.
 /// @param rt The render target.
 JALIUM_API void jalium_render_target_set_full_invalidation(JaliumRenderTarget* rt);
+
+/// Returns whether the render target supports partial redraw + dirty-rect presentation.
+/// Returns 1 when partial presentation is supported, otherwise 0.
+JALIUM_API int32_t jalium_render_target_supports_partial_presentation(JaliumRenderTarget* rt);
 
 /// Creates a composition visual node for embedding external content (e.g. WebView).
 /// On Windows this returns an IUnknown* pointer in visual_out.
@@ -403,6 +424,12 @@ JALIUM_API void jalium_push_opacity(JaliumRenderTarget* rt, float opacity);
 /// @param rt The render target.
 JALIUM_API void jalium_pop_opacity(JaliumRenderTarget* rt);
 
+/// Sets the current shape type for SDF rect rendering.
+/// @param rt The render target.
+/// @param type 0 = RoundedRect (default), 1 = SuperEllipse.
+/// @param n SuperEllipse exponent (e.g. 4.0 for squircle).
+JALIUM_API void jalium_set_shape_type(JaliumRenderTarget* rt, int type, float n);
+
 // ============================================================================
 // Brush Management
 // ============================================================================
@@ -492,6 +519,35 @@ JALIUM_API void jalium_text_format_set_paragraph_alignment(JaliumTextFormat* for
 /// @param format The text format.
 /// @param trimming The trimming mode (0 = none, 1 = character ellipsis, 2 = word ellipsis).
 JALIUM_API void jalium_text_format_set_trimming(JaliumTextFormat* format, int32_t trimming);
+
+/// Sets word wrapping mode.
+/// @param wrapping 0=wrap, 1=no_wrap, 2=character, 3=emergency_break
+JALIUM_API void jalium_text_format_set_word_wrapping(JaliumTextFormat* format, int32_t wrapping);
+
+/// Sets line spacing.
+/// @param method 0=default, 1=uniform, 2=proportional
+JALIUM_API void jalium_text_format_set_line_spacing(JaliumTextFormat* format, int32_t method, float spacing, float baseline);
+
+/// Sets maximum number of lines (0 = unlimited).
+JALIUM_API void jalium_text_format_set_max_lines(JaliumTextFormat* format, uint32_t maxLines);
+
+/// Hit-tests a point against a text layout.
+JALIUM_API JaliumResult jalium_text_format_hit_test_point(
+    JaliumTextFormat* format,
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    float pointX, float pointY,
+    JaliumTextHitTestResult* result
+);
+
+/// Gets caret position for a given text index.
+JALIUM_API JaliumResult jalium_text_format_hit_test_text_position(
+    JaliumTextFormat* format,
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    uint32_t textPosition, int32_t isTrailingHit,
+    JaliumTextHitTestResult* result
+);
 
 /// Measures text and returns metrics.
 /// Uses DirectWrite's IDWriteTextLayout for accurate measurement.
@@ -735,7 +791,8 @@ JALIUM_API void jalium_effect_end_capture(JaliumRenderTarget* rt);
 /// @param h Height of the draw area (in DIPs).
 /// @param radius Blur radius (in DIPs).
 JALIUM_API void jalium_draw_blur_effect(JaliumRenderTarget* rt,
-    float x, float y, float w, float h, float radius);
+    float x, float y, float w, float h, float radius,
+    float uvOffsetX, float uvOffsetY);
 
 /// Applies a drop shadow effect to the captured element content and draws it.
 /// Draws the shadow (offset + blurred alpha) behind the original content.
@@ -755,11 +812,38 @@ JALIUM_API void jalium_draw_blur_effect(JaliumRenderTarget* rt,
 JALIUM_API void jalium_draw_drop_shadow_effect(JaliumRenderTarget* rt,
     float x, float y, float w, float h,
     float blurRadius, float offsetX, float offsetY,
-    float r, float g, float b, float a);
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
-// ============================================================================
-// Liquid Glass Effect
-// ============================================================================
+JALIUM_API void jalium_draw_outer_glow_effect(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float glowSize, float r, float g, float b, float a, float intensity,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL);
+
+JALIUM_API void jalium_draw_inner_shadow_effect(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL);
+
+JALIUM_API void jalium_draw_color_matrix_effect(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    const float* matrix);
+
+JALIUM_API void jalium_draw_emboss_effect(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    float amount, float lightDirX, float lightDirY, float relief);
+
+/// Applies a custom pixel shader effect to the captured element content and draws it.
+/// The captured content is exposed to the shader as t0/s0, and the provided
+/// float constants are uploaded to constant buffer register b0.
+JALIUM_API void jalium_draw_shader_effect(JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    const uint8_t* shaderBytecode,
+    uint32_t shaderBytecodeSize,
+    const float* constants,
+    uint32_t constantFloatCount);
 
 // ============================================================================
 // Content Border (U-shape, no top edge)

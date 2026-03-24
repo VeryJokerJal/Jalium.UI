@@ -304,7 +304,11 @@ float4 main(
     float2 uv1       : TEXCOORD1
 ) : SV_Target
 {
+    // Use uv0 for OldContent, uv1 for NewContent to handle inputs
+    // with different sizes/offsets correctly in the D2D1 effect graph.
     float2 uv = uv0;
+    // Note: Individual Do*() functions use 'uv' for both textures, which is
+    // correct when both inputs share the same coordinate space (same size/offset).
     int m = (int)mode;
 
     if (m == 0) return DoDissolve(uv);

@@ -13,6 +13,12 @@ public class DataGridRowHeader : ButtonBase
     private static readonly SolidColorBrush s_defaultSeparatorBrush = new(Color.FromRgb(67, 67, 70));
     private static readonly SolidColorBrush s_selectionIndicatorBrush = new(Color.White);
 
+    // Cached pens
+    private Pen? _separatorPen;
+    private Brush? _separatorPenBrush;
+    private Pen? _arrowPen;
+    private Brush? _arrowPenBrush;
+
     #region Dependency Properties
 
     /// <summary>
@@ -207,23 +213,47 @@ public class DataGridRowHeader : ButtonBase
         if (SeparatorVisibility == Visibility.Visible)
         {
             var separatorBrush = ResolveSeparatorBrush();
-            var separatorPen = new Pen(separatorBrush, 1);
-            dc.DrawLine(separatorPen, new Point(rect.Width - 1, 0), new Point(rect.Width - 1, rect.Height));
-            dc.DrawLine(separatorPen, new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
+            if (_separatorPen == null || _separatorPenBrush != separatorBrush)
+            {
+                _separatorPen = new Pen(separatorBrush, 1);
+                _separatorPenBrush = separatorBrush;
+            }
+            dc.DrawLine(_separatorPen, new Point(rect.Width - 1, 0), new Point(rect.Width - 1, rect.Height));
+            dc.DrawLine(_separatorPen, new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
         }
     }
+
+    // Right-pointing chevron in 6×8 design space, cached
+    private static readonly PathGeometry s_selectionChevron = (PathGeometry)Geometry.Parse("M 0,0 L 6,4 L 0,8");
 
     private void DrawSelectionIndicator(DrawingContext dc, Rect rect)
     {
         var arrowBrush = ResolveSelectionIndicatorBrush();
-        var arrowPen = new Pen(arrowBrush, 2);
+        if (_arrowPen == null || _arrowPenBrush != arrowBrush)
+        {
+            _arrowPen = new Pen(arrowBrush, 2);
+            _arrowPenBrush = arrowBrush;
+        }
 
-        var centerX = rect.Width / 2;
-        var centerY = rect.Height / 2;
+        var bounds = s_selectionChevron.Bounds;
+        var ox = rect.Width / 2 - bounds.X - bounds.Width / 2;
+        var oy = rect.Height / 2 - bounds.Y - bounds.Height / 2;
 
-        // Draw right-pointing arrow
-        dc.DrawLine(arrowPen, new Point(centerX - 3, centerY - 4), new Point(centerX + 3, centerY));
-        dc.DrawLine(arrowPen, new Point(centerX + 3, centerY), new Point(centerX - 3, centerY + 4));
+        foreach (var figure in s_selectionChevron.Figures)
+        {
+            var tf = new PathFigure
+            {
+                StartPoint = new Point(figure.StartPoint.X + ox, figure.StartPoint.Y + oy),
+                IsClosed = figure.IsClosed,
+                IsFilled = false
+            };
+            foreach (var seg in figure.Segments)
+                if (seg is LineSegment ls)
+                    tf.Segments.Add(new LineSegment(new Point(ls.Point.X + ox, ls.Point.Y + oy), ls.IsStroked));
+            var geo = new PathGeometry();
+            geo.Figures.Add(tf);
+            dc.DrawGeometry(null, _arrowPen, geo);
+        }
     }
 
     private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

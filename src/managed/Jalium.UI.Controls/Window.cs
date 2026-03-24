@@ -15,6 +15,7 @@ namespace Jalium.UI.Controls;
 public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 {
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
+    private static readonly bool DebugRender = IsEnvironmentSwitchEnabled("JALIUM_DEBUG_RENDER");
 
     /// <inheritdoc />
     protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
@@ -71,11 +72,143 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>Reads whether a flag is currently set.</summary>
     private bool HasRenderFlag(int flag) => (Volatile.Read(ref _renderState) & flag) != 0;
 
+    // ── Debug HUD ──
+    private readonly RenderDebugHud _debugHud = new();
+    private readonly DebugHudOverlay _debugHudOverlay = new();
+    private sealed class RenderDebugHud
+    {
+        // ── Enabled flag (off by default, toggle with F3) ──
+        public bool Enabled { get; set; }
+
+        // ── Timing ──
+        private readonly System.Diagnostics.Stopwatch _intervalSw = System.Diagnostics.Stopwatch.StartNew();
+        private readonly System.Diagnostics.Stopwatch _frameSw = new();
+        private int _frameCount;
+        private double _fps;
+        private double _lastFrameMs, _worstFrameMs;
+        private double _layoutMs, _renderMs, _presentMs;
+
+        // ── Counters (accumulated per interval) ──
+        private int _renderFrameCalls, _paintCalls, _processRenderCalls;
+        private int _beginDrawFails, _resizeCount;
+        private int _fullFrames, _partialFrames, _skippedFrames;
+        private int _dirtyElementCount;
+
+        // ── Snapshot (displayed values, updated once per second) ──
+        private double _dFps, _dWorstMs;
+        private double _dLayoutMs, _dRenderMs, _dPresentMs;
+        private int _dRenderFrameCalls, _dPaintCalls, _dProcessRenderCalls;
+        private int _dBeginDrawFails, _dResizeCount;
+        private int _dFullFrames, _dPartialFrames, _dSkippedFrames;
+        private int _dDirtyElements;
+
+        // ── State ──
+        private string _renderPath = "—";
+        private string _backendName = "?";
+        private int _windowWidth, _windowHeight;
+        private float _dpiScale;
+        private Rect _dirtyRegion;
+        private long _gcTotalBytes;
+        private int _gcGen0, _gcGen1, _gcGen2;
+
+        // ── Events ──
+        public void OnRenderFrame() { _renderFrameCalls++; _frameSw.Restart(); }
+        public void OnPaint() => _paintCalls++;
+        public void OnProcessRender() => _processRenderCalls++;
+        public void OnBeginFail() => _beginDrawFails++;
+        public void OnResize() => _resizeCount++;
+        public void OnSkipped() => _skippedFrames++;
+        public void OnFull() { _fullFrames++; _renderPath = "Full"; }
+        public void OnPartial() { _partialFrames++; _renderPath = "Partial"; }
+        public void MarkLayout() => _layoutMs = _frameSw.Elapsed.TotalMilliseconds;
+        public void MarkRender() => _renderMs = _frameSw.Elapsed.TotalMilliseconds;
+        public void SetBackend(string b) => _backendName = b;
+        public void SetWindowSize(int w, int h) { _windowWidth = w; _windowHeight = h; }
+        public void SetDpiScale(float s) => _dpiScale = s;
+        public void SetDirtyInfo(int elementCount, Rect region) { _dirtyElementCount = elementCount; _dirtyRegion = region; }
+
+        public void OnEndDraw()
+        {
+            _presentMs = _frameSw.Elapsed.TotalMilliseconds;
+            _lastFrameMs = _presentMs;
+            if (_lastFrameMs > _worstFrameMs) _worstFrameMs = _lastFrameMs;
+            _frameCount++;
+        }
+
+        private void FlushInterval()
+        {
+            if (_intervalSw.Elapsed.TotalSeconds < 1.0) return;
+
+            _dFps = _frameCount / _intervalSw.Elapsed.TotalSeconds;
+            _dWorstMs = _worstFrameMs;
+            _dLayoutMs = _layoutMs;
+            _dRenderMs = _renderMs;
+            _dPresentMs = _presentMs;
+            _dRenderFrameCalls = _renderFrameCalls;
+            _dPaintCalls = _paintCalls;
+            _dProcessRenderCalls = _processRenderCalls;
+            _dBeginDrawFails = _beginDrawFails;
+            _dResizeCount = _resizeCount;
+            _dFullFrames = _fullFrames;
+            _dPartialFrames = _partialFrames;
+            _dSkippedFrames = _skippedFrames;
+            _dDirtyElements = _dirtyElementCount;
+
+            // Sample GC stats
+            _gcTotalBytes = GC.GetTotalMemory(false);
+            _gcGen0 = GC.CollectionCount(0);
+            _gcGen1 = GC.CollectionCount(1);
+            _gcGen2 = GC.CollectionCount(2);
+
+            // Reset accumulators
+            _frameCount = 0;
+            _renderFrameCalls = 0;
+            _paintCalls = 0;
+            _processRenderCalls = 0;
+            _beginDrawFails = 0;
+            _resizeCount = 0;
+            _fullFrames = 0;
+            _partialFrames = 0;
+            _skippedFrames = 0;
+            _worstFrameMs = 0;
+            _intervalSw.Restart();
+        }
+
+        public void UpdateOverlay(DebugHudOverlay overlay)
+        {
+            if (!Enabled) return;
+            FlushInterval();
+
+            double layoutMs = _dLayoutMs;
+            double renderMs = Math.Max(0, _dRenderMs - _dLayoutMs);
+            double presentMs = Math.Max(0, _dPresentMs - _dRenderMs);
+            string dirtyStr = _dirtyRegion.IsEmpty ? "none"
+                : $"{_dirtyRegion.X:F0},{_dirtyRegion.Y:F0} {_dirtyRegion.Width:F0}x{_dirtyRegion.Height:F0}";
+
+            overlay.Update(
+                _dFps, _dWorstMs,
+                layoutMs, renderMs, presentMs, _dPresentMs,
+                _renderPath, _backendName,
+                _dFullFrames, _dPartialFrames, _dSkippedFrames, _dBeginDrawFails,
+                _dDirtyElements, dirtyStr,
+                _windowWidth, _windowHeight, _dpiScale,
+                _gcTotalBytes, _gcGen0, _gcGen1, _gcGen2);
+        }
+    }
+
     private bool _isFirstLayout = true;
     private bool _renderRecoveryInProgress;
     private DispatcherTimer? _renderRecoveryRetryTimer;
+    private int _consecutiveRecoverableRenderFailures;
+    private int _renderRecoveryRetryDelayMs = RenderRecoveryRetryInitialDelayMs;
+    private RenderBackend _renderBackendOverride = RenderBackend.Auto;
     private bool _fullInvalidation = true;  // First frame is always full
-    private Rect _previousDirtyRegion = Rect.Empty;  // Previous frame's dirty region (for clearing old positions)
+    // FLIP_SEQUENTIAL with N buffers: buffer K's non-dirty area still has content
+    // from frame K-N.  We must repaint the union of the last N-1 dirty regions
+    // to cover all stale buffers.  With FrameCount=3, track 2 previous regions.
+    private const int DirtyHistoryCount = 2;
+    private readonly Rect[] _dirtyHistory = new Rect[DirtyHistoryCount];
+    private int _dirtyHistoryIndex;
     private long _lastRenderTicks;          // Timestamp of last completed render (for rate-limiting)
     private Timer? _renderThrottleTimer;    // Deferred render when rate-limited or waiting for the GPU
     private long _suppressEscapeUntilTick;
@@ -88,7 +221,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private bool _attemptedAutoWindowIcon;
     private const double DefaultTitleBarHeightDip = 32.0;
     private const int GpuBusyRetryDelayMs = 1;
-    private const int RenderRecoveryRetryDelayMs = 120;
+    private const int RenderRecoveryRetryInitialDelayMs = 120;
+    private const int RenderRecoveryRetryMaxDelayMs = 2000;
+    private const int DeviceLostBackendFallbackThreshold = 2;
+    private const string D3D12ForceWarpEnvironmentVariable = "JALIUM_D3D12_FORCE_WARP";
 
     private static bool IsEnvironmentSwitchEnabled(string variableName)
     {
@@ -544,6 +680,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // Create overlay layer for popup hosting (must be created before title bar)
         OverlayLayer = new OverlayLayer();
         AddVisualChild(OverlayLayer);
+
+        // Debug HUD overlay (F3 to toggle, rendered as a normal control in the overlay layer)
+        OverlayLayer.Children.Add(_debugHudOverlay);
 
         _realTimeStylus = new RealTimeStylus(this);
         AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnWindowKeyboardFocusChanged), handledEventsToo: true);
@@ -2028,6 +2167,56 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         return (exStyle & WS_EX_NOREDIRECTIONBITMAP) != 0;
     }
 
+    private static bool IsBackendAvailable(RenderBackend backend)
+        => backend != RenderBackend.Auto && NativeMethods.IsBackendAvailable(backend) != 0;
+
+    private static ReadOnlySpan<RenderBackend> GetBackendFallbackOrder()
+        => RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? [RenderBackend.D3D12, RenderBackend.Vulkan, RenderBackend.Software]
+            : [RenderBackend.Vulkan, RenderBackend.Software];
+
+    private static int GetBackendFallbackIndex(RenderBackend backend)
+    {
+        var order = GetBackendFallbackOrder();
+        for (int i = 0; i < order.Length; i++)
+        {
+            if (order[i] == backend)
+            {
+                return i;
+            }
+        }
+
+        return -1;
+    }
+
+    private bool TryAdvanceRenderBackendFallback(RenderBackend failedBackend)
+    {
+        var order = GetBackendFallbackOrder();
+        int index = GetBackendFallbackIndex(failedBackend);
+        if (index < 0)
+        {
+            index = 0;
+        }
+
+        for (int i = index + 1; i < order.Length; i++)
+        {
+            var candidate = order[i];
+            if (candidate != failedBackend && IsBackendAvailable(candidate))
+            {
+                _renderBackendOverride = candidate;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private void EnableD3D12WarpFallback()
+    {
+        _renderBackendOverride = RenderBackend.D3D12;
+        Environment.SetEnvironmentVariable(D3D12ForceWarpEnvironmentVariable, "1");
+    }
+
     private void EnsureRenderTarget(bool forceNewContext = false)
     {
         if (RenderTarget != null)
@@ -2044,7 +2233,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
-        var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceNewContext);
+        var requestedBackend = _renderBackendOverride != RenderBackend.Auto
+            ? _renderBackendOverride
+            : RenderBackend.Auto;
+        var context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
 
         try
         {
@@ -2062,7 +2254,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             // The preferred GPU (e.g. integrated) couldn't create a render target
             // for this window. Fall back to a new context with default GPU selection.
-            context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, GpuPreference.Auto, forceReplace: true);
+            context = RenderContext.GetOrCreateCurrent(requestedBackend, GpuPreference.Auto, forceReplace: true);
 
             if (ShouldUseCompositionRenderTarget())
             {
@@ -2071,6 +2263,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             else
             {
                 RenderTarget = context.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
+            }
+        }
+        catch (Exception) when (requestedBackend != RenderBackend.Auto && TryAdvanceRenderBackendFallback(requestedBackend))
+        {
+            var fallbackContext = RenderContext.GetOrCreateCurrent(_renderBackendOverride, GpuPreference.Auto, forceReplace: true);
+            if (ShouldUseCompositionRenderTarget())
+            {
+                RenderTarget = fallbackContext.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
+            }
+            else
+            {
+                RenderTarget = fallbackContext.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
             }
         }
 
@@ -3236,7 +3440,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         try
         {
-            renderTarget.Resize(physicalWidth, physicalHeight);
+            _debugHud.OnResize(); renderTarget.Resize(physicalWidth, physicalHeight);
         }
         catch (RenderPipelineException ex)
         {
@@ -3262,6 +3466,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             || (exception.Result == JaliumResult.Unknown &&
                 string.Equals(exception.Stage, "Create", StringComparison.OrdinalIgnoreCase));
 
+    private static bool IsRecoverableRenderPipelineFailure(JaliumResult result, string stage)
+        => result is JaliumResult.DeviceLost
+            or JaliumResult.InvalidState
+            or JaliumResult.ResourceCreationFailed
+            || (result == JaliumResult.Unknown &&
+                string.Equals(stage, "Create", StringComparison.OrdinalIgnoreCase));
+
     private bool TryRecoverFromRenderPipelineFailure(RenderPipelineException exception, string stage)
     {
         if (!IsRecoverableRenderPipelineException(exception) ||
@@ -3276,11 +3487,29 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         try
         {
+            RenderBackend failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
+            if (failedBackend == RenderBackend.Auto &&
+                Enum.TryParse<RenderBackend>(exception.Backend, ignoreCase: true, out var parsedBackend))
+            {
+                failedBackend = parsedBackend;
+            }
+
             _drawingContext?.ClearCache();
             _drawingContext = null;
 
             RenderTarget?.Dispose();
             RenderTarget = null;
+
+            if (exception.Result == JaliumResult.DeviceLost &&
+                _consecutiveRecoverableRenderFailures >= DeviceLostBackendFallbackThreshold &&
+                failedBackend != RenderBackend.Auto)
+            {
+                if (!TryAdvanceRenderBackendFallback(failedBackend) &&
+                    failedBackend == RenderBackend.D3D12)
+                {
+                    EnableD3D12WarpFallback();
+                }
+            }
 
             bool forceNewContext = exception.Result == JaliumResult.DeviceLost ||
                 string.Equals(exception.Stage, "Create", StringComparison.OrdinalIgnoreCase);
@@ -3297,7 +3526,74 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             }
 
             InvalidateMeasure();
-            ScheduleRenderAfterRecovery();
+            ScheduleRenderRecoveryRetry(escalateBackoff: false);
+            return true;
+        }
+        catch (RenderPipelineException recoveryException) when (IsRecoverableRenderPipelineException(recoveryException))
+        {
+            LogRenderFailure(recoveryException, $"{stage}:Recover");
+            return false;
+        }
+        catch (Exception recoveryException)
+        {
+            LogRenderFailure(recoveryException, $"{stage}:Recover");
+            return false;
+        }
+        finally
+        {
+            _renderRecoveryInProgress = false;
+        }
+    }
+
+    private bool TryRecoverFromRenderPipelineFailure(JaliumResult result, string stage)
+    {
+        if (!IsRecoverableRenderPipelineFailure(result, stage) ||
+            Handle == nint.Zero ||
+            _isClosing ||
+            _renderRecoveryInProgress)
+        {
+            return false;
+        }
+
+        _renderRecoveryInProgress = true;
+
+        try
+        {
+            RenderBackend failedBackend = RenderTarget?.Backend ?? RenderBackend.Auto;
+
+            _drawingContext?.ClearCache();
+            _drawingContext = null;
+
+            RenderTarget?.Dispose();
+            RenderTarget = null;
+
+            if (result == JaliumResult.DeviceLost &&
+                _consecutiveRecoverableRenderFailures >= DeviceLostBackendFallbackThreshold &&
+                failedBackend != RenderBackend.Auto)
+            {
+                if (!TryAdvanceRenderBackendFallback(failedBackend) &&
+                    failedBackend == RenderBackend.D3D12)
+                {
+                    EnableD3D12WarpFallback();
+                }
+            }
+
+            bool forceNewContext = result == JaliumResult.DeviceLost ||
+                string.Equals(stage, "Create", StringComparison.OrdinalIgnoreCase);
+            EnsureRenderTarget(forceNewContext: forceNewContext);
+            if (RenderTarget == null || !RenderTarget.IsValid)
+            {
+                return false;
+            }
+
+            lock (_dirtyLock)
+            {
+                _dirtyElements.Clear();
+                _fullInvalidation = true;
+            }
+
+            InvalidateMeasure();
+            ScheduleRenderRecoveryRetry(escalateBackoff: false);
             return true;
         }
         catch (RenderPipelineException recoveryException) when (IsRecoverableRenderPipelineException(recoveryException))
@@ -3329,14 +3625,111 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
     }
 
-    private void ScheduleRenderRecoveryRetry()
+    private void MarkRecoverableRenderFailure()
+    {
+        _consecutiveRecoverableRenderFailures = Math.Min(_consecutiveRecoverableRenderFailures + 1, 8);
+        if (_consecutiveRecoverableRenderFailures <= 1)
+        {
+            _renderRecoveryRetryDelayMs = RenderRecoveryRetryInitialDelayMs;
+            return;
+        }
+
+        _renderRecoveryRetryDelayMs = Math.Min(RenderRecoveryRetryMaxDelayMs, _renderRecoveryRetryDelayMs * 2);
+    }
+
+    private void ResetRenderRecoveryBackoff()
+    {
+        _consecutiveRecoverableRenderFailures = 0;
+        _renderRecoveryRetryDelayMs = RenderRecoveryRetryInitialDelayMs;
+        _renderRecoveryRetryTimer?.Stop();
+    }
+
+    private bool HandleRecoverableRenderPipelineFailure(RenderPipelineException exception, string stage)
+    {
+        if (!IsRecoverableRenderPipelineException(exception))
+        {
+            return false;
+        }
+
+        // Preserve a full repaint request when a frame dies after we already
+        // committed dirty state, so the eventual retry never resumes from a
+        // partially-rendered dirty set.
+        lock (_dirtyLock)
+        {
+            _fullInvalidation = true;
+        }
+
+        MarkRecoverableRenderFailure();
+
+        if (TryRecoverFromRenderPipelineFailure(exception, stage))
+        {
+            return true;
+        }
+
+        ScheduleRenderRecoveryRetry(escalateBackoff: false);
+        return true;
+    }
+
+    private bool CompleteEndDrawOrHandleFailure()
+    {
+        var renderTarget = RenderTarget;
+        if (renderTarget == null || !renderTarget.IsValid)
+        {
+            return false;
+        }
+
+        JaliumResult endResult = renderTarget.TryEndDraw();
+        if (endResult == JaliumResult.Ok)
+        {
+            _debugHud.OnEndDraw();
+            _lastRenderTicks = Environment.TickCount64;
+            ResetRenderRecoveryBackoff();
+            return true;
+        }
+
+        if (IsRecoverableRenderPipelineFailure(endResult, "End"))
+        {
+            lock (_dirtyLock)
+            {
+                _fullInvalidation = true;
+            }
+
+            MarkRecoverableRenderFailure();
+
+            if (!TryRecoverFromRenderPipelineFailure(endResult, "End"))
+            {
+                ScheduleRenderRecoveryRetry(escalateBackoff: false);
+            }
+
+            return false;
+        }
+
+        throw new RenderPipelineException(
+            stage: "End",
+            result: endResult,
+            resultCode: (int)endResult,
+            hwnd: Handle,
+            width: renderTarget.Width,
+            height: renderTarget.Height,
+            dpiX: (float)(_dpiScale * 96.0),
+            dpiY: (float)(_dpiScale * 96.0),
+            backend: renderTarget.Backend.ToString());
+    }
+
+    private void ScheduleRenderRecoveryRetry(bool escalateBackoff = true)
     {
         if (Handle == nint.Zero || _dispatcher == null || _isClosing)
         {
             return;
         }
 
+        if (escalateBackoff)
+        {
+            MarkRecoverableRenderFailure();
+        }
+
         _renderRecoveryRetryTimer ??= CreateRenderRecoveryRetryTimer();
+        _renderRecoveryRetryTimer.Interval = TimeSpan.FromMilliseconds(_renderRecoveryRetryDelayMs);
         if (!_renderRecoveryRetryTimer.IsEnabled)
         {
             _renderRecoveryRetryTimer.Start();
@@ -3347,7 +3740,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         var timer = new DispatcherTimer
         {
-            Interval = TimeSpan.FromMilliseconds(RenderRecoveryRetryDelayMs)
+            Interval = TimeSpan.FromMilliseconds(_renderRecoveryRetryDelayMs)
         };
         timer.Tick += OnRenderRecoveryRetryTimerTick;
         return timer;
@@ -3395,7 +3788,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// Validates the update region via BeginPaint/EndPaint and delegates to RenderFrame.
     /// </summary>
     private void OnPaint()
-    {
+    { _debugHud.OnPaint();
         PAINTSTRUCT ps = new();
         _ = BeginPaint(Handle, out ps);
         RenderFrame();
@@ -3414,7 +3807,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// immediately after all ticks in the same batch 鈥?no WM_PAINT starvation.
     /// </summary>
     private void ProcessRender()
-    {
+    { _debugHud.OnProcessRender();
         ClearRenderFlag(RenderFlag_Scheduled);
         if (Handle == nint.Zero) return;
 
@@ -3455,6 +3848,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return true;
         }
 
+        _debugHud.OnBeginFail();
+        if (DebugRender) System.Diagnostics.Debug.WriteLine("[TryBeginDraw] FAIL: GPU busy");
         if (CompositionTarget.IsActive)
         {
             SetRenderFlag(RenderFlag_DirtyBetween);
@@ -3483,7 +3878,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     ///   preventing GPU saturation from rapid input events (scrolling, mouse drag).
     /// </summary>
     private void RenderFrame()
-    {
+    { _debugHud.OnRenderFrame();
         if (HasRenderFlag(RenderFlag_Rendering)) return;
         SetRenderFlag(RenderFlag_Rendering);
         ClearRenderFlag(RenderFlag_Requested);
@@ -3503,6 +3898,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             // Perform layout before rendering (queue-based: only dirty elements).
             // UpdateLayout may trigger further invalidations via AddDirtyElement.
             UpdateLayout();
+            _debugHud.MarkLayout();
 
             // ── Compute dirty region from accumulated dirty elements ──
             // Check dirty AFTER UpdateLayout so layout-triggered invalidations are included.
@@ -3520,15 +3916,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 // frames where there is genuinely nothing to render.
                 if (!_fullInvalidation && _dirtyElements.Count == 0)
                 {
+                    _debugHud.OnSkipped();
+                    if (DebugRender) System.Diagnostics.Debug.WriteLine("[RenderFrame] SKIP: no dirty, no fullInvalidation");
                     return;
                 }
 
                 fullInvalidation = _fullInvalidation || requiresFullReplay;
+                if (DebugRender)
+                {
+                    var reason = _fullInvalidation ? "_fullInvalidation" : requiresFullReplay ? "forceFullReplay" : "dirty";
+                    System.Diagnostics.Debug.WriteLine($"[RenderFrame] path={( fullInvalidation ? "FULL" : "PARTIAL")} reason={reason} dirtyCount={_dirtyElements.Count} fullInv={_fullInvalidation}");
+                    if (_dirtyElements.Count > 0 && _dirtyElements.Count <= 10)
+                    {
+                        foreach (var (el, bounds) in _dirtyElements)
+                            System.Diagnostics.Debug.WriteLine($"  dirty: {el.GetType().Name} bounds={bounds}");
+                    }
+                }
 
                 if (!fullInvalidation)
                 {
                     dirtyRegion = ComputeDirtyRegion();
                 }
+                _debugHud.SetDirtyInfo(_dirtyElements.Count, dirtyRegion);
 
                 // NOTE: do NOT clear _dirtyElements here.  BeginDraw may fail
                 // (GPU still busy with the previous frame) and we need to preserve
@@ -3537,14 +3946,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
             var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
             _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
+            _drawingContext.SimplifyGpuEffects = _isSizing;
+            _debugHud.SetBackend(RenderTarget.Backend.ToString());
+            _debugHud.SetWindowSize(RenderTarget.Width, RenderTarget.Height);
+            _debugHud.SetDpiScale((float)_dpiScale);
 
-            // VSync disabled — no frame rate limiting.
+            // VSync disabled — let the compositor / display handle pacing.
+            // This minimizes input-to-display latency for all scenarios.
             RenderTarget.SetVSyncEnabled(false);
 
             if (fullInvalidation)
             {
                 // ── Full render path (first frame, resize, theme change) ──
-                _previousDirtyRegion = new Rect(0, 0, ActualWidth, ActualHeight);
+                // Full render refreshes the CURRENT buffer only. The other N-1
+                // swap chain buffers still have stale content. Seed the dirty
+                // history with the full window rect so the next N-1 partial frames
+                // repaint everything on those buffers. If the DXGI runtime copies
+                // non-dirty content between buffers this is redundant (the >50%
+                // area check will promote to full), but it's required on drivers
+                // that skip the copy for D3D12 FLIP_SEQUENTIAL.
+                var fullWindowRect = new Rect(0, 0, ActualWidth, ActualHeight);
+                for (int h = 0; h < DirtyHistoryCount; h++) _dirtyHistory[h] = fullWindowRect;
+                _dirtyHistoryIndex = 0;
                 RenderTarget.SetFullInvalidation();
 
                 // TryBeginDraw: non-blocking.  If the GPU hasn't finished the
@@ -3561,13 +3984,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
                 try
                 {
+                    _debugHud.OnFull();
                     ClearBackground();
                     _drawingContext.Offset = Point.Zero;
                     Render(_drawingContext);
+                    _debugHud.MarkRender();
                     DevToolsOverlay?.DrawOverlay(_drawingContext);
                     OnRender(RenderTarget);
-                    RenderTarget.EndDraw();
-                    _lastRenderTicks = Environment.TickCount64;
+                    if (!CompleteEndDrawOrHandleFailure()) { return; }
+                    _debugHud.UpdateOverlay(_debugHudOverlay);
+                }
+                catch (RenderPipelineException ex)
+                {
+                    if (RenderTarget.IsDrawing)
+                        try { _ = RenderTarget.TryEndDraw(); } catch { }
+                    if (HandleRecoverableRenderPipelineFailure(ex, "RenderFrame"))
+                    {
+                        return;
+                    }
+
+                    throw;
                 }
                 catch
                 {
@@ -3586,12 +4022,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             else
             {
                 // ── Retained mode partial render ──
+                // Union with dirty regions from the last N-1 frames so that all
+                // FLIP_SEQUENTIAL buffers get stale areas repainted.
                 var rawDirtyRegion = dirtyRegion;
-                if (!_previousDirtyRegion.IsEmpty)
+                for (int h = 0; h < DirtyHistoryCount; h++)
                 {
-                    dirtyRegion = dirtyRegion.Union(_previousDirtyRegion);
+                    if (!_dirtyHistory[h].IsEmpty)
+                        dirtyRegion = dirtyRegion.Union(_dirtyHistory[h]);
                 }
-                _previousDirtyRegion = rawDirtyRegion;
+                // Record this frame's raw dirty region into the ring buffer
+                _dirtyHistory[_dirtyHistoryIndex] = rawDirtyRegion;
+                _dirtyHistoryIndex = (_dirtyHistoryIndex + 1) % DirtyHistoryCount;
 
                 const double DirtyRectMargin = 2.0;
                 var clipRegion = new Rect(
@@ -3611,19 +4052,36 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 if (windowArea > 0 &&
                     clipRegion.Width * clipRegion.Height > windowArea * 0.5)
                 {
-                    _previousDirtyRegion = new Rect(0, 0, ActualWidth, ActualHeight);
+                    // Promoted to full render. Seed history with full window
+                    // (same rationale as the main full invalidation path).
+                    var fullRect = new Rect(0, 0, ActualWidth, ActualHeight);
+                    for (int h = 0; h < DirtyHistoryCount; h++) _dirtyHistory[h] = fullRect;
+                    _dirtyHistoryIndex = 0;
                     RenderTarget.SetFullInvalidation();
                     if (!TryBeginDrawOrScheduleRetry()) { return; }
                     lock (_dirtyLock) { _dirtyElements.Clear(); _fullInvalidation = false; }
                     try
                     {
+                        _debugHud.OnFull();
                         ClearBackground();
                         _drawingContext.Offset = Point.Zero;
                         Render(_drawingContext);
+                        _debugHud.MarkRender();
                         DevToolsOverlay?.DrawOverlay(_drawingContext);
+                        _debugHud.UpdateOverlay(_debugHudOverlay);
                         OnRender(RenderTarget);
-                        RenderTarget.EndDraw();
-                        _lastRenderTicks = Environment.TickCount64;
+                        if (!CompleteEndDrawOrHandleFailure()) { return; }
+                    }
+                    catch (RenderPipelineException ex)
+                    {
+                        if (RenderTarget.IsDrawing)
+                            try { _ = RenderTarget.TryEndDraw(); } catch { }
+                        if (HandleRecoverableRenderPipelineFailure(ex, "RenderFrame"))
+                        {
+                            return;
+                        }
+
+                        throw;
                     }
                     catch
                     {
@@ -3642,17 +4100,30 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     lock (_dirtyLock) { _dirtyElements.Clear(); _fullInvalidation = false; }
                     try
                     {
+                        _debugHud.OnPartial();
                         _drawingContext.Offset = Point.Zero;
                         _drawingContext.PushDirtyRegionClip(clipRegion);
 
                         ClearBackground(clipRegion);
                         Render(_drawingContext);
+                        _debugHud.MarkRender();
 
                         _drawingContext.PopDirtyRegionClip();
                         DevToolsOverlay?.DrawOverlay(_drawingContext);
+                        _debugHud.UpdateOverlay(_debugHudOverlay);
                         OnRender(RenderTarget);
-                        RenderTarget.EndDraw();
-                        _lastRenderTicks = Environment.TickCount64;
+                        if (!CompleteEndDrawOrHandleFailure()) { return; }
+                    }
+                    catch (RenderPipelineException ex)
+                    {
+                        if (RenderTarget.IsDrawing)
+                            try { _ = RenderTarget.TryEndDraw(); } catch { }
+                        if (HandleRecoverableRenderPipelineFailure(ex, "RenderFrame"))
+                        {
+                            return;
+                        }
+
+                        throw;
                     }
                     catch
                     {
@@ -3668,20 +4139,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
         catch (RenderPipelineException ex)
         {
-            if (string.Equals(ex.Stage, "Begin", StringComparison.OrdinalIgnoreCase))
+            if (HandleRecoverableRenderPipelineFailure(ex, "RenderFrame"))
             {
-                LogRenderFailure(ex, "RenderFrame");
-                throw;
-            }
-
-            if (TryRecoverFromRenderPipelineFailure(ex, "RenderFrame"))
-            {
-                return;
-            }
-
-            if (IsRecoverableRenderPipelineException(ex))
-            {
-                ScheduleRenderRecoveryRetry();
                 return;
             }
 
@@ -4063,6 +4522,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         var modifiers = GetModifierKeys();
         bool isRepeat = ((lParam.ToInt64() >> 30) & 1) != 0;
         int timestamp = Environment.TickCount;
+
+        // F3 toggles debug HUD
+        if (key == Key.F3 && !isRepeat)
+        {
+            _debugHud.Enabled = !_debugHud.Enabled;
+            _debugHudOverlay.Visibility = _debugHud.Enabled ? Visibility.Visible : Visibility.Collapsed;
+            RequestFullInvalidation();
+            InvalidateWindow();
+            return true;
+        }
 
         // F12 opens DevTools (only in DEBUG builds)
         // Skip if this window cannot open DevTools (e.g., DevToolsWindow itself)

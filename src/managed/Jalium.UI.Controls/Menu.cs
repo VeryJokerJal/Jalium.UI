@@ -386,6 +386,10 @@ public class MenuItem : HeaderedItemsControl
     private const double ItemHeight = 28;
     private const double MenuItemPadding = 8;
 
+    // Cached pens
+    private Pen? _arrowPen;
+    private Brush? _arrowPenBrush;
+
     #endregion
 
     #region Constructor
@@ -912,7 +916,12 @@ public class MenuItem : HeaderedItemsControl
 
     private void DrawCheckMark(DrawingContext dc, double x, double height, Brush brush)
     {
-        var checkPen = new Pen(brush, 2);
+        if (_arrowPen == null || _arrowPenBrush != brush)
+        {
+            _arrowPenBrush = brush;
+            _arrowPen = new Pen(brush, 2);
+        }
+        var checkPen = _arrowPen;
         var centerX = x + IconColumnWidth / 2;
         var centerY = height / 2;
 

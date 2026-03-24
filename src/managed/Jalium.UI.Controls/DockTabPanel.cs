@@ -17,6 +17,16 @@ public class DockTabPanel : Selector
     private static readonly SolidColorBrush s_fallbackBorderBrush = new(Color.FromRgb(0x3C, 0x3C, 0x4D));
     private static readonly SolidColorBrush s_fallbackAccentBrush = new(Color.FromRgb(0x7A, 0xA2, 0xF7));
     private const double TabStripScrollBarThickness = 10.0;
+    private const double DefaultDockCornerRadius = 8.0;
+    private const double DefaultDockTabJoinRadius = 6.0;
+
+    // Cached pens for OnRender/OnPostRender to avoid per-frame allocation
+    private Pen? _separatorPen;
+    private Brush? _separatorPenBrush;
+    private Pen? _highlightPen;
+    private Brush? _highlightPenBrush;
+    private Pen? _topBorderPen;
+    private Brush? _topBorderPenBrush;
 
     /// <summary>
     /// Occurs when a tab is explicitly closed via tab close action.
@@ -907,6 +917,114 @@ public class DockTabPanel : Selector
         return true;
     }
 
+    private DockItem? GetSelectedDockItem()
+    {
+        if (SelectedIndex < 0 || SelectedIndex >= Items.Count)
+            return null;
+
+        return Items[SelectedIndex] as DockItem;
+    }
+
+    private double ResolveChromeCornerRadius(double width, double height)
+    {
+        var radius = Math.Max(
+            Math.Max(CornerRadius.TopLeft, CornerRadius.TopRight),
+            Math.Max(CornerRadius.BottomRight, CornerRadius.BottomLeft));
+
+        if (radius <= 0)
+            radius = DefaultDockCornerRadius;
+
+        var maxAllowed = Math.Max(0, Math.Min(width, height) / 2.0);
+        return Math.Min(radius, maxAllowed);
+    }
+
+    private static double ResolveTabCornerRadius(DockItem? item, double width, double height)
+    {
+        var itemCornerRadius = item?.CornerRadius ?? default;
+        var radius = Math.Max(
+            Math.Max(itemCornerRadius.TopLeft, itemCornerRadius.TopRight),
+            Math.Max(itemCornerRadius.BottomRight, itemCornerRadius.BottomLeft));
+
+        if (radius <= 0)
+            radius = DefaultDockCornerRadius;
+
+        var maxAllowed = Math.Max(0, Math.Min(width, height) / 2.0);
+        return Math.Min(radius, maxAllowed);
+    }
+
+    private static double ResolveJoinRadius(double desiredRadius, double availableSpan, double availableHeight)
+    {
+        if (desiredRadius <= 0 || availableSpan <= 0 || availableHeight <= 0)
+            return 0;
+
+        return Math.Min(desiredRadius, Math.Min(availableSpan, availableHeight));
+    }
+
+    private bool TryGetSelectedTabOutlineMetrics(
+        double leftEdge,
+        double rightEdge,
+        double topEdge,
+        double topY,
+        double contentCornerRadius,
+        out double selectedTabX,
+        out double selectedTabWidth,
+        out double tabTopLeftRadius,
+        out double tabTopRightRadius,
+        out double leftJoinRadius,
+        out double rightJoinRadius,
+        out double gapLeft,
+        out double gapRight,
+        out bool isLeftEdgeTab)
+    {
+        selectedTabX = 0;
+        selectedTabWidth = 0;
+        tabTopLeftRadius = 0;
+        tabTopRightRadius = 0;
+        leftJoinRadius = 0;
+        rightJoinRadius = 0;
+        gapLeft = 0;
+        gapRight = 0;
+        isLeftEdgeTab = false;
+
+        if (!TryGetSelectedTabBounds(out selectedTabX, out selectedTabWidth))
+            return false;
+
+        var clampedLeft = Math.Clamp(selectedTabX, leftEdge, rightEdge);
+        var clampedRight = Math.Clamp(selectedTabX + selectedTabWidth, leftEdge, rightEdge);
+        selectedTabX = clampedLeft;
+        selectedTabWidth = Math.Max(0, clampedRight - clampedLeft);
+        if (selectedTabWidth <= 0)
+            return false;
+
+        var baseTabTopRadius = ResolveTabCornerRadius(GetSelectedDockItem(), selectedTabWidth, Math.Max(0, topY - topEdge));
+        var desiredTabJoinRadius = Math.Max(DefaultDockTabJoinRadius, baseTabTopRadius - 2);
+
+        isLeftEdgeTab = selectedTabX <= leftEdge + contentCornerRadius + 0.5;
+        if (isLeftEdgeTab)
+        {
+            var tabRight = selectedTabX + selectedTabWidth;
+            selectedTabX = leftEdge;
+            selectedTabWidth = Math.Max(0, Math.Min(tabRight, rightEdge) - selectedTabX);
+            if (selectedTabWidth <= 0)
+                return false;
+        }
+
+        tabTopLeftRadius = isLeftEdgeTab ? 0 : baseTabTopRadius;
+        tabTopRightRadius = baseTabTopRadius;
+
+        var availableLeftJoin = isLeftEdgeTab
+            ? 0
+            : Math.Max(0, selectedTabX - (leftEdge + contentCornerRadius));
+        leftJoinRadius = ResolveJoinRadius(desiredTabJoinRadius, availableLeftJoin, Math.Max(0, topY - topEdge));
+
+        var availableRightJoin = Math.Max(0, (rightEdge - contentCornerRadius) - (selectedTabX + selectedTabWidth));
+        rightJoinRadius = ResolveJoinRadius(desiredTabJoinRadius, availableRightJoin, Math.Max(0, topY - topEdge));
+
+        gapLeft = isLeftEdgeTab ? selectedTabX : selectedTabX - leftJoinRadius;
+        gapRight = selectedTabX + selectedTabWidth + rightJoinRadius;
+        return gapRight > gapLeft;
+    }
+
     protected override void OnRender(object drawingContextObj)
     {
         if (drawingContextObj is not DrawingContext dc)
@@ -933,34 +1051,49 @@ public class DockTabPanel : Selector
             var contentHeight = Math.Max(0, ActualHeight - topY);
             if (contentHeight > 0)
             {
+                var contentRect = _contentRect.Width > 0 && _contentRect.Height > 0
+                    ? _contentRect
+                    : new Rect(0, topY, ActualWidth, contentHeight);
+                var contentCornerRadius = ResolveChromeCornerRadius(contentRect.Width, contentRect.Height);
                 dc.DrawRoundedRectangle(
                     panelBackground,
                     null,
-                    new Rect(0, topY, ActualWidth, contentHeight),
-                    new CornerRadius(4, 4, 4, 4));
-            }
-
-            var hasActiveTab = TryGetSelectedTabBounds(out var activeTabX, out var activeTabWidth);
-            if (hasActiveTab)
-            {
-                var activeLeft = Math.Clamp(activeTabX, stripRect.X, stripRect.Right);
-                var activeRight = Math.Clamp(activeTabX + activeTabWidth, stripRect.X, stripRect.Right);
-                var clampedWidth = Math.Max(0, activeRight - activeLeft);
-                hasActiveTab = clampedWidth > 0;
-                activeTabX = activeLeft;
-                activeTabWidth = clampedWidth;
+                    contentRect,
+                    new CornerRadius(contentCornerRadius));
             }
 
             if (stripRect.Width > 0 && stripRect.Height > 0)
             {
-                // Draw tab-strip background but leave the selected tab gap, same as the legacy look.
-                if (hasActiveTab)
+                var contentRect = _contentRect.Width > 0 && _contentRect.Height > 0
+                    ? _contentRect
+                    : new Rect(0, topY, ActualWidth, contentHeight);
+                var contentCornerRadius = ResolveChromeCornerRadius(contentRect.Width, contentRect.Height);
+
+                // Leave the selected-tab pocket open so the panel background can visually flow
+                // into the custom join curve without showing strip-colored AA under it.
+                if (TryGetSelectedTabOutlineMetrics(
+                        stripRect.X,
+                        stripRect.Right,
+                        stripRect.Y,
+                        topY,
+                        contentCornerRadius,
+                        out _,
+                        out _,
+                        out _,
+                        out _,
+                        out _,
+                        out _,
+                        out var gapLeft,
+                        out var gapRight,
+                        out _))
                 {
-                    if (activeTabX > stripRect.X)
-                        dc.DrawRectangle(tabStripBrush, null, new Rect(stripRect.X, stripRect.Y, activeTabX - stripRect.X, stripRect.Height));
-                    var rightStart = activeTabX + activeTabWidth;
-                    if (rightStart < stripRect.Right)
-                        dc.DrawRectangle(tabStripBrush, null, new Rect(rightStart, stripRect.Y, stripRect.Right - rightStart, stripRect.Height));
+                    var clampedGapLeft = Math.Clamp(gapLeft, stripRect.X, stripRect.Right);
+                    var clampedGapRight = Math.Clamp(gapRight, stripRect.X, stripRect.Right);
+
+                    if (clampedGapLeft > stripRect.X)
+                        dc.DrawRectangle(tabStripBrush, null, new Rect(stripRect.X, stripRect.Y, clampedGapLeft - stripRect.X, stripRect.Height));
+                    if (clampedGapRight < stripRect.Right)
+                        dc.DrawRectangle(tabStripBrush, null, new Rect(clampedGapRight, stripRect.Y, stripRect.Right - clampedGapRight, stripRect.Height));
                 }
                 else
                 {
@@ -976,7 +1109,12 @@ public class DockTabPanel : Selector
             if (_contentRect.Width > 0 && _contentRect.Height > 0)
                 dc.DrawRectangle(panelBackground, null, _contentRect);
 
-            var separatorPen = new Pen(borderBrush, 1);
+            if (_separatorPen == null || _separatorPenBrush != borderBrush)
+            {
+                _separatorPenBrush = borderBrush;
+                _separatorPen = new Pen(borderBrush, 1);
+            }
+            var separatorPen = _separatorPen;
             switch (TabStripPlacement)
             {
                 case Dock.Bottom:
@@ -996,8 +1134,16 @@ public class DockTabPanel : Selector
 
         if (IsDockHighlighted)
         {
-            var highlightPen = new Pen(ResolveAccentBrush(), 2);
-            dc.DrawRoundedRectangle(null, highlightPen, new Rect(1, 1, Math.Max(0, ActualWidth - 2), Math.Max(0, ActualHeight - 2)), 4, 4);
+            var accentBrush = ResolveAccentBrush();
+            if (_highlightPen == null || _highlightPenBrush != accentBrush)
+            {
+                _highlightPenBrush = accentBrush;
+                _highlightPen = new Pen(accentBrush, 2);
+            }
+            var highlightPen = _highlightPen;
+            var highlightRect = new Rect(1, 1, Math.Max(0, ActualWidth - 2), Math.Max(0, ActualHeight - 2));
+            var highlightCornerRadius = ResolveChromeCornerRadius(highlightRect.Width, highlightRect.Height);
+            dc.DrawRoundedRectangle(null, highlightPen, highlightRect, highlightCornerRadius, highlightCornerRadius);
         }
 
         base.OnRender(drawingContextObj);
@@ -1016,12 +1162,15 @@ public class DockTabPanel : Selector
                 return;
 
             var topBorderBrush = ResolveTabStripBorderBrush();
-            var topBorderPen = new Pen(topBorderBrush, 1)
+            if (_topBorderPen == null || _topBorderPenBrush != topBorderBrush)
             {
-                LineJoin = PenLineJoin.Round,
-                StartLineCap = PenLineCap.Round,
-                EndLineCap = PenLineCap.Round,
-            };
+                _topBorderPenBrush = topBorderBrush;
+                _topBorderPen = new Pen(topBorderBrush, 1)
+                {
+                    LineJoin = PenLineJoin.Round,
+                };
+            }
+            var topBorderPen = _topBorderPen;
             var halfStroke = topBorderPen.Thickness * 0.5;
             var leftEdge = halfStroke;
             var topEdge = halfStroke;
@@ -1038,154 +1187,96 @@ public class DockTabPanel : Selector
             if (contentRightEdge <= leftEdge || contentBottomEdge <= topEdge)
                 return;
 
-            var hasActiveTab = TryGetSelectedTabBounds(out var selectedTabX, out var selectedTabWidth);
-            if (hasActiveTab)
-            {
-                var originalTabX = selectedTabX;
-                var clampedLeft = Math.Clamp(originalTabX, leftEdge, contentRightEdge);
-                var clampedRight = Math.Clamp(originalTabX + selectedTabWidth, leftEdge, contentRightEdge);
-                selectedTabX = clampedLeft;
-                selectedTabWidth = Math.Max(0, clampedRight - clampedLeft);
-                hasActiveTab = selectedTabWidth > 0;
-            }
-
             topY = Math.Clamp(topY, topEdge, contentBottomEdge);
             double w = contentRightEdge;
             double h = contentBottomEdge;
-            const double contentR = 4;
-            const double tabTopR = 4;
-            const double tabBottomR = 4;
+            var contentR = ResolveChromeCornerRadius(contentRightEdge - leftEdge, contentBottomEdge - topY);
+            var outerBorderRect = new Rect(leftEdge, topY, Math.Max(0, w - leftEdge), Math.Max(0, h - topY));
             const double k = 0.5522847498; // cubic bezier approximation for quarter circle
-            var firstTabAtLeftEdge = hasActiveTab && selectedTabX <= leftEdge + contentR + 0.5;
-            var startY = firstTabAtLeftEdge ? topY : topY + contentR;
 
+            // Use the native rounded-rect stroke for the outer shell so the four corners stay
+            // on the crisp SDF path instead of the softer custom path-stroke renderer.
+            dc.DrawRoundedRectangle(null, topBorderPen, outerBorderRect, contentR, contentR);
+
+            if (!TryGetSelectedTabOutlineMetrics(
+                    leftEdge,
+                    w,
+                    topEdge,
+                    topY,
+                    contentR,
+                    out var selectedTabX,
+                    out var selectedTabWidth,
+                    out var tabTopLeftR,
+                    out var tabTopRightR,
+                    out var leftJoinR,
+                    out var rightJoinR,
+                    out var gapLeft,
+                    out var gapRight,
+                    out var isLeftEdgeTab))
+            {
+                return;
+            }
+
+            var panelBackground = ResolvePanelBackgroundBrush();
+            var maskLeft = Math.Clamp(gapLeft + 0.5, leftEdge, w);
+            var maskRight = Math.Clamp(gapRight - 0.5, leftEdge, w);
+            if (maskRight > maskLeft)
+            {
+                dc.DrawRectangle(panelBackground, null, new Rect(maskLeft, topY - 1, maskRight - maskLeft, 2));
+            }
+            if (isLeftEdgeTab && contentR > 0)
+            {
+                dc.DrawRectangle(panelBackground, null, new Rect(0, topY, contentR + 1, contentR + 1));
+                dc.DrawLine(topBorderPen, new Point(leftEdge, topY), new Point(leftEdge, topY + contentR));
+            }
+
+            double tx = selectedTabX;
+            double tw = selectedTabWidth;
             var borderFigure = new PathFigure
             {
-                StartPoint = new Point(leftEdge, startY),
-                IsClosed = true,
+                StartPoint = new Point(gapLeft, topY),
+                IsClosed = false,
                 IsFilled = false,
             };
 
-            if (!firstTabAtLeftEdge)
+            if (!isLeftEdgeTab && leftJoinR > 0)
             {
-                // Top-left content corner: left edge -> top edge
                 borderFigure.Segments.Add(new BezierSegment(
-                    new Point(leftEdge, topY + contentR * (1 - k)),
-                    new Point(leftEdge + contentR * (1 - k), topY),
-                    new Point(leftEdge + contentR, topY)));
+                    new Point(tx - leftJoinR * (1 - k), topY),
+                    new Point(tx, topY - leftJoinR * (1 - k)),
+                    new Point(tx, topY - leftJoinR)));
             }
 
-            if (hasActiveTab)
+            borderFigure.Segments.Add(new LineSegment(new Point(tx, topEdge + tabTopLeftR)));
+            if (tabTopLeftR > 0)
             {
-                double tx = selectedTabX;
-                double tw = selectedTabWidth;
-
-                // First tab touching left edge should use a square bottom-left corner.
-                var isLeftEdgeTab = tx <= leftEdge + contentR + 0.5;
-                if (isLeftEdgeTab)
-                {
-                    var tabRight = tx + tw;
-                    tx = leftEdge;
-                    tw = Math.Max(0, Math.Min(tabRight, w) - tx);
-                }
-                var canUseLeftOutward = !isLeftEdgeTab && tx - tabBottomR >= leftEdge + contentR;
-                var leftJoinX = canUseLeftOutward
-                    ? tx - tabBottomR
-                    : (isLeftEdgeTab ? tx : Math.Clamp(tx + tabBottomR, leftEdge + contentR, w - contentR));
-                if (!isLeftEdgeTab)
-                    borderFigure.Segments.Add(new LineSegment(new Point(leftJoinX, topY)));
-
-                // Selected tab bottom-left corner: bottom edge -> left edge
-                if (isLeftEdgeTab)
-                {
-                    borderFigure.Segments.Add(new LineSegment(new Point(tx, topY - tabBottomR)));
-                }
-                else if (canUseLeftOutward)
-                {
-                    borderFigure.Segments.Add(new BezierSegment(
-                        new Point(tx - tabBottomR * (1 - k), topY),
-                        new Point(tx, topY - tabBottomR * (1 - k)),
-                        new Point(tx, topY - tabBottomR)));
-                }
-                else
-                {
-                    borderFigure.Segments.Add(new BezierSegment(
-                        new Point(tx + tabBottomR * (1 - k), topY),
-                        new Point(tx, topY - tabBottomR * (1 - k)),
-                        new Point(tx, topY - tabBottomR)));
-                }
-
-                // Selected tab left edge
-                borderFigure.Segments.Add(new LineSegment(new Point(tx, topEdge + tabTopR)));
-
-                // Selected tab top-left corner: left edge -> top edge
                 borderFigure.Segments.Add(new BezierSegment(
-                    new Point(tx, topEdge + tabTopR * (1 - k)),
-                    new Point(tx + tabTopR * (1 - k), topEdge),
-                    new Point(tx + tabTopR, topEdge)));
-
-                // Selected tab top edge
-                borderFigure.Segments.Add(new LineSegment(new Point(tx + tw - tabTopR, topEdge)));
-
-                // Selected tab top-right corner: top edge -> right edge
-                borderFigure.Segments.Add(new BezierSegment(
-                    new Point(tx + tw - tabTopR * (1 - k), topEdge),
-                    new Point(tx + tw, topEdge + tabTopR * (1 - k)),
-                    new Point(tx + tw, topEdge + tabTopR)));
-
-                // Selected tab right edge
-                borderFigure.Segments.Add(new LineSegment(new Point(tx + tw, topY - tabBottomR)));
-
-                // Selected tab bottom-right corner: right edge -> bottom edge
-                var canUseRightOutward = tx + tw + tabBottomR <= w - contentR;
-                if (canUseRightOutward)
-                {
-                    borderFigure.Segments.Add(new BezierSegment(
-                        new Point(tx + tw, topY - tabBottomR * (1 - k)),
-                        new Point(tx + tw + tabBottomR * (1 - k), topY),
-                        new Point(tx + tw + tabBottomR, topY)));
-                }
-                else
-                {
-                    borderFigure.Segments.Add(new BezierSegment(
-                        new Point(tx + tw, topY - tabBottomR * (1 - k)),
-                        new Point(tx + tw - tabBottomR * (1 - k), topY),
-                        new Point(tx + tw - tabBottomR, topY)));
-                }
+                    new Point(tx, topEdge + tabTopLeftR * (1 - k)),
+                    new Point(tx + tabTopLeftR * (1 - k), topEdge),
+                    new Point(tx + tabTopLeftR, topEdge)));
+            }
+            else
+            {
+                borderFigure.Segments.Add(new LineSegment(new Point(tx, topEdge)));
             }
 
-            // Continue top edge to top-right content corner
-            borderFigure.Segments.Add(new LineSegment(new Point(w - contentR, topY)));
-
-            // Top-right content corner: top edge -> right edge
+            borderFigure.Segments.Add(new LineSegment(new Point(tx + tw - tabTopRightR, topEdge)));
             borderFigure.Segments.Add(new BezierSegment(
-                new Point(w - contentR * (1 - k), topY),
-                new Point(w, topY + contentR * (1 - k)),
-                new Point(w, topY + contentR)));
-
-            // Right edge
-            borderFigure.Segments.Add(new LineSegment(new Point(w, h - contentR)));
-
-            // Bottom-right content corner: right edge -> bottom edge
-            borderFigure.Segments.Add(new BezierSegment(
-                new Point(w, h - contentR * (1 - k)),
-                new Point(w - contentR * (1 - k), h),
-                new Point(w - contentR, h)));
-
-            // Bottom edge
-            borderFigure.Segments.Add(new LineSegment(new Point(leftEdge + contentR, h)));
-
-            // Bottom-left content corner: bottom edge -> left edge
-            borderFigure.Segments.Add(new BezierSegment(
-                new Point(leftEdge + contentR * (1 - k), h),
-                new Point(leftEdge, h - contentR * (1 - k)),
-                new Point(leftEdge, h - contentR)));
+                new Point(tx + tw - tabTopRightR * (1 - k), topEdge),
+                new Point(tx + tw, topEdge + tabTopRightR * (1 - k)),
+                new Point(tx + tw, topEdge + tabTopRightR)));
+            borderFigure.Segments.Add(new LineSegment(new Point(tx + tw, topY - rightJoinR)));
+            if (rightJoinR > 0)
+            {
+                borderFigure.Segments.Add(new BezierSegment(
+                    new Point(tx + tw, topY - rightJoinR * (1 - k)),
+                    new Point(tx + tw + rightJoinR * (1 - k), topY),
+                    new Point(gapRight, topY)));
+            }
 
             var borderGeometry = new PathGeometry();
             borderGeometry.Figures.Add(borderFigure);
-            dc.PushClip(new RectangleGeometry(new Rect(0, 0, Math.Max(0, ActualWidth), Math.Max(0, ActualHeight))));
             dc.DrawGeometry(null, topBorderPen, borderGeometry);
-            dc.Pop();
             return;
         }
 

@@ -20,19 +20,12 @@
                     <StackPanel Orientation="Horizontal">
                         <!-- CheckBox Box -->
                         <Grid Width="18" Height="18" VerticalAlignment="Center">
-                            <Border Name="FocusOuter"
+                            <Border Name="FocusBorder"
                                     IsHitTestVisible="False"
                                     BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                                    BorderThickness="1"
+                                    BorderThickness="2"
                                     CornerRadius="{TemplateBinding CornerRadius}"
-                                    Opacity="0" />
-                            <Border Name="FocusInner"
-                                    IsHitTestVisible="False"
-                                    BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="{TemplateBinding CornerRadius}"
-                                    Margin="2"
-                                    Opacity="0" />
+                                    Visibility="Collapsed" />
                             <Border Name="CheckBoxBorder"
                                     Background="{TemplateBinding Background}"
                                     BorderBrush="{TemplateBinding BorderBrush}"
@@ -125,12 +118,10 @@
 
             <!-- Disabled state (highest priority) -->
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
                 <Setter Property="Background" Value="{DynamicResource ToggleDisabledBackground}" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ToggleDisabledBorder}" />
@@ -157,19 +148,12 @@
                         <Grid Width="18"
                               Height="18"
                               VerticalAlignment="Center">
-                            <Border Name="FocusOuter"
+                            <Border Name="FocusBorder"
                                     IsHitTestVisible="False"
                                     BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                                    BorderThickness="1"
+                                    BorderThickness="2"
                                     CornerRadius="9"
-                                    Opacity="0" />
-                            <Border Name="FocusInner"
-                                    IsHitTestVisible="False"
-                                    BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="9"
-                                    Margin="2"
-                                    Opacity="0" />
+                                    Visibility="Collapsed" />
 
                             <!-- Use a Border with full corner radius for circle effect -->
                             <Border Name="OuterCircle"
@@ -232,12 +216,10 @@
 
             <!-- Disabled state (highest priority) -->
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
                 <Setter Property="Background" Value="{DynamicResource ToggleDisabledBackground}" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ToggleDisabledBorder}" />
@@ -273,19 +255,12 @@
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <Grid Width="44"
                               Height="20">
-                            <Border Name="FocusOuter"
+                            <Border Name="FocusBorder"
                                     IsHitTestVisible="False"
                                     BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                                    BorderThickness="1"
+                                    BorderThickness="2"
                                     CornerRadius="10"
-                                    Opacity="0" />
-                            <Border Name="FocusInner"
-                                    IsHitTestVisible="False"
-                                    BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                                    BorderThickness="1"
-                                    CornerRadius="10"
-                                    Margin="2"
-                                    Opacity="0" />
+                                    Visibility="Collapsed" />
                             <!-- Switch Track -->
                             <Border Name="PART_SwitchTrack"
                                     Width="44"
@@ -323,12 +298,10 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
             </PropertyTrigger>
         </Style.Triggers>
 

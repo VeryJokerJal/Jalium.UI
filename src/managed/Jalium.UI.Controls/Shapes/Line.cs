@@ -115,15 +115,22 @@ public class Line : Shape
             return;
 
         var stroke = Stroke;
-        if (stroke == null)
+        var strokeThickness = StrokeThickness;
+        if (stroke == null || strokeThickness <= 0)
             return;
 
-        var pen = new Pen(stroke, StrokeThickness)
+        var pen = new Pen(stroke, strokeThickness)
         {
             StartLineCap = StrokeStartLineCap,
             EndLineCap = StrokeEndLineCap,
-            LineJoin = StrokeLineJoin
+            LineJoin = StrokeLineJoin,
+            MiterLimit = StrokeMiterLimit
         };
+        var dashArray = StrokeDashArray;
+        if (dashArray is { Count: > 0 })
+        {
+            pen.DashStyle = new DashStyle(dashArray, StrokeDashOffset);
+        }
 
         dc.DrawLine(pen, new Point(X1, Y1), new Point(X2, Y2));
     }

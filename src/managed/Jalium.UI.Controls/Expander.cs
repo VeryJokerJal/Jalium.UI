@@ -185,6 +185,7 @@ public class Expander : ContentControl
                 {
                     var rt = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
                     rt.Angle = 90;
+                    _chevron.RenderTransformOrigin = new Point(0.5, 0.5);
                     _chevron.RenderTransform = rt;
                 }
             }

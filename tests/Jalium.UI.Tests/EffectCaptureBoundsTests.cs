@@ -55,7 +55,8 @@ public class EffectCaptureBoundsTests
         {
         }
 
-        public void ApplyElementEffect(IEffect effect, float x, float y, float w, float h)
+        public void ApplyElementEffect(IEffect effect, float x, float y, float w, float h,
+            float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
         {
             ApplyCalls.Add(new CaptureBounds(x, y, w, h));
         }

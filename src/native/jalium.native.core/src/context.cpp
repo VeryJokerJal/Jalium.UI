@@ -1,7 +1,7 @@
 #include "jalium_internal.h"
 
 // ============================================================================
-// C API Implementation
+// C API
 // ============================================================================
 
 extern "C" {
@@ -9,7 +9,6 @@ extern "C" {
 JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
     auto& registry = jalium::GetBackendRegistry();
 
-    // If AUTO, try to find the best available backend
     JaliumBackend actualBackend = backend;
     if (backend == JALIUM_BACKEND_AUTO) {
         const JaliumBackend preferredOrder[] = {
@@ -39,21 +38,13 @@ JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
         }
     }
 
-    // Get the factory for the requested backend
     auto factory = registry.GetFactory(actualBackend);
-    if (!factory) {
-        return nullptr;
-    }
+    if (!factory) return nullptr;
 
-    // Create the backend implementation
-    // Note: factory() returns IRenderBackend* (C-style), which is jalium::IRenderBackend* in C++
     auto* rawBackend = reinterpret_cast<jalium::IRenderBackend*>(factory());
-    if (!rawBackend) {
-        return nullptr;
-    }
-    auto backendImpl = std::unique_ptr<jalium::IRenderBackend>(rawBackend);
+    if (!rawBackend) return nullptr;
 
-    // Create and return the context
+    auto backendImpl = std::unique_ptr<jalium::IRenderBackend>(rawBackend);
     auto* ctx = new jalium::Context(actualBackend, std::move(backendImpl));
     return reinterpret_cast<JaliumContext*>(ctx);
 }
@@ -84,6 +75,12 @@ JALIUM_API JaliumResult jalium_context_check_device_status(JaliumContext* ctx) {
     auto* impl = reinterpret_cast<jalium::Context*>(ctx)->GetBackendImpl();
     if (!impl) return JALIUM_ERROR_INVALID_ARGUMENT;
     return impl->CheckDeviceStatus();
+}
+
+JALIUM_API JaliumResult jalium_context_get_adapter_info(JaliumContext* ctx, JaliumAdapterInfo* info) {
+    if (!ctx || !info) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *info = {};
+    return JALIUM_ERROR_NOT_SUPPORTED;
 }
 
 } // extern "C"

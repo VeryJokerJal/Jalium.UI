@@ -147,6 +147,11 @@ public static class ShaderLibrary
             t = saturate(t);
 
             // 查找渐变停止点并插值
+            if (grad.StopsCount == 0)
+                return float4(0, 0, 0, 0);
+            if (grad.StopsCount == 1)
+                return UnpackColor(GradientStops[grad.StopsIndex].Color);
+
             float4 result = float4(0, 0, 0, 0);
             for (uint i = 0; i < grad.StopsCount - 1; i++)
             {
@@ -365,9 +370,6 @@ public static class ShaderLibrary
             float fw = fwidth(dist);
             float alpha = smoothstep(0.5 - fw, 0.5 + fw, dist);
 
-            if (alpha <= 0.01)
-                discard;
-
             // Subpixel AA - 水平方向 RGB 子像素偏移采样
             float2 texelSize = float2(ddx(input.TexCoord.x), 0);
             float distR = GlyphAtlas.Sample(AtlasSampler, input.TexCoord - texelSize * 0.333).r;
@@ -378,9 +380,13 @@ public static class ShaderLibrary
             subpixelAlpha.g = alpha;
             subpixelAlpha.b = smoothstep(0.5 - fw, 0.5 + fw, distB);
 
+            float combinedAlpha = max(max(subpixelAlpha.r, subpixelAlpha.g), subpixelAlpha.b);
+            if (combinedAlpha <= 0.01)
+                discard;
+
             float4 result;
             result.rgb = textColor.rgb * subpixelAlpha;
-            result.a = max(max(subpixelAlpha.r, subpixelAlpha.g), subpixelAlpha.b) * textColor.a;
+            result.a = combinedAlpha * textColor.a;
 
             return result;
         }
@@ -548,7 +554,7 @@ public static class ShaderLibrary
             return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * 3.14159265) * sigma);
         }
 
-        [numthreads(256, 1, 1)]
+        [numthreads(64, 1, 1)]
         void BlurHorizontalCS(uint3 dispatchId : SV_DispatchThreadID)
         {
             if (dispatchId.x >= (uint)TextureSize.x || dispatchId.y >= (uint)TextureSize.y)
@@ -592,7 +598,7 @@ public static class ShaderLibrary
             return exp(-(x * x) / (2.0 * sigma * sigma)) / (sqrt(2.0 * 3.14159265) * sigma);
         }
 
-        [numthreads(1, 256, 1)]
+        [numthreads(1, 64, 1)]
         void BlurVerticalCS(uint3 dispatchId : SV_DispatchThreadID)
         {
             if (dispatchId.x >= (uint)TextureSize.x || dispatchId.y >= (uint)TextureSize.y)

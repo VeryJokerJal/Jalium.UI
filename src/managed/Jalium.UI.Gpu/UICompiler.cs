@@ -35,6 +35,18 @@ public sealed class UICompiler
     private readonly Stack<Rect> _clipStack = new();
 
     /// <summary>
+    /// 安全获取材质，防止越界访问。索引无效时返回索引 0 处的材质。
+    /// </summary>
+    private Material SafeGetMaterial(int index)
+    {
+        if (index < 0 || index >= _materials.Count)
+        {
+            return _materials.Count > 0 ? _materials[0] : default;
+        }
+        return _materials[index];
+    }
+
+    /// <summary>
     /// 编译选项
     /// </summary>
     public CompilerOptions Options { get; set; } = new();
@@ -190,11 +202,12 @@ public sealed class UICompiler
     private void CompileTrigger(TriggerDef trigger, uint baseMaterialIndex)
     {
         // 创建触发后的材质
+        var baseMaterial = SafeGetMaterial((int)baseMaterialIndex);
         var triggeredMaterial = new Material(
-            background: trigger.Background.HasValue ? ParseColor(trigger.Background.Value) : _materials[(int)baseMaterialIndex].BackgroundColor,
-            border: trigger.BorderBrush.HasValue ? ParseColor(trigger.BorderBrush.Value) : _materials[(int)baseMaterialIndex].BorderColor,
-            foreground: trigger.Foreground.HasValue ? ParseColor(trigger.Foreground.Value) : _materials[(int)baseMaterialIndex].ForegroundColor,
-            opacity: trigger.Opacity.HasValue ? (byte)(trigger.Opacity.Value * 255) : _materials[(int)baseMaterialIndex].Opacity
+            background: trigger.Background.HasValue ? ParseColor(trigger.Background.Value) : baseMaterial.BackgroundColor,
+            border: trigger.BorderBrush.HasValue ? ParseColor(trigger.BorderBrush.Value) : baseMaterial.BorderColor,
+            foreground: trigger.Foreground.HasValue ? ParseColor(trigger.Foreground.Value) : baseMaterial.ForegroundColor,
+            opacity: trigger.Opacity.HasValue ? (byte)(trigger.Opacity.Value * 255) : baseMaterial.Opacity
         );
 
         var triggeredMaterialIndex = (uint)_materials.Count;
@@ -533,23 +546,23 @@ public sealed class UICompiler
 
             // 按渲染顺序添加：不透明节点先，然后半透明节点
             // 矩形 -> 图像 -> 路径 -> 文本 -> 效果
-            foreach (var node in sortedRects.Where(n => _materials[(int)n.MaterialIndex].Opacity == 255))
+            foreach (var node in sortedRects.Where(n => SafeGetMaterial((int)n.MaterialIndex).Opacity == 255))
                 reorderedNodes.Add(node);
-            foreach (var node in sortedImages.Where(n => _materials[(int)n.MaterialIndex].Opacity == 255))
+            foreach (var node in sortedImages.Where(n => SafeGetMaterial((int)n.MaterialIndex).Opacity == 255))
                 reorderedNodes.Add(node);
-            foreach (var node in sortedPaths.Where(n => _materials[(int)n.MaterialIndex].Opacity == 255))
+            foreach (var node in sortedPaths.Where(n => SafeGetMaterial((int)n.MaterialIndex).Opacity == 255))
                 reorderedNodes.Add(node);
-            foreach (var node in sortedText.Where(n => _materials[(int)n.MaterialIndex].Opacity == 255))
+            foreach (var node in sortedText.Where(n => SafeGetMaterial((int)n.MaterialIndex).Opacity == 255))
                 reorderedNodes.Add(node);
 
             // 半透明节点（需要从后往前渲染）
-            foreach (var node in sortedRects.Where(n => _materials[(int)n.MaterialIndex].Opacity < 255))
+            foreach (var node in sortedRects.Where(n => SafeGetMaterial((int)n.MaterialIndex).Opacity < 255))
                 reorderedNodes.Add(node);
-            foreach (var node in sortedImages.Where(n => _materials[(int)n.MaterialIndex].Opacity < 255))
+            foreach (var node in sortedImages.Where(n => SafeGetMaterial((int)n.MaterialIndex).Opacity < 255))
                 reorderedNodes.Add(node);
-            foreach (var node in sortedPaths.Where(n => _materials[(int)n.MaterialIndex].Opacity < 255))
+            foreach (var node in sortedPaths.Where(n => SafeGetMaterial((int)n.MaterialIndex).Opacity < 255))
                 reorderedNodes.Add(node);
-            foreach (var node in sortedText.Where(n => _materials[(int)n.MaterialIndex].Opacity < 255))
+            foreach (var node in sortedText.Where(n => SafeGetMaterial((int)n.MaterialIndex).Opacity < 255))
                 reorderedNodes.Add(node);
 
             // 效果节点最后
@@ -590,7 +603,7 @@ public sealed class UICompiler
 
         foreach (var node in _nodes)
         {
-            var material = _materials[(int)node.MaterialIndex];
+            var material = SafeGetMaterial((int)node.MaterialIndex);
             var hasChildren = childCounts.TryGetValue(node.Id, out var count) && count > 0;
 
             // 检查是否需要单独图层
@@ -686,7 +699,7 @@ public sealed class UICompiler
 
         foreach (var node in sortedNodes)
         {
-            var material = _materials[(int)node.MaterialIndex];
+            var material = SafeGetMaterial((int)node.MaterialIndex);
             var bounds = GetNodeBounds(node);
 
             // 检查是否被完全遮挡
@@ -1216,30 +1229,122 @@ public sealed class UICompiler
     private ReadOnlyMemory<byte> GetEffectParameters(EffectNode effect)
     {
         // 根据效果类型生成参数
-        var parameters = new byte[16];
-        using var ms = new MemoryStream(parameters);
-        using var writer = new BinaryWriter(ms);
+        byte[] parameters;
+        MemoryStream ms;
+        BinaryWriter writer;
 
         switch (effect.EffectType)
         {
             case EffectType.GaussianBlur:
             case EffectType.BackdropBlur:
+                parameters = new byte[16];
+                ms = new MemoryStream(parameters);
+                writer = new BinaryWriter(ms);
                 writer.Write(5f); // 模糊半径
                 writer.Write(0f); // 保留
                 writer.Write(0f);
                 writer.Write(0f);
-                break;
+                writer.Dispose();
+                ms.Dispose();
+                return parameters;
 
             case EffectType.BoxShadow:
             case EffectType.DropShadow:
+                parameters = new byte[16];
+                ms = new MemoryStream(parameters);
+                writer = new BinaryWriter(ms);
                 writer.Write(4f);  // X 偏移
                 writer.Write(4f);  // Y 偏移
                 writer.Write(8f);  // 模糊半径
                 writer.Write(0f);  // 扩展
-                break;
-        }
+                writer.Dispose();
+                ms.Dispose();
+                return parameters;
 
-        return parameters;
+            case EffectType.OuterGlow:
+                // 参数: glowSize, blurRadius, colorR, colorG, colorB, colorA, intensity
+                parameters = new byte[28];
+                ms = new MemoryStream(parameters);
+                writer = new BinaryWriter(ms);
+                writer.Write(5f);  // 发光大小
+                writer.Write(5f);  // 模糊半径
+                writer.Write(1f);  // 颜色 R
+                writer.Write(0.84f); // 颜色 G (Gold)
+                writer.Write(0f);  // 颜色 B
+                writer.Write(1f);  // 颜色 A
+                writer.Write(1f);  // 强度
+                writer.Dispose();
+                ms.Dispose();
+                return parameters;
+
+            case EffectType.InnerShadow:
+                // 参数: offsetX, offsetY, blurRadius, spreadRadius, colorR, colorG, colorB, colorA, cornerRadius
+                parameters = new byte[36];
+                ms = new MemoryStream(parameters);
+                writer = new BinaryWriter(ms);
+                writer.Write(3f);  // X 偏移
+                writer.Write(3f);  // Y 偏移
+                writer.Write(5f);  // 模糊半径
+                writer.Write(0f);  // 扩展半径
+                writer.Write(0f);  // 颜色 R
+                writer.Write(0f);  // 颜色 G
+                writer.Write(0f);  // 颜色 B
+                writer.Write(0.5f); // 颜色 A
+                writer.Write(0f);  // 圆角半径
+                writer.Dispose();
+                ms.Dispose();
+                return parameters;
+
+            case EffectType.Emboss:
+                // 参数: amount, lightAngle, relief, width, lightR, lightG, lightB, darkR, darkG, darkB
+                parameters = new byte[40];
+                ms = new MemoryStream(parameters);
+                writer = new BinaryWriter(ms);
+                writer.Write(1f);  // 浮雕量
+                writer.Write(45f); // 光源角度
+                writer.Write(0.44f); // 浮雕深度
+                writer.Write(1f);  // 边缘宽度
+                writer.Write(1f);  // 高光 R
+                writer.Write(1f);  // 高光 G
+                writer.Write(1f);  // 高光 B
+                writer.Write(0f);  // 阴影 R
+                writer.Write(0f);  // 阴影 G
+                writer.Write(0f);  // 阴影 B
+                writer.Dispose();
+                ms.Dispose();
+                return parameters;
+
+            case EffectType.ColorMatrix:
+                // 参数: 5x4 颜色矩阵 (20 个 float)
+                parameters = new byte[80];
+                ms = new MemoryStream(parameters);
+                writer = new BinaryWriter(ms);
+                // 默认写入恒等矩阵
+                writer.Write(1f); writer.Write(0f); writer.Write(0f); writer.Write(0f); writer.Write(0f); // Row 1
+                writer.Write(0f); writer.Write(1f); writer.Write(0f); writer.Write(0f); writer.Write(0f); // Row 2
+                writer.Write(0f); writer.Write(0f); writer.Write(1f); writer.Write(0f); writer.Write(0f); // Row 3
+                writer.Write(0f); writer.Write(0f); writer.Write(0f); writer.Write(1f); writer.Write(0f); // Row 4
+                writer.Dispose();
+                ms.Dispose();
+                return parameters;
+
+            case EffectType.ElementEffectGroup:
+                // 参数: effectCount, 后跟各子效果类型和参数索引
+                parameters = new byte[16];
+                ms = new MemoryStream(parameters);
+                writer = new BinaryWriter(ms);
+                writer.Write(0);   // 子效果数量（运行时填充）
+                writer.Write(0f);  // 保留
+                writer.Write(0f);
+                writer.Write(0f);
+                writer.Dispose();
+                ms.Dispose();
+                return parameters;
+
+            default:
+                parameters = new byte[16];
+                return parameters;
+        }
     }
 
     private CompiledUIBundle Package()
@@ -1495,8 +1600,9 @@ public sealed class UICompiler
             _vertexData.AddRange(yBytes);
         }
 
-        // 添加索引数据
-        _indexData.AddRange(result.Indices);
+        // 添加索引数据 (uint[] → ushort)
+        foreach (var idx in result.Indices)
+            _indexData.Add((ushort)idx);
 
         var cache = new PathCache(
             pathHash,

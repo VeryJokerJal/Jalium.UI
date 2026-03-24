@@ -15,6 +15,12 @@ public class DocumentPageView : FrameworkElement
     private static readonly SolidColorBrush s_shadowBrush = new(Color.FromArgb(32, 0, 0, 0));
     private static readonly SolidColorBrush s_borderBrush = new(Color.FromRgb(200, 200, 200));
     private static readonly Pen s_borderPen = new(s_borderBrush, 1);
+
+    // Cached border pen
+    private Pen? _borderPen;
+    private Brush? _borderPenBrush;
+    private double _borderPenThickness;
+
     private const string PlaceholderBrushKey = "ControlBackground";
     private const string PlaceholderSecondaryBrushKey = "ControlFillColorTertiaryBrush";
     private const string PageBrushKey = "WindowBackground";
@@ -312,7 +318,13 @@ public class DocumentPageView : FrameworkElement
     {
         var borderBrush = BorderBrush ?? ResolveThemeBrush(BorderBrushKey, s_borderBrush, BorderSecondaryBrushKey);
         var borderThickness = GetMaxBorderThickness();
-        return new Pen(borderBrush, borderThickness);
+        if (_borderPen == null || _borderPenBrush != borderBrush || _borderPenThickness != borderThickness)
+        {
+            _borderPenBrush = borderBrush;
+            _borderPenThickness = borderThickness;
+            _borderPen = new Pen(borderBrush, borderThickness);
+        }
+        return _borderPen;
     }
 
     private double GetMaxBorderThickness()

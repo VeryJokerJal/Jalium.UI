@@ -305,21 +305,29 @@ public class ContextMenu : ItemsControl
         var scrollHost = new MenuPopupScrollHost();
         var panel = scrollHost.ItemsPanel;
 
-        foreach (var item in Items)
+        panel.Children.BeginBatchUpdate();
+        try
         {
-            if (item is UIElement element)
+            foreach (var item in Items)
             {
-                // Detach from any existing visual parent before re-parenting
-                if (element.VisualParent != null)
+                if (item is UIElement element)
                 {
-                    element.DetachFromVisualParent();
+                    // Detach from any existing visual parent before re-parenting
+                    if (element.VisualParent != null)
+                    {
+                        element.DetachFromVisualParent();
+                    }
+                    panel.Children.Add(element);
                 }
-                panel.Children.Add(element);
+                else if (item is string text)
+                {
+                    panel.Children.Add(new MenuItem { Header = text });
+                }
             }
-            else if (item is string text)
-            {
-                panel.Children.Add(new MenuItem { Header = text });
-            }
+        }
+        finally
+        {
+            panel.Children.EndBatchUpdate();
         }
 
         _popupBorder.Child = scrollHost;

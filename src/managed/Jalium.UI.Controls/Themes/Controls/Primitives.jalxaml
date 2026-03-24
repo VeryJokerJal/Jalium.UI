@@ -104,25 +104,18 @@
                         <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
                                           VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
                     </Border>
-                    <Border Name="FocusOuter"
+                    <Border Name="FocusBorder"
                             IsHitTestVisible="False"
                             BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="1"
-                            Opacity="0" />
-                    <Border Name="FocusInner"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                            BorderThickness="1"
-                            Margin="2"
-                            Opacity="0" />
+                            BorderThickness="2"
+                            Visibility="Collapsed" />
                 </Grid>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

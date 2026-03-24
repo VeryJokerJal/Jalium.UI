@@ -242,7 +242,14 @@ public enum EffectType
     BackdropAcrylic,         // 亚克力效果（Windows 10/11）
 
     // 组合滤镜链
-    BackdropFilterChain      // 多个滤镜组合
+    BackdropFilterChain,     // 多个滤镜组合
+
+    // 元素效果系列（追加在末尾，不破坏已有值）
+    OuterGlow,               // 外发光效果
+    InnerShadow,             // 内阴影效果
+    Emboss,                  // 浮雕效果
+    Shader,                  // 自定义着色器效果
+    ElementEffectGroup,      // 效果组合
 }
 
 /// <summary>

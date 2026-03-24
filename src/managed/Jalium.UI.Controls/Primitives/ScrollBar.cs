@@ -21,6 +21,11 @@ public class ScrollBar : RangeBase
 
     #endregion
 
+    // Cached pens
+    private Pen? _borderPen;
+    private Brush? _borderPenBrush;
+    private double _borderPenThickness;
+
     #region Dependency Properties
 
     /// <summary>
@@ -298,6 +303,7 @@ public class ScrollBar : RangeBase
         }
         ApplySelfStyle();
         ApplyPartStyles();
+        ApplyAutoHideVisualState(_autoHideCollapseProgress, null, suppressArrangeInvalidation: true);
     }
 
     private void OnResourcesChangedHandler(object? sender, EventArgs e)
@@ -366,9 +372,14 @@ public class ScrollBar : RangeBase
         {
             if (_hasCustomLineButtonStyle)
             {
-                // Ensure themed line-button visuals are visible when keyed style is available.
-                ClearLocalIfValueEquals(_lineUpButton, OpacityProperty, 0.0);
-                ClearLocalIfValueEquals(_lineDownButton, OpacityProperty, 0.0);
+                // Ensure themed line-button visuals are visible when keyed style is available,
+                // but only when the scrollbar is expanded.  During collapse the opacity is
+                // managed by ApplyAutoHideVisualState and must not be cleared.
+                if (_autoHideCollapseProgress <= 0.001)
+                {
+                    ClearLocalIfValueEquals(_lineUpButton, OpacityProperty, 0.0);
+                    ClearLocalIfValueEquals(_lineDownButton, OpacityProperty, 0.0);
+                }
             }
             else
             {
@@ -903,17 +914,44 @@ public class ScrollBar : RangeBase
 
         if (_lineUpButton != null && _lineDownButton != null)
         {
+            // Use Visibility.Collapsed when fully collapsed so the rendering pipeline
+            // skips the buttons entirely (Opacity alone may not hide them reliably).
+            var fullyCollapsed = collapseProgress >= 0.999;
+
             if (_hasCustomLineButtonStyle)
             {
-                var arrowOpacity = 1.0 - collapseProgress;
-                _lineUpButton.Opacity = arrowOpacity;
-                _lineDownButton.Opacity = arrowOpacity;
+                var targetVisibility = fullyCollapsed ? Visibility.Collapsed : Visibility.Visible;
+                if (_lineUpButton.Visibility != targetVisibility)
+                    _lineUpButton.Visibility = targetVisibility;
+                if (_lineDownButton.Visibility != targetVisibility)
+                    _lineDownButton.Visibility = targetVisibility;
+
+                if (!fullyCollapsed)
+                {
+                    var arrowOpacity = 1.0 - collapseProgress;
+                    _lineUpButton.Opacity = arrowOpacity;
+                    _lineDownButton.Opacity = arrowOpacity;
+                }
             }
             else
             {
                 // Keep fallback mode line buttons transparent to avoid default square overlays.
                 _lineUpButton.Opacity = 0;
                 _lineDownButton.Opacity = 0;
+                if (fullyCollapsed)
+                {
+                    if (_lineUpButton.Visibility != Visibility.Collapsed)
+                        _lineUpButton.Visibility = Visibility.Collapsed;
+                    if (_lineDownButton.Visibility != Visibility.Collapsed)
+                        _lineDownButton.Visibility = Visibility.Collapsed;
+                }
+                else
+                {
+                    if (_lineUpButton.Visibility != Visibility.Visible)
+                        _lineUpButton.Visibility = Visibility.Visible;
+                    if (_lineDownButton.Visibility != Visibility.Visible)
+                        _lineDownButton.Visibility = Visibility.Visible;
+                }
             }
         }
 
@@ -1051,8 +1089,13 @@ public class ScrollBar : RangeBase
 
         if (BorderBrush != null && BorderThickness.TotalWidth > 0)
         {
-            var borderPen = new Pen(BorderBrush, BorderThickness.Left);
-            dc.DrawRoundedRectangle(null, borderPen, innerRect, CornerRadius);
+            if (_borderPen == null || _borderPenBrush != BorderBrush || _borderPenThickness != BorderThickness.Left)
+            {
+                _borderPen = new Pen(BorderBrush, BorderThickness.Left);
+                _borderPenBrush = BorderBrush;
+                _borderPenThickness = BorderThickness.Left;
+            }
+            dc.DrawRoundedRectangle(null, _borderPen, innerRect, CornerRadius);
         }
 
         // Fallback: if line-button styles are missing, draw simple arrows directly.

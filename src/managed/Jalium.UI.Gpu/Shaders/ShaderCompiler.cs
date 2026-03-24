@@ -13,6 +13,7 @@ public sealed class ShaderCompiler : IDisposable
 {
     private readonly string _cacheDirectory;
     private readonly Dictionary<ShaderType, CompiledShader> _shaderCache = new();
+    private readonly Lock _cacheLock = new();
     private readonly Assembly? _resourceAssembly;
     private readonly string _resourcePrefix;
     private bool _disposed;
@@ -50,9 +51,12 @@ public sealed class ShaderCompiler : IDisposable
     /// </summary>
     public CompiledShader GetOrCompile(ShaderType type)
     {
-        // 1. 内存缓存
-        if (_shaderCache.TryGetValue(type, out var cached))
-            return cached;
+        // 1. 内存缓存（快速路径，带锁保护）
+        lock (_cacheLock)
+        {
+            if (_shaderCache.TryGetValue(type, out var cached))
+                return cached;
+        }
 
         var stage = GetStage(type);
 
@@ -61,7 +65,7 @@ public sealed class ShaderCompiler : IDisposable
         if (precompiled != null)
         {
             var compiled = new CompiledShader(type, stage, precompiled);
-            _shaderCache[type] = compiled;
+            lock (_cacheLock) { _shaderCache[type] = compiled; }
             return compiled;
         }
 
@@ -82,7 +86,7 @@ public sealed class ShaderCompiler : IDisposable
         }
         else
         {
-            // 4. 运行时编译
+            // 4. 运行时编译（在锁外执行，编译可能较慢）
             bytecode = CompileFromSource(source, entryPoint, target);
 
             // 写入磁盘缓存
@@ -97,7 +101,7 @@ public sealed class ShaderCompiler : IDisposable
         }
 
         var result = new CompiledShader(type, stage, bytecode);
-        _shaderCache[type] = result;
+        lock (_cacheLock) { _shaderCache[type] = result; }
 
         return result;
     }
@@ -159,7 +163,7 @@ public sealed class ShaderCompiler : IDisposable
     /// </summary>
     public void ClearCache()
     {
-        _shaderCache.Clear();
+        lock (_cacheLock) { _shaderCache.Clear(); }
 
         if (Directory.Exists(_cacheDirectory))
         {
@@ -234,7 +238,7 @@ public sealed class ShaderCompiler : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        _shaderCache.Clear();
+        lock (_cacheLock) { _shaderCache.Clear(); }
     }
 }
 

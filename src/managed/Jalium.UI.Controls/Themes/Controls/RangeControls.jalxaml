@@ -128,19 +128,12 @@
                             </StackPanel>
                         </Grid>
                     </Border>
-                    <Border Name="FocusOuter"
+                    <Border Name="FocusBorder"
                             IsHitTestVisible="False"
                             BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="1"
+                            BorderThickness="2"
                             CornerRadius="{TemplateBinding CornerRadius}"
-                            Opacity="0" />
-                    <Border Name="FocusInner"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                            BorderThickness="1"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Margin="2"
-                            Opacity="0" />
+                            Visibility="Collapsed" />
                 </Grid>
             </ControlTemplate>
         </Setter>
@@ -154,12 +147,10 @@
                 <Setter Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
                 <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
             </PropertyTrigger>

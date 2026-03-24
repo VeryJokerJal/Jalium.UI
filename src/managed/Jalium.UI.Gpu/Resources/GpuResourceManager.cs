@@ -133,6 +133,8 @@ public sealed class GpuResourceManager : IDisposable
     // 缓冲区池：按 (大小, 用途) 分组复用
     private readonly Dictionary<(int Size, BufferUsage Usage), Stack<nint>> _bufferPool = new();
     private const int MaxPooledBuffersPerBucket = 8;
+    private const int MaxPooledBuckets = 64;
+    private int _totalPooledBuffers;
 
     /// <summary>
     /// 从池中获取或创建缓冲区。调用方负责在不再需要时归还。
@@ -158,6 +160,12 @@ public sealed class GpuResourceManager : IDisposable
         var key = (size, usage);
         if (!_bufferPool.TryGetValue(key, out var stack))
         {
+            // Limit total number of buckets to prevent unbounded growth
+            if (_bufferPool.Count >= MaxPooledBuckets)
+            {
+                _backend.DestroyBuffer(buffer);
+                return;
+            }
             stack = new Stack<nint>();
             _bufferPool[key] = stack;
         }
@@ -165,6 +173,7 @@ public sealed class GpuResourceManager : IDisposable
         if (stack.Count < MaxPooledBuffersPerBucket)
         {
             stack.Push(buffer);
+            _totalPooledBuffers++;
         }
         else
         {
@@ -243,6 +252,9 @@ public sealed class FrameResources : IDisposable
 
         // 创建上传缓冲区
         _uploadBuffer = backend.CreateBuffer(uploadBufferSize, BufferUsage.Upload);
+
+        // 获取 CPU 映射指针（上传堆缓冲区在创建时即持久映射）
+        _mappedPtr = backend.GetBufferMappedPointer(_uploadBuffer);
     }
 
     /// <summary>

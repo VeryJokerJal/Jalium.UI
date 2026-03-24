@@ -172,10 +172,15 @@ public sealed class GlyphRun
             }
         }
 
+        // Use font metrics for vertical bounds (ascent above baseline, descent below).
+        // FontFamily provides Baseline (ascent ratio) and LineSpacing (total line height ratio).
+        var ascent = FontRenderingEmSize * (FontFamily?.Baseline ?? 0.8);
+        var totalHeight = FontRenderingEmSize * (FontFamily?.LineSpacing ?? 1.2);
+
         return new Rect(
             BaselineOrigin.X,
-            BaselineOrigin.Y - FontRenderingEmSize,
+            BaselineOrigin.Y - ascent,
             totalWidth,
-            FontRenderingEmSize);
+            totalHeight);
     }
 }

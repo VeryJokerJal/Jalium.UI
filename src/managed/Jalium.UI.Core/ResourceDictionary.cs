@@ -2,6 +2,7 @@ using System.Collections;
 using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
 namespace Jalium.UI;
 
@@ -39,15 +40,39 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     private Uri? _source;
     private int _notificationDeferralDepth;
     private bool _notificationPending;
+    private HashSet<object>? _pendingChangedKeys; // null means "all keys changed"
+    private bool _pendingAllChanged;
 
     // Cycle detection for recursive MergedDictionaries lookups
     [ThreadStatic]
     private static HashSet<ResourceDictionary>? t_lookupChain;
 
     /// <summary>
+    /// Event args for resource dictionary changes, carrying the set of changed keys.
+    /// </summary>
+    public sealed class ResourcesChangedEventArgs : EventArgs
+    {
+        /// <summary>
+        /// The keys that were added or modified. Null means "all keys may have changed"
+        /// (e.g. merged dictionary replacement).
+        /// </summary>
+        public IReadOnlySet<object>? ChangedKeys { get; }
+
+        public ResourcesChangedEventArgs(IReadOnlySet<object>? changedKeys) => ChangedKeys = changedKeys;
+
+        /// <summary>Sentinel for "everything changed".</summary>
+        public static readonly ResourcesChangedEventArgs All = new(null);
+    }
+
+    /// <summary>
     /// Occurs when this dictionary or one of its merged dictionaries changes.
     /// </summary>
     public event EventHandler? Changed;
+
+    /// <summary>
+    /// Occurs when resources change, with information about which keys changed.
+    /// </summary>
+    public event EventHandler<ResourcesChangedEventArgs>? ChangedWithKeys;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="ResourceDictionary"/> class.
@@ -85,7 +110,10 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
                 return;
 
             s_currentThemeKey = value;
-            DynamicResourceBindingOperations.RefreshAll();
+            // Note: RefreshAll() is NOT called here to avoid double-refresh.
+            // Callers (e.g. ThemeManager.ForceThemeRefresh) are responsible for
+            // triggering a single consolidated refresh after all dictionary
+            // replacements are complete.
         }
     }
 
@@ -204,7 +232,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
         set
         {
             _innerDictionary[key] = value;
-            OnChanged();
+            OnChangedForKey(key);
         }
     }
 
@@ -214,7 +242,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     public void Add(object key, object? value)
     {
         _innerDictionary.Add(key, value);
-        OnChanged();
+        OnChangedForKey(key);
     }
 
     /// <summary>
@@ -312,7 +340,7 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
     {
         if (_innerDictionary.Remove(key))
         {
-            OnChanged();
+            OnChangedForKey(key);
             return true;
         }
 
@@ -413,15 +441,40 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
         ((ICollection)_innerDictionary).CopyTo(array, index);
     }
 
+    private void OnChangedForKey(object key)
+    {
+        if (_notificationDeferralDepth > 0)
+        {
+            _notificationPending = true;
+            if (!_pendingAllChanged)
+            {
+                _pendingChangedKeys ??= new HashSet<object>();
+                _pendingChangedKeys.Add(key);
+            }
+            return;
+        }
+
+        var keys = new HashSet<object> { key };
+        RaiseChanged(new ResourcesChangedEventArgs(keys));
+    }
+
     private void OnChanged()
     {
         if (_notificationDeferralDepth > 0)
         {
             _notificationPending = true;
+            _pendingAllChanged = true; // merged dict replacement — all keys may have changed
             return;
         }
 
+        RaiseChanged(ResourcesChangedEventArgs.All);
+    }
+
+    private void RaiseChanged(ResourcesChangedEventArgs args)
+    {
+        ResourceLookup.InvalidateResourceCache();
         Changed?.Invoke(this, EventArgs.Empty);
+        ChangedWithKeys?.Invoke(this, args);
     }
 
     private void EndNotificationDeferral()
@@ -436,7 +489,12 @@ public class ResourceDictionary : IDictionary<object, object?>, IDictionary
         if (_notificationDeferralDepth == 0 && _notificationPending)
         {
             _notificationPending = false;
-            Changed?.Invoke(this, EventArgs.Empty);
+            var args = _pendingAllChanged
+                ? ResourcesChangedEventArgs.All
+                : new ResourcesChangedEventArgs(_pendingChangedKeys);
+            _pendingChangedKeys = null;
+            _pendingAllChanged = false;
+            RaiseChanged(args);
         }
     }
 
@@ -524,6 +582,22 @@ public static class ResourceLookup
     /// </summary>
     public static Func<FrameworkElement, FrameworkElement?>? AncestorRedirectLookup { get; set; }
 
+    // Resource lookup cache: maps (element identity, resourceKey) to cached result.
+    // Invalidated when resources change via InvalidateResourceCache().
+    [ThreadStatic]
+    private static Dictionary<(int, object), object?>? t_resourceCache;
+    [ThreadStatic]
+    private static int t_cacheGeneration;
+    private static volatile int s_globalCacheGeneration;
+
+    /// <summary>
+    /// Invalidates the resource lookup cache. Called when resource dictionaries change.
+    /// </summary>
+    public static void InvalidateResourceCache()
+    {
+        Interlocked.Increment(ref s_globalCacheGeneration);
+    }
+
     /// <summary>
     /// Finds a resource with the specified key, searching up the visual tree.
     /// </summary>
@@ -534,6 +608,32 @@ public static class ResourceLookup
     {
         if (resourceKey == null)
             return null;
+
+        // Check cache
+        var cache = t_resourceCache ??= new Dictionary<(int, object), object?>();
+        var gen = s_globalCacheGeneration;
+        if (t_cacheGeneration != gen)
+        {
+            cache.Clear();
+            t_cacheGeneration = gen;
+        }
+
+        if (element != null)
+        {
+            var cacheKey = (RuntimeHelpers.GetHashCode(element), resourceKey);
+            if (cache.TryGetValue(cacheKey, out var cached))
+            {
+                return cached;
+            }
+
+            var result = FindResourceCore(element, resourceKey, new HashSet<object>());
+            // Only cache if the cache hasn't grown too large
+            if (cache.Count < 4096)
+            {
+                cache[cacheKey] = result;
+            }
+            return result;
+        }
 
         return FindResourceCore(element, resourceKey, new HashSet<object>());
     }

@@ -71,6 +71,8 @@ public class Polygon : Shape
         return finalSize;
     }
 
+    private PathGeometry? _cachedGeometry;
+
     /// <summary>
     /// Renders the polygon.
     /// </summary>
@@ -96,28 +98,37 @@ public class Polygon : Shape
             {
                 StartLineCap = StrokeStartLineCap,
                 EndLineCap = StrokeEndLineCap,
-                LineJoin = StrokeLineJoin
+                LineJoin = StrokeLineJoin,
+                MiterLimit = StrokeMiterLimit
             };
+            var dashArray = StrokeDashArray;
+            if (dashArray is { Count: > 0 })
+            {
+                pen.DashStyle = new DashStyle(dashArray, StrokeDashOffset);
+            }
         }
 
-        // Create geometry
-        var geometry = new PathGeometry();
-        var figure = new PathFigure
+        if (_cachedGeometry == null)
         {
-            StartPoint = points[0],
-            IsClosed = true,
-            IsFilled = fill != null
-        };
+            var geometry = new PathGeometry();
+            var figure = new PathFigure
+            {
+                StartPoint = points[0],
+                IsClosed = true,
+                IsFilled = fill != null
+            };
 
-        for (int i = 1; i < points.Count; i++)
-        {
-            figure.Segments.Add(new LineSegment(points[i]));
+            for (int i = 1; i < points.Count; i++)
+            {
+                figure.Segments.Add(new LineSegment(points[i]));
+            }
+
+            geometry.Figures.Add(figure);
+            geometry.FillRule = FillRule;
+            _cachedGeometry = geometry;
         }
 
-        geometry.Figures.Add(figure);
-        geometry.FillRule = FillRule;
-
-        dc.DrawGeometry(fill, pen, geometry);
+        dc.DrawGeometry(fill, pen, _cachedGeometry);
     }
 
     private static Rect GetBounds(PointCollection points)
@@ -145,6 +156,7 @@ public class Polygon : Shape
     {
         if (d is Polygon polygon)
         {
+            polygon._cachedGeometry = null;
             polygon.InvalidateMeasure();
             polygon.InvalidateVisual();
         }

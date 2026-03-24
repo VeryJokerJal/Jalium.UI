@@ -210,25 +210,39 @@ public sealed class D3D12ShaderBackend : IRenderBackendEx, IDisposable
     public nint CreateBuffer(int size, BufferUsage usage) =>
         NativeD3D12Pipeline.jalium_buffer_create_empty(_nativeContext, size, (int)usage);
 
+    public nint GetBufferMappedPointer(nint buffer) =>
+        NativeD3D12Pipeline.jalium_buffer_get_mapped_ptr(_nativeContext, buffer);
+
     public nint CreateTexture2D(int width, int height, TextureFormat format, TextureUsage usage) =>
         NativeD3D12Pipeline.jalium_texture_create_2d(_nativeContext, width, height, (int)format, (int)usage);
 
     public DescriptorHandle CreateSrv(nint resource)
     {
         var index = NativeD3D12Pipeline.jalium_descriptor_create_srv(_nativeContext, resource);
+        if (index < 0)
+            throw new InvalidOperationException($"Failed to create SRV descriptor: native returned error code {index}");
         return new DescriptorHandle((uint)index, DescriptorType.SrvCbvUav);
     }
 
     public DescriptorHandle CreateCbv(nint buffer, int offset, int size)
     {
         var index = NativeD3D12Pipeline.jalium_descriptor_create_cbv(_nativeContext, buffer, offset, size);
+        if (index < 0)
+            throw new InvalidOperationException($"Failed to create CBV descriptor: native returned error code {index}");
         return new DescriptorHandle((uint)index, DescriptorType.SrvCbvUav);
     }
 
     public DescriptorHandle CreateUav(nint resource)
     {
         var index = NativeD3D12Pipeline.jalium_descriptor_create_uav(_nativeContext, resource);
+        if (index < 0)
+            throw new InvalidOperationException($"Failed to create UAV descriptor: native returned error code {index}");
         return new DescriptorHandle((uint)index, DescriptorType.SrvCbvUav);
+    }
+
+    public void FreeDescriptor(DescriptorHandle handle)
+    {
+        NativeD3D12Pipeline.jalium_descriptor_free(_nativeContext, (int)handle.HeapIndex);
     }
 
     public void ExecuteCommandBuffer(GpuCommandBuffer commands)
@@ -333,6 +347,9 @@ internal static partial class NativeD3D12Pipeline
 
     [LibraryImport(LibName)]
     internal static partial nint jalium_buffer_create_empty(nint context, int size, int usage);
+
+    [LibraryImport(LibName)]
+    internal static partial nint jalium_buffer_get_mapped_ptr(nint context, nint buffer);
 
     [LibraryImport(LibName)]
     internal static partial void jalium_buffer_update(nint context, nint buffer, int offset, ReadOnlySpan<byte> data, int size);
@@ -446,6 +463,9 @@ internal static partial class NativeD3D12Pipeline
 
     [LibraryImport(LibName)]
     internal static partial int jalium_descriptor_create_uav(nint context, nint resource);
+
+    [LibraryImport(LibName)]
+    internal static partial void jalium_descriptor_free(nint context, int index);
 
     // ===== 命令 =====
 

@@ -61,15 +61,17 @@ public readonly struct Color : IEquatable<Color>
     public static Color FromRgb(byte r, byte g, byte b) => new(255, r, g, b);
 
     /// <summary>
-    /// Creates a color from normalized float values (0.0 - 1.0).
+    /// Creates a color from scRGB (linear) float values (0.0 - 1.0).
+    /// RGB components are in linear light space and are converted to sRGB
+    /// gamma for storage.  Alpha is linear in both spaces.
     /// </summary>
     public static Color FromScRgb(float a, float r, float g, float b)
     {
         return new Color(
-            (byte)(Math.Clamp(a, 0f, 1f) * 255),
-            (byte)(Math.Clamp(r, 0f, 1f) * 255),
-            (byte)(Math.Clamp(g, 0f, 1f) * 255),
-            (byte)(Math.Clamp(b, 0f, 1f) * 255));
+            (byte)Math.Round(Math.Clamp(a, 0f, 1f) * 255),
+            (byte)Math.Round(LinearToSrgb(Math.Clamp(r, 0f, 1f)) * 255),
+            (byte)Math.Round(LinearToSrgb(Math.Clamp(g, 0f, 1f)) * 255),
+            (byte)Math.Round(LinearToSrgb(Math.Clamp(b, 0f, 1f)) * 255));
     }
 
     /// <summary>
@@ -78,19 +80,25 @@ public readonly struct Color : IEquatable<Color>
     public float ScA => A / 255f;
 
     /// <summary>
-    /// Gets the red component as a normalized float (0.0 - 1.0).
+    /// Gets the red component as a linear-light scRGB float (0.0 - 1.0).
     /// </summary>
-    public float ScR => R / 255f;
+    public float ScR => SrgbToLinear(R / 255f);
 
     /// <summary>
-    /// Gets the green component as a normalized float (0.0 - 1.0).
+    /// Gets the green component as a linear-light scRGB float (0.0 - 1.0).
     /// </summary>
-    public float ScG => G / 255f;
+    public float ScG => SrgbToLinear(G / 255f);
 
     /// <summary>
-    /// Gets the blue component as a normalized float (0.0 - 1.0).
+    /// Gets the blue component as a linear-light scRGB float (0.0 - 1.0).
     /// </summary>
-    public float ScB => B / 255f;
+    public float ScB => SrgbToLinear(B / 255f);
+
+    private static float SrgbToLinear(float s)
+        => s <= 0.04045f ? s / 12.92f : MathF.Pow((s + 0.055f) / 1.055f, 2.4f);
+
+    private static float LinearToSrgb(float l)
+        => l <= 0.0031308f ? l * 12.92f : 1.055f * MathF.Pow(l, 1f / 2.4f) - 0.055f;
 
     #region Predefined Colors
 

@@ -332,7 +332,7 @@ bool TriangulateSimplePolygon(const std::vector<float>& inputPoints, std::vector
 
     const bool isCcw = SignedArea2D(points) > 0.0f;
     int guard = 0;
-    while (indices.size() > 3 && guard < 4096) {
+    while (indices.size() > 3 && guard < 65536) {
         bool earFound = false;
         for (size_t i = 0; i < indices.size(); ++i) {
             const int prev = indices[(i + indices.size() - 1) % indices.size()];
@@ -384,6 +384,14 @@ bool TriangulateSimplePolygon(const std::vector<float>& inputPoints, std::vector
         }
 
         ++guard;
+    }
+
+    if (guard >= 65536) {
+#ifdef _WIN32
+        OutputDebugStringA("[Vulkan] Triangulation guard limit reached\n");
+#else
+        fprintf(stderr, "[Vulkan] Triangulation guard limit reached\n");
+#endif
     }
 
     if (indices.size() == 3) {
@@ -772,14 +780,17 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     (void)width;
     (void)height;
     (void)vsync;
+    fprintf(stderr, "[Vulkan] Initialize failed: unsupported platform\n");
     return false;
 #else
 #ifdef _WIN32
     if (surfaceDescriptor.platform != JALIUM_PLATFORM_WINDOWS || surfaceDescriptor.handle0 == 0) {
+        OutputDebugStringA("[Vulkan] Initialize failed: invalid Windows surface descriptor\n");
         return false;
     }
 #elif defined(__linux__)
     if (surfaceDescriptor.platform != JALIUM_PLATFORM_LINUX_X11 || surfaceDescriptor.handle0 == 0 || surfaceDescriptor.handle1 == 0) {
+        fprintf(stderr, "[Vulkan] Initialize failed: invalid Linux surface descriptor\n");
         return false;
     }
 #endif
@@ -787,11 +798,13 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     getInstanceProcAddr = GetVulkanGetInstanceProcAddr();
     getDeviceProcAddr = GetVulkanGetDeviceProcAddr();
     if (!getInstanceProcAddr || !getDeviceProcAddr) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not load Vulkan proc addresses\n");
         return false;
     }
 
     createInstance = LoadInstanceProc<PFN_vkCreateInstance>(getInstanceProcAddr, VK_NULL_HANDLE, "vkCreateInstance");
     if (!createInstance) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not load vkCreateInstance\n");
         return false;
     }
 
@@ -816,6 +829,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     instanceInfo.ppEnabledExtensionNames = extensions;
 
     if (createInstance(&instanceInfo, nullptr, &instance) != VK_SUCCESS || !instance) {
+        fprintf(stderr, "[Vulkan] Initialize failed: vkCreateInstance returned failure\n");
         return false;
     }
 
@@ -837,6 +851,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         !getPhysicalDeviceMemoryProperties ||
         !getPhysicalDeviceSurfaceSupport || !getSurfaceCapabilities || !getSurfaceFormats ||
         !getSurfacePresentModes || !destroySurface || !createDevice) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not load required instance-level function pointers\n");
         return false;
     }
 
@@ -846,6 +861,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     surfaceInfo.hinstance = GetModuleHandleW(nullptr);
     surfaceInfo.hwnd = reinterpret_cast<HWND>(surfaceDescriptor.handle0);
     if (!createWin32Surface || createWin32Surface(instance, &surfaceInfo, nullptr, &surface) != VK_SUCCESS || surface == VK_NULL_HANDLE) {
+        OutputDebugStringA("[Vulkan] Initialize failed: could not create Win32 surface\n");
         return false;
     }
 #elif defined(__linux__)
@@ -854,17 +870,20 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     surfaceInfo.dpy = reinterpret_cast<Display*>(surfaceDescriptor.handle0);
     surfaceInfo.window = static_cast<Window>(reinterpret_cast<uintptr_t>(surfaceDescriptor.handle1));
     if (!createXlibSurface || createXlibSurface(instance, &surfaceInfo, nullptr, &surface) != VK_SUCCESS || surface == VK_NULL_HANDLE) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not create Xlib surface\n");
         return false;
     }
 #endif
 
     uint32_t physicalDeviceCount = 0;
     if (enumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr) != VK_SUCCESS || physicalDeviceCount == 0) {
+        fprintf(stderr, "[Vulkan] Initialize failed: no physical devices found\n");
         return false;
     }
 
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     if (enumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data()) != VK_SUCCESS) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not enumerate physical devices\n");
         return false;
     }
 
@@ -897,6 +916,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     }
 
     if (physicalDevice == VK_NULL_HANDLE || queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        fprintf(stderr, "[Vulkan] Initialize failed: no suitable GPU with graphics+present queue found\n");
         return false;
     }
 
@@ -915,6 +935,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     deviceInfo.enabledExtensionCount = 1;
     deviceInfo.ppEnabledExtensionNames = deviceExtensions;
     if (createDevice(physicalDevice, &deviceInfo, nullptr, &device) != VK_SUCCESS || device == VK_NULL_HANDLE) {
+        fprintf(stderr, "[Vulkan] Initialize failed: vkCreateDevice returned failure\n");
         return false;
     }
 
@@ -998,11 +1019,13 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         !cmdEndRenderPass || !cmdBindPipeline || !cmdBindDescriptorSets || !cmdSetViewport ||
         !cmdSetScissor || !cmdPushConstants || !cmdDraw || !cmdBindVertexBuffers || !queueSubmit || !createSemaphore || !destroySemaphore ||
         !createFence || !destroyFence || !waitForFences || !resetFences || !deviceWaitIdle) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not load required device-level function pointers\n");
         return false;
     }
 
     getDeviceQueue(device, queueFamilyIndex, 0, &queue);
     if (queue == VK_NULL_HANDLE) {
+        fprintf(stderr, "[Vulkan] Initialize failed: vkGetDeviceQueue returned null queue\n");
         return false;
     }
 
@@ -1011,6 +1034,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     commandPoolInfo.queueFamilyIndex = queueFamilyIndex;
     if (createCommandPool(device, &commandPoolInfo, nullptr, &commandPool) != VK_SUCCESS || commandPool == VK_NULL_HANDLE) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not create command pool\n");
         return false;
     }
 
@@ -1020,6 +1044,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     commandBufferInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     commandBufferInfo.commandBufferCount = 1;
     if (allocateCommandBuffers(device, &commandBufferInfo, &commandBuffer) != VK_SUCCESS || commandBuffer == VK_NULL_HANDLE) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not allocate command buffer\n");
         return false;
     }
 
@@ -1027,12 +1052,14 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     if (createSemaphore(device, &semaphoreInfo, nullptr, &imageAvailable) != VK_SUCCESS ||
         createSemaphore(device, &semaphoreInfo, nullptr, &renderFinished) != VK_SUCCESS) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not create semaphores\n");
         return false;
     }
 
     VkFenceCreateInfo fenceInfo {};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     if (createFence(device, &fenceInfo, nullptr, &inFlight) != VK_SUCCESS || inFlight == VK_NULL_HANDLE) {
+        fprintf(stderr, "[Vulkan] Initialize failed: could not create fence\n");
         return false;
     }
 
@@ -1068,10 +1095,21 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
     }
 
     VkSurfaceFormatKHR selectedFormat = formats.front();
+    // Prefer SRGB format so the GPU auto-converts linear→sRGB on write,
+    // matching D3D12's DXGI_FORMAT_R8G8B8A8_UNORM_SRGB behavior.
     for (const auto& candidate : formats) {
-        if (candidate.format == VK_FORMAT_B8G8R8A8_UNORM && candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+        if (candidate.format == VK_FORMAT_B8G8R8A8_SRGB && candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
             selectedFormat = candidate;
             break;
+        }
+    }
+    // Fallback: if SRGB format is unavailable, accept UNORM + sRGB color space.
+    if (selectedFormat.format != VK_FORMAT_B8G8R8A8_SRGB) {
+        for (const auto& candidate : formats) {
+            if (candidate.format == VK_FORMAT_B8G8R8A8_UNORM && candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+                selectedFormat = candidate;
+                break;
+            }
         }
     }
 
@@ -5951,7 +5989,7 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
     RasterizePolygon(transformedPoints, fillRule, b, g, r, a);
 }
 
-void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed)
+void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit)
 {
     TouchFrame();
     if (points && pointCount >= 2) {
@@ -6050,6 +6088,36 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
             }
             currentX = endX;
             currentY = endY;
+        } else if (tag == 2 && index + 1 < commandLength) {
+            // MoveTo: new sub-path
+            currentX = commands[index++];
+            currentY = commands[index++];
+            localPoints.push_back(currentX);
+            localPoints.push_back(currentY);
+            ApplyTransform(transform, currentX, currentY, worldX, worldY);
+            points.push_back(worldX);
+            points.push_back(worldY);
+        } else if (tag == 3 && index + 3 < commandLength) {
+            // QuadTo [cx, cy, ex, ey]
+            const float cpx = commands[index++];
+            const float cpy = commands[index++];
+            const float endX = commands[index++];
+            const float endY = commands[index++];
+            for (int step = 1; step <= 8; ++step) {
+                const float t = static_cast<float>(step) / 8.0f;
+                const float omt = 1.0f - t;
+                const float qx = omt * omt * currentX + 2.0f * omt * t * cpx + t * t * endX;
+                const float qy = omt * omt * currentY + 2.0f * omt * t * cpy + t * t * endY;
+                localPoints.push_back(qx);
+                localPoints.push_back(qy);
+                ApplyTransform(transform, qx, qy, worldX, worldY);
+                points.push_back(worldX);
+                points.push_back(worldY);
+            }
+            currentX = endX;
+            currentY = endY;
+        } else if (tag == 5) {
+            // ClosePath — no-op for fill
         } else {
             break;
         }
@@ -6062,7 +6130,7 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
     RasterizePolygon(points, fillRule, b, g, r, a);
 }
 
-void VulkanRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed)
+void VulkanRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap)
 {
     TouchFrame();
     std::vector<float> localPoints;
@@ -6126,6 +6194,37 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
             }
             currentX = endX;
             currentY = endY;
+        } else if (tag == 2 && index + 1 < commandLength) {
+            // MoveTo: new sub-path
+            currentX = commands[index++];
+            currentY = commands[index++];
+            localPoints.push_back(currentX);
+            localPoints.push_back(currentY);
+            ApplyTransform(transform, currentX, currentY, worldX, worldY);
+            points.push_back(worldX);
+            points.push_back(worldY);
+        } else if (tag == 3 && index + 3 < commandLength) {
+            // QuadTo [cx, cy, ex, ey]
+            const float cpx = commands[index++];
+            const float cpy = commands[index++];
+            const float endX = commands[index++];
+            const float endY = commands[index++];
+            for (int step = 1; step <= 8; ++step) {
+                const float t = static_cast<float>(step) / 8.0f;
+                const float omt = 1.0f - t;
+                const float qx = omt * omt * currentX + 2.0f * omt * t * cpx + t * t * endX;
+                const float qy = omt * omt * currentY + 2.0f * omt * t * cpy + t * t * endY;
+                localPoints.push_back(qx);
+                localPoints.push_back(qy);
+                ApplyTransform(transform, qx, qy, worldX, worldY);
+                points.push_back(worldX);
+                points.push_back(worldY);
+            }
+            currentX = endX;
+            currentY = endY;
+        } else if (tag == 5) {
+            // ClosePath
+            closed = true;
         } else {
             break;
         }
@@ -6439,6 +6538,7 @@ void VulkanRenderTarget::PopOpacity()
         opacityStack_.pop_back();
     }
 }
+void VulkanRenderTarget::SetShapeType(int /*type*/, float /*n*/) {}
 void VulkanRenderTarget::SetVSyncEnabled(bool enabled) { vsyncEnabled_ = enabled; }
 void VulkanRenderTarget::SetDpi(float dpiX, float dpiY) { dpiX_ = dpiX; dpiY_ = dpiY; }
 void VulkanRenderTarget::AddDirtyRect(float x, float y, float w, float h) { dirtyRects_.push_back(JaliumRect { x, y, w, h }); }
@@ -7010,11 +7110,19 @@ void VulkanRenderTarget::EndEffectCapture()
     effectCaptureStack_.pop_back();
 }
 
-void VulkanRenderTarget::DrawBlurEffect(float x, float y, float w, float h, float radius)
+void VulkanRenderTarget::DrawBlurEffect(float x, float y, float w, float h, float radius, float /*uvOffsetX*/, float /*uvOffsetY*/)
 {
     TouchFrame();
 
     if (lastCapturedPixels_.empty()) {
+        return;
+    }
+
+    if (radius <= 0.0f) {
+        if (!TryRecordGpuPixelBufferCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, 1.0f)) {
+            InvalidateGpuReplay();
+        }
+        BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
         return;
     }
 
@@ -7026,7 +7134,7 @@ void VulkanRenderTarget::DrawBlurEffect(float x, float y, float w, float h, floa
     BlendBuffer(blurred, width_, height_, x, y, w, h, 1.0f);
 }
 
-void VulkanRenderTarget::DrawDropShadowEffect(float x, float y, float w, float h, float blurRadius, float offsetX, float offsetY, float r, float g, float b, float a)
+void VulkanRenderTarget::DrawDropShadowEffect(float x, float y, float w, float h, float blurRadius, float offsetX, float offsetY, float r, float g, float b, float a, float /*uvOffsetX*/, float /*uvOffsetY*/, float cornerTL, float cornerTR, float cornerBR, float cornerBL)
 {
     TouchFrame();
 
@@ -7058,6 +7166,18 @@ void VulkanRenderTarget::DrawDropShadowEffect(float x, float y, float w, float h
     BlendBuffer(shadowPixels, width_, height_, x + offsetX, y + offsetY, w, h, 1.0f);
     BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
 }
+
+void VulkanRenderTarget::DrawShaderEffect(float x, float y, float w, float h,
+    const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
+    const float* constants, uint32_t constantFloatCount)
+{
+    (void)shaderBytecode;
+    (void)shaderBytecodeSize;
+    (void)constants;
+    (void)constantFloatCount;
+    DrawBlurEffect(x, y, w, h, 0.0f);
+}
+
 void VulkanRenderTarget::DrawLiquidGlass(float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost, int shapeType, float shapeExponent, int neighborCount, float fusionRadius, const float* neighborData)
 {
     TouchFrame();

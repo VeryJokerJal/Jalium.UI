@@ -18,6 +18,17 @@ public sealed class Typeface
     }
 
     /// <summary>
+    /// Initializes a new instance of the <see cref="Typeface"/> class with normal stretch.
+    /// </summary>
+    /// <param name="fontFamily">The font family.</param>
+    /// <param name="weight">The font weight.</param>
+    /// <param name="style">The font style.</param>
+    public Typeface(FontFamily fontFamily, FontWeight weight, FontStyle style)
+        : this(fontFamily, style, weight, FontStretches.Normal)
+    {
+    }
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="Typeface"/> class.
     /// </summary>
     /// <param name="fontFamily">The font family.</param>
@@ -91,9 +102,16 @@ public sealed class Typeface
     /// <returns>True if a GlyphTypeface was found; otherwise, false.</returns>
     public bool TryGetGlyphTypeface(out GlyphTypeface? glyphTypeface)
     {
-        // Simplified implementation
-        glyphTypeface = new GlyphTypeface(new Uri(FontFamily.Source, UriKind.RelativeOrAbsolute));
-        return true;
+        try
+        {
+            glyphTypeface = new GlyphTypeface(new Uri(FontFamily.Source, UriKind.RelativeOrAbsolute));
+            return true;
+        }
+        catch
+        {
+            glyphTypeface = null;
+            return false;
+        }
     }
 
     /// <inheritdoc />

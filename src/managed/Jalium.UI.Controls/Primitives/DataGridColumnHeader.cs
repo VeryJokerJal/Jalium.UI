@@ -21,6 +21,14 @@ public class DataGridColumnHeader : ButtonBase
 
     #endregion
 
+    // Cached pens
+    private Pen? _separatorPen;
+    private Brush? _separatorPenBrush;
+    private Pen? _sortIndicatorPen;
+    private Brush? _sortIndicatorPenBrush;
+    private Pen? _bottomBorderPen;
+    private Brush? _bottomBorderPenBrush;
+
     #region Dependency Properties
 
     /// <summary>
@@ -306,7 +314,12 @@ public class DataGridColumnHeader : ButtonBase
     {
         var borderBrush = BorderBrush
             ?? ResolveThemeBrush("ControlBorder", s_borderBrush, "DividerStrokeColorDefaultBrush");
-        return new Pen(borderBrush, 1);
+        if (_bottomBorderPen == null || _bottomBorderPenBrush != borderBrush)
+        {
+            _bottomBorderPen = new Pen(borderBrush, 1);
+            _bottomBorderPenBrush = borderBrush;
+        }
+        return _bottomBorderPen;
     }
 
     private Brush ResolveThemeBrush(string resourceKey, Brush fallback, string? secondaryResourceKey = null)
@@ -364,31 +377,49 @@ public class DataGridColumnHeader : ButtonBase
         if (SeparatorVisibility == Visibility.Visible)
         {
             var separatorBrush = ResolveSeparatorBrush();
-            var separatorPen = new Pen(separatorBrush, 1);
-            dc.DrawLine(separatorPen, new Point(rect.Width - 1, 0), new Point(rect.Width - 1, rect.Height));
+            if (_separatorPen == null || _separatorPenBrush != separatorBrush)
+            {
+                _separatorPen = new Pen(separatorBrush, 1);
+                _separatorPenBrush = separatorBrush;
+            }
+            dc.DrawLine(_separatorPen, new Point(rect.Width - 1, 0), new Point(rect.Width - 1, rect.Height));
         }
 
         // Draw bottom border
         dc.DrawLine(ResolveBottomBorderPen(), new Point(0, rect.Height - 1), new Point(rect.Width, rect.Height - 1));
     }
 
+    // Sort indicator chevrons in 8×4 design space, cached
+    private static readonly PathGeometry s_sortUp = (PathGeometry)Geometry.Parse("M 0,4 L 4,0 L 8,4");
+    private static readonly PathGeometry s_sortDown = (PathGeometry)Geometry.Parse("M 0,0 L 4,4 L 8,0");
+
     private void DrawSortIndicator(DrawingContext dc, Rect rect, double offsetX, Brush brush)
     {
-        var arrowPen = new Pen(brush, 1.5);
-        var centerX = offsetX + 6;
-        var centerY = rect.Height / 2;
-
-        if (SortDirection == ListSortDirection.Ascending)
+        if (_sortIndicatorPen == null || _sortIndicatorPenBrush != brush)
         {
-            // Up arrow
-            dc.DrawLine(arrowPen, new Point(centerX - 4, centerY + 2), new Point(centerX, centerY - 2));
-            dc.DrawLine(arrowPen, new Point(centerX, centerY - 2), new Point(centerX + 4, centerY + 2));
+            _sortIndicatorPen = new Pen(brush, 1.5);
+            _sortIndicatorPenBrush = brush;
         }
-        else
+
+        var source = SortDirection == ListSortDirection.Ascending ? s_sortUp : s_sortDown;
+        var bounds = source.Bounds;
+        var ox = offsetX + 6 - bounds.X - bounds.Width / 2;
+        var oy = rect.Height / 2 - bounds.Y - bounds.Height / 2;
+
+        foreach (var figure in source.Figures)
         {
-            // Down arrow
-            dc.DrawLine(arrowPen, new Point(centerX - 4, centerY - 2), new Point(centerX, centerY + 2));
-            dc.DrawLine(arrowPen, new Point(centerX, centerY + 2), new Point(centerX + 4, centerY - 2));
+            var tf = new PathFigure
+            {
+                StartPoint = new Point(figure.StartPoint.X + ox, figure.StartPoint.Y + oy),
+                IsClosed = figure.IsClosed,
+                IsFilled = false
+            };
+            foreach (var seg in figure.Segments)
+                if (seg is LineSegment ls)
+                    tf.Segments.Add(new LineSegment(new Point(ls.Point.X + ox, ls.Point.Y + oy), ls.IsStroked));
+            var geo = new PathGeometry();
+            geo.Figures.Add(tf);
+            dc.DrawGeometry(null, _sortIndicatorPen, geo);
         }
     }
 

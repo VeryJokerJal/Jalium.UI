@@ -44,6 +44,21 @@ typedef enum JaliumBackend {
     JALIUM_BACKEND_SOFTWARE = 99    ///< Software rasterizer
 } JaliumBackend;
 
+/// GPU adapter preference for multi-GPU systems.
+typedef enum JaliumGpuPreference {
+    JALIUM_GPU_PREFERENCE_AUTO = 0,             ///< Let the OS/driver decide (default)
+    JALIUM_GPU_PREFERENCE_HIGH_PERFORMANCE = 1, ///< Prefer discrete/high-performance GPU
+    JALIUM_GPU_PREFERENCE_MINIMUM_POWER = 2,    ///< Prefer integrated/low-power GPU
+} JaliumGpuPreference;
+
+/// GPU adapter type classification.
+typedef enum JaliumGpuAdapterType {
+    JALIUM_GPU_ADAPTER_TYPE_UNKNOWN = 0,     ///< Unknown or unclassified adapter
+    JALIUM_GPU_ADAPTER_TYPE_DISCRETE = 1,    ///< Discrete GPU (dedicated graphics card)
+    JALIUM_GPU_ADAPTER_TYPE_INTEGRATED = 2,  ///< Integrated GPU (on-CPU graphics)
+    JALIUM_GPU_ADAPTER_TYPE_SOFTWARE = 3,    ///< Software/WARP adapter
+} JaliumGpuAdapterType;
+
 /// Host platform identifier for native window/surface handles.
 typedef enum JaliumPlatform {
     JALIUM_PLATFORM_UNKNOWN = 0,
@@ -109,16 +124,45 @@ typedef enum JaliumTextTrimming {
     JALIUM_TEXT_TRIMMING_WORD_ELLIPSIS = 2     ///< Trim at word boundary with ellipsis
 } JaliumTextTrimming;
 
+/// Stroke line join styles.
+typedef enum JaliumLineJoin {
+    JALIUM_LINE_JOIN_MITER = 0,     ///< Sharp corner (default)
+    JALIUM_LINE_JOIN_BEVEL = 1,     ///< Flat corner
+    JALIUM_LINE_JOIN_ROUND = 2      ///< Rounded corner
+} JaliumLineJoin;
+
+/// Word wrapping options.
+typedef enum JaliumWordWrapping {
+    JALIUM_WORD_WRAP = 0,            ///< Wrap at word boundaries
+    JALIUM_WORD_WRAP_NONE = 1,       ///< No wrapping (single line)
+    JALIUM_WORD_WRAP_CHARACTER = 2,  ///< Wrap at character boundaries
+    JALIUM_WORD_WRAP_EMERGENCY = 3   ///< Wrap at word boundaries, break words if needed
+} JaliumWordWrapping;
+
+/// Text hit-test result.
+typedef struct JaliumTextHitTestResult {
+    uint32_t textPosition;   ///< Character index at the hit point
+    int32_t  isTrailingHit;  ///< Non-zero if hit is on the trailing edge of the character
+    int32_t  isInside;       ///< Non-zero if the point is inside the text layout
+    float    caretX;         ///< X position of the caret at this text position
+    float    caretY;         ///< Y position of the caret
+    float    caretHeight;    ///< Height of the caret
+} JaliumTextHitTestResult;
+
 // ============================================================================
 // Structures
 // ============================================================================
 
-/// Represents a color with RGBA components.
+/// Represents a color with RGBA components in sRGB gamma space.
+/// All backends expect colors in sRGB gamma (non-linear).  GPU backends
+/// (D3D12/Vulkan) use sRGB render-target views to convert to linear for
+/// blending and back to sRGB on write.  The software backend performs the
+/// sRGB↔linear conversion explicitly when blending or interpolating gradients.
 typedef struct JaliumColor {
-    float r;    ///< Red component (0.0 - 1.0)
-    float g;    ///< Green component (0.0 - 1.0)
-    float b;    ///< Blue component (0.0 - 1.0)
-    float a;    ///< Alpha component (0.0 - 1.0)
+    float r;    ///< Red component (0.0 - 1.0, sRGB gamma)
+    float g;    ///< Green component (0.0 - 1.0, sRGB gamma)
+    float b;    ///< Blue component (0.0 - 1.0, sRGB gamma)
+    float a;    ///< Alpha component (0.0 - 1.0, linear)
 } JaliumColor;
 
 /// Represents a point in 2D space.
@@ -148,13 +192,13 @@ typedef struct JaliumMatrix {
     float m31, m32;    ///< Third column (translation)
 } JaliumMatrix;
 
-/// Represents a gradient stop.
+/// Represents a gradient stop.  Color components are in sRGB gamma space.
 typedef struct JaliumGradientStop {
     float position;    ///< Position along the gradient (0.0 - 1.0)
-    float r;           ///< Red component
-    float g;           ///< Green component
-    float b;           ///< Blue component
-    float a;           ///< Alpha component
+    float r;           ///< Red component (sRGB gamma)
+    float g;           ///< Green component (sRGB gamma)
+    float b;           ///< Blue component (sRGB gamma)
+    float a;           ///< Alpha component (linear)
 } JaliumGradientStop;
 
 /// Represents text metrics for layout measurement.
@@ -168,6 +212,16 @@ typedef struct JaliumTextMetrics {
     float lineGap;         ///< The recommended line gap
     uint32_t lineCount;    ///< The number of lines in the layout
 } JaliumTextMetrics;
+
+/// Information about the selected GPU adapter.
+typedef struct JaliumAdapterInfo {
+    wchar_t name[128];              ///< Adapter description string
+    int32_t adapterType;            ///< JaliumGpuAdapterType value
+    uint64_t dedicatedVideoMemory;  ///< Dedicated video memory in bytes
+    uint64_t sharedSystemMemory;    ///< Shared system memory in bytes
+    uint32_t vendorId;              ///< PCI vendor ID
+    uint32_t deviceId;              ///< PCI device ID
+} JaliumAdapterInfo;
 
 /// Platform-neutral native surface descriptor.
 /// handle0/1/2 are backend/platform-specific payload slots (for example HWND,

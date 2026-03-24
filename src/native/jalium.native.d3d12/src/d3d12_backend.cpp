@@ -1,20 +1,38 @@
 #include "d3d12_backend.h"
 #include "d3d12_render_target.h"
 #include "d3d12_resources.h"
-#include "liquid_glass_effects.h"
-#include "transition_shader_effect.h"
 #include <cstdlib>
 #include <cwchar>
 #include <vector>
 
 #pragma comment(lib, "d3d12.lib")
 #pragma comment(lib, "dxgi.lib")
-#pragma comment(lib, "d3d11.lib")
-#pragma comment(lib, "d2d1.lib")
 #pragma comment(lib, "dwrite.lib")
 #pragma comment(lib, "windowscodecs.lib")
 
 namespace jalium {
+
+namespace {
+bool IsWarpForced()
+{
+    wchar_t* value = nullptr;
+    size_t valueLength = 0;
+    if (_wdupenv_s(&value, &valueLength, L"JALIUM_D3D12_FORCE_WARP") != 0 || !value || *value == L'\0') {
+        if (value) {
+            free(value);
+        }
+        return false;
+    }
+
+    bool enabled = _wcsicmp(value, L"1") == 0
+        || _wcsicmp(value, L"true") == 0
+        || _wcsicmp(value, L"yes") == 0
+        || _wcsicmp(value, L"on") == 0;
+
+    free(value);
+    return enabled;
+}
+}
 
 #if defined(_DEBUG)
 namespace {
@@ -22,6 +40,26 @@ bool IsGpuDebugEnabled() {
     wchar_t* value = nullptr;
     size_t valueLength = 0;
     if (_wdupenv_s(&value, &valueLength, L"JALIUM_ENABLE_GPU_DEBUG") != 0 || !value || *value == L'\0') {
+        if (value) {
+            free(value);
+        }
+        return false;
+    }
+
+    bool enabled = _wcsicmp(value, L"1") == 0
+        || _wcsicmp(value, L"true") == 0
+        || _wcsicmp(value, L"yes") == 0
+        || _wcsicmp(value, L"on") == 0;
+
+    free(value);
+    return enabled;
+}
+
+bool IsGpuValidationEnabled()
+{
+    wchar_t* value = nullptr;
+    size_t valueLength = 0;
+    if (_wdupenv_s(&value, &valueLength, L"JALIUM_ENABLE_GPU_VALIDATION") != 0 || !value || *value == L'\0') {
         if (value) {
             free(value);
         }
@@ -74,27 +112,14 @@ D3D12Backend::~D3D12Backend() {
     // Release in reverse order of creation
     wicFactory_.Reset();
     dwriteFactory_.Reset();
-    d2dDevice_.Reset();
-    d2dFactory_.Reset();
-    d3d11On12Device_.Reset();
-    d3d11Context_.Reset();
-    d3d11Device_.Reset();
     commandQueue_.Reset();
     device_.Reset();
     dxgiFactory_.Reset();
 }
 
 void D3D12Backend::ReleasePartialInit() {
-    // Clean up resources allocated during a partially-failed Initialize().
-    // Without this, successful sub-steps (e.g. CreateD3D12Device) would leak
-    // if a later sub-step (e.g. CreateD2DDevice) fails.
     wicFactory_.Reset();
     dwriteFactory_.Reset();
-    d2dDevice_.Reset();
-    d2dFactory_.Reset();
-    d3d11On12Device_.Reset();
-    d3d11Context_.Reset();
-    d3d11Device_.Reset();
     commandQueue_.Reset();
     device_.Reset();
     dxgiFactory_.Reset();
@@ -112,12 +137,24 @@ JaliumResult D3D12Backend::CheckDeviceStatus() {
 bool D3D12Backend::Initialize(void* preferredWindow) {
     if (initialized_) return true;
 
-    if (!CreateD3D12Device(preferredWindow)) {
-        return false;
+    // Read GPU preference from environment variable (zero ABI change approach)
+    gpuPrefFromEnv_ = JALIUM_GPU_PREFERENCE_AUTO;
+    {
+        wchar_t* val = nullptr;
+        size_t len = 0;
+        if (_wdupenv_s(&val, &len, L"JALIUM_GPU_PREFERENCE") == 0 && val && *val != L'\0') {
+            if (_wcsicmp(val, L"integrated") == 0 || _wcsicmp(val, L"igpu") == 0
+                || _wcsicmp(val, L"low") == 0 || _wcsicmp(val, L"minimum_power") == 0) {
+                gpuPrefFromEnv_ = JALIUM_GPU_PREFERENCE_MINIMUM_POWER;
+            } else if (_wcsicmp(val, L"discrete") == 0 || _wcsicmp(val, L"high") == 0
+                || _wcsicmp(val, L"high_performance") == 0) {
+                gpuPrefFromEnv_ = JALIUM_GPU_PREFERENCE_HIGH_PERFORMANCE;
+            }
+        }
+        if (val) free(val);
     }
 
-    if (!CreateD2DDevice()) {
-        ReleasePartialInit();
+    if (!CreateD3D12Device(preferredWindow)) {
         return false;
     }
 
@@ -138,12 +175,30 @@ bool D3D12Backend::Initialize(void* preferredWindow) {
 bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
     UINT dxgiFactoryFlags = 0;
 
+    // Always enable DRED (Device Removed Extended Data) so we can diagnose
+    // device-lost even in Release builds.  DRED has negligible overhead.
+    {
+        ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dredSettings;
+        if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings)))) {
+            dredSettings->SetAutoBreadcrumbsEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            dredSettings->SetPageFaultEnablement(D3D12_DRED_ENABLEMENT_FORCED_ON);
+            OutputDebugStringA("[D3D12Backend] DRED auto-breadcrumbs + page-fault enabled.\n");
+        }
+    }
+
 #if defined(_DEBUG)
     if (IsGpuDebugEnabled()) {
         ComPtr<ID3D12Debug> debugController;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController)))) {
             debugController->EnableDebugLayer();
             dxgiFactoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
+
+            ComPtr<ID3D12Debug1> debugController1;
+            if (IsGpuValidationEnabled() &&
+                SUCCEEDED(debugController.As(&debugController1))) {
+                debugController1->SetEnableGPUBasedValidation(TRUE);
+                OutputDebugStringA("[D3D12Backend] GPU-based validation enabled.\n");
+            }
         }
     }
 #endif
@@ -153,6 +208,18 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
     if (FAILED(hr)) {
         return false;
     }
+
+    auto tryCreateWarpDevice = [this]() -> bool {
+        ComPtr<IDXGIAdapter> warpAdapter;
+        if (FAILED(dxgiFactory_->EnumWarpAdapter(IID_PPV_ARGS(&warpAdapter)))) {
+            return false;
+        }
+
+        return SUCCEEDED(D3D12CreateDevice(
+            warpAdapter.Get(),
+            D3D_FEATURE_LEVEL_11_0,
+            IID_PPV_ARGS(&device_)));
+    };
 
     auto tryCreateDeviceForAdapter = [this](IDXGIAdapter1* adapter) -> bool {
         if (!adapter) {
@@ -165,47 +232,80 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
         }
 
         // Skip software adapters (WARP fallback can be added later if needed).
-        if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) {
+        // Check both the explicit flag AND the Microsoft vendor + zero VRAM heuristic,
+        // because some GPU-switching configurations expose WARP without the SOFTWARE flag.
+        bool isSoftwareAdapter = (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0;
+        if (!isSoftwareAdapter && desc.VendorId == 0x1414 && desc.DedicatedVideoMemory == 0) {
+            isSoftwareAdapter = true; // Microsoft Basic Render Driver without SOFTWARE flag
+        }
+        if (isSoftwareAdapter) {
             return false;
         }
 
-        return SUCCEEDED(D3D12CreateDevice(
-            adapter,
-            D3D_FEATURE_LEVEL_11_0,
-            IID_PPV_ARGS(&device_)));
+        HRESULT hrCreate = D3D12CreateDevice(
+                adapter,
+                D3D_FEATURE_LEVEL_11_0,
+                IID_PPV_ARGS(&device_));
+        return SUCCEEDED(hrCreate);
     };
 
-    HMONITOR preferredMonitor = nullptr;
-    if (preferredWindow != nullptr) {
-        preferredMonitor = MonitorFromWindow(static_cast<HWND>(preferredWindow), MONITOR_DEFAULTTONEAREST);
+    // Map JaliumGpuPreference to DXGI_GPU_PREFERENCE for adapter enumeration.
+    DXGI_GPU_PREFERENCE dxgiPref = DXGI_GPU_PREFERENCE_UNSPECIFIED;
+    bool hasExplicitPreference = false;
+    switch (gpuPrefFromEnv_) {
+    case JALIUM_GPU_PREFERENCE_HIGH_PERFORMANCE:
+        dxgiPref = DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE;
+        hasExplicitPreference = true;
+        break;
+    case JALIUM_GPU_PREFERENCE_MINIMUM_POWER:
+        dxgiPref = DXGI_GPU_PREFERENCE_MINIMUM_POWER;
+        hasExplicitPreference = true;
+        break;
+    default:
+        dxgiPref = DXGI_GPU_PREFERENCE_UNSPECIFIED;
+        break;
     }
 
-    if (preferredMonitor) {
-        for (UINT adapterIndex = 0;; ++adapterIndex) {
-            ComPtr<IDXGIAdapter1> adapter;
-            HRESULT hrEnum = dxgiFactory_->EnumAdapters1(adapterIndex, &adapter);
-            if (FAILED(hrEnum)) {
-                break;
-            }
+    // Strategy 0: Explicit WARP fallback (software D3D12 device).
+    if (IsWarpForced() && tryCreateWarpDevice()) {
+        OutputDebugStringA("[D3D12Backend] Using forced WARP adapter.\n");
+    }
 
-            if (!AdapterDrivesMonitor(adapter.Get(), preferredMonitor)) {
-                continue;
-            }
+    // Strategy 1: Monitor-associated adapter selection.
+    // Only used when no explicit GPU preference is set.
+    if (!device_ && !hasExplicitPreference) {
+        HMONITOR preferredMonitor = nullptr;
+        if (preferredWindow != nullptr) {
+            preferredMonitor = MonitorFromWindow(static_cast<HWND>(preferredWindow), MONITOR_DEFAULTTONEAREST);
+        }
 
-            if (tryCreateDeviceForAdapter(adapter.Get())) {
-                break;
+        if (preferredMonitor) {
+            for (UINT adapterIndex = 0;; ++adapterIndex) {
+                ComPtr<IDXGIAdapter1> adapter;
+                HRESULT hrEnum = dxgiFactory_->EnumAdapters1(adapterIndex, &adapter);
+                if (FAILED(hrEnum)) {
+                    break;
+                }
+
+                if (!AdapterDrivesMonitor(adapter.Get(), preferredMonitor)) {
+                    continue;
+                }
+
+                if (tryCreateDeviceForAdapter(adapter.Get())) {
+                    break;
+                }
             }
         }
     }
 
-    // Prefer OS GPU preference ordering (hybrid GPU aware), then fall back to legacy enumeration.
+    // Strategy 2: GPU preference ordering via DXGI 1.6.
     ComPtr<IDXGIFactory6> factory6;
     if (!device_ && SUCCEEDED(dxgiFactory_.As(&factory6))) {
         for (UINT adapterIndex = 0;; ++adapterIndex) {
             ComPtr<IDXGIAdapter1> adapter;
             HRESULT hrEnum = factory6->EnumAdapterByGpuPreference(
                 adapterIndex,
-                DXGI_GPU_PREFERENCE_UNSPECIFIED,
+                dxgiPref,
                 IID_PPV_ARGS(&adapter));
             if (FAILED(hrEnum)) {
                 break;
@@ -217,6 +317,7 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
         }
     }
 
+    // Strategy 3: Legacy enumeration fallback.
     if (!device_) {
         for (UINT adapterIndex = 0;; ++adapterIndex) {
             ComPtr<IDXGIAdapter1> adapter;
@@ -231,9 +332,25 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
         }
     }
 
+    // Strategy 4: Final WARP fallback when no hardware adapter can be created.
+    if (!device_ && tryCreateWarpDevice()) {
+        OutputDebugStringA("[D3D12Backend] Falling back to WARP adapter.\n");
+    }
+
     if (!device_) {
         return false;
     }
+
+#if defined(_DEBUG)
+    if (IsGpuDebugEnabled()) {
+        ComPtr<ID3D12InfoQueue> infoQueue;
+        if (SUCCEEDED(device_.As(&infoQueue))) {
+            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+            OutputDebugStringA("[D3D12Backend] InfoQueue break on corruption/error enabled.\n");
+        }
+    }
+#endif
 
     // Create command queue
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -243,79 +360,6 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
     hr = device_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue_));
     if (FAILED(hr)) {
         return false;
-    }
-
-    return true;
-}
-
-bool D3D12Backend::CreateD2DDevice() {
-    // Create D2D factory
-    D2D1_FACTORY_OPTIONS factoryOptions = {};
-#if defined(_DEBUG)
-    if (IsGpuDebugEnabled()) {
-        factoryOptions.debugLevel = D2D1_DEBUG_LEVEL_INFORMATION;
-    }
-#endif
-
-    HRESULT hr = D2D1CreateFactory(
-        D2D1_FACTORY_TYPE_SINGLE_THREADED,
-        __uuidof(ID2D1Factory3),
-        &factoryOptions,
-        reinterpret_cast<void**>(d2dFactory_.GetAddressOf()));
-
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    // Create D3D11on12 device
-    ComPtr<IUnknown> commandQueues[] = { commandQueue_.Get() };
-    UINT d3d11DeviceFlags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-#if defined(_DEBUG)
-    if (IsGpuDebugEnabled()) {
-        d3d11DeviceFlags |= D3D11_CREATE_DEVICE_DEBUG;
-    }
-#endif
-
-    hr = D3D11On12CreateDevice(
-        device_.Get(),
-        d3d11DeviceFlags,
-        nullptr, 0,  // Feature levels
-        reinterpret_cast<IUnknown**>(commandQueues),
-        1,
-        0,
-        &d3d11Device_,
-        &d3d11Context_,
-        nullptr);
-
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    hr = d3d11Device_.As(&d3d11On12Device_);
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    // Get DXGI device from D3D11 device
-    ComPtr<IDXGIDevice> dxgiDevice;
-    hr = d3d11Device_.As(&dxgiDevice);
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    // Create D2D device
-    hr = d2dFactory_->CreateDevice(dxgiDevice.Get(), &d2dDevice_);
-    if (FAILED(hr)) {
-        return false;
-    }
-
-    // Register custom D2D1 effects
-    ComPtr<ID2D1Factory1> factory1;
-    hr = d2dFactory_.As(&factory1);
-    if (SUCCEEDED(hr) && factory1) {
-        LiquidGlassEffect::Register(factory1.Get());
-        TransitionShaderEffect::Register(factory1.Get());
-        // Registration failure is non-fatal; effects will fall back gracefully
     }
 
     return true;

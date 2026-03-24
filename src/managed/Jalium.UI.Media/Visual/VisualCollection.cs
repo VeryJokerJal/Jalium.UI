@@ -100,6 +100,9 @@ public sealed class VisualCollection : IList<Visual>, IReadOnlyList<Visual>
     /// </summary>
     public void RemoveRange(int index, int count)
     {
+        if (index < 0 || count < 0 || index + count > _items.Count)
+            throw new ArgumentOutOfRangeException();
+
         for (int i = count - 1; i >= 0; i--)
         {
             RemoveAt(index + i);

@@ -6,6 +6,11 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#include <wincodec.h>
+#include <Shlwapi.h>
+#include <wrl/client.h>
+using Microsoft::WRL::ComPtr;
+#pragma comment(lib, "Shlwapi.lib")
 #endif
 
 #ifdef __APPLE__
@@ -27,6 +32,15 @@ static inline float Lerp(float a, float b, float t) {
     return a + (b - a) * t;
 }
 
+// sRGB ↔ linear conversion for perceptually correct blending and gradients.
+static inline float SrgbToLinear(float s) {
+    return (s <= 0.04045f) ? s / 12.92f : std::pow((s + 0.055f) / 1.055f, 2.4f);
+}
+
+static inline float LinearToSrgb(float l) {
+    return (l <= 0.0031308f) ? l * 12.92f : 1.055f * std::pow(l, 1.0f / 2.4f) - 0.055f;
+}
+
 static void InterpolateGradientStops(const std::vector<JaliumGradientStop>& stops, float t,
                                       float& r, float& g, float& b, float& a)
 {
@@ -46,9 +60,14 @@ static void InterpolateGradientStops(const std::vector<JaliumGradientStop>& stop
         if (t >= stops[i].position && t <= stops[i + 1].position) {
             float range = stops[i + 1].position - stops[i].position;
             float local = (range > 0) ? (t - stops[i].position) / range : 0;
-            r = Lerp(stops[i].r, stops[i + 1].r, local);
-            g = Lerp(stops[i].g, stops[i + 1].g, local);
-            b = Lerp(stops[i].b, stops[i + 1].b, local);
+            // Interpolate in linear light space for perceptually correct gradients,
+            // matching D2D's D2D1_GAMMA_2_2 gradient stop collection behavior.
+            float lr0 = SrgbToLinear(stops[i].r), lr1 = SrgbToLinear(stops[i + 1].r);
+            float lg0 = SrgbToLinear(stops[i].g), lg1 = SrgbToLinear(stops[i + 1].g);
+            float lb0 = SrgbToLinear(stops[i].b), lb1 = SrgbToLinear(stops[i + 1].b);
+            r = LinearToSrgb(Lerp(lr0, lr1, local));
+            g = LinearToSrgb(Lerp(lg0, lg1, local));
+            b = LinearToSrgb(Lerp(lb0, lb1, local));
             a = Lerp(stops[i].a, stops[i + 1].a, local);
             return;
         }
@@ -74,18 +93,30 @@ void SoftwareFramebuffer::BlendPixel(int32_t x, int32_t y, uint8_t r, uint8_t g,
     }
     if (a == 0) return;
 
-    // Alpha blending (premultiplied)
+    // Alpha blending using premultiplied alpha, matching D3D12/Metal behavior.
+    // Source (r,g,b,a) arrives as straight alpha; convert to premultiplied for blending.
     float sa = a / 255.0f;
-    float da = pixels[idx + 3] / 255.0f;
-    float outA = sa + da * (1 - sa);
+    float srcB = b * sa;
+    float srcG = g * sa;
+    float srcR = r * sa;
+
+    float dstA = pixels[idx + 3] / 255.0f;
+    float dstB = pixels[idx + 0] * dstA;  // stored straight → premultiply
+    float dstG = pixels[idx + 1] * dstA;
+    float dstR = pixels[idx + 2] * dstA;
+
+    float oneMinusSa = 1.0f - sa;
+    float outA = sa + dstA * oneMinusSa;
     if (outA < 0.001f) {
         pixels[idx + 0] = pixels[idx + 1] = pixels[idx + 2] = pixels[idx + 3] = 0;
         return;
     }
-    pixels[idx + 0] = (uint8_t)((b * sa + pixels[idx + 0] * da * (1 - sa)) / outA);
-    pixels[idx + 1] = (uint8_t)((g * sa + pixels[idx + 1] * da * (1 - sa)) / outA);
-    pixels[idx + 2] = (uint8_t)((r * sa + pixels[idx + 2] * da * (1 - sa)) / outA);
-    pixels[idx + 3] = (uint8_t)(outA * 255);
+    // Premultiplied blend: outPre = srcPre + dstPre * (1 - srcA), then un-premultiply.
+    float invOutA = 1.0f / outA;
+    pixels[idx + 0] = (uint8_t)std::clamp((srcB + dstB * oneMinusSa) * invOutA, 0.0f, 255.0f);
+    pixels[idx + 1] = (uint8_t)std::clamp((srcG + dstG * oneMinusSa) * invOutA, 0.0f, 255.0f);
+    pixels[idx + 2] = (uint8_t)std::clamp((srcR + dstR * oneMinusSa) * invOutA, 0.0f, 255.0f);
+    pixels[idx + 3] = (uint8_t)(outA * 255.0f + 0.5f);
 }
 
 void SoftwareFramebuffer::SetPixel(int32_t x, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
@@ -132,7 +163,43 @@ JaliumResult SoftwareTextFormat::MeasureText(
 {
     if (!metrics) return JALIUM_ERROR_INVALID_ARGUMENT;
 
-    // Approximate text measurement based on font metrics
+#ifdef _WIN32
+    // Use GDI for accurate text measurement
+    HDC hdc = CreateCompatibleDC(nullptr);
+    if (hdc) {
+        int fontHeight = -(int)(fontSize * 96.0f / 72.0f);
+        HFONT hFont = CreateFontW(fontHeight, 0, 0, 0,
+            fontWeight, (fontStyle == 1 || fontStyle == 2) ? TRUE : FALSE,
+            FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH,
+            fontFamily.c_str());
+        HGDIOBJ oldFont = SelectObject(hdc, hFont);
+
+        RECT rc = { 0, 0, maxWidth > 0 ? (LONG)maxWidth : 10000, maxHeight > 0 ? (LONG)maxHeight : 10000 };
+        UINT dtFlags = DT_CALCRECT | DT_WORDBREAK;
+        DrawTextW(hdc, text, textLength, &rc, dtFlags);
+
+        TEXTMETRICW tm;
+        GetTextMetricsW(hdc, &tm);
+
+        metrics->width = (float)(rc.right - rc.left);
+        metrics->height = (float)(rc.bottom - rc.top);
+        metrics->lineHeight = (float)tm.tmHeight;
+        metrics->baseline = (float)tm.tmAscent;
+        metrics->ascent = (float)tm.tmAscent;
+        metrics->descent = (float)tm.tmDescent;
+        metrics->lineGap = (float)tm.tmExternalLeading;
+        metrics->lineCount = (metrics->lineHeight > 0) ? (uint32_t)(metrics->height / metrics->lineHeight) : 1;
+        if (metrics->lineCount == 0) metrics->lineCount = 1;
+
+        SelectObject(hdc, oldFont);
+        DeleteObject(hFont);
+        DeleteDC(hdc);
+        return JALIUM_OK;
+    }
+#endif
+
+    // Fallback: approximate text measurement based on font metrics
     float charWidth = fontSize * 0.6f;
     float lineHeight = fontSize * 1.2f;
     float ascent = fontSize * 0.8f;
@@ -188,7 +255,14 @@ SoftwareRenderTarget::SoftwareRenderTarget(int32_t width, int32_t height)
     currentTransform_ = SoftwareTransform::Identity();
 }
 
-SoftwareRenderTarget::~SoftwareRenderTarget() = default;
+SoftwareRenderTarget::~SoftwareRenderTarget() {
+#ifdef _WIN32
+    if (cachedTextDC_) {
+        DeleteDC(static_cast<HDC>(cachedTextDC_));
+        cachedTextDC_ = nullptr;
+    }
+#endif
+}
 
 JaliumResult SoftwareRenderTarget::Resize(int32_t width, int32_t height)
 {
@@ -407,17 +481,69 @@ void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float
 void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth)
 {
     if (!brush) return;
-    // Approximate rounded rect stroke with fill + inner clear
-    FillRoundedRectangle(x, y, w, h, rx, ry, brush);
-    // Punch inner
+    rx = std::min(rx, w * 0.5f);
+    ry = std::min(ry, h * 0.5f);
     float sw = strokeWidth;
     float innerRx = std::max(0.0f, rx - sw);
     float innerRy = std::max(0.0f, ry - sw);
 
-    // Save and create a "clear" brush is complex — use simple overlay approach
-    // For stroke, re-fill the inner area with the background (approximate)
-    // This is a simplified approach; a production implementation would use scanline edge tracking
-    (void)innerRx; (void)innerRy;
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
+    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+    int32_t isw = (int32_t)(sw + 0.5f);
+
+    // Rasterize only the stroke ring by testing outer and inner rounded rects
+    for (int32_t row = 0; row < ih; row++) {
+        for (int32_t col = 0; col < iw; col++) {
+            float cx = (float)col, cy = (float)row;
+            // Check if inside outer rounded rect
+            bool insideOuter = true;
+            if (cx < rx && cy < ry) {
+                float dx = (cx - rx) / rx; float dy = (cy - ry) / ry;
+                insideOuter = (dx * dx + dy * dy) <= 1.0f;
+            } else if (cx > w - rx && cy < ry) {
+                float dx = (cx - (w - rx)) / rx; float dy = (cy - ry) / ry;
+                insideOuter = (dx * dx + dy * dy) <= 1.0f;
+            } else if (cx < rx && cy > h - ry) {
+                float dx = (cx - rx) / rx; float dy = (cy - (h - ry)) / ry;
+                insideOuter = (dx * dx + dy * dy) <= 1.0f;
+            } else if (cx > w - rx && cy > h - ry) {
+                float dx = (cx - (w - rx)) / rx; float dy = (cy - (h - ry)) / ry;
+                insideOuter = (dx * dx + dy * dy) <= 1.0f;
+            }
+            if (!insideOuter) continue;
+
+            // Check if outside inner rounded rect (i.e., in the stroke ring)
+            float icx = cx - sw, icy = cy - sw;
+            float innerW = w - sw * 2, innerH = h - sw * 2;
+            bool insideInner = false;
+            if (innerW > 0 && innerH > 0 && icx >= 0 && icy >= 0 && icx <= innerW && icy <= innerH) {
+                insideInner = true;
+                if (icx < innerRx && icy < innerRy && innerRx > 0 && innerRy > 0) {
+                    float dx = (icx - innerRx) / innerRx; float dy = (icy - innerRy) / innerRy;
+                    insideInner = (dx * dx + dy * dy) <= 1.0f;
+                } else if (icx > innerW - innerRx && icy < innerRy && innerRx > 0 && innerRy > 0) {
+                    float dx = (icx - (innerW - innerRx)) / innerRx; float dy = (icy - innerRy) / innerRy;
+                    insideInner = (dx * dx + dy * dy) <= 1.0f;
+                } else if (icx < innerRx && icy > innerH - innerRy && innerRx > 0 && innerRy > 0) {
+                    float dx = (icx - innerRx) / innerRx; float dy = (icy - (innerH - innerRy)) / innerRy;
+                    insideInner = (dx * dx + dy * dy) <= 1.0f;
+                } else if (icx > innerW - innerRx && icy > innerH - innerRy && innerRx > 0 && innerRy > 0) {
+                    float dx = (icx - (innerW - innerRx)) / innerRx; float dy = (icy - (innerH - innerRy)) / innerRy;
+                    insideInner = (dx * dx + dy * dy) <= 1.0f;
+                }
+            }
+
+            if (!insideInner) {
+                int32_t fx = ix + col, fy = iy + row;
+                if (!clipStack_.empty() && IsClipped((float)fx, (float)fy)) continue;
+                uint8_t r, g, b, a;
+                GetBrushColor(brush, (float)fx, (float)fy, r, g, b, a);
+                fb_.BlendPixel(fx, fy, r, g, b, a);
+            }
+        }
+    }
 }
 
 void SoftwareRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush)
@@ -488,59 +614,107 @@ void SoftwareRenderTarget::FillPolygon(const float* points, uint32_t pointCount,
 {
     if (!brush || pointCount < 3) return;
 
-    // Scanline fill using even-odd or winding rule
-    float minY = points[1], maxY = points[1];
-    float minX = points[0], maxX = points[0];
-    for (uint32_t i = 1; i < pointCount; i++) {
-        float px = points[i * 2], py = points[i * 2 + 1];
-        float tx, ty;
-        currentTransform_.Apply(px, py, tx, ty);
-        minX = std::min(minX, tx); maxX = std::max(maxX, tx);
-        minY = std::min(minY, ty); maxY = std::max(maxY, ty);
-    }
-
-    // Transform all points
+    // Transform all points first
     std::vector<float> tpts(pointCount * 2);
     for (uint32_t i = 0; i < pointCount; i++) {
         currentTransform_.Apply(points[i * 2], points[i * 2 + 1], tpts[i * 2], tpts[i * 2 + 1]);
     }
 
+    // Compute bounding box from transformed points
+    float minX = tpts[0], maxX = tpts[0];
+    float minY = tpts[1], maxY = tpts[1];
+    for (uint32_t i = 1; i < pointCount; i++) {
+        minX = std::min(minX, tpts[i * 2]);
+        maxX = std::max(maxX, tpts[i * 2]);
+        minY = std::min(minY, tpts[i * 2 + 1]);
+        maxY = std::max(maxY, tpts[i * 2 + 1]);
+    }
+
     int32_t iy0 = (int32_t)minY, iy1 = (int32_t)(maxY + 1);
     iy0 = std::max(iy0, 0); iy1 = std::min(iy1, height_);
 
+    bool useWinding = (fillRule == 1);
+
     for (int32_t scanY = iy0; scanY < iy1; scanY++) {
         float sy = (float)scanY + 0.5f;
-        std::vector<float> intersections;
 
-        for (uint32_t i = 0; i < pointCount; i++) {
-            uint32_t j = (i + 1) % pointCount;
-            float y0 = tpts[i * 2 + 1], y1 = tpts[j * 2 + 1];
-            float x0 = tpts[i * 2], x1 = tpts[j * 2];
+        if (useWinding) {
+            // Winding number rule: track crossing directions
+            std::vector<std::pair<float, int>> crossings; // (x, direction)
+            for (uint32_t i = 0; i < pointCount; i++) {
+                uint32_t j = (i + 1) % pointCount;
+                float y0 = tpts[i * 2 + 1], y1 = tpts[j * 2 + 1];
+                float x0 = tpts[i * 2], x1 = tpts[j * 2];
 
-            if ((y0 <= sy && y1 > sy) || (y1 <= sy && y0 > sy)) {
-                float t = (sy - y0) / (y1 - y0);
-                intersections.push_back(x0 + t * (x1 - x0));
+                if ((y0 <= sy && y1 > sy) || (y1 <= sy && y0 > sy)) {
+                    float t = (sy - y0) / (y1 - y0);
+                    float ix = x0 + t * (x1 - x0);
+                    int dir = (y1 > y0) ? 1 : -1;
+                    crossings.push_back({ix, dir});
+                }
             }
-        }
+            std::sort(crossings.begin(), crossings.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
 
-        std::sort(intersections.begin(), intersections.end());
+            int winding = 0;
+            for (size_t i = 0; i < crossings.size(); i++) {
+                int prevWinding = winding;
+                winding += crossings[i].second;
+                // Fill when winding number transitions to/from zero
+                if (prevWinding == 0 && winding != 0) {
+                    // Start of filled span
+                } else if (prevWinding != 0 && winding == 0 && i > 0) {
+                    // Find the start of this span
+                    float spanStart = crossings[i - 1].first;
+                    // Backtrack to find where winding became non-zero
+                    int w2 = 0;
+                    for (size_t k = 0; k <= i; k++) {
+                        int prev2 = w2;
+                        w2 += crossings[k].second;
+                        if (prev2 == 0 && w2 != 0) {
+                            spanStart = crossings[k].first;
+                        }
+                    }
+                    int32_t xStart = std::max(0, (int32_t)spanStart);
+                    int32_t xEnd = std::min(width_ - 1, (int32_t)crossings[i].first);
+                    for (int32_t x = xStart; x <= xEnd; x++) {
+                        if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
+                        uint8_t r, g, b, a;
+                        GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
+                        fb_.BlendPixel(x, scanY, r, g, b, a);
+                    }
+                }
+            }
+        } else {
+            // Even-odd rule (original behavior)
+            std::vector<float> intersections;
+            for (uint32_t i = 0; i < pointCount; i++) {
+                uint32_t j = (i + 1) % pointCount;
+                float y0 = tpts[i * 2 + 1], y1 = tpts[j * 2 + 1];
+                float x0 = tpts[i * 2], x1 = tpts[j * 2];
 
-        for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
-            int32_t xStart = std::max(0, (int32_t)intersections[i]);
-            int32_t xEnd = std::min(width_ - 1, (int32_t)intersections[i + 1]);
-            for (int32_t x = xStart; x <= xEnd; x++) {
-                if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
-                uint8_t r, g, b, a;
-                GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
-                fb_.BlendPixel(x, scanY, r, g, b, a);
+                if ((y0 <= sy && y1 > sy) || (y1 <= sy && y0 > sy)) {
+                    float t = (sy - y0) / (y1 - y0);
+                    intersections.push_back(x0 + t * (x1 - x0));
+                }
+            }
+            std::sort(intersections.begin(), intersections.end());
+
+            for (size_t i = 0; i + 1 < intersections.size(); i += 2) {
+                int32_t xStart = std::max(0, (int32_t)intersections[i]);
+                int32_t xEnd = std::min(width_ - 1, (int32_t)intersections[i + 1]);
+                for (int32_t x = xStart; x <= xEnd; x++) {
+                    if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
+                    uint8_t r, g, b, a;
+                    GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
+                    fb_.BlendPixel(x, scanY, r, g, b, a);
+                }
             }
         }
     }
-
-    (void)fillRule;
 }
 
-void SoftwareRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed)
+void SoftwareRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit)
 {
     if (!brush || pointCount < 2) return;
     uint8_t r, g, b, a;
@@ -581,7 +755,7 @@ void SoftwareRenderTarget::FillPath(float startX, float startY, const float* com
             float cp2x = commands[i + 3], cp2y = commands[i + 4];
             float ex = commands[i + 5], ey = commands[i + 6];
 
-            const int segments = 8;
+            const int segments = 24;
             for (int s = 1; s <= segments; s++) {
                 float t = (float)s / segments;
                 float it = 1 - t;
@@ -591,6 +765,28 @@ void SoftwareRenderTarget::FillPath(float startX, float startY, const float* com
                 flatPoints.push_back(by);
             }
             i += 7;
+        } else if (tag == 2 && i + 2 < commandLength) {
+            // MoveTo: new sub-path — for software backend, just add points inline
+            flatPoints.push_back(commands[i + 1]);
+            flatPoints.push_back(commands[i + 2]);
+            i += 3;
+        } else if (tag == 3 && i + 4 < commandLength) {
+            // QuadTo: flatten quadratic bezier
+            float px = flatPoints[flatPoints.size() - 2];
+            float py = flatPoints[flatPoints.size() - 1];
+            float cpx = commands[i + 1], cpy = commands[i + 2];
+            float ex = commands[i + 3], ey = commands[i + 4];
+            const int segments = 16;
+            for (int s = 1; s <= segments; s++) {
+                float t = (float)s / segments;
+                float it = 1 - t;
+                flatPoints.push_back(it * it * px + 2 * it * t * cpx + t * t * ex);
+                flatPoints.push_back(it * it * py + 2 * it * t * cpy + t * t * ey);
+            }
+            i += 5;
+        } else if (tag == 5) {
+            // ClosePath — no-op for fill
+            i += 1;
         } else {
             break;
         }
@@ -599,7 +795,7 @@ void SoftwareRenderTarget::FillPath(float startX, float startY, const float* com
     FillPolygon(flatPoints.data(), (uint32_t)(flatPoints.size() / 2), brush, fillRule);
 }
 
-void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed)
+void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap)
 {
     if (!brush) return;
 
@@ -622,7 +818,7 @@ void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* c
             float cp2x = commands[i + 3], cp2y = commands[i + 4];
             float ex = commands[i + 5], ey = commands[i + 6];
 
-            const int segments = 8;
+            const int segments = 24;
             for (int s = 1; s <= segments; s++) {
                 float t = (float)s / segments;
                 float it = 1 - t;
@@ -632,6 +828,29 @@ void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* c
                 flatPoints.push_back(by);
             }
             i += 7;
+        } else if (tag == 2 && i + 2 < commandLength) {
+            // MoveTo: new sub-path
+            flatPoints.push_back(commands[i + 1]);
+            flatPoints.push_back(commands[i + 2]);
+            i += 3;
+        } else if (tag == 3 && i + 4 < commandLength) {
+            // QuadTo: flatten quadratic bezier
+            float px = flatPoints[flatPoints.size() - 2];
+            float py = flatPoints[flatPoints.size() - 1];
+            float cpx = commands[i + 1], cpy = commands[i + 2];
+            float ex = commands[i + 3], ey = commands[i + 4];
+            const int segments = 16;
+            for (int s = 1; s <= segments; s++) {
+                float t = (float)s / segments;
+                float it = 1 - t;
+                flatPoints.push_back(it * it * px + 2 * it * t * cpx + t * t * ex);
+                flatPoints.push_back(it * it * py + 2 * it * t * cpy + t * t * ey);
+            }
+            i += 5;
+        } else if (tag == 5) {
+            // ClosePath
+            closed = true;
+            i += 1;
         } else {
             break;
         }
@@ -681,14 +900,18 @@ void SoftwareRenderTarget::RenderText(
 
     // Use platform text rendering if available, otherwise draw placeholder rectangles
 #if defined(_WIN32)
-    // Use GDI for text rendering
+    // Use GDI for text rendering with cached HDC
     uint8_t r, g, b, a;
     GetBrushColor(brush, x, y, r, g, b, a);
 
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
 
-    HDC hdc = CreateCompatibleDC(nullptr);
+    if (!cachedTextDC_) {
+        cachedTextDC_ = CreateCompatibleDC(nullptr);
+    }
+    HDC hdc = static_cast<HDC>(cachedTextDC_);
+    if (!hdc) return;
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = (int32_t)w;
@@ -746,7 +969,6 @@ void SoftwareRenderTarget::RenderText(
         SelectObject(hdc, oldBm);
         DeleteObject(hbm);
     }
-    DeleteDC(hdc);
 #else
     // Fallback: draw placeholder rectangles representing text bounds
     auto* solid = dynamic_cast<SoftwareSolidBrush*>(brush);
@@ -815,9 +1037,24 @@ void SoftwareRenderTarget::PopClip()
 
 void SoftwareRenderTarget::PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry)
 {
-    // Approximate as rectangle clip (proper implementation would need per-pixel masking)
-    PushClip(x, y, w, h);
-    (void)rx; (void)ry;
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+
+    SoftwareClipRect clip;
+    if (!clipStack_.empty()) {
+        auto& top = clipStack_.top();
+        clip.x = std::max(tx, top.x);
+        clip.y = std::max(ty, top.y);
+        float right = std::min(tx + w, top.x + top.w);
+        float bottom = std::min(ty + h, top.y + top.h);
+        clip.w = std::max(0.0f, right - clip.x);
+        clip.h = std::max(0.0f, bottom - clip.y);
+    } else {
+        clip = {tx, ty, w, h};
+    }
+    clip.rx = rx;
+    clip.ry = ry;
+    clipStack_.push(clip);
 }
 
 void SoftwareRenderTarget::PunchTransparentRect(float x, float y, float w, float h)
@@ -846,6 +1083,8 @@ void SoftwareRenderTarget::PopOpacity()
     currentOpacity_ = opacityStack_.top();
     opacityStack_.pop();
 }
+
+void SoftwareRenderTarget::SetShapeType(int /*type*/, float /*n*/) {}
 
 void SoftwareRenderTarget::SetVSyncEnabled(bool enabled)
 {
@@ -1038,10 +1277,44 @@ Bitmap* SoftwareBackend::CreateBitmapFromMemory(const uint8_t* data, uint32_t da
 
 #ifdef _WIN32
     // Use WIC to decode image data
-    // For simplicity, handle basic BMP/PNG header detection
-    // A production implementation would use WIC or stb_image
-    (void)dataSize;
-    return nullptr;
+    ComPtr<IWICImagingFactory> wicFactory;
+    HRESULT hr = CoCreateInstance(
+        CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
+        IID_PPV_ARGS(&wicFactory));
+    if (FAILED(hr) || !wicFactory) return nullptr;
+
+    ComPtr<IStream> stream;
+    stream.Attach(SHCreateMemStream(data, dataSize));
+    if (!stream) return nullptr;
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    hr = wicFactory->CreateDecoderFromStream(
+        stream.Get(), nullptr, WICDecodeMetadataCacheOnDemand, &decoder);
+    if (FAILED(hr) || !decoder) return nullptr;
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    hr = decoder->GetFrame(0, &frame);
+    if (FAILED(hr) || !frame) return nullptr;
+
+    ComPtr<IWICFormatConverter> converter;
+    hr = wicFactory->CreateFormatConverter(&converter);
+    if (FAILED(hr) || !converter) return nullptr;
+
+    hr = converter->Initialize(
+        frame.Get(), GUID_WICPixelFormat32bppBGRA,
+        WICBitmapDitherTypeNone, nullptr, 0.0, WICBitmapPaletteTypeCustom);
+    if (FAILED(hr)) return nullptr;
+
+    UINT width = 0, height = 0;
+    converter->GetSize(&width, &height);
+    if (width == 0 || height == 0) return nullptr;
+
+    std::vector<uint8_t> pixels(width * height * 4);
+    hr = converter->CopyPixels(
+        nullptr, width * 4, (UINT)pixels.size(), pixels.data());
+    if (FAILED(hr)) return nullptr;
+
+    return new SoftwareBitmap(width, height, std::move(pixels));
 #else
     (void)dataSize;
     return nullptr;

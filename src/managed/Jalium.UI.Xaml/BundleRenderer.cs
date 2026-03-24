@@ -341,16 +341,19 @@ public sealed class BundleRenderer
     {
         // Apply transform if present
         bool hasTransform = node.TransformIndex > 0 &&
+                            (int)node.TransformIndex >= 0 &&
                             node.TransformIndex * 6 + 5 < _bundle.Transforms.Length;
-
-        if (hasTransform)
-        {
-            var matrix = GetTransformMatrix(node.TransformIndex);
-            dc.PushTransform(new MatrixTransform(matrix));
-        }
+        bool pushed = false;
 
         try
         {
+            if (hasTransform)
+            {
+                var matrix = GetTransformMatrix(node.TransformIndex);
+                dc.PushTransform(new MatrixTransform(matrix));
+                pushed = true;
+            }
+
             switch (node)
             {
                 case RectNode rect:
@@ -372,7 +375,7 @@ public sealed class BundleRenderer
         }
         finally
         {
-            if (hasTransform)
+            if (pushed)
             {
                 dc.Pop();
             }

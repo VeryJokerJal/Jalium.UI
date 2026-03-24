@@ -31,10 +31,17 @@
   </PropertyGroup>
 
   <PropertyGroup>
+    <!--
+      Inside Visual Studio, the native vcxproj projects are usually already part of the
+      active solution build. Default to skipping the extra nested native build there to
+      avoid duplicate MSBuild/link invocations fighting over the same PDBs.
+    -->
+    <BuildJaliumNativeProjects Condition="'$(BuildJaliumNativeProjects)' == '' and '$(BuildingInsideVisualStudio)' == 'true'">false</BuildJaliumNativeProjects>
     <BuildJaliumNativeProjects Condition="'$(BuildJaliumNativeProjects)' == ''">true</BuildJaliumNativeProjects>
     <JaliumNativeRootPath Condition="'$(JaliumNativeRootPath)' == ''">$(MSBuildProjectDirectory)\..\..\native</JaliumNativeRootPath>
     <JaliumNativeConfiguration Condition="'$(JaliumNativeConfiguration)' == ''">$(Configuration)</JaliumNativeConfiguration>
     <JaliumNativePlatform Condition="'$(JaliumNativePlatform)' == ''">x64</JaliumNativePlatform>
+    <BuildJaliumNativeStaticProjects Condition="'$(BuildJaliumNativeStaticProjects)' == '' and '$(BuildingInsideVisualStudio)' == 'true'">false</BuildJaliumNativeStaticProjects>
     <BuildJaliumNativeStaticProjects Condition="'$(BuildJaliumNativeStaticProjects)' == ''">true</BuildJaliumNativeStaticProjects>
     <JaliumNativeStaticConfiguration Condition="'$(JaliumNativeStaticConfiguration)' == ''">Release</JaliumNativeStaticConfiguration>
     <JaliumNativeStaticPlatform Condition="'$(JaliumNativeStaticPlatform)' == ''">x64</JaliumNativeStaticPlatform>
@@ -59,6 +66,8 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.Build.Framework" Version="18.3.3" ExcludeAssets="runtime" />
     <PackageReference Include="Microsoft.Build.Utilities.Core" Version="18.3.3" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="5.0.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.Common" Version="5.0.0" />
   </ItemGroup>
 
   <Target Name="BuildJalxamlCompilerBeforePack" BeforeTargets="GenerateNuspec">

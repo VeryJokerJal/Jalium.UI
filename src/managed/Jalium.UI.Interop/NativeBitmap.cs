@@ -146,7 +146,11 @@ public sealed class NativeBitmap : IDisposable
 
     ~NativeBitmap()
     {
-        _disposed = true;
+        if (_handle != nint.Zero)
+        {
+            NativeMethods.BitmapDestroy(_handle);
+        }
         _handle = nint.Zero;
+        _disposed = true;
     }
 }

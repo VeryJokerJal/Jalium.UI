@@ -63,7 +63,7 @@ public sealed class KeyEventArgs : InputEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is KeyEventHandler keyHandler)
         {

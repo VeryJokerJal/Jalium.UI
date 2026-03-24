@@ -165,9 +165,11 @@ public sealed class RenderGraph
             }
         }
 
-        // 如果有环或未排序完全，保持原始顺序
+        // 如果有环或未排序完全，记录警告并保持原始顺序
         if (sorted.Count < _passes.Count)
         {
+            System.Diagnostics.Debug.WriteLine(
+                $"[RenderGraph] Topological sort incomplete: {sorted.Count}/{_passes.Count} passes sorted. Possible cycle detected — using original order.");
             return new List<RenderPass>(_passes);
         }
 

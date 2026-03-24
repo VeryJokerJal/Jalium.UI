@@ -93,6 +93,48 @@ JALIUM_API void jalium_text_format_set_trimming(JaliumTextFormat* format, int32_
     }
 }
 
+JALIUM_API void jalium_text_format_set_word_wrapping(JaliumTextFormat* format, int32_t wrapping) {
+    if (format) {
+        reinterpret_cast<jalium::TextFormat*>(format)->SetWordWrapping(wrapping);
+    }
+}
+
+JALIUM_API void jalium_text_format_set_line_spacing(JaliumTextFormat* format, int32_t method, float spacing, float baseline) {
+    if (format) {
+        reinterpret_cast<jalium::TextFormat*>(format)->SetLineSpacing(method, spacing, baseline);
+    }
+}
+
+JALIUM_API void jalium_text_format_set_max_lines(JaliumTextFormat* format, uint32_t maxLines) {
+    if (format) {
+        reinterpret_cast<jalium::TextFormat*>(format)->SetMaxLines(maxLines);
+    }
+}
+
+JALIUM_API JaliumResult jalium_text_format_hit_test_point(
+    JaliumTextFormat* format,
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    float pointX, float pointY,
+    JaliumTextHitTestResult* result)
+{
+    if (!format || !text || !result) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return reinterpret_cast<jalium::TextFormat*>(format)->HitTestPoint(
+        text, textLength, maxWidth, maxHeight, pointX, pointY, result);
+}
+
+JALIUM_API JaliumResult jalium_text_format_hit_test_text_position(
+    JaliumTextFormat* format,
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight,
+    uint32_t textPosition, int32_t isTrailingHit,
+    JaliumTextHitTestResult* result)
+{
+    if (!format || !text || !result) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return reinterpret_cast<jalium::TextFormat*>(format)->HitTestTextPosition(
+        text, textLength, maxWidth, maxHeight, textPosition, isTrailingHit, result);
+}
+
 JALIUM_API JaliumResult jalium_text_format_measure_text(
     JaliumTextFormat* format,
     const wchar_t* text,

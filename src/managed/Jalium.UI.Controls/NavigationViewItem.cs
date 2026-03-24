@@ -563,6 +563,7 @@ public class NavigationViewItem : ContentControl
 
         var rotateTransform = _chevron.RenderTransform as RotateTransform ?? new RotateTransform();
         rotateTransform.Angle = angle;
+        _chevron.RenderTransformOrigin = new Point(0.5, 0.5);
         _chevron.RenderTransform = rotateTransform;
         _chevron.InvalidateVisual();
     }

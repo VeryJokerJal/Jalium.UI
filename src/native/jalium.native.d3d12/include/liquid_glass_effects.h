@@ -31,10 +31,10 @@ struct LiquidGlassConstants {
     float vibrancy;              // Saturation enhancement (default 1.5)
     float tintR, tintG, tintB;
 
-    // Register 3: Tint opacity + highlight + light direction
+    // Register 3: Tint opacity + highlight + light position (screen-space)
     float tintOpacity;
     float highlightOpacity;      // Edge highlight (default 0.55)
-    float lightDirX, lightDirY;  // Light direction (default 0, -1)
+    float lightPosX, lightPosY;  // Screen-space light position (-1 = no mouse, use dual-corner)
 
     // Register 4: Shadow parameters
     float shadowOffset;          // Downward offset (default 3)
@@ -123,7 +123,7 @@ public:
     HRESULT SetTintColor(D2D1_VECTOR_4F value);
     D2D1_VECTOR_4F GetTintColor() const;
 
-    // Property 3: TintAndHighlight (float4: tintOpacity, highlightOpacity, lightDirX, lightDirY)
+    // Property 3: TintAndHighlight (float4: tintOpacity, highlightOpacity, lightPosX, lightPosY)
     HRESULT SetTintAndHighlight(D2D1_VECTOR_4F value);
     D2D1_VECTOR_4F GetTintAndHighlight() const;
 

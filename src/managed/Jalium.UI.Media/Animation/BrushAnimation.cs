@@ -116,11 +116,12 @@ public sealed class BrushAnimation : AnimationTimeline<Brush>
 
     private static Color LerpColor(Color from, Color to, double progress)
     {
-        return Color.FromArgb(
-            (byte)Math.Round(Lerp(from.A, to.A, progress)),
-            (byte)Math.Round(Lerp(from.R, to.R, progress)),
-            (byte)Math.Round(Lerp(from.G, to.G, progress)),
-            (byte)Math.Round(Lerp(from.B, to.B, progress)));
+        // Interpolate in linear light space for perceptually correct transitions.
+        float a = (float)Lerp(from.ScA, to.ScA, progress);
+        float r = (float)Lerp(from.ScR, to.ScR, progress);
+        float g = (float)Lerp(from.ScG, to.ScG, progress);
+        float b = (float)Lerp(from.ScB, to.ScB, progress);
+        return Color.FromScRgb(a, r, g, b);
     }
 
     private static double Lerp(double from, double to, double progress)

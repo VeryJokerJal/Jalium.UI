@@ -24,7 +24,7 @@ public abstract class ImageSource
 /// <summary>
 /// Represents a bitmap image source.
 /// </summary>
-public sealed class BitmapImage : ImageSource
+public sealed class BitmapImage : ImageSource, IDisposable
 {
     private nint _nativeHandle;
     private double _width;
@@ -33,6 +33,7 @@ public sealed class BitmapImage : ImageSource
     private byte[]? _imageData;
     private byte[]? _rawPixelData;
     private int _pixelStride;
+    private CancellationTokenSource? _httpCts;
 
     /// <summary>
     /// Occurs when the image has been loaded from a remote source.
@@ -87,6 +88,11 @@ public sealed class BitmapImage : ImageSource
         get => _uriSource;
         set
         {
+            // Cancel any in-flight HTTP load before starting a new one
+            _httpCts?.Cancel();
+            _httpCts?.Dispose();
+            _httpCts = null;
+
             _uriSource = value;
             if (value != null)
             {
@@ -166,17 +172,21 @@ public sealed class BitmapImage : ImageSource
         else if (uri.Scheme == "http" || uri.Scheme == "https")
         {
             // Load asynchronously from HTTP/HTTPS URL
-            _ = LoadFromHttpAsync(uri);
+            var cts = new CancellationTokenSource();
+            _httpCts = cts;
+            _ = LoadFromHttpAsync(uri, cts.Token);
         }
     }
 
-    private async Task LoadFromHttpAsync(Uri uri)
+    private async Task LoadFromHttpAsync(Uri uri, CancellationToken cancellationToken)
     {
         try
         {
             var dispatcher = Dispatcher.CurrentDispatcher;
             using var httpClient = new System.Net.Http.HttpClient();
-            var bytes = await httpClient.GetByteArrayAsync(uri).ConfigureAwait(false);
+            var bytes = await httpClient.GetByteArrayAsync(uri, cancellationToken).ConfigureAwait(false);
+
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (dispatcher != null)
             {
@@ -186,6 +196,10 @@ public sealed class BitmapImage : ImageSource
             {
                 LoadFromBytes(bytes);
             }
+        }
+        catch (OperationCanceledException)
+        {
+            // Load was cancelled (URI changed or object disposed)
         }
         catch
         {
@@ -249,7 +263,7 @@ public sealed class BitmapImage : ImageSource
         {
             // JPEG: need to parse markers to find SOF
             int offset = 2;
-            while (offset < data.Length - 8)
+            while (offset < data.Length - 1)
             {
                 if (data[offset] != 0xFF)
                 {
@@ -257,17 +271,26 @@ public sealed class BitmapImage : ImageSource
                     continue;
                 }
 
+                if (offset + 1 >= data.Length)
+                    break;
+
                 byte marker = data[offset + 1];
 
                 // SOF0, SOF1, SOF2 (Start of Frame markers)
                 if (marker == 0xC0 || marker == 0xC1 || marker == 0xC2)
                 {
+                    if (offset + 8 >= data.Length)
+                        break;
+
                     height = (data[offset + 5] << 8) | data[offset + 6];
                     width = (data[offset + 7] << 8) | data[offset + 8];
                     return true;
                 }
 
                 // Skip to next marker
+                if (offset + 3 >= data.Length)
+                    break;
+
                 int length = (data[offset + 2] << 8) | data[offset + 3];
                 offset += length + 2;
             }
@@ -295,6 +318,16 @@ public sealed class BitmapImage : ImageSource
         {
             // Image load failed silently
         }
+    }
+
+    /// <summary>
+    /// Cancels any pending HTTP load and releases resources.
+    /// </summary>
+    public void Dispose()
+    {
+        _httpCts?.Cancel();
+        _httpCts?.Dispose();
+        _httpCts = null;
     }
 
     /// <summary>

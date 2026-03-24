@@ -67,6 +67,7 @@ internal static partial class DragDropPlatform
         var window = rootVisual as Window;
         FrameworkElement? dragVisual = null;
         double dragOffsetX = 0, dragOffsetY = 0;
+        bool dragVisualAdded = false;
 
         bool showVisual = DragDrop.GetShowDragVisual(sourceElement);
         if (showVisual && window != null && sourceElement is FrameworkElement sourceFE)
@@ -80,9 +81,9 @@ internal static partial class DragDropPlatform
             Canvas.SetLeft(dragVisual, clickPos.X - dragOffsetX);
             Canvas.SetTop(dragVisual, clickPos.Y - dragOffsetY);
             window.OverlayLayer.Children.Add(dragVisual);
+            dragVisualAdded = true;
             dragVisual.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
         }
-
         var finalEffects = DragDropEffects.None;
         UIElement? currentTarget = null;
         bool cancelled = false;
@@ -237,7 +238,7 @@ internal static partial class DragDropPlatform
         finally
         {
             // Remove drag visual
-            if (dragVisual != null)
+            if (dragVisualAdded && dragVisual != null)
                 window?.OverlayLayer.Children.Remove(dragVisual);
 
             if (cancelled && currentTarget != null)

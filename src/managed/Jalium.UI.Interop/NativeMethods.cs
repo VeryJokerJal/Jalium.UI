@@ -46,6 +46,31 @@ public struct TextMetrics
 }
 
 /// <summary>
+/// Text hit-test result returned by native hit-testing APIs.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+public struct TextHitTestResult
+{
+    /// <summary>Character index at the hit point.</summary>
+    public uint TextPosition;
+
+    /// <summary>Non-zero if hit is on the trailing edge of the character.</summary>
+    public int IsTrailingHit;
+
+    /// <summary>Non-zero if the point is inside the text layout.</summary>
+    public int IsInside;
+
+    /// <summary>X position of the caret at this text position.</summary>
+    public float CaretX;
+
+    /// <summary>Y position of the caret.</summary>
+    public float CaretY;
+
+    /// <summary>Height of the caret.</summary>
+    public float CaretHeight;
+}
+
+/// <summary>
 /// Native method imports for the Jalium rendering engine.
 /// </summary>
 internal static partial class NativeMethods
@@ -101,8 +126,8 @@ internal static partial class NativeMethods
     /// <summary>
     /// Creates a new Jalium rendering context.
     /// </summary>
-    [LibraryImport(CoreLib, EntryPoint = "jalium_context_create")]
-    internal static partial nint ContextCreate(RenderBackend backend);
+    [DllImport(CoreLib, EntryPoint = "jalium_context_create", ExactSpelling = true)]
+    internal static extern nint ContextCreate(RenderBackend backend);
 
     /// <summary>
     /// Destroys a Jalium rendering context.
@@ -214,6 +239,12 @@ internal static partial class NativeMethods
     internal static partial void RenderTargetSetFullInvalidation(nint renderTarget);
 
     /// <summary>
+    /// Returns whether the render target supports partial redraw + dirty-rect presentation.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_supports_partial_presentation")]
+    internal static partial int RenderTargetSupportsPartialPresentation(nint renderTarget);
+
+    /// <summary>
     /// Creates a composition visual node for hosting external content (e.g. WebView).
     /// Returns a backend-specific COM pointer (IUnknown* on Windows).
     /// </summary>
@@ -314,20 +345,23 @@ internal static partial class NativeMethods
     /// <param name="strokeWidth">Width of stroke.</param>
     /// <param name="closed">Whether to close the polygon (1 = closed, 0 = open).</param>
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_polygon")]
-    internal static partial void DrawPolygon(nint renderTarget, float[] points, int pointCount, nint brush, float strokeWidth, int closed);
+    internal static partial void DrawPolygon(nint renderTarget, float[] points, int pointCount, nint brush, float strokeWidth, int closed, int lineJoin, float miterLimit);
 
     /// <summary>
     /// Fills a path with lines and bezier curves.
-    /// Commands: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey].
+    /// Commands: tag 0 = LineTo [0,x,y], tag 1 = CubicBezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey],
+    ///           tag 2 = MoveTo [2,x,y], tag 3 = QuadBezierTo [3,cpx,cpy,ex,ey],
+    ///           tag 4 = ArcTo [4,ex,ey,rx,ry,xRotDeg,largeArc,sweep], tag 5 = ClosePath [5].
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_fill_path")]
     internal static partial void FillPath(nint renderTarget, float startX, float startY, float[] commands, int commandLength, nint brush, int fillRule);
 
     /// <summary>
     /// Strokes a path with lines and bezier curves.
+    /// lineCap: 0 = Butt, 1 = Square, 2 = Round.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_stroke_path")]
-    internal static partial void StrokePath(nint renderTarget, float startX, float startY, float[] commands, int commandLength, nint brush, float strokeWidth, int closed);
+    internal static partial void StrokePath(nint renderTarget, float startX, float startY, float[] commands, int commandLength, nint brush, float strokeWidth, int closed, int lineJoin, float miterLimit, int lineCap);
 
     /// <summary>
     /// Draws a content area border: fills with bottom-only rounded corners, strokes U-shape (no top).
@@ -451,7 +485,8 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_blur_effect")]
     internal static partial void DrawBlurEffect(nint renderTarget,
-        float x, float y, float w, float h, float radius);
+        float x, float y, float w, float h, float radius,
+        float uvOffsetX, float uvOffsetY);
 
     /// <summary>
     /// Applies a drop shadow effect to the captured element content and draws it.
@@ -460,7 +495,38 @@ internal static partial class NativeMethods
     internal static partial void DrawDropShadowEffect(nint renderTarget,
         float x, float y, float w, float h,
         float blurRadius, float offsetX, float offsetY,
-        float r, float g, float b, float a);
+        float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_outer_glow_effect")]
+    internal static partial void DrawOuterGlowEffect(nint renderTarget,
+        float x, float y, float w, float h,
+        float glowSize, float r, float g, float b, float a, float intensity,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_inner_shadow_effect")]
+    internal static partial void DrawInnerShadowEffect(nint renderTarget,
+        float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_color_matrix_effect")]
+    internal static partial void DrawColorMatrixEffect(nint renderTarget,
+        float x, float y, float w, float h,
+        ReadOnlySpan<float> matrix);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_emboss_effect")]
+    internal static partial void DrawEmbossEffect(nint renderTarget,
+        float x, float y, float w, float h,
+        float amount, float lightDirX, float lightDirY, float relief);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_shader_effect")]
+    internal static partial void DrawShaderEffect(nint renderTarget,
+        float x, float y, float w, float h,
+        [In] byte[] shaderBytecode, uint shaderBytecodeSize,
+        [In] float[] constants, uint constantFloatCount);
 
     /// <summary>
     /// Draws a liquid glass effect with SDF-based refraction, highlight, and inner shadow.
@@ -541,6 +607,12 @@ internal static partial class NativeMethods
     [LibraryImport(CoreLib, EntryPoint = "jalium_pop_opacity")]
     internal static partial void PopOpacity(nint renderTarget);
 
+    /// <summary>
+    /// Sets the current shape type for SDF rect rendering.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_set_shape_type")]
+    internal static partial void SetShapeType(nint renderTarget, int type, float n);
+
     #endregion
 
     #region Brush Management
@@ -609,6 +681,38 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_trimming")]
     internal static partial void TextFormatSetTrimming(nint textFormat, int trimming);
+
+    /// <summary>
+    /// Sets word wrapping mode (0=wrap, 1=no_wrap, 2=character, 3=emergency_break).
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_word_wrapping")]
+    internal static partial void TextFormatSetWordWrapping(nint textFormat, int wrapping);
+
+    /// <summary>
+    /// Sets line spacing (method: 0=default, 1=uniform, 2=proportional).
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_line_spacing")]
+    internal static partial void TextFormatSetLineSpacing(nint textFormat, int method, float spacing, float baseline);
+
+    /// <summary>
+    /// Sets maximum number of lines (0 = unlimited).
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_set_max_lines")]
+    internal static partial void TextFormatSetMaxLines(nint textFormat, uint maxLines);
+
+    /// <summary>
+    /// Hit-tests a point against a text layout.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_hit_test_point", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int TextFormatHitTestPoint(nint textFormat, string text, int textLength,
+        float maxWidth, float maxHeight, float pointX, float pointY, out TextHitTestResult result);
+
+    /// <summary>
+    /// Gets caret position for a given text index.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_format_hit_test_text_position", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int TextFormatHitTestTextPosition(nint textFormat, string text, int textLength,
+        float maxWidth, float maxHeight, uint textPosition, int isTrailingHit, out TextHitTestResult result);
 
     /// <summary>
     /// Measures text and returns metrics.

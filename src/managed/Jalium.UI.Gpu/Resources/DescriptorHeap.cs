@@ -85,9 +85,14 @@ public sealed class DescriptorHeapManager : IDisposable
     public void Free(DescriptorHandle handle)
     {
         if (handle.Type == DescriptorType.Sampler)
+        {
             _samplerPool.Free(handle.HeapIndex);
+        }
         else
+        {
             _srvCbvUavPool.Free(handle.HeapIndex);
+            _backend.FreeDescriptor(handle);
+        }
     }
 
     /// <summary>

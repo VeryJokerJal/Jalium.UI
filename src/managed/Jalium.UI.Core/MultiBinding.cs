@@ -278,11 +278,22 @@ public sealed class MultiBindingExpression : BindingExpressionBase
                 targetValue = _multiBinding.FallbackValue;
 
             // Apply StringFormat if specified
-            if (targetValue != null && !string.IsNullOrEmpty(_multiBinding.StringFormat))
+            if (!string.IsNullOrEmpty(_multiBinding.StringFormat))
             {
                 try
                 {
-                    targetValue = string.Format(_multiBinding.StringFormat, targetValue);
+                    var culture = _multiBinding.ConverterCulture ?? CultureInfo.CurrentCulture;
+                    // When a converter is used, format the converted result;
+                    // otherwise pass all child binding values so that
+                    // "{0} - {1}" style formats work as in WPF.
+                    if (_multiBinding.Converter != null && targetValue != null)
+                    {
+                        targetValue = string.Format(culture, _multiBinding.StringFormat, targetValue);
+                    }
+                    else if (values.Length > 0)
+                    {
+                        targetValue = string.Format(culture, _multiBinding.StringFormat, values!);
+                    }
                 }
                 catch (FormatException)
                 {

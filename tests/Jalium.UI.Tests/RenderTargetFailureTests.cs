@@ -63,6 +63,19 @@ public class RenderTargetFailureTests
         Assert.False(renderTarget.IsDrawing);
     }
 
+    [Fact]
+    public void Create_WhenNativeDisablesPartialPresentation_ExposesCapability()
+    {
+        var native = new RenderTargetTestNative
+        {
+            SupportsPartialPresentationValue = false
+        };
+
+        using var renderTarget = CreateRenderTarget(native);
+
+        Assert.False(renderTarget.SupportsPartialPresentation);
+    }
+
     private static RenderTarget CreateRenderTarget(RenderTargetTestNative native, int width = 320, int height = 240)
     {
         return new RenderTarget(

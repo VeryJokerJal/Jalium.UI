@@ -13,6 +13,7 @@ namespace Jalium.UI.Controls;
 public partial class DockItem : HeaderedContentControl
 {
     private const string HeaderEllipsis = "...";
+    private const double DefaultSelectedTabCornerRadius = 8.0;
 
     // Cached brushes and pens for OnRender (OneTheme-aligned deep blue-gray palette)
     private static readonly SolidColorBrush s_fallbackSelectedBackgroundBrush = new(Color.FromRgb(0x1E, 0x1E, 0x2E));
@@ -139,6 +140,12 @@ public partial class DockItem : HeaderedContentControl
     private Window? _floatingWindowOwner;
     private EventHandler<System.ComponentModel.CancelEventArgs>? _floatingWindowClosingHandler;
     private bool _suppressRestoreOnFloatingWindowClose;
+
+    // Cached pens
+    private Pen? _closeButtonPen;
+    private Brush? _closeButtonPenBrush;
+    private Pen? _dragIndicatorPen;
+    private Brush? _dragIndicatorPenBrush;
 
     #endregion
 
@@ -572,12 +579,16 @@ public partial class DockItem : HeaderedContentControl
     /// </summary>
     internal void BeginFloatingDrag(Window floatingWindow)
     {
+        if (floatingWindow == null) return;
+
         _floatingDragWindow = floatingWindow;
         _isDraggingFloatingWindow = true;
 
-        CaptureMouse();
+        // Capture initial positions before CaptureMouse(), which may trigger
+        // re-entrant mouse events that clear _floatingDragWindow.
         GetCursorPos(out _floatingDragStartCursor);
-        GetWindowRect(_floatingDragWindow.Handle, out _floatingDragStartWindowRect);
+        GetWindowRect(floatingWindow.Handle, out _floatingDragStartWindowRect);
+        CaptureMouse();
     }
 
     /// <summary>
@@ -1126,12 +1137,14 @@ public partial class DockItem : HeaderedContentControl
             bgBrush = Background ?? s_transparentBrush;
 
         var placement = OwnerPanel?.TabStripPlacement ?? Dock.Top;
+        var tabCornerRadius = ResolveTabCornerRadius(ActualWidth, ActualHeight + 1);
+        var isLeadingEdgeTab = IsSelected && IsAtTabStripLeadingEdge();
         var activeCorners = placement switch
         {
-            Dock.Bottom => new CornerRadius(0, 0, 4, 4),
-            Dock.Left => new CornerRadius(4, 0, 0, 4),
-            Dock.Right => new CornerRadius(0, 4, 4, 0),
-            _ => new CornerRadius(4, 4, 0, 0),
+            Dock.Bottom => new CornerRadius(0, 0, tabCornerRadius, isLeadingEdgeTab ? 0 : tabCornerRadius),
+            Dock.Left => new CornerRadius(isLeadingEdgeTab ? 0 : tabCornerRadius, 0, 0, tabCornerRadius),
+            Dock.Right => new CornerRadius(0, isLeadingEdgeTab ? 0 : tabCornerRadius, tabCornerRadius, 0),
+            _ => new CornerRadius(isLeadingEdgeTab ? 0 : tabCornerRadius, tabCornerRadius, 0, 0),
         };
 
         if (IsSelected)
@@ -1180,7 +1193,13 @@ public partial class DockItem : HeaderedContentControl
             }
 
             // Draw X
-            var xPen = new Pen((_isCloseButtonHovered || _isCloseButtonPressed) ? activeTextBrush : inactiveTextBrush, 1);
+            var xBrush = (_isCloseButtonHovered || _isCloseButtonPressed) ? activeTextBrush : inactiveTextBrush;
+            if (_closeButtonPen == null || _closeButtonPenBrush != xBrush)
+            {
+                _closeButtonPenBrush = xBrush;
+                _closeButtonPen = new Pen(xBrush, 1);
+            }
+            var xPen = _closeButtonPen;
             var margin = 3.0;
             dc.DrawLine(xPen, new Point(closeX + margin, closeY + margin), new Point(closeX + closeSize - margin, closeY + closeSize - margin));
             dc.DrawLine(xPen, new Point(closeX + closeSize - margin, closeY + margin), new Point(closeX + margin, closeY + closeSize - margin));
@@ -1196,10 +1215,15 @@ public partial class DockItem : HeaderedContentControl
         // Dragging tab preview: highlight the tab itself instead of drawing an insertion line.
         if (_isReorderDragging)
         {
-            var dragPen = new Pen(indicatorBrush, 1)
+            if (_dragIndicatorPen == null || _dragIndicatorPenBrush != indicatorBrush)
             {
-                LineJoin = PenLineJoin.Round
-            };
+                _dragIndicatorPenBrush = indicatorBrush;
+                _dragIndicatorPen = new Pen(indicatorBrush, 1)
+                {
+                    LineJoin = PenLineJoin.Round
+                };
+            }
+            var dragPen = _dragIndicatorPen;
             dc.DrawRoundedRectangle(null, dragPen, bounds, activeCorners);
             dc.DrawRectangle(dragDimBrush, null, bounds);
         }
@@ -1211,6 +1235,41 @@ public partial class DockItem : HeaderedContentControl
         if (padding.Left == 0 && padding.Top == 0 && padding.Right == 0 && padding.Bottom == 0)
             return new Thickness(10, 5, 10, 5);
         return padding;
+    }
+
+    private double ResolveTabCornerRadius(double width, double height)
+    {
+        var radius = Math.Max(
+            Math.Max(CornerRadius.TopLeft, CornerRadius.TopRight),
+            Math.Max(CornerRadius.BottomRight, CornerRadius.BottomLeft));
+
+        if (radius <= 0)
+            radius = DefaultSelectedTabCornerRadius;
+
+        var maxAllowed = Math.Max(0, Math.Min(width, height) / 2.0);
+        return Math.Min(radius, maxAllowed);
+    }
+
+    private bool IsAtTabStripLeadingEdge()
+    {
+        var ownerPanel = OwnerPanel;
+        if (ownerPanel == null)
+            return false;
+
+        try
+        {
+            var position = TransformToAncestor(ownerPanel);
+            return ownerPanel.TabStripPlacement switch
+            {
+                Dock.Bottom or Dock.Top => position.X <= ownerPanel.TabHeadersViewportRect.X + 0.5,
+                Dock.Left or Dock.Right => position.Y <= ownerPanel.TabHeadersViewportRect.Y + 0.5,
+                _ => false,
+            };
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     internal FormattedText? CreateHeaderTextLayoutForTesting(double availableWidth, double availableHeight)

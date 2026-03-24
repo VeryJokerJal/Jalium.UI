@@ -54,22 +54,14 @@
                                 Grid.RowSpan="2"
                                 IsHitTestVisible="False"
                                 Visibility="Collapsed" />
-                        <!-- Focus rings inside outer border -->
-                        <Border Name="FocusOuter"
+                        <!-- Focus ring inside outer border -->
+                        <Border Name="FocusBorder"
                                 Grid.RowSpan="2"
                                 IsHitTestVisible="False"
                                 BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                                BorderThickness="1"
+                                BorderThickness="2"
                                 CornerRadius="4"
-                                Opacity="0" />
-                        <Border Name="FocusInner"
-                                Grid.RowSpan="2"
-                                IsHitTestVisible="False"
-                                BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                                BorderThickness="1"
-                                CornerRadius="4"
-                                Margin="2"
-                                Opacity="0" />
+                                Visibility="Collapsed" />
                     </Grid>
                 </Border>
             </ControlTemplate>
@@ -77,13 +69,11 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="0" />
+                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>

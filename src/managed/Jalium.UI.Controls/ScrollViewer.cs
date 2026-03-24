@@ -26,6 +26,9 @@ public partial class ScrollViewer : Control
 
     private UIElement? _content;
     private IScrollInfo? _scrollInfo;
+    private Pen? _borderPenCached;
+    private Brush? _borderPenBrush;
+    private double _borderPenThickness;
     private double _horizontalOffset;
     private double _verticalOffset;
     private double _extentWidth;
@@ -1134,7 +1137,7 @@ public partial class ScrollViewer : Control
     /// Returns a clip geometry for the viewport area.
     /// Respects the ClipToBounds property - when false, no clipping is applied.
     /// </summary>
-    protected internal override object? GetLayoutClip()
+    internal override object? GetLayoutClip()
     {
         if (!ClipToBounds)
         {
@@ -1793,8 +1796,13 @@ public partial class ScrollViewer : Control
         // Draw border
         if (BorderBrush != null && BorderThickness.Left > 0)
         {
-            var pen = new Pen(BorderBrush, BorderThickness.Left);
-            dc.DrawRectangle(null, pen, bounds);
+            if (_borderPenCached == null || _borderPenBrush != BorderBrush || _borderPenThickness != BorderThickness.Left)
+            {
+                _borderPenBrush = BorderBrush;
+                _borderPenThickness = BorderThickness.Left;
+                _borderPenCached = new Pen(BorderBrush, BorderThickness.Left);
+            }
+            dc.DrawRectangle(null, _borderPenCached, bounds);
         }
 
         // Content and scrollbars render through the visual tree.

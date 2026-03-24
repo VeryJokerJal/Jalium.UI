@@ -183,7 +183,7 @@ public class DragEventArgs : RoutedEventArgs
     public Point GetPosition(IInputElement? relativeTo) => _position;
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is DragEventHandler dragHandler)
             dragHandler(target, this);
@@ -212,7 +212,7 @@ public class GiveFeedbackEventArgs : RoutedEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is GiveFeedbackEventHandler feedbackHandler)
             feedbackHandler(target, this);
@@ -244,7 +244,7 @@ public class QueryContinueDragEventArgs : RoutedEventArgs
     }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is QueryContinueDragEventHandler queryHandler)
             queryHandler(target, this);

@@ -74,6 +74,7 @@ public partial class Application
             {
                 _resources = new ResourceDictionary();
                 _resources.Changed += OnApplicationResourcesDictionaryChanged;
+                _resources.ChangedWithKeys += OnApplicationResourcesChangedWithKeys;
             }
 
             return _resources;
@@ -84,10 +85,14 @@ public partial class Application
                 return;
 
             if (_resources != null)
+            {
                 _resources.Changed -= OnApplicationResourcesDictionaryChanged;
+                _resources.ChangedWithKeys -= OnApplicationResourcesChangedWithKeys;
+            }
 
             _resources = value ?? new ResourceDictionary();
             _resources.Changed += OnApplicationResourcesDictionaryChanged;
+            _resources.ChangedWithKeys += OnApplicationResourcesChangedWithKeys;
             OnApplicationResourcesChanged();
         }
     }
@@ -208,7 +213,21 @@ public partial class Application
 
     private void OnApplicationResourcesDictionaryChanged(object? sender, EventArgs e)
     {
-        OnApplicationResourcesChanged();
+        // Legacy handler — the full refresh is driven by ChangedWithKeys below.
+    }
+
+    private void OnApplicationResourcesChangedWithKeys(object? sender, ResourceDictionary.ResourcesChangedEventArgs e)
+    {
+        if (e.ChangedKeys != null)
+        {
+            // Targeted refresh — only update DynamicResource bindings whose key changed
+            DynamicResourceBindingOperations.RefreshForKeys(e.ChangedKeys);
+        }
+        else
+        {
+            // Full refresh (merged dictionary replacement, theme switch, etc.)
+            OnApplicationResourcesChanged();
+        }
     }
 
     private void OnApplicationResourcesChanged()

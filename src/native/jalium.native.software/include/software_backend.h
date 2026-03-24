@@ -67,6 +67,9 @@ public:
     void SetAlignment(int32_t a) override { alignment = a; }
     void SetParagraphAlignment(int32_t a) override { paragraphAlignment = a; }
     void SetTrimming(int32_t t) override { trimming = t; }
+    void SetWordWrapping(int32_t) override {}
+    void SetLineSpacing(int32_t, float, float) override {}
+    void SetMaxLines(uint32_t) override {}
 
     JaliumResult MeasureText(
         const wchar_t* text, uint32_t textLength,
@@ -74,6 +77,19 @@ public:
         JaliumTextMetrics* metrics) override;
 
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
+
+    JaliumResult HitTestPoint(
+        const wchar_t*, uint32_t, float, float, float, float,
+        JaliumTextHitTestResult* result) override {
+        if (result) memset(result, 0, sizeof(*result));
+        return JALIUM_OK;
+    }
+    JaliumResult HitTestTextPosition(
+        const wchar_t*, uint32_t, float, float, uint32_t, int32_t,
+        JaliumTextHitTestResult* result) override {
+        if (result) memset(result, 0, sizeof(*result));
+        return JALIUM_OK;
+    }
 };
 
 class SoftwareBitmap : public Bitmap {
@@ -146,8 +162,29 @@ struct SoftwareTransform {
 
 struct SoftwareClipRect {
     float x, y, w, h;
+    float rx = 0, ry = 0; // corner radii (0 = rectangular)
     bool Contains(float px, float py) const {
-        return px >= x && px < x + w && py >= y && py < y + h;
+        if (px < x || px >= x + w || py < y || py >= y + h) return false;
+        if (rx <= 0 || ry <= 0) return true;
+        // Check rounded corners
+        float lx = px - x, ly = py - y;
+        if (lx < rx && ly < ry) {
+            float dx = (lx - rx) / rx, dy = (ly - ry) / ry;
+            return (dx * dx + dy * dy) <= 1.0f;
+        }
+        if (lx > w - rx && ly < ry) {
+            float dx = (lx - (w - rx)) / rx, dy = (ly - ry) / ry;
+            return (dx * dx + dy * dy) <= 1.0f;
+        }
+        if (lx < rx && ly > h - ry) {
+            float dx = (lx - rx) / rx, dy = (ly - (h - ry)) / ry;
+            return (dx * dx + dy * dy) <= 1.0f;
+        }
+        if (lx > w - rx && ly > h - ry) {
+            float dx = (lx - (w - rx)) / rx, dy = (ly - (h - ry)) / ry;
+            return (dx * dx + dy * dy) <= 1.0f;
+        }
+        return true;
     }
 };
 
@@ -173,9 +210,9 @@ public:
     void DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) override;
     void DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) override;
     void FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) override;
-    void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed) override;
+    void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f) override;
     void FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule) override;
-    void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed) override;
+    void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0) override;
     void DrawContentBorder(float x, float y, float w, float h,
         float blRadius, float brRadius,
         Brush* fillBrush, Brush* strokeBrush, float strokeWidth) override;
@@ -192,6 +229,7 @@ public:
     void PunchTransparentRect(float x, float y, float w, float h) override;
     void PushOpacity(float opacity) override;
     void PopOpacity() override;
+    void SetShapeType(int type, float n) override;
     void SetVSyncEnabled(bool enabled) override;
     void SetDpi(float dpiX, float dpiY) override;
     void AddDirtyRect(float x, float y, float w, float h) override;
@@ -254,6 +292,7 @@ private:
 
 #ifdef _WIN32
     void* hwnd_ = nullptr;
+    void* cachedTextDC_ = nullptr; // HDC cached for text rendering
 #endif
 };
 

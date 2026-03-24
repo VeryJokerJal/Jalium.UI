@@ -220,6 +220,10 @@ public class ColorPicker : Control
     private bool _isDraggingAlpha;
     private bool _isUpdatingColor;
 
+    // Cached hue gradient brushes
+    private LinearGradientBrush[]? _hueGradientBrushes;
+    private Size _hueGradientSize;
+
     #endregion
 
     #region Constructor
@@ -386,6 +390,7 @@ public class ColorPicker : Control
 
     private void UpdateSpectrumFromPosition(Point position)
     {
+        if (_spectrumRect.Width <= 0 || _spectrumRect.Height <= 0) return;
         _saturation = Math.Clamp((position.X - _spectrumRect.X) / _spectrumRect.Width, 0, 1);
         _value = Math.Clamp(1 - (position.Y - _spectrumRect.Y) / _spectrumRect.Height, 0, 1);
         UpdateColor();
@@ -393,12 +398,14 @@ public class ColorPicker : Control
 
     private void UpdateHueFromPosition(Point position)
     {
+        if (_hueSliderRect.Width <= 0) return;
         _hue = Math.Clamp((position.X - _hueSliderRect.X) / _hueSliderRect.Width, 0, 1) * 360;
         UpdateColor();
     }
 
     private void UpdateAlphaFromPosition(Point position)
     {
+        if (_alphaSliderRect.Width <= 0) return;
         var alpha = Math.Clamp((position.X - _alphaSliderRect.X) / _alphaSliderRect.Width, 0, 1);
         _alpha = (byte)Math.Round(alpha * 255);
         UpdateColor();
@@ -559,24 +566,29 @@ public class ColorPicker : Control
 
     private void DrawHueSlider(DrawingContext dc, Rect rect)
     {
-        // Draw hue gradient
+        // Draw hue gradient (cached – colors are deterministic, only rebuild when size changes)
+        var currentSize = new Size(rect.Width, rect.Height);
+        if (_hueGradientBrushes == null || _hueGradientSize != currentSize)
+        {
+            _hueGradientSize = currentSize;
+            _hueGradientBrushes = new LinearGradientBrush[6];
+            for (int j = 0; j < 6; j++)
+            {
+                HsvToRgb(j * 60, 1, 1, out var sr, out var sg, out var sb);
+                HsvToRgb((j + 1) * 60, 1, 1, out var er, out var eg, out var eb);
+                _hueGradientBrushes[j] = new LinearGradientBrush(
+                    Color.FromRgb(sr, sg, sb),
+                    Color.FromRgb(er, eg, eb), 0);
+            }
+        }
         for (int i = 0; i < 6; i++)
         {
-            var startHue = i * 60;
-            var endHue = (i + 1) * 60;
-            HsvToRgb(startHue, 1, 1, out var sr, out var sg, out var sb);
-            HsvToRgb(endHue, 1, 1, out var er, out var eg, out var eb);
-
             var segmentRect = new Rect(
                 rect.X + rect.Width * i / 6,
                 rect.Y,
                 rect.Width / 6 + 1,
                 rect.Height);
-
-            var gradient = new LinearGradientBrush(
-                Color.FromRgb(sr, sg, sb),
-                Color.FromRgb(er, eg, eb), 0);
-            dc.DrawRectangle(gradient, null, segmentRect);
+            dc.DrawRectangle(_hueGradientBrushes[i], null, segmentRect);
         }
 
         // Draw border

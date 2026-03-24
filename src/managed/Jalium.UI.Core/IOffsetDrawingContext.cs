@@ -23,6 +23,12 @@ public interface IClipDrawingContext
     void PushClip(object clipGeometry);
 
     /// <summary>
+    /// Pushes a rounded-rect clip using element bounds and corner radius.
+    /// </summary>
+    void PushRoundedRectClip(Rect bounds, CornerRadius cornerRadius) =>
+        PushClip(bounds); // default: fall back to rectangular clip
+
+    /// <summary>
     /// Pops the most recent clip from the clip stack.
     /// </summary>
     void Pop();
@@ -58,6 +64,25 @@ public interface IOpacityDrawingContext
 }
 
 /// <summary>
+/// Interface for drawing contexts that support push/pop transforms.
+/// </summary>
+public interface ITransformDrawingContext
+{
+    /// <summary>
+    /// Pushes a transform onto the transform stack, applying it around the specified origin.
+    /// </summary>
+    /// <param name="transform">The transform to push (Media.Transform).</param>
+    /// <param name="originX">The X origin in pixels for the transform center.</param>
+    /// <param name="originY">The Y origin in pixels for the transform center.</param>
+    void PushTransform(object transform, double originX, double originY);
+
+    /// <summary>
+    /// Pops the most recent transform from the transform stack.
+    /// </summary>
+    void PopTransform();
+}
+
+/// <summary>
 /// Interface for drawing contexts that support element effect capture and rendering.
 /// </summary>
 public interface IEffectDrawingContext
@@ -77,5 +102,7 @@ public interface IEffectDrawingContext
     /// The implementation dispatches to the appropriate native rendering method
     /// based on the concrete effect type.
     /// </summary>
-    void ApplyElementEffect(IEffect effect, float x, float y, float w, float h);
+    void ApplyElementEffect(IEffect effect, float x, float y, float w, float h,
+        float captureOriginX = 0, float captureOriginY = 0,
+        float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0);
 }

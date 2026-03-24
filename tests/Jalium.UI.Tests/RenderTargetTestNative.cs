@@ -11,6 +11,7 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
     public int ResizeResult { get; set; } = (int)JaliumResult.Ok;
     public int BeginDrawResult { get; set; } = (int)JaliumResult.Ok;
     public int EndDrawResult { get; set; } = (int)JaliumResult.Ok;
+    public bool SupportsPartialPresentationValue { get; set; } = true;
 
     public nint CreateForSurface(nint context, NativeSurfaceDescriptor surface, int width, int height)
     {
@@ -32,9 +33,15 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
 
     public int EndDraw(nint renderTarget) => EndDrawResult;
 
+    public void SetVSyncEnabled(nint renderTarget, bool enabled)
+    {
+    }
+
     public void SetFullInvalidation(nint renderTarget)
     {
     }
+
+    public bool SupportsPartialPresentation(nint renderTarget) => SupportsPartialPresentationValue;
 
     public void Destroy(nint renderTarget)
     {

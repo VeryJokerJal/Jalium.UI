@@ -59,8 +59,17 @@ public sealed class ShaderTransition : ContentTransition
 
         return CreateFrameTimer(DurationMs, EffectiveEasing, progress =>
         {
-            host.GpuShaderProgress = progress;
-            host.InvalidateTransitionVisual();
+            try
+            {
+                host.GpuShaderProgress = progress;
+                host.InvalidateTransitionVisual();
+            }
+            catch
+            {
+                host.GpuShaderMode = -1;
+                host.GpuShaderProgress = 0.0;
+                throw;
+            }
         }, () =>
         {
             // Reset GPU shader mode and restore visibility

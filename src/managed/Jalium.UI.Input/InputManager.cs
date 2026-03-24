@@ -201,7 +201,7 @@ public sealed class ManipulationStartingEventArgs : InputEventArgs
     public bool IsSingleTouchEnabled { get; set; } = true;
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is ManipulationStartingEventHandler typedHandler)
         {
@@ -226,7 +226,7 @@ public sealed class ManipulationBoundaryFeedbackEventArgs : InputEventArgs
     public UIElement? ManipulationContainer { get; init; }
 
     /// <inheritdoc />
-    protected internal override void InvokeEventHandler(Delegate handler, object target)
+    internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is ManipulationBoundaryFeedbackEventHandler typedHandler)
         {

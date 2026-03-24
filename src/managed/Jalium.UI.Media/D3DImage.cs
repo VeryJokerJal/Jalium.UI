@@ -3,7 +3,7 @@ namespace Jalium.UI.Media;
 /// <summary>
 /// An ImageSource that displays a user-created Direct3D surface.
 /// </summary>
-public sealed class D3DImage : ImageSource
+public sealed class D3DImage : ImageSource, IDisposable
 {
     private double _pixelWidth;
     private double _pixelHeight;
@@ -13,6 +13,7 @@ public sealed class D3DImage : ImageSource
     private bool _enableSoftwareFallback;
     private int _lockCount;
     private readonly List<Int32Rect> _dirtyRects = new();
+    private bool _disposed;
 
     /// <summary>
     /// Gets a value indicating whether a front buffer is available.
@@ -77,10 +78,22 @@ public sealed class D3DImage : ImageSource
     /// </summary>
     public void SetBackBuffer(D3DResourceType backBufferType, IntPtr backBuffer, bool enableSoftwareFallback)
     {
+        // Release previous COM reference if held
+        if (_backBuffer != IntPtr.Zero)
+        {
+            System.Runtime.InteropServices.Marshal.Release(_backBuffer);
+        }
+
         _backBufferType = backBufferType;
-        _backBuffer = backBuffer;
         _enableSoftwareFallback = enableSoftwareFallback;
         _dirtyRects.Clear();
+
+        // AddRef the new COM surface to prevent use-after-free
+        if (backBuffer != IntPtr.Zero)
+        {
+            System.Runtime.InteropServices.Marshal.AddRef(backBuffer);
+        }
+        _backBuffer = backBuffer;
 
         var isFrontBufferAvailable = backBuffer != IntPtr.Zero;
         if (_isFrontBufferAvailable != isFrontBufferAvailable)
@@ -88,6 +101,19 @@ public sealed class D3DImage : ImageSource
             _isFrontBufferAvailable = isFrontBufferAvailable;
             IsFrontBufferAvailableChanged?.Invoke(this, EventArgs.Empty);
         }
+    }
+
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        if (_backBuffer != IntPtr.Zero)
+        {
+            System.Runtime.InteropServices.Marshal.Release(_backBuffer);
+            _backBuffer = IntPtr.Zero;
+        }
+        _isFrontBufferAvailable = false;
     }
 
     /// <summary>
@@ -151,6 +177,23 @@ public sealed class D3DImage : ImageSource
             return;
         }
 
+        // Merge with existing overlapping rects to avoid unbounded growth
+        for (int i = 0; i < _dirtyRects.Count; i++)
+        {
+            var existing = _dirtyRects[i];
+            if (dirtyRect.X < existing.X + existing.Width &&
+                dirtyRect.X + dirtyRect.Width > existing.X &&
+                dirtyRect.Y < existing.Y + existing.Height &&
+                dirtyRect.Y + dirtyRect.Height > existing.Y)
+            {
+                var minX = Math.Min(existing.X, dirtyRect.X);
+                var minY = Math.Min(existing.Y, dirtyRect.Y);
+                var maxX = Math.Max(existing.X + existing.Width, dirtyRect.X + dirtyRect.Width);
+                var maxY = Math.Max(existing.Y + existing.Height, dirtyRect.Y + dirtyRect.Height);
+                _dirtyRects[i] = new Int32Rect(minX, minY, maxX - minX, maxY - minY);
+                return;
+            }
+        }
         _dirtyRects.Add(dirtyRect);
     }
 

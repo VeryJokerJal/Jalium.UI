@@ -81,6 +81,7 @@ public sealed class PropertyStore
 {
     private readonly Dictionary<(uint NodeId, ushort PropertyId), float> _floatValues = new();
     private readonly Dictionary<uint, DirtyFlags> _dirtyFlagsByNode = new();
+    private readonly HashSet<uint> _reusableDirtySet = new();
 
     public void Clear()
     {
@@ -88,10 +89,15 @@ public sealed class PropertyStore
         _dirtyFlagsByNode.Clear();
     }
 
+    /// <summary>
+    /// 浮点属性变化的最小阈值。小于此值的变化会被忽略以避免不必要的重绘。
+    /// </summary>
+    private const float FloatChangeEpsilon = 1e-4f;
+
     public bool SetFloat(uint nodeId, ushort propertyId, float value, in RenderPropertyMetadata metadata)
     {
         var key = (nodeId, propertyId);
-        if (_floatValues.TryGetValue(key, out var oldValue) && Math.Abs(oldValue - value) < 0.0001f)
+        if (_floatValues.TryGetValue(key, out var oldValue) && Math.Abs(oldValue - value) < FloatChangeEpsilon)
         {
             return false;
         }
@@ -135,21 +141,21 @@ public sealed class PropertyStore
 
     public HashSet<uint> GetDirtyNodes(DirtyFlags mask)
     {
-        var result = new HashSet<uint>();
+        _reusableDirtySet.Clear();
         if (mask == DirtyFlags.None)
         {
-            return result;
+            return _reusableDirtySet;
         }
 
         foreach (var (nodeId, flags) in _dirtyFlagsByNode)
         {
             if ((flags & mask) != 0)
             {
-                result.Add(nodeId);
+                _reusableDirtySet.Add(nodeId);
             }
         }
 
-        return result;
+        return _reusableDirtySet;
     }
 
     public void ClearDirty(DirtyFlags mask)
@@ -159,18 +165,31 @@ public sealed class PropertyStore
             return;
         }
 
-        var nodes = _dirtyFlagsByNode.Keys.ToArray();
-        foreach (var nodeId in nodes)
+        if (mask == DirtyFlags.All)
         {
-            var next = _dirtyFlagsByNode[nodeId] & ~mask;
+            // Fast path: clearing all flags means just clear the dictionary
+            _dirtyFlagsByNode.Clear();
+            return;
+        }
+
+        // Use reusable set to collect keys to remove, avoiding Keys.ToArray() allocation
+        _reusableDirtySet.Clear();
+        foreach (var (nodeId, flags) in _dirtyFlagsByNode)
+        {
+            var next = flags & ~mask;
             if (next == DirtyFlags.None)
             {
-                _dirtyFlagsByNode.Remove(nodeId);
+                _reusableDirtySet.Add(nodeId);
             }
             else
             {
                 _dirtyFlagsByNode[nodeId] = next;
             }
+        }
+
+        foreach (var nodeId in _reusableDirtySet)
+        {
+            _dirtyFlagsByNode.Remove(nodeId);
         }
     }
 }
@@ -203,14 +222,21 @@ public sealed class ReactiveGraph
     private readonly Dictionary<uint, List<ReactiveEdge>> _edges = new();
     private readonly Queue<ReactiveInvalidation> _pending = new();
     private readonly HashSet<ReactiveInvalidation> _pendingLookup = [];
+    private readonly object _pendingLock = new();
 
-    public bool HasPendingInvalidations => _pending.Count > 0;
+    public bool HasPendingInvalidations
+    {
+        get { lock (_pendingLock) { return _pending.Count > 0; } }
+    }
 
     public void Clear()
     {
         _edges.Clear();
-        _pending.Clear();
-        _pendingLookup.Clear();
+        lock (_pendingLock)
+        {
+            _pending.Clear();
+            _pendingLookup.Clear();
+        }
     }
 
     public void AddEdge(uint fromNodeId, uint toNodeId, DirtyFlags dirtyFlags)
@@ -241,9 +267,12 @@ public sealed class ReactiveGraph
         }
 
         var invalidation = new ReactiveInvalidation(nodeId, dirtyFlags);
-        if (_pendingLookup.Add(invalidation))
+        lock (_pendingLock)
         {
-            _pending.Enqueue(invalidation);
+            if (_pendingLookup.Add(invalidation))
+            {
+                _pending.Enqueue(invalidation);
+            }
         }
     }
 
@@ -253,30 +282,33 @@ public sealed class ReactiveGraph
 
         var visited = new HashSet<ReactiveInvalidation>();
 
-        while (_pending.Count > 0)
+        lock (_pendingLock)
         {
-            var current = _pending.Dequeue();
-            _pendingLookup.Remove(current);
-
-            if (!visited.Add(current))
+            while (_pending.Count > 0)
             {
-                continue;
-            }
+                var current = _pending.Dequeue();
+                _pendingLookup.Remove(current);
 
-            onVisit(current.NodeId, current.DirtyFlags);
-
-            if (!_edges.TryGetValue(current.NodeId, out var edges))
-            {
-                continue;
-            }
-
-            foreach (var edge in edges)
-            {
-                var nextFlags = current.DirtyFlags | edge.DirtyFlags;
-                var next = new ReactiveInvalidation(edge.TargetNodeId, nextFlags);
-                if (_pendingLookup.Add(next))
+                if (!visited.Add(current))
                 {
-                    _pending.Enqueue(next);
+                    continue;
+                }
+
+                onVisit(current.NodeId, current.DirtyFlags);
+
+                if (!_edges.TryGetValue(current.NodeId, out var edges))
+                {
+                    continue;
+                }
+
+                foreach (var edge in edges)
+                {
+                    var nextFlags = current.DirtyFlags | edge.DirtyFlags;
+                    var next = new ReactiveInvalidation(edge.TargetNodeId, nextFlags);
+                    if (_pendingLookup.Add(next))
+                    {
+                        _pending.Enqueue(next);
+                    }
                 }
             }
         }

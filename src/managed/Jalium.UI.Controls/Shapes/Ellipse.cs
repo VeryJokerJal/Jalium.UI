@@ -14,7 +14,7 @@ public class Ellipse : Shape
     {
         if (Stretch == Stretch.None)
         {
-            return new Size(0, 0);
+            return Size.Empty;
         }
 
         // Return available size, constrained by Width/Height if set
@@ -25,6 +25,12 @@ public class Ellipse : Shape
         if (double.IsPositiveInfinity(height)) height = 0;
 
         return new Size(width, height);
+    }
+
+    /// <inheritdoc />
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        return finalSize;
     }
 
     #endregion
@@ -58,7 +64,18 @@ public class Ellipse : Shape
         Pen? pen = null;
         if (Stroke != null && strokeThickness > 0)
         {
-            pen = new Pen(Stroke, strokeThickness);
+            pen = new Pen(Stroke, strokeThickness)
+            {
+                StartLineCap = StrokeStartLineCap,
+                EndLineCap = StrokeEndLineCap,
+                LineJoin = StrokeLineJoin,
+                MiterLimit = StrokeMiterLimit
+            };
+            var dashArray = StrokeDashArray;
+            if (dashArray is { Count: > 0 })
+            {
+                pen.DashStyle = new DashStyle(dashArray, StrokeDashOffset);
+            }
         }
 
         dc.DrawEllipse(Fill, pen, new Point(centerX, centerY), radiusX, radiusY);

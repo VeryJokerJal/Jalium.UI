@@ -31,9 +31,9 @@ public:
     void DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) override;
     void DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) override;
     void FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) override;
-    void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed) override;
+    void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f) override;
     void FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule) override;
-    void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed) override;
+    void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0) override;
     void DrawContentBorder(float x, float y, float w, float h, float blRadius, float brRadius, Brush* fillBrush, Brush* strokeBrush, float strokeWidth) override;
     void RenderText(const wchar_t* text, uint32_t textLength, TextFormat* format, float x, float y, float w, float h, Brush* brush) override;
     void PushTransform(const float* matrix) override;
@@ -44,6 +44,7 @@ public:
     void PunchTransparentRect(float x, float y, float w, float h) override;
     void PushOpacity(float opacity) override;
     void PopOpacity() override;
+    void SetShapeType(int type, float n) override;
     void SetVSyncEnabled(bool enabled) override;
     void SetDpi(float dpiX, float dpiY) override;
     void AddDirtyRect(float x, float y, float w, float h) override;
@@ -61,8 +62,11 @@ public:
     void DrawCapturedTransition(int slot, float x, float y, float w, float h, float opacity) override;
     void BeginEffectCapture(float x, float y, float w, float h) override;
     void EndEffectCapture() override;
-    void DrawBlurEffect(float x, float y, float w, float h, float radius) override;
-    void DrawDropShadowEffect(float x, float y, float w, float h, float blurRadius, float offsetX, float offsetY, float r, float g, float b, float a) override;
+    void DrawBlurEffect(float x, float y, float w, float h, float radius, float uvOffsetX = 0, float uvOffsetY = 0) override;
+    void DrawDropShadowEffect(float x, float y, float w, float h, float blurRadius, float offsetX, float offsetY, float r, float g, float b, float a, float uvOffsetX = 0, float uvOffsetY = 0, float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0) override;
+    void DrawShaderEffect(float x, float y, float w, float h,
+        const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
+        const float* constants, uint32_t constantFloatCount) override;
     void DrawLiquidGlass(float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost, int shapeType, float shapeExponent, int neighborCount, float fusionRadius, const float* neighborData) override;
 
 private:
