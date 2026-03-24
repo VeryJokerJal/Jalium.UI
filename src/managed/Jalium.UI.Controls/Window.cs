@@ -3955,6 +3955,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             // This minimizes input-to-display latency for all scenarios.
             RenderTarget.SetVSyncEnabled(false);
 
+            // VSync disabled — no frame rate limiting.
+            RenderTarget.SetVSyncEnabled(false);
+
             if (fullInvalidation)
             {
                 // ── Full render path (first frame, resize, theme change) ──

@@ -546,12 +546,14 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         // Check if we need managed dashed stroke rendering
         bool hasDash = pen?.DashStyle?.Dashes is { Count: > 0 };
-        // Use managed widening only for Triangle line caps (not natively supported).
-        // Flat (Butt), Round, and Square caps are handled natively.
-        // Closed figures have no endpoints, so line caps don't apply.
+        // Use managed widening only for non-Flat line caps (which the native
+        // DrawPolygon cannot render).  LineJoin differences (Miter vs Bevel)
+        // are handled natively — the managed widening + FillPolygon path
+        // cannot correctly render closed stroke outlines on D3D12 (triangle
+        // fan doesn't support concave/ring polygons).
         bool hasNonFlatCaps = pen != null && (
-            pen.StartLineCap == PenLineCap.Triangle ||
-            pen.EndLineCap == PenLineCap.Triangle);
+            pen.StartLineCap != PenLineCap.Flat ||
+            pen.EndLineCap != PenLineCap.Flat);
 
         // For fill: use compound path rendering when there are multiple figures
         // (enables proper hole/fill rule handling in the native triangulator)
@@ -586,7 +588,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 }
                 else if (needsWidening)
                 {
-                    // Use GetWidenedPathGeometry for accurate line caps on open paths
+                    // Use GetWidenedPathGeometry for accurate line caps/joins on open paths
                     DrawWidenedStroke(pen, figure, pathGeom.FillRule);
                 }
                 else if (FigureHasCurves(figure))
@@ -1962,23 +1964,27 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (effect is Media.Effects.BlurEffect blur)
         {
-            // Blur content should be clipped to element's rounded corners.
-            // x,y already contain the element's screen position (= Offset).
-            bool hasCorners = cornerTL > 0 || cornerTR > 0 || cornerBR > 0 || cornerBL > 0;
-            if (hasCorners)
+            if (blur.Radius > 0.5)
             {
-                float maxR = Math.Max(Math.Max(cornerTL, cornerTR), Math.Max(cornerBR, cornerBL));
-                _renderTarget.PushRoundedRectClip(x, y, w, h, maxR, maxR);
-            }
-            _renderTarget.DrawBlurEffect(x, y, w, h, (float)blur.Radius, uvOffX, uvOffY);
-            if (hasCorners)
-            {
-                _renderTarget.PopClip();
+                // Blur content should be clipped to element's rounded corners.
+                // x,y already contain the element's screen position (= Offset).
+                bool hasCorners = cornerTL > 0 || cornerTR > 0 || cornerBR > 0 || cornerBL > 0;
+                if (hasCorners)
+                {
+                    float maxR = Math.Max(Math.Max(cornerTL, cornerTR), Math.Max(cornerBR, cornerBL));
+                    _renderTarget.PushRoundedRectClip(x, y, w, h, maxR, maxR);
+                }
+                _renderTarget.DrawBlurEffect(x, y, w, h, (float)blur.Radius, uvOffX, uvOffY);
+                if (hasCorners)
+                {
+                    _renderTarget.PopClip();
+                }
             }
         }
         else if (effect is Media.Effects.ElementBlurEffect elementBlur)
         {
-            _renderTarget.DrawBlurEffect(x, y, w, h, (float)elementBlur.Radius, uvOffX, uvOffY);
+            if (elementBlur.Radius > 0.5)
+                _renderTarget.DrawBlurEffect(x, y, w, h, (float)elementBlur.Radius, uvOffX, uvOffY);
         }
         else if (effect is Media.Effects.DropShadowEffect shadow)
         {
