@@ -3,7 +3,7 @@ using Jalium.UI.Controls;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Media3D;
 using System;
-using MediaPlayer = Jalium.UI.Controls.MediaPlayer;
+using MediaPlayer = Jalium.UI.Controls.MediaElement;
 
 var app = new Application();
 

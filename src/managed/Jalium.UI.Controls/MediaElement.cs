@@ -26,33 +26,33 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Specifies the load behavior for the MediaElement.
 /// </summary>
-//public enum MediaState
-//{
-//    /// <summary>
-//    /// The media is in manual control mode (uses Play, Pause, Stop methods).
-//    /// </summary>
-//    Manual,
+public enum MediaState
+{
+    /// <summary>
+    /// The media is in manual control mode (uses Play, Pause, Stop methods).
+    /// </summary>
+    Manual,
 
-//    /// <summary>
-//    /// The media is playing.
-//    /// </summary>
-//    Play,
+    /// <summary>
+    /// The media is playing.
+    /// </summary>
+    Play,
 
-//    /// <summary>
-//    /// The media is paused.
-//    /// </summary>
-//    Pause,
+    /// <summary>
+    /// The media is paused.
+    /// </summary>
+    Pause,
 
-//    /// <summary>
-//    /// The media is stopped.
-//    /// </summary>
-//    Stop,
+    /// <summary>
+    /// The media is stopped.
+    /// </summary>
+    Stop,
 
-//    /// <summary>
-//    /// The media is closed.
-//    /// </summary>
-//    Close
-//}
+    /// <summary>
+    /// The media is closed.
+    /// </summary>
+    Close
+}
 
 #endregion
 
@@ -1297,9 +1297,9 @@ public class MediaElement : FrameworkElement, IDisposable
     /// Gets or sets a media source on the MediaElement.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public Uri? Source
+    public string? Source
     {
-        get => (Uri?)GetValue(SourceProperty);
+        get => GetValue(SourceProperty).ToString();
         set => SetValue(SourceProperty, value);
     }
 
