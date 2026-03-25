@@ -1,3 +1,5 @@
+﻿using Jalium.UI;
+using Jalium.UI.Controls;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
@@ -21,132 +23,26 @@ using System.Threading.Tasks;
 
 namespace Jalium.UI.Controls;
 
-#region 媒体状态枚举
+#region 媒体状态与事件参数
 
-/// <summary>
-/// Specifies the load behavior for the MediaElement.
-/// </summary>
-//public enum MediaState
-//{
-//    /// <summary>
-//    /// The media is in manual control mode (uses Play, Pause, Stop methods).
-//    /// </summary>
-//    Manual,
+public enum MediaState
+{
+    Manual,
+    Play,
+    Pause,
+    Stop,
+    Close
+}
 
-//    /// <summary>
-//    /// The media is playing.
-//    /// </summary>
-//    Play,
-
-//    /// <summary>
-//    /// The media is paused.
-//    /// </summary>
-//    Pause,
-
-//    /// <summary>
-//    /// The media is stopped.
-//    /// </summary>
-//    Stop,
-
-//    /// <summary>
-//    /// The media is closed.
-//    /// </summary>
-//    Close
-//}
-
-#endregion
-
-#region 事件参数
-
-/// <summary>
-/// Event arguments for media failure events.
-/// </summary>
 public sealed class MediaFailedEventArgs : RoutedEventArgs
 {
-    /// <summary>
-    /// Gets the exception that caused the failure.
-    /// </summary>
     public Exception Exception { get; }
-
-    /// <summary>
-    /// Gets the error message.
-    /// </summary>
     public string ErrorMessage => Exception.Message;
 
     public MediaFailedEventArgs(RoutedEvent routedEvent, object source, Exception exception)
         : base(routedEvent, source)
     {
         Exception = exception;
-    }
-
-    public MediaFailedEventArgs(Exception exception)
-    {
-        Exception = exception;
-    }
-}
-
-/// <summary>
-/// Event arguments for media script command events.
-/// </summary>
-public sealed class MediaScriptCommandEventArgs : EventArgs
-{
-    /// <summary>
-    /// Gets the type of script command.
-    /// </summary>
-    public string ParameterType { get; }
-
-    /// <summary>
-    /// Gets the script command parameter.
-    /// </summary>
-    public string ParameterValue { get; }
-
-    public MediaScriptCommandEventArgs(string parameterType, string parameterValue)
-    {
-        ParameterType = parameterType;
-        ParameterValue = parameterValue;
-    }
-}
-
-#endregion
-
-#region Duration 结构
-
-/// <summary>
-/// Represents the duration of time a Timeline is active.
-/// </summary>
-public struct Duration
-{
-    private readonly TimeSpan _timeSpan;
-    private readonly DurationType _type;
-
-    public static Duration Automatic => new(DurationType.Automatic);
-    public static Duration Forever => new(DurationType.Forever);
-
-    private Duration(DurationType type)
-    {
-        _type = type;
-        _timeSpan = TimeSpan.Zero;
-    }
-
-    public Duration(TimeSpan timeSpan)
-    {
-        _type = DurationType.TimeSpan;
-        _timeSpan = timeSpan;
-    }
-
-    public bool HasTimeSpan => _type == DurationType.TimeSpan;
-
-    public TimeSpan TimeSpan => _type == DurationType.TimeSpan
-        ? _timeSpan
-        : throw new InvalidOperationException("Duration does not have a TimeSpan value.");
-
-    public static implicit operator Duration(TimeSpan timeSpan) => new(timeSpan);
-
-    private enum DurationType
-    {
-        Automatic,
-        TimeSpan,
-        Forever
     }
 }
 
@@ -300,8 +196,11 @@ public sealed class VideoFrameBuffer : IDisposable
 
 #endregion
 
-#region 音频流信息
+#region 音频管理器 (SoundFlow + FFmpeg)
 
+/// <summary>
+/// 音频流信息结构 - 用于存储探测到的真实格式
+/// </summary>
 public sealed class AudioStreamInfo
 {
     public int SampleRate { get; set; }
@@ -309,10 +208,9 @@ public sealed class AudioStreamInfo
     public int BitsPerSample { get; set; }
 }
 
-#endregion
-
-#region 音频管理器 (SoundFlow + FFmpeg)
-
+/// <summary>
+/// 使用 SoundFlow + FFmpeg 编解码器管理音频播放
+/// </summary>
 public sealed class AudioPlaybackManager : IDisposable
 {
     private MiniAudioEngine? _audioEngine;
@@ -331,6 +229,7 @@ public sealed class AudioPlaybackManager : IDisposable
     private TimeSpan _pausePosition;
     private bool _isPlaying;
 
+    // 存储探测到的真实音频格式
     private AudioStreamInfo _detectedFormat = new() { SampleRate = 48000, Channels = 2, BitsPerSample = 16 };
 
     public TimeSpan CurrentPosition
@@ -429,10 +328,14 @@ public sealed class AudioPlaybackManager : IDisposable
 
     #region 音频格式探测
 
+    /// <summary>
+    /// 使用 AudioFormat.GetFormatFromStream 或手动解析文件头
+    /// </summary>
     private AudioStreamInfo DetectAudioFormat(string filePath)
     {
         try
         {
+            //尝试使用 SoundFlow 的 AudioFormat.GetFormatFromStream（如果可用）
             var formatMethod = typeof(AudioFormat).GetMethod("GetFormatFromStream",
                 BindingFlags.Public | BindingFlags.Static);
 
@@ -459,6 +362,7 @@ public sealed class AudioPlaybackManager : IDisposable
                 }
             }
 
+            // 手动解析文件头
             using var fs = File.OpenRead(filePath);
             var header = new byte[16384];
             var read = fs.Read(header, 0, header.Length);
@@ -688,10 +592,14 @@ public sealed class AudioPlaybackManager : IDisposable
         return info;
     }
 
+    /// <summary>
+    /// 创建与探测到的格式匹配的 AudioFormat
+    /// </summary>
     private AudioFormat CreateMatchingFormat(AudioStreamInfo info)
     {
         try
         {
+            // 将 bitsPerSample 转换为 SampleFormat 枚举
             var sampleFormat = info.BitsPerSample switch
             {
                 8 => SampleFormat.U8,
@@ -701,6 +609,7 @@ public sealed class AudioPlaybackManager : IDisposable
                 _ => SampleFormat.S16
             };
 
+            // 使用对象初始化器创建 AudioFormat
             var format = new AudioFormat
             {
                 SampleRate = info.SampleRate,
@@ -744,20 +653,27 @@ public sealed class AudioPlaybackManager : IDisposable
                 _currentFilePath = filePath;
                 Duration = GetAudioDuration(filePath);
 
+                // 探测文件真实格式
                 _detectedFormat = DetectAudioFormat(filePath);
                 FileLogger.Log($"[OpenAndPlay] Detected: {_detectedFormat.SampleRate}Hz, {_detectedFormat.Channels}ch, {_detectedFormat.BitsPerSample}bit");
 
+                // 创建匹配的 AudioFormat
                 var targetFormat = CreateMatchingFormat(_detectedFormat);
 
+                // 使用文件格式初始化 PlaybackDevice
                 var defaultDevice = _audioEngine!.PlaybackDevices.FirstOrDefault(x => x.IsDefault);
                 _playbackDevice = _audioEngine.InitializePlaybackDevice(defaultDevice, targetFormat);
 
                 FileLogger.Log($"[Device] Initialized with format: {targetFormat.SampleRate}Hz");
 
+                // 使用标准 FileStream 构造函数（修复 bufferSize 参数错误）
                 _fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
                     bufferSize: 262144, useAsync: true);
 
+                // StreamDataProvider 使用相同的 targetFormat
                 _dataProvider = new StreamDataProvider(_audioEngine, targetFormat, _fileStream);
+
+                // SoundPlayer 使用相同的 targetFormat
                 _soundPlayer = new SoundPlayer(_audioEngine, targetFormat, _dataProvider);
 
                 UpdateVolume();
@@ -860,6 +776,9 @@ public sealed class AudioPlaybackManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Seek 操作需要重新初始化流，确保格式一致
+    /// </summary>
     public bool Seek(TimeSpan position)
     {
         lock (_lock)
@@ -876,17 +795,20 @@ public sealed class AudioPlaybackManager : IDisposable
                 _dataProvider?.Dispose();
                 _fileStream?.Dispose();
 
+                //重新打开文件流时使用相同的格式
                 _fileStream = new FileStream(_currentFilePath, FileMode.Open, FileAccess.Read, FileShare.Read,
                     bufferSize: 262144, useAsync: true);
 
                 if (_fileStream.CanSeek)
                 {
+                    // 估算字节位置（基于探测到的格式）
                     var bytesPerSecond = _detectedFormat.SampleRate * _detectedFormat.Channels * (_detectedFormat.BitsPerSample / 8);
                     var bytePosition = (long)(position.TotalSeconds * bytesPerSecond);
                     _fileStream.Position = Math.Min(bytePosition, _fileStream.Length);
                     FileLogger.Log($"[Seek] File position set to {_fileStream.Position} bytes");
                 }
 
+                // 使用探测到的格式重新创建 Provider 和 Player
                 var targetFormat = CreateMatchingFormat(_detectedFormat);
                 _dataProvider = new StreamDataProvider(_audioEngine, targetFormat, _fileStream);
                 _soundPlayer = new SoundPlayer(_audioEngine, targetFormat, _dataProvider);
@@ -1094,13 +1016,9 @@ public sealed class AVSyncClock : IDisposable
 
 #endregion
 
-#region MediaElement 控件
+#region 媒体播放器控件
 
-/// <summary>
-/// Represents a control that contains audio and/or video.
-/// Uses OpenCvSharp for video decoding and SoundFlow + FFmpeg for audio playback.
-/// </summary>
-public class MediaElement : FrameworkElement, IDisposable
+public sealed class MediaPlayer : FrameworkElement, IDisposable
 {
     #region 私有字段
 
@@ -1113,8 +1031,6 @@ public class MediaElement : FrameworkElement, IDisposable
     private bool _isPlaying;
     private bool _hasVideo;
     private bool _hasAudio;
-    private double _downloadProgress;
-    private double _bufferingProgress;
     private CancellationTokenSource? _playbackCts;
     private Task? _videoDecodeTask;
     private Task? _videoRenderTask;
@@ -1151,84 +1067,36 @@ public class MediaElement : FrameworkElement, IDisposable
 
     #region 依赖属性
 
-    /// <summary>
-    /// Identifies the Source dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
-        DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(MediaElement),
+        DependencyProperty.Register(nameof(Source), typeof(string), typeof(MediaPlayer),
             new PropertyMetadata(null, OnSourceChanged));
 
-    /// <summary>
-    /// Identifies the Volume dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VolumeProperty =
-        DependencyProperty.Register(nameof(Volume), typeof(double), typeof(MediaElement),
+        DependencyProperty.Register(nameof(Volume), typeof(double), typeof(MediaPlayer),
             new PropertyMetadata(0.5, OnVolumeChanged, CoerceVolume));
 
-    /// <summary>
-    /// Identifies the Balance dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty BalanceProperty =
-        DependencyProperty.Register(nameof(Balance), typeof(double), typeof(MediaElement),
-            new PropertyMetadata(0.0, OnBalanceChanged, CoerceBalance));
-
-    /// <summary>
-    /// Identifies the IsMuted dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsMutedProperty =
-        DependencyProperty.Register(nameof(IsMuted), typeof(bool), typeof(MediaElement),
+        DependencyProperty.Register(nameof(IsMuted), typeof(bool), typeof(MediaPlayer),
             new PropertyMetadata(false, OnIsMutedChanged));
 
-    /// <summary>
-    /// Identifies the ScrubbingEnabled dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public static readonly DependencyProperty ScrubbingEnabledProperty =
-        DependencyProperty.Register(nameof(ScrubbingEnabled), typeof(bool), typeof(MediaElement),
-            new PropertyMetadata(false));
-
-    /// <summary>
-    /// Identifies the Stretch dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchProperty =
-        DependencyProperty.Register(nameof(Stretch), typeof(Stretch), typeof(MediaElement),
+        DependencyProperty.Register(nameof(Stretch), typeof(Stretch), typeof(MediaPlayer),
             new PropertyMetadata(Stretch.Uniform, OnStretchChanged));
 
-    /// <summary>
-    /// Identifies the StretchDirection dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchDirectionProperty =
-        DependencyProperty.Register(nameof(StretchDirection), typeof(StretchDirection), typeof(MediaElement),
+        DependencyProperty.Register(nameof(StretchDirection), typeof(StretchDirection), typeof(MediaPlayer),
             new PropertyMetadata(StretchDirection.Both, OnStretchChanged));
 
-    /// <summary>
-    /// Identifies the LoadedBehavior dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LoadedBehaviorProperty =
-        DependencyProperty.Register(nameof(LoadedBehavior), typeof(MediaState), typeof(MediaElement),
+        DependencyProperty.Register(nameof(LoadedBehavior), typeof(MediaState), typeof(MediaPlayer),
             new PropertyMetadata(MediaState.Play, OnLoadedBehaviorChanged));
 
-    /// <summary>
-    /// Identifies the UnloadedBehavior dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UnloadedBehaviorProperty =
-        DependencyProperty.Register(nameof(UnloadedBehavior), typeof(MediaState), typeof(MediaElement),
+        DependencyProperty.Register(nameof(UnloadedBehavior), typeof(MediaState), typeof(MediaPlayer),
             new PropertyMetadata(MediaState.Close));
 
-    /// <summary>
-    /// Identifies the SpeedRatio dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SpeedRatioProperty =
-        DependencyProperty.Register(nameof(SpeedRatio), typeof(double), typeof(MediaElement),
+        DependencyProperty.Register(nameof(SpeedRatio), typeof(double), typeof(MediaPlayer),
             new PropertyMetadata(1.0, OnSpeedRatioChanged, CoerceSpeedRatio));
 
     #endregion
@@ -1237,166 +1105,86 @@ public class MediaElement : FrameworkElement, IDisposable
 
     public static readonly RoutedEvent MediaOpenedEvent =
         EventManager.RegisterRoutedEvent(nameof(MediaOpened), RoutingStrategy.Bubble,
-            typeof(RoutedEventHandler), typeof(MediaElement));
+            typeof(RoutedEventHandler), typeof(MediaPlayer));
 
     public static readonly RoutedEvent MediaEndedEvent =
         EventManager.RegisterRoutedEvent(nameof(MediaEnded), RoutingStrategy.Bubble,
-            typeof(RoutedEventHandler), typeof(MediaElement));
+            typeof(RoutedEventHandler), typeof(MediaPlayer));
 
     public static readonly RoutedEvent MediaFailedEvent =
         EventManager.RegisterRoutedEvent(nameof(MediaFailed), RoutingStrategy.Bubble,
-            typeof(EventHandler<MediaFailedEventArgs>), typeof(MediaElement));
+            typeof(EventHandler<MediaFailedEventArgs>), typeof(MediaPlayer));
 
-    /// <summary>
-    /// Occurs when media loading has finished.
-    /// </summary>
     public event RoutedEventHandler? MediaOpened
     {
-        add => AddHandler(MediaOpenedEvent, value!);
-        remove => RemoveHandler(MediaOpenedEvent, value!);
+        add => AddHandler(MediaOpenedEvent, value);
+        remove => RemoveHandler(MediaOpenedEvent, value);
     }
 
-    /// <summary>
-    /// Occurs when the media has ended.
-    /// </summary>
     public event RoutedEventHandler? MediaEnded
     {
-        add => AddHandler(MediaEndedEvent, value!);
-        remove => RemoveHandler(MediaEndedEvent, value!);
+        add => AddHandler(MediaEndedEvent, value);
+        remove => RemoveHandler(MediaEndedEvent, value);
     }
 
-    /// <summary>
-    /// Occurs when an error is encountered.
-    /// </summary>
     public event EventHandler<MediaFailedEventArgs>? MediaFailed
     {
-        add => AddHandler(MediaFailedEvent, value!);
-        remove => RemoveHandler(MediaFailedEvent, value!);
+        add => AddHandler(MediaFailedEvent, value);
+        remove => RemoveHandler(MediaFailedEvent, value);
     }
-
-    /// <summary>
-    /// Occurs when buffering has started.
-    /// </summary>
-    public event RoutedEventHandler? BufferingStarted;
-
-    /// <summary>
-    /// Occurs when buffering has ended.
-    /// </summary>
-    public event RoutedEventHandler? BufferingEnded;
-
-    /// <summary>
-    /// Occurs when a script command is encountered in the media.
-    /// </summary>
-    public event EventHandler<MediaScriptCommandEventArgs>? ScriptCommand;
 
     #endregion
 
     #region CLR 属性
 
-    /// <summary>
-    /// Gets or sets a media source on the MediaElement.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public Uri? Source
+    public string? Source
     {
-        get => (Uri?)GetValue(SourceProperty);
+        get => (string?)GetValue(SourceProperty);
         set => SetValue(SourceProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the media's volume.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Volume
     {
         get => (double)GetValue(VolumeProperty)!;
         set => SetValue(VolumeProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a ratio of volume across speakers.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public double Balance
-    {
-        get => (double)GetValue(BalanceProperty)!;
-        set => SetValue(BalanceProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether the audio is muted.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsMuted
     {
         get => (bool)GetValue(IsMutedProperty)!;
         set => SetValue(IsMutedProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a value that indicates whether the MediaElement will update frames
-    /// for seek operations while paused.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
-    public bool ScrubbingEnabled
-    {
-        get => (bool)GetValue(ScrubbingEnabledProperty)!;
-        set => SetValue(ScrubbingEnabledProperty, value);
-    }
-
-    /// <summary>
-    /// Gets or sets a Stretch value that describes how the media fills the destination rectangle.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Stretch Stretch
     {
         get => (Stretch)GetValue(StretchProperty)!;
         set => SetValue(StretchProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a value that determines the restrictions on scaling that are applied to the video.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StretchDirection StretchDirection
     {
         get => (StretchDirection)GetValue(StretchDirectionProperty)!;
         set => SetValue(StretchDirectionProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the load behavior MediaState for the media.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public MediaState LoadedBehavior
     {
         get => (MediaState)GetValue(LoadedBehaviorProperty)!;
         set => SetValue(LoadedBehaviorProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the unload behavior MediaState for the media.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public MediaState UnloadedBehavior
     {
         get => (MediaState)GetValue(UnloadedBehaviorProperty)!;
         set => SetValue(UnloadedBehaviorProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the speed ratio of the media.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SpeedRatio
     {
         get => (double)GetValue(SpeedRatioProperty)!;
         set => SetValue(SpeedRatioProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the current position of progress through the media's playback time.
-    /// </summary>
     public TimeSpan Position
     {
         get => _position;
@@ -1409,75 +1197,30 @@ public class MediaElement : FrameworkElement, IDisposable
         }
     }
 
-    /// <summary>
-    /// Gets the duration of the media.
-    /// </summary>
     public Duration NaturalDuration => _duration == TimeSpan.Zero
         ? Duration.Automatic
         : new Duration(_duration);
 
-    /// <summary>
-    /// Gets the width of the video.
-    /// </summary>
     public int NaturalVideoWidth => _videoWidth;
-
-    /// <summary>
-    /// Gets the height of the video.
-    /// </summary>
     public int NaturalVideoHeight => _videoHeight;
-
-    /// <summary>
-    /// Gets a value indicating whether the media has audio.
-    /// </summary>
     public bool HasAudio => _hasAudio;
-
-    /// <summary>
-    /// Gets a value indicating whether the media has video.
-    /// </summary>
     public bool HasVideo => _hasVideo;
-
-    /// <summary>
-    /// Gets a value indicating the percentage of buffering progress made.
-    /// </summary>
-    public double BufferingProgress => _bufferingProgress;
-
-    /// <summary>
-    /// Gets a percentage value indicating the amount of download completed for content located on a remote server.
-    /// </summary>
-    public double DownloadProgress => _downloadProgress;
-
-    /// <summary>
-    /// Gets a value indicating whether the media is buffering.
-    /// </summary>
-    public bool IsBuffering { get; private set; }
-
-    /// <summary>
-    /// Gets a value indicating whether the media can be paused.
-    /// </summary>
     public bool CanPause { get; private set; } = true;
-
-    /// <summary>
-    /// Gets a value indicating whether the media is currently playing.
-    /// </summary>
     public bool IsPlaying => _isPlaying;
-
-    /// <summary>
-    /// Gets synchronization statistics.
-    /// </summary>
     public string SyncStats => $"Frames: {_framesRendered} Dropped: {_framesDropped} Late: {_framesLate}";
 
     #endregion
 
     #region 构造函数与析构函数
 
-    public MediaElement()
+    public MediaPlayer()
     {
         Unloaded += OnUnloaded;
         _audioManager = new AudioPlaybackManager();
-        FileLogger.Log("MediaElement created with OpenCV and SoundFlow + FFmpeg (cross-platform)");
+        FileLogger.Log("MediaPlayer created with OpenCV and SoundFlow + FFmpeg (cross-platform)");
     }
 
-    ~MediaElement()
+    ~MediaPlayer()
     {
         Dispose(false);
     }
@@ -1490,7 +1233,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void Dispose(bool disposing)
     {
-        FileLogger.Log("MediaElement disposing");
+        FileLogger.Log("MediaPlayer disposing");
         StopPlayback();
         _syncClock?.Dispose();
         _videoCapture?.Dispose();
@@ -1507,9 +1250,6 @@ public class MediaElement : FrameworkElement, IDisposable
 
     #region 公共方法
 
-    /// <summary>
-    /// Plays media from the current position.
-    /// </summary>
     public void Play()
     {
         if (_isPlaying) return;
@@ -1519,9 +1259,6 @@ public class MediaElement : FrameworkElement, IDisposable
         StartPlaybackInternal();
     }
 
-    /// <summary>
-    /// Pauses media at the current position.
-    /// </summary>
     public void Pause()
     {
         if (!_isPlaying) return;
@@ -1531,9 +1268,6 @@ public class MediaElement : FrameworkElement, IDisposable
         PausePlayback();
     }
 
-    /// <summary>
-    /// Stops and resets media to be played from the beginning.
-    /// </summary>
     public void Stop()
     {
         FileLogger.Log("Stop() called");
@@ -1544,9 +1278,6 @@ public class MediaElement : FrameworkElement, IDisposable
         InvalidateVisual();
     }
 
-    /// <summary>
-    /// Closes the media.
-    /// </summary>
     public void Close()
     {
         FileLogger.Log("Close() called");
@@ -1559,7 +1290,6 @@ public class MediaElement : FrameworkElement, IDisposable
 
     #region 布局与渲染
 
-    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
         if (!_hasVideo || _videoWidth <= 0 || _videoHeight <= 0)
@@ -1568,10 +1298,10 @@ public class MediaElement : FrameworkElement, IDisposable
         }
 
         var naturalSize = new Size(_videoWidth, _videoHeight);
-        return ComputeScaledSize(availableSize, naturalSize);
+        var result = ComputeScaledSize(availableSize, naturalSize);
+        return result;
     }
 
-    /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
         _arrangedSize = finalSize;
@@ -1695,36 +1425,33 @@ public class MediaElement : FrameworkElement, IDisposable
 
     #endregion
 
-    #region 属性变更处理
+    #region 属性变更处理程序
 
     private static void OnSourceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is MediaElement media)
+        if (d is MediaPlayer media)
         {
-            media.OnSourceChanged((Uri?)e.OldValue, (Uri?)e.NewValue);
+            media.OnSourceChanged((string?)e.OldValue, (string?)e.NewValue);
         }
     }
 
-    private void OnSourceChanged(Uri? oldSource, Uri? newSource)
+    private void OnSourceChanged(string? oldPath, string? newPath)
     {
-        if (newSource != null)
+        FileLogger.Log($"OnSourceChanged: old={oldPath}, new={newPath}");
+        _mediaPath = newPath;
+        if (!string.IsNullOrEmpty(newPath))
         {
-            var path = newSource.IsFile ? newSource.LocalPath : newSource.ToString();
-            FileLogger.Log($"OnSourceChanged: new={path}");
-            _mediaPath = path;
-            OpenMedia(path);
+            OpenMedia(newPath);
         }
         else
         {
-            FileLogger.Log("OnSourceChanged: source cleared");
-            _mediaPath = null;
             CloseMedia();
         }
     }
 
     private static void OnVolumeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is MediaElement media)
+        if (d is MediaPlayer media)
         {
             media.SetVolumeInternal((double)e.NewValue!);
         }
@@ -1736,20 +1463,9 @@ public class MediaElement : FrameworkElement, IDisposable
         return Math.Clamp(volume, 0.0, 1.0);
     }
 
-    private static void OnBalanceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        // Balance control - reserved for future implementation
-    }
-
-    private static object CoerceBalance(DependencyObject d, object? value)
-    {
-        var balance = (double)(value ?? 0.0);
-        return Math.Clamp(balance, -1.0, 1.0);
-    }
-
     private static void OnIsMutedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is MediaElement media)
+        if (d is MediaPlayer media)
         {
             media.SetMutedInternal((bool)e.NewValue!);
         }
@@ -1757,7 +1473,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private static void OnStretchChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is MediaElement media)
+        if (d is MediaPlayer media)
         {
             media.InvalidateMeasure();
             media.InvalidateVisual();
@@ -1766,7 +1482,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private static void OnLoadedBehaviorChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is MediaElement media)
+        if (d is MediaPlayer media)
         {
             media.ApplyLoadedBehavior((MediaState)e.NewValue!);
         }
@@ -1774,7 +1490,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private static void OnSpeedRatioChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
-        if (d is MediaElement media)
+        if (d is MediaPlayer media)
         {
             var ratio = (double)e.NewValue!;
             if (media._syncClock != null)
@@ -1810,7 +1526,7 @@ public class MediaElement : FrameworkElement, IDisposable
             var duration = 0.0;
             var audioDuration = 0.0;
 
-            // 尝试打开视频
+            //尝试打开视频
             _videoCapture?.Dispose();
             _videoCapture = new VideoCapture(source);
 
@@ -1967,7 +1683,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
             _audioManager.Play();
 
-            Thread.Sleep(50);
+            Thread.Sleep(50); // 等待音频启动
 
             FileLogger.Log("SoundFlow audio playback started");
         }
@@ -2236,12 +1952,16 @@ public class MediaElement : FrameworkElement, IDisposable
         }
     }
 
+    /// <summary>
+    /// 音频同步循环 - 更新同步时钟的音频位置
+    /// </summary>
     private void AudioSyncLoop(CancellationToken token)
     {
         FileLogger.Log("AudioSyncLoop started");
 
         try
         {
+            // 等待音频启动
             Thread.Sleep(100);
 
             while (!token.IsCancellationRequested && _isPlaying)
@@ -2408,7 +2128,7 @@ public class MediaElement : FrameworkElement, IDisposable
         try
         {
             var stride = width * 4;
-            _frameBitmap!.WritePixels(
+            _frameBitmap.WritePixels(
                 new Int32Rect(0, 0, width, height),
                 pixelData,
                 stride,
