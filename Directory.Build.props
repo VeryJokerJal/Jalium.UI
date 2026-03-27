@@ -10,9 +10,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- Versioning -->
-    <Version>26.9.2</Version>
-    <AssemblyVersion>26.9.2.0</AssemblyVersion>
-    <FileVersion>26.9.2.0</FileVersion>
+    <Version>26.9.6</Version>
+    <AssemblyVersion>26.9.6.0</AssemblyVersion>
+    <FileVersion>26.9.6.0</FileVersion>
 
     <!-- NuGet Package Metadata -->
     <Authors>Jalium Team</Authors>
