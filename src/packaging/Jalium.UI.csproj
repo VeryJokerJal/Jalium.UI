@@ -18,7 +18,7 @@
     <PackageProjectUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</PackageProjectUrl>
     <RepositoryUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</RepositoryUrl>
     <PackageTags>jalium;ui;xaml;jalxaml;wpf;windows;directx;gpu</PackageTags>
-    <Version>26.9.2</Version>
+    <Version>26.9.6</Version>
   </PropertyGroup>
 
   <!-- Reference all Jalium.UI packages -->
