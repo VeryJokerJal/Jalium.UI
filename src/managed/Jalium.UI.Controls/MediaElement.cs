@@ -276,7 +276,7 @@ public sealed class AudioPlaybackManager : IDisposable
     private bool _isMuted;
     private string? _currentFilePath;
 
-    // 【关键】使用音频引擎内部时间，而不是自己计算
+    // 使用音频引擎内部时间，而不是自己计算
     private TimeSpan _basePosition;
     private DateTime _lastPlayTime;
     private bool _isActuallyPlaying;
@@ -293,7 +293,7 @@ public sealed class AudioPlaybackManager : IDisposable
             {
                 if (_soundPlayer == null) return TimeSpan.Zero;
 
-                // 【修复】优先使用 SoundPlayer 的内部位置（如果有）
+                // 优先使用 SoundPlayer 的内部位置（如果有）
                 // 否则基于已播放时间计算
                 if (_isActuallyPlaying && _soundPlayer.State == PlaybackState.Playing)
                 {
@@ -437,7 +437,7 @@ public sealed class AudioPlaybackManager : IDisposable
 
                 if (_soundPlayer.State == PlaybackState.Paused)
                 {
-                    // 【关键】恢复播放时，更新基准时间
+                    // 恢复播放时，更新基准时间
                     _soundPlayer.Play();
                     _lastPlayTime = DateTime.Now;
                     _isActuallyPlaying = true;
@@ -472,7 +472,7 @@ public sealed class AudioPlaybackManager : IDisposable
                 if (_soundPlayer.State == PlaybackState.Playing)
                 {
                     _soundPlayer.Pause();
-                    // 【关键】暂停时，累加已播放时间到基准位置
+                    // 暂停时，累加已播放时间到基准位置
                     var elapsed = DateTime.Now - _lastPlayTime;
                     _basePosition += elapsed;
                     _isActuallyPlaying = false;
@@ -521,7 +521,7 @@ public sealed class AudioPlaybackManager : IDisposable
             {
                 FileLogger.Log($"Audio seeking to {position.TotalSeconds:F2}s");
 
-                // 【关键】Seek 时重置内部位置状态
+                // Seek 时重置内部位置状态
                 _soundPlayer?.Stop();
                 _playbackDevice.MasterMixer.RemoveComponent(_soundPlayer!);
                 _dataProvider?.Dispose();
@@ -543,7 +543,7 @@ public sealed class AudioPlaybackManager : IDisposable
                 UpdateVolume();
                 _playbackDevice.MasterMixer.AddComponent(_soundPlayer);
 
-                // 【关键】更新基准位置为 Seek 目标位置
+                // 更新基准位置为 Seek 目标位置
                 _basePosition = position;
 
                 // 如果正在播放，继续播放
@@ -646,7 +646,7 @@ public sealed class AudioPlaybackManager : IDisposable
 
 public sealed class AVSyncClock : IDisposable
 {
-    // 【关键】使用高精度计时器
+    // 使用高精度计时器
     private readonly Stopwatch _systemClock;
     private TimeSpan _baseMediaTime;
     private double _speedRatio = 1.0;
@@ -654,7 +654,7 @@ public sealed class AVSyncClock : IDisposable
     private bool _isRunning;
     private double _lastAudioPosition;
 
-    // 【关键】音视频同步阈值（大厂标准：40ms 以内人耳无法感知）
+    // 音视频同步阈值（40ms 以内人耳无法感知）
     public const double MaxAllowedDriftMs = 40;
     public const double VideoCatchUpThresholdMs = 80;
 
@@ -701,7 +701,7 @@ public sealed class AVSyncClock : IDisposable
         {
             if (_isRunning)
             {
-                // 【关键】暂停时，将已运行时间累加到基准时间
+                // 暂停时，将已运行时间累加到基准时间
                 _baseMediaTime += TimeSpan.FromTicks((long)(_systemClock.Elapsed.Ticks / _speedRatio));
                 _systemClock.Stop();
                 _isRunning = false;
@@ -822,7 +822,7 @@ public class MediaElement : FrameworkElement, IDisposable
     private int _targetWidth;
     private int _targetHeight;
 
-    // 【关键】记录视频应该从什么时间戳开始解码（解决多次暂停后的时间戳漂移）
+    // 记录视频应该从什么时间戳开始解码（解决多次暂停后的时间戳漂移）
     private double _videoStartTimeMs;
 
     #endregion
@@ -1376,7 +1376,7 @@ public class MediaElement : FrameworkElement, IDisposable
             _syncClock.SpeedRatio = SpeedRatio;
 
             _frameBuffer?.Dispose();
-            _frameBuffer = new VideoFrameBuffer(3); // 【优化】减小缓冲大小，降低延迟
+            _frameBuffer = new VideoFrameBuffer(3); // 减小缓冲大小，降低延迟
 
             if (_hasVideo)
             {
@@ -1446,7 +1446,7 @@ public class MediaElement : FrameworkElement, IDisposable
         _targetWidth = videoWidth;
         _targetHeight = videoHeight;
 
-        // 【关键】首次播放或Stop后，从0开始
+        // 首次播放或Stop后，从0开始
         _videoStartTimeMs = _position.TotalMilliseconds;
 
         if (_hasAudio && _audioManager != null)
@@ -1458,8 +1458,8 @@ public class MediaElement : FrameworkElement, IDisposable
                 _audioManager.Seek(_position);
 
             _audioManager.Play();
-            // 【优化】减少音频启动延迟
-            Thread.Sleep(20);
+            // 音频启动延迟
+            Thread.Sleep(1);
         }
 
         _syncClock?.Start(_position);
@@ -1503,13 +1503,13 @@ public class MediaElement : FrameworkElement, IDisposable
     }
 
     /// <summary>
-    /// 【关键修复】Resume时保持时间戳连续性，避免音视频错位
+    /// Resume时保持时间戳连续性，避免音视频错位
     /// </summary>
     private void ResumePlayback()
     {
         FileLogger.Log($"ResumePlayback: position={_position.TotalSeconds:F3}s");
 
-        // 【关键】先确保之前的任务完全停止，避免资源冲突
+        // 先确保之前的任务完全停止，避免资源冲突
         _playbackCts?.Cancel();
         try
         {
@@ -1521,20 +1521,20 @@ public class MediaElement : FrameworkElement, IDisposable
         _playbackCts = new CancellationTokenSource();
         var token = _playbackCts.Token;
 
-        // 【关键】保持当前位置作为视频起始时间戳，不要累加！
+        // 保持当前位置作为视频起始时间戳，不要累加！
         // 这样解码出的帧时间戳 = _position + (当前帧 - 起始帧) * frameDelay
         _videoStartTimeMs = _position.TotalMilliseconds;
 
-        // 【关键】先启动音频，再启动视频，确保音频先运行
+        // 先启动音频，再启动视频，确保音频先运行
         if (_hasAudio && _audioManager != null)
         {
             _audioManager.Play();
         }
 
-        // 【关键】同步时钟恢复，保持时间连续性
+        // 同步时钟恢复，保持时间连续性
         _syncClock?.Resume();
 
-        // 【关键】清空旧帧缓冲，避免显示旧帧造成卡顿感
+        // 清空旧帧缓冲，避免显示旧帧造成卡顿感
         _frameBuffer?.Clear();
 
         if (_hasVideo && _targetWidth > 0 && _targetHeight > 0)
@@ -1566,7 +1566,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void PausePlayback()
     {
-        // 【关键】先暂停时钟，确保时间停止在正确位置
+        // 先暂停时钟，确保时间停止在正确位置
         _syncClock?.Pause();
         _audioManager?.Pause();
 
@@ -1574,14 +1574,14 @@ public class MediaElement : FrameworkElement, IDisposable
 
         try
         {
-            // 【优化】减少等待时间，提高响应速度
+            // 减少等待时间，提高响应速度
             _videoDecodeTask?.Wait(TimeSpan.FromMilliseconds(500));
             _videoRenderTask?.Wait(TimeSpan.FromMilliseconds(500));
             _audioSyncTask?.Wait(TimeSpan.FromMilliseconds(200));
         }
         catch { }
 
-        // 【关键】更新位置到暂停时的准确时间
+        // 更新位置到暂停时的准确时间
         if (_syncClock != null)
         {
             _position = _syncClock.GetMediaTime();
@@ -1669,7 +1669,7 @@ public class MediaElement : FrameworkElement, IDisposable
     #region 播放循环
 
     /// <summary>
-    /// 【关键修复】视频解码循环 - 使用绝对时间戳，确保暂停后继续播放时间正确
+    /// 视频解码循环 - 使用绝对时间戳，确保暂停后继续播放时间正确
     /// </summary>
     private void VideoDecodeLoop(CancellationToken token, int targetWidth, int targetHeight)
     {
@@ -1693,7 +1693,7 @@ public class MediaElement : FrameworkElement, IDisposable
                     break;
                 }
 
-                // 【关键】计算绝对时间戳：基于起始时间 + 相对偏移
+                // 计算绝对时间戳：基于起始时间 + 相对偏移
                 // 这样无论Resume多少次，时间戳都是正确的绝对时间
                 var relativeFrameIndex = frameIndex - startFrameIndex;
                 var framePts = _videoStartTimeMs + (relativeFrameIndex * _frameDelayMs);
@@ -1714,7 +1714,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
                 var frame = new VideoFrame(frameData, targetWidth, targetHeight, (long)framePts, (int)frameIndex);
 
-                // 【优化】使用非阻塞添加，避免解码线程卡住
+                // 使用非阻塞添加，避免解码线程卡住
                 if (!_frameBuffer!.TryAdd(frame, 50))
                 {
                     // 如果缓冲满，丢弃最旧的帧
@@ -1753,7 +1753,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
                 var delay = _syncClock!.CalculateVideoDelay(frame.TimestampMs);
 
-                // 【优化】如果帧时间戳落后太多，直接丢弃，避免追赶造成卡顿
+                // 如果帧时间戳落后太多，直接丢弃，避免追赶造成卡顿
                 if (delay < TimeSpan.FromMilliseconds(-AVSyncClock.VideoCatchUpThresholdMs))
                 {
                     _framesDropped++;
@@ -1765,7 +1765,7 @@ public class MediaElement : FrameworkElement, IDisposable
                     continue;
                 }
 
-                // 【优化】如果延迟很小，直接渲染，不等待
+                // 如果延迟很小，直接渲染，不等待
                 if (delay > TimeSpan.FromMilliseconds(2))
                 {
                     await PreciseDelay(delay, token);
@@ -1802,20 +1802,20 @@ public class MediaElement : FrameworkElement, IDisposable
     {
         try
         {
-            // 【优化】减少初始延迟
+            // 减少初始延迟
             Thread.Sleep(50);
 
             while (!token.IsCancellationRequested && _isPlaying)
             {
                 if (_audioManager != null && _syncClock != null)
                 {
-                    // 【关键】使用音频实际位置更新同步时钟
+                    // 使用音频实际位置更新同步时钟
                     var audioPos = _audioManager.CurrentPosition.TotalSeconds;
                     _syncClock.UpdateAudioPosition(audioPos);
                     _position = _audioManager.CurrentPosition;
                 }
 
-                // 【优化】降低同步频率，减少CPU占用
+                // 降低同步频率，减少CPU占用
                 Thread.Sleep(20);
             }
         }
@@ -1894,7 +1894,7 @@ public class MediaElement : FrameworkElement, IDisposable
     {
         if (delay <= TimeSpan.Zero) return;
 
-        const int taskDelayThresholdMs = 16; // 【优化】降低到一帧的时间
+        const int taskDelayThresholdMs = 16; // 降低到一帧的时间
 
         if (delay.TotalMilliseconds > taskDelayThresholdMs)
         {

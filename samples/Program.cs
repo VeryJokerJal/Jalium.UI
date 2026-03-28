@@ -2,15 +2,14 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Media;
 using System;
-using MediaPlayer = Jalium.UI.Controls.MediaElement;
 using Stretch = Jalium.UI.Controls.Stretch;
 
 var app = new Application();
 
 // 创建播放器
-var mediaPlayer = new MediaPlayer
+var mediaPlayer = new MediaElement
 {
-    Source = new Uri("file:///D:/test.mp4"),
+    Source = new Uri("file:///E:/s.mp3"),
     Width = 854,
     Height = 480,
     Stretch = Stretch.Fill,
