@@ -10,10 +10,10 @@ var app = new Application();
 // 创建播放器
 var mediaPlayer = new MediaPlayer
 {
-    Source = new Uri("file:///E:/test.mp4"),
+    Source = new Uri("file:///D:/test.mp4"),
     Width = 854,
     Height = 480,
-    Stretch = Stretch.Uniform,
+    Stretch = Stretch.Fill,
     LoadedBehavior = MediaState.Manual
 };
 
@@ -44,7 +44,8 @@ var panel = new StackPanel
             Margin = new Thickness(10),
             Children = { playBtn, pauseBtn, stopBtn }
         }
-    }
+    },
+    
 };
 
 var window = new Window
