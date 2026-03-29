@@ -805,7 +805,7 @@ public class MediaElement : FrameworkElement, IDisposable
     private double _videoFps;
     private double _frameDelayMs;
 
-    private double _currentVolume = 0.5;
+    private double _currentVolume = 1;
     private bool _isMuted;
 
     private AVSyncClock? _syncClock;
@@ -835,7 +835,7 @@ public class MediaElement : FrameworkElement, IDisposable
 
     public static readonly DependencyProperty VolumeProperty =
         DependencyProperty.Register(nameof(Volume), typeof(double), typeof(MediaElement),
-            new PropertyMetadata(0.5, OnVolumeChanged, CoerceVolume));
+            new PropertyMetadata(1, OnVolumeChanged, CoerceVolume));
 
     public static readonly DependencyProperty BalanceProperty =
         DependencyProperty.Register(nameof(Balance), typeof(double), typeof(MediaElement),
