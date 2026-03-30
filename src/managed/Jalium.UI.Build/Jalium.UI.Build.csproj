@@ -11,7 +11,7 @@
     <IsPackable>true</IsPackable>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>Jalium.UI.Build</PackageId>
-    <Version>26.9.7</Version>
+    <Version>26.9.8</Version>
     <Description>MSBuild tasks for compiling Jalium.UI JALXAML files</Description>
     <Authors>Jalium</Authors>
 

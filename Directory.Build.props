@@ -10,9 +10,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- Versioning -->
-    <Version>26.9.7</Version>
-    <AssemblyVersion>26.9.7.0</AssemblyVersion>
-    <FileVersion>26.9.7.0</FileVersion>
+    <Version>26.9.8</Version>
+    <AssemblyVersion>26.9.8.0</AssemblyVersion>
+    <FileVersion>26.9.8.0</FileVersion>
 
     <!-- NuGet Package Metadata -->
     <Authors>Jal</Authors>
