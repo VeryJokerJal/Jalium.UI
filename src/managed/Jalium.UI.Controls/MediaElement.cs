@@ -11,6 +11,7 @@ using SoundFlow.Enums;
 using SoundFlow.Providers;
 using SoundFlow.Structs;
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
@@ -23,34 +24,12 @@ namespace Jalium.UI.Controls;
 
 #region 媒体状态枚举
 
-/// <summary>
-/// Specifies the load behavior for the MediaElement.
-/// </summary>
 public enum MediaState
 {
-    /// <summary>
-    /// The media is in manual control mode (uses Play, Pause, Stop methods).
-    /// </summary>
     Manual,
-
-    /// <summary>
-    /// The media is playing.
-    /// </summary>
     Play,
-
-    /// <summary>
-    /// The media is paused.
-    /// </summary>
     Pause,
-
-    /// <summary>
-    /// The media is stopped.
-    /// </summary>
     Stop,
-
-    /// <summary>
-    /// The media is closed.
-    /// </summary>
     Close
 }
 
@@ -58,19 +37,9 @@ public enum MediaState
 
 #region 事件参数
 
-/// <summary>
-/// Event arguments for media failure events.
-/// </summary>
 public sealed class MediaFailedEventArgs : RoutedEventArgs
 {
-    /// <summary>
-    /// Gets the exception that caused the failure.
-    /// </summary>
     public Exception Exception { get; }
-
-    /// <summary>
-    /// Gets the error message.
-    /// </summary>
     public string ErrorMessage => Exception.Message;
 
     public MediaFailedEventArgs(RoutedEvent routedEvent, object source, Exception exception)
@@ -85,19 +54,9 @@ public sealed class MediaFailedEventArgs : RoutedEventArgs
     }
 }
 
-/// <summary>
-/// Event arguments for media script command events.
-/// </summary>
 public sealed class MediaScriptCommandEventArgs : EventArgs
 {
-    /// <summary>
-    /// Gets the type of script command.
-    /// </summary>
     public string ParameterType { get; }
-
-    /// <summary>
-    /// Gets the script command parameter.
-    /// </summary>
     public string ParameterValue { get; }
 
     public MediaScriptCommandEventArgs(string parameterType, string parameterValue)
@@ -111,9 +70,6 @@ public sealed class MediaScriptCommandEventArgs : EventArgs
 
 #region Duration 结构
 
-/// <summary>
-/// Represents the duration of time a Timeline is active.
-/// </summary>
 public struct Duration
 {
     private readonly TimeSpan _timeSpan;
@@ -212,7 +168,7 @@ public sealed class VideoFrame : IDisposable
     public byte[] Data { get; }
     public int Width { get; }
     public int Height { get; }
-    public long TimestampMs { get; }
+    public long TimestampMs { get; }  // 绝对时间戳（从视频开始计算的毫秒数）
     public int FrameIndex { get; }
 
     public VideoFrame(byte[] data, int width, int height, long timestampMs, int frameIndex)
@@ -231,13 +187,11 @@ public sealed class VideoFrameBuffer : IDisposable
 {
     private readonly BlockingCollection<VideoFrame> _frameQueue;
     private readonly int _maxSize;
-    private int _frameIndex;
 
     public VideoFrameBuffer(int maxSize = 3)
     {
         _maxSize = maxSize;
         _frameQueue = new BlockingCollection<VideoFrame>(maxSize);
-        _frameIndex = 0;
     }
 
     public bool TryAdd(VideoFrame frame, int timeoutMs = 0)
@@ -288,13 +242,9 @@ public sealed class VideoFrameBuffer : IDisposable
 
     public int Count => _frameQueue.Count;
 
-    public int GetNextFrameIndex() => Interlocked.Increment(ref _frameIndex) - 1;
-
     public void Dispose()
     {
-        _frameQueue.CompleteAdding();
         Clear();
-        _frameQueue.Dispose();
     }
 }
 
@@ -311,7 +261,7 @@ public sealed class AudioStreamInfo
 
 #endregion
 
-#region 音频管理器 (SoundFlow + FFmpeg)
+#region 音频管理器
 
 public sealed class AudioPlaybackManager : IDisposable
 {
@@ -324,14 +274,16 @@ public sealed class AudioPlaybackManager : IDisposable
     private bool _disposed;
     private double _currentVolume = 1.0;
     private bool _isMuted;
-    private bool _isInitialized;
     private string? _currentFilePath;
 
-    private DateTime _playbackStartTime;
-    private TimeSpan _pausePosition;
-    private bool _isPlaying;
+    // 使用音频引擎内部时间，而不是自己计算
+    private TimeSpan _basePosition;
+    private DateTime _lastPlayTime;
+    private bool _isActuallyPlaying;
 
-    private AudioStreamInfo _detectedFormat = new() { SampleRate = 48000, Channels = 2, BitsPerSample = 16 };
+    private const int FORCED_SAMPLE_RATE = 44100;
+    private const int FORCED_CHANNELS = 2;
+    private const SampleFormat FORCED_FORMAT = SampleFormat.F32;
 
     public TimeSpan CurrentPosition
     {
@@ -340,9 +292,15 @@ public sealed class AudioPlaybackManager : IDisposable
             lock (_lock)
             {
                 if (_soundPlayer == null) return TimeSpan.Zero;
-                if (_isPlaying)
-                    return _pausePosition + (DateTime.Now - _playbackStartTime);
-                return _pausePosition;
+
+                // 优先使用 SoundPlayer 的内部位置（如果有）
+                // 否则基于已播放时间计算
+                if (_isActuallyPlaying && _soundPlayer.State == PlaybackState.Playing)
+                {
+                    var elapsed = DateTime.Now - _lastPlayTime;
+                    return _basePosition + elapsed;
+                }
+                return _basePosition;
             }
         }
     }
@@ -359,13 +317,14 @@ public sealed class AudioPlaybackManager : IDisposable
         try
         {
             _audioEngine = new MiniAudioEngine();
+            FileLogger.Log($"AudioPlaybackManager: Engine initialized");
+
             var factory = new FFmpegCodecFactory();
             TryRegisterFactory(factory);
-            FileLogger.Log("AudioPlaybackManager: Engine initialized and FFmpeg codecs registered");
         }
         catch (Exception ex)
         {
-            FileLogger.LogError("Failed to initialize engine and codecs in constructor", ex);
+            FileLogger.LogError("Failed to initialize engine and codecs", ex);
         }
     }
 
@@ -380,28 +339,8 @@ public sealed class AudioPlaybackManager : IDisposable
             if (registerMethod != null && _audioEngine != null)
             {
                 registerMethod.Invoke(_audioEngine, new object[] { factory });
-                FileLogger.Log("FFmpeg codec factory registered via RegisterCodecFactory");
+                FileLogger.Log("FFmpeg codec factory registered");
                 return;
-            }
-
-            var codecManagerProp = engineType.GetProperty("CodecManager",
-                BindingFlags.Public | BindingFlags.Instance);
-
-            if (codecManagerProp != null && _audioEngine != null)
-            {
-                var codecManager = codecManagerProp.GetValue(_audioEngine);
-                if (codecManager != null)
-                {
-                    var addMethod = codecManager.GetType().GetMethod("AddFactory",
-                        BindingFlags.Public | BindingFlags.Instance);
-
-                    if (addMethod != null)
-                    {
-                        addMethod.Invoke(codecManager, new object[] { factory });
-                        FileLogger.Log("FFmpeg codec factory registered via CodecManager.AddFactory");
-                        return;
-                    }
-                }
             }
         }
         catch (Exception ex)
@@ -427,309 +366,6 @@ public sealed class AudioPlaybackManager : IDisposable
         }
     }
 
-    #region 音频格式探测
-
-    private AudioStreamInfo DetectAudioFormat(string filePath)
-    {
-        try
-        {
-            var formatMethod = typeof(AudioFormat).GetMethod("GetFormatFromStream",
-                BindingFlags.Public | BindingFlags.Static);
-
-            if (formatMethod != null && _audioEngine != null)
-            {
-                try
-                {
-                    using var testStream = File.OpenRead(filePath);
-                    var detectedFormat = formatMethod.Invoke(null, new object[] { testStream });
-                    if (detectedFormat is AudioFormat af)
-                    {
-                        FileLogger.Log($"[AutoDetect] AudioFormat.GetFormatFromStream: {af.SampleRate}Hz, {af.Channels}ch");
-                        return new AudioStreamInfo
-                        {
-                            SampleRate = af.SampleRate,
-                            Channels = af.Channels,
-                            BitsPerSample = 16
-                        };
-                    }
-                }
-                catch (Exception ex)
-                {
-                    FileLogger.LogError("GetFormatFromStream failed, fallback to manual detection", ex);
-                }
-            }
-
-            using var fs = File.OpenRead(filePath);
-            var header = new byte[16384];
-            var read = fs.Read(header, 0, header.Length);
-            var extension = Path.GetExtension(filePath).ToLowerInvariant();
-
-            if (extension == ".wav" || extension == ".wave")
-                return ParseWavHeader(header);
-            if (extension == ".mp3")
-                return ParseMp3Header(header, read);
-            if (extension == ".mp4" || extension == ".m4a" || extension == ".mov")
-                return ParseMp4Header(header);
-            if (extension == ".flac")
-                return ParseFlacHeader(header);
-            if (extension == ".ogg")
-                return ParseOggHeader(header);
-        }
-        catch (Exception ex)
-        {
-            FileLogger.LogError($"Format detection failed for {filePath}", ex);
-        }
-
-        return GuessFormatFromExtension(filePath);
-    }
-
-    private AudioStreamInfo ParseWavHeader(byte[] header)
-    {
-        if (header.Length < 44) return new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 };
-
-        string riff = System.Text.Encoding.ASCII.GetString(header, 0, 4);
-        string wave = System.Text.Encoding.ASCII.GetString(header, 8, 4);
-
-        if (riff != "RIFF" || wave != "WAVE")
-            return new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 };
-
-        int channels = header[22] | (header[23] << 8);
-        int sampleRate = header[24] | (header[25] << 8) | (header[26] << 16) | (header[27] << 24);
-        int bitsPerSample = header[34] | (header[35] << 8);
-
-        FileLogger.Log($"[WAV Detected] {sampleRate}Hz, {channels}ch, {bitsPerSample}bit");
-
-        return new AudioStreamInfo
-        {
-            SampleRate = sampleRate > 0 ? sampleRate : 44100,
-            Channels = channels > 0 ? channels : 2,
-            BitsPerSample = bitsPerSample > 0 ? bitsPerSample : 16
-        };
-    }
-
-    private AudioStreamInfo ParseMp3Header(byte[] header, int length)
-    {
-        for (int i = 0; i < length - 4; i++)
-        {
-            if (header[i] == 0xFF && (header[i + 1] & 0xE0) == 0xE0)
-            {
-                int byte1 = header[i + 1];
-                int byte2 = header[i + 2];
-
-                int mpegVersion = (byte1 >> 3) & 0x3;
-                int sampleRateIndex = (byte2 >> 2) & 0x3;
-                int channelMode = (byte2 >> 6) & 0x3;
-
-                int[,] sampleRates = {
-                    { 44100, 48000, 32000, 0 },
-                    { 22050, 24000, 16000, 0 },
-                    { 11025, 12000, 8000, 0 }
-                };
-
-                int versionIndex = mpegVersion == 3 ? 0 : (mpegVersion == 2 ? 1 : 2);
-                int sampleRate = sampleRates[versionIndex, sampleRateIndex];
-                int channels = channelMode == 3 ? 1 : 2;
-
-                if (sampleRate > 0)
-                {
-                    FileLogger.Log($"[MP3 Detected] {sampleRate}Hz, {channels}ch");
-                    return new AudioStreamInfo
-                    {
-                        SampleRate = sampleRate,
-                        Channels = channels,
-                        BitsPerSample = 16
-                    };
-                }
-            }
-        }
-        return new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 };
-    }
-
-    private AudioStreamInfo ParseMp4Header(byte[] header)
-    {
-        if (header.Length > 8)
-        {
-            string sig = System.Text.Encoding.ASCII.GetString(header, 4, 4);
-            if (sig == "ftyp" || sig == "moov")
-            {
-                for (int i = 0; i < header.Length - 20; i++)
-                {
-                    if (header[i] == 'm' && header[i + 1] == 'd' && header[i + 2] == 'h' && header[i + 3] == 'd')
-                    {
-                        int version = header[i + 4];
-                        int offset = version == 1 ? 28 : 16;
-
-                        if (i + offset + 8 < header.Length)
-                        {
-                            uint timescale = (uint)((header[i + offset] << 24) |
-                                                   (header[i + offset + 1] << 16) |
-                                                   (header[i + offset + 2] << 8) |
-                                                    header[i + offset + 3]);
-
-                            if (timescale >= 8000 && timescale <= 192000)
-                            {
-                                FileLogger.Log($"[MP4 Detected] {timescale}Hz");
-                                return new AudioStreamInfo
-                                {
-                                    SampleRate = (int)timescale,
-                                    Channels = 2,
-                                    BitsPerSample = 16
-                                };
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        return new AudioStreamInfo { SampleRate = 48000, Channels = 2, BitsPerSample = 16 };
-    }
-
-    private AudioStreamInfo ParseFlacHeader(byte[] header)
-    {
-        if (header.Length < 38) return new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 };
-
-        string marker = System.Text.Encoding.ASCII.GetString(header, 0, 4);
-        if (marker != "fLaC") return new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 };
-
-        int pos = 4;
-        while (pos < header.Length - 34)
-        {
-            int blockHeader = (header[pos] << 24) | (header[pos + 1] << 16) |
-                             (header[pos + 2] << 8) | header[pos + 3];
-            int blockType = (blockHeader >> 31) & 0x1;
-            int actualType = (blockHeader >> 24) & 0x7F;
-            int blockSize = blockHeader & 0xFFFFFF;
-
-            if (actualType == 0)
-            {
-                int sampleRate = ((header[pos + 10] << 16) | (header[pos + 11] << 8) |
-                                  (header[pos + 12] & 0xF0)) >> 4;
-                int channels = ((header[pos + 12] & 0x0F) >> 1) + 1;
-
-                if (sampleRate > 0)
-                {
-                    FileLogger.Log($"[FLAC Detected] {sampleRate}Hz, {channels}ch");
-                    return new AudioStreamInfo
-                    {
-                        SampleRate = sampleRate,
-                        Channels = channels,
-                        BitsPerSample = 16
-                    };
-                }
-            }
-
-            if (blockType == 1) break;
-            pos += 4 + blockSize;
-        }
-
-        return new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 };
-    }
-
-    private AudioStreamInfo ParseOggHeader(byte[] header)
-    {
-        if (header.Length < 30) return new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 };
-
-        string capture = System.Text.Encoding.ASCII.GetString(header, 0, 4);
-        if (capture != "OggS") return new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 };
-
-        for (int i = 0; i < header.Length - 30; i++)
-        {
-            if (header[i] == 1 && System.Text.Encoding.ASCII.GetString(header, i + 1, 6) == "vorbis")
-            {
-                int sampleRate = header[i + 15] | (header[i + 16] << 8) |
-                                (header[i + 17] << 16) | (header[i + 18] << 24);
-                int channels = header[i + 19];
-
-                if (sampleRate > 0)
-                {
-                    FileLogger.Log($"[OGG Vorbis Detected] {sampleRate}Hz, {channels}ch");
-                    return new AudioStreamInfo
-                    {
-                        SampleRate = sampleRate,
-                        Channels = channels > 0 ? channels : 2,
-                        BitsPerSample = 16
-                    };
-                }
-            }
-
-            if (System.Text.Encoding.ASCII.GetString(header, i, 8) == "OpusHead")
-            {
-                int channels = header[i + 9];
-                FileLogger.Log($"[OGG Opus Detected] 48000Hz, {channels}ch");
-                return new AudioStreamInfo
-                {
-                    SampleRate = 48000,
-                    Channels = channels > 0 ? channels : 2,
-                    BitsPerSample = 16
-                };
-            }
-        }
-
-        return new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 };
-    }
-
-    private AudioStreamInfo GuessFormatFromExtension(string filePath)
-    {
-        var ext = Path.GetExtension(filePath).ToLowerInvariant();
-
-        var info = ext switch
-        {
-            ".mp3" => new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 },
-            ".wav" => new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 },
-            ".flac" => new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 },
-            ".ogg" => new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 },
-            ".m4a" or ".mp4" or ".mov" => new AudioStreamInfo { SampleRate = 48000, Channels = 2, BitsPerSample = 16 },
-            ".aac" => new AudioStreamInfo { SampleRate = 48000, Channels = 2, BitsPerSample = 16 },
-            ".wma" => new AudioStreamInfo { SampleRate = 44100, Channels = 2, BitsPerSample = 16 },
-            _ => new AudioStreamInfo { SampleRate = 48000, Channels = 2, BitsPerSample = 16 }
-        };
-
-        FileLogger.Log($"[GuessFormat] {ext} -> {info.SampleRate}Hz");
-        return info;
-    }
-
-    private AudioFormat CreateMatchingFormat(AudioStreamInfo info)
-    {
-        try
-        {
-            var sampleFormat = info.BitsPerSample switch
-            {
-                8 => SampleFormat.U8,
-                16 => SampleFormat.S16,
-                24 => SampleFormat.S24,
-                32 => SampleFormat.S32,
-                _ => SampleFormat.S16
-            };
-
-            var format = new AudioFormat
-            {
-                SampleRate = info.SampleRate,
-                Channels = info.Channels,
-                Format = sampleFormat
-            };
-
-            FileLogger.Log($"[CreateFormat] Created format: {info.SampleRate}Hz, {info.BitsPerSample}bit ({sampleFormat}), {info.Channels}ch");
-            return format;
-        }
-        catch (Exception ex)
-        {
-            FileLogger.LogError($"Failed to create format {info.SampleRate}Hz, fallback to preset", ex);
-
-            return info.SampleRate switch
-            {
-                44100 => AudioFormat.Cd,
-                48000 => AudioFormat.Dvd,
-                96000 => AudioFormat.StudioHq,
-                192000 => new AudioFormat { SampleRate = 192000, Channels = 2, Format = SampleFormat.S24 },
-                _ => AudioFormat.Dvd
-            };
-        }
-    }
-
-    #endregion
-
-    #region 核心播放控制
-
     public bool OpenAndPlay(string filePath)
     {
         lock (_lock)
@@ -742,31 +378,41 @@ public sealed class AudioPlaybackManager : IDisposable
                     return false;
 
                 _currentFilePath = filePath;
-                Duration = GetAudioDuration(filePath);
-
-                _detectedFormat = DetectAudioFormat(filePath);
-                FileLogger.Log($"[OpenAndPlay] Detected: {_detectedFormat.SampleRate}Hz, {_detectedFormat.Channels}ch, {_detectedFormat.BitsPerSample}bit");
-
-                var targetFormat = CreateMatchingFormat(_detectedFormat);
+                Duration = TimeSpan.Zero;
 
                 var defaultDevice = _audioEngine!.PlaybackDevices.FirstOrDefault(x => x.IsDefault);
-                _playbackDevice = _audioEngine.InitializePlaybackDevice(defaultDevice, targetFormat);
+                if (defaultDevice.Name == null)
+                {
+                    defaultDevice = _audioEngine.PlaybackDevices.FirstOrDefault();
+                }
 
-                FileLogger.Log($"[Device] Initialized with format: {targetFormat.SampleRate}Hz");
+                if (string.IsNullOrEmpty(defaultDevice.Name))
+                {
+                    FileLogger.LogError("No playback device found");
+                    return false;
+                }
 
+                var forcedFormat = new AudioFormat
+                {
+                    SampleRate = FORCED_SAMPLE_RATE,
+                    Channels = FORCED_CHANNELS,
+                    Format = FORCED_FORMAT
+                };
+
+                _playbackDevice = _audioEngine.InitializePlaybackDevice(defaultDevice, forcedFormat);
                 _fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
                     bufferSize: 262144, useAsync: true);
 
-                _dataProvider = new StreamDataProvider(_audioEngine, targetFormat, _fileStream);
-                _soundPlayer = new SoundPlayer(_audioEngine, targetFormat, _dataProvider);
+                _dataProvider = new StreamDataProvider(_audioEngine, forcedFormat, _fileStream);
+                _soundPlayer = new SoundPlayer(_audioEngine, forcedFormat, _dataProvider);
 
                 UpdateVolume();
                 _playbackDevice.MasterMixer.AddComponent(_soundPlayer);
 
-                _isInitialized = true;
-                _pausePosition = TimeSpan.Zero;
+                _basePosition = TimeSpan.Zero;
+                _isActuallyPlaying = false;
 
-                FileLogger.Log($"[Success] Audio opened: {filePath} @ {targetFormat.SampleRate}Hz (all components matched)");
+                FileLogger.Log($"Audio opened: {filePath}");
                 return true;
             }
             catch (Exception ex)
@@ -778,11 +424,6 @@ public sealed class AudioPlaybackManager : IDisposable
         }
     }
 
-    private TimeSpan GetAudioDuration(string filePath)
-    {
-        return TimeSpan.Zero;
-    }
-
     public bool Play()
     {
         lock (_lock)
@@ -791,22 +432,30 @@ public sealed class AudioPlaybackManager : IDisposable
 
             try
             {
-                if (_soundPlayer.State != PlaybackState.Playing)
+                if (_soundPlayer.State == PlaybackState.Playing)
+                    return true;
+
+                if (_soundPlayer.State == PlaybackState.Paused)
                 {
-                    Thread.Sleep(300);
-
-                    _playbackDevice.Start();
+                    // 恢复播放时，更新基准时间
                     _soundPlayer.Play();
-                    _playbackStartTime = DateTime.Now;
-                    _isPlaying = true;
-
-                    FileLogger.Log($"[Play] Started at {_detectedFormat.SampleRate}Hz (1x speed, no pitch shift)");
+                    _lastPlayTime = DateTime.Now;
+                    _isActuallyPlaying = true;
+                    FileLogger.Log($"Audio resumed from {_basePosition}");
+                    return true;
                 }
+
+                _playbackDevice.Start();
+                _soundPlayer.Play();
+                _lastPlayTime = DateTime.Now;
+                _isActuallyPlaying = true;
+
+                FileLogger.Log("Audio started");
                 return true;
             }
             catch (Exception ex)
             {
-                FileLogger.LogError("SoundFlow audio play failed", ex);
+                FileLogger.LogError("Audio play failed", ex);
                 return false;
             }
         }
@@ -820,18 +469,20 @@ public sealed class AudioPlaybackManager : IDisposable
 
             try
             {
-                _soundPlayer.Pause();
-                if (_isPlaying)
+                if (_soundPlayer.State == PlaybackState.Playing)
                 {
-                    _pausePosition += DateTime.Now - _playbackStartTime;
-                    _isPlaying = false;
+                    _soundPlayer.Pause();
+                    // 暂停时，累加已播放时间到基准位置
+                    var elapsed = DateTime.Now - _lastPlayTime;
+                    _basePosition += elapsed;
+                    _isActuallyPlaying = false;
+                    FileLogger.Log($"Audio paused at {_basePosition}");
                 }
-                FileLogger.Log("[Pause] Audio playback paused");
                 return true;
             }
             catch (Exception ex)
             {
-                FileLogger.LogError("SoundFlow audio pause failed", ex);
+                FileLogger.LogError("Audio pause failed", ex);
                 return false;
             }
         }
@@ -846,15 +497,14 @@ public sealed class AudioPlaybackManager : IDisposable
             try
             {
                 _soundPlayer.Stop();
-                _pausePosition = TimeSpan.Zero;
-                _isPlaying = false;
-                _playbackDevice?.Stop();
-                FileLogger.Log("[Stop] Audio playback stopped");
+                _basePosition = TimeSpan.Zero;
+                _isActuallyPlaying = false;
+                FileLogger.Log("Audio stopped");
                 return true;
             }
             catch (Exception ex)
             {
-                FileLogger.LogError("SoundFlow audio stop failed", ex);
+                FileLogger.LogError("Audio stop failed", ex);
                 return false;
             }
         }
@@ -869,8 +519,9 @@ public sealed class AudioPlaybackManager : IDisposable
 
             try
             {
-                FileLogger.Log($"[Seek] Seeking to {position.TotalSeconds:F2}s");
+                FileLogger.Log($"Audio seeking to {position.TotalSeconds:F2}s");
 
+                // Seek 时重置内部位置状态
                 _soundPlayer?.Stop();
                 _playbackDevice.MasterMixer.RemoveComponent(_soundPlayer!);
                 _dataProvider?.Dispose();
@@ -879,33 +530,35 @@ public sealed class AudioPlaybackManager : IDisposable
                 _fileStream = new FileStream(_currentFilePath, FileMode.Open, FileAccess.Read, FileShare.Read,
                     bufferSize: 262144, useAsync: true);
 
-                if (_fileStream.CanSeek)
+                var forcedFormat = new AudioFormat
                 {
-                    var bytesPerSecond = _detectedFormat.SampleRate * _detectedFormat.Channels * (_detectedFormat.BitsPerSample / 8);
-                    var bytePosition = (long)(position.TotalSeconds * bytesPerSecond);
-                    _fileStream.Position = Math.Min(bytePosition, _fileStream.Length);
-                    FileLogger.Log($"[Seek] File position set to {_fileStream.Position} bytes");
-                }
+                    SampleRate = FORCED_SAMPLE_RATE,
+                    Channels = FORCED_CHANNELS,
+                    Format = FORCED_FORMAT
+                };
 
-                var targetFormat = CreateMatchingFormat(_detectedFormat);
-                _dataProvider = new StreamDataProvider(_audioEngine, targetFormat, _fileStream);
-                _soundPlayer = new SoundPlayer(_audioEngine, targetFormat, _dataProvider);
+                _dataProvider = new StreamDataProvider(_audioEngine, forcedFormat, _fileStream);
+                _soundPlayer = new SoundPlayer(_audioEngine, forcedFormat, _dataProvider);
+
                 UpdateVolume();
                 _playbackDevice.MasterMixer.AddComponent(_soundPlayer);
 
-                _pausePosition = position;
-                if (_isPlaying)
+                // 更新基准位置为 Seek 目标位置
+                _basePosition = position;
+
+                // 如果正在播放，继续播放
+                if (_isActuallyPlaying)
                 {
-                    _playbackStartTime = DateTime.Now;
+                    _lastPlayTime = DateTime.Now;
                     _soundPlayer.Play();
                 }
 
-                FileLogger.Log($"[Seek] Seek completed to {position}");
+                FileLogger.Log($"Audio seek completed");
                 return true;
             }
             catch (Exception ex)
             {
-                FileLogger.LogError($"[Seek] Failed to seek to {position}", ex);
+                FileLogger.LogError($"Audio seek failed", ex);
                 return false;
             }
         }
@@ -954,19 +607,26 @@ public sealed class AudioPlaybackManager : IDisposable
         _dataProvider = null;
         _fileStream?.Dispose();
         _fileStream = null;
-        _playbackDevice?.Stop();
-        _playbackDevice?.Dispose();
-        _playbackDevice = null;
-        _isInitialized = false;
-        _isPlaying = false;
+
+        if (_playbackDevice != null)
+        {
+            try
+            {
+                _playbackDevice.Stop();
+                _playbackDevice.Dispose();
+            }
+            catch { }
+            _playbackDevice = null;
+        }
     }
 
     public void Close()
     {
         lock (_lock)
         {
-            FileLogger.Log("[Close] Closing audio playback");
             Cleanup();
+            _basePosition = TimeSpan.Zero;
+            _isActuallyPlaying = false;
         }
     }
 
@@ -977,29 +637,26 @@ public sealed class AudioPlaybackManager : IDisposable
         Close();
         _audioEngine?.Dispose();
         _audioEngine = null;
-        FileLogger.Log("[Dispose] AudioPlaybackManager disposed");
     }
-
-    #endregion
 }
 
 #endregion
 
 #region 同步时钟
 
-/// <summary>
-/// 音视频同步时钟 - 使用音频位置作为主时钟
-/// </summary>
 public sealed class AVSyncClock : IDisposable
 {
-    private double _audioPositionSeconds;
+    // 使用高精度计时器
     private readonly Stopwatch _systemClock;
-    private TimeSpan _baseTime;
+    private TimeSpan _baseMediaTime;
     private double _speedRatio = 1.0;
     private readonly object _lock = new();
+    private bool _isRunning;
+    private double _lastAudioPosition;
 
-    public const double MaxAllowedDriftMs = 50;
-    public const double VideoCatchUpThresholdMs = 100;
+    // 音视频同步阈值（40ms 以内人耳无法感知）
+    public const double MaxAllowedDriftMs = 40;
+    public const double VideoCatchUpThresholdMs = 80;
 
     public AVSyncClock()
     {
@@ -1010,23 +667,20 @@ public sealed class AVSyncClock : IDisposable
     {
         lock (_lock)
         {
-            _audioPositionSeconds = positionSeconds;
-        }
-    }
+            _lastAudioPosition = positionSeconds;
+            // 当音频位置领先时钟时，微调时钟基准
+            var clockTime = GetMediaTime().TotalSeconds;
+            var drift = positionSeconds - clockTime;
 
-    public TimeSpan GetMediaTime()
-    {
-        lock (_lock)
-        {
-            if (_audioPositionSeconds > 0)
+            // 如果漂移超过阈值，调整时钟基准
+            if (Math.Abs(drift) > MaxAllowedDriftMs / 1000.0)
             {
-                return TimeSpan.FromSeconds(_audioPositionSeconds / _speedRatio);
+                _baseMediaTime = TimeSpan.FromSeconds(positionSeconds);
+                if (_isRunning)
+                {
+                    _systemClock.Restart();
+                }
             }
-
-            if (!_systemClock.IsRunning)
-                return _baseTime;
-
-            return _baseTime + TimeSpan.FromTicks((long)(_systemClock.Elapsed.Ticks / _speedRatio));
         }
     }
 
@@ -1034,9 +688,10 @@ public sealed class AVSyncClock : IDisposable
     {
         lock (_lock)
         {
-            _baseTime = startPosition;
-            _audioPositionSeconds = startPosition.TotalSeconds;
+            _baseMediaTime = startPosition;
             _systemClock.Restart();
+            _isRunning = true;
+            FileLogger.Log($"AVSyncClock started at {startPosition.TotalSeconds:F3}s");
         }
     }
 
@@ -1044,7 +699,14 @@ public sealed class AVSyncClock : IDisposable
     {
         lock (_lock)
         {
-            _systemClock.Stop();
+            if (_isRunning)
+            {
+                // 暂停时，将已运行时间累加到基准时间
+                _baseMediaTime += TimeSpan.FromTicks((long)(_systemClock.Elapsed.Ticks / _speedRatio));
+                _systemClock.Stop();
+                _isRunning = false;
+                FileLogger.Log($"AVSyncClock paused at {_baseMediaTime.TotalSeconds:F3}s");
+            }
         }
     }
 
@@ -1052,7 +714,12 @@ public sealed class AVSyncClock : IDisposable
     {
         lock (_lock)
         {
-            _systemClock.Start();
+            if (!_isRunning)
+            {
+                _systemClock.Restart();
+                _isRunning = true;
+                FileLogger.Log($"AVSyncClock resumed, base time {_baseMediaTime.TotalSeconds:F3}s");
+            }
         }
     }
 
@@ -1062,7 +729,20 @@ public sealed class AVSyncClock : IDisposable
         {
             _systemClock.Stop();
             _systemClock.Reset();
-            _audioPositionSeconds = 0;
+            _baseMediaTime = TimeSpan.Zero;
+            _isRunning = false;
+        }
+    }
+
+    public TimeSpan GetMediaTime()
+    {
+        lock (_lock)
+        {
+            if (!_isRunning)
+                return _baseMediaTime;
+
+            var elapsed = TimeSpan.FromTicks((long)(_systemClock.Elapsed.Ticks / _speedRatio));
+            return _baseMediaTime + elapsed;
         }
     }
 
@@ -1096,10 +776,6 @@ public sealed class AVSyncClock : IDisposable
 
 #region MediaElement 控件
 
-/// <summary>
-/// Represents a control that contains audio and/or video.
-/// Uses OpenCvSharp for video decoding and SoundFlow + FFmpeg for audio playback.
-/// </summary>
 public class MediaElement : FrameworkElement, IDisposable
 {
     #region 私有字段
@@ -1111,9 +787,9 @@ public class MediaElement : FrameworkElement, IDisposable
     private TimeSpan _position;
     private TimeSpan _duration;
     private bool _isPlaying;
+    private bool _isPaused;
     private bool _hasVideo;
     private bool _hasAudio;
-    private double _downloadProgress;
     private double _bufferingProgress;
     private CancellationTokenSource? _playbackCts;
     private Task? _videoDecodeTask;
@@ -1135,7 +811,6 @@ public class MediaElement : FrameworkElement, IDisposable
     private AVSyncClock? _syncClock;
 
     private double _displayScale = 1.0;
-
     private Size _arrangedSize;
     private bool _isArranged;
     private bool _pendingPlay;
@@ -1147,86 +822,49 @@ public class MediaElement : FrameworkElement, IDisposable
     private int _targetWidth;
     private int _targetHeight;
 
+    // 记录视频应该从什么时间戳开始解码（解决多次暂停后的时间戳漂移）
+    private double _videoStartTimeMs;
+
     #endregion
 
     #region 依赖属性
 
-    /// <summary>
-    /// Identifies the Source dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public static readonly DependencyProperty SourceProperty =
         DependencyProperty.Register(nameof(Source), typeof(Uri), typeof(MediaElement),
             new PropertyMetadata(null, OnSourceChanged));
 
-    /// <summary>
-    /// Identifies the Volume dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty VolumeProperty =
         DependencyProperty.Register(nameof(Volume), typeof(double), typeof(MediaElement),
             new PropertyMetadata(0.5, OnVolumeChanged, CoerceVolume));
 
-    /// <summary>
-    /// Identifies the Balance dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty BalanceProperty =
         DependencyProperty.Register(nameof(Balance), typeof(double), typeof(MediaElement),
             new PropertyMetadata(0.0, OnBalanceChanged, CoerceBalance));
 
-    /// <summary>
-    /// Identifies the IsMuted dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsMutedProperty =
         DependencyProperty.Register(nameof(IsMuted), typeof(bool), typeof(MediaElement),
             new PropertyMetadata(false, OnIsMutedChanged));
 
-    /// <summary>
-    /// Identifies the ScrubbingEnabled dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty ScrubbingEnabledProperty =
         DependencyProperty.Register(nameof(ScrubbingEnabled), typeof(bool), typeof(MediaElement),
             new PropertyMetadata(false));
 
-    /// <summary>
-    /// Identifies the Stretch dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchProperty =
         DependencyProperty.Register(nameof(Stretch), typeof(Stretch), typeof(MediaElement),
             new PropertyMetadata(Stretch.Uniform, OnStretchChanged));
 
-    /// <summary>
-    /// Identifies the StretchDirection dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty StretchDirectionProperty =
         DependencyProperty.Register(nameof(StretchDirection), typeof(StretchDirection), typeof(MediaElement),
             new PropertyMetadata(StretchDirection.Both, OnStretchChanged));
 
-    /// <summary>
-    /// Identifies the LoadedBehavior dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty LoadedBehaviorProperty =
         DependencyProperty.Register(nameof(LoadedBehavior), typeof(MediaState), typeof(MediaElement),
             new PropertyMetadata(MediaState.Play, OnLoadedBehaviorChanged));
 
-    /// <summary>
-    /// Identifies the UnloadedBehavior dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty UnloadedBehaviorProperty =
         DependencyProperty.Register(nameof(UnloadedBehavior), typeof(MediaState), typeof(MediaElement),
             new PropertyMetadata(MediaState.Close));
 
-    /// <summary>
-    /// Identifies the SpeedRatio dependency property.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty SpeedRatioProperty =
         DependencyProperty.Register(nameof(SpeedRatio), typeof(double), typeof(MediaElement),
             new PropertyMetadata(1.0, OnSpeedRatioChanged, CoerceSpeedRatio));
@@ -1247,156 +885,92 @@ public class MediaElement : FrameworkElement, IDisposable
         EventManager.RegisterRoutedEvent(nameof(MediaFailed), RoutingStrategy.Bubble,
             typeof(EventHandler<MediaFailedEventArgs>), typeof(MediaElement));
 
-    /// <summary>
-    /// Occurs when media loading has finished.
-    /// </summary>
     public event RoutedEventHandler? MediaOpened
     {
         add => AddHandler(MediaOpenedEvent, value!);
         remove => RemoveHandler(MediaOpenedEvent, value!);
     }
 
-    /// <summary>
-    /// Occurs when the media has ended.
-    /// </summary>
     public event RoutedEventHandler? MediaEnded
     {
         add => AddHandler(MediaEndedEvent, value!);
         remove => RemoveHandler(MediaEndedEvent, value!);
     }
 
-    /// <summary>
-    /// Occurs when an error is encountered.
-    /// </summary>
     public event EventHandler<MediaFailedEventArgs>? MediaFailed
     {
         add => AddHandler(MediaFailedEvent, value!);
         remove => RemoveHandler(MediaFailedEvent, value!);
     }
 
-    /// <summary>
-    /// Occurs when buffering has started.
-    /// </summary>
     public event RoutedEventHandler? BufferingStarted;
-
-    /// <summary>
-    /// Occurs when buffering has ended.
-    /// </summary>
     public event RoutedEventHandler? BufferingEnded;
-
-    /// <summary>
-    /// Occurs when a script command is encountered in the media.
-    /// </summary>
     public event EventHandler<MediaScriptCommandEventArgs>? ScriptCommand;
 
     #endregion
 
     #region CLR 属性
 
-    /// <summary>
-    /// Gets or sets a media source on the MediaElement.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
     public Uri? Source
     {
         get => (Uri?)GetValue(SourceProperty);
         set => SetValue(SourceProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the media's volume.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Volume
     {
         get => (double)GetValue(VolumeProperty)!;
         set => SetValue(VolumeProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a ratio of volume across speakers.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double Balance
     {
         get => (double)GetValue(BalanceProperty)!;
         set => SetValue(BalanceProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether the audio is muted.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public bool IsMuted
     {
         get => (bool)GetValue(IsMutedProperty)!;
         set => SetValue(IsMutedProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a value that indicates whether the MediaElement will update frames
-    /// for seek operations while paused.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool ScrubbingEnabled
     {
         get => (bool)GetValue(ScrubbingEnabledProperty)!;
         set => SetValue(ScrubbingEnabledProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a Stretch value that describes how the media fills the destination rectangle.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public Stretch Stretch
     {
         get => (Stretch)GetValue(StretchProperty)!;
         set => SetValue(StretchProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets a value that determines the restrictions on scaling that are applied to the video.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public StretchDirection StretchDirection
     {
         get => (StretchDirection)GetValue(StretchDirectionProperty)!;
         set => SetValue(StretchDirectionProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the load behavior MediaState for the media.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public MediaState LoadedBehavior
     {
         get => (MediaState)GetValue(LoadedBehaviorProperty)!;
         set => SetValue(LoadedBehaviorProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the unload behavior MediaState for the media.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public MediaState UnloadedBehavior
     {
         get => (MediaState)GetValue(UnloadedBehaviorProperty)!;
         set => SetValue(UnloadedBehaviorProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the speed ratio of the media.
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public double SpeedRatio
     {
         get => (double)GetValue(SpeedRatioProperty)!;
         set => SetValue(SpeedRatioProperty, value);
     }
 
-    /// <summary>
-    /// Gets or sets the current position of progress through the media's playback time.
-    /// </summary>
     public TimeSpan Position
     {
         get => _position;
@@ -1409,61 +983,18 @@ public class MediaElement : FrameworkElement, IDisposable
         }
     }
 
-    /// <summary>
-    /// Gets the duration of the media.
-    /// </summary>
     public Duration NaturalDuration => _duration == TimeSpan.Zero
         ? Duration.Automatic
         : new Duration(_duration);
 
-    /// <summary>
-    /// Gets the width of the video.
-    /// </summary>
     public int NaturalVideoWidth => _videoWidth;
-
-    /// <summary>
-    /// Gets the height of the video.
-    /// </summary>
     public int NaturalVideoHeight => _videoHeight;
-
-    /// <summary>
-    /// Gets a value indicating whether the media has audio.
-    /// </summary>
     public bool HasAudio => _hasAudio;
-
-    /// <summary>
-    /// Gets a value indicating whether the media has video.
-    /// </summary>
     public bool HasVideo => _hasVideo;
-
-    /// <summary>
-    /// Gets a value indicating the percentage of buffering progress made.
-    /// </summary>
     public double BufferingProgress => _bufferingProgress;
-
-    /// <summary>
-    /// Gets a percentage value indicating the amount of download completed for content located on a remote server.
-    /// </summary>
-    public double DownloadProgress => _downloadProgress;
-
-    /// <summary>
-    /// Gets a value indicating whether the media is buffering.
-    /// </summary>
     public bool IsBuffering { get; private set; }
-
-    /// <summary>
-    /// Gets a value indicating whether the media can be paused.
-    /// </summary>
     public bool CanPause { get; private set; } = true;
-
-    /// <summary>
-    /// Gets a value indicating whether the media is currently playing.
-    /// </summary>
     public bool IsPlaying => _isPlaying;
-
-    /// <summary>
-    /// Gets synchronization statistics.
-    /// </summary>
     public string SyncStats => $"Frames: {_framesRendered} Dropped: {_framesDropped} Late: {_framesLate}";
 
     #endregion
@@ -1474,7 +1005,7 @@ public class MediaElement : FrameworkElement, IDisposable
     {
         Unloaded += OnUnloaded;
         _audioManager = new AudioPlaybackManager();
-        FileLogger.Log("MediaElement created with OpenCV and SoundFlow + FFmpeg (cross-platform)");
+        FileLogger.Log("MediaElement created");
     }
 
     ~MediaElement()
@@ -1490,7 +1021,6 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void Dispose(bool disposing)
     {
-        FileLogger.Log("MediaElement disposing");
         StopPlayback();
         _syncClock?.Dispose();
         _videoCapture?.Dispose();
@@ -1507,50 +1037,50 @@ public class MediaElement : FrameworkElement, IDisposable
 
     #region 公共方法
 
-    /// <summary>
-    /// Plays media from the current position.
-    /// </summary>
     public void Play()
     {
         if (_isPlaying) return;
 
         FileLogger.Log("Play() called");
-        _isPlaying = true;
-        StartPlaybackInternal();
+
+        if (_isPaused)
+        {
+            ResumePlayback();
+        }
+        else
+        {
+            _isPlaying = true;
+            StartPlaybackInternal();
+        }
     }
 
-    /// <summary>
-    /// Pauses media at the current position.
-    /// </summary>
     public void Pause()
     {
-        if (!_isPlaying) return;
+        if (!_isPlaying || _isPaused) return;
 
         FileLogger.Log("Pause() called");
         _isPlaying = false;
+        _isPaused = true;
         PausePlayback();
     }
 
-    /// <summary>
-    /// Stops and resets media to be played from the beginning.
-    /// </summary>
     public void Stop()
     {
         FileLogger.Log("Stop() called");
         _isPlaying = false;
+        _isPaused = false;
         _pendingPlay = false;
         StopPlayback();
         _position = TimeSpan.Zero;
+        _videoStartTimeMs = 0;
         InvalidateVisual();
     }
 
-    /// <summary>
-    /// Closes the media.
-    /// </summary>
     public void Close()
     {
         FileLogger.Log("Close() called");
         _isPlaying = false;
+        _isPaused = false;
         _pendingPlay = false;
         CloseMedia();
     }
@@ -1559,7 +1089,6 @@ public class MediaElement : FrameworkElement, IDisposable
 
     #region 布局与渲染
 
-    /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
         if (!_hasVideo || _videoWidth <= 0 || _videoHeight <= 0)
@@ -1571,7 +1100,6 @@ public class MediaElement : FrameworkElement, IDisposable
         return ComputeScaledSize(availableSize, naturalSize);
     }
 
-    /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
         _arrangedSize = finalSize;
@@ -1659,9 +1187,7 @@ public class MediaElement : FrameworkElement, IDisposable
             {
                 Foreground = new SolidColorBrush(Color.FromRgb(200, 200, 200))
             };
-            var textWidth = text.Width;
-            var textHeight = text.Height;
-            dc.DrawText(text, new Point((rect.Width - textWidth) / 2, (rect.Height - textHeight) / 2));
+            dc.DrawText(text, new Point((rect.Width - text.Width) / 2, (rect.Height - text.Height) / 2));
             return;
         }
 
@@ -1687,9 +1213,7 @@ public class MediaElement : FrameworkElement, IDisposable
             {
                 Foreground = new SolidColorBrush(Color.FromRgb(200, 200, 200))
             };
-            var textWidth = text.Width;
-            var textHeight = text.Height;
-            dc.DrawText(text, new Point((rect.Width - textWidth) / 2, (rect.Height - textHeight) / 2));
+            dc.DrawText(text, new Point((rect.Width - text.Width) / 2, (rect.Height - text.Height) / 2));
         }
     }
 
@@ -1710,13 +1234,12 @@ public class MediaElement : FrameworkElement, IDisposable
         if (newSource != null)
         {
             var path = newSource.IsFile ? newSource.LocalPath : newSource.ToString();
-            FileLogger.Log($"OnSourceChanged: new={path}");
+            FileLogger.Log($"OnSourceChanged: {path}");
             _mediaPath = path;
             OpenMedia(path);
         }
         else
         {
-            FileLogger.Log("OnSourceChanged: source cleared");
             _mediaPath = null;
             CloseMedia();
         }
@@ -1736,10 +1259,7 @@ public class MediaElement : FrameworkElement, IDisposable
         return Math.Clamp(volume, 0.0, 1.0);
     }
 
-    private static void OnBalanceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        // Balance control - reserved for future implementation
-    }
+    private static void OnBalanceChanged(DependencyObject d, DependencyPropertyChangedEventArgs e) { }
 
     private static object CoerceBalance(DependencyObject d, object? value)
     {
@@ -1808,9 +1328,7 @@ public class MediaElement : FrameworkElement, IDisposable
             var videoHeight = 0;
             var videoFps = 30.0;
             var duration = 0.0;
-            var audioDuration = 0.0;
 
-            // 尝试打开视频
             _videoCapture?.Dispose();
             _videoCapture = new VideoCapture(source);
 
@@ -1823,35 +1341,24 @@ public class MediaElement : FrameworkElement, IDisposable
                 videoFps = videoInfo.VideoFps;
                 duration = videoInfo.Duration;
 
-                FileLogger.Log($"Video detected: {videoWidth}x{videoHeight}@{videoFps}fps, Duration: {duration}s");
+                FileLogger.Log($"Video: {videoWidth}x{videoHeight}@{videoFps}fps, {duration}s");
             }
             else
             {
                 _videoCapture.Dispose();
                 _videoCapture = null;
-                FileLogger.Log("No video stream found");
             }
 
-            // 使用 SoundFlow + FFmpeg 检测音频
             if (_audioManager != null)
             {
                 _audioManager.Close();
-
                 if (_audioManager.OpenAndPlay(source))
                 {
                     hasAudio = true;
-                    audioDuration = _audioManager.Duration.TotalSeconds;
-
+                    var audioDuration = _audioManager.Duration.TotalSeconds;
                     if (duration <= 0 && audioDuration > 0)
                         duration = audioDuration;
-
-                    FileLogger.Log($"Audio detected with SoundFlow: Duration={audioDuration}s");
-
                     _audioManager.Stop();
-                }
-                else
-                {
-                    FileLogger.Log("No audio stream found with SoundFlow");
                 }
             }
 
@@ -1862,17 +1369,14 @@ public class MediaElement : FrameworkElement, IDisposable
             _videoFps = videoFps > 0 ? videoFps : 30.0;
             _duration = TimeSpan.FromSeconds(duration);
             _frameDelayMs = 1000.0 / _videoFps;
+            _videoStartTimeMs = 0;
 
-            // 创建同步时钟
             _syncClock?.Dispose();
             _syncClock = new AVSyncClock();
             _syncClock.SpeedRatio = SpeedRatio;
 
-            // 创建帧缓冲区
             _frameBuffer?.Dispose();
-            _frameBuffer = new VideoFrameBuffer(5);
-
-            FileLogger.Log($"OpenMedia complete: Video={_hasVideo}, Audio={_hasAudio}, Duration={_duration}");
+            _frameBuffer = new VideoFrameBuffer(3); // 减小缓冲大小，降低延迟
 
             if (_hasVideo)
             {
@@ -1917,17 +1421,11 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void StartPlaybackInternal()
     {
-        FileLogger.Log($"StartPlaybackInternal: mediaPath={_mediaPath}, hasVideo={_hasVideo}, hasAudio={_hasAudio}, isArranged={_isArranged}");
-
         if (string.IsNullOrEmpty(_mediaPath))
-        {
-            FileLogger.Log("StartPlaybackInternal: aborted - no media path");
             return;
-        }
 
         if (!_isArranged || _arrangedSize.Width <= 0 || _arrangedSize.Height <= 0)
         {
-            FileLogger.Log("StartPlaybackInternal: Layout not ready, deferring...");
             _pendingPlay = true;
             return;
         }
@@ -1937,80 +1435,213 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void StartPlaybackWithSize(Size targetSize)
     {
-        FileLogger.Log($"StartPlaybackWithSize: targetSize={targetSize.Width}x{targetSize.Height}");
-
         _playbackCts = new CancellationTokenSource();
         var token = _playbackCts.Token;
 
-        // 重置帧统计
         _framesRendered = 0;
         _framesDropped = 0;
         _framesLate = 0;
 
-        // 计算视频渲染尺寸
         var (videoWidth, videoHeight) = CalculateVideoRenderSize(targetSize);
         _targetWidth = videoWidth;
         _targetHeight = videoHeight;
 
-        FileLogger.Log($"Video render size: {videoWidth}x{videoHeight}");
+        // 首次播放或Stop后，从0开始
+        _videoStartTimeMs = _position.TotalMilliseconds;
 
-        // 先启动音频，再启动同步时钟，最后启动视频
         if (_hasAudio && _audioManager != null)
         {
             _audioManager.SetVolume(_currentVolume);
             _audioManager.SetMuted(_isMuted);
 
             if (_position > TimeSpan.Zero)
-            {
                 _audioManager.Seek(_position);
-            }
 
             _audioManager.Play();
-
-            Thread.Sleep(50);
-
-            FileLogger.Log("SoundFlow audio playback started");
+            // 音频启动延迟
+            Thread.Sleep(1);
         }
 
-        // 启动同步时钟
         _syncClock?.Start(_position);
 
-        // 启动音频同步任务
         if (_hasAudio)
         {
             _audioSyncTask = Task.Run(() => AudioSyncLoop(token), token);
         }
 
-        // 启动视频播放
         if (_hasVideo && videoWidth > 0 && videoHeight > 0)
         {
-            _videoCapture?.Dispose();
-            _videoCapture = new VideoCapture(_mediaPath!);
-
-            if (!_videoCapture.IsOpened())
-            {
-                FileLogger.LogError("Failed to reopen video stream");
-                RaiseMediaFailed(new InvalidOperationException("Failed to open video"));
-                return;
-            }
-
-            if (_position > TimeSpan.Zero)
-            {
-                var framePos = _position.TotalSeconds * _videoFps;
-                _videoCapture.Set(VideoCaptureProperties.PosFrames, framePos);
-            }
-
-            _videoDecodeTask = Task.Run(() => VideoDecodeLoop(token, videoWidth, videoHeight), token);
-            _videoRenderTask = Task.Run(() => VideoRenderLoop(token), token);
-
-            FileLogger.Log("Video playback started");
+            StartVideoPlayback(token, videoWidth, videoHeight);
         }
 
-        // 纯音频模式
         if (!_hasVideo && _hasAudio)
         {
             _videoRenderTask = Task.Run(() => AudioOnlyPositionLoop(token), token);
         }
+    }
+
+    private void StartVideoPlayback(CancellationToken token, int videoWidth, int videoHeight)
+    {
+        _videoCapture?.Dispose();
+        _videoCapture = new VideoCapture(_mediaPath!);
+
+        if (!_videoCapture.IsOpened())
+        {
+            RaiseMediaFailed(new InvalidOperationException("Failed to open video"));
+            return;
+        }
+
+        // 定位到正确位置
+        if (_position > TimeSpan.Zero)
+        {
+            var framePos = _position.TotalSeconds * _videoFps;
+            _videoCapture.Set(VideoCaptureProperties.PosFrames, framePos);
+        }
+
+        _videoDecodeTask = Task.Run(() => VideoDecodeLoop(token, videoWidth, videoHeight), token);
+        _videoRenderTask = Task.Run(() => VideoRenderLoop(token), token);
+    }
+
+    /// <summary>
+    /// Resume时保持时间戳连续性，避免音视频错位
+    /// </summary>
+    private void ResumePlayback()
+    {
+        FileLogger.Log($"ResumePlayback: position={_position.TotalSeconds:F3}s");
+
+        // 先确保之前的任务完全停止，避免资源冲突
+        _playbackCts?.Cancel();
+        try
+        {
+            _videoDecodeTask?.Wait(TimeSpan.FromMilliseconds(500));
+            _videoRenderTask?.Wait(TimeSpan.FromMilliseconds(500));
+        }
+        catch { }
+
+        _playbackCts = new CancellationTokenSource();
+        var token = _playbackCts.Token;
+
+        // 保持当前位置作为视频起始时间戳，不要累加！
+        // 这样解码出的帧时间戳 = _position + (当前帧 - 起始帧) * frameDelay
+        _videoStartTimeMs = _position.TotalMilliseconds;
+
+        // 先启动音频，再启动视频，确保音频先运行
+        if (_hasAudio && _audioManager != null)
+        {
+            _audioManager.Play();
+        }
+
+        // 同步时钟恢复，保持时间连续性
+        _syncClock?.Resume();
+
+        // 清空旧帧缓冲，避免显示旧帧造成卡顿感
+        _frameBuffer?.Clear();
+
+        if (_hasVideo && _targetWidth > 0 && _targetHeight > 0)
+        {
+            // 重新打开视频并定位到当前位置
+            _videoCapture?.Dispose();
+            _videoCapture = new VideoCapture(_mediaPath!);
+
+            if (_videoCapture.IsOpened())
+            {
+                var framePos = _position.TotalSeconds * _videoFps;
+                _videoCapture.Set(VideoCaptureProperties.PosFrames, framePos);
+
+                FileLogger.Log($"Resume video at frame {framePos:F0}, timeMs={_videoStartTimeMs:F1}");
+
+                _videoDecodeTask = Task.Run(() => VideoDecodeLoop(token, _targetWidth, _targetHeight), token);
+                _videoRenderTask = Task.Run(() => VideoRenderLoop(token), token);
+            }
+        }
+
+        if (_hasAudio)
+        {
+            _audioSyncTask = Task.Run(() => AudioSyncLoop(token), token);
+        }
+
+        _isPlaying = true;
+        _isPaused = false;
+    }
+
+    private void PausePlayback()
+    {
+        // 先暂停时钟，确保时间停止在正确位置
+        _syncClock?.Pause();
+        _audioManager?.Pause();
+
+        _playbackCts?.Cancel();
+
+        try
+        {
+            // 减少等待时间，提高响应速度
+            _videoDecodeTask?.Wait(TimeSpan.FromMilliseconds(500));
+            _videoRenderTask?.Wait(TimeSpan.FromMilliseconds(500));
+            _audioSyncTask?.Wait(TimeSpan.FromMilliseconds(200));
+        }
+        catch { }
+
+        // 更新位置到暂停时的准确时间
+        if (_syncClock != null)
+        {
+            _position = _syncClock.GetMediaTime();
+        }
+    }
+
+    private void StopPlayback()
+    {
+        _playbackCts?.Cancel();
+
+        try
+        {
+            _videoDecodeTask?.Wait(TimeSpan.FromSeconds(1));
+            _videoRenderTask?.Wait(TimeSpan.FromSeconds(1));
+            _audioSyncTask?.Wait(TimeSpan.FromSeconds(1));
+        }
+        catch { }
+
+        _playbackCts?.Dispose();
+        _playbackCts = null;
+        _videoDecodeTask = null;
+        _videoRenderTask = null;
+        _audioSyncTask = null;
+        _isPlaying = false;
+        _pendingPlay = false;
+
+        _syncClock?.Stop();
+        _frameBuffer?.Clear();
+
+        _audioManager?.Stop();
+        _videoCapture?.Dispose();
+        _videoCapture = null;
+    }
+
+    private void CloseMedia()
+    {
+        StopPlayback();
+
+        _videoCapture?.Dispose();
+        _videoCapture = null;
+        _audioManager?.Close();
+        _frameBuffer?.Dispose();
+        _frameBuffer = null;
+
+        _frameBitmap = null;
+        _frameImage = null;
+        _position = TimeSpan.Zero;
+        _duration = TimeSpan.Zero;
+        _hasVideo = false;
+        _hasAudio = false;
+        _videoWidth = 0;
+        _videoHeight = 0;
+        _isArranged = false;
+        _arrangedSize = Size.Empty;
+        _pendingPlay = false;
+        _isPaused = false;
+        _videoStartTimeMs = 0;
+
+        InvalidateMeasure();
+        InvalidateVisual();
     }
 
     private (int width, int height) CalculateVideoRenderSize(Size availableSize)
@@ -2033,83 +1664,24 @@ public class MediaElement : FrameworkElement, IDisposable
         return (targetWidth, targetHeight);
     }
 
-    private void PausePlayback()
-    {
-        FileLogger.Log("PausePlayback");
-        _syncClock?.Pause();
-        _audioManager?.Pause();
-    }
-
-    private void StopPlayback()
-    {
-        FileLogger.Log("StopPlayback called");
-
-        _playbackCts?.Cancel();
-
-        try
-        {
-            _videoDecodeTask?.Wait(TimeSpan.FromSeconds(2));
-            _videoRenderTask?.Wait(TimeSpan.FromSeconds(2));
-            _audioSyncTask?.Wait(TimeSpan.FromSeconds(2));
-        }
-        catch { }
-
-        _playbackCts?.Dispose();
-        _playbackCts = null;
-        _videoDecodeTask = null;
-        _videoRenderTask = null;
-        _audioSyncTask = null;
-        _isPlaying = false;
-        _pendingPlay = false;
-
-        _syncClock?.Stop();
-        _frameBuffer?.Clear();
-
-        _audioManager?.Stop();
-        _videoCapture?.Dispose();
-        _videoCapture = null;
-
-        FileLogger.Log($"StopPlayback completed. Stats: {SyncStats}");
-    }
-
-    private void CloseMedia()
-    {
-        FileLogger.Log("CloseMedia");
-        StopPlayback();
-
-        _videoCapture?.Dispose();
-        _videoCapture = null;
-        _audioManager?.Close();
-        _frameBuffer?.Dispose();
-        _frameBuffer = null;
-
-        _frameBitmap = null;
-        _frameImage = null;
-        _position = TimeSpan.Zero;
-        _duration = TimeSpan.Zero;
-        _hasVideo = false;
-        _hasAudio = false;
-        _videoWidth = 0;
-        _videoHeight = 0;
-        _isArranged = false;
-        _arrangedSize = Size.Empty;
-        _pendingPlay = false;
-
-        InvalidateMeasure();
-        InvalidateVisual();
-    }
-
     #endregion
 
     #region 播放循环
 
+    /// <summary>
+    /// 视频解码循环 - 使用绝对时间戳，确保暂停后继续播放时间正确
+    /// </summary>
     private void VideoDecodeLoop(CancellationToken token, int targetWidth, int targetHeight)
     {
-        FileLogger.Log($"VideoDecodeLoop started: {targetWidth}x{targetHeight}, FPS={_videoFps:F2}");
+        // 获取当前视频位置（帧号）
+        var currentFramePos = _videoCapture?.Get(VideoCaptureProperties.PosFrames) ?? 0;
+        var startFrameIndex = (long)currentFramePos;
+
+        FileLogger.Log($"VideoDecodeLoop: startFrame={startFrameIndex}, startTimeMs={_videoStartTimeMs:F1}");
 
         try
         {
-            var frameIndex = 0;
+            var frameIndex = startFrameIndex;
 
             using var mat = new Mat();
 
@@ -2121,7 +1693,10 @@ public class MediaElement : FrameworkElement, IDisposable
                     break;
                 }
 
-                var framePts = frameIndex * _frameDelayMs;
+                // 计算绝对时间戳：基于起始时间 + 相对偏移
+                // 这样无论Resume多少次，时间戳都是正确的绝对时间
+                var relativeFrameIndex = frameIndex - startFrameIndex;
+                var framePts = _videoStartTimeMs + (relativeFrameIndex * _frameDelayMs);
 
                 Mat processedMat;
                 if (mat.Width != targetWidth || mat.Height != targetHeight)
@@ -2137,10 +1712,12 @@ public class MediaElement : FrameworkElement, IDisposable
                 var frameData = MatToBgraBytes(processedMat, targetWidth, targetHeight);
                 processedMat.Dispose();
 
-                var frame = new VideoFrame(frameData, targetWidth, targetHeight, (long)framePts, frameIndex);
+                var frame = new VideoFrame(frameData, targetWidth, targetHeight, (long)framePts, (int)frameIndex);
 
-                if (!_frameBuffer!.TryAdd(frame, 100))
+                // 使用非阻塞添加，避免解码线程卡住
+                if (!_frameBuffer!.TryAdd(frame, 50))
                 {
+                    // 如果缓冲满，丢弃最旧的帧
                     if (_frameBuffer.TryTake(out var oldFrame))
                     {
                         oldFrame?.Dispose();
@@ -2150,8 +1727,6 @@ public class MediaElement : FrameworkElement, IDisposable
 
                 frameIndex++;
             }
-
-            FileLogger.Log($"VideoDecodeLoop ended. Total frames decoded: {frameIndex}");
         }
         catch (OperationCanceledException)
         {
@@ -2170,7 +1745,6 @@ public class MediaElement : FrameworkElement, IDisposable
         try
         {
             var firstFrame = true;
-            var lastLogTime = DateTime.Now;
 
             while (!token.IsCancellationRequested && _isPlaying)
             {
@@ -2179,52 +1753,40 @@ public class MediaElement : FrameworkElement, IDisposable
 
                 var delay = _syncClock!.CalculateVideoDelay(frame.TimestampMs);
 
-                if (delay > TimeSpan.FromMilliseconds(1))
-                {
-                    await PreciseDelay(delay, token);
-                }
-                else if (delay < TimeSpan.FromMilliseconds(-AVSyncClock.VideoCatchUpThresholdMs))
+                // 如果帧时间戳落后太多，直接丢弃，避免追赶造成卡顿
+                if (delay < TimeSpan.FromMilliseconds(-AVSyncClock.VideoCatchUpThresholdMs))
                 {
                     _framesDropped++;
-                    if (frame.FrameIndex % 30 == 0)
+                    if (_framesDropped % 30 == 0)
                     {
-                        FileLogger.Log($"Dropping frame {frame.FrameIndex} (lag: {-delay.TotalMilliseconds:F1}ms)");
+                        FileLogger.Log($"Dropped {_framesDropped} frames, current drift: {-delay.TotalMilliseconds:F1}ms");
                     }
                     frame.Dispose();
                     continue;
                 }
-                else if (delay < TimeSpan.Zero)
+
+                // 如果延迟很小，直接渲染，不等待
+                if (delay > TimeSpan.FromMilliseconds(2))
                 {
-                    _framesLate++;
+                    await PreciseDelay(delay, token);
                 }
 
                 _position = _syncClock.GetMediaTime();
                 _framesRendered++;
 
-                var frameData = frame.Data;
-                var width = frame.Width;
-                var height = frame.Height;
-
                 Dispatcher.MainDispatcher?.BeginInvoke(() =>
                 {
-                    UpdateFrameBitmap(frameData, width, height);
+                    UpdateFrameBitmap(frame.Data, frame.Width, frame.Height);
                 });
 
                 if (firstFrame)
                 {
-                    FileLogger.Log($"First frame rendered at PTS={frame.TimestampMs:F1}ms");
+                    FileLogger.Log($"First frame rendered: PTS={frame.TimestampMs:F1}ms, drift={delay.TotalMilliseconds:F1}ms");
                     firstFrame = false;
-                }
-                else if ((DateTime.Now - lastLogTime).TotalSeconds >= 5)
-                {
-                    FileLogger.Log($"Render stats: {SyncStats}, Buffer: {_frameBuffer?.Count}, Drift: {delay.TotalMilliseconds:F1}ms");
-                    lastLogTime = DateTime.Now;
                 }
 
                 frame.Dispose();
             }
-
-            FileLogger.Log($"VideoRenderLoop ended. Rendered: {_framesRendered}, Dropped: {_framesDropped}");
         }
         catch (OperationCanceledException)
         {
@@ -2238,28 +1800,26 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void AudioSyncLoop(CancellationToken token)
     {
-        FileLogger.Log("AudioSyncLoop started");
-
         try
         {
-            Thread.Sleep(100);
+            // 减少初始延迟
+            Thread.Sleep(50);
 
             while (!token.IsCancellationRequested && _isPlaying)
             {
                 if (_audioManager != null && _syncClock != null)
                 {
+                    // 使用音频实际位置更新同步时钟
                     var audioPos = _audioManager.CurrentPosition.TotalSeconds;
                     _syncClock.UpdateAudioPosition(audioPos);
                     _position = _audioManager.CurrentPosition;
                 }
 
-                Thread.Sleep(10);
+                // 降低同步频率，减少CPU占用
+                Thread.Sleep(20);
             }
         }
-        catch (OperationCanceledException)
-        {
-            FileLogger.Log("AudioSyncLoop cancelled");
-        }
+        catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             FileLogger.LogError("AudioSyncLoop error", ex);
@@ -2268,8 +1828,6 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private async Task AudioOnlyPositionLoop(CancellationToken token)
     {
-        FileLogger.Log("AudioOnlyPositionLoop started");
-
         try
         {
             while (!token.IsCancellationRequested && _isPlaying)
@@ -2295,10 +1853,7 @@ public class MediaElement : FrameworkElement, IDisposable
                 }
             }
         }
-        catch (OperationCanceledException)
-        {
-            FileLogger.Log("AudioOnlyPositionLoop cancelled");
-        }
+        catch (OperationCanceledException) { }
     }
 
     #endregion
@@ -2339,7 +1894,7 @@ public class MediaElement : FrameworkElement, IDisposable
     {
         if (delay <= TimeSpan.Zero) return;
 
-        const int taskDelayThresholdMs = 20;
+        const int taskDelayThresholdMs = 16; // 降低到一帧的时间
 
         if (delay.TotalMilliseconds > taskDelayThresholdMs)
         {
@@ -2508,21 +2063,28 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void SeekToPosition(TimeSpan position)
     {
-        FileLogger.Log($"SeekToPosition: {position}");
+        FileLogger.Log($"SeekToPosition: {position.TotalSeconds:F3}s");
 
         var wasPlaying = _isPlaying;
-        StopPlayback();
+        var wasPaused = _isPaused;
+
+        if (_isPlaying)
+        {
+            StopPlayback();
+        }
 
         _position = position;
+        _videoStartTimeMs = position.TotalMilliseconds;  // Seek时更新时间基准
 
         if (_audioManager != null)
         {
             _audioManager.Seek(position);
         }
 
-        if (wasPlaying)
+        if (wasPlaying || wasPaused)
         {
             _isPlaying = true;
+            _isPaused = false;
             StartPlaybackInternal();
         }
     }
@@ -2549,20 +2111,21 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void ApplyLoadedBehavior(MediaState state)
     {
-        FileLogger.Log($"ApplyLoadedBehavior: {state}, isArranged={_isArranged}");
-
         switch (state)
         {
             case MediaState.Play:
                 _isPlaying = true;
+                _isPaused = false;
                 StartPlaybackInternal();
                 break;
             case MediaState.Pause:
                 _isPlaying = false;
+                _isPaused = true;
                 PausePlayback();
                 break;
             case MediaState.Stop:
                 _isPlaying = false;
+                _isPaused = false;
                 StopPlayback();
                 break;
             case MediaState.Close:
@@ -2573,8 +2136,6 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void ApplyUnloadedBehavior()
     {
-        FileLogger.Log($"ApplyUnloadedBehavior: {UnloadedBehavior}");
-
         switch (UnloadedBehavior)
         {
             case MediaState.Close:
@@ -2595,21 +2156,20 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void RaiseMediaOpened()
     {
-        FileLogger.Log("RaiseMediaOpened");
         RaiseEvent(new RoutedEventArgs(MediaOpenedEvent, this));
     }
 
     private void RaiseMediaEnded()
     {
-        FileLogger.Log("RaiseMediaEnded");
         _isPlaying = false;
+        _isPaused = false;
         RaiseEvent(new RoutedEventArgs(MediaEndedEvent, this));
     }
 
     private void RaiseMediaFailed(Exception exception)
     {
-        FileLogger.LogError("RaiseMediaFailed", exception);
         _isPlaying = false;
+        _isPaused = false;
         RaiseEvent(new MediaFailedEventArgs(MediaFailedEvent, this, exception));
     }
 
