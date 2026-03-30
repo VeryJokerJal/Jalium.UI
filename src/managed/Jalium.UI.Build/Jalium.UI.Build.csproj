@@ -11,13 +11,13 @@
     <IsPackable>true</IsPackable>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>Jalium.UI.Build</PackageId>
-    <Version>26.9.6</Version>
+    <Version>26.9.7</Version>
     <Description>MSBuild tasks for compiling Jalium.UI JALXAML files</Description>
     <Authors>Jalium</Authors>
 
     <!-- NuGet 包设置 -->
-    <PackageProjectUrl>https://github.com/jalium/jalium-ui</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/jalium/jalium-ui</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/VeryJokerJal/Jalium.UI</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/VeryJokerJal/Jalium.UI</RepositoryUrl>
     <PackageTags>jalium;ui;xaml;msbuild;build</PackageTags>
     <DevelopmentDependency>true</DevelopmentDependency>
     <NoPackageAnalysis>true</NoPackageAnalysis>
