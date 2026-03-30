@@ -10,15 +10,15 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- Versioning -->
-    <Version>26.9.6</Version>
-    <AssemblyVersion>26.9.6.0</AssemblyVersion>
-    <FileVersion>26.9.6.0</FileVersion>
+    <Version>26.9.7</Version>
+    <AssemblyVersion>26.9.7.0</AssemblyVersion>
+    <FileVersion>26.9.7.0</FileVersion>
 
     <!-- NuGet Package Metadata -->
-    <Authors>Jalium Team</Authors>
-    <Company>Jalium</Company>
-    <Product>Jalium.UI</Product>
-    <Copyright>Copyright (c) Jalium Team</Copyright>
+    <Authors>Jal</Authors>
+    <Company>Jal</Company>
+    <Product>Jalium UI</Product>
+    <Copyright>Copyright (c) Jal</Copyright>
     <PackageProjectUrl>https://github.com/jalium/jalium-ui</PackageProjectUrl>
     <RepositoryUrl>https://github.com/jalium/jalium-ui</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
