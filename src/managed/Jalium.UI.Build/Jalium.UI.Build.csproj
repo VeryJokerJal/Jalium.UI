@@ -11,7 +11,7 @@
     <IsPackable>true</IsPackable>
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <PackageId>Jalium.UI.Build</PackageId>
-    <Version>26.9.8</Version>
+    <Version>26.9.10</Version>
     <Description>MSBuild tasks for compiling Jalium.UI JALXAML files</Description>
     <Authors>Jalium</Authors>
 
@@ -96,6 +96,19 @@
              Targets="Build"
              BuildInParallel="true"
              Properties="Configuration=$(JaliumNativeStaticConfiguration);Platform=$(JaliumNativeStaticPlatform);SolutionDir=$(JaliumNativeRootPath)\;ShouldUnsetParentConfigurationAndPlatform=false" />
+  </Target>
+
+  <!-- 将 Roslyn Scripting 依赖打包到 tasks 目录，MSBuild 任务需要这些程序集 -->
+  <Target Name="_IncludeTaskDependencies" BeforeTargets="_GetPackageFiles" AfterTargets="Build">
+    <ItemGroup>
+      <_TaskDependencyFile Include="$(OutputPath)Microsoft.CodeAnalysis.dll" />
+      <_TaskDependencyFile Include="$(OutputPath)Microsoft.CodeAnalysis.CSharp.dll" />
+      <_TaskDependencyFile Include="$(OutputPath)Microsoft.CodeAnalysis.Scripting.dll" />
+      <_TaskDependencyFile Include="$(OutputPath)Microsoft.CodeAnalysis.CSharp.Scripting.dll" />
+      <_TaskDependencyFile Include="$(OutputPath)System.Collections.Immutable.dll" Condition="Exists('$(OutputPath)System.Collections.Immutable.dll')" />
+      <_TaskDependencyFile Include="$(OutputPath)System.Reflection.Metadata.dll" Condition="Exists('$(OutputPath)System.Reflection.Metadata.dll')" />
+      <Content Include="@(_TaskDependencyFile)" PackagePath="tasks/$(TargetFramework)/" />
+    </ItemGroup>
   </Target>
 
   <!-- 包含 targets 文件到 NuGet 包 -->
