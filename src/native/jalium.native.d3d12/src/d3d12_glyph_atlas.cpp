@@ -119,6 +119,12 @@ public:
     std::vector<GlyphRun> runs;
     std::vector<TextDecoration> decorations;
 
+    /// DPI scale factor for pixel snapping.  Set to dpiScale_ (e.g. 1.5 for
+    /// 144 DPI) so DirectWrite snaps glyph advances to the physical pixel grid
+    /// instead of the coarse 96-DPI grid.  Without this, rounding errors
+    /// accumulate and create visible gaps ("b utt on" instead of "button").
+    float dpiScale = 1.0f;
+
     // IUnknown — stack-allocated, ref counting is a no-op.
     // DirectWrite's Draw() is synchronous and does not retain the renderer.
     ULONG STDMETHODCALLTYPE AddRef() override { return 1; }
@@ -132,13 +138,14 @@ public:
         return E_NOINTERFACE;
     }
 
-    // IDWritePixelSnapping
+    // IDWritePixelSnapping — report actual display DPI so glyph positions
+    // snap to the physical pixel grid, not the 96-DPI logical grid.
     HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* disabled) override { *disabled = FALSE; return S_OK; }
     HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* transform) override {
         *transform = { 1, 0, 0, 1, 0, 0 };
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* ppd) override { *ppd = 1.0f; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* ppd) override { *ppd = dpiScale; return S_OK; }
 
     // IDWriteTextRenderer
     HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT baselineOriginX, FLOAT baselineOriginY,
@@ -199,7 +206,7 @@ public:
 D3D12GlyphAtlas::D3D12GlyphAtlas(ID3D12Device* device, IDWriteFactory* dwriteFactory)
     : device_(device), dwriteFactory_(dwriteFactory)
 {
-    atlasBitmap_.resize(kAtlasWidth * kAtlasHeight, 0);
+    atlasBitmap_.resize((size_t)kAtlasWidth * kAtlasHeight * 4, 0);  // RGBA = 4 bytes per pixel
 }
 
 D3D12GlyphAtlas::~D3D12GlyphAtlas() = default;
@@ -218,8 +225,8 @@ void D3D12GlyphAtlas::Reset()
 
 bool D3D12GlyphAtlas::Initialize()
 {
-    // Create atlas texture (R8_UNORM, GPU default heap)
-    auto texDesc = MakeTex2DDesc(DXGI_FORMAT_R8_UNORM, kAtlasWidth, kAtlasHeight);
+    // Create atlas texture (R8G8B8A8_UNORM for ClearType sub-pixel coverage, GPU default heap)
+    auto texDesc = MakeTex2DDesc(DXGI_FORMAT_R8G8B8A8_UNORM, kAtlasWidth, kAtlasHeight);
     auto defaultHeap = MakeHeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
     if (FAILED(device_->CreateCommittedResource(
@@ -228,9 +235,9 @@ bool D3D12GlyphAtlas::Initialize()
             IID_PPV_ARGS(&atlasTexture_))))
         return false;
 
-    // Upload buffer for atlas updates — size = width * height (R8 = 1 byte per pixel)
+    // Upload buffer for atlas updates — size = width * height * 4 (RGBA = 4 bytes per pixel)
     // Add row alignment padding (D3D12 requires 256-byte row pitch alignment)
-    UINT rowPitch = (kAtlasWidth + 255) & ~255u;
+    UINT rowPitch = (kAtlasWidth * 4 + 255) & ~255u;
     UINT64 uploadSize = (UINT64)rowPitch * kAtlasHeight;
     auto uploadHeap = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
     auto uploadDesc = MakeBufferDesc(uploadSize);
@@ -253,17 +260,19 @@ bool D3D12GlyphAtlas::Initialize()
     // so the render target must not apply an additional DPI scaling factor.
     bitmapRenderTarget_->SetPixelsPerDip(1.0f);
 
-    // Create custom rendering params for high-quality grayscale AA
-    // (ClearType uses subpixel color which requires RGB atlas; we use grayscale R8)
-    ComPtr<IDWriteFactory3> factory3;
-    if (SUCCEEDED(dwriteFactory_->QueryInterface(IID_PPV_ARGS(&factory3)))) {
+    // Cache IDWriteFactory3 for CreateGlyphRunAnalysis (ClearType path)
+    dwriteFactory_->QueryInterface(IID_PPV_ARGS(&dwriteFactory3_));
+
+    // Create custom rendering params for ClearType sub-pixel rendering.
+    // clearTypeLevel = 1.0 enables full ClearType; RGBA atlas stores per-channel coverage.
+    if (dwriteFactory3_) {
         ComPtr<IDWriteRenderingParams3> params3;
-        factory3->CreateCustomRenderingParams(
+        dwriteFactory3_->CreateCustomRenderingParams(
             1.0f,              // gamma
-            0.0f,              // enhancedContrast
+            0.5f,              // enhancedContrast — slight boost for ClearType sharpness
             0.0f,              // grayscaleEnhancedContrast
-            0.0f,              // clearTypeLevel = 0 forces grayscale AA for R8 atlas
-            DWRITE_PIXEL_GEOMETRY_FLAT,
+            1.0f,              // clearTypeLevel = 1.0 enables full ClearType sub-pixel rendering
+            DWRITE_PIXEL_GEOMETRY_RGB,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
             DWRITE_GRID_FIT_MODE_DISABLED,
             &params3);
@@ -319,7 +328,87 @@ bool D3D12GlyphAtlas::AllocateAtlasRect(uint16_t w, uint16_t h, uint16_t& outX, 
 
 bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
 {
-    // Get glyph metrics
+    DWRITE_GLYPH_RUN glyphRun = {};
+    glyphRun.fontFace = key.fontFace;
+    glyphRun.fontEmSize = (float)key.fontSize;
+    glyphRun.glyphCount = 1;
+    glyphRun.glyphIndices = &key.glyphIndex;
+
+    // ── Primary path: IDWriteGlyphRunAnalysis for accurate ClearType bounds ──
+    if (dwriteFactory3_) {
+        // Sub-pixel X offset: the glyph's appearance depends on where it falls
+        // relative to the physical pixel grid.  We rasterize at the quantized
+        // sub-pixel offset so each cached variant matches a specific position.
+        float subpixelOffset = key.subpixelX / 4.0f;
+
+        ComPtr<IDWriteGlyphRunAnalysis> analysis;
+        HRESULT hr = dwriteFactory3_->CreateGlyphRunAnalysis(
+            &glyphRun,
+            nullptr,  // no transform
+            DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+            DWRITE_MEASURING_MODE_NATURAL,
+            DWRITE_GRID_FIT_MODE_DISABLED,
+            DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+            subpixelOffset, 0.0f,  // sub-pixel X offset baked into bounds
+            &analysis);
+
+        if (SUCCEEDED(hr) && analysis) {
+            // Get exact pixel bounds including ClearType sub-pixel fringe
+            RECT bounds = {};
+            hr = analysis->GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds);
+            if (FAILED(hr)) { entry.valid = false; return true; }
+
+            int glyphW = bounds.right - bounds.left;
+            int glyphH = bounds.bottom - bounds.top;
+
+            if (glyphW <= 0 || glyphH <= 0) { entry.valid = false; return true; }
+            if (glyphW > 512 || glyphH > 512) { entry.valid = false; return true; }
+
+            // Get ClearType alpha texture (3 bytes per pixel: R, G, B coverage)
+            UINT32 bufferSize = (UINT32)((size_t)glyphW * glyphH * 3);
+            std::vector<uint8_t> alphaValues(bufferSize);
+            hr = analysis->CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1,
+                &bounds, alphaValues.data(), bufferSize);
+            if (FAILED(hr)) { entry.valid = false; return false; }
+
+            uint16_t atlasX, atlasY;
+            if (!AllocateAtlasRect((uint16_t)glyphW, (uint16_t)glyphH, atlasX, atlasY)) {
+                needsReset_ = true;
+                entry.valid = false;
+                return true;
+            }
+
+            // Copy 3-byte-per-pixel ClearType data to RGBA atlas
+            for (int y = 0; y < glyphH; y++) {
+                if ((uint32_t)(atlasY + y) >= kAtlasHeight) break;
+                for (int x = 0; x < glyphW; x++) {
+                    if ((uint32_t)(atlasX + x) >= kAtlasWidth) break;
+                    const uint8_t* src = alphaValues.data() + ((size_t)y * glyphW + x) * 3;
+                    size_t atlasOffset = ((size_t)(atlasY + y) * kAtlasWidth + (atlasX + x)) * 4;
+                    atlasBitmap_[atlasOffset + 0] = src[0]; // R sub-pixel coverage
+                    atlasBitmap_[atlasOffset + 1] = src[1]; // G sub-pixel coverage
+                    atlasBitmap_[atlasOffset + 2] = src[2]; // B sub-pixel coverage
+                    atlasBitmap_[atlasOffset + 3] = std::max(std::max(src[0], src[1]), src[2]);
+                }
+            }
+
+            entry.x = atlasX;
+            entry.y = atlasY;
+            entry.w = (uint16_t)glyphW;
+            entry.h = (uint16_t)glyphH;
+            // bounds.left/top are pixel offsets from baseline origin (0,0)
+            entry.bearingX = (int16_t)bounds.left;
+            entry.bearingY = (int16_t)(-bounds.top);  // top is negative (above baseline)
+            entry.valid = true;
+
+            dirty_ = true;
+            dirtyMinY_ = std::min(dirtyMinY_, atlasY);
+            dirtyMaxY_ = std::max(dirtyMaxY_, (uint16_t)(atlasY + glyphH));
+            return true;
+        }
+    }
+
+    // ── Fallback: GDI bitmap render target ──
     DWRITE_GLYPH_METRICS metrics;
     if (FAILED(key.fontFace->GetDesignGlyphMetrics(&key.glyphIndex, 1, &metrics, FALSE)))
         return false;
@@ -328,16 +417,14 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     key.fontFace->GetMetrics(&fontMetrics);
 
     float scale = (float)key.fontSize / fontMetrics.designUnitsPerEm;
-    int glyphW = (int)std::ceil((metrics.advanceWidth - metrics.leftSideBearing - metrics.rightSideBearing) * scale) + 2;
+    int glyphW = (int)std::ceil((metrics.advanceWidth - metrics.leftSideBearing - metrics.rightSideBearing) * scale) + 4;
     int glyphH = (int)std::ceil((metrics.advanceHeight - metrics.topSideBearing - metrics.bottomSideBearing) * scale) + 2;
 
-    // Max glyph size: 512px to accommodate large text at high DPI (e.g. 72pt at 4x = 384px)
     if (glyphW <= 0 || glyphH <= 0 || glyphW > 512 || glyphH > 512) {
         entry.valid = false;
-        return true; // skip but don't fail
+        return true;
     }
 
-    // Ensure bitmap render target is large enough
     SIZE curSize = {};
     bitmapRenderTarget_->GetSize(&curSize);
     if (curSize.cx < glyphW || curSize.cy < glyphH) {
@@ -345,18 +432,12 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
                                      std::max((UINT32)glyphH, (UINT32)curSize.cy));
     }
 
-    // Clear and render glyph
     HDC hdc = bitmapRenderTarget_->GetMemoryDC();
     RECT clearRect = { 0, 0, glyphW, glyphH };
     FillRect(hdc, &clearRect, (HBRUSH)GetStockObject(BLACK_BRUSH));
 
-    DWRITE_GLYPH_RUN glyphRun = {};
-    glyphRun.fontFace = key.fontFace;
-    glyphRun.fontEmSize = (float)key.fontSize;
-    glyphRun.glyphCount = 1;
-    glyphRun.glyphIndices = &key.glyphIndex;
-
-    float originX = -(metrics.leftSideBearing * scale) + 1;
+    float subpixelOffset = key.subpixelX / 4.0f;
+    float originX = -(metrics.leftSideBearing * scale) + 2 + subpixelOffset;
     float originY = (metrics.verticalOriginY - metrics.topSideBearing) * scale + 1;
 
     bitmapRenderTarget_->DrawGlyphRun(originX, originY, DWRITE_MEASURING_MODE_NATURAL,
@@ -370,13 +451,11 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
         return false;
     }
 
-    // Allocate atlas space — if full, skip this glyph for now.
-    // The atlas will be reset at the start of the next frame.
     uint16_t atlasX, atlasY;
     if (!AllocateAtlasRect((uint16_t)glyphW, (uint16_t)glyphH, atlasX, atlasY)) {
-        needsReset_ = true;  // Signal reset for next frame
+        needsReset_ = true;
         entry.valid = false;
-        return true;  // Don't fail, just skip this glyph
+        return true;
     }
 
     for (int y = 0; y < glyphH; y++) {
@@ -384,8 +463,11 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
         for (int x = 0; x < glyphW; x++) {
             if ((uint32_t)(atlasX + x) >= kAtlasWidth) break;
             const uint8_t* pixel = glyphPixels.data() + (((size_t)y * glyphW) + x) * 4;
-            uint8_t alpha = std::max(std::max(pixel[0], pixel[1]), pixel[2]);
-            atlasBitmap_[(atlasY + y) * kAtlasWidth + (atlasX + x)] = alpha;
+            size_t atlasOffset = ((size_t)(atlasY + y) * kAtlasWidth + (atlasX + x)) * 4;
+            atlasBitmap_[atlasOffset + 0] = pixel[2]; // R (BGRA→RGBA)
+            atlasBitmap_[atlasOffset + 1] = pixel[1]; // G
+            atlasBitmap_[atlasOffset + 2] = pixel[0]; // B
+            atlasBitmap_[atlasOffset + 3] = std::max(std::max(pixel[0], pixel[1]), pixel[2]);
         }
     }
 
@@ -393,15 +475,10 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     entry.y = atlasY;
     entry.w = (uint16_t)glyphW;
     entry.h = (uint16_t)glyphH;
-    // bearingX/Y define the offset from pen position to the top-left of the glyph bitmap.
-    // The rasterizer placed the glyph origin at (-leftBearing + 1, vertOriginY + 1) in the
-    // bitmap, so the bearing to apply at draw time is (leftBearing - 1, -(vertOriginY - topBearing) - 1).
-    // We store them so that: glyphScreenX = penX + bearingX/dpiScale, glyphScreenY = baseline - bearingY/dpiScale.
-    entry.bearingX = (int16_t)std::round(metrics.leftSideBearing * scale - 1);
+    entry.bearingX = (int16_t)std::round(metrics.leftSideBearing * scale - 2);
     entry.bearingY = (int16_t)std::round((metrics.verticalOriginY - metrics.topSideBearing) * scale + 1);
     entry.valid = true;
 
-    // Mark dirty region
     dirty_ = true;
     dirtyMinY_ = std::min(dirtyMinY_, atlasY);
     dirtyMaxY_ = std::max(dirtyMaxY_, (uint16_t)(atlasY + glyphH));
@@ -422,8 +499,10 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
 {
     if (!layout || !initialized_) return 0;
 
-    // Extract glyph runs from the text layout
+    // Extract glyph runs from the text layout.
+    // Pass dpiScale_ so DirectWrite snaps to the physical pixel grid.
     GlyphRunCollector collector;
+    collector.dpiScale = dpiScale_;
     layout->Draw(nullptr, &collector, originX, originY);
 
     uint32_t count = 0;
@@ -432,42 +511,53 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
 
     for (auto& run : collector.runs) {
         float penX = run.baselineX;
-        // Apply DPI scale to get physical pixel size for rasterization
+        // Apply DPI scale to get physical pixel size for rasterization.
+        // Do NOT quantize fontSize — it must match the size DirectWrite used
+        // to compute glyph advances, otherwise spacing errors accumulate.
         float scaledSize = run.fontSize * dpiScale_;
         if (scaledSize <= 0) continue;
         uint16_t fontSize = (uint16_t)std::round(scaledSize);
-        // Quantize: 1px for small text (sharper), 2px for large text (cache efficiency)
-        if (fontSize > 24) {
-            fontSize = (fontSize + 1) & ~1;
-        }
         if (fontSize < 1) fontSize = 1;
 
+        float invDpi = 1.0f / dpiScale_;
+
         for (uint32_t i = 0; i < run.glyphIndices.size(); i++) {
+            // Apply DirectWrite glyph offsets (kerning adjustments, mark positioning, etc.)
+            float offsetX = 0, offsetY = 0;
+            if (i < run.glyphOffsets.size()) {
+                offsetX = run.glyphOffsets[i].advanceOffset;
+                offsetY = run.glyphOffsets[i].ascenderOffset;
+            }
+
+            // Compute pen position in physical pixels to determine sub-pixel offset.
+            // ClearType rendering is sensitive to horizontal sub-pixel position —
+            // a glyph at x=10.0 looks different from one at x=10.33.
+            float penXPhysical = (penX + offsetX) * dpiScale_;
+            float subpixelF = penXPhysical - std::floor(penXPhysical);
+            // Quantize to 1/4 pixel (4 cached variants per glyph — balances quality vs cache size)
+            uint8_t subpixelQuant = (uint8_t)std::min((int)(subpixelF * 4.0f), 3);
+
             GlyphKey key;
             key.fontFace = run.fontFace.Get();
             key.glyphIndex = run.glyphIndices[i];
             key.fontSize = fontSize;
+            key.subpixelX = subpixelQuant;
 
             auto it = cache_.find(key);
             if (it == cache_.end()) {
-                GlyphEntry entry = {};
-                if (!RasterizeGlyph(key, entry)) continue;
-                it = cache_.emplace(key, entry).first;
+                GlyphCacheValue val = {};
+                if (!RasterizeGlyph(key, val.entry)) continue;
+                val.fontFaceRef = run.fontFace;
+                it = cache_.emplace(key, std::move(val)).first;
             }
 
-            auto& entry = it->second;
+            auto& entry = it->second.entry;
             if (entry.valid && entry.w > 0 && entry.h > 0) {
-                // Glyph was rasterized at DPI-scaled size; convert bearing back to logical pixels
-                float invDpi = 1.0f / dpiScale_;
-
-                // Apply DirectWrite glyph offsets (kerning adjustments, mark positioning, etc.)
-                float offsetX = 0, offsetY = 0;
-                if (i < run.glyphOffsets.size()) {
-                    offsetX = run.glyphOffsets[i].advanceOffset;
-                    offsetY = run.glyphOffsets[i].ascenderOffset;
-                }
-
-                float glyphX = penX + offsetX + entry.bearingX * invDpi;
+                // The glyph was rasterized with sub-pixel offset baked in via
+                // CreateGlyphRunAnalysis(baselineOriginX = subpixelQuant/4.0).
+                // bounds.left already includes that offset, so position the quad
+                // at the integer pixel boundary + bounds offset.
+                float glyphX = std::floor(penXPhysical) * invDpi + entry.bearingX * invDpi;
                 float glyphY = run.baselineY - offsetY - entry.bearingY * invDpi;
 
                 GlyphQuadInstance inst;
@@ -539,7 +629,7 @@ void D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
     }
     UINT uploadHeight = uploadMaxY - uploadMinY;
 
-    UINT rowPitch = (kAtlasWidth + 255) & ~255u;
+    UINT rowPitch = (kAtlasWidth * 4 + 255) & ~255u;  // RGBA = 4 bytes per pixel
     void* mapped = nullptr;
     HRESULT hr = uploadBuffer_->Map(0, nullptr, &mapped);
     if (FAILED(hr) || !mapped) {
@@ -550,8 +640,8 @@ void D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
     UINT64 uploadRowOffset = (UINT64)uploadMinY * rowPitch;
     for (UINT y = 0; y < uploadHeight; y++) {
         memcpy((uint8_t*)mapped + uploadRowOffset + y * rowPitch,
-               atlasBitmap_.data() + ((size_t)uploadMinY + y) * kAtlasWidth,
-               kAtlasWidth);
+               atlasBitmap_.data() + ((size_t)uploadMinY + y) * kAtlasWidth * 4,
+               kAtlasWidth * 4);
     }
     uploadBuffer_->Unmap(0, nullptr);
 
@@ -565,7 +655,7 @@ void D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
     src.pResource = uploadBuffer_.Get();
     src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     src.PlacedFootprint.Offset = 0;
-    src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8_UNORM;
+    src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     src.PlacedFootprint.Footprint.Width = kAtlasWidth;
     src.PlacedFootprint.Footprint.Height = kAtlasHeight;
     src.PlacedFootprint.Footprint.Depth = 1;

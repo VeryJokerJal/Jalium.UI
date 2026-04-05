@@ -39,29 +39,39 @@ struct GlyphEntry {
 struct GlyphKey {
     IDWriteFontFace* fontFace;
     uint16_t glyphIndex;
-    uint16_t fontSize;   // quantized (rounded to nearest 2px for cache efficiency)
+    uint16_t fontSize;      // physical pixel size (rounded, no further quantization)
+    uint8_t  subpixelX;     // sub-pixel X offset quantized to 1/4 pixel (0..3)
 
     bool operator==(const GlyphKey& other) const {
         return fontFace == other.fontFace &&
                glyphIndex == other.glyphIndex &&
-               fontSize == other.fontSize;
+               fontSize == other.fontSize &&
+               subpixelX == other.subpixelX;
     }
 };
 
 struct GlyphKeyHash {
     size_t operator()(const GlyphKey& k) const {
         size_t h = std::hash<void*>{}(k.fontFace);
-        h ^= std::hash<uint32_t>{}((uint32_t)k.glyphIndex << 16 | k.fontSize) + 0x9e3779b9 + (h << 6) + (h >> 2);
+        h ^= std::hash<uint32_t>{}(((uint32_t)k.glyphIndex << 16) | ((uint32_t)k.fontSize << 2) | k.subpixelX) + 0x9e3779b9 + (h << 6) + (h >> 2);
         return h;
     }
+};
+
+/// Cache value: glyph atlas entry + ref-counted font face.
+/// Holding a ComPtr keeps the IDWriteFontFace alive so that the raw pointer
+/// in GlyphKey remains valid and cannot be recycled for a different font.
+struct GlyphCacheValue {
+    GlyphEntry entry;
+    ComPtr<IDWriteFontFace> fontFaceRef;  // prevents dangling GlyphKey::fontFace
 };
 
 // ============================================================================
 // D3D12 Glyph Atlas
 //
-// Manages a 4096x4096 R8 texture atlas for glyph rendering.
+// Manages a 4096x4096 R8G8B8A8 texture atlas for ClearType sub-pixel text rendering.
 // Uses DirectWrite for text layout and glyph rasterization (CPU),
-// and D3D12 for rendering glyph quads (GPU).
+// and D3D12 dual-source blending for per-channel alpha compositing (GPU).
 // ============================================================================
 
 class D3D12GlyphAtlas {
@@ -123,11 +133,11 @@ private:
     ComPtr<ID3D12Resource> atlasTexture_;
     ComPtr<ID3D12Resource> uploadBuffer_;
 
-    // CPU-side atlas bitmap (R8)
+    // CPU-side atlas bitmap (RGBA — R,G,B = sub-pixel coverage, A = max coverage)
     std::vector<uint8_t> atlasBitmap_;
 
-    // Glyph cache
-    std::unordered_map<GlyphKey, GlyphEntry, GlyphKeyHash> cache_;
+    // Glyph cache (GlyphCacheValue holds a ComPtr to prevent dangling fontFace pointers)
+    std::unordered_map<GlyphKey, GlyphCacheValue, GlyphKeyHash> cache_;
 
     // Simple row-based atlas packer
     uint16_t packX_ = 0;
@@ -142,8 +152,9 @@ private:
     // Current resource state for barrier tracking
     D3D12_RESOURCE_STATES atlasState_ = D3D12_RESOURCE_STATE_COMMON;
 
-    // DirectWrite bitmap render target (for CPU rasterization)
-    ComPtr<IDWriteBitmapRenderTarget> bitmapRenderTarget_;
+    // DirectWrite rasterization
+    ComPtr<IDWriteFactory3> dwriteFactory3_;  // cached QI for CreateGlyphRunAnalysis
+    ComPtr<IDWriteBitmapRenderTarget> bitmapRenderTarget_;  // fallback rasterizer
     ComPtr<IDWriteRenderingParams> renderingParams_;
 
     bool initialized_ = false;
