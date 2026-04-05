@@ -571,7 +571,7 @@ public class Label : ContentControl
     {
         if (Content is string text)
         {
-            var fontFamily = FontFamily ?? "Segoe UI";
+            var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = FontSize > 0 ? FontSize : 14;
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             TextMeasurement.MeasureText(formattedText);

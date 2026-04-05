@@ -146,6 +146,12 @@ public static class ThemeLoader
         return LoadResourceDictionary(stream);
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Startup types are registered in XamlTypeRegistry or preserved by the application")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072:Target parameter argument",
+        Justification = "Startup types are registered in XamlTypeRegistry or preserved by the application")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Startup types are registered in XamlTypeRegistry or preserved by the application")]
     private static object? LoadStartupObjectFromUri(Application app, Uri startupUri)
     {
         ArgumentNullException.ThrowIfNull(app);
@@ -387,6 +393,10 @@ public static class ThemeLoader
         return null;
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Startup types are registered in XamlTypeRegistry or preserved by the application")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072:Target parameter argument",
+        Justification = "Startup types are registered in XamlTypeRegistry or preserved by the application")]
     private static Type? ResolveStartupType(string className, Assembly preferredAssembly, Assembly appAssembly)
     {
         var startupType = preferredAssembly.GetType(className, throwOnError: false);
@@ -411,6 +421,12 @@ public static class ThemeLoader
         return null;
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "ResourceDictionary types are preserved by XamlTypeRegistry and ILLink descriptors")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072:Target parameter argument",
+        Justification = "ResourceDictionary types are preserved by XamlTypeRegistry and ILLink descriptors")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "ResourceDictionary types are preserved by XamlTypeRegistry and ILLink descriptors")]
     private static ResourceDictionary? LoadResourceDictionaryFromPayload(
         byte[] payload,
         string resourceName,

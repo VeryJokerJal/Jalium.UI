@@ -965,6 +965,18 @@ internal sealed class EditorView
         if (length <= 0 || relativeX <= 0)
             return 0;
 
+        // Use DirectWrite's native hit testing for accurate character mapping
+        string fontFamily = GetMeasurementFontFamily();
+        double fontSize = GetMeasurementFontSize();
+        if (TextMeasurement.HitTestPoint(lineText, fontFamily, fontSize, (float)relativeX, out var hitResult))
+        {
+            int column = (int)hitResult.TextPosition;
+            if (hitResult.IsTrailingHit != 0)
+                column++;
+            return Math.Clamp(column, 0, length);
+        }
+
+        // Fallback: binary search using prefix width measurement
         double lineWidth = GetPrefixWidth(cachedLine, lineText, length);
         if (relativeX >= lineWidth)
             return length;
@@ -1014,6 +1026,25 @@ internal sealed class EditorView
         if (clampedColumn <= 0)
             return 0;
 
+        // Use DirectWrite's native hit testing for accurate character position within the full line layout.
+        // This ensures the measured position matches what DirectWrite uses during rendering,
+        // avoiding drift from measuring prefix substrings independently.
+        if (clampedColumn < lineText.Length)
+        {
+            // Get the leading edge of character at clampedColumn = trailing edge of previous character
+            if (TextMeasurement.HitTestTextPosition(lineText, fontFamily, fontSize, (uint)clampedColumn, false, out var hitResult)
+                && hitResult.CaretX > 0)
+                return hitResult.CaretX;
+        }
+        else
+        {
+            // At end of line: get the trailing edge of the last character
+            if (TextMeasurement.HitTestTextPosition(lineText, fontFamily, fontSize, (uint)(clampedColumn - 1), true, out var hitResult)
+                && hitResult.CaretX > 0)
+                return hitResult.CaretX;
+        }
+
+        // Fallback: measure the prefix substring directly
         var prefixText = lineText[..clampedColumn];
         if (prefixText.Length == 0)
             return 0;

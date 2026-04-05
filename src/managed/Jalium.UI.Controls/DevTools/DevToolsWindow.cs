@@ -5,8 +5,10 @@ using System.Reflection;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
+using ShapePath = Jalium.UI.Controls.Shapes.Path;
 
 namespace Jalium.UI.Controls.DevTools;
 
@@ -58,7 +60,7 @@ public class DevToolsWindow : Window
     private static readonly SolidColorBrush BrushRowAlt = new(Color.FromRgb(36, 36, 36));
     private static readonly SolidColorBrush BrushToolbarBg = new(Color.FromRgb(45, 45, 48));
     private static readonly SolidColorBrush BrushToolbarBorder = new(Color.FromRgb(63, 63, 70));
-    private static readonly SolidColorBrush BrushAccent = new(Color.FromRgb(0, 120, 215));
+    private static readonly SolidColorBrush BrushAccent = new(ThemeColors.Accent);
     private static readonly SolidColorBrush BrushBreadcrumbSep = new(Color.FromRgb(100, 100, 100));
     private static readonly SolidColorBrush BrushBoxMargin = new(Color.FromArgb(180, 255, 180, 100));
     private static readonly SolidColorBrush BrushBoxBorder = new(Color.FromArgb(180, 255, 220, 100));
@@ -219,14 +221,19 @@ public class DevToolsWindow : Window
             Margin = new Thickness(4, 2, 4, 2)
         };
 
-        toolbar.Children.Add(MakeToolbarButton("\u21bb Refresh", "F5", OnRefreshClick));
+        toolbar.Children.Add(MakeToolbarButton("Refresh", "F5", OnRefreshClick,
+            "M670.783 229.290c-47.677-26.908-102.166-41.658-159.109-41.658-178.952 0-324.022 145.069-324.022 324.022 0 33.553-27.200 60.754-60.754 60.754s-60.754-27.200-60.754-60.754c0-246.059 199.470-445.530 445.530-445.530 89.863 0 175.407 26.802 247.370 74.905l68.914-68.914c8.258-8.259 21.966-7.940 30.617 0.710 4.022 4.022 6.413 9.366 6.677 14.928l10.908 229.367c0.853 17.940-12.982 32.500-30.902 32.522a32.715 32.715 0 0 1-1.583-0.037l-229.367-10.908c-11.960-0.569-21.644-10.715-21.630-22.661 0.007-5.555 2.152-10.794 5.991-14.634l72.111-72.111z m-318.218 564.726c47.677 26.908 102.166 41.659 159.109 41.659 178.952 0 324.022-145.069 324.022-324.022 0-33.553 27.200-60.754 60.754-60.754s60.754 27.200 60.754 60.754c0 246.059-199.470 445.530-445.530 445.530-89.863 0-175.407-26.802-247.370-74.905l-68.914 68.914c-8.258 8.258-21.966 7.941-30.617-0.710-4.022-4.022-6.413-9.367-6.677-14.928l-10.908-229.367c-0.853-17.940 12.982-32.500 30.902-32.522a31.497 31.497 0 0 1 1.584 0.037l229.367 10.909c11.960 0.569 21.644 10.714 21.630 22.661-0.006 5.555-2.152 10.794-5.991 14.633l-72.112 72.110z"));
 
-        _pickerButton = MakeToolbarButton("\u2316 Pick", "Ctrl+Shift+C", OnPickerClick);
+        _pickerButton = MakeToolbarButton("Pick", "Ctrl+Shift+C", OnPickerClick,
+            "M702.932 777.584c-11.692-3.161-23.743 3.758-26.903 15.45-3.165 11.698 3.758 23.744 15.451 26.903 73.027 19.747 105.712 47.546 105.712 66.333 0 14.494-19.804 37.052-75.398 56.907-55.701 19.895-130.205 30.845-209.791 30.845-79.586 0-154.099-10.95-209.799-30.845-55.593-19.855-75.396-42.413-75.396-56.907 0-18.793 32.702-46.602 105.761-66.348 11.698-3.161 18.618-15.201 15.456-26.899-3.159-11.692-15.199-18.617-26.897-15.455-89.119 24.084-138.198 62.687-138.198 108.702 0 26.869 17.359 47.165 31.924 59.459 17.477 14.762 41.905 27.805 72.594 38.766 60.318 21.541 140.063 33.407 224.549 33.407 84.493 0 164.238-11.872 224.556-33.407 30.689-10.961 55.115-24.005 72.595-38.766 14.564-12.295 31.924-32.590 31.924-59.459 0-46-49.056-84.603-138.137-108.686zM422.048 826.725c23.419 26.842 56.222 42.223 90.118 42.223h0.005c34.028 0 66.802-15.506 90.080-42.569 7.059-7.696 67.087-73.789 127.916-160.351 88.146-125.430 132.837-229.369 132.837-308.923 0-47.367-9.283-93.344-27.597-136.640-17.684-41.803-42.986-79.343-75.212-111.563-32.219-32.218-69.751-57.526-111.554-75.202-43.302-18.315-89.278-27.603-136.639-27.603-47.367 0-93.344 9.289-136.641 27.603-41.802 17.678-79.342 42.985-111.561 75.202-32.219 32.226-57.526 69.759-75.202 111.563-18.315 43.297-27.603 89.273-27.603 136.640 0 79.552 44.724 183.524 132.929 309.029 61.247 87.146 121.682 153.568 128.124 160.590zM375.908 347.290c0-77.421 62.989-140.405 140.402-140.405 77.421 0 140.404 62.986 140.404 140.405 0 77.415-62.982 140.404-140.404 140.404-77.414 0-140.402-62.989-140.402-140.404z");
         toolbar.Children.Add(_pickerButton);
 
-        toolbar.Children.Add(MakeToolbarButton("\u25bc Expand", "Ctrl+E", OnExpandAllClick));
-        toolbar.Children.Add(MakeToolbarButton("\u25b6 Collapse", "Ctrl+Shift+E", OnCollapseAllClick));
-        toolbar.Children.Add(MakeToolbarButton("\u2398 Copy", "Ctrl+C", OnCopyClick));
+        toolbar.Children.Add(MakeToolbarButton("Expand", "Ctrl+E", OnExpandAllClick,
+            "M947.2 916.48l-30.72-199.68c0-15.36-15.36-30.72-30.72-30.72-5.12 0-10.24 0-15.36 5.12-5.12 0-5.12 5.12-10.24 5.12l-51.2 51.2-194.56-199.68c-10.24-10.24-25.6-10.24-35.84 0l-35.84 35.84c-10.24 10.24-10.24 25.6 0 35.84l199.68 199.68-51.2 51.2c-5.12 5.12-5.12 5.12-5.12 10.24-5.12 5.12-5.12 10.24-5.12 15.36 0 15.36 15.36 30.72 30.72 30.72l194.56 25.6h5.12c10.24 0 20.48-5.12 20.48-15.36 10.24-10.24 15.36-10.24 15.36-20.48z m-506.88-368.64c-10.24-10.24-25.6-10.24-35.84 0L204.8 747.52l-51.2-51.2c0-5.12 0-10.24-5.12-10.24s-5.12-5.12-15.36-5.12c-15.36 0-30.72 15.36-30.72 30.72l-30.72 199.68c0 5.12 5.12 15.36 5.12 15.36 5.12 5.12 15.36 15.36 25.6 15.36h5.12l199.68-25.6c15.36 0 30.72-15.36 30.72-30.72 0-5.12 0-10.24-5.12-15.36 0-5.12-5.12-5.12-5.12-10.24l-51.2-51.2L476.16 614.4c10.24-10.24 10.24-25.6 0-35.84 0 5.12-35.84-30.72-35.84-30.72z m506.88-440.32c0-5.12-5.12-15.36-5.12-15.36-5.12-5.12-15.36-15.36-20.48-15.36h-5.12L716.8 102.4c-15.36 0-30.72 15.36-30.72 30.72 0 5.12 0 10.24 5.12 15.36 0 5.12 5.12 5.12 5.12 10.24l51.2 51.2-194.56 194.56c-10.24 10.24-10.24 25.6 0 35.84l35.84 35.84c10.24 10.24 25.6 10.24 35.84 0l194.56-204.8 51.2 51.2c5.12 5.12 5.12 5.12 15.36 5.12 5.12 0 5.12 5.12 10.24 5.12 10.24 0 25.6-10.24 25.6-25.6l25.6-199.68z m-670.72 102.4l51.2-51.2c0-5.12 5.12-5.12 5.12-10.24 5.12-5.12 5.12-10.24 5.12-15.36 0-15.36-15.36-30.72-30.72-30.72l-199.68-25.6c-10.24 0-15.36 5.12-20.48 15.36-5.12 5.12-10.24 5.12-10.24 15.36L107.52 307.2c0 15.36 15.36 30.72 30.72 30.72 5.12 0 5.12 0 15.36-5.12l5.12-5.12 51.2-51.2L409.6 476.16c10.24 10.24 25.6 10.24 35.84 0l35.84-35.84c10.24-10.24 10.24-25.6 0-35.84-5.12 0-204.8-194.56-204.8-194.56z"));
+        toolbar.Children.Add(MakeToolbarButton("Collapse", "Ctrl+Shift+E", OnCollapseAllClick,
+            "M398.409143 172.763429c-3.218286 0-11.190857 0-14.409143 3.218285-3.218286 0-6.436571 3.218286-11.190857 6.436572l-57.636572 57.563428L95.963429 20.772571C84.845714 9.581714 67.291429 9.581714 57.563429 20.772571L17.627429 59.245714c-11.190857 11.190857-11.190857 28.818286 0 38.4l223.963428 224.036572-57.563428 57.563428c-3.218286 3.218286-6.436571 6.436571-6.436572 11.264-3.218286 3.145143-3.218286 11.190857-3.218286 14.336 0 17.627429 14.409143 32.036571 32.036572 32.036572l219.209143 27.209143h3.145143a30.281143 30.281143 0 0 0 25.6-14.409143c3.218286-6.436571 6.436571-11.190857 6.436571-20.845715L428.763429 204.8a29.842286 29.842286 0 0 0-30.354286-32.036571zM592.018286 460.8h3.145143l224.036571-28.818286c17.554286 0 32.036571-14.409143 32.036571-31.963428 0-3.218286 0-11.190857-3.218285-14.409143 0-3.218286-3.218286-6.436571-6.436572-11.190857l-57.563428-56.027429 220.818285-220.818286c11.190857-11.190857 11.190857-28.745143 0-38.4l-38.4-38.4c-11.264-11.190857-28.818286-11.190857-38.4 0L705.536 239.981714l-57.636571-57.563428c-3.145143-3.218286-6.363429-6.436571-11.190858-6.436572-3.145143 0-6.363429-3.218286-14.409142-3.218285a32.109714 32.109714 0 0 0-31.963429 32.036571l-32.036571 224.036571c0 6.363429 3.218286 14.336 6.436571 17.554286 9.581714 8.045714 17.554286 14.409143 27.209143 14.409143zM428.836571 563.2h-3.218285l-219.209143 28.818286a32.109714 32.109714 0 0 0-32.036572 31.963428c0 3.218286 0 11.190857 3.218286 14.409143 0 3.218286 3.218286 6.436571 6.436572 11.190857l57.563428 57.636572-220.818286 219.209143c-11.190857 11.190857-11.190857 28.745143 0 38.4l38.4 38.4c11.190857 11.190857 28.818286 11.190857 38.4 0l222.427429-219.209143 57.563429 57.563428c3.218286 3.218286 6.436571 6.436571 14.409142 6.436572 3.218286 0 6.436571 3.145143 11.264 3.145143 17.554286 0 31.963429-14.336 31.963429-31.963429l28.818286-224.036571a29.110857 29.110857 0 0 0-6.436572-17.554286c-11.190857-8.045714-17.554286-14.409143-28.818285-14.409143z m577.536 361.618286L782.409143 708.754286l57.563428-57.636572c3.218286-3.218286 6.436571-6.363429 6.436572-11.190857 3.218286-3.218286 3.218286-11.190857 3.218286-14.409143a32.109714 32.109714 0 0 0-32.036572-31.963428L596.845714 561.590857h-3.145143c-11.190857 0-17.627429 6.436571-25.6 14.409143-3.218286 6.436571-6.436571 11.190857-6.436571 17.554286l32.036571 224.036571c0 17.554286 14.409143 32.036571 31.963429 32.036572 3.218286 0 6.436571 0 14.409143-3.218286 3.218286 0 6.436571-3.218286 11.190857-6.436572l57.636571-57.563428 219.136 220.818286c11.264 11.190857 28.818286 11.190857 38.473143 0l38.4-38.4a29.622857 29.622857 0 0 0 1.536-40.009143z"));
+        toolbar.Children.Add(MakeToolbarButton("Copy", "Ctrl+C", OnCopyClick,
+            "M890.197 41.984H347.179C296.832 41.984 256 81.195 256 129.536v75.861h86.016V156.928c0-16.128 13.611-29.184 30.379-29.184h492.16c16.768 0 30.379 13.056 30.379 29.184v539.349c0 7.68-3.2 15.061-8.96 20.437a30.379 30.379 0 0 1-21.461 8.149H733.867v85.12h156.245c50.133 0 90.88-38.827 91.179-86.955V129.536c0-48.341-40.832-87.552-91.093-87.552z M676.864 214.016H133.845C83.499 214.016 42.667 253.227 42.667 301.568v75.861h86.016V328.96c0-16.128 13.611-29.184 30.379-29.184h492.16c16.768 0 30.379 13.056 30.379 29.184v539.349c0 7.68-3.2 15.061-8.96 20.437a30.379 30.379 0 0 1-21.461 8.149H520.533v85.12h156.245c50.133 0 90.88-38.827 91.179-86.955V301.568c0.043-48.341-40.789-87.552-91.093-87.552z M42.709 301.568v593.493c0.299 48.128 41.045 86.955 91.179 86.955H546.133v-85.12H159.445a30.379 30.379 0 0 1-21.461-8.149 27.947 27.947 0 0 1-8.96-20.437V328.96c0-16.128 13.611-29.184 30.379-29.184h492.16c16.768 0 30.379 13.056 30.379 29.184v48.469H768V301.568c0-48.341-40.832-87.552-91.179-87.552H133.803c-50.304 0-91.136 39.211-91.093 87.552z M256 384.683h298.667a42.667 42.667 0 0 1 0 85.333H256a42.667 42.667 0 0 1 0-85.333zM256 555.349h298.667a42.667 42.667 0 0 1 0 85.333H256a42.667 42.667 0 0 1 0-85.333zM256 726.016h298.667a42.667 42.667 0 0 1 0 85.333H256a42.667 42.667 0 0 1 0-85.333z"));
 
         return new Border
         {
@@ -237,21 +244,39 @@ public class DevToolsWindow : Window
         };
     }
 
-    private static Border MakeToolbarButton(string label, string shortcut, RoutedEventHandler handler)
+    private static Border MakeToolbarButton(string label, string shortcut, RoutedEventHandler handler, string? iconPathData = null)
     {
         var inner = new StackPanel { Orientation = Orientation.Horizontal };
+
+        if (iconPathData != null)
+        {
+            var icon = new ShapePath
+            {
+                Data = iconPathData,
+                Fill = new SolidColorBrush(Color.FromRgb(200, 200, 200)),
+                Stretch = Stretch.Uniform,
+                Width = 12,
+                Height = 12,
+                Margin = new Thickness(0, 0, 4, 0),
+                VerticalAlignment = VerticalAlignment.Center
+            };
+            inner.Children.Add(icon);
+        }
+
         inner.Children.Add(new TextBlock
         {
             Text = label,
             FontSize = 11,
             Foreground = new SolidColorBrush(Color.FromRgb(200, 200, 200)),
-            Margin = new Thickness(0, 0, 4, 0)
+            Margin = new Thickness(0, 0, 4, 0),
+            VerticalAlignment = VerticalAlignment.Center
         });
         inner.Children.Add(new TextBlock
         {
             Text = shortcut,
             FontSize = 9,
-            Foreground = new SolidColorBrush(Color.FromRgb(120, 120, 120))
+            Foreground = new SolidColorBrush(Color.FromRgb(120, 120, 120)),
+            VerticalAlignment = VerticalAlignment.Center
         });
 
         var btn = new Border
@@ -380,16 +405,102 @@ public class DevToolsWindow : Window
     /// </summary>
     private void SelectVisualInTree(Visual visual)
     {
+        // First, try to find in already-built items
         foreach (var item in _allTreeItems)
         {
             if (item.Visual == visual)
             {
-                // Expand ancestors
                 ExpandAncestors(item);
                 item.IsSelected = true;
                 return;
             }
         }
+
+        // Not found — tree is lazily built and this node hasn't been created yet.
+        // Build the ancestor chain from root to target, then force-expand along that path.
+        var ancestorChain = new List<Visual>();
+        for (Visual? v = visual; v != null; v = v.VisualParent)
+        {
+            ancestorChain.Add(v);
+            if (v == _targetWindow) break;
+        }
+        if (ancestorChain.Count == 0 || ancestorChain[^1] != _targetWindow) return;
+        ancestorChain.Reverse(); // [_targetWindow, child, ..., visual]
+
+        // Find root tree item
+        DevToolsTreeViewItem? current = null;
+        foreach (var item in _allTreeItems)
+        {
+            if (item.Visual == _targetWindow) { current = item; break; }
+        }
+        if (current == null) return;
+
+        // Build a set for O(1) lookup of visuals in the ancestor chain
+        var ancestorSet = new HashSet<Visual>(ancestorChain);
+
+        // Walk from root toward target, force-building children at each level
+        while (current.Visual != visual)
+        {
+            current.IsExpanded = true;
+            EnsureChildrenBuilt(current);
+
+            // Find the child whose visual is in the ancestor chain (i.e. on the path to target)
+            DevToolsTreeViewItem? next = null;
+            foreach (var child in current.Items)
+            {
+                if (child is DevToolsTreeViewItem dti && ancestorSet.Contains(dti.Visual))
+                {
+                    next = dti;
+                    break;
+                }
+            }
+            if (next == null) return;
+            current = next;
+        }
+
+        ExpandAncestors(current);
+        current.IsSelected = true;
+    }
+
+    /// <summary>
+    /// Forces immediate creation of child tree items for a node that may still be in the pending build queue.
+    /// </summary>
+    private void EnsureChildrenBuilt(DevToolsTreeViewItem parentItem)
+    {
+        var remaining = _pendingTreeBuild.Count;
+        var requeue = new List<PendingTreeBuildNode>(remaining);
+        bool found = false;
+
+        for (int i = 0; i < remaining; i++)
+        {
+            var node = _pendingTreeBuild.Dequeue();
+            if (node.Item == parentItem && !found)
+            {
+                found = true;
+                var childCount = node.Visual.VisualChildrenCount;
+                var childItems = new List<TreeViewItem>(childCount - node.NextChildIndex);
+                while (node.NextChildIndex < childCount)
+                {
+                    var child = node.Visual.GetVisualChild(node.NextChildIndex);
+                    node.NextChildIndex++;
+                    if (child == null) continue;
+
+                    var childItem = new DevToolsTreeViewItem(child);
+                    PrepareTreeItem(childItem, node.Level + 1);
+                    childItems.Add(childItem);
+                    _allTreeItems.Add(childItem);
+                    _pendingTreeBuild.Enqueue(new PendingTreeBuildNode(childItem, child, node.Level + 1));
+                }
+                parentItem.AddChildItems(childItems);
+            }
+            else
+            {
+                requeue.Add(node);
+            }
+        }
+
+        foreach (var node in requeue)
+            _pendingTreeBuild.Enqueue(node);
     }
 
     private static void ExpandAncestors(TreeViewItem item)
@@ -841,9 +952,9 @@ public class DevToolsWindow : Window
             AddSection("UIElement");
             AddSize("DesiredSize", uiElement.DesiredSize);
             AddRect("VisualBounds", uiElement.VisualBounds);
-            AddEnum("Visibility", uiElement.Visibility, v => uiElement.Visibility = (Visibility)v);
-            AddBool("IsEnabled", uiElement.IsEnabled, v => uiElement.IsEnabled = v);
-            AddNum("Opacity", uiElement.Opacity, "F2", v => uiElement.Opacity = v);
+            AddEnum("Visibility", uiElement.Visibility, v => ForceSetValue(uiElement, UIElement.VisibilityProperty, v));
+            AddBool("IsEnabled", uiElement.IsEnabled, v => ForceSetValue(uiElement, UIElement.IsEnabledProperty, v));
+            AddNum("Opacity", uiElement.Opacity, "F2", v => ForceSetValue(uiElement, UIElement.OpacityProperty, (double)v));
             AddBool("ClipToBounds", uiElement.ClipToBounds, v => uiElement.ClipToBounds = v);
             AddBool("Focusable", uiElement.Focusable, v => uiElement.Focusable = v);
             AddBool("IsMouseOver", uiElement.IsMouseOver);
@@ -893,11 +1004,11 @@ public class DevToolsWindow : Window
                 if (fe is Control control)
                 {
                     AddSection("Appearance");
-                    AddBrush("Background", control.Background, v => control.Background = v);
-                    AddBrush("Foreground", control.Foreground, v => control.Foreground = v);
-                    AddBrush("BorderBrush", control.BorderBrush, v => control.BorderBrush = v);
-                    AddThickness("BorderThickness", control.BorderThickness, v => control.BorderThickness = v);
-                    AddThickness("Padding", control.Padding, v => control.Padding = v);
+                    AddBrush("Background", control.Background, v => ForceSetValue(control, Control.BackgroundProperty, v));
+                    AddBrush("Foreground", control.Foreground, v => ForceSetValue(control, Control.ForegroundProperty, v));
+                    AddBrush("BorderBrush", control.BorderBrush, v => ForceSetValue(control, Control.BorderBrushProperty, v));
+                    AddThickness("BorderThickness", control.BorderThickness, v => ForceSetValue(control, Control.BorderThicknessProperty, v));
+                    AddThickness("Padding", control.Padding, v => ForceSetValue(control, Control.PaddingProperty, v));
                     AddStr("CornerRadius", control.CornerRadius.ToString());
 
                     AddSection("Typography");
@@ -918,8 +1029,8 @@ public class DevToolsWindow : Window
                     AddEnum("TextTrimming", tb.TextTrimming);
 
                     AddSection("Typography");
-                    AddBrush("Foreground", tb.Foreground, v => tb.Foreground = v);
-                    AddNum("FontSize", tb.FontSize, "F1", v => tb.FontSize = v);
+                    AddBrush("Foreground", tb.Foreground, v => ForceSetValue(tb, TextBlock.ForegroundProperty, v));
+                    AddNum("FontSize", tb.FontSize, "F1", v => ForceSetValue(tb, TextBlock.FontSizeProperty, (double)v));
                     AddFontFamily("FontFamily", tb.FontFamily);
                     AddFontWeight("FontWeight", tb.FontWeight);
                 }
@@ -928,10 +1039,10 @@ public class DevToolsWindow : Window
                 if (fe is Border border)
                 {
                     AddSection("Border");
-                    AddBrush("Background", border.Background, v => border.Background = v);
-                    AddBrush("BorderBrush", border.BorderBrush, v => border.BorderBrush = v);
-                    AddThickness("BorderThickness", border.BorderThickness, v => border.BorderThickness = v);
-                    AddThickness("Padding", border.Padding, v => border.Padding = v);
+                    AddBrush("Background", border.Background, v => ForceSetValue(border, Border.BackgroundProperty, v));
+                    AddBrush("BorderBrush", border.BorderBrush, v => ForceSetValue(border, Border.BorderBrushProperty, v));
+                    AddThickness("BorderThickness", border.BorderThickness, v => ForceSetValue(border, Border.BorderThicknessProperty, v));
+                    AddThickness("Padding", border.Padding, v => ForceSetValue(border, Border.PaddingProperty, v));
                     AddStr("CornerRadius", border.CornerRadius.ToString());
                     if (border.Child != null)
                         AddStr("Child", border.Child.GetType().Name);
@@ -2393,6 +2504,7 @@ public class DevToolsWindow : Window
                 BorderBrush = BrushSwatchBorder,
                 BorderThickness = new Thickness(1),
                 CornerRadius = new CornerRadius(2),
+                Cursor = (Cursor)Cursors.Hand,
                 Margin = new Thickness(0, 1, 6, 1)
             };
             row.Children.Add(swatch);
@@ -2401,9 +2513,10 @@ public class DevToolsWindow : Window
                 ? $"#{c.A:X2}{c.R:X2}{c.G:X2}{c.B:X2}"
                 : $"#{c.R:X2}{c.G:X2}{c.B:X2}";
 
+            TextBox? tb = null;
             if (setter != null)
             {
-                var tb = new TextBox
+                tb = new TextBox
                 {
                     Text = hex,
                     FontSize = 11,
@@ -2438,15 +2551,122 @@ public class DevToolsWindow : Window
                     FontSize = 11
                 });
             }
+
+            // Click swatch to open color picker popup
+            swatch.MouseDown += (_, _) =>
+            {
+                var picker = new ColorPicker
+                {
+                    Color = ((SolidColorBrush)swatch.Background!).Color,
+                    Width = 260,
+                    IsAlphaEnabled = true
+                };
+                var popupBorder = new Border
+                {
+                    Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                    BorderBrush = BrushAccent,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(4),
+                    Padding = new Thickness(8),
+                    Child = picker
+                };
+                var popup = new Popup
+                {
+                    Child = popupBorder,
+                    PlacementTarget = swatch,
+                    Placement = PlacementMode.Bottom,
+                    StaysOpen = false,
+                    IsOpen = true
+                };
+                picker.ColorChanged += (_, args) =>
+                {
+                    swatch.Background = new SolidColorBrush(args.NewColor);
+                    if (setter != null)
+                    {
+                        var nb = new SolidColorBrush(args.NewColor);
+                        setter(nb);
+                    }
+                    if (tb != null)
+                    {
+                        var nc = args.NewColor;
+                        tb.Text = nc.A < 255
+                            ? $"#{nc.A:X2}{nc.R:X2}{nc.G:X2}{nc.B:X2}"
+                            : $"#{nc.R:X2}{nc.G:X2}{nc.B:X2}";
+                    }
+                };
+            };
         }
         else if (brush == null)
         {
-            row.Children.Add(new TextBlock
+            if (setter != null)
             {
-                Text = "null",
-                Foreground = BrushNull,
-                FontSize = 11
-            });
+                // Clickable empty swatch to create a new color via picker
+                var nullSwatch = new Border
+                {
+                    Width = 14,
+                    Height = 14,
+                    Background = null,
+                    BorderBrush = BrushSwatchBorder,
+                    BorderThickness = new Thickness(1),
+                    CornerRadius = new CornerRadius(2),
+                    Margin = new Thickness(0, 1, 6, 1)
+                };
+                var nullText = new TextBlock
+                {
+                    Text = "null",
+                    Foreground = BrushNull,
+                    FontSize = 11
+                };
+                row.Children.Add(nullSwatch);
+                row.Children.Add(nullText);
+
+                nullSwatch.MouseDown += (_, _) =>
+                {
+                    var picker = new ColorPicker
+                    {
+                        Color = Color.White,
+                        Width = 260,
+                        IsAlphaEnabled = true
+                    };
+                    var popupBorder = new Border
+                    {
+                        Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                        BorderBrush = BrushAccent,
+                        BorderThickness = new Thickness(1),
+                        CornerRadius = new CornerRadius(4),
+                        Padding = new Thickness(8),
+                        Child = picker
+                    };
+                    var popup = new Popup
+                    {
+                        Child = popupBorder,
+                        PlacementTarget = nullSwatch,
+                        Placement = PlacementMode.Bottom,
+                        StaysOpen = false,
+                        IsOpen = true
+                    };
+                    picker.ColorChanged += (_, args) =>
+                    {
+                        var nb = new SolidColorBrush(args.NewColor);
+                        nullSwatch.Background = nb;
+                        setter(nb);
+                        var nc = args.NewColor;
+                        nullText.Text = nc.A < 255
+                            ? $"#{nc.A:X2}{nc.R:X2}{nc.G:X2}{nc.B:X2}"
+                            : $"#{nc.R:X2}{nc.G:X2}{nc.B:X2}";
+                        nullText.Foreground = BrushString;
+                    };
+                };
+            }
+            else
+            {
+                row.Children.Add(new TextBlock
+                {
+                    Text = "null",
+                    Foreground = BrushNull,
+                    FontSize = 11
+                });
+            }
         }
         else
         {
@@ -2537,7 +2757,7 @@ public class DevToolsWindow : Window
             Text = $"\"{display}\"",
             Foreground = BrushString,
             FontSize = 11,
-            FontFamily = fontFamily ?? "Segoe UI"
+            FontFamily = fontFamily ?? FrameworkElement.DefaultFontFamilyName
         });
     }
 
@@ -2557,6 +2777,23 @@ public class DevToolsWindow : Window
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
     //  Parsing utilities
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
+
+    /// <summary>
+    /// Forces a dependency property value from DevTools by clearing animated and trigger layer values
+    /// that would otherwise override the local value on the next frame.
+    /// </summary>
+    private static void ForceSetValue(DependencyObject obj, DependencyProperty dp, object? value)
+    {
+        // Clear animated value (highest priority — overrides local)
+        obj.ClearAnimatedValue(dp);
+
+        // Clear trigger layer values that could re-apply
+        obj.ClearLayerValue(dp, DependencyObject.LayerValueSource.TemplateTrigger);
+        obj.ClearLayerValue(dp, DependencyObject.LayerValueSource.StyleTrigger);
+
+        // Set as local value (highest non-animated priority)
+        obj.SetValue(dp, value);
+    }
 
     private static bool TryParseHexColor(string hex, out Color color)
     {

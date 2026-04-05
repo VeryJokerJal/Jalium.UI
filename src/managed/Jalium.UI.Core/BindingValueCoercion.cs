@@ -6,11 +6,20 @@ internal static class BindingValueCoercion
 {
     public static object? Coerce(object? value, Type targetType, CultureInfo culture)
     {
-        if (value == null ||
-            ReferenceEquals(value, DependencyProperty.UnsetValue) ||
+        if (ReferenceEquals(value, DependencyProperty.UnsetValue) ||
             ReferenceEquals(value, Binding.DoNothing))
         {
             return value;
+        }
+
+        if (value == null)
+        {
+            // For non-nullable value types (double, int, bool, etc.), return the
+            // type's default rather than null to prevent NullReferenceException
+            // when the DP getter unboxes the stored value.
+            if (targetType.IsValueType && Nullable.GetUnderlyingType(targetType) == null)
+                return Activator.CreateInstance(targetType);
+            return null;
         }
 
         var underlyingType = Nullable.GetUnderlyingType(targetType) ?? targetType;

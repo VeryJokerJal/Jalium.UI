@@ -147,7 +147,8 @@ Brush* VulkanBackend::CreateSolidBrush(float r, float g, float b, float a)
 
 Brush* VulkanBackend::CreateLinearGradientBrush(
     float startX, float startY, float endX, float endY,
-    const JaliumGradientStop* stops, uint32_t stopCount)
+    const JaliumGradientStop* stops, uint32_t stopCount,
+    uint32_t /*spreadMethod*/)
 {
     return new VulkanLinearGradientBrush(startX, startY, endX, endY, stops, stopCount);
 }
@@ -155,7 +156,8 @@ Brush* VulkanBackend::CreateLinearGradientBrush(
 Brush* VulkanBackend::CreateRadialGradientBrush(
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
-    const JaliumGradientStop* stops, uint32_t stopCount)
+    const JaliumGradientStop* stops, uint32_t stopCount,
+    uint32_t /*spreadMethod*/)
 {
     return new VulkanRadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount);
 }

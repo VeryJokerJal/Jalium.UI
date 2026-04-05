@@ -7,7 +7,6 @@
     <!-- ============================================== -->
     <Style TargetType="DataGrid">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="RowHeight" Value="28" />
@@ -84,7 +83,6 @@
     <!-- ============================================== -->
     <Style TargetType="DataGridRow">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGridRow">
                 <Border Name="PART_RowBorder"
@@ -112,7 +110,6 @@
     <!-- ============================================== -->
     <Style TargetType="DataGridCell">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGridCell">
@@ -132,7 +129,6 @@
     <!-- ============================================== -->
     <Style TargetType="DataGridColumnHeader">
         <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Padding" Value="8,6,4,6" />
         <Setter Property="Template">
             <ControlTemplate TargetType="DataGridColumnHeader">

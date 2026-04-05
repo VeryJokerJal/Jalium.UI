@@ -1,6 +1,7 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -19,13 +20,13 @@ public class Calendar : Control
     #region Static Brushes & Pens
 
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
-    private static readonly SolidColorBrush s_headerBgBrush = new(Color.FromRgb(55, 55, 55));
-    private static readonly SolidColorBrush s_hoverBrush = new(Color.FromArgb(40, 255, 255, 255));
-    private static readonly SolidColorBrush s_arrowNormalBrush = new(Color.FromRgb(200, 200, 200));
-    private static readonly SolidColorBrush s_dayHeaderBrush = new(Color.FromRgb(160, 160, 160));
-    private static readonly SolidColorBrush s_accentBrush = new(Color.FromRgb(0, 120, 212));
-    private static readonly SolidColorBrush s_unselectableBrush = new(Color.FromRgb(80, 80, 80));
-    private static readonly SolidColorBrush s_otherMonthBrush = new(Color.FromRgb(100, 100, 100));
+    private static readonly SolidColorBrush s_headerBgBrush = new(ThemeColors.SecondaryBackground);
+    private static readonly SolidColorBrush s_hoverBrush = new(ThemeColors.HighlightBackground);
+    private static readonly SolidColorBrush s_arrowNormalBrush = new(ThemeColors.TextSecondary);
+    private static readonly SolidColorBrush s_dayHeaderBrush = new(ThemeColors.TextSecondary);
+    private static readonly SolidColorBrush s_accentBrush = new(ThemeColors.Accent);
+    private static readonly SolidColorBrush s_unselectableBrush = new(ThemeColors.TextDisabled);
+    private static readonly SolidColorBrush s_otherMonthBrush = new(ThemeColors.TextDisabled);
 
     #endregion
 
@@ -549,7 +550,7 @@ public class Calendar : Control
 
         // Draw month/year text
         var monthYearText = DisplayDate.ToString("MMMM yyyy");
-        var formattedText = new FormattedText(monthYearText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+        var formattedText = new FormattedText(monthYearText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
         {
             Foreground = ResolvePrimaryTextBrush(),
             FontWeight = 600
@@ -617,7 +618,7 @@ public class Calendar : Control
             var dayIndex = (firstDayIndex + col) % 7;
             var dayName = dayNames[dayIndex];
 
-            var formattedText = new FormattedText(dayName, FontFamily ?? "Segoe UI", 11)
+            var formattedText = new FormattedText(dayName, FontFamily ?? FrameworkElement.DefaultFontFamilyName, 11)
             {
                 Foreground = ResolveCalendarBrush("TextSecondary", s_dayHeaderBrush)
             };
@@ -707,7 +708,7 @@ public class Calendar : Control
             textBrush = ResolvePrimaryTextBrush();
         }
 
-        var formattedText = new FormattedText(dayText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 13)
+        var formattedText = new FormattedText(dayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 13)
         {
             Foreground = textBrush
         };

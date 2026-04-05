@@ -57,6 +57,38 @@ public sealed class InlineCollection : List<Inline>
     }
 
     /// <summary>
+    /// Inserts an inline element at the specified index.
+    /// </summary>
+    public new void Insert(int index, Inline item)
+    {
+        item.Parent = _parent;
+        base.Insert(index, item);
+
+        // Rebuild sibling links
+        if (index > 0)
+        {
+            var prev = this[index - 1];
+            prev.NextInline = item;
+            item.PreviousInline = prev;
+        }
+        else
+        {
+            item.PreviousInline = null;
+        }
+
+        if (index < Count - 1)
+        {
+            var next = this[index + 1];
+            next.PreviousInline = item;
+            item.NextInline = next;
+        }
+        else
+        {
+            item.NextInline = null;
+        }
+    }
+
+    /// <summary>
     /// Removes an inline element from the collection.
     /// </summary>
     public new bool Remove(Inline item)

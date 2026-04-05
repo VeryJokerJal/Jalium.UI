@@ -45,7 +45,7 @@ internal sealed class DebugHudOverlay : Border
         _fpsText = new TextBlock
         {
             Text = "0",
-            FontFamily = new FontFamily("Segoe UI"),
+            FontFamily = new FontFamily(FrameworkElement.DefaultFontFamilyName),
             FontSize = 20,
             FontWeight = FontWeights.Bold,
             Foreground = new SolidColorBrush(Color.FromArgb(255, 80, 255, 80)),
@@ -54,7 +54,7 @@ internal sealed class DebugHudOverlay : Border
         var fpsLabel = new TextBlock
         {
             Text = "FPS",
-            FontFamily = new FontFamily("Segoe UI"),
+            FontFamily = new FontFamily(FrameworkElement.DefaultFontFamilyName),
             FontSize = 10,
             Foreground = new SolidColorBrush(labelColor),
             Margin = new Thickness(0, 8, 12, 0),
@@ -62,7 +62,7 @@ internal sealed class DebugHudOverlay : Border
         _pathText = new TextBlock
         {
             Text = "Full [D3D12]",
-            FontFamily = new FontFamily("Segoe UI"),
+            FontFamily = new FontFamily(FrameworkElement.DefaultFontFamilyName),
             FontSize = 10,
             Foreground = new SolidColorBrush(dimColor),
             Margin = new Thickness(0, 8, 0, 0),

@@ -1,0 +1,6 @@
+<linker>
+  <!-- Preserve TypeResolver so the AOT type resolution callback works under trimming -->
+  <assembly fullname="Jalium.UI.Core">
+    <type fullname="Jalium.UI.TypeResolver" preserve="all" />
+  </assembly>
+</linker>

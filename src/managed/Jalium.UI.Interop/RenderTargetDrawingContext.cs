@@ -322,6 +322,46 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
     }
 
+    /// <summary>
+    /// Draws a rounded rectangle with per-corner radii using native SDF rendering.
+    /// </summary>
+    public override void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, CornerRadius cornerRadius)
+    {
+        if (_closed) return;
+
+        var x = SnapCoordinate(rectangle.X + Offset.X);
+        var y = SnapCoordinate(rectangle.Y + Offset.Y);
+        var width = (float)rectangle.Width;
+        var height = (float)rectangle.Height;
+        var maxR = Math.Min(width, height) / 2f;
+        var tl = (float)Math.Min(cornerRadius.TopLeft, maxR);
+        var tr = (float)Math.Min(cornerRadius.TopRight, maxR);
+        var br = (float)Math.Min(cornerRadius.BottomRight, maxR);
+        var bl = (float)Math.Min(cornerRadius.BottomLeft, maxR);
+
+        if (brush != null)
+        {
+            var nativeBrush = GetNativeBrush(brush, x, y, width, height);
+            if (nativeBrush != null)
+            {
+                _renderTarget.FillPerCornerRoundedRectangle(x, y, width, height, tl, tr, br, bl, nativeBrush);
+            }
+        }
+
+        if (pen?.Brush != null)
+        {
+            var strokeRight = SnapCoordinate(rectangle.X + rectangle.Width + Offset.X);
+            var strokeBottom = SnapCoordinate(rectangle.Y + rectangle.Height + Offset.Y);
+            var strokeW = strokeRight - x;
+            var strokeH = strokeBottom - y;
+            var strokeBrush = GetNativeBrush(pen.Brush, x, y, strokeW, strokeH);
+            if (strokeBrush != null)
+            {
+                _renderTarget.DrawPerCornerRoundedRectangle(x, y, strokeW, strokeH, tl, tr, br, bl, strokeBrush, (float)pen.Thickness);
+            }
+        }
+    }
+
     /// <inheritdoc />
     public override void DrawContentBorder(Brush? fillBrush, Pen? strokePen, Rect rectangle,
         double bottomLeftRadius, double bottomRightRadius)
@@ -412,9 +452,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             formattedText.FontStyle);
         if (format == null) return;
 
-        // Round text coordinates to pixel boundaries to prevent sub-pixel jittering
-        // DirectWrite renders text using sub-pixel positioning which can cause visual instability
-        var x = (float)Math.Round(origin.X + Offset.X);
+        var x = (float)(origin.X + Offset.X);
         var y = (float)Math.Round(origin.Y + Offset.Y);
         var width = (float)formattedText.MaxTextWidth;
         var height = (float)formattedText.MaxTextHeight;
@@ -555,6 +593,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             pen.StartLineCap != PenLineCap.Flat ||
             pen.EndLineCap != PenLineCap.Flat);
 
+        // Compute geometry bounds once for gradient brush coordinate mapping.
+        var geoBounds = pathGeom.Bounds;
+
         // For fill: use compound path rendering when there are multiple figures
         // (enables proper hole/fill rule handling in the native triangulator)
         var fillFigures = brush != null
@@ -564,15 +605,15 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         if (fillFigures != null && fillFigures.Count > 1)
         {
             // Send all figures as a single compound path with MoveTo separators
-            DrawCompoundPathFill(brush!, fillFigures, pathGeom.FillRule);
+            DrawCompoundPathFill(brush!, fillFigures, pathGeom.FillRule, geoBounds);
         }
         else if (fillFigures != null && fillFigures.Count == 1)
         {
             var figure = fillFigures[0];
             if (FigureHasCurves(figure))
-                DrawPathFigureNative(brush, null, figure, pathGeom.FillRule);
+                DrawPathFigureNative(brush, null, figure, pathGeom.FillRule, geoBounds);
             else
-                DrawPathFigurePolygon(brush, null, figure, pathGeom.FillRule);
+                DrawPathFigurePolygon(brush, null, figure, pathGeom.FillRule, geoBounds);
         }
 
         // Stroke rendering: each figure stroked individually
@@ -580,24 +621,47 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         {
             foreach (var figure in pathGeom.Figures)
             {
-                bool needsWidening = hasNonFlatCaps && !figure.IsClosed;
-
-                if (hasDash)
+                if (hasDash && FigureHasCurves(figure))
                 {
-                    DrawDashedPathFigure(pen, figure);
+                    // Route dashed curved paths through native StrokePath (Vello handles dash expansion)
+                    DrawPathFigureNative(null, pen, figure, pathGeom.FillRule, geoBounds);
                 }
-                else if (needsWidening)
+                else if (hasDash)
                 {
-                    // Use GetWidenedPathGeometry for accurate line caps/joins on open paths
-                    DrawWidenedStroke(pen, figure, pathGeom.FillRule);
+                    // Straight-line dashed paths: managed dash expansion (avoids Vello overhead)
+                    DrawDashedPathFigure(pen, figure);
                 }
                 else if (FigureHasCurves(figure))
                 {
-                    DrawPathFigureNative(null, pen, figure, pathGeom.FillRule);
+                    DrawPathFigureNative(null, pen, figure, pathGeom.FillRule, geoBounds);
                 }
                 else
                 {
-                    DrawPathFigurePolygon(null, pen, figure, pathGeom.FillRule);
+                    DrawPathFigurePolygon(null, pen, figure, pathGeom.FillRule, geoBounds);
+                }
+
+                // Draw round caps as circles at endpoints (native StrokePath
+                // only supports flat caps; this avoids the self-intersection
+                // issues caused by DrawWidenedStroke).
+                if (hasNonFlatCaps && !figure.IsClosed && pen.Brush != null)
+                {
+                    var capRadius = pen.Thickness / 2;
+                    var startPt = figure.StartPoint;
+                    var endPt = startPt;
+                    // Find the last point in the figure
+                    foreach (var seg in figure.Segments)
+                    {
+                        if (seg is LineSegment ls) endPt = ls.Point;
+                        else if (seg is PolyLineSegment pls && pls.Points.Count > 0) endPt = pls.Points[^1];
+                        else if (seg is BezierSegment bs) endPt = bs.Point3;
+                        else if (seg is PolyBezierSegment pbs && pbs.Points.Count > 0) endPt = pbs.Points[^1];
+                        else if (seg is QuadraticBezierSegment qs) endPt = qs.Point2;
+                        else if (seg is ArcSegment arcs) endPt = arcs.Point;
+                    }
+                    if (pen.StartLineCap == PenLineCap.Round)
+                        DrawEllipse(pen.Brush, null, startPt, capRadius, capRadius);
+                    if (pen.EndLineCap == PenLineCap.Round)
+                        DrawEllipse(pen.Brush, null, endPt, capRadius, capRadius);
                 }
             }
         }
@@ -608,7 +672,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// using tag 2 (MoveTo) to separate contours.  This enables the native
     /// triangulator to handle holes and fill rules correctly.
     /// </summary>
-    private void DrawCompoundPathFill(Brush brush, List<PathFigure> figures, FillRule fillRule)
+    private void DrawCompoundPathFill(Brush brush, List<PathFigure> figures, FillRule fillRule, Rect geoBounds)
     {
         _pathCommandBuffer ??= new List<float>(256);
         _pathCommandBuffer.Clear();
@@ -638,7 +702,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (cmds.Count == 0) return;
 
-        var nativeBrush = GetNativeBrush(brush);
+        var nativeBrush = GetNativeBrush(brush,
+            (float)(geoBounds.X + ox), (float)(geoBounds.Y + oy),
+            (float)geoBounds.Width, (float)geoBounds.Height);
         if (nativeBrush != null)
         {
             int rule = fillRule == FillRule.Nonzero ? 1 : 0;
@@ -655,10 +721,11 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var widened = singleGeom.GetWidenedPathGeometry(pen);
         if (widened.Figures.Count == 0) return;
 
+        var wBounds = widened.Bounds;
         var strokeBrush = pen.Brush;
         foreach (var wFigure in widened.Figures)
         {
-            DrawPathFigurePolygon(strokeBrush, null, wFigure, FillRule.Nonzero);
+            DrawPathFigurePolygon(strokeBrush, null, wFigure, FillRule.Nonzero, wBounds);
         }
     }
 
@@ -1080,7 +1147,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     // Reusable command buffer for path rendering to reduce GC pressure.
     private List<float>? _pathCommandBuffer;
 
-    private void DrawPathFigureNative(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule)
+    private void DrawPathFigureNative(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds)
     {
         // Build command buffer: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey]
         _pathCommandBuffer ??= new List<float>(128);
@@ -1095,11 +1162,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         float startX = (float)(figure.StartPoint.X + ox);
         float startY = (float)(figure.StartPoint.Y + oy);
+        float bx = (float)(geoBounds.X + ox), by = (float)(geoBounds.Y + oy);
+        float bw = (float)geoBounds.Width, bh = (float)geoBounds.Height;
         var cmdArray = cmds.ToArray();
 
         if (brush != null && figure.IsFilled)
         {
-            var nativeBrush = GetNativeBrush(brush);
+            var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
             if (nativeBrush != null)
             {
                 int rule = fillRule == FillRule.Nonzero ? 1 : 0;
@@ -1109,7 +1178,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (pen?.Brush != null)
         {
-            var strokeBrush = GetNativeBrush(pen.Brush);
+            var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
             if (strokeBrush != null)
             {
                 int nativeLineCap = pen.StartLineCap switch
@@ -1118,7 +1187,17 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                     PenLineCap.Square => 1,   // kLineCapSquare
                     _ => 0                    // kLineCapButt (Flat, Triangle)
                 };
-                _renderTarget.StrokePath(startX, startY, cmdArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit, nativeLineCap);
+                // Marshal dash pattern if present
+                float[]? dashArray = null;
+                float dashOff = 0f;
+                if (pen.DashStyle?.Dashes is { Count: > 0 } dashes)
+                {
+                    dashArray = new float[dashes.Count];
+                    for (int di = 0; di < dashes.Count; di++)
+                        dashArray[di] = (float)(dashes[di] * pen.Thickness);
+                    dashOff = (float)(pen.DashStyle.Offset * pen.Thickness);
+                }
+                _renderTarget.StrokePath(startX, startY, cmdArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit, nativeLineCap, dashArray, dashOff);
             }
         }
     }
@@ -1129,7 +1208,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     // Reusable point buffer for polygon flattening to reduce GC pressure.
     private List<Point>? _polygonPointBuffer;
 
-    private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule)
+    private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds)
     {
         _polygonPointBuffer ??= new List<Point>(64);
         _polygonPointBuffer.Clear();
@@ -1237,10 +1316,15 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             }
         }
 
+        var ox = Offset.X;
+        var oy = Offset.Y;
+        float bx = (float)(geoBounds.X + ox), by = (float)(geoBounds.Y + oy);
+        float bw = (float)geoBounds.Width, bh = (float)geoBounds.Height;
+
         if (brush != null && figure.IsFilled && points.Count >= 3)
         {
             int rule = fillRule == FillRule.Nonzero ? 1 : 0;
-            var nativeBrush = GetNativeBrush(brush);
+            var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
             if (nativeBrush != null)
             {
                 _renderTarget.FillPolygon(pointArray, nativeBrush, rule);
@@ -1249,7 +1333,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (pen?.Brush != null && points.Count >= 2)
         {
-            var strokeBrush = GetNativeBrush(pen.Brush);
+            var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
             if (strokeBrush != null)
             {
                 _renderTarget.DrawPolygon(pointArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit);
@@ -1526,13 +1610,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// <param name="localBounds">The transition area in local coordinates.</param>
     /// <param name="progress">Transition progress (0.0 - 1.0).</param>
     /// <param name="mode">Shader mode index (0-9).</param>
-    public void DrawTransitionShader(Rect localBounds, float progress, int mode)
+    public void DrawTransitionShader(Rect localBounds, float progress, int mode, float cornerRadius = 0f)
     {
         if (_closed) return;
         var x = (float)(localBounds.X + Offset.X);
         var y = (float)(localBounds.Y + Offset.Y);
         _renderTarget.DrawTransitionShader(x, y,
-            (float)localBounds.Width, (float)localBounds.Height, progress, mode);
+            (float)localBounds.Width, (float)localBounds.Height, progress, mode, cornerRadius);
     }
 
     /// <summary>
@@ -2006,6 +2090,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 (float)glow.EffectiveBlurRadius,
                 color.R / 255f, color.G / 255f, color.B / 255f,
                 (float)glow.Opacity, (float)glow.Intensity,
+                uvOffX, uvOffY,
                 cornerTL, cornerTR, cornerBR, cornerBL);
         }
         else if (effect is Media.Effects.InnerShadowEffect innerShadow)
@@ -2017,6 +2102,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 (float)innerShadow.OffsetY,
                 color.R / 255f, color.G / 255f, color.B / 255f,
                 (float)innerShadow.Opacity,
+                uvOffX, uvOffY,
                 cornerTL, cornerTR, cornerBR, cornerBL);
         }
         else if (effect is Media.Effects.EmbossEffect emboss)
@@ -2224,9 +2310,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         return arr;
     }
 
-    private NativeBrush CreateNativeLinearGradient(LinearGradientBrush brush,
+    private NativeBrush? CreateNativeLinearGradient(LinearGradientBrush brush,
         float bx, float by, float bw, float bh)
     {
+        if (brush.GradientStops.Count == 0)
+            return null;
+
         float sx, sy, ex, ey;
         if (brush.MappingMode == BrushMappingMode.RelativeToBoundingBox)
         {
@@ -2243,8 +2332,18 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             ey = (float)brush.EndPoint.Y;
         }
 
+        // Guard against degenerate gradient line (start == end).
+        if (sx == ex && sy == ey)
+            return null;
+
         var stops = MarshalGradientStops(brush.GradientStops);
-        var nb = _context.CreateLinearGradientBrush(sx, sy, ex, ey, stops, (uint)brush.GradientStops.Count);
+        var nb = _context.CreateLinearGradientBrush(sx, sy, ex, ey, stops, (uint)brush.GradientStops.Count, (uint)brush.SpreadMethod);
+        if (!nb.IsValid)
+        {
+            nb.Dispose();
+            return null;
+        }
+
         nb.LastAccessSequence = ++_brushCacheSequence;
 
         // Replace previous cached entry if any
@@ -2254,9 +2353,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         return nb;
     }
 
-    private NativeBrush CreateNativeRadialGradient(RadialGradientBrush brush,
+    private NativeBrush? CreateNativeRadialGradient(RadialGradientBrush brush,
         float bx, float by, float bw, float bh)
     {
+        if (brush.GradientStops.Count == 0)
+            return null;
+
         float cx, cy, rx, ry, ox, oy;
         if (brush.MappingMode == BrushMappingMode.RelativeToBoundingBox)
         {
@@ -2278,7 +2380,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
 
         var stops = MarshalGradientStops(brush.GradientStops);
-        var nb = _context.CreateRadialGradientBrush(cx, cy, rx, ry, ox, oy, stops, (uint)brush.GradientStops.Count);
+        var nb = _context.CreateRadialGradientBrush(cx, cy, rx, ry, ox, oy, stops, (uint)brush.GradientStops.Count, (uint)brush.SpreadMethod);
+        if (!nb.IsValid)
+        {
+            nb.Dispose();
+            return null;
+        }
+
         nb.LastAccessSequence = ++_brushCacheSequence;
 
         // Replace previous cached entry if any
@@ -2292,7 +2400,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (string.IsNullOrWhiteSpace(fontFamily))
         {
-            fontFamily = "Segoe UI";
+            fontFamily = FrameworkElement.DefaultFontFamilyName;
         }
 
         if (double.IsNaN(fontSize) || double.IsInfinity(fontSize) || fontSize <= 0)

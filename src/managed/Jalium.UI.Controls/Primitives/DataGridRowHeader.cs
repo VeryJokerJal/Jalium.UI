@@ -1,3 +1,4 @@
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -7,7 +8,7 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class DataGridRowHeader : ButtonBase
 {
-    private static readonly SolidColorBrush s_selectedBackgroundBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_selectedBackgroundBrush = new(ThemeColors.SelectedItemBackground);
     private static readonly SolidColorBrush s_pressedBackgroundBrush = new(Color.FromRgb(60, 60, 60));
     private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(45, 45, 45));
     private static readonly SolidColorBrush s_defaultSeparatorBrush = new(Color.FromRgb(67, 67, 70));

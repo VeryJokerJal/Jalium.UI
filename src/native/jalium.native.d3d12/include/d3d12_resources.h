@@ -33,6 +33,7 @@ public:
 
     float startX_, startY_, endX_, endY_;
     std::vector<GradStop> stops_;
+    uint32_t spreadMethod_ = 0;  // 0=Pad, 1=Repeat, 2=Reflect
 };
 
 class D3D12RadialGradientBrush : public Brush {
@@ -47,6 +48,7 @@ public:
 
     float centerX_, centerY_, radiusX_, radiusY_, originX_, originY_;
     std::vector<GradStop> stops_;
+    uint32_t spreadMethod_ = 0;  // 0=Pad, 1=Repeat, 2=Reflect
 };
 
 /// D3D12 bitmap wrapper.

@@ -265,6 +265,26 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Draws a filled rounded rectangle with per-corner radii.
+    /// </summary>
+    public void FillPerCornerRoundedRectangle(float x, float y, float width, float height, float tl, float tr, float br, float bl, NativeBrush brush)
+    {
+        ThrowIfDisposed();
+        if (brush == null || !brush.IsValid) return;
+        NativeMethods.FillPerCornerRoundedRectangle(_handle, x, y, width, height, tl, tr, br, bl, brush.Handle);
+    }
+
+    /// <summary>
+    /// Draws a rounded rectangle outline with per-corner radii.
+    /// </summary>
+    public void DrawPerCornerRoundedRectangle(float x, float y, float width, float height, float tl, float tr, float br, float bl, NativeBrush brush, float strokeWidth = 1.0f)
+    {
+        ThrowIfDisposed();
+        if (brush == null || !brush.IsValid) return;
+        NativeMethods.DrawPerCornerRoundedRectangle(_handle, x, y, width, height, tl, tr, br, bl, brush.Handle, strokeWidth);
+    }
+
+    /// <summary>
     /// Draws a filled ellipse.
     /// </summary>
     public void FillEllipse(float centerX, float centerY, float radiusX, float radiusY, NativeBrush brush)
@@ -347,11 +367,13 @@ public sealed class RenderTarget : IDisposable
     /// Strokes a path with native bezier curve support.
     /// lineCap: 0 = Butt, 1 = Square, 2 = Round.
     /// </summary>
-    public void StrokePath(float startX, float startY, float[] commands, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true, int lineJoin = 0, float miterLimit = 10.0f, int lineCap = 0)
+    public void StrokePath(float startX, float startY, float[] commands, NativeBrush brush, float strokeWidth = 1.0f, bool closed = true, int lineJoin = 0, float miterLimit = 10.0f, int lineCap = 0,
+        float[]? dashPattern = null, float dashOffset = 0.0f)
     {
         ThrowIfDisposed();
         if (brush == null || !brush.IsValid || commands == null || commands.Length == 0) return;
-        NativeMethods.StrokePath(_handle, startX, startY, commands, commands.Length, brush.Handle, strokeWidth, closed ? 1 : 0, lineJoin, miterLimit, lineCap);
+        NativeMethods.StrokePath(_handle, startX, startY, commands, commands.Length, brush.Handle, strokeWidth, closed ? 1 : 0, lineJoin, miterLimit, lineCap,
+            dashPattern, dashPattern?.Length ?? 0, dashOffset);
     }
 
     /// <summary>
@@ -822,10 +844,10 @@ public sealed class RenderTarget : IDisposable
     /// <param name="h">Height (in DIPs).</param>
     /// <param name="progress">Transition progress (0.0 - 1.0).</param>
     /// <param name="mode">Shader mode index (0-9).</param>
-    public void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode)
+    public void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode, float cornerRadius = 0f)
     {
         ThrowIfDisposed();
-        NativeMethods.DrawTransitionShader(_handle, x, y, w, h, progress, mode);
+        NativeMethods.DrawTransitionShader(_handle, x, y, w, h, progress, mode, cornerRadius);
     }
 
     /// <summary>
@@ -887,21 +909,25 @@ public sealed class RenderTarget : IDisposable
 
     public void DrawOuterGlowEffect(float x, float y, float w, float h,
         float glowSize, float r, float g, float b, float a, float intensity,
+        float uvOffsetX = 0, float uvOffsetY = 0,
         float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
     {
         ThrowIfDisposed();
         NativeMethods.DrawOuterGlowEffect(_handle, x, y, w, h,
-            glowSize, r, g, b, a, intensity, cornerTL, cornerTR, cornerBR, cornerBL);
+            glowSize, r, g, b, a, intensity, uvOffsetX, uvOffsetY,
+            cornerTL, cornerTR, cornerBR, cornerBL);
     }
 
     public void DrawInnerShadowEffect(float x, float y, float w, float h,
         float blurRadius, float offsetX, float offsetY,
         float r, float g, float b, float a,
+        float uvOffsetX = 0, float uvOffsetY = 0,
         float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
     {
         ThrowIfDisposed();
         NativeMethods.DrawInnerShadowEffect(_handle, x, y, w, h,
-            blurRadius, offsetX, offsetY, r, g, b, a, cornerTL, cornerTR, cornerBR, cornerBL);
+            blurRadius, offsetX, offsetY, r, g, b, a, uvOffsetX, uvOffsetY,
+            cornerTL, cornerTR, cornerBR, cornerBL);
     }
 
     public void DrawColorMatrixEffect(float x, float y, float w, float h,

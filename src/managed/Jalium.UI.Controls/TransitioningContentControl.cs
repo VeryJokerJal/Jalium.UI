@@ -254,8 +254,10 @@ public class TransitioningContentControl : ContentControl, TransitionHost
         RenderContentForCapture(ContentElement, rtdc);
         rtdc.EndTransitionCapture(1);
 
-        // Blend with GPU shader
-        rtdc.DrawTransitionShader(rect, (float)_gpuShaderProgress, _gpuShaderMode);
+        // Blend with GPU shader (pass CornerRadius for SDF clipping)
+        var cr = CornerRadius;
+        var maxCr = (float)Math.Max(Math.Max(cr.TopLeft, cr.TopRight), Math.Max(cr.BottomLeft, cr.BottomRight));
+        rtdc.DrawTransitionShader(rect, (float)_gpuShaderProgress, _gpuShaderMode, maxCr);
     }
 
     /// <summary>

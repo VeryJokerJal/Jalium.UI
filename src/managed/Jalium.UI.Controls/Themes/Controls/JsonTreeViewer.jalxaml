@@ -1,0 +1,107 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- JsonTreeViewer Style                            -->
+    <!-- ============================================== -->
+    <!-- A tree-based JSON data viewer with search, expand/collapse,
+         and path display functionality. -->
+    <Style TargetType="JsonTreeViewer">
+        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="MinWidth" Value="200" />
+        <Setter Property="MinHeight" Value="150" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="JsonTreeViewer">
+                <Border Name="RootBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        ClipToBounds="True">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Toolbar -->
+                        <Border Name="PART_ToolBar"
+                                Grid.Row="0"
+                                Background="{DynamicResource ControlBackground}"
+                                BorderBrush="{DynamicResource ControlBorder}"
+                                BorderThickness="0,0,0,1"
+                                Padding="4,2,4,2">
+                            <StackPanel Orientation="Horizontal">
+                                <Button Name="PART_ExpandAllButton"
+                                        Content="Expand All"
+                                        Margin="0,0,4,0"
+                                        Padding="8,4,8,4"
+                                        MinWidth="0"
+                                        MinHeight="0" />
+                                <Button Name="PART_CollapseAllButton"
+                                        Content="Collapse All"
+                                        Margin="0,0,4,0"
+                                        Padding="8,4,8,4"
+                                        MinWidth="0"
+                                        MinHeight="0" />
+                                <Button Name="PART_CopyPathButton"
+                                        Content="Copy Path"
+                                        Padding="8,4,8,4"
+                                        MinWidth="0"
+                                        MinHeight="0" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Search Box -->
+                        <Border Name="PART_SearchBox"
+                                Grid.Row="1"
+                                Background="{DynamicResource ControlBackground}"
+                                BorderBrush="{DynamicResource ControlBorder}"
+                                BorderThickness="0,0,0,1"
+                                Padding="4">
+                            <TextBox Name="PART_SearchTextBox"
+                                     PlaceholderText="Search..."
+                                     BorderThickness="1" />
+                        </Border>
+
+                        <!-- Tree View -->
+                        <TreeView Name="PART_TreeView"
+                                  Grid.Row="2"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  Padding="0" />
+
+                        <!-- Status Bar -->
+                        <Border Name="PART_StatusBar"
+                                Grid.Row="3"
+                                Background="{DynamicResource ControlBackground}"
+                                BorderBrush="{DynamicResource ControlBorder}"
+                                BorderThickness="0,1,0,0"
+                                Padding="8,4,8,4">
+                            <TextBlock Name="PART_StatusText"
+                                       Foreground="{DynamicResource TextSecondary}"
+                                       FontSize="11" />
+                        </Border>
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Opacity" Value="0.65" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+</ResourceDictionary>

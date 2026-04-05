@@ -1,0 +1,6 @@
+<StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+            xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+  @foreach(var name in new[]{"Alice", "Bob", "Charlie"}) {
+  <TextBlock Text="@name" />
+  }
+</StackPanel>

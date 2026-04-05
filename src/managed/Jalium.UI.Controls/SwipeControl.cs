@@ -1,4 +1,5 @@
 using Jalium.UI.Input;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -8,8 +9,8 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class SwipeControl : ContentControl
 {
-    private static readonly SolidColorBrush s_defaultSwipeBackgroundBrush = new(Color.FromRgb(0, 120, 212));
-    private static readonly SolidColorBrush s_defaultSwipeForegroundBrush = new(Color.FromRgb(255, 255, 255));
+    private static readonly SolidColorBrush s_defaultSwipeBackgroundBrush = new(ThemeColors.Accent);
+    private static readonly SolidColorBrush s_defaultSwipeForegroundBrush = new(ThemeColors.TextPrimary);
     private double _translateX;
     private bool _isDragging;
     private Point _dragStart;
@@ -164,7 +165,7 @@ public class SwipeControl : ContentControl
 
             if (!string.IsNullOrEmpty(item.Text))
             {
-                var textFormatted = new FormattedText(item.Text, "Segoe UI", 12) { Foreground = fg };
+                var textFormatted = new FormattedText(item.Text, FrameworkElement.DefaultFontFamilyName, 12) { Foreground = fg };
                 dc.DrawText(textFormatted, new Point(centerX - textFormatted.Width / 2, centerY + 4));
             }
         }

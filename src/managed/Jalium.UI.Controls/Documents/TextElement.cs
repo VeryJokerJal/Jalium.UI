@@ -1,3 +1,4 @@
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Documents;
@@ -24,7 +25,7 @@ public abstract class TextElement : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.RegisterAttached("FontFamily", typeof(string), typeof(TextElement),
-            new PropertyMetadata("Segoe UI", null, null, inherits: true));
+            new PropertyMetadata(FrameworkElement.DefaultFontFamilyName, null, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontSize dependency property.
@@ -60,7 +61,7 @@ public abstract class TextElement : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         DependencyProperty.RegisterAttached("Foreground", typeof(Brush), typeof(TextElement),
-            new PropertyMetadata(new SolidColorBrush(Color.Black), null, null, inherits: true));
+            new PropertyMetadata(null, null, null, inherits: true));
 
     /// <summary>
     /// Identifies the Background dependency property.
@@ -86,7 +87,7 @@ public abstract class TextElement : DependencyObject
     public static Brush? GetForeground(DependencyObject element) => (Brush?)element.GetValue(ForegroundProperty);
 
     public static void SetFontFamily(DependencyObject element, string value) => element.SetValue(FontFamilyProperty, value);
-    public static string GetFontFamily(DependencyObject element) => (string)(element.GetValue(FontFamilyProperty) ?? "Segoe UI");
+    public static string GetFontFamily(DependencyObject element) => (string)(element.GetValue(FontFamilyProperty) ?? FrameworkElement.DefaultFontFamilyName);
 
     public static void SetFontSize(DependencyObject element, double value) => element.SetValue(FontSizeProperty, value);
     public static double GetFontSize(DependencyObject element) => (double)element.GetValue(FontSizeProperty)!;
@@ -107,7 +108,7 @@ public abstract class TextElement : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public string FontFamily
     {
-        get => (string)(GetValue(FontFamilyProperty) ?? "Segoe UI");
+        get => (string)(GetValue(FontFamilyProperty) ?? FrameworkElement.DefaultFontFamilyName);
         set => SetValue(FontFamilyProperty, value);
     }
 
@@ -200,7 +201,7 @@ public abstract class TextElement : DependencyObject
     /// <summary>
     /// Gets the effective font family.
     /// </summary>
-    public string GetEffectiveFontFamily() => GetEffectiveValue(FontFamilyProperty, "Segoe UI");
+    public string GetEffectiveFontFamily() => GetEffectiveValue(FontFamilyProperty, FrameworkElement.DefaultFontFamilyName);
 
     /// <summary>
     /// Gets the effective font size.
@@ -221,7 +222,7 @@ public abstract class TextElement : DependencyObject
     /// Gets the effective foreground brush.
     /// </summary>
     public Brush GetEffectiveForeground() =>
-        GetEffectiveValue<Brush?>(ForegroundProperty, null) ?? new SolidColorBrush(Color.Black);
+        GetEffectiveValue<Brush?>(ForegroundProperty, null) ?? new SolidColorBrush(ThemeColors.TextPrimary);
 
     /// <summary>
     /// Gets the effective background brush.

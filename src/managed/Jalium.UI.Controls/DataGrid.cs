@@ -5,15 +5,39 @@ using System.ComponentModel;
 using System.Reflection;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
+/// Internal interface for controls that host DataGridColumnHeaders (DataGrid, TreeDataGrid).
+/// Allows column headers to call back into their parent for resize, drag reorder, etc.
+/// </summary>
+internal interface IColumnHeaderHost
+{
+    bool CanUserResizeColumns { get; }
+    bool CanUserReorderColumns { get; }
+    bool IsColumnDragging { get; }
+    void ResizeColumn(DataGridColumn column, double newWidth);
+    void StartColumnDrag(DataGridColumnHeader sourceHeader, DataGridColumn column);
+    void UpdateColumnDrag(Point positionInHost);
+    void EndColumnDrag(Point positionInHost);
+    void CancelColumnDrag();
+}
+
+/// <summary>
 /// Represents a control that displays data in a customizable grid using TemplatedControl pattern.
 /// </summary>
-public class DataGrid : Control
+public class DataGrid : Control, IColumnHeaderHost
 {
+    bool IColumnHeaderHost.IsColumnDragging => _isColumnDragging;
+    void IColumnHeaderHost.ResizeColumn(DataGridColumn column, double newWidth) => ResizeColumn(column, newWidth);
+    void IColumnHeaderHost.StartColumnDrag(DataGridColumnHeader sourceHeader, DataGridColumn column) => StartColumnDrag(sourceHeader, column);
+    void IColumnHeaderHost.UpdateColumnDrag(Point positionInHost) => UpdateColumnDrag(positionInHost);
+    void IColumnHeaderHost.EndColumnDrag(Point positionInHost) => EndColumnDrag(positionInHost);
+    void IColumnHeaderHost.CancelColumnDrag() => CancelColumnDrag();
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -555,6 +579,7 @@ public class DataGrid : Control
                 Width = column.ActualWidth,
                 Height = double.IsNaN(ColumnHeaderHeight) ? double.NaN : GetEffectiveColumnHeaderHeight(),
                 ParentDataGrid = this,
+                ColumnHost = this,
                 Column = column
             };
 
@@ -2081,7 +2106,7 @@ public class DataGrid : Control
         };
 
         // Create drop indicator (vertical line)
-        var accentBrush = TryFindResource("AccentBrush") as Brush ?? new SolidColorBrush(Color.FromRgb(0, 120, 215));
+        var accentBrush = TryFindResource("AccentBrush") as Brush ?? new SolidColorBrush(ThemeColors.Accent);
         _dropIndicator = new Border
         {
             Width = 2,
@@ -2437,6 +2462,7 @@ public class DataGridColumnHeader : ContentControl
     private const double DragThreshold = 5.0;
 
     internal DataGrid? ParentDataGrid { get; set; }
+    internal IColumnHeaderHost? ColumnHost { get; set; }
     internal DataGridColumn? Column { get; set; }
 
     private TextBlock? _sortIndicator;
@@ -2482,8 +2508,9 @@ public class DataGridColumnHeader : ContentControl
             return;
         }
 
+        var host = ColumnHost;
         var canResize = Column != null
-            && (ParentDataGrid?.CanUserResizeColumns ?? false)
+            && (host?.CanUserResizeColumns ?? false)
             && Column.CanUserResize;
 
         _resizeGrip.Visibility = canResize ? Visibility.Visible : Visibility.Collapsed;
@@ -2491,12 +2518,12 @@ public class DataGridColumnHeader : ContentControl
 
     private bool CanResizeCurrentColumn() =>
         Column != null
-        && (ParentDataGrid?.CanUserResizeColumns ?? false)
+        && (ColumnHost?.CanUserResizeColumns ?? false)
         && Column.CanUserResize;
 
     private bool CanDragCurrentColumn() =>
         Column != null
-        && (ParentDataGrid?.CanUserReorderColumns ?? false)
+        && (ColumnHost?.CanUserReorderColumns ?? false)
         && Column.CanUserReorder;
 
     private bool IsInResizeZone(Point point)
@@ -2544,35 +2571,34 @@ public class DataGridColumnHeader : ContentControl
 
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
+        var host = ColumnHost;
         if (_isResizing && Column != null)
         {
             var currentX = e.GetPosition(null).X;
             var delta = currentX - _resizeStartX;
             var newWidth = Math.Clamp(_resizeStartWidth + delta, Column.MinWidth, Column.MaxWidth);
-            ParentDataGrid?.ResizeColumn(Column, newWidth);
+            host?.ResizeColumn(Column, newWidth);
             Cursor = Jalium.UI.Cursors.SizeWE;
             e.Handled = true;
             return;
         }
 
-        if (_isDragging && ParentDataGrid != null)
+        if (_isDragging && host is UIElement hostElement)
         {
-            // Update ghost position
-            ParentDataGrid.UpdateColumnDrag(e.GetPosition(ParentDataGrid));
+            host.UpdateColumnDrag(e.GetPosition(hostElement));
             e.Handled = true;
             return;
         }
 
         if (_mouseDownForDrag && !_isDragging)
         {
-            // Check if past drag threshold
             var currentPos = e.GetPosition(null);
             if (Math.Abs(currentPos.X - _mouseDownPoint.X) > DragThreshold)
             {
                 _isDragging = true;
                 _mouseDownForDrag = false;
                 Cursor = Jalium.UI.Cursors.SizeAll;
-                ParentDataGrid?.StartColumnDrag(this, Column!);
+                host?.StartColumnDrag(this, Column!);
                 e.Handled = true;
                 return;
             }
@@ -2595,22 +2621,20 @@ public class DataGridColumnHeader : ContentControl
         if (_isDragging)
         {
             _isDragging = false;
-            // Release mouse capture BEFORE EndColumnDrag, because EndColumnDrag
-            // may trigger Columns.Move -> RefreshColumnHeaders which destroys this
-            // header instance. Releasing after removal would fail silently.
             if (IsMouseCaptured) ReleaseMouseCapture();
             Cursor = null;
-            ParentDataGrid?.EndColumnDrag(e.GetPosition(ParentDataGrid));
+            if (ColumnHost is UIElement hostElement)
+            {
+                ColumnHost.EndColumnDrag(e.GetPosition(hostElement));
+            }
             e.Handled = true;
             return;
         }
 
         if (_mouseDownForDrag)
         {
-            // Mouse was pressed for potential drag but didn't exceed threshold — release
             _mouseDownForDrag = false;
             if (IsMouseCaptured) ReleaseMouseCapture();
-            // Don't set e.Handled so the sort click handler fires
         }
     }
 
@@ -2621,11 +2645,9 @@ public class DataGridColumnHeader : ContentControl
         if (_isDragging)
         {
             _isDragging = false;
-            // Only cancel if the DataGrid still considers us in a drag
-            // (EndColumnDrag already called CleanupDragVisuals if completed normally)
-            if (ParentDataGrid != null && ParentDataGrid._isColumnDragging)
+            if (ColumnHost != null && ColumnHost.IsColumnDragging)
             {
-                ParentDataGrid.CancelColumnDrag();
+                ColumnHost.CancelColumnDrag();
             }
         }
 

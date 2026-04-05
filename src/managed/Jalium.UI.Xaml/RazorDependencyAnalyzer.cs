@@ -8,12 +8,16 @@ internal static class RazorCodeBlockAnalyzer
     {
         if (RazorScriptingFeature.IsSupported)
         {
-            var analysis = RazorCSharpDependencyAnalyzer.AnalyzeCodeBlock(code);
-            return new RazorCodeBlockPlan(
-                code,
-                analysis.Dependencies,
-                analysis.RootIdentifiers,
-                analysis.DeclaredIdentifiers);
+            try
+            {
+                var analysis = RazorCSharpDependencyAnalyzer.AnalyzeCodeBlock(code);
+                return new RazorCodeBlockPlan(
+                    code,
+                    analysis.Dependencies,
+                    analysis.RootIdentifiers,
+                    analysis.DeclaredIdentifiers);
+            }
+            catch (NotSupportedException) { /* Roslyn unavailable — fall through to lightweight */ }
         }
 
         var fallback = RazorLightweightDependencyAnalyzer.AnalyzeCodeBlock(code);
@@ -45,14 +49,18 @@ internal static class RazorExpressionAnalyzer
 
         if (RazorScriptingFeature.IsSupported)
         {
-            var analysis = RazorCSharpDependencyAnalyzer.AnalyzeExpression(expression);
-            return new RazorExpressionPlan(
-                expression,
-                analysis.Dependencies,
-                analysis.RootIdentifiers);
+            try
+            {
+                var analysis = RazorCSharpDependencyAnalyzer.AnalyzeExpression(expression);
+                return new RazorExpressionPlan(
+                    expression,
+                    analysis.Dependencies,
+                    analysis.RootIdentifiers);
+            }
+            catch (NotSupportedException) { /* Roslyn unavailable — fall through to lightweight */ }
         }
 
-        // Lightweight fallback when Roslyn is trimmed (NativeAOT).
+        // Lightweight fallback (AOT/single-file safe).
         var fallback = RazorLightweightDependencyAnalyzer.AnalyzeExpression(expression);
         return new RazorExpressionPlan(
             expression,

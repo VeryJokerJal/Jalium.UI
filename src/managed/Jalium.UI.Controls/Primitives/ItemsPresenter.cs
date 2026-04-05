@@ -56,10 +56,19 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
             // Try to get panel from owner's ItemsPanel template
             if (_owner?.ItemsPanel != null)
             {
-                _itemsPanel = _owner.ItemsPanel.CreatePanel() as Panel;
+                var created = _owner.ItemsPanel.CreatePanel();
+                if (created is Panel panel)
+                {
+                    _itemsPanel = panel;
+                }
+                else if (created != null)
+                {
+                    System.Diagnostics.Debug.WriteLine(
+                        $"ItemsPresenter: ItemsPanelTemplate produced a {created.GetType().Name} instead of a Panel. Falling back to StackPanel.");
+                }
             }
 
-            // Default to StackPanel if no template
+            // Default to StackPanel if no template or template didn't produce a Panel
             _itemsPanel ??= new StackPanel { Orientation = Orientation.Vertical };
 
             if (_itemsPanel is IScrollInfo scrollInfo)
@@ -73,6 +82,22 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
         }
 
         return _itemsPanel;
+    }
+
+    /// <summary>
+    /// Discards the current items panel so that the next measure pass
+    /// will create a new one from the owner's <see cref="ItemsControl.ItemsPanel"/> template.
+    /// </summary>
+    internal void InvalidatePanel()
+    {
+        if (_itemsPanel != null)
+        {
+            _itemsPanel.Children.Clear();
+            RemoveVisualChild(_itemsPanel);
+            _itemsPanel = null;
+        }
+
+        InvalidateMeasure();
     }
 
     /// <summary>
@@ -97,13 +122,22 @@ public class ItemsPresenter : FrameworkElement, IScrollInfo
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        // Create the panel FIRST so it's available when owner calls RefreshItems
-        var panel = EnsureItemsPanel();
-
-        // Try to attach to owner if not already done
+        // Attach to owner BEFORE creating the panel so that
+        // EnsureItemsPanel can read the owner's ItemsPanel template.
         if (_owner == null)
         {
             AttachToOwner();
+        }
+
+        bool panelJustCreated = _itemsPanel == null;
+        var panel = EnsureItemsPanel();
+
+        // If the panel was just created after owner attachment, the earlier
+        // RefreshItems (from SetItemsPresenter) found no panel and was a no-op.
+        // Trigger it again now that the panel exists.
+        if (panelJustCreated && _owner != null)
+        {
+            _owner.RefreshItemsInternal();
         }
 
         panel.Measure(availableSize);

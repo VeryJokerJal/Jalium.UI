@@ -1,4 +1,5 @@
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
@@ -10,9 +11,9 @@ public sealed class CalendarDayButton : Button
 {
     #region Static Brushes & Pens
 
-    private static readonly SolidColorBrush s_selectionBrush = new(Color.FromRgb(0, 120, 212));
-    private static readonly SolidColorBrush s_highlightBrush = new(Color.FromRgb(60, 60, 60));
-    private static readonly SolidColorBrush s_todayRingBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_selectionBrush = new(ThemeColors.SelectedItemBackground);
+    private static readonly SolidColorBrush s_highlightBrush = new(ThemeColors.HighlightBackground);
+    private static readonly SolidColorBrush s_todayRingBrush = new(ThemeColors.Accent);
     private static readonly Pen s_todayPen = new(s_todayRingBrush, 2);
     private static readonly SolidColorBrush s_blackedOutFgBrush = new(Color.FromRgb(80, 80, 80));
     private static readonly SolidColorBrush s_inactiveFgBrush = new(Color.FromRgb(128, 128, 128));
@@ -279,7 +280,7 @@ public sealed class CalendarDayButton : Button
                 fgBrush = ResolveDefaultForegroundBrush();
             }
 
-            var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = fgBrush
             };

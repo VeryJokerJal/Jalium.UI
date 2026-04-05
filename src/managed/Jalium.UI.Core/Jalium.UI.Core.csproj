@@ -6,7 +6,16 @@
     <Description>Core types for Jalium.UI framework including DependencyObject, Visual, UIElement, and layout system.</Description>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Core</PackageId>
+    <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
+
+  <!-- ILLink descriptor to preserve types accessed via reflection (AOT/trimming) -->
+  <ItemGroup>
+    <EmbeddedResource Include="ILLink.Descriptors.xml">
+      <LogicalName>ILLink.Descriptors.xml</LogicalName>
+    </EmbeddedResource>
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="Jalium.UI.Input" />

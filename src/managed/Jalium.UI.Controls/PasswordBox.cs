@@ -2,6 +2,7 @@ using Jalium.UI.Automation;
 using Jalium.UI.Controls.Automation;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
 
@@ -168,7 +169,7 @@ public class PasswordBox : Control, IImeSupport
     #region Static Brushes & Pens
 
     private static readonly SolidColorBrush s_fallbackPlaceholderBrush = new(Color.FromRgb(128, 128, 128));
-    private static readonly SolidColorBrush s_fallbackFocusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_fallbackFocusBorderBrush = new(ThemeColors.ControlBorderFocused);
     private static readonly SolidColorBrush s_fallbackWhiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
     private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
@@ -680,7 +681,7 @@ public class PasswordBox : Control, IImeSupport
             if (!string.IsNullOrEmpty(PlaceholderText))
             {
                 var placeholderBrush = ResolvePlaceholderBrush();
-                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily ?? "Segoe UI", FontSize)
+                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
                     Foreground = placeholderBrush,
                     MaxTextWidth = contentRect.Width,
@@ -749,7 +750,7 @@ public class PasswordBox : Control, IImeSupport
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
 
         var displayText = IsPasswordRevealed ? _password : new string(PasswordChar, _password.Length);
-        var formattedText = new FormattedText(displayText, FontFamily ?? "Segoe UI", FontSize)
+        var formattedText = new FormattedText(displayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = textBrush,
             MaxTextWidth = Math.Max(0, contentRect.Width + roundedHorizontalOffset),
@@ -797,7 +798,7 @@ public class PasswordBox : Control, IImeSupport
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, y, compositionWidth, lineHeight));
 
         // Draw composition text
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? "Segoe UI", FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -980,7 +981,7 @@ public class PasswordBox : Control, IImeSupport
 
     private double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
@@ -996,7 +997,7 @@ public class PasswordBox : Control, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
 
         // Check if font settings changed, invalidate cache if so

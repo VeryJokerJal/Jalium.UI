@@ -175,8 +175,10 @@ bool D3D12Backend::Initialize(void* preferredWindow) {
 bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
     UINT dxgiFactoryFlags = 0;
 
-    // Always enable DRED (Device Removed Extended Data) so we can diagnose
-    // device-lost even in Release builds.  DRED has negligible overhead.
+    // DRED (Device Removed Extended Data) for diagnosing device-lost.
+    // Only in debug builds: D3D12GetDebugInterface loads d3d12SDKLayers.dll
+    // and auto-breadcrumbs add per-command-list overhead.
+#if defined(_DEBUG)
     {
         ComPtr<ID3D12DeviceRemovedExtendedDataSettings> dredSettings;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&dredSettings)))) {
@@ -185,6 +187,7 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
             OutputDebugStringA("[D3D12Backend] DRED auto-breadcrumbs + page-fault enabled.\n");
         }
     }
+#endif
 
 #if defined(_DEBUG)
     if (IsGpuDebugEnabled()) {
@@ -416,17 +419,23 @@ Brush* D3D12Backend::CreateSolidBrush(float r, float g, float b, float a) {
 
 Brush* D3D12Backend::CreateLinearGradientBrush(
     float startX, float startY, float endX, float endY,
-    const JaliumGradientStop* stops, uint32_t stopCount)
+    const JaliumGradientStop* stops, uint32_t stopCount,
+    uint32_t spreadMethod)
 {
-    return new D3D12LinearGradientBrush(startX, startY, endX, endY, stops, stopCount);
+    auto* b = new D3D12LinearGradientBrush(startX, startY, endX, endY, stops, stopCount);
+    b->spreadMethod_ = spreadMethod;
+    return b;
 }
 
 Brush* D3D12Backend::CreateRadialGradientBrush(
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
-    const JaliumGradientStop* stops, uint32_t stopCount)
+    const JaliumGradientStop* stops, uint32_t stopCount,
+    uint32_t spreadMethod)
 {
-    return new D3D12RadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount);
+    auto* b = new D3D12RadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount);
+    b->spreadMethod_ = spreadMethod;
+    return b;
 }
 
 TextFormat* D3D12Backend::CreateTextFormat(

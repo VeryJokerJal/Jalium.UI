@@ -198,4 +198,81 @@ internal static class DynamicResourceBindingOperations
             target.ClearValue(property);
         }
     }
+
+    // ---- Non-FrameworkElement DependencyObject support (Freezable-like) ----
+
+    private sealed class NonVisualDynamicResourceSubscription
+    {
+        public required FrameworkElement Host { get; init; }
+        public required DependencyObject Target { get; init; }
+        public required DependencyProperty Property { get; init; }
+        public required object ResourceKey { get; init; }
+        public required EventHandler Handler { get; init; }
+    }
+
+    private static readonly ConditionalWeakTable<DependencyObject, Dictionary<DependencyProperty, NonVisualDynamicResourceSubscription>> NonVisualSubscriptions = new();
+
+    /// <summary>
+    /// Sets a dynamic resource on a non-FrameworkElement DependencyObject by using
+    /// a host FrameworkElement for resource lookup, similar to WPF's Freezable
+    /// inheritance context.
+    /// </summary>
+    internal static void SetDynamicResourceForNonVisual(
+        FrameworkElement host,
+        DependencyObject target,
+        DependencyProperty property,
+        object resourceKey)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        ArgumentNullException.ThrowIfNull(target);
+        ArgumentNullException.ThrowIfNull(property);
+        ArgumentNullException.ThrowIfNull(resourceKey);
+
+        ClearDynamicResourceForNonVisual(target, property);
+
+        var subscriptions = NonVisualSubscriptions.GetOrCreateValue(target);
+        EventHandler handler = (_, _) => RefreshNonVisualDynamicResource(target, property);
+        subscriptions[property] = new NonVisualDynamicResourceSubscription
+        {
+            Host = host,
+            Target = target,
+            Property = property,
+            ResourceKey = resourceKey,
+            Handler = handler,
+        };
+
+        host.ResourcesChanged += handler;
+        RefreshNonVisualDynamicResource(target, property);
+    }
+
+    internal static void ClearDynamicResourceForNonVisual(DependencyObject target, DependencyProperty property)
+    {
+        if (!NonVisualSubscriptions.TryGetValue(target, out var subscriptions))
+            return;
+
+        if (!subscriptions.TryGetValue(property, out var subscription))
+            return;
+
+        subscription.Host.ResourcesChanged -= subscription.Handler;
+        subscriptions.Remove(property);
+    }
+
+    private static void RefreshNonVisualDynamicResource(DependencyObject target, DependencyProperty property)
+    {
+        if (!NonVisualSubscriptions.TryGetValue(target, out var subscriptions))
+            return;
+
+        if (!subscriptions.TryGetValue(property, out var subscription))
+            return;
+
+        var resolved = ResourceLookup.FindResource(subscription.Host, subscription.ResourceKey);
+        if (resolved != null)
+        {
+            target.SetValue(property, resolved);
+        }
+        else if (target.HasLocalValue(property))
+        {
+            target.ClearValue(property);
+        }
+    }
 }

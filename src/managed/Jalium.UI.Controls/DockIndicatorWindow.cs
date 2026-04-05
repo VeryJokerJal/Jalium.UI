@@ -102,11 +102,19 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     /// <summary>
     /// Moves the indicator window to a new screen position and/or size (physical pixels).
     /// </summary>
+    private int _screenX, _screenY;
+
     internal void MoveTo(int screenX, int screenY, int width, int height)
     {
         if (_hwnd == nint.Zero) return;
 
         bool sizeChanged = width != _width || height != _height;
+        bool posChanged = screenX != _screenX || screenY != _screenY;
+
+        if (!sizeChanged && !posChanged) return; // Nothing changed — skip expensive calls
+
+        _screenX = screenX;
+        _screenY = screenY;
         _width = width;
         _height = height;
 

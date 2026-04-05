@@ -1,3 +1,4 @@
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -8,7 +9,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public abstract class IconElement : FrameworkElement
 {
-    private static readonly SolidColorBrush s_defaultForegroundBrush = new(Color.FromRgb(255, 255, 255));
+    private static readonly SolidColorBrush s_defaultForegroundBrush = new(ThemeColors.TextPrimary);
 
     /// <summary>
     /// Identifies the Foreground dependency property.

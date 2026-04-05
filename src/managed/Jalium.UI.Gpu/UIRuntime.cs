@@ -1569,6 +1569,7 @@ public static class BundleSerializer
 {
     private const ushort CurrentVersion = (ushort)RenderIR.Version;
     private const ushort LegacyInteractiveRegionVersion = 1;
+    private const ushort LegacyNoPathDataVersion = 2;
     private static ReadOnlySpan<byte> JuibMagic => "JUIB"u8;
     private static ReadOnlySpan<byte> LegacyUicMagic => "JUIC"u8;
     private static ReadOnlySpan<byte> LegacyJuibMagicFromUInt32 => [0x42, 0x49, 0x55, 0x4A];
@@ -1628,6 +1629,9 @@ public static class BundleSerializer
         WriteTextureRefArray(writer, bundle.Textures);
         WriteGlyphAtlasRefArray(writer, bundle.GlyphAtlases);
         WritePathCacheArray(writer, bundle.PathCaches);
+        WriteByteArray(writer, bundle.VertexData);
+        WriteUShortArray(writer, bundle.IndexData);
+        WriteStringArray(writer, bundle.PathDataStrings);
         WriteInteractiveRegionArray(writer, bundle.InteractiveRegions);
         WriteStateTransitionArray(writer, bundle.StateTransitions);
         WriteBackdropFilterParamsArray(writer, bundle.BackdropFilterParams);
@@ -1662,21 +1666,48 @@ public static class BundleSerializer
         var version = ReadAndValidateHeader(reader);
 
         // 读取各部分
+        var nodes = ReadNodeArray(reader);
+        var materials = ReadMaterialArray(reader);
+        var gradients = ReadGradientArray(reader);
+        var gradientStops = ReadGradientStopArray(reader);
+        var curves = ReadCurveArray(reader);
+        var animTargets = ReadAnimationTargetArray(reader);
+        var transforms = ReadFloatArray(reader);
+        var animValues = ReadByteArray(reader);
+        var drawCmds = ReadDrawCommandArray(reader);
+        var textures = ReadTextureRefArray(reader);
+        var glyphAtlases = ReadGlyphAtlasRefArray(reader);
+        var pathCaches = ReadPathCacheArray(reader);
+
+        // v3+ 包含顶点/索引缓冲区和原始路径数据
+        byte[] vertexData = [];
+        ushort[] indexData = [];
+        string[] pathDataStrings = [];
+        if (version >= 3)
+        {
+            vertexData = ReadByteArray(reader);
+            indexData = ReadUShortArray(reader);
+            pathDataStrings = ReadStringArray(reader);
+        }
+
         return new CompiledUIBundle
         {
             Version = RenderIR.Version,
-            Nodes = ReadNodeArray(reader),
-            Materials = ReadMaterialArray(reader),
-            Gradients = ReadGradientArray(reader),
-            GradientStops = ReadGradientStopArray(reader),
-            Curves = ReadCurveArray(reader),
-            AnimationTargets = ReadAnimationTargetArray(reader),
-            Transforms = ReadFloatArray(reader),
-            AnimationValues = ReadByteArray(reader),
-            DrawCommands = ReadDrawCommandArray(reader),
-            Textures = ReadTextureRefArray(reader),
-            GlyphAtlases = ReadGlyphAtlasRefArray(reader),
-            PathCaches = ReadPathCacheArray(reader),
+            Nodes = nodes,
+            Materials = materials,
+            Gradients = gradients,
+            GradientStops = gradientStops,
+            Curves = curves,
+            AnimationTargets = animTargets,
+            Transforms = transforms,
+            AnimationValues = animValues,
+            DrawCommands = drawCmds,
+            Textures = textures,
+            GlyphAtlases = glyphAtlases,
+            PathCaches = pathCaches,
+            VertexData = vertexData,
+            IndexData = indexData,
+            PathDataStrings = pathDataStrings,
             InteractiveRegions = ReadInteractiveRegionArray(reader, version),
             StateTransitions = ReadStateTransitionArray(reader),
             BackdropFilterParams = ReadBackdropFilterParamsArray(reader)
@@ -1700,7 +1731,8 @@ public static class BundleSerializer
             throw new InvalidDataException("Invalid bundle file format.");
 
         var version = reader.ReadUInt16();
-        if (version != CurrentVersion && version != LegacyInteractiveRegionVersion)
+        if (version != CurrentVersion && version != LegacyInteractiveRegionVersion
+            && version != LegacyNoPathDataVersion)
             throw new InvalidDataException($"Unsupported bundle version: {version}");
 
         return version;
@@ -2450,6 +2482,38 @@ public static class BundleSerializer
     {
         var count = reader.ReadInt32();
         return reader.ReadBytes(count);
+    }
+
+    private static void WriteUShortArray(BinaryWriter writer, ushort[] arr)
+    {
+        writer.Write(arr.Length);
+        foreach (var v in arr)
+            writer.Write(v);
+    }
+
+    private static ushort[] ReadUShortArray(BinaryReader reader)
+    {
+        var count = reader.ReadInt32();
+        var arr = new ushort[count];
+        for (int i = 0; i < count; i++)
+            arr[i] = reader.ReadUInt16();
+        return arr;
+    }
+
+    private static void WriteStringArray(BinaryWriter writer, string[] arr)
+    {
+        writer.Write(arr.Length);
+        foreach (var s in arr)
+            writer.Write(s ?? string.Empty);
+    }
+
+    private static string[] ReadStringArray(BinaryReader reader)
+    {
+        var count = reader.ReadInt32();
+        var arr = new string[count];
+        for (int i = 0; i < count; i++)
+            arr[i] = reader.ReadString();
+        return arr;
     }
 
     private static void WriteRect(BinaryWriter writer, Rect rect)

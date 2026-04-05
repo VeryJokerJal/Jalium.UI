@@ -20,6 +20,7 @@
     <JalxamlIntermediateOutputPath Condition="'$(JalxamlIntermediateOutputPath)' == ''">$(MSBuildProjectExtensionsPath)$(_JalxamlResolvedOutputConfigurationSegment)$(_JalxamlResolvedOutputTargetFrameworkSegment)$(_JalxamlResolvedOutputRuntimeIdentifierSegment)Jalxaml\</JalxamlIntermediateOutputPath>
     <JalxamlRazorIntermediateOutputPath Condition="'$(_JalxamlUsesDefaultRazorIntermediateOutputPath)' == 'true'">$(JalxamlIntermediateOutputPath)Razor\</JalxamlRazorIntermediateOutputPath>
     <EnableJalxamlCodeGeneration Condition="'$(EnableJalxamlCodeGeneration)' == ''">true</EnableJalxamlCodeGeneration>
+    <EnableJalxamlRazorTransform Condition="'$(EnableJalxamlRazorTransform)' == ''">true</EnableJalxamlRazorTransform>
   </PropertyGroup>
 
   <!-- Discover .jalxaml files by default. -->
@@ -93,7 +94,7 @@
   <!-- Transform Razor-style JALXAML before compilation and embedding. -->
   <Target Name="TransformJalxamlRazor"
           BeforeTargets="CompileJalxaml;EmbedJalxamlSources"
-          DependsOnTargets="PrepareForBuild"
+          DependsOnTargets="PrepareForBuild;ResolveAssemblyReferences"
           Inputs="@(JalxamlPage);@(JalxamlApplicationDefinition)"
           Outputs="@(JalxamlPage->'$(JalxamlRazorIntermediateOutputPath)%(RecursiveDir)%(Filename)%(Extension)');@(JalxamlApplicationDefinition->'$(JalxamlRazorIntermediateOutputPath)%(RecursiveDir)%(Filename)%(Extension)');$(JalxamlRazorIntermediateOutputPath)Jalxaml.RazorMetadata.g.cs"
           Condition="'$(EnableJalxamlRazorTransform)' == 'true' and ('@(JalxamlPage)' != '' or '@(JalxamlApplicationDefinition)' != '')">
@@ -103,7 +104,8 @@
     <TransformJalxamlRazorTask
         SourceFiles="@(JalxamlPage);@(JalxamlApplicationDefinition)"
         OutputDirectory="$(JalxamlRazorIntermediateOutputPath)"
-        ProjectDirectory="$(MSBuildProjectDirectory)">
+        ProjectDirectory="$(MSBuildProjectDirectory)"
+        ReferencePaths="@(ReferencePath)">
       <Output TaskParameter="TransformedFiles" ItemName="_JalxamlRazorTransformedFiles" />
       <Output TaskParameter="GeneratedCodeFiles" ItemName="_JalxamlRazorGeneratedCodeFiles" />
     </TransformJalxamlRazorTask>
@@ -137,10 +139,13 @@
   <Target Name="IncludeJalxamlRazorGeneratedCode"
           BeforeTargets="CoreCompile"
           DependsOnTargets="TransformJalxamlRazor"
-          Condition="'$(EnableJalxamlRazorTransform)' == 'true' and '@(_JalxamlRazorGeneratedCodeFiles)' != ''">
+          Condition="'$(EnableJalxamlRazorTransform)' == 'true'">
     <ItemGroup>
       <Compile Remove="@(_JalxamlRazorGeneratedCodeFiles)" />
       <Compile Include="@(_JalxamlRazorGeneratedCodeFiles)" Condition="Exists('%(Identity)')" />
+      <!-- Always include the metadata file even when TransformJalxamlRazor was skipped (incremental build) -->
+      <Compile Remove="$(JalxamlRazorIntermediateOutputPath)Jalxaml.RazorMetadata.g.cs" />
+      <Compile Include="$(JalxamlRazorIntermediateOutputPath)Jalxaml.RazorMetadata.g.cs" Condition="Exists('$(JalxamlRazorIntermediateOutputPath)Jalxaml.RazorMetadata.g.cs')" />
       <FileWrites Include="@(_JalxamlRazorGeneratedCodeFiles)" Condition="Exists('%(Identity)')" />
     </ItemGroup>
   </Target>

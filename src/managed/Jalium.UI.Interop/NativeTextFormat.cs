@@ -171,6 +171,48 @@ public sealed class NativeTextFormat : IDisposable
     }
 
     /// <summary>
+    /// Hit-tests a point against a text layout to determine the character at that position.
+    /// </summary>
+    /// <param name="text">The full text of the layout.</param>
+    /// <param name="maxWidth">The maximum layout width.</param>
+    /// <param name="maxHeight">The maximum layout height.</param>
+    /// <param name="pointX">The X coordinate to test.</param>
+    /// <param name="pointY">The Y coordinate to test.</param>
+    /// <param name="result">The hit test result.</param>
+    /// <returns>True if the hit test succeeded.</returns>
+    public bool HitTestPoint(string text, float maxWidth, float maxHeight, float pointX, float pointY, out TextHitTestResult result)
+    {
+        ThrowIfDisposed();
+        result = default;
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        var hr = NativeMethods.TextFormatHitTestPoint(_handle, text, text.Length, maxWidth, maxHeight, pointX, pointY, out result);
+        return hr == 0;
+    }
+
+    /// <summary>
+    /// Gets the caret position for a given text index within a layout.
+    /// </summary>
+    /// <param name="text">The full text of the layout.</param>
+    /// <param name="maxWidth">The maximum layout width.</param>
+    /// <param name="maxHeight">The maximum layout height.</param>
+    /// <param name="textPosition">The character index.</param>
+    /// <param name="isTrailingHit">Whether to get the trailing edge position.</param>
+    /// <param name="result">The hit test result with caret position.</param>
+    /// <returns>True if the query succeeded.</returns>
+    public bool HitTestTextPosition(string text, float maxWidth, float maxHeight, uint textPosition, bool isTrailingHit, out TextHitTestResult result)
+    {
+        ThrowIfDisposed();
+        result = default;
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        var hr = NativeMethods.TextFormatHitTestTextPosition(_handle, text, text.Length, maxWidth, maxHeight, textPosition, isTrailingHit ? 1 : 0, out result);
+        return hr == 0;
+    }
+
+    /// <summary>
     /// Gets font metrics without measuring text.
     /// This is useful for determining line height before text content is known.
     /// </summary>

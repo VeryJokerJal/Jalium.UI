@@ -21,6 +21,14 @@ public static partial class CompositionTarget
     private static volatile bool _inRaiseRendering;
     private static bool _highResolutionTimerRequested;
 
+    // High-resolution waitable timer (Windows 10 1803+).
+    // CREATE_WAITABLE_TIMER_HIGH_RESOLUTION provides sub-ms precision
+    // without depending on timeBeginPeriod, which System.Threading.Timer
+    // may ignore under NativeAOT (thread pool timers use their own resolution).
+    private static nint _hrtHandle;
+    private static Thread? _hrtThread;
+    private static volatile bool _hrtRunning;
+
     private const uint HighResolutionTimerPeriodMs = 1;
 
     /// <summary>
@@ -124,19 +132,72 @@ public static partial class CompositionTarget
 
     private static void StartTimer()
     {
-        RequestHighResolutionTimer();
+        // Try high-resolution waitable timer (Windows 10 1803+).
+        // This provides guaranteed sub-ms one-shot timing independent of
+        // timeBeginPeriod — critical for NativeAOT where System.Threading.Timer
+        // may fire at the default ~15.6ms OS resolution, capping FPS to ~60.
+        _hrtHandle = CreateWaitableTimerExW(nint.Zero, nint.Zero,
+            CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+            TIMER_MODIFY_STATE | SYNCHRONIZE);
 
-        // One-shot timer: fires once, then waits for re-arm after RaiseRendering
-        // completes. This guarantees at most ONE RaiseRendering in-flight at any
-        // time, preventing callback accumulation that causes iGPU hangs.
+        if (_hrtHandle != nint.Zero)
+        {
+            _hrtRunning = true;
+            // Arm initial 1ms one-shot (negative = relative, in 100ns units).
+            long dueTime = -10_000L * FrameIntervalMs;
+            SetWaitableTimerEx(_hrtHandle, in dueTime, 0, nint.Zero, nint.Zero, nint.Zero, 0);
+            _hrtThread = new Thread(HighResTimerLoop)
+            {
+                IsBackground = true,
+                Name = "Jalium.FrameTimer"
+            };
+            _hrtThread.Start();
+            return;
+        }
+
+        // Fallback: timeBeginPeriod + System.Threading.Timer (pre-1803 or failure).
+        RequestHighResolutionTimer();
         _frameTimer = new Timer(OnFrameTick, null, FrameIntervalMs, Timeout.Infinite);
     }
 
     private static void StopTimer()
     {
-        _frameTimer?.Dispose();
-        _frameTimer = null;
-        ReleaseHighResolutionTimer();
+        if (_hrtHandle != nint.Zero)
+        {
+            _hrtRunning = false;
+            // Signal timer immediately to unblock the wait thread.
+            long immediate = -1;
+            SetWaitableTimerEx(_hrtHandle, in immediate, 0, nint.Zero, nint.Zero, nint.Zero, 0);
+            _hrtThread?.Join(500);
+            _hrtThread = null;
+            CloseHandle(_hrtHandle);
+            _hrtHandle = nint.Zero;
+        }
+        else
+        {
+            _frameTimer?.Dispose();
+            _frameTimer = null;
+            ReleaseHighResolutionTimer();
+        }
+    }
+
+    /// <summary>
+    /// Background thread loop for the high-resolution waitable timer path.
+    /// Waits for the timer to fire (one-shot), then dispatches OnFrameTick.
+    /// The timer is re-armed by <see cref="RearmTimer"/> after rendering completes,
+    /// preserving the one-shot guarantee: at most one RaiseRendering in-flight.
+    /// </summary>
+    private static void HighResTimerLoop()
+    {
+        while (_hrtRunning)
+        {
+            uint result = WaitForSingleObject(_hrtHandle, 1000);
+            if (!_hrtRunning) break;
+            if (result == 0) // WAIT_OBJECT_0
+            {
+                OnFrameTick(null);
+            }
+        }
     }
 
     private static void OnFrameTick(object? state)
@@ -263,7 +324,14 @@ public static partial class CompositionTarget
     {
         lock (_timerLock)
         {
-            if (_frameTimer != null && _subscriberCount > 0)
+            if (_subscriberCount <= 0) return;
+
+            if (_hrtHandle != nint.Zero)
+            {
+                long dueTime = -10_000L * FrameIntervalMs;
+                SetWaitableTimerEx(_hrtHandle, in dueTime, 0, nint.Zero, nint.Zero, nint.Zero, 0);
+            }
+            else if (_frameTimer != null)
             {
                 _frameTimer.Change(FrameIntervalMs, Timeout.Infinite);
             }
@@ -299,4 +367,28 @@ public static partial class CompositionTarget
 
     [LibraryImport("winmm.dll", EntryPoint = "timeEndPeriod")]
     private static partial uint TimeEndPeriod(uint uPeriod);
+
+    // ── High-resolution waitable timer (kernel32) ──
+
+    private const uint CREATE_WAITABLE_TIMER_HIGH_RESOLUTION = 0x00000002;
+    private const uint TIMER_MODIFY_STATE = 0x0002;
+    private const uint SYNCHRONIZE = 0x00100000;
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial nint CreateWaitableTimerExW(
+        nint lpTimerAttributes, nint lpTimerName, uint dwFlags, uint dwDesiredAccess);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetWaitableTimerEx(
+        nint hTimer, in long lpDueTime, int lPeriod,
+        nint pfnCompletionRoutine, nint lpArgToCompletionRoutine,
+        nint wakeContext, uint tolerableDelay);
+
+    [LibraryImport("kernel32.dll")]
+    private static partial uint WaitForSingleObject(nint hHandle, uint dwMilliseconds);
+
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool CloseHandle(nint hObject);
 }

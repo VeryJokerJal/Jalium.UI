@@ -95,7 +95,7 @@ public class StatusBarItem : ContentControl
         if (Content is string text)
         {
             var fgBrush = Foreground ?? s_defaultFgBrush;
-            var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 12)
+            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
             {
                 Foreground = fgBrush
             };

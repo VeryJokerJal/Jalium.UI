@@ -4,8 +4,11 @@
 #include "d3d12_glyph_atlas.h"
 #include <vector>
 #include <stack>
+#include <memory>
 
 namespace jalium {
+
+class D3D12VelloRenderer;  // forward declaration
 
 // ============================================================================
 // 3x2 affine transform (column-major)
@@ -302,6 +305,12 @@ public:
     // effect capture / blur that need rasterised content on the back buffer.
     void FlushGraphicsForCompute();
 
+    // --- Vello GPU path renderer ---
+    D3D12VelloRenderer* GetVelloRenderer() const { return velloRenderer_.get(); }
+    bool HasVelloPaths() const;
+    void FlushVelloPaths();
+    void ApplyScissorToVello();
+
 private:
     bool CreatePSOs();
     bool CreateRootSignature();
@@ -439,6 +448,9 @@ private:
 
     // DPI scale factor (1.0 = 96 DPI / 100%)
     float dpiScale_ = 1.0f;
+
+    // Vello GPU path renderer
+    std::unique_ptr<D3D12VelloRenderer> velloRenderer_;
 
     // Swap chain format (queried at init, used for PSO creation)
     DXGI_FORMAT swapChainFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;

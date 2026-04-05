@@ -16,7 +16,7 @@ public sealed class FlowDocument : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         DependencyProperty.Register(nameof(FontFamily), typeof(string), typeof(FlowDocument),
-            new PropertyMetadata("Segoe UI"));
+            new PropertyMetadata(FrameworkElement.DefaultFontFamilyName));
 
     /// <summary>
     /// Identifies the FontSize dependency property.
@@ -129,7 +129,7 @@ public sealed class FlowDocument : DependencyObject
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public string FontFamily
     {
-        get => (string)(GetValue(FontFamilyProperty) ?? "Segoe UI");
+        get => (string)(GetValue(FontFamilyProperty) ?? FrameworkElement.DefaultFontFamilyName);
         set => SetValue(FontFamilyProperty, value);
     }
 
@@ -263,7 +263,6 @@ public sealed class FlowDocument : DependencyObject
     public FlowDocument()
     {
         Blocks = new BlockCollection(null!);
-        Foreground = new SolidColorBrush(Color.Black);
     }
 
     /// <summary>

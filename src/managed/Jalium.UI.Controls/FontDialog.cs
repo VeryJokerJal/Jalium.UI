@@ -10,7 +10,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public sealed class FontDialog
 {
-    private const string DefaultFontFamilyName = "Segoe UI";
+    private static readonly string DefaultFontFamilyName = FrameworkElement.DefaultFontFamilyName;
     private const int DefaultLogicalDpi = 96;
     private const byte DEFAULT_CHARSET = 1;
     private const byte DEFAULT_PITCH = 0;

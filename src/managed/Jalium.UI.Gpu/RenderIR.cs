@@ -7,7 +7,7 @@ namespace Jalium.UI.Gpu;
 public static class RenderIR
 {
     // 版本号，用于验证编译产物兼容性
-    public const int Version = 2;
+    public const int Version = 3;
 }
 
 #region Scene Graph Nodes
@@ -1446,6 +1446,21 @@ public sealed class CompiledUIBundle
     /// 路径缓存
     /// </summary>
     public required PathCache[] PathCaches { get; init; }
+
+    /// <summary>
+    /// 路径顶点数据（float X, Y 对）
+    /// </summary>
+    public byte[] VertexData { get; init; } = [];
+
+    /// <summary>
+    /// 路径索引数据
+    /// </summary>
+    public ushort[] IndexData { get; init; } = [];
+
+    /// <summary>
+    /// 原始路径数据字符串（SVG mini-language），与 PathCaches 索引对应
+    /// </summary>
+    public string[] PathDataStrings { get; init; } = [];
 
     /// <summary>
     /// 交互区域映射（用于 hit testing）

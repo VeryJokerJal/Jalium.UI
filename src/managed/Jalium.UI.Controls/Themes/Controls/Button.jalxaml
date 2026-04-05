@@ -7,71 +7,61 @@
     <!-- ============================================== -->
     <Style TargetType="Button">
         <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,6,12,6" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="MinWidth" Value="60" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Button">
-                <Grid>
-                    <Border Name="BackgroundBorder"
-                            TransitionProperty="None"
-                            Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="{TemplateBinding BorderThickness}"
-                            CornerRadius="{TemplateBinding CornerRadius}" />
-                    <Border Name="StateOverlay"
-                            TransitionProperty="Opacity"
-                            IsHitTestVisible="False"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Opacity="0" />
-                    <Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Visibility="Collapsed" />
-                    <ContentPresenter
-                        Margin="{TemplateBinding Padding}"
-                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
-                        <ContentPresenter.Resources>
-                            <Style TargetType="TextBlock">
-                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                <Setter Property="TextWrapping" Value="NoWrap" />
-                            </Style>
-                            <Style TargetType="AccessText">
-                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                <Setter Property="TextWrapping" Value="NoWrap" />
-                            </Style>
-                        </ContentPresenter.Resources>
-                    </ContentPresenter>
-                </Grid>
+                <Border Name="RootBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}">
+                    <Grid>
+                        <Border Name="FocusBorder"
+                                IsHitTestVisible="False"
+                                BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
+                                BorderThickness="2"
+                                CornerRadius="{TemplateBinding CornerRadius}"
+                                Visibility="Collapsed" />
+                        <ContentPresenter
+                            Margin="{TemplateBinding Padding}"
+                            HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                            VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
+                            <ContentPresenter.Resources>
+                                <Style TargetType="TextBlock">
+                                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                    <Setter Property="TextWrapping" Value="NoWrap" />
+                                </Style>
+                                <Style TargetType="AccessText">
+                                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                    <Setter Property="TextWrapping" Value="NoWrap" />
+                                </Style>
+                            </ContentPresenter.Resources>
+                        </ContentPresenter>
+                    </Grid>
+                </Border>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
-                <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
+                <Setter Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
                 <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource ButtonBackgroundPressed}" />
-                <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
+                <Setter Property="Background" Value="{DynamicResource ButtonBackgroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
                 <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="StateOverlay" Property="Opacity" Value="0" />
                 <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
                 <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
                 <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
@@ -85,13 +75,11 @@
     <!-- ============================================== -->
     <Style TargetType="SplitButton">
         <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,6,12,6" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="MinWidth" Value="96" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -125,9 +113,6 @@
 
                     <Button Name="SecondaryButton"
                             Grid.Column="1"
-                            Content="&#xE70D;"
-                            FontFamily="Segoe MDL2 Assets"
-                            FontSize="11"
                             Background="{TemplateBinding Background}"
                             Foreground="{TemplateBinding Foreground}"
                             BorderBrush="{TemplateBinding BorderBrush}"
@@ -137,7 +122,15 @@
                             MinWidth="32"
                             MinHeight="{TemplateBinding MinHeight}"
                             HorizontalContentAlignment="Center"
-                            VerticalContentAlignment="Center" />
+                            VerticalContentAlignment="Center">
+                        <Path Data="M488.879 595.6l-321.988-331.454c-38.173-39.259-100.089-39.259-138.261 0s-38.173 103.036 0 142.295l488.957 503.388c38.173 39.259 100.087 39.259 138.261 0l488.801-503.388c38.173-39.259 38.173-103.036 0-142.295-19.087-19.707-44.070-29.483-69.209-29.483-24.983 0-49.966 9.931-69.053 29.483l-321.988 331.454-95.588 82.708-99.933-82.708z"
+                              Fill="{TemplateBinding Foreground}"
+                              Width="10"
+                              Height="10"
+                              Stretch="Uniform"
+                              HorizontalAlignment="Center"
+                              VerticalAlignment="Center" />
+                    </Button>
                 </Grid>
             </ControlTemplate>
         </Setter>
@@ -160,13 +153,11 @@
     <!-- ============================================== -->
     <Style TargetType="RepeatButton">
         <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
@@ -241,7 +232,6 @@
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="HorizontalContentAlignment" Value="Left" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">

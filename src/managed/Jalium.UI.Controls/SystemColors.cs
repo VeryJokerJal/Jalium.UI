@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI;
@@ -5,7 +7,7 @@ namespace Jalium.UI;
 /// <summary>
 /// Contains static properties for system-defined colors and brushes that correspond to Windows display elements.
 /// </summary>
-public static class SystemColors
+public static partial class SystemColors
 {
     private const string WindowTextBrushResourceKey = "SystemColorWindowTextColorBrush";
     private const string WindowBrushResourceKey = "SystemColorWindowColorBrush";
@@ -16,37 +18,87 @@ public static class SystemColors
     private const string HotlightBrushResourceKey = "SystemColorHotlightColorBrush";
     private const string GrayTextBrushResourceKey = "SystemColorGrayTextColorBrush";
 
-    // Color properties
-    public static Color ActiveBorderColor => Color.FromRgb(180, 180, 180);
-    public static Color ActiveCaptionColor => Color.FromRgb(153, 180, 209);
-    public static Color ActiveCaptionTextColor => Color.FromRgb(0, 0, 0);
-    public static Color AppWorkspaceColor => Color.FromRgb(171, 171, 171);
-    public static Color ControlColor => ResolveColor(ButtonFaceBrushResourceKey, Color.FromRgb(240, 240, 240));
-    public static Color ControlDarkColor => Color.FromRgb(160, 160, 160);
-    public static Color ControlDarkDarkColor => Color.FromRgb(105, 105, 105);
-    public static Color ControlLightColor => Color.FromRgb(227, 227, 227);
-    public static Color ControlLightLightColor => Color.FromRgb(255, 255, 255);
-    public static Color ControlTextColor => ResolveColor(ButtonTextBrushResourceKey, Color.FromRgb(0, 0, 0));
-    public static Color DesktopColor => Color.FromRgb(0, 0, 0);
-    public static Color GradientActiveCaptionColor => Color.FromRgb(185, 209, 234);
-    public static Color GradientInactiveCaptionColor => Color.FromRgb(215, 228, 242);
-    public static Color GrayTextColor => ResolveColor(GrayTextBrushResourceKey, Color.FromRgb(109, 109, 109));
-    public static Color HighlightColor => ResolveColor(HighlightBrushResourceKey, Color.FromRgb(0, 120, 215));
-    public static Color HighlightTextColor => ResolveColor(HighlightTextBrushResourceKey, Color.FromRgb(255, 255, 255));
-    public static Color HotTrackColor => ResolveColor(HotlightBrushResourceKey, Color.FromRgb(0, 102, 204));
-    public static Color InactiveBorderColor => Color.FromRgb(244, 247, 252);
-    public static Color InactiveCaptionColor => Color.FromRgb(191, 205, 219);
-    public static Color InactiveCaptionTextColor => Color.FromRgb(0, 0, 0);
-    public static Color InfoColor => Color.FromRgb(255, 255, 225);
-    public static Color InfoTextColor => Color.FromRgb(0, 0, 0);
-    public static Color MenuColor => Color.FromRgb(240, 240, 240);
-    public static Color MenuBarColor => Color.FromRgb(240, 240, 240);
-    public static Color MenuHighlightColor => ResolveColor(HighlightBrushResourceKey, Color.FromRgb(0, 120, 215));
-    public static Color MenuTextColor => Color.FromRgb(0, 0, 0);
-    public static Color ScrollBarColor => Color.FromRgb(200, 200, 200);
-    public static Color WindowColor => ResolveColor(WindowBrushResourceKey, Color.FromRgb(255, 255, 255));
-    public static Color WindowFrameColor => Color.FromRgb(100, 100, 100);
-    public static Color WindowTextColor => ResolveColor(WindowTextBrushResourceKey, Color.FromRgb(0, 0, 0));
+    #region Win32 System Color Constants
+
+    private const int COLOR_SCROLLBAR = 0;
+    private const int COLOR_BACKGROUND = 1;
+    private const int COLOR_ACTIVECAPTION = 2;
+    private const int COLOR_INACTIVECAPTION = 3;
+    private const int COLOR_MENU = 4;
+    private const int COLOR_WINDOW = 5;
+    private const int COLOR_WINDOWFRAME = 6;
+    private const int COLOR_MENUTEXT = 7;
+    private const int COLOR_WINDOWTEXT = 8;
+    private const int COLOR_CAPTIONTEXT = 9;
+    private const int COLOR_ACTIVEBORDER = 10;
+    private const int COLOR_INACTIVEBORDER = 11;
+    private const int COLOR_APPWORKSPACE = 12;
+    private const int COLOR_HIGHLIGHT = 13;
+    private const int COLOR_HIGHLIGHTTEXT = 14;
+    private const int COLOR_BTNFACE = 15;
+    private const int COLOR_BTNSHADOW = 16;
+    private const int COLOR_GRAYTEXT = 17;
+    private const int COLOR_BTNTEXT = 18;
+    private const int COLOR_INACTIVECAPTIONTEXT = 19;
+    private const int COLOR_BTNHIGHLIGHT = 20;
+    private const int COLOR_3DDKSHADOW = 21;
+    private const int COLOR_3DLIGHT = 22;
+    private const int COLOR_INFOTEXT = 23;
+    private const int COLOR_INFOBK = 24;
+    private const int COLOR_HOTLIGHT = 26;
+    private const int COLOR_GRADIENTACTIVECAPTION = 27;
+    private const int COLOR_GRADIENTINACTIVECAPTION = 28;
+    private const int COLOR_MENUHILIGHT = 29;
+    private const int COLOR_MENUBAR = 30;
+
+    [LibraryImport("user32.dll")]
+    private static partial uint GetSysColor(int nIndex);
+
+    /// <summary>
+    /// Converts a Win32 COLORREF (0x00BBGGRR) to a Jalium.UI Color.
+    /// </summary>
+    private static Color ColorFromSysColor(int index)
+    {
+        uint cr = GetSysColor(index);
+        byte r = (byte)(cr & 0xFF);
+        byte g = (byte)((cr >> 8) & 0xFF);
+        byte b = (byte)((cr >> 16) & 0xFF);
+        return Color.FromRgb(r, g, b);
+    }
+
+    #endregion
+
+    // Color properties — prefer theme resource, then Win32 system color, then hardcoded fallback.
+    public static Color ActiveBorderColor => ColorFromSysColor(COLOR_ACTIVEBORDER);
+    public static Color ActiveCaptionColor => ColorFromSysColor(COLOR_ACTIVECAPTION);
+    public static Color ActiveCaptionTextColor => ColorFromSysColor(COLOR_CAPTIONTEXT);
+    public static Color AppWorkspaceColor => ColorFromSysColor(COLOR_APPWORKSPACE);
+    public static Color ControlColor => ResolveColor(ButtonFaceBrushResourceKey, ColorFromSysColor(COLOR_BTNFACE));
+    public static Color ControlDarkColor => ColorFromSysColor(COLOR_BTNSHADOW);
+    public static Color ControlDarkDarkColor => ColorFromSysColor(COLOR_3DDKSHADOW);
+    public static Color ControlLightColor => ColorFromSysColor(COLOR_3DLIGHT);
+    public static Color ControlLightLightColor => ColorFromSysColor(COLOR_BTNHIGHLIGHT);
+    public static Color ControlTextColor => ResolveColor(ButtonTextBrushResourceKey, ColorFromSysColor(COLOR_BTNTEXT));
+    public static Color DesktopColor => ColorFromSysColor(COLOR_BACKGROUND);
+    public static Color GradientActiveCaptionColor => ColorFromSysColor(COLOR_GRADIENTACTIVECAPTION);
+    public static Color GradientInactiveCaptionColor => ColorFromSysColor(COLOR_GRADIENTINACTIVECAPTION);
+    public static Color GrayTextColor => ResolveColor(GrayTextBrushResourceKey, ColorFromSysColor(COLOR_GRAYTEXT));
+    public static Color HighlightColor => ResolveColor(HighlightBrushResourceKey, ColorFromSysColor(COLOR_HIGHLIGHT));
+    public static Color HighlightTextColor => ResolveColor(HighlightTextBrushResourceKey, ColorFromSysColor(COLOR_HIGHLIGHTTEXT));
+    public static Color HotTrackColor => ResolveColor(HotlightBrushResourceKey, ColorFromSysColor(COLOR_HOTLIGHT));
+    public static Color InactiveBorderColor => ColorFromSysColor(COLOR_INACTIVEBORDER);
+    public static Color InactiveCaptionColor => ColorFromSysColor(COLOR_INACTIVECAPTION);
+    public static Color InactiveCaptionTextColor => ColorFromSysColor(COLOR_INACTIVECAPTIONTEXT);
+    public static Color InfoColor => ColorFromSysColor(COLOR_INFOBK);
+    public static Color InfoTextColor => ColorFromSysColor(COLOR_INFOTEXT);
+    public static Color MenuColor => ColorFromSysColor(COLOR_MENU);
+    public static Color MenuBarColor => ColorFromSysColor(COLOR_MENUBAR);
+    public static Color MenuHighlightColor => ResolveColor(HighlightBrushResourceKey, ColorFromSysColor(COLOR_MENUHILIGHT));
+    public static Color MenuTextColor => ColorFromSysColor(COLOR_MENUTEXT);
+    public static Color ScrollBarColor => ColorFromSysColor(COLOR_SCROLLBAR);
+    public static Color WindowColor => ResolveColor(WindowBrushResourceKey, ColorFromSysColor(COLOR_WINDOW));
+    public static Color WindowFrameColor => ColorFromSysColor(COLOR_WINDOWFRAME);
+    public static Color WindowTextColor => ResolveColor(WindowTextBrushResourceKey, ColorFromSysColor(COLOR_WINDOWTEXT));
 
     // Brush properties (lazy-initialized)
     private static SolidColorBrush? _controlBrush;

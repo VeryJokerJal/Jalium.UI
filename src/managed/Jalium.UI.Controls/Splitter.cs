@@ -1,4 +1,5 @@
 using Jalium.UI.Input;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 using static Jalium.UI.Cursors;
@@ -19,7 +20,7 @@ public class GridSplitter : Control
 
     #region Static Brushes
 
-    private static readonly SolidColorBrush s_draggingBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_draggingBrush = new(ThemeColors.Accent);
 
     #endregion
 
@@ -350,8 +351,9 @@ public class GridSplitter : Control
                 var newWidth1 = _originalDimension1 + delta;
                 var newWidth2 = _originalDimension2 - delta;
 
-                def1.Width = new GridLength(newWidth1, GridUnitType.Pixel);
-                def2.Width = new GridLength(newWidth2, GridUnitType.Pixel);
+                // Use Star units so both columns scale proportionally when the window is resized.
+                def1.Width = new GridLength(newWidth1, GridUnitType.Star);
+                def2.Width = new GridLength(newWidth2, GridUnitType.Star);
             }
         }
         else
@@ -370,8 +372,8 @@ public class GridSplitter : Control
                 var newHeight1 = _originalDimension1 + delta;
                 var newHeight2 = _originalDimension2 - delta;
 
-                def1.Height = new GridLength(newHeight1, GridUnitType.Pixel);
-                def2.Height = new GridLength(newHeight2, GridUnitType.Pixel);
+                def1.Height = new GridLength(newHeight1, GridUnitType.Star);
+                def2.Height = new GridLength(newHeight2, GridUnitType.Star);
             }
         }
 

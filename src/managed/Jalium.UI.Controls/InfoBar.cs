@@ -1,5 +1,6 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -19,7 +20,7 @@ public class InfoBar : ContentControl
     // Cached brushes for OnRender (per-severity)
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_infoBgBrush = new(Color.FromRgb(45, 45, 55));
-    private static readonly SolidColorBrush s_infoIconBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_infoIconBrush = new(ThemeColors.Accent);
     private static readonly SolidColorBrush s_successBgBrush = new(Color.FromRgb(35, 55, 40));
     private static readonly SolidColorBrush s_successIconBrush = new(Color.FromRgb(16, 185, 129));
     private static readonly SolidColorBrush s_warningBgBrush = new(Color.FromRgb(55, 50, 35));
@@ -281,7 +282,7 @@ public class InfoBar : ContentControl
         // Calculate text heights
         if (!string.IsNullOrEmpty(Title))
         {
-            var titleFormatted = new FormattedText(Title, FontFamily ?? "Segoe UI", (FontSize > 0 ? FontSize : 14) + 2);
+            var titleFormatted = new FormattedText(Title, FontFamily ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2);
             titleFormatted.FontWeight = 600;
             Interop.TextMeasurement.MeasureText(titleFormatted);
             height = Math.Max(height, titleFormatted.Height + padding.TotalHeight);
@@ -289,7 +290,7 @@ public class InfoBar : ContentControl
 
         if (!string.IsNullOrEmpty(Message))
         {
-            var messageFormatted = new FormattedText(Message, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14);
+            var messageFormatted = new FormattedText(Message, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
             Interop.TextMeasurement.MeasureText(messageFormatted);
 
             if (!string.IsNullOrEmpty(Title))
@@ -353,7 +354,7 @@ public class InfoBar : ContentControl
 
         if (!string.IsNullOrEmpty(Title))
         {
-            var titleFormatted = new FormattedText(Title, FontFamily ?? "Segoe UI", (FontSize > 0 ? FontSize : 14) + 2)
+            var titleFormatted = new FormattedText(Title, FontFamily ?? FrameworkElement.DefaultFontFamilyName, (FontSize > 0 ? FontSize : 14) + 2)
             {
                 Foreground = textBrush,
                 FontWeight = 600
@@ -365,7 +366,7 @@ public class InfoBar : ContentControl
 
         if (!string.IsNullOrEmpty(Message))
         {
-            var messageFormatted = new FormattedText(Message, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var messageFormatted = new FormattedText(Message, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = textBrush
             };
@@ -486,7 +487,7 @@ public class InfoBar : ContentControl
             InfoBarSeverity.Informational => (
                 ResolveColor("InfoBarInformationalBackground", Color.FromRgb(45, 45, 55)),
                 ResolveColor("InfoBarForeground", Color.White),
-                ResolveColor("InfoBarInfoBrush", Color.FromRgb(0, 120, 212))),
+                ResolveColor("InfoBarInfoBrush", ThemeColors.Accent)),
 
             InfoBarSeverity.Success => (
                 ResolveColor("InfoBarSuccessBackground", Color.FromRgb(35, 55, 40)),
@@ -506,7 +507,7 @@ public class InfoBar : ContentControl
             _ => (
                 ResolveColor("InfoBarInformationalBackground", Color.FromRgb(45, 45, 55)),
                 ResolveColor("InfoBarForeground", Color.White),
-                ResolveColor("InfoBarInfoBrush", Color.FromRgb(0, 120, 212)))
+                ResolveColor("InfoBarInfoBrush", ThemeColors.Accent))
         };
     }
 

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Globalization;
+using System.Reflection;
 
 namespace Jalium.UI.Media;
 
@@ -128,19 +129,28 @@ public sealed class ColorConverter : TypeConverter
             return null;
         }
 
-        // Try named colors
-        return colorString.ToLowerInvariant() switch
+        // Try named colors (full lookup from Colors class)
+        if (s_namedColors.TryGetValue(colorString.ToLowerInvariant(), out var namedColor))
+            return namedColor;
+
+        return null;
+    }
+
+    private static readonly Dictionary<string, Color> s_namedColors = BuildNamedColorMap();
+
+    private static Dictionary<string, Color> BuildNamedColorMap()
+    {
+        var map = new Dictionary<string, Color>(StringComparer.OrdinalIgnoreCase);
+        foreach (var prop in typeof(Colors).GetProperties(BindingFlags.Public | BindingFlags.Static))
         {
-            "transparent" => Color.FromArgb(0, 255, 255, 255),
-            "black" => Color.FromRgb(0, 0, 0),
-            "white" => Color.FromRgb(255, 255, 255),
-            "red" => Color.FromRgb(255, 0, 0),
-            "green" => Color.FromRgb(0, 128, 0),
-            "blue" => Color.FromRgb(0, 0, 255),
-            "yellow" => Color.FromRgb(255, 255, 0),
-            "gray" or "grey" => Color.FromRgb(128, 128, 128),
-            _ => null
-        };
+            if (prop.PropertyType == typeof(Color))
+            {
+                map[prop.Name.ToLowerInvariant()] = (Color)prop.GetValue(null)!;
+            }
+        }
+        // Add common aliases
+        map["grey"] = map["gray"];
+        return map;
     }
 }
 

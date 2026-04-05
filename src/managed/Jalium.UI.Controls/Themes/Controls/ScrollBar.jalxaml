@@ -23,7 +23,7 @@
                         BorderBrush="Transparent"
                         BorderThickness="0">
                     <Path Name="PART_Arrow"
-                          Data="M333.414 23.989 l557.904 393.923 c58.785 42.21 58.785 147.737 0 189.948 l-557.904 395.106 c-58.785 42.21-155.948 11.943-155.948-72.478 v-835.205 c0-84.421 97.162-113.505 155.948-71.293 Z"
+                          Data="M 841.90,426.67 L 273.07,0 A 170.67,170.67,0,0,0,0,136.53 V 989.87 A 170.67,170.67,0,0,0,273.07,1126.40 L 841.90,699.73 A 170.67,170.67,0,0,0,841.90,426.67 Z"
                           Fill="{TemplateBinding Foreground}"
                           Width="8"
                           Height="8"
@@ -36,16 +36,16 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="Tag" Value="Up">
-                <Setter TargetName="PART_Arrow" Property="Data" Value="M1000.011 690.586 l-393.923-557.904 c-42.21-58.785-147.737-58.785-189.948 0 l-395.106 557.904 c-42.21 58.785-11.943 155.948 72.478 155.948 h835.205 c84.421 0 113.505-97.162 71.293-155.948 Z" />
+                <Setter TargetName="PART_Arrow" Property="Data" Value="M 733.87,0 L 1160.54,568.83 A 170.67,170.67,0,0,1,1024.00,841.90 H 170.67 A 170.67,170.67,0,0,1,34.14,568.83 L 460.80,0 A 170.67,170.67,0,0,1,733.87,0 Z" />
             </PropertyTrigger>
             <PropertyTrigger Property="Tag" Value="Down">
-                <Setter TargetName="PART_Arrow" Property="Data" Value="M1000.011 333.414 l-393.923 557.904 c-42.21 58.785-147.737 58.785-189.948 0 l-395.106-557.904 c-42.21-58.785-11.943-155.948 72.478-155.948 h835.205 c84.421 0 113.505 97.162 71.293 155.948 Z" />
+                <Setter TargetName="PART_Arrow" Property="Data" Value="M 733.87,841.90 L 1160.54,273.07 A 170.67,170.67,0,0,0,1024.00,0 H 170.67 A 170.67,170.67,0,0,0,34.14,273.07 L 460.80,841.90 A 170.67,170.67,0,0,0,733.87,841.90 Z" />
             </PropertyTrigger>
             <PropertyTrigger Property="Tag" Value="Left">
-                <Setter TargetName="PART_Arrow" Property="Data" Value="M690.586 1000.011 l-557.904-393.923 c-58.785-42.21-58.785-147.737 0-189.948 l557.904-395.106 c58.785-42.21 155.948-11.943 155.948 72.478 v835.205 c0 84.421-97.162 113.505-155.948 71.293 Z" />
+                <Setter TargetName="PART_Arrow" Property="Data" Value="M 0,426.67 L 568.83,0 A 170.67,170.67,0,0,1,841.90,136.53 V 989.87 A 170.67,170.67,0,0,1,568.83,1126.40 L 0,699.73 A 170.67,170.67,0,0,1,0,426.67 Z" />
             </PropertyTrigger>
             <PropertyTrigger Property="Tag" Value="Right">
-                <Setter TargetName="PART_Arrow" Property="Data" Value="M333.414 23.989 l557.904 393.923 c58.785 42.21 58.785 147.737 0 189.948 l-557.904 395.106 c-58.785 42.21-155.948 11.943-155.948-72.478 v-835.205 c0-84.421 97.162-113.505 155.948-71.293 Z" />
+                <Setter TargetName="PART_Arrow" Property="Data" Value="M 841.90,426.67 L 273.07,0 A 170.67,170.67,0,0,0,0,136.53 V 989.87 A 170.67,170.67,0,0,0,273.07,1126.40 L 841.90,699.73 A 170.67,170.67,0,0,0,841.90,426.67 Z" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
                 <Setter TargetName="PART_Arrow" Property="Opacity" Value="0.45" />

@@ -91,6 +91,10 @@
             <Color x:Key="InfoBarSuccess">#6CCB5F</Color>
             <Color x:Key="InfoBarWarning">#FCE100</Color>
             <Color x:Key="InfoBarError">#FF99A4</Color>
+            <Color x:Key="ToastInformation">#0078D4</Color>
+            <Color x:Key="ToastSuccess">#10B981</Color>
+            <Color x:Key="ToastWarning">#F59E0B</Color>
+            <Color x:Key="ToastError">#DC2626</Color>
             <Color x:Key="SystemColorWindowTextColor">#FFFFFFFF</Color>
             <Color x:Key="SystemColorWindowColor">#FF202020</Color>
             <Color x:Key="SystemColorButtonFaceColor">#FF454545</Color>
@@ -275,11 +279,11 @@
             <SolidColorBrush x:Key="TitleBarButtonBackground" Color="#00FFFFFF" />
             <SolidColorBrush x:Key="TitleBarButtonHover" Color="#12FFFFFF" />
             <SolidColorBrush x:Key="TitleBarButtonPressed" Color="#19000000" />
-            <SolidColorBrush x:Key="TitleBarCloseButtonHover" Color="#FF99A4" />
-            <SolidColorBrush x:Key="TitleBarCloseButtonPressed" Color="#442726" />
+            <SolidColorBrush x:Key="TitleBarCloseButtonHover" Color="#E81123" />
+            <SolidColorBrush x:Key="TitleBarCloseButtonPressed" Color="#F4747E  " />
             <SolidColorBrush x:Key="TitleBarGlyph" Color="#FFFFFF" />
 
-            <SolidColorBrush x:Key="ScrollBarTrack" Color="#0FFFFFFF" />
+            <SolidColorBrush x:Key="ScrollBarTrack" Color="#05FFFFFF" />
             <SolidColorBrush x:Key="ScrollBarThumb" Color="#8BFFFFFF" />
             <SolidColorBrush x:Key="ScrollBarThumbHover" Color="#8BFFFFFF" />
             <SolidColorBrush x:Key="ScrollBarThumbActive" Color="#8BFFFFFF" />
@@ -298,11 +302,13 @@
             <SolidColorBrush x:Key="HyperlinkForegroundPressed" Color="#FFFFFF" />
 
             <SolidColorBrush x:Key="DockTabStripBackground" Color="#1C1C1C" />
-            <SolidColorBrush x:Key="DockTabStripBorder" Color="#66757575" />
-            <SolidColorBrush x:Key="DockTabItemSelectedBackground" Color="#12FFFFFF" />
+            <SolidColorBrush x:Key="DockTabStripBorder" Color="#33757575" />
+            <SolidColorBrush x:Key="DockTabStripBorderFocused" Color="#667C4DFF" />
+            <SolidColorBrush x:Key="DockTabItemSelectedBackground" Color="Transparent" />
+            <SolidColorBrush x:Key="DockTabItemSelectedBackgroundFocused" Color="#1A7C4DFF" />
             <SolidColorBrush x:Key="DockTabItemHoverBackground" Color="#0FFFFFFF" />
             <SolidColorBrush x:Key="DockContentBackground" Color="#202020" />
-            <SolidColorBrush x:Key="DockSplitterBackground" Color="#1C1C1C" />
+            <SolidColorBrush x:Key="DockSplitterBackground" Color="Transparent" />
             <SolidColorBrush x:Key="DockSplitterHover" Color="#0FFFFFFF" />
             <SolidColorBrush x:Key="DockCloseButtonHover" Color="#FF99A4" />
 
@@ -315,6 +321,16 @@
             <SolidColorBrush x:Key="InfoBarWarningBrush" Color="#FCE100" />
             <SolidColorBrush x:Key="InfoBarErrorBrush" Color="#FF99A4" />
             <SolidColorBrush x:Key="InfoBarForeground" Color="#FFFFFF" />
+
+            <SolidColorBrush x:Key="ToastInformationBackground" Color="#0078D4" />
+            <SolidColorBrush x:Key="ToastSuccessBackground" Color="#10B981" />
+            <SolidColorBrush x:Key="ToastWarningBackground" Color="#F59E0B" />
+            <SolidColorBrush x:Key="ToastErrorBackground" Color="#DC2626" />
+            <SolidColorBrush x:Key="ToastInformationIcon" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastSuccessIcon" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastWarningIcon" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastErrorIcon" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastForeground" Color="#FFFFFF" />
 
             <SolidColorBrush x:Key="CommandBarBackground" Color="#1C1C1C" />
             <SolidColorBrush x:Key="CommandBarBorderBrush" Color="#12FFFFFF" />
@@ -426,6 +442,10 @@
             <Color x:Key="InfoBarSuccess">#0F7B0F</Color>
             <Color x:Key="InfoBarWarning">#9D5D00</Color>
             <Color x:Key="InfoBarError">#C42B1C</Color>
+            <Color x:Key="ToastInformation">#0078D4</Color>
+            <Color x:Key="ToastSuccess">#16A34A</Color>
+            <Color x:Key="ToastWarning">#D97706</Color>
+            <Color x:Key="ToastError">#DC2626</Color>
             <Color x:Key="SystemColorWindowTextColor">#E4000000</Color>
             <Color x:Key="SystemColorWindowColor">#FFF3F3F3</Color>
             <Color x:Key="SystemColorButtonFaceColor">#FFFFFFFF</Color>
@@ -617,7 +637,7 @@
             <SolidColorBrush x:Key="TitleBarCloseButtonPressed" Color="#FDE7E9" />
             <SolidColorBrush x:Key="TitleBarGlyph" Color="#E4000000" />
 
-            <SolidColorBrush x:Key="ScrollBarTrack" Color="#09000000" />
+            <SolidColorBrush x:Key="ScrollBarTrack" Color="#05000000" />
             <SolidColorBrush x:Key="ScrollBarThumb" Color="#72000000" />
             <SolidColorBrush x:Key="ScrollBarThumbHover" Color="#72000000" />
             <SolidColorBrush x:Key="ScrollBarThumbActive" Color="#72000000" />
@@ -637,10 +657,12 @@
 
             <SolidColorBrush x:Key="DockTabStripBackground" Color="#EEEEEE" />
             <SolidColorBrush x:Key="DockTabStripBorder" Color="#66757575" />
+            <SolidColorBrush x:Key="DockTabStripBorderFocused" Color="#667C4DFF" />
             <SolidColorBrush x:Key="DockTabItemSelectedBackground" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="DockTabItemSelectedBackgroundFocused" Color="#1A7C4DFF" />
             <SolidColorBrush x:Key="DockTabItemHoverBackground" Color="#09000000" />
             <SolidColorBrush x:Key="DockContentBackground" Color="#F3F3F3" />
-            <SolidColorBrush x:Key="DockSplitterBackground" Color="#EEEEEE" />
+            <SolidColorBrush x:Key="DockSplitterBackground" Color="Transparent" />
             <SolidColorBrush x:Key="DockSplitterHover" Color="#09000000" />
             <SolidColorBrush x:Key="DockCloseButtonHover" Color="#C42B1C" />
 
@@ -653,6 +675,16 @@
             <SolidColorBrush x:Key="InfoBarWarningBrush" Color="#9D5D00" />
             <SolidColorBrush x:Key="InfoBarErrorBrush" Color="#C42B1C" />
             <SolidColorBrush x:Key="InfoBarForeground" Color="#E4000000" />
+
+            <SolidColorBrush x:Key="ToastInformationBackground" Color="#0078D4" />
+            <SolidColorBrush x:Key="ToastSuccessBackground" Color="#16A34A" />
+            <SolidColorBrush x:Key="ToastWarningBackground" Color="#D97706" />
+            <SolidColorBrush x:Key="ToastErrorBackground" Color="#DC2626" />
+            <SolidColorBrush x:Key="ToastInformationIcon" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastSuccessIcon" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastWarningIcon" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastErrorIcon" Color="#FFFFFF" />
+            <SolidColorBrush x:Key="ToastForeground" Color="#FFFFFF" />
 
             <SolidColorBrush x:Key="CommandBarBackground" Color="#FFFFFF" />
             <SolidColorBrush x:Key="CommandBarBorderBrush" Color="#0F000000" />

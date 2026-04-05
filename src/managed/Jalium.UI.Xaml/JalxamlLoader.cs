@@ -28,14 +28,43 @@ public static class JalxamlLoader
     /// <param name="resourceName">The name of the embedded .uic resource (e.g., "AssemblyName.ClassName.uic").</param>
     public static void LoadFromCompiledResource(object component, string resourceName)
     {
+        LoadFromCompiledResource(component, resourceName, null);
+    }
+
+    /// <summary>
+    /// Loads compiled JALXAML from an embedded .uic resource with AOT-safe named element output.
+    /// Named elements are collected into the provided dictionary instead of being wired via reflection.
+    /// </summary>
+    public static void LoadFromCompiledResource(object component, string resourceName, Dictionary<string, object>? namedElements)
+    {
         var assembly = component.GetType().Assembly;
+
+        // If the source .jalxaml contains Razor directives (@if, @(expr), @Path),
+        // fall back to the runtime XamlReader which supports them.
+        // The .uic compiled path strips XML text nodes, losing @if blocks.
+        var jalxamlResourceName = resourceName.Replace(".uic", ".jalxaml");
+        if (TryFindJalxamlSourceResource(assembly, jalxamlResourceName) is { } sourceResourceName
+            && HasRazorDirectives(assembly, sourceResourceName))
+        {
+            if (namedElements != null)
+                XamlReader.LoadComponent(component, sourceResourceName, namedElements, assembly);
+            else
+                XamlReader.LoadComponent(component, sourceResourceName, assembly);
+
+            if (component is UIElement element)
+            {
+                element.InvalidateMeasure();
+                element.InvalidateArrange();
+            }
+
+            return;
+        }
 
         // Try to find the embedded resource
         var stream = assembly.GetManifestResourceStream(resourceName);
 
         if (stream == null)
         {
-            // List available resources for debugging
             var availableResources = assembly.GetManifestResourceNames();
             throw new JalxamlLoadException(
                 $"Cannot find embedded .uic resource '{resourceName}' in assembly '{assembly.GetName().Name}'. " +
@@ -44,14 +73,65 @@ public static class JalxamlLoader
 
         using (stream)
         {
-            // Read the binary data from the stream
             var buffer = new byte[stream.Length];
             stream.ReadExactly(buffer, 0, buffer.Length);
 
-            // Load using the compiled data path
             var bundle = BundleSerializer.Load(buffer);
-            XamlTypeRegistry.ApplyBundle(component, bundle);
+            XamlTypeRegistry.ApplyBundle(component, bundle, namedElements);
         }
+    }
+
+    private static string? TryFindJalxamlSourceResource(Assembly assembly, string baseName)
+    {
+        var stream = assembly.GetManifestResourceStream(baseName);
+        if (stream != null)
+        {
+            stream.Dispose();
+            return baseName;
+        }
+
+        var resourceNames = assembly.GetManifestResourceNames();
+        foreach (var name in resourceNames)
+        {
+            if (name.EndsWith(".jalxaml", StringComparison.OrdinalIgnoreCase)
+                && name.Contains(baseName.Replace(".jalxaml", ""), StringComparison.OrdinalIgnoreCase))
+            {
+                return name;
+            }
+        }
+
+        return null;
+    }
+
+    private static bool HasRazorDirectives(Assembly assembly, string resourceName)
+    {
+        using var stream = assembly.GetManifestResourceStream(resourceName);
+        if (stream == null)
+            return false;
+
+        using var reader = new System.IO.StreamReader(stream);
+        var content = reader.ReadToEnd();
+        return content.Contains("@if(", StringComparison.Ordinal)
+            || content.Contains("@if (", StringComparison.Ordinal)
+            || content.Contains("@for(", StringComparison.Ordinal)
+            || content.Contains("@for (", StringComparison.Ordinal)
+            || content.Contains("@foreach(", StringComparison.Ordinal)
+            || content.Contains("@foreach (", StringComparison.Ordinal)
+            || content.Contains("@while(", StringComparison.Ordinal)
+            || content.Contains("@while (", StringComparison.Ordinal)
+            || content.Contains("@switch(", StringComparison.Ordinal)
+            || content.Contains("@switch (", StringComparison.Ordinal)
+            || content.Contains("@do{", StringComparison.Ordinal)
+            || content.Contains("@do {", StringComparison.Ordinal)
+            || content.Contains("@try{", StringComparison.Ordinal)
+            || content.Contains("@try {", StringComparison.Ordinal)
+            || content.Contains("@using(", StringComparison.Ordinal)
+            || content.Contains("@using (", StringComparison.Ordinal)
+            || content.Contains("@lock(", StringComparison.Ordinal)
+            || content.Contains("@lock (", StringComparison.Ordinal)
+            || content.Contains("@*", StringComparison.Ordinal)
+            || content.Contains("@section ", StringComparison.Ordinal)
+            || content.Contains("@RenderSection(", StringComparison.Ordinal);
     }
 
     /// <summary>

@@ -7,12 +7,10 @@
     <!-- ============================================== -->
     <Style TargetType="DatePicker">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="MinHeight" Value="32" />
 
         <Style.Triggers>
@@ -27,12 +25,10 @@
     <!-- ============================================== -->
     <Style TargetType="TimePicker">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="MinHeight" Value="32" />
 
         <Style.Triggers>
@@ -47,12 +43,10 @@
     <!-- ============================================== -->
     <Style TargetType="Calendar">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontSize" Value="14" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
@@ -66,11 +60,9 @@
     <!-- ============================================== -->
     <Style TargetType="ColorPicker">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8" />
-        <Setter Property="FontSize" Value="14" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
@@ -84,11 +76,9 @@
     <!-- ============================================== -->
     <Style TargetType="CalendarButton">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding" Value="4" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
 
@@ -118,12 +108,10 @@
     <!-- ============================================== -->
     <Style TargetType="CalendarDayButton">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Width" Value="32" />
         <Setter Property="Height" Value="32" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
 
@@ -159,10 +147,8 @@
     <!-- ============================================== -->
     <Style TargetType="CalendarItem">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="FontSize" Value="14" />
     </Style>
 
     <!-- ============================================== -->
@@ -170,12 +156,10 @@
     <!-- ============================================== -->
     <Style TargetType="DatePickerTextBox">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="TextWrapping" Value="NoWrap" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
 

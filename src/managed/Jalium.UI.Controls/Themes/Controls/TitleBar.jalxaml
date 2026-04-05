@@ -8,7 +8,7 @@
     <Style TargetType="TitleBar">
         <Setter Property="Background" Value="{DynamicResource TitleBarBackground}" />
         <Setter Property="Foreground" Value="{DynamicResource TitleBarText}" />
-        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
         <Setter Property="Height" Value="32" />
         <Setter Property="Template">
@@ -74,7 +74,6 @@
         <Setter Property="Background" Value="{DynamicResource TitleBarButtonBackground}" />
         <Setter Property="Foreground" Value="{DynamicResource TitleBarGlyph}" />
         <Setter Property="Width" Value="46" />
-        <Setter Property="Height" Value="32" />
         <Setter Property="GlyphSize" Value="10" />
         <Setter Property="Template">
             <ControlTemplate TargetType="TitleBarButton">
@@ -215,6 +214,7 @@
                             <Condition Property="Kind" Value="Close" />
                         </MultiTrigger.Conditions>
                         <Setter TargetName="PART_RootBorder" Property="Background" Value="{DynamicResource TitleBarCloseButtonPressed}" />
+                        <Setter Property="Foreground" Value="Black" />
                     </MultiTrigger>
                 </ControlTemplate.Triggers>
             </ControlTemplate>

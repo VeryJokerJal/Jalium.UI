@@ -35,6 +35,48 @@ internal static class DockIndicator
     private static readonly SolidColorBrush s_fallbackPreviewBackgroundBrush = new(PreviewBg);
     private static readonly SolidColorBrush s_fallbackPreviewBorderBrush = new(PreviewBorder);
 
+    // Cached resolved resources — cleared when theme changes
+    private static Brush? s_cachedChromeBackground;
+    private static Brush? s_cachedChromeBorder;
+    private static Brush? s_cachedButtonBackground;
+    private static Brush? s_cachedButtonBorder;
+    private static Brush? s_cachedButtonHoverBackground;
+    private static Brush? s_cachedPreviewBackground;
+    private static Brush? s_cachedPreviewBorder;
+    private static Color? s_cachedIconNormal;
+    private static Color? s_cachedIconHover;
+
+    // Cached Pen objects to avoid allocation per frame
+    private static Pen? s_cachedChromeBorderPen;
+    private static Pen? s_cachedButtonBorderPen;
+    private static Pen? s_cachedButtonHoverBorderPen;
+    private static Pen? s_cachedPreviewBorderPen;
+
+    /// <summary>
+    /// Clears cached brushes/pens so they are re-resolved from theme resources on next render.
+    /// Call when the drag session starts or theme changes.
+    /// </summary>
+    internal static void InvalidateResourceCache()
+    {
+        s_cachedChromeBackground = null;
+        s_cachedChromeBorder = null;
+        s_cachedButtonBackground = null;
+        s_cachedButtonBorder = null;
+        s_cachedButtonHoverBackground = null;
+        s_cachedPreviewBackground = null;
+        s_cachedPreviewBorder = null;
+        s_cachedIconNormal = null;
+        s_cachedIconHover = null;
+        s_cachedChromeBorderPen = null;
+        s_cachedButtonBorderPen = null;
+        s_cachedButtonHoverBorderPen = null;
+        s_cachedPreviewBorderPen = null;
+        s_cachedIconPenNormal = null;
+        s_cachedIconPenHover = null;
+        s_cachedIconFillNormal = null;
+        s_cachedIconFillHover = null;
+    }
+
     #region Hit-Testing
 
     internal static Rect GetCenterButtonRect(double panelWidth, double panelHeight, DockPosition position)
@@ -115,7 +157,7 @@ internal static class DockIndicator
         var pad = 5.0;
 
         var bgBrush = ResolveChromeBackgroundBrush();
-        var borderPen = new Pen(ResolveChromeBorderBrush(), 1);
+        var borderPen = ResolveChromeBackgroundBorderPen();
 
         // Horizontal bar: Left + Center + Right
         var hRect = new Rect(
@@ -147,7 +189,7 @@ internal static class DockIndicator
 
             // Pill-shaped background
             var bgBrush = ResolveChromeBackgroundBrush();
-            var borderPen = new Pen(ResolveChromeBorderBrush(), 1);
+            var borderPen = ResolveChromeBackgroundBorderPen();
             var bgRect = new Rect(rect.X - 4, rect.Y - 4, rect.Width + 8, rect.Height + 8);
             dc.DrawRoundedRectangle(bgBrush, borderPen, bgRect, CornerRadius, CornerRadius);
 
@@ -162,7 +204,7 @@ internal static class DockIndicator
     private static void DrawButton(DrawingContext dc, Rect rect, DockPosition position, bool isHovered)
     {
         var bgBrush = ResolveButtonBackgroundBrush(isHovered);
-        var borderPen = new Pen(ResolveButtonBorderBrush(isHovered), 1);
+        var borderPen = ResolveButtonBorderPen(isHovered);
 
         dc.DrawRoundedRectangle(bgBrush, borderPen, rect, 4, 4);
 
@@ -170,10 +212,28 @@ internal static class DockIndicator
         DrawDockIcon(dc, rect, position, iconColor);
     }
 
+    // Cached icon drawing objects — keyed by hovered state (normal vs hover)
+    private static Pen? s_cachedIconPenNormal;
+    private static Pen? s_cachedIconPenHover;
+    private static SolidColorBrush? s_cachedIconFillNormal;
+    private static SolidColorBrush? s_cachedIconFillHover;
+
     private static void DrawDockIcon(DrawingContext dc, Rect rect, DockPosition position, Color color)
     {
-        var pen = new Pen(new SolidColorBrush(color), 1.2);
-        var fillBrush = new SolidColorBrush(Color.FromArgb(140, color.R, color.G, color.B));
+        // Use cached pen/brush per hover state to avoid per-frame allocation
+        bool isHover = (color == IconHover || (s_cachedIconHover.HasValue && color == s_cachedIconHover.Value));
+        Pen pen;
+        SolidColorBrush fillBrush;
+        if (isHover)
+        {
+            pen = s_cachedIconPenHover ??= new Pen(new SolidColorBrush(color), 1.2);
+            fillBrush = s_cachedIconFillHover ??= new SolidColorBrush(Color.FromArgb(140, color.R, color.G, color.B));
+        }
+        else
+        {
+            pen = s_cachedIconPenNormal ??= new Pen(new SolidColorBrush(color), 1.2);
+            fillBrush = s_cachedIconFillNormal ??= new SolidColorBrush(Color.FromArgb(140, color.R, color.G, color.B));
+        }
         var m = 7.0;
         var iconRect = new Rect(rect.X + m, rect.Y + m, rect.Width - m * 2, rect.Height - m * 2);
 
@@ -245,7 +305,7 @@ internal static class DockIndicator
         if (position == DockPosition.None) return;
 
         var previewBrush = ResolvePreviewBackgroundBrush();
-        var borderPen = new Pen(ResolvePreviewBorderBrush(), 2);
+        var borderPen = ResolvePreviewBorderPen();
 
         var canonicalPos = ToCanonicalPosition(position);
         Rect previewRect = canonicalPos switch
@@ -266,43 +326,51 @@ internal static class DockIndicator
 
     private static Brush ResolveChromeBackgroundBrush()
     {
-        return ResolveBrush("DockIndicatorChromeBackground", s_fallbackChromeBackgroundBrush);
+        return s_cachedChromeBackground ??= ResolveBrush("DockIndicatorChromeBackground", s_fallbackChromeBackgroundBrush);
     }
 
     private static Brush ResolveChromeBorderBrush()
     {
-        return ResolveBrush("DockIndicatorChromeBorder", s_fallbackChromeBorderBrush);
+        return s_cachedChromeBorder ??= ResolveBrush("DockIndicatorChromeBorder", s_fallbackChromeBorderBrush);
+    }
+
+    private static Pen ResolveChromeBackgroundBorderPen()
+    {
+        return s_cachedChromeBorderPen ??= new Pen(ResolveChromeBorderBrush(), 1);
     }
 
     private static Brush ResolveButtonBackgroundBrush(bool isHovered)
     {
-        return isHovered
-            ? ResolveBrush("DockIndicatorButtonHoverBackground", s_fallbackButtonHoverBackgroundBrush)
-            : ResolveBrush("DockIndicatorButtonBackground", s_fallbackButtonBackgroundBrush);
+        if (isHovered)
+            return s_cachedButtonHoverBackground ??= ResolveBrush("DockIndicatorButtonHoverBackground", s_fallbackButtonHoverBackgroundBrush);
+        return s_cachedButtonBackground ??= ResolveBrush("DockIndicatorButtonBackground", s_fallbackButtonBackgroundBrush);
     }
 
-    private static Brush ResolveButtonBorderBrush(bool isHovered)
+    private static Pen ResolveButtonBorderPen(bool isHovered)
     {
-        return isHovered
-            ? ResolveBrush("DockIndicatorButtonHoverBackground", s_fallbackButtonHoverBackgroundBrush)
-            : ResolveBrush("DockIndicatorButtonBorder", s_fallbackButtonBorderBrush);
+        if (isHovered)
+            return s_cachedButtonHoverBorderPen ??= new Pen(
+                s_cachedButtonHoverBackground ??= ResolveBrush("DockIndicatorButtonHoverBackground", s_fallbackButtonHoverBackgroundBrush), 1);
+        return s_cachedButtonBorderPen ??= new Pen(
+            s_cachedButtonBorder ??= ResolveBrush("DockIndicatorButtonBorder", s_fallbackButtonBorderBrush), 1);
     }
 
     private static Color ResolveIconColor(bool isHovered)
     {
-        return ResolveColor(
-            isHovered ? "DockIndicatorIconHoverForeground" : "DockIndicatorIconForeground",
-            isHovered ? IconHover : IconNormal);
+        if (isHovered)
+            return s_cachedIconHover ??= ResolveColor("DockIndicatorIconHoverForeground", IconHover);
+        return s_cachedIconNormal ??= ResolveColor("DockIndicatorIconForeground", IconNormal);
     }
 
     private static Brush ResolvePreviewBackgroundBrush()
     {
-        return ResolveBrush("DockIndicatorPreviewBackground", s_fallbackPreviewBackgroundBrush);
+        return s_cachedPreviewBackground ??= ResolveBrush("DockIndicatorPreviewBackground", s_fallbackPreviewBackgroundBrush);
     }
 
-    private static Brush ResolvePreviewBorderBrush()
+    private static Pen ResolvePreviewBorderPen()
     {
-        return ResolveBrush("DockIndicatorPreviewBorder", s_fallbackPreviewBorderBrush);
+        return s_cachedPreviewBorderPen ??= new Pen(
+            s_cachedPreviewBorder ??= ResolveBrush("DockIndicatorPreviewBorder", s_fallbackPreviewBorderBrush), 2);
     }
 
     private static Brush ResolveBrush(string resourceKey, Brush fallback)

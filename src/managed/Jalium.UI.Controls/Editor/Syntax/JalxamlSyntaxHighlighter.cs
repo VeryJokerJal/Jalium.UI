@@ -10,6 +10,13 @@ internal sealed class JalxamlHighlighterState
     public bool InTag { get; init; }
     public bool InAttributeValue { get; init; }
     public int MarkupExtensionDepth { get; init; }
+    public int RazorBraceDepth { get; init; }
+    public bool InRazorBlockComment { get; init; }
+    /// <summary>
+    /// Set when a Razor directive (e.g. <c>@for(...)</c>) was scanned but the opening <c>{</c>
+    /// was not found on the same line. The next line should look for <c>{</c> to enter code mode.
+    /// </summary>
+    public bool RazorPendingBlock { get; init; }
 
     public static readonly JalxamlHighlighterState Default = new();
 
@@ -18,10 +25,13 @@ internal sealed class JalxamlHighlighterState
         InComment == other.InComment &&
         InTag == other.InTag &&
         InAttributeValue == other.InAttributeValue &&
-        MarkupExtensionDepth == other.MarkupExtensionDepth;
+        MarkupExtensionDepth == other.MarkupExtensionDepth &&
+        RazorBraceDepth == other.RazorBraceDepth &&
+        InRazorBlockComment == other.InRazorBlockComment &&
+        RazorPendingBlock == other.RazorPendingBlock;
 
     public override int GetHashCode() =>
-        HashCode.Combine(InComment, InTag, InAttributeValue, MarkupExtensionDepth);
+        HashCode.Combine(InComment, InTag, InAttributeValue, MarkupExtensionDepth, RazorBraceDepth, InRazorBlockComment, RazorPendingBlock);
 }
 
 /// <summary>
@@ -69,8 +79,23 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
         "for",
         "foreach",
         "while",
+        "do",
         "switch",
+        "try",
+        "catch",
+        "finally",
+        "using",
+        "lock",
+        "section",
         "code",
+    };
+
+    private static readonly HashSet<string> s_razorContinuationKeywords = new(StringComparer.Ordinal)
+    {
+        "else",
+        "catch",
+        "finally",
+        "while", // for do { } while();
     };
 
     private static readonly HashSet<string> s_razorExpressionKeywords = new(StringComparer.Ordinal)
@@ -104,6 +129,11 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
         "finally",
         "do",
         "await",
+        "throw",
+        "using",
+        "lock",
+        "when",
+        "in",
     };
 
     private static readonly HashSet<string> s_razorCodeKeywords = new(StringComparer.Ordinal)
@@ -147,6 +177,55 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
         bool inTag = state.InTag;
         bool inAttrValue = state.InAttributeValue;
         int meDepth = state.MarkupExtensionDepth;
+        int razorBraceDepth = state.RazorBraceDepth;
+        bool inRazorBlockComment = state.InRazorBlockComment;
+        bool razorPendingBlock = state.RazorPendingBlock;
+
+        // Handle pending Razor block: previous line had @directive(...) without {
+        if (razorPendingBlock && pos < lineText.Length)
+        {
+            razorPendingBlock = false;
+            int ws = pos;
+            while (ws < lineText.Length && char.IsWhiteSpace(lineText[ws]))
+                ws++;
+            if (ws < lineText.Length && lineText[ws] == '{')
+            {
+                if (ws > pos)
+                    tokens.Add(new SyntaxToken(pos, ws - pos, TokenClassification.PlainText));
+                tokens.Add(new SyntaxToken(ws, 1, TokenClassification.Punctuation));
+                pos = ws + 1;
+                razorBraceDepth = 1;
+                pos = ScanRazorCodeBlockMultiLine(lineText, pos, tokens, ref razorBraceDepth, ref inRazorBlockComment, ref razorPendingBlock);
+            }
+        }
+
+        // Continue multi-line Razor block comment /* ... */
+        if (inRazorBlockComment)
+        {
+            int endIdx = lineText.IndexOf("*/", pos, StringComparison.Ordinal);
+            if (endIdx >= 0)
+            {
+                tokens.Add(new SyntaxToken(pos, endIdx + 2 - pos, TokenClassification.Comment));
+                pos = endIdx + 2;
+                inRazorBlockComment = false;
+            }
+            else
+            {
+                tokens.Add(new SyntaxToken(pos, lineText.Length - pos, TokenClassification.Comment));
+                return (FillPlainText(tokens, lineText.Length), new JalxamlHighlighterState
+                {
+                    InComment = inComment, InTag = inTag, InAttributeValue = inAttrValue,
+                    MarkupExtensionDepth = meDepth, RazorBraceDepth = razorBraceDepth,
+                    InRazorBlockComment = true
+                });
+            }
+        }
+
+        // Continue multi-line Razor code block from previous line
+        if (razorBraceDepth > 0 && pos < lineText.Length)
+        {
+            pos = ScanRazorCodeBlockMultiLine(lineText, pos, tokens, ref razorBraceDepth, ref inRazorBlockComment, ref razorPendingBlock);
+        }
 
         // Continue multi-line comment from previous line
         if (inComment)
@@ -264,7 +343,7 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
                 continue;
             }
 
-            pos = ScanTextContent(lineText, pos, tokens);
+            pos = ScanTextContentWithRazor(lineText, pos, tokens, ref razorBraceDepth, ref inRazorBlockComment, ref razorPendingBlock);
         }
 
         var endState = new JalxamlHighlighterState
@@ -272,7 +351,10 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
             InComment = inComment,
             InTag = inTag,
             InAttributeValue = inAttrValue,
-            MarkupExtensionDepth = meDepth
+            MarkupExtensionDepth = meDepth,
+            RazorBraceDepth = razorBraceDepth,
+            InRazorBlockComment = inRazorBlockComment,
+            RazorPendingBlock = razorPendingBlock,
         };
 
         return (FillPlainText(tokens, lineText.Length), endState);
@@ -1022,6 +1104,459 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
         return pos;
     }
 
+    /// <summary>
+    /// Scans text content with Razor brace-depth tracking so that multi-line Razor code blocks
+    /// receive C# highlighting. When a Razor directive opens a <c>{</c>, the brace depth increments
+    /// and subsequent content is highlighted as C# until all braces close.
+    /// </summary>
+    private static int ScanTextContentWithRazor(
+        string text, int pos, List<SyntaxToken> tokens,
+        ref int razorBraceDepth, ref bool inRazorBlockComment,
+        ref bool razorPendingBlock)
+    {
+        int segmentStart = pos;
+
+        while (pos < text.Length && text[pos] != '<')
+        {
+            if (TryGetRazorEscapeLength(text, pos, out int escapeLength))
+            {
+                pos += escapeLength;
+                continue;
+            }
+
+            if (text[pos] == '@')
+            {
+                // Flush plain text before @
+                if (pos > segmentStart)
+                {
+                    tokens.Add(new SyntaxToken(segmentStart, pos - segmentStart, TokenClassification.PlainText));
+                    segmentStart = pos;
+                }
+
+                var razorTokens = new List<SyntaxToken>();
+                bool pendingBlock = false;
+                int razorEnd = ScanRazorInlineWithBraceTracking(text, pos, razorTokens, ref razorBraceDepth, ref inRazorBlockComment, ref pendingBlock);
+                if (pendingBlock)
+                    razorPendingBlock = true;
+                if (razorEnd > pos)
+                {
+                    tokens.AddRange(razorTokens);
+                    pos = razorEnd;
+                    segmentStart = pos;
+
+                    // If we entered a Razor code block, continue scanning as C# on this line
+                    if (razorBraceDepth > 0)
+                    {
+                        pos = ScanRazorCodeBlockMultiLine(text, pos, tokens, ref razorBraceDepth, ref inRazorBlockComment, ref razorPendingBlock);
+                        segmentStart = pos;
+                    }
+
+                    continue;
+                }
+            }
+
+            if (text[pos] is '{' or '}')
+            {
+                if (pos > segmentStart)
+                    tokens.Add(new SyntaxToken(segmentStart, pos - segmentStart, TokenClassification.PlainText));
+
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
+                pos++;
+                segmentStart = pos;
+                continue;
+            }
+
+            pos++;
+        }
+
+        if (pos > segmentStart)
+            tokens.Add(new SyntaxToken(segmentStart, pos - segmentStart, TokenClassification.PlainText));
+
+        return pos;
+    }
+
+    /// <summary>
+    /// Like <see cref="ScanRazorInline"/> but tracks brace depth for multi-line block support.
+    /// After scanning <c>@keyword(...)</c>, if a <c>{</c> follows, it increments <paramref name="razorBraceDepth"/>
+    /// instead of trying to scan the entire block on one line.
+    /// </summary>
+    private static int ScanRazorInlineWithBraceTracking(
+        string text, int pos, List<SyntaxToken> tokens,
+        ref int razorBraceDepth, ref bool inRazorBlockComment,
+        ref bool razorPendingBlock)
+    {
+        if (pos >= text.Length || text[pos] != '@')
+            return pos;
+
+        if (TryGetRazorEscapeLength(text, pos, out _))
+            return pos;
+
+        // @(expression) — single-line, no brace tracking needed
+        if (pos + 1 < text.Length && text[pos + 1] == '(')
+        {
+            tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
+            tokens.Add(new SyntaxToken(pos + 1, 1, TokenClassification.Punctuation));
+            return ScanRazorExpression(text, pos + 2, tokens, initialParenDepth: 1);
+        }
+
+        // @{ code block — track brace depth
+        if (pos + 1 < text.Length && text[pos + 1] == '{')
+        {
+            tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
+            tokens.Add(new SyntaxToken(pos + 1, 1, TokenClassification.Punctuation));
+            razorBraceDepth = 1;
+            return pos + 2;
+        }
+
+        // @* comment *@
+        if (pos + 1 < text.Length && text[pos + 1] == '*')
+        {
+            int commentStart = pos;
+            int commentEnd = text.IndexOf("*@", pos + 2, StringComparison.Ordinal);
+            if (commentEnd >= 0)
+            {
+                tokens.Add(new SyntaxToken(commentStart, commentEnd + 2 - commentStart, TokenClassification.Comment));
+                return commentEnd + 2;
+            }
+            else
+            {
+                tokens.Add(new SyntaxToken(commentStart, text.Length - commentStart, TokenClassification.Comment));
+                return text.Length;
+            }
+        }
+
+        // @directive with brace tracking
+        if (pos + 1 < text.Length && IsRazorIdentifierStart(text[pos + 1]))
+        {
+            int keywordStart = pos + 1;
+            int keywordEnd = ScanRazorIdentifier(text, keywordStart);
+            string keyword = text[keywordStart..keywordEnd];
+
+            if (s_razorDirectiveKeywords.Contains(keyword))
+            {
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
+                tokens.Add(new SyntaxToken(keywordStart, keywordEnd - keywordStart,
+                    s_razorExpressionControlKeywords.Contains(keyword)
+                        ? TokenClassification.ControlKeyword
+                        : TokenClassification.Keyword));
+
+                int cursor = keywordEnd;
+
+                // Scan parenthesized condition if present
+                if (keyword is "if" or "for" or "foreach" or "while" or "switch" or "using" or "lock" or "catch")
+                {
+                    while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+                        cursor++;
+
+                    if (cursor < text.Length && text[cursor] == '(')
+                    {
+                        tokens.Add(new SyntaxToken(cursor, 1, TokenClassification.Punctuation));
+                        cursor = ScanRazorExpression(text, cursor + 1, tokens, initialParenDepth: 1);
+                    }
+                }
+
+                // Scan optional section name for @section
+                if (keyword == "section")
+                {
+                    while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+                        cursor++;
+                    int nameStart = cursor;
+                    while (cursor < text.Length && (char.IsLetterOrDigit(text[cursor]) || text[cursor] == '_'))
+                        cursor++;
+                    if (cursor > nameStart)
+                        tokens.Add(new SyntaxToken(nameStart, cursor - nameStart, TokenClassification.Identifier));
+                }
+
+                // Skip to opening brace
+                while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+                    cursor++;
+
+                if (cursor < text.Length && text[cursor] == '{')
+                {
+                    tokens.Add(new SyntaxToken(cursor, 1, TokenClassification.Punctuation));
+                    cursor++;
+                    razorBraceDepth = 1;
+                }
+                else
+                {
+                    // { is on the next line — mark pending
+                    razorPendingBlock = true;
+                }
+
+                return cursor;
+            }
+        }
+
+        // @path
+        if (pos + 1 < text.Length && TryScanRazorPath(text, pos + 1, out int pathEnd))
+        {
+            tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
+            tokens.Add(new SyntaxToken(pos + 1, pathEnd - (pos + 1), TokenClassification.BindingPath));
+            return pathEnd;
+        }
+
+        return pos;
+    }
+
+    /// <summary>
+    /// Scans C# code inside a multi-line Razor code block, tracking brace depth.
+    /// When depth reaches 0, checks for continuation keywords (else, catch, finally)
+    /// and re-enters code block mode if found.
+    /// </summary>
+    private static int ScanRazorCodeBlockMultiLine(
+        string text, int pos, List<SyntaxToken> tokens,
+        ref int razorBraceDepth, ref bool inRazorBlockComment,
+        ref bool razorPendingBlock)
+    {
+        while (pos < text.Length)
+        {
+            char c = text[pos];
+
+            // Whitespace
+            if (char.IsWhiteSpace(c))
+            {
+                int ws = pos;
+                while (pos < text.Length && char.IsWhiteSpace(text[pos]))
+                    pos++;
+                tokens.Add(new SyntaxToken(ws, pos - ws, TokenClassification.PlainText));
+                continue;
+            }
+
+            // Line comment
+            if (c == '/' && pos + 1 < text.Length && text[pos + 1] == '/')
+            {
+                tokens.Add(new SyntaxToken(pos, text.Length - pos, TokenClassification.Comment));
+                pos = text.Length;
+                return pos;
+            }
+
+            // Block comment
+            if (c == '/' && pos + 1 < text.Length && text[pos + 1] == '*')
+            {
+                int commentStart = pos;
+                int endIdx = text.IndexOf("*/", pos + 2, StringComparison.Ordinal);
+                if (endIdx >= 0)
+                {
+                    tokens.Add(new SyntaxToken(commentStart, endIdx + 2 - commentStart, TokenClassification.Comment));
+                    pos = endIdx + 2;
+                }
+                else
+                {
+                    tokens.Add(new SyntaxToken(commentStart, text.Length - commentStart, TokenClassification.Comment));
+                    inRazorBlockComment = true;
+                    pos = text.Length;
+                }
+                continue;
+            }
+
+            // String literals
+            if (c is '"' or '\'')
+            {
+                int stringStart = pos;
+                char quote = c;
+                pos++;
+                while (pos < text.Length)
+                {
+                    if (text[pos] == '\\')
+                    {
+                        pos += 2;
+                        continue;
+                    }
+                    if (text[pos] == quote)
+                    {
+                        pos++;
+                        break;
+                    }
+                    pos++;
+                }
+                tokens.Add(new SyntaxToken(stringStart, pos - stringStart, TokenClassification.String));
+                continue;
+            }
+
+            // Identifiers and keywords
+            if (IsRazorIdentifierStart(c))
+            {
+                int idStart = pos;
+                int idEnd = ScanRazorIdentifier(text, pos);
+                string identifier = text[idStart..idEnd];
+
+                int lookahead = idEnd;
+                while (lookahead < text.Length && char.IsWhiteSpace(text[lookahead]))
+                    lookahead++;
+
+                var classification = s_razorExpressionControlKeywords.Contains(identifier)
+                    ? TokenClassification.ControlKeyword
+                    : s_razorCodeKeywords.Contains(identifier)
+                        ? TokenClassification.Keyword
+                        : lookahead < text.Length && text[lookahead] == '('
+                            ? TokenClassification.Method
+                            : TokenClassification.Identifier;
+
+                tokens.Add(new SyntaxToken(idStart, idEnd - idStart, classification));
+                pos = idEnd;
+                continue;
+            }
+
+            // Numbers
+            if (char.IsDigit(c) || (c == '-' && pos + 1 < text.Length && char.IsDigit(text[pos + 1])))
+            {
+                int numStart = pos;
+                pos++;
+                while (pos < text.Length && (char.IsDigit(text[pos]) || text[pos] is '.' or '_' or 'e' or 'E'
+                       or '+' or '-' or 'f' or 'F' or 'd' or 'D' or 'm' or 'M' or 'l' or 'L' or 'u' or 'U'))
+                    pos++;
+                tokens.Add(new SyntaxToken(numStart, pos - numStart, TokenClassification.Number));
+                continue;
+            }
+
+            // Braces
+            if (c == '{')
+            {
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Punctuation));
+                pos++;
+                razorBraceDepth++;
+                continue;
+            }
+
+            if (c == '}')
+            {
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Punctuation));
+                pos++;
+                razorBraceDepth--;
+                if (razorBraceDepth <= 0)
+                {
+                    razorBraceDepth = 0;
+                    // Check for continuation keyword after }
+                    pos = TryScanRazorContinuation(text, pos, tokens, ref razorBraceDepth, ref razorPendingBlock);
+                    if (razorBraceDepth <= 0)
+                        return pos;
+                }
+                continue;
+            }
+
+            // Punctuation
+            if (c is '(' or ')' or '[' or ']' or ',' or '.' or ';')
+            {
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Punctuation));
+                pos++;
+                continue;
+            }
+
+            // Operators
+            if (c is '?' or ':' or '+' or '-' or '*' or '/' or '%' or '=' or '!' or '<' or '>' or '&' or '|' or '^' or '~')
+            {
+                int opStart = pos;
+                pos++;
+                while (pos < text.Length && text[pos] is '=' or '&' or '|' or '>' or '<' or '?')
+                    pos++;
+                tokens.Add(new SyntaxToken(opStart, pos - opStart, TokenClassification.Operator));
+                continue;
+            }
+
+            // @ inside code block (nested Razor)
+            if (c == '@')
+            {
+                tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
+                pos++;
+                continue;
+            }
+
+            tokens.Add(new SyntaxToken(pos, 1, TokenClassification.PlainText));
+            pos++;
+        }
+
+        return pos;
+    }
+
+    /// <summary>
+    /// After a closing <c>}</c> at Razor depth 0, checks for continuation keywords
+    /// (else, catch, finally, while) and if found, scans them and re-enters the code block.
+    /// </summary>
+    private static int TryScanRazorContinuation(
+        string text, int pos, List<SyntaxToken> tokens, ref int razorBraceDepth, ref bool razorPendingBlock)
+    {
+        // Save position for rollback
+        int savedPos = pos;
+
+        // Skip whitespace (including newline within the same line scan)
+        int wsStart = pos;
+        while (pos < text.Length && char.IsWhiteSpace(text[pos]))
+            pos++;
+        if (pos > wsStart)
+            tokens.Add(new SyntaxToken(wsStart, pos - wsStart, TokenClassification.PlainText));
+
+        // Check for continuation keyword
+        if (pos < text.Length && IsRazorIdentifierStart(text[pos]))
+        {
+            int kwStart = pos;
+            int kwEnd = ScanRazorIdentifier(text, pos);
+            string keyword = text[kwStart..kwEnd];
+
+            if (s_razorContinuationKeywords.Contains(keyword))
+            {
+                tokens.Add(new SyntaxToken(kwStart, kwEnd - kwStart, TokenClassification.ControlKeyword));
+                int cursor = kwEnd;
+
+                // Scan condition clause for catch(...), else if(...), while(...)
+                while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+                    cursor++;
+
+                // "else if" pattern
+                if (keyword == "else" && cursor < text.Length && IsRazorIdentifierStart(text[cursor]))
+                {
+                    int nextKwStart = cursor;
+                    int nextKwEnd = ScanRazorIdentifier(text, cursor);
+                    string nextKw = text[nextKwStart..nextKwEnd];
+                    if (nextKw == "if")
+                    {
+                        tokens.Add(new SyntaxToken(nextKwStart, nextKwEnd - nextKwStart, TokenClassification.ControlKeyword));
+                        cursor = nextKwEnd;
+                        while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+                            cursor++;
+                    }
+                }
+
+                if (cursor < text.Length && text[cursor] == '(')
+                {
+                    tokens.Add(new SyntaxToken(cursor, 1, TokenClassification.Punctuation));
+                    cursor = ScanRazorExpression(text, cursor + 1, tokens, initialParenDepth: 1);
+                }
+
+                // Skip to {
+                while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+                    cursor++;
+
+                if (cursor < text.Length && text[cursor] == '{')
+                {
+                    tokens.Add(new SyntaxToken(cursor, 1, TokenClassification.Punctuation));
+                    cursor++;
+                    razorBraceDepth = 1;
+                }
+                // do { } while(expr); — while without { is a terminator, not continuation
+                else if (keyword == "while")
+                {
+                    while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
+                        cursor++;
+                    if (cursor < text.Length && text[cursor] == ';')
+                    {
+                        tokens.Add(new SyntaxToken(cursor, 1, TokenClassification.Punctuation));
+                        cursor++;
+                    }
+                }
+                else
+                {
+                    // { is on the next line
+                    razorPendingBlock = true;
+                }
+
+                return cursor;
+            }
+        }
+
+        // No continuation found — already added whitespace tokens, just return
+        return pos;
+    }
+
     private static int ScanRazorInline(string text, int pos, List<SyntaxToken> tokens, bool allowDirective)
     {
         if (pos >= text.Length || text[pos] != '@')
@@ -1200,12 +1735,12 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
 
         tokens.Add(new SyntaxToken(pos, 1, TokenClassification.Operator));
         tokens.Add(new SyntaxToken(keywordStart, keywordEnd - keywordStart,
-            keyword is "if" or "else" or "for" or "foreach" or "while" or "switch"
+            s_razorExpressionControlKeywords.Contains(keyword)
                 ? TokenClassification.ControlKeyword
                 : TokenClassification.Keyword));
 
         int cursor = keywordEnd;
-        if (keyword is "if" or "for" or "foreach" or "while" or "switch")
+        if (keyword is "if" or "for" or "foreach" or "while" or "switch" or "using" or "lock" or "catch")
         {
             while (cursor < text.Length && char.IsWhiteSpace(text[cursor]))
                 cursor++;

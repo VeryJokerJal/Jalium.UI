@@ -6,6 +6,8 @@
     <Description>GPU-related functionality for Jalium.UI framework.</Description>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Gpu</PackageId>
+    <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
 </Project>

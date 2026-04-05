@@ -1,0 +1,8 @@
+<linker>
+  <!-- Preserve ThemeLoader and its ModuleInitializer so theme loading works under trimming/AOT -->
+  <assembly fullname="Jalium.UI.Xaml">
+    <type fullname="Jalium.UI.Markup.ThemeLoader" preserve="all" />
+    <type fullname="Jalium.UI.Markup.XamlTypeRegistry" preserve="all" />
+    <type fullname="Jalium.UI.Markup.XamlReader" preserve="all" />
+  </assembly>
+</linker>

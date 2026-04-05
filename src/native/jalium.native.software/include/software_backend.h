@@ -212,7 +212,7 @@ public:
     void FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) override;
     void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f) override;
     void FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule) override;
-    void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0) override;
+    void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0, const float* dashPattern = nullptr, uint32_t dashCount = 0, float dashOffset = 0.0f) override;
     void DrawContentBorder(float x, float y, float w, float h,
         float blRadius, float brRadius,
         Brush* fillBrush, Brush* strokeBrush, float strokeWidth) override;
@@ -313,11 +313,13 @@ public:
     Brush* CreateSolidBrush(float r, float g, float b, float a) override;
     Brush* CreateLinearGradientBrush(
         float startX, float startY, float endX, float endY,
-        const JaliumGradientStop* stops, uint32_t stopCount) override;
+        const JaliumGradientStop* stops, uint32_t stopCount,
+        uint32_t spreadMethod = 0) override;
     Brush* CreateRadialGradientBrush(
         float centerX, float centerY, float radiusX, float radiusY,
         float originX, float originY,
-        const JaliumGradientStop* stops, uint32_t stopCount) override;
+        const JaliumGradientStop* stops, uint32_t stopCount,
+        uint32_t spreadMethod = 0) override;
     TextFormat* CreateTextFormat(
         const wchar_t* fontFamily,
         float fontSize,

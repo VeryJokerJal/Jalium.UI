@@ -13,11 +13,27 @@
     <!-- InfoBar Style -->
     <!-- ============================================== -->
     <Style TargetType="InfoBar">
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Padding" Value="12,8,12,8" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="MinHeight" Value="48" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ToastNotificationItem Style -->
+    <!-- ============================================== -->
+    <Style TargetType="ToastNotificationItem">
+        <Setter Property="Foreground" Value="{DynamicResource ToastForeground}" />
+        <Setter Property="Padding" Value="12,8,12,8" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="MinHeight" Value="56" />
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- ToastNotificationHost Style -->
+    <!-- ============================================== -->
+    <Style TargetType="ToastNotificationHost">
+        <Setter Property="Background" Value="Transparent" />
+        <Setter Property="IsHitTestVisible" Value="True" />
     </Style>
 
     <!-- ============================================== -->
@@ -44,7 +60,7 @@
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ToolTip">
                 <Border Name="ToolTipBorder"
@@ -64,11 +80,9 @@
     <!-- ============================================== -->
     <Style TargetType="GroupBox">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="Template">
             <ControlTemplate TargetType="GroupBox">
                 <Grid>
@@ -107,7 +121,6 @@
     <!-- ============================================== -->
     <Style TargetType="Expander">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12" />

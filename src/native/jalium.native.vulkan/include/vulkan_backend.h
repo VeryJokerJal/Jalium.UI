@@ -36,11 +36,13 @@ public:
     Brush* CreateSolidBrush(float r, float g, float b, float a) override;
     Brush* CreateLinearGradientBrush(
         float startX, float startY, float endX, float endY,
-        const JaliumGradientStop* stops, uint32_t stopCount) override;
+        const JaliumGradientStop* stops, uint32_t stopCount,
+        uint32_t spreadMethod = 0) override;
     Brush* CreateRadialGradientBrush(
         float centerX, float centerY, float radiusX, float radiusY,
         float originX, float originY,
-        const JaliumGradientStop* stops, uint32_t stopCount) override;
+        const JaliumGradientStop* stops, uint32_t stopCount,
+        uint32_t spreadMethod = 0) override;
     TextFormat* CreateTextFormat(
         const wchar_t* fontFamily,
         float fontSize,

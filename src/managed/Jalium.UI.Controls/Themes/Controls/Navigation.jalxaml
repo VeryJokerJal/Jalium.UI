@@ -7,7 +7,6 @@
     <!-- ============================================== -->
     <Style TargetType="NavigationView">
         <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
         <Setter Property="HorizontalContentAlignment" Value="Stretch" />
         <Setter Property="VerticalContentAlignment" Value="Stretch" />
@@ -92,7 +91,6 @@
     <!-- ============================================== -->
     <Style TargetType="NavigationViewItem">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
         <Setter Property="Margin" Value="6,1,6,1" />
         <Setter Property="CornerRadius" Value="6" />
@@ -137,7 +135,7 @@
                                 <!-- Expand/Collapse Chevron -->
                                 <Path Name="PART_Chevron"
                                       Grid.Column="3"
-                                      Data="M333.414 23.989 l557.904 393.923 c58.785 42.21 58.785 147.737 0 189.948 l-557.904 395.106 c-58.785 42.21-155.948 11.943-155.948-72.478 v-835.205 c0-84.421 97.162-113.505 155.948-71.293 Z"
+                                      Data="M 841.90,426.67 L 273.07,0 A 170.67,170.67,0,0,0,0,136.53 V 989.87 A 170.67,170.67,0,0,0,273.07,1126.40 L 841.90,699.73 A 170.67,170.67,0,0,0,841.90,426.67 Z"
                                       Fill="{DynamicResource TextSecondary}"
                                       Width="8"
                                       Height="8"

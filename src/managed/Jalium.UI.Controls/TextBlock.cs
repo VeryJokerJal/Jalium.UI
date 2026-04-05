@@ -58,7 +58,7 @@ public class TextBlock : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         TextElement.ForegroundProperty.AddOwner(typeof(TextBlock),
-            new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged, null, inherits: true));
+            new PropertyMetadata(new SolidColorBrush(Themes.ThemeColors.TextPrimary), OnVisualPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontFamily dependency property.
@@ -67,7 +67,7 @@ public class TextBlock : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         TextElement.FontFamilyProperty.AddOwner(typeof(TextBlock),
-            new PropertyMetadata("Segoe UI", OnTextChanged, null, inherits: true));
+            new PropertyMetadata(FrameworkElement.DefaultFontFamilyName, OnTextChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontSize dependency property.
@@ -196,7 +196,7 @@ public class TextBlock : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public string FontFamily
     {
-        get => (string)(GetValue(FontFamilyProperty) ?? "Segoe UI");
+        get => (string)(GetValue(FontFamilyProperty) ?? FrameworkElement.DefaultFontFamilyName);
         set => SetValue(FontFamilyProperty, value);
     }
 
@@ -1062,7 +1062,7 @@ public class TextBlock : FrameworkElement
             return 0;
         }
 
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -1162,7 +1162,7 @@ public class TextBlock : FrameworkElement
 
     private double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         return TextMeasurement.GetLineHeight(fontFamily, fontSize, FontWeight.ToOpenTypeWeight(), FontStyle.ToOpenTypeStyle());
     }

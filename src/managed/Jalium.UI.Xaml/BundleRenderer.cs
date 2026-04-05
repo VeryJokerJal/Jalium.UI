@@ -34,6 +34,7 @@ public sealed class BundleRenderer
     private readonly Dictionary<string, ImageSource?> _imageCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<ulong> _missingTextDiagnostics = new();
     private readonly HashSet<uint> _missingPathDiagnostics = new();
+    private readonly Dictionary<uint, Geometry?> _geometryCache = new();
 
     /// <summary>
     /// Optional text resolver used to recover text content from <see cref="TextNode.TextHash"/>.
@@ -432,7 +433,7 @@ public sealed class BundleRenderer
             text = $"[text:{node.TextHash:X}]";
         }
 
-        var fontFamily = "Segoe UI";
+        var fontFamily = Jalium.UI.FrameworkElement.DefaultFontFamilyName;
         var fontSize = 12.0;
         if (node.GlyphAtlasIndex < _bundle.GlyphAtlases.Length)
         {
@@ -496,19 +497,92 @@ public sealed class BundleRenderer
             stroke = GetPen(0xFF808080, 1f);
         }
 
-        if (node.PathCacheIndex < _bundle.PathCaches.Length)
+        var geometry = GetOrCreateGeometry(node.PathCacheIndex);
+        if (geometry != null)
         {
-            ReportPathFallback(node.PathCacheIndex,
-                "PathCache geometry reconstruction is unavailable; rendering bounds fallback.");
+            dc.DrawGeometry(fill, stroke, geometry);
         }
         else
         {
-            ReportPathFallback(node.PathCacheIndex,
-                "PathCache index is out of range; rendering bounds fallback.");
+            // 无法重建几何体，回退到矩形边界
+            var bounds = ConvertRect(node.Bounds);
+            dc.DrawRectangle(fill, stroke, bounds);
+        }
+    }
+
+    private Geometry? GetOrCreateGeometry(uint pathCacheIndex)
+    {
+        if (_geometryCache.TryGetValue(pathCacheIndex, out var cached))
+            return cached;
+
+        Geometry? geometry = null;
+
+        // 优先使用原始 SVG 路径数据（保留曲线精度）
+        if (pathCacheIndex < _bundle.PathDataStrings.Length)
+        {
+            var pathData = _bundle.PathDataStrings[pathCacheIndex];
+            if (!string.IsNullOrEmpty(pathData))
+            {
+                try
+                {
+                    geometry = Geometry.Parse(pathData);
+                }
+                catch
+                {
+                    // 解析失败，尝试从顶点数据重建
+                }
+            }
         }
 
-        var bounds = ConvertRect(node.Bounds);
-        dc.DrawRectangle(fill, stroke, bounds);
+        // 回退：从三角化顶点数据重建
+        if (geometry == null && pathCacheIndex < _bundle.PathCaches.Length
+            && _bundle.VertexData.Length > 0)
+        {
+            geometry = ReconstructGeometryFromVertices(pathCacheIndex);
+        }
+
+        _geometryCache[pathCacheIndex] = geometry;
+        return geometry;
+    }
+
+    private Geometry? ReconstructGeometryFromVertices(uint pathCacheIndex)
+    {
+        var cache = _bundle.PathCaches[pathCacheIndex];
+        if (cache.VertexCount < 3 || cache.IndexCount < 3)
+            return null;
+
+        var vertexData = _bundle.VertexData;
+        var indexData = _bundle.IndexData;
+
+        // 提取顶点
+        var vertices = new CorePoint[cache.VertexCount];
+        var byteOffset = (int)cache.VertexOffset;
+        for (int i = 0; i < cache.VertexCount; i++)
+        {
+            var x = BitConverter.ToSingle(vertexData, byteOffset);
+            var y = BitConverter.ToSingle(vertexData, byteOffset + 4);
+            vertices[i] = new CorePoint(x, y);
+            byteOffset += 8;
+        }
+
+        // 从三角化索引重建为三角形网格
+        var sg = new StreamGeometry();
+        using (var ctx = sg.Open())
+        {
+            var idxOffset = (int)cache.IndexOffset;
+            for (int i = 0; i + 2 < cache.IndexCount; i += 3)
+            {
+                var i0 = indexData[idxOffset + i];
+                var i1 = indexData[idxOffset + i + 1];
+                var i2 = indexData[idxOffset + i + 2];
+
+                ctx.BeginFigure(vertices[i0], true, true);
+                ctx.LineTo(vertices[i1], true, false);
+                ctx.LineTo(vertices[i2], true, false);
+            }
+        }
+
+        return sg;
     }
 
     private void RenderBackdropFilterNode(DrawingContext dc, BackdropFilterNode node)

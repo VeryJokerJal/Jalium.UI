@@ -74,7 +74,7 @@ public sealed class DatePickerTextBox : TextBox
         var watermarkText = Watermark?.ToString() ?? string.Empty;
 
         var watermarkBrush = new SolidColorBrush(Color.FromRgb(128, 128, 128));
-        var formattedText = new FormattedText(watermarkText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+        var formattedText = new FormattedText(watermarkText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
         {
             Foreground = watermarkBrush,
             MaxTextWidth = contentWidth,

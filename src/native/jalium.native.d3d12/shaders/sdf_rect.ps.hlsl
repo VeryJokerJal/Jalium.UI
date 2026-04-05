@@ -73,10 +73,10 @@ float4 main(PsInput input) : SV_Target
     float2 p = input.localPos - halfSize;
 
     float4 r = float4(
+        input.cornerRadius.z,
         input.cornerRadius.y,
         input.cornerRadius.x,
-        input.cornerRadius.w,
-        input.cornerRadius.z);
+        input.cornerRadius.w);
 
     float maxR = min(halfSize.x, halfSize.y);
     r = min(r, maxR);
@@ -98,6 +98,7 @@ float4 main(PsInput input) : SV_Target
         float lenSq  = dot(dir, dir);
         float t = (lenSq > 0.0) ? dot(input.localPos - start, dir) / lenSq : 0.0;
         fill = SampleGradient(input, t);
+        fill.rgb *= fill.a;
     }
     else if (input.gradientType == 2)
     {
@@ -106,6 +107,7 @@ float4 main(PsInput input) : SV_Target
         float2 d = (input.localPos - center) / max(radius, float2(0.001, 0.001));
         float t = length(d);
         fill = SampleGradient(input, t);
+        fill.rgb *= fill.a;
     }
     else
     {

@@ -6130,7 +6130,7 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
     RasterizePolygon(points, fillRule, b, g, r, a);
 }
 
-void VulkanRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap)
+void VulkanRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount, float dashOffset)
 {
     TouchFrame();
     std::vector<float> localPoints;

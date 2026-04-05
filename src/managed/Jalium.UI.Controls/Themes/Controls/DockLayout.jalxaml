@@ -13,7 +13,7 @@
         <Setter Property="TabStripBackground" Value="{DynamicResource DockTabStripBackground}" />
         <Setter Property="TabStripBorderBrush" Value="{DynamicResource DockTabStripBorder}" />
         <Setter Property="TabStripHeight" Value="28" />
-        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
     </Style>
 
     <!-- DockItem -->

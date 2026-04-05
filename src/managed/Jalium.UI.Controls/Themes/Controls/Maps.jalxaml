@@ -1,0 +1,142 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- MapView Style                                    -->
+    <!-- ============================================== -->
+    <!-- An interactive map viewer with pan/zoom, layers,
+         zoom controls, scale bar, and attribution display. -->
+    <Style TargetType="MapView">
+        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="MinWidth" Value="200" />
+        <Setter Property="MinHeight" Value="200" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MapView">
+                <Border Name="RootBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        ClipToBounds="True">
+                    <Grid>
+                        <!-- Map canvas layers -->
+                        <Canvas Name="PART_MapCanvas" />
+
+                        <!-- Zoom controls (top-right) -->
+                        <StackPanel Name="PART_ZoomControls"
+                                    Orientation="Vertical"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Top"
+                                    Margin="0,8,8,0">
+                            <Button Name="PART_ZoomInButton"
+                                    Content="+"
+                                    Width="32"
+                                    Height="32"
+                                    MinWidth="0"
+                                    MinHeight="0"
+                                    Padding="0"
+                                    HorizontalContentAlignment="Center"
+                                    VerticalContentAlignment="Center"
+                                    Margin="0,0,0,2" />
+                            <Button Name="PART_ZoomOutButton"
+                                    Content="-"
+                                    Width="32"
+                                    Height="32"
+                                    MinWidth="0"
+                                    MinHeight="0"
+                                    Padding="0"
+                                    HorizontalContentAlignment="Center"
+                                    VerticalContentAlignment="Center" />
+                        </StackPanel>
+
+                        <!-- Scale bar (bottom-left) -->
+                        <Border Name="PART_ScaleBar"
+                                HorizontalAlignment="Left"
+                                VerticalAlignment="Bottom"
+                                Margin="8,0,0,8"
+                                Background="{DynamicResource ControlBackground}"
+                                BorderBrush="{DynamicResource ControlBorder}"
+                                BorderThickness="1"
+                                CornerRadius="2"
+                                Padding="6,2,6,2">
+                            <TextBlock Name="PART_ScaleText"
+                                       FontSize="10"
+                                       Foreground="{DynamicResource TextSecondary}" />
+                        </Border>
+
+                        <!-- Attribution (bottom-right) -->
+                        <Border Name="PART_Attribution"
+                                HorizontalAlignment="Right"
+                                VerticalAlignment="Bottom"
+                                Margin="0,0,8,8"
+                                Background="{DynamicResource ControlBackground}"
+                                CornerRadius="2"
+                                Padding="4,2,4,2"
+                                Opacity="0.8">
+                            <TextBlock Name="PART_AttributionText"
+                                       FontSize="9"
+                                       Foreground="{DynamicResource TextSecondary}" />
+                        </Border>
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.65" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- MiniMap Style                                    -->
+    <!-- ============================================== -->
+    <!-- A small overview map typically overlaid on a MapView. -->
+    <Style TargetType="MiniMap">
+        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Width" Value="150" />
+        <Setter Property="Height" Value="100" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="MiniMap">
+                <Border Name="RootBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        ClipToBounds="True" />
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.65" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+    <!-- ============================================== -->
+    <!-- GeographicHeatmap Style                          -->
+    <!-- ============================================== -->
+    <!-- A geographic heatmap overlay (FrameworkElement-based, no template). -->
+    <Style TargetType="GeographicHeatmap">
+        <Setter Property="IsHitTestVisible" Value="False" />
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Opacity" Value="0.65" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+</ResourceDictionary>

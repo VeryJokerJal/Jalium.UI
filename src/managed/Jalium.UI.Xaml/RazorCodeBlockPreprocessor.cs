@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text;
 using Microsoft.CodeAnalysis.CSharp.Scripting;
 using Microsoft.CodeAnalysis.Scripting;
@@ -12,22 +13,45 @@ namespace Jalium.UI.Markup;
 /// </summary>
 internal static class RazorCodeBlockPreprocessor
 {
+    private static readonly ConcurrentDictionary<string, string> ProcessCache = new(StringComparer.Ordinal);
+    private static readonly ConcurrentDictionary<string, Dictionary<string, string>> SectionCache = new(StringComparer.Ordinal);
+    private const int MaxProcessCacheSize = 512;
+
     /// <summary>
     /// Expands all <c>@{ }</c> code blocks in element text content, returning valid XML.
+    /// Also processes <c>@section Name { ... }</c> definitions and <c>@RenderSection("Name")</c> calls.
     /// </summary>
     public static string Process(string xaml)
     {
-        if (!xaml.Contains("@{"))
+        if (!xaml.Contains('@'))
             return xaml;
 
+        var originalXaml = xaml;
+        if (ProcessCache.TryGetValue(originalXaml, out var cached))
+        {
+            // Re-register sections even on cache hit (page may have been reloaded)
+            ReRegisterSections(originalXaml);
+            return cached;
+        }
+
+        // First pass: extract @section definitions and collect their content
+        var sections = new Dictionary<string, string>(StringComparer.Ordinal);
+        xaml = ExtractSectionDefinitions(xaml, sections);
+        if (sections.Count > 0)
+            SectionCache[originalXaml] = sections;
+
+        var hasRenderSection = xaml.Contains("@RenderSection(", StringComparison.Ordinal);
         var blocks = FindCodeBlocksInTextContent(xaml);
-        if (blocks.Count == 0)
+        if (blocks.Count == 0 && sections.Count == 0 && !hasRenderSection)
             return xaml;
+
+        // Merge adjacent blocks (separated only by whitespace) so variables are shared
+        var merged = MergeAdjacentBlocks(xaml, blocks);
 
         var sb = new StringBuilder(xaml.Length * 2);
         var lastEnd = 0;
 
-        foreach (var block in blocks)
+        foreach (var block in merged)
         {
             sb.Append(xaml, lastEnd, block.Start - lastEnd);
             var expanded = ExpandCodeBlock(block.Code);
@@ -36,8 +60,205 @@ internal static class RazorCodeBlockPreprocessor
         }
 
         sb.Append(xaml, lastEnd, xaml.Length - lastEnd);
+        var result = sb.ToString();
+
+        // Second pass: replace @RenderSection("Name") calls with section content
+        if (sections.Count > 0 || hasRenderSection)
+            result = ReplaceSectionRenders(result, sections);
+
+        if (ProcessCache.Count >= MaxProcessCacheSize)
+            ProcessCache.Clear();
+        ProcessCache[originalXaml] = result;
+
+        return result;
+    }
+
+    /// <summary>
+    /// Merges consecutive code blocks that are only separated by whitespace into a single
+    /// execution unit so that variables declared in one block are accessible in the next.
+    /// </summary>
+    private static List<CodeBlockInfo> MergeAdjacentBlocks(string xaml, List<CodeBlockInfo> blocks)
+    {
+        if (blocks.Count <= 1)
+            return blocks;
+
+        var result = new List<CodeBlockInfo>();
+        var groupStart = blocks[0].Start;
+        var groupEnd = blocks[0].End;
+        var groupCode = new StringBuilder(blocks[0].Code);
+
+        for (var i = 1; i < blocks.Count; i++)
+        {
+            var gap = xaml.AsSpan(groupEnd, blocks[i].Start - groupEnd);
+            if (gap.IsWhiteSpace())
+            {
+                if (groupCode.Length > 0 && blocks[i].Code.Length > 0)
+                    groupCode.AppendLine();
+                groupCode.Append(blocks[i].Code);
+                groupEnd = blocks[i].End;
+            }
+            else
+            {
+                result.Add(new CodeBlockInfo(groupStart, groupEnd, groupCode.ToString()));
+                groupStart = blocks[i].Start;
+                groupEnd = blocks[i].End;
+                groupCode.Clear();
+                groupCode.Append(blocks[i].Code);
+            }
+        }
+
+        result.Add(new CodeBlockInfo(groupStart, groupEnd, groupCode.ToString()));
+        return result;
+    }
+
+    private static void ReRegisterSections(string originalXaml)
+    {
+        if (SectionCache.TryGetValue(originalXaml, out var sections))
+        {
+            foreach (var (name, body) in sections)
+                RazorExpressionRegistry.RegisterSection(name, body);
+        }
+    }
+
+    #region Section support
+
+    /// <summary>
+    /// Scans XAML for <c>@section Name { ... }</c> definitions, extracts them, and returns
+    /// the XAML with those definitions removed. Section bodies are stored for later
+    /// replacement when <c>@RenderSection("Name")</c> is encountered.
+    /// </summary>
+    private static string ExtractSectionDefinitions(string xaml, Dictionary<string, string> sections)
+    {
+        var sb = new StringBuilder(xaml.Length);
+        var i = 0;
+
+        while (i < xaml.Length)
+        {
+            // Skip @@ escape sequences
+            if (xaml[i] == '@' && i + 1 < xaml.Length && xaml[i + 1] == '@')
+            {
+                sb.Append(xaml[i]);
+                sb.Append(xaml[i + 1]);
+                i += 2;
+                continue;
+            }
+
+            if (xaml[i] == '@' && i + 8 < xaml.Length &&
+                xaml.AsSpan(i + 1, 7).SequenceEqual("section") &&
+                (i + 8 >= xaml.Length || !char.IsLetterOrDigit(xaml[i + 8])))
+            {
+                var p = i + 8;
+                while (p < xaml.Length && char.IsWhiteSpace(xaml[p])) p++;
+
+                // Read section name
+                var nameStart = p;
+                while (p < xaml.Length && (char.IsLetterOrDigit(xaml[p]) || xaml[p] == '_')) p++;
+                if (p == nameStart) { sb.Append(xaml[i]); i++; continue; }
+                var sectionName = xaml[nameStart..p];
+
+                while (p < xaml.Length && char.IsWhiteSpace(xaml[p])) p++;
+                if (p >= xaml.Length || xaml[p] != '{') { sb.Append(xaml[i]); i++; continue; }
+
+                var bodyEnd = FindMatchingBrace(xaml, p + 1);
+                if (bodyEnd < 0) { sb.Append(xaml[i]); i++; continue; }
+
+                var body = xaml[(p + 1)..bodyEnd].Trim();
+                sections[sectionName] = body;
+                RazorExpressionRegistry.RegisterSection(sectionName, body);
+
+                // Skip the entire @section block and trailing whitespace (don't emit it)
+                i = bodyEnd + 1;
+                while (i < xaml.Length && (xaml[i] == ' ' || xaml[i] == '\t' || xaml[i] == '\r' || xaml[i] == '\n'))
+                    i++;
+                continue;
+            }
+
+            sb.Append(xaml[i]);
+            i++;
+        }
+
         return sb.ToString();
     }
+
+    /// <summary>
+    /// Replaces all <c>@RenderSection("Name")</c> calls with the content of the
+    /// corresponding section. Supports both <c>@RenderSection("Name")</c> and
+    /// <c>@RenderSection("Name", required: false)</c> syntax.
+    /// </summary>
+    private static string ReplaceSectionRenders(string xaml, Dictionary<string, string> sections)
+    {
+        var sb = new StringBuilder(xaml.Length);
+        var i = 0;
+
+        while (i < xaml.Length)
+        {
+            // Skip @@ escape sequences
+            if (xaml[i] == '@' && i + 1 < xaml.Length && xaml[i + 1] == '@')
+            {
+                sb.Append(xaml[i]);
+                sb.Append(xaml[i + 1]);
+                i += 2;
+                continue;
+            }
+
+            if (xaml[i] == '@' && i + 14 < xaml.Length &&
+                xaml.AsSpan(i + 1, 13).SequenceEqual("RenderSection") &&
+                (i + 14 >= xaml.Length || xaml[i + 14] == '('))
+            {
+                var p = i + 14;
+                while (p < xaml.Length && char.IsWhiteSpace(xaml[p])) p++;
+                if (p < xaml.Length && xaml[p] == '(')
+                {
+                    var argsStart = p + 1;
+                    var parenEnd = FindMatchingParen(xaml, argsStart);
+                    if (parenEnd >= 0)
+                    {
+                        var args = xaml[argsStart..parenEnd].Trim();
+                        var sectionName = ExtractSectionNameFromArgs(args);
+                        if (sectionName != null)
+                        {
+                            // Try local sections first, then global registry
+                            if (sections.TryGetValue(sectionName, out var content))
+                                sb.Append(content);
+                            else if (RazorExpressionRegistry.TryGetGlobalSection(sectionName, out var globalContent))
+                                sb.Append(globalContent);
+                            else
+                                // Section not yet registered — emit a dynamic host that will
+                                // load the content when the section is registered at runtime
+                                sb.Append($"<RazorSectionHost SectionName=\"{sectionName}\"/>");
+                        }
+                        i = parenEnd + 1;
+                        continue;
+                    }
+                }
+            }
+
+            sb.Append(xaml[i]);
+            i++;
+        }
+
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Extracts the section name from RenderSection arguments.
+    /// Handles: <c>"Name"</c>, <c>"Name", required: false</c>, <c>"Name", false</c>
+    /// </summary>
+    private static string? ExtractSectionNameFromArgs(string args)
+    {
+        var trimmed = args.Trim();
+        if (trimmed.Length < 2) return null;
+
+        char quote = trimmed[0];
+        if (quote != '"' && quote != '\'') return null;
+
+        var endQuote = trimmed.IndexOf(quote, 1);
+        if (endQuote < 0) return null;
+
+        return trimmed[1..endQuote];
+    }
+
+    #endregion
 
     #region Find code blocks in text content
 
@@ -132,18 +353,48 @@ internal static class RazorCodeBlockPreprocessor
                 continue;
             }
 
-            // Check for @{ in text content
-            if (xaml[i] == '@' && i + 1 < xaml.Length && xaml[i + 1] == '{')
+            if (xaml[i] == '@' && i + 1 < xaml.Length)
             {
-                var start = i;
-                var codeStart = i + 2;
-                var codeEnd = FindMatchingBrace(xaml, codeStart);
-                if (codeEnd >= 0)
+                // @* comment *@
+                if (xaml[i + 1] == '*')
                 {
-                    var code = xaml[codeStart..codeEnd].Trim();
-                    blocks.Add(new CodeBlockInfo(start, codeEnd + 1, code));
-                    i = codeEnd + 1;
-                    continue;
+                    var commentEnd = xaml.IndexOf("*@", i + 2, StringComparison.Ordinal);
+                    if (commentEnd >= 0)
+                    {
+                        blocks.Add(new CodeBlockInfo(i, commentEnd + 2, ""));
+                        i = commentEnd + 2;
+                        continue;
+                    }
+                }
+
+                // @{ code block }
+                if (xaml[i + 1] == '{')
+                {
+                    var start = i;
+                    var codeStart = i + 2;
+                    var codeEnd = FindMatchingBrace(xaml, codeStart);
+                    if (codeEnd >= 0)
+                    {
+                        var code = xaml[codeStart..codeEnd].Trim();
+                        blocks.Add(new CodeBlockInfo(start, codeEnd + 1, code));
+                        i = codeEnd + 1;
+                        continue;
+                    }
+                }
+
+                // @keyword directives: for, foreach, while, switch, using, lock, do, try
+                if (char.IsLetter(xaml[i + 1]))
+                {
+                    int dEnd;
+                    string dCode;
+                    if (TryMatchBlockDirective(xaml, i, out dEnd, out dCode)
+                        || TryMatchDoWhileDirective(xaml, i, out dEnd, out dCode)
+                        || TryMatchTryCatchDirective(xaml, i, out dEnd, out dCode))
+                    {
+                        blocks.Add(new CodeBlockInfo(i, dEnd, dCode));
+                        i = dEnd;
+                        continue;
+                    }
                 }
             }
 
@@ -305,6 +556,295 @@ internal static class RazorCodeBlockPreprocessor
         return -1;
     }
 
+    /// <summary>
+    /// Starting from the position after an opening <c>(</c>, finds the matching <c>)</c>.
+    /// Returns the position after <c>)</c>, or -1 if unbalanced.
+    /// </summary>
+    private static int FindMatchingParen(string input, int start)
+    {
+        var p = start;
+        var depth = 1;
+        var inString = false;
+        var inChar = false;
+        var escaped = false;
+        var verbatimString = false;
+        char stringQuote = '\0';
+
+        while (p < input.Length && depth > 0)
+        {
+            var c = input[p];
+            if (escaped) { escaped = false; p++; continue; }
+            if (inString)
+            {
+                if (!verbatimString && c == '\\') { escaped = true; p++; continue; }
+                if (c == stringQuote)
+                {
+                    if (verbatimString && p + 1 < input.Length && input[p + 1] == stringQuote) { p += 2; continue; }
+                    inString = false; verbatimString = false; stringQuote = '\0';
+                }
+                p++; continue;
+            }
+            if (inChar)
+            {
+                if (c == '\\') { escaped = true; p++; continue; }
+                if (c == '\'') inChar = false;
+                p++; continue;
+            }
+            if (c == '\'') { inChar = true; p++; continue; }
+            if (c == '"')
+            {
+                inString = true;
+                verbatimString = p > 0 && input[p - 1] == '@';
+                stringQuote = '"';
+                p++; continue;
+            }
+            if (c == '(') { depth++; p++; continue; }
+            if (c == ')')
+            {
+                depth--;
+                if (depth == 0) return p + 1;
+            }
+            p++;
+        }
+
+        return -1;
+    }
+
+    /// <summary>
+    /// Tries to match a <c>@keyword(...){...}</c> directive at the given position.
+    /// Supported keywords: for, foreach, while, switch, using, lock.
+    /// Also supports <c>@await foreach</c> and <c>@await using</c>.
+    /// </summary>
+    private static bool TryMatchBlockDirective(string input, int atPos, out int blockEnd, out string code)
+    {
+        blockEnd = 0;
+        code = "";
+
+        var pos = atPos + 1; // skip '@'
+        var remaining = input.Length - pos;
+
+        // Optional "await" prefix (for "await foreach" / "await using")
+        if (remaining >= 6 && input.AsSpan(pos, 5).SequenceEqual("await") &&
+            !char.IsLetterOrDigit(input[pos + 5]))
+        {
+            var afterAwait = pos + 5;
+            while (afterAwait < input.Length && char.IsWhiteSpace(input[afterAwait])) afterAwait++;
+            var r = input.Length - afterAwait;
+
+            var isAwaitForeach = r >= 7 && input.AsSpan(afterAwait, 7).SequenceEqual("foreach") &&
+                (r == 7 || !char.IsLetterOrDigit(input[afterAwait + 7]));
+            var isAwaitUsing = r >= 5 && input.AsSpan(afterAwait, 5).SequenceEqual("using") &&
+                (r == 5 || !char.IsLetterOrDigit(input[afterAwait + 5]));
+
+            if (isAwaitForeach || isAwaitUsing)
+            {
+                pos = afterAwait;
+                remaining = r;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        // Match keyword (check longest first to avoid prefix conflicts)
+        int keywordLen;
+        if (remaining >= 7 && input.AsSpan(pos, 7).SequenceEqual("foreach") &&
+            (remaining == 7 || !char.IsLetterOrDigit(input[pos + 7])))
+            keywordLen = 7;
+        else if (remaining >= 6 && input.AsSpan(pos, 6).SequenceEqual("switch") &&
+                 (remaining == 6 || !char.IsLetterOrDigit(input[pos + 6])))
+            keywordLen = 6;
+        else if (remaining >= 5 && input.AsSpan(pos, 5).SequenceEqual("while") &&
+                 (remaining == 5 || !char.IsLetterOrDigit(input[pos + 5])))
+            keywordLen = 5;
+        else if (remaining >= 5 && input.AsSpan(pos, 5).SequenceEqual("using") &&
+                 (remaining == 5 || !char.IsLetterOrDigit(input[pos + 5])))
+            keywordLen = 5;
+        else if (remaining >= 4 && input.AsSpan(pos, 4).SequenceEqual("lock") &&
+                 (remaining == 4 || !char.IsLetterOrDigit(input[pos + 4])))
+            keywordLen = 4;
+        else if (remaining >= 3 && input.AsSpan(pos, 3).SequenceEqual("for") &&
+                 (remaining == 3 || !char.IsLetterOrDigit(input[pos + 3])))
+            keywordLen = 3;
+        else
+            return false;
+
+        var p = pos + keywordLen;
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+        if (p >= input.Length || input[p] != '(') return false;
+
+        var afterParen = FindMatchingParen(input, p + 1);
+        if (afterParen < 0) return false;
+        p = afterParen;
+
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+        if (p >= input.Length || input[p] != '{') return false;
+
+        var braceEnd = FindMatchingBrace(input, p + 1);
+        if (braceEnd < 0) return false;
+
+        blockEnd = braceEnd + 1;
+        code = input[(atPos + 1)..blockEnd].Trim();
+        return true;
+    }
+
+    /// <summary>
+    /// Tries to match <c>@do { ... } while(expr);</c> at the given position.
+    /// </summary>
+    private static bool TryMatchDoWhileDirective(string input, int atPos, out int blockEnd, out string code)
+    {
+        blockEnd = 0;
+        code = "";
+
+        var pos = atPos + 1;
+        var remaining = input.Length - pos;
+
+        if (remaining < 2 || input[pos] != 'd' || input[pos + 1] != 'o')
+            return false;
+        if (remaining > 2 && char.IsLetterOrDigit(input[pos + 2]))
+            return false;
+
+        var p = pos + 2;
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+        if (p >= input.Length || input[p] != '{') return false;
+
+        var braceEnd = FindMatchingBrace(input, p + 1);
+        if (braceEnd < 0) return false;
+        p = braceEnd + 1;
+
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+        // Match "while"
+        if (p + 5 > input.Length || !input.AsSpan(p, 5).SequenceEqual("while"))
+            return false;
+        if (p + 5 < input.Length && char.IsLetterOrDigit(input[p + 5]))
+            return false;
+        p += 5;
+
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+        if (p >= input.Length || input[p] != '(') return false;
+
+        var afterParen = FindMatchingParen(input, p + 1);
+        if (afterParen < 0) return false;
+        p = afterParen;
+
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+        if (p < input.Length && input[p] == ';') p++;
+
+        blockEnd = p;
+        code = input[(atPos + 1)..blockEnd].Trim();
+        return true;
+    }
+
+    /// <summary>
+    /// Tries to match <c>@try { ... } catch(...) { ... } finally { ... }</c> at the given position.
+    /// </summary>
+    private static bool TryMatchTryCatchDirective(string input, int atPos, out int blockEnd, out string code)
+    {
+        blockEnd = 0;
+        code = "";
+
+        var pos = atPos + 1;
+        var remaining = input.Length - pos;
+
+        if (remaining < 3 || input[pos] != 't' || input[pos + 1] != 'r' || input[pos + 2] != 'y')
+            return false;
+        if (remaining > 3 && char.IsLetterOrDigit(input[pos + 3]))
+            return false;
+
+        var p = pos + 3;
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+        if (p >= input.Length || input[p] != '{') return false;
+
+        var braceEnd = FindMatchingBrace(input, p + 1);
+        if (braceEnd < 0) return false;
+        p = braceEnd + 1;
+
+        var hasCatchOrFinally = false;
+
+        // Match zero or more catch blocks
+        while (true)
+        {
+            var save = p;
+            while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+            if (p + 5 <= input.Length && input.AsSpan(p, 5).SequenceEqual("catch") &&
+                (p + 5 >= input.Length || !char.IsLetterOrDigit(input[p + 5])))
+            {
+                hasCatchOrFinally = true;
+                p += 5;
+                while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+                // Optional (ExceptionType ex)
+                if (p < input.Length && input[p] == '(')
+                {
+                    var afterParen = FindMatchingParen(input, p + 1);
+                    if (afterParen < 0) return false;
+                    p = afterParen;
+                    while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+                }
+
+                // Optional "when (expr)"
+                if (p + 4 <= input.Length && input.AsSpan(p, 4).SequenceEqual("when") &&
+                    (p + 4 >= input.Length || !char.IsLetterOrDigit(input[p + 4])))
+                {
+                    p += 4;
+                    while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+                    if (p < input.Length && input[p] == '(')
+                    {
+                        var afterWhen = FindMatchingParen(input, p + 1);
+                        if (afterWhen < 0) return false;
+                        p = afterWhen;
+                        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+                    }
+                }
+
+                if (p >= input.Length || input[p] != '{') return false;
+                braceEnd = FindMatchingBrace(input, p + 1);
+                if (braceEnd < 0) return false;
+                p = braceEnd + 1;
+                continue;
+            }
+
+            p = save;
+            break;
+        }
+
+        // Match optional finally block
+        {
+            var save = p;
+            while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+            if (p + 7 <= input.Length && input.AsSpan(p, 7).SequenceEqual("finally") &&
+                (p + 7 >= input.Length || !char.IsLetterOrDigit(input[p + 7])))
+            {
+                hasCatchOrFinally = true;
+                p += 7;
+                while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+                if (p >= input.Length || input[p] != '{') return false;
+                braceEnd = FindMatchingBrace(input, p + 1);
+                if (braceEnd < 0) return false;
+                p = braceEnd + 1;
+            }
+            else
+            {
+                p = save;
+            }
+        }
+
+        if (!hasCatchOrFinally) return false;
+
+        blockEnd = p;
+        code = input[(atPos + 1)..blockEnd].Trim();
+        return true;
+    }
+
     #endregion
 
     #region Expand code block
@@ -314,8 +854,11 @@ internal static class RazorCodeBlockPreprocessor
     /// </summary>
     private static string ExpandCodeBlock(string code)
     {
-        var script = BuildCodeBlockScript(code);
-        return ExecuteScript(script);
+        if (string.IsNullOrWhiteSpace(code))
+            return string.Empty;
+
+        var segments = ParseCodeBlockSegments(code);
+        return RazorLightweightCodeBlockInterpreter.Expand(segments);
     }
 
     /// <summary>
@@ -340,14 +883,14 @@ internal static class RazorCodeBlockPreprocessor
         return sb.ToString();
     }
 
-    private readonly record struct CodeSegment(string Text, bool IsMarkup);
+    internal readonly record struct CodeSegment(string Text, bool IsMarkup);
 
     /// <summary>
     /// Splits a code block into alternating C# code and XML markup segments.
     /// XML markup starts when <c>&lt;UppercaseLetter</c> appears at statement level
     /// (not inside a C# string, comment, or expression).
     /// </summary>
-    private static List<CodeSegment> ParseCodeBlockSegments(string code)
+    internal static List<CodeSegment> ParseCodeBlockSegments(string code)
     {
         var segments = new List<CodeSegment>();
         var pos = 0;
@@ -688,9 +1231,43 @@ internal static class RazorCodeBlockPreprocessor
                     continue;
                 }
 
-                // @identifier
+                // @* comment *@ (strip from output)
+                if (markup[i + 1] == '*')
+                {
+                    FlushLiteral(sb, literal);
+                    var commentEnd = markup.IndexOf("*@", i + 2, StringComparison.Ordinal);
+                    if (commentEnd >= 0) { i = commentEnd + 2; continue; }
+                }
+
+                // @{ inline code } (emit code directly, no output wrapping)
+                if (markup[i + 1] == '{')
+                {
+                    FlushLiteral(sb, literal);
+                    var codeStart = i + 2;
+                    var codeEnd = FindMatchingBrace(markup, codeStart);
+                    if (codeEnd >= 0)
+                    {
+                        sb.AppendLine(markup[codeStart..codeEnd].Trim());
+                        i = codeEnd + 1;
+                        continue;
+                    }
+                }
+
+                // @keyword(...){}  or  @identifier
                 if (char.IsLetter(markup[i + 1]) || markup[i + 1] == '_')
                 {
+                    // Try nested block directive first (@for, @foreach, @while, @if, @switch, @using, @lock)
+                    if (TryParseBlockDirectiveInMarkup(markup, i, out var dEnd, out var dHeader, out var dBody))
+                    {
+                        FlushLiteral(sb, literal);
+                        sb.AppendLine(dHeader);
+                        EmitMarkupAsWrite(sb, dBody);
+                        sb.AppendLine("}");
+                        i = dEnd;
+                        continue;
+                    }
+
+                    // Regular identifier
                     FlushLiteral(sb, literal);
                     var idStart = i + 1;
                     var p = idStart;
@@ -725,12 +1302,74 @@ internal static class RazorCodeBlockPreprocessor
     }
 
     /// <summary>
+    /// Tries to parse a block directive (<c>@for</c>, <c>@foreach</c>, <c>@while</c>, <c>@if</c>,
+    /// <c>@switch</c>, <c>@using</c>, <c>@lock</c>) within markup content.
+    /// Returns the C# header (e.g. <c>for(...) {</c>) and the body content separately.
+    /// </summary>
+    private static bool TryParseBlockDirectiveInMarkup(string markup, int atPos, out int directiveEnd, out string header, out string body)
+    {
+        directiveEnd = 0;
+        header = "";
+        body = "";
+
+        var pos = atPos + 1; // skip '@'
+        var remaining = markup.Length - pos;
+
+        int keywordLen;
+        if (remaining >= 7 && markup.AsSpan(pos, 7).SequenceEqual("foreach") &&
+            (remaining == 7 || !char.IsLetterOrDigit(markup[pos + 7])))
+            keywordLen = 7;
+        else if (remaining >= 6 && markup.AsSpan(pos, 6).SequenceEqual("switch") &&
+                 (remaining == 6 || !char.IsLetterOrDigit(markup[pos + 6])))
+            keywordLen = 6;
+        else if (remaining >= 5 && markup.AsSpan(pos, 5).SequenceEqual("while") &&
+                 (remaining == 5 || !char.IsLetterOrDigit(markup[pos + 5])))
+            keywordLen = 5;
+        else if (remaining >= 5 && markup.AsSpan(pos, 5).SequenceEqual("using") &&
+                 (remaining == 5 || !char.IsLetterOrDigit(markup[pos + 5])))
+            keywordLen = 5;
+        else if (remaining >= 4 && markup.AsSpan(pos, 4).SequenceEqual("lock") &&
+                 (remaining == 4 || !char.IsLetterOrDigit(markup[pos + 4])))
+            keywordLen = 4;
+        else if (remaining >= 3 && markup.AsSpan(pos, 3).SequenceEqual("for") &&
+                 (remaining == 3 || !char.IsLetterOrDigit(markup[pos + 3])))
+            keywordLen = 3;
+        else if (remaining >= 2 && markup.AsSpan(pos, 2).SequenceEqual("if") &&
+                 (remaining == 2 || !char.IsLetterOrDigit(markup[pos + 2])))
+            keywordLen = 2;
+        else
+            return false;
+
+        var p = pos + keywordLen;
+        while (p < markup.Length && char.IsWhiteSpace(markup[p])) p++;
+        if (p >= markup.Length || markup[p] != '(') return false;
+
+        var afterParen = FindMatchingParen(markup, p + 1);
+        if (afterParen < 0) return false;
+
+        var hp = afterParen;
+        while (hp < markup.Length && char.IsWhiteSpace(markup[hp])) hp++;
+        if (hp >= markup.Length || markup[hp] != '{') return false;
+
+        header = markup[pos..(hp + 1)]; // e.g. "for(var col = 1; col <= 4; col++) {"
+
+        var bodyStart = hp + 1;
+        var bodyEnd = FindMatchingBrace(markup, bodyStart);
+        if (bodyEnd < 0) return false;
+
+        body = markup[bodyStart..bodyEnd];
+        directiveEnd = bodyEnd + 1;
+        return true;
+    }
+
+    /// <summary>
     /// Executes the generated C# script and returns the XAML output string.
     /// </summary>
     private static string ExecuteScript(string script)
     {
         var references = AppDomain.CurrentDomain.GetAssemblies()
-            .Where(static a => !a.IsDynamic && !string.IsNullOrWhiteSpace(a.Location))
+            .Where(static a => !a.IsDynamic && !string.IsNullOrWhiteSpace(a.Location)
+                             && System.IO.File.Exists(a.Location))
             .GroupBy(static a => a.FullName, StringComparer.Ordinal)
             .Select(static g => g.First())
             .Cast<System.Reflection.Assembly>()

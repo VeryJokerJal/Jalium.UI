@@ -512,13 +512,29 @@ public class DockSplitPanel : Panel
             return;
 
         var clampedDelta = Math.Clamp(delta, minDelta, maxDelta);
-        var newSize1 = originalSize1 + clampedDelta;
-        var newSize2 = originalSize2 - clampedDelta;
+        var newPixel1 = originalSize1 + clampedDelta;
+        var newPixel2 = originalSize2 - clampedDelta;
 
-        // Use star sizing so panes adapt proportionally when the window resizes.
-        // The star values represent the ratio of space each pane occupies.
-        SetSize(child1, new GridLength(newSize1, GridUnitType.Star));
-        SetSize(child2, new GridLength(newSize2, GridUnitType.Star));
+        // Convert desired pixel sizes to correct star values.
+        // Read current star values so we scale proportionally relative to other panes.
+        var oldStar1 = GetSize(child1);
+        var oldStar2 = GetSize(child2);
+        var starValue1 = oldStar1.IsStar ? oldStar1.Value : 1.0;
+        var starValue2 = oldStar2.IsStar ? oldStar2.Value : 1.0;
+
+        // The two panes currently occupy (originalSize1 + originalSize2) pixels
+        // with star weights (starValue1 + starValue2).  Redistribute the same
+        // total star weight proportionally to the new pixel sizes.
+        var totalPixels = originalSize1 + originalSize2;
+        if (totalPixels > 0)
+        {
+            var totalStar = starValue1 + starValue2;
+            var newStar1 = totalStar * (newPixel1 / totalPixels);
+            var newStar2 = totalStar * (newPixel2 / totalPixels);
+            SetSize(child1, new GridLength(Math.Max(0.001, newStar1), GridUnitType.Star));
+            SetSize(child2, new GridLength(Math.Max(0.001, newStar2), GridUnitType.Star));
+        }
+
         InvalidateMeasure();
     }
 

@@ -186,6 +186,12 @@ public class ItemsControl : Control
     /// </summary>
     protected virtual Panel CreateItemsPanel()
     {
+        if (ItemsPanel != null)
+        {
+            var panel = ItemsPanel.CreatePanel() as Panel;
+            if (panel != null) return panel;
+        }
+
         return new StackPanel { Orientation = Orientation.Vertical };
     }
 
@@ -490,7 +496,10 @@ public class ItemsControl : Control
         if (d is ItemsControl itemsControl)
         {
             itemsControl._fallbackItemsHost = null;
-            itemsControl._itemsPresenter = null;
+            if (itemsControl._itemsPresenter != null)
+            {
+                itemsControl._itemsPresenter.InvalidatePanel();
+            }
             itemsControl.RefreshItems();
         }
     }
@@ -628,6 +637,11 @@ public class ItemsControl : Control
     #endregion
 
     #region Internal Methods for ItemContainerGenerator
+
+    /// <summary>
+    /// Internal entry point for <see cref="RefreshItems"/> used by <see cref="Primitives.ItemsPresenter"/>.
+    /// </summary>
+    internal void RefreshItemsInternal() => RefreshItems();
 
     /// <summary>
     /// Public wrapper for IsItemItsOwnContainer used by ItemContainerGenerator.

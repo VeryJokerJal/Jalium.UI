@@ -60,6 +60,16 @@ public class EffectCaptureBoundsTests
         {
             ApplyCalls.Add(new CaptureBounds(x, y, w, h));
         }
+
+        public void ApplyElementEffect(IEffect effect, float x, float y, float w, float h, float captureOriginX = 0, float captureOriginY = 0, float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0)
+        {
+            // 这里可以添加效果应用的逻辑
+            // 例如，使用 effect 对象的属性来修改元素的外观
+            // 具体实现取决于 IEffect 接口的定义和效果类型
+            // 这只是一个示例，实际逻辑可能会有所不同
+            // 例如：
+            // effect.Apply(x, y, w, h, cornerTL, cornerTR, cornerBR, cornerBL);
+        }
     }
 
     private readonly record struct CaptureBounds(float X, float Y, float Width, float Height);

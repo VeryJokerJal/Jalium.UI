@@ -207,7 +207,7 @@ public class StackPanel : Panel, IScrollInfo
         double totalHeight = 0;
         double maxCross = 0;
 
-        foreach (var child in Children)
+        foreach (var child in Children.ToArray())
         {
             // Skip collapsed children
             if (child.Visibility == Visibility.Collapsed)
@@ -281,7 +281,7 @@ public class StackPanel : Panel, IScrollInfo
         double scrollOffsetX = ScrollOwner != null ? -_horizontalOffset : 0;
         double scrollOffsetY = ScrollOwner != null ? -_verticalOffset : 0;
 
-        foreach (var child in Children)
+        foreach (var child in Children.ToArray())
         {
             // Skip collapsed children
             if (child.Visibility == Visibility.Collapsed)

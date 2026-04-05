@@ -587,6 +587,37 @@ public sealed class InfoBarAutomationPeer : FrameworkElementAutomationPeer
         => InfoBarOwner.Title ?? InfoBarOwner.Message ?? base.GetNameCore();
 }
 
+/// <summary>
+/// Exposes ToastNotificationItem types to UI Automation.
+/// </summary>
+public sealed class ToastNotificationItemAutomationPeer : FrameworkElementAutomationPeer
+{
+    public ToastNotificationItemAutomationPeer(ToastNotificationItem owner) : base(owner) { }
+
+    private ToastNotificationItem ToastOwner => (ToastNotificationItem)Owner;
+
+    protected override AutomationControlType GetAutomationControlTypeCore()
+        => AutomationControlType.Group;
+
+    protected override string GetClassNameCore() => nameof(ToastNotificationItem);
+
+    protected override string GetNameCore()
+        => ToastOwner.Title ?? ToastOwner.Message ?? base.GetNameCore();
+}
+
+/// <summary>
+/// Exposes ToastNotificationHost types to UI Automation.
+/// </summary>
+public sealed class ToastNotificationHostAutomationPeer : FrameworkElementAutomationPeer
+{
+    public ToastNotificationHostAutomationPeer(ToastNotificationHost owner) : base(owner) { }
+
+    protected override AutomationControlType GetAutomationControlTypeCore()
+        => AutomationControlType.Group;
+
+    protected override string GetClassNameCore() => nameof(ToastNotificationHost);
+}
+
 #endregion
 
 #region AutoCompleteBox

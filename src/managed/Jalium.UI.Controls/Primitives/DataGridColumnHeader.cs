@@ -356,7 +356,7 @@ public class DataGridColumnHeader : ButtonBase
         if (Content is string text)
         {
             var fgBrush = ResolveForegroundBrush();
-            var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 12)
+            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
             {
                 Foreground = fgBrush
             };

@@ -6,7 +6,13 @@
     <Description>XAML parser and markup extensions for Jalium.UI framework.</Description>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Xaml</PackageId>
+    <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Jalium.UI.Tests" />
+  </ItemGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
@@ -16,7 +22,14 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="5.0.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp.Scripting" Version="5.3.0" />
+  </ItemGroup>
+
+  <!-- ILLink descriptor to preserve types accessed via reflection (AOT/trimming) -->
+  <ItemGroup>
+    <EmbeddedResource Include="ILLink.Descriptors.xml">
+      <LogicalName>ILLink.Descriptors.xml</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
   <!-- Allow ILC to trim Roslyn when RazorScripting feature switch is off -->

@@ -12,6 +12,9 @@ namespace Jalium.UI.Controls;
 [ContentProperty("Child")]
 public class Border : FrameworkElement
 {
+    private const float DefaultGlassTintChannel = 0.08f;
+    private const float DefaultGlassTintOpacity = 0.3f;
+
     private UIElement? _child;
     private Pen? _cachedBorderPen;
     private Brush? _cachedBorderBrush;
@@ -559,7 +562,7 @@ public class Border : FrameworkElement
                                      cornerRadius.BottomRight + cornerRadius.BottomLeft) / 4.0);
 
             // Extract tint color from Background brush if it's a SolidColorBrush
-            float tintR = 0.08f, tintG = 0.08f, tintB = 0.08f, tintOpacity = 0.3f;
+            float tintR = DefaultGlassTintChannel, tintG = DefaultGlassTintChannel, tintB = DefaultGlassTintChannel, tintOpacity = DefaultGlassTintOpacity;
             if (Background is SolidColorBrush solidBrush)
             {
                 var color = solidBrush.Color;

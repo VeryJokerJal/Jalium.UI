@@ -166,6 +166,38 @@ public sealed class BlockCollection : List<Block>
     }
 
     /// <summary>
+    /// Inserts a block element at the specified index.
+    /// </summary>
+    public new void Insert(int index, Block item)
+    {
+        item.Parent = _parent;
+        base.Insert(index, item);
+
+        // Rebuild sibling links
+        if (index > 0)
+        {
+            var prev = this[index - 1];
+            prev.NextBlock = item;
+            item.PreviousBlock = prev;
+        }
+        else
+        {
+            item.PreviousBlock = null;
+        }
+
+        if (index < Count - 1)
+        {
+            var next = this[index + 1];
+            next.PreviousBlock = item;
+            item.NextBlock = next;
+        }
+        else
+        {
+            item.NextBlock = null;
+        }
+    }
+
+    /// <summary>
     /// Removes a block element from the collection.
     /// </summary>
     public new bool Remove(Block item)

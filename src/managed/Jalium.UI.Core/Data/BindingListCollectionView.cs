@@ -204,17 +204,17 @@ public sealed class AlternationConverter
 /// </summary>
 public static class SystemFonts
 {
-    public static string MessageFontFamily => "Segoe UI";
+    public static string MessageFontFamily => FrameworkElement.DefaultFontFamilyName;
     public static double MessageFontSize => 12.0;
-    public static string CaptionFontFamily => "Segoe UI";
+    public static string CaptionFontFamily => FrameworkElement.DefaultFontFamilyName;
     public static double CaptionFontSize => 12.0;
-    public static string SmallCaptionFontFamily => "Segoe UI";
+    public static string SmallCaptionFontFamily => FrameworkElement.DefaultFontFamilyName;
     public static double SmallCaptionFontSize => 11.0;
-    public static string MenuFontFamily => "Segoe UI";
+    public static string MenuFontFamily => FrameworkElement.DefaultFontFamilyName;
     public static double MenuFontSize => 12.0;
-    public static string StatusFontFamily => "Segoe UI";
+    public static string StatusFontFamily => FrameworkElement.DefaultFontFamilyName;
     public static double StatusFontSize => 12.0;
-    public static string IconFontFamily => "Segoe UI";
+    public static string IconFontFamily => FrameworkElement.DefaultFontFamilyName;
     public static double IconFontSize => 9.0;
 }
 

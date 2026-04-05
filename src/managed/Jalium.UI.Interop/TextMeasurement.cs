@@ -1,4 +1,5 @@
 using System.Globalization;
+using Jalium.UI;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Interop;
@@ -137,6 +138,61 @@ public static class TextMeasurement
     }
 
     /// <summary>
+    /// Hit-tests a point against a text layout to determine the character at that position.
+    /// Uses DirectWrite's native hit testing for pixel-accurate results.
+    /// </summary>
+    /// <param name="text">The full text to test against.</param>
+    /// <param name="fontFamily">The font family name.</param>
+    /// <param name="fontSize">The font size in DIPs.</param>
+    /// <param name="pointX">The X coordinate to test.</param>
+    /// <param name="result">The hit test result.</param>
+    /// <returns>True if the hit test succeeded; false if native context is unavailable.</returns>
+    public static bool HitTestPoint(string text, string fontFamily, double fontSize, float pointX, out TextHitTestResult result)
+    {
+        result = default;
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        var context = RenderContext.Current;
+        if (context == null || !context.IsValid)
+            return false;
+
+        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, 400);
+        if (format == null || !format.IsValid)
+            return false;
+
+        return format.HitTestPoint(text, 100000f, 100000f, pointX, 0f, out result);
+    }
+
+    /// <summary>
+    /// Gets the caret X position for a given character index within a text layout.
+    /// Uses DirectWrite's native hit testing for pixel-accurate results.
+    /// </summary>
+    /// <param name="text">The full text of the layout.</param>
+    /// <param name="fontFamily">The font family name.</param>
+    /// <param name="fontSize">The font size in DIPs.</param>
+    /// <param name="textPosition">The character index.</param>
+    /// <param name="isTrailingHit">If true, returns the trailing edge of the character; otherwise the leading edge.</param>
+    /// <param name="result">The hit test result with caret position.</param>
+    /// <returns>True if the query succeeded; false if native context is unavailable.</returns>
+    public static bool HitTestTextPosition(string text, string fontFamily, double fontSize, uint textPosition, bool isTrailingHit, out TextHitTestResult result)
+    {
+        result = default;
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        var context = RenderContext.Current;
+        if (context == null || !context.IsValid)
+            return false;
+
+        var format = GetOrCreateFormat(context, fontFamily, (float)fontSize, 400);
+        if (format == null || !format.IsValid)
+            return false;
+
+        return format.HitTestTextPosition(text, 100000f, 100000f, textPosition, isTrailingHit, out result);
+    }
+
+    /// <summary>
     /// Clears the text format cache. Call this when fonts are changed or memory needs to be freed.
     /// </summary>
     public static void ClearCache()
@@ -156,7 +212,7 @@ public static class TextMeasurement
     {
         if (string.IsNullOrWhiteSpace(fontFamily))
         {
-            fontFamily = "Segoe UI";
+            fontFamily = FrameworkElement.DefaultFontFamilyName;
         }
 
         if (float.IsNaN(fontSize) || float.IsInfinity(fontSize) || fontSize <= 0)

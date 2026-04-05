@@ -822,7 +822,7 @@ public class TabItem : HeaderedContentControl
             }
 
             var fontSize = FontSize > 0 ? FontSize : 13;
-            var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : "Segoe UI";
+            var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : FrameworkElement.DefaultFontFamilyName;
 
             var text = new FormattedText(headerText, fontFamily, fontSize)
             {

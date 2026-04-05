@@ -2,6 +2,7 @@ using System.Globalization;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -60,7 +61,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     private const double DefaultHeight = 32;
 
     // Static brushes & pens for rendering
-    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_focusBorderBrush = new(ThemeColors.ControlBorderFocused);
     private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
@@ -623,7 +624,7 @@ public class NumberBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
@@ -635,7 +636,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
 
         if (_cachedFontFamily != fontFamily || _cachedFontSize != fontSize)
@@ -1062,7 +1063,7 @@ public class NumberBox : TextBoxBase, IImeSupport
 
         if (Header is string headerText)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14);
+            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
             TextMeasurement.MeasureText(headerFormatted);
             headerHeight = headerFormatted.Height + 4;
         }
@@ -1101,7 +1102,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         // Draw header (always draw, regardless of template mode)
         if (Header is string headerText && Foreground != null)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = Foreground
             };
@@ -1192,7 +1193,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         var displayText = _text;
         if (string.IsNullOrEmpty(displayText) && !string.IsNullOrEmpty(PlaceholderText))
         {
-            var placeholderFormatted = new FormattedText(PlaceholderText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var placeholderFormatted = new FormattedText(PlaceholderText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = ResolvePlaceholderBrush(),
                 MaxTextWidth = Math.Max(0, contentRect.Width),
@@ -1205,7 +1206,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         }
         else if (!string.IsNullOrEmpty(displayText))
         {
-            var valueFormatted = new FormattedText(displayText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var valueFormatted = new FormattedText(displayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = ResolveTextForegroundBrush(),
                 MaxTextWidth = Math.Max(0, contentRect.Width),
@@ -1264,7 +1265,7 @@ public class NumberBox : TextBoxBase, IImeSupport
         var compositionBgBrush = s_compositionBgBrush;
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
 
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? "Segoe UI", FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,

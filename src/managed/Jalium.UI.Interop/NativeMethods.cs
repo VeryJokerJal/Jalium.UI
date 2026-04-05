@@ -300,6 +300,18 @@ internal static partial class NativeMethods
     internal static partial void DrawRoundedRectangle(nint renderTarget, float x, float y, float width, float height, float radiusX, float radiusY, nint brush, float strokeWidth);
 
     /// <summary>
+    /// Draws a filled rounded rectangle with per-corner radii.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_fill_per_corner_rounded_rectangle")]
+    internal static partial void FillPerCornerRoundedRectangle(nint renderTarget, float x, float y, float width, float height, float tl, float tr, float br, float bl, nint brush);
+
+    /// <summary>
+    /// Draws a rounded rectangle outline with per-corner radii.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_per_corner_rounded_rectangle")]
+    internal static partial void DrawPerCornerRoundedRectangle(nint renderTarget, float x, float y, float width, float height, float tl, float tr, float br, float bl, nint brush, float strokeWidth);
+
+    /// <summary>
     /// Draws a filled ellipse.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_fill_ellipse")]
@@ -361,7 +373,8 @@ internal static partial class NativeMethods
     /// lineCap: 0 = Butt, 1 = Square, 2 = Round.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_stroke_path")]
-    internal static partial void StrokePath(nint renderTarget, float startX, float startY, float[] commands, int commandLength, nint brush, float strokeWidth, int closed, int lineJoin, float miterLimit, int lineCap);
+    internal static partial void StrokePath(nint renderTarget, float startX, float startY, float[] commands, int commandLength, nint brush, float strokeWidth, int closed, int lineJoin, float miterLimit, int lineCap,
+        float[]? dashPattern, int dashCount, float dashOffset);
 
     /// <summary>
     /// Draws a content area border: fills with bottom-only rounded corners, strokes U-shape (no top).
@@ -454,7 +467,7 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_transition_shader")]
     internal static partial void DrawTransitionShader(nint renderTarget,
-        float x, float y, float w, float h, float progress, int mode);
+        float x, float y, float w, float h, float progress, int mode, float cornerRadius);
 
     /// <summary>
     /// Draws a previously captured transition bitmap to the current render target.
@@ -503,6 +516,7 @@ internal static partial class NativeMethods
     internal static partial void DrawOuterGlowEffect(nint renderTarget,
         float x, float y, float w, float h,
         float glowSize, float r, float g, float b, float a, float intensity,
+        float uvOffsetX, float uvOffsetY,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_inner_shadow_effect")]
@@ -510,6 +524,7 @@ internal static partial class NativeMethods
         float x, float y, float w, float h,
         float blurRadius, float offsetX, float offsetY,
         float r, float g, float b, float a,
+        float uvOffsetX, float uvOffsetY,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_color_matrix_effect")]
@@ -630,7 +645,8 @@ internal static partial class NativeMethods
     internal static partial nint BrushCreateLinearGradient(
         nint context,
         float startX, float startY, float endX, float endY,
-        float[] stops, uint stopCount);
+        float[] stops, uint stopCount,
+        uint extendMode);
 
     /// <summary>
     /// Creates a radial gradient brush.
@@ -640,7 +656,8 @@ internal static partial class NativeMethods
         nint context,
         float centerX, float centerY, float radiusX, float radiusY,
         float originX, float originY,
-        float[] stops, uint stopCount);
+        float[] stops, uint stopCount,
+        uint extendMode);
 
     /// <summary>
     /// Destroys a brush.

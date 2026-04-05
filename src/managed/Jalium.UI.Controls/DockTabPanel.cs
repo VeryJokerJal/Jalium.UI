@@ -36,6 +36,18 @@ public class DockTabPanel : Selector
 
     #region Dependency Properties
 
+    private static readonly DependencyPropertyKey IsPanelFocusedPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(IsPanelFocused), typeof(bool), typeof(DockTabPanel),
+            new PropertyMetadata(false, OnVisualPropertyChanged));
+
+    public static readonly DependencyProperty IsPanelFocusedProperty = IsPanelFocusedPropertyKey.DependencyProperty;
+
+    /// <summary>
+    /// Gets whether this panel or any of its content currently has focus.
+    /// Used to switch between focused (accent) and unfocused (neutral) visual states.
+    /// </summary>
+    public bool IsPanelFocused => (bool)GetValue(IsPanelFocusedProperty)!;
+
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty SelectedContentProperty =
         DependencyProperty.Register(nameof(SelectedContent), typeof(object), typeof(DockTabPanel),
@@ -154,14 +166,9 @@ public class DockTabPanel : Selector
     internal bool IsDockHighlighted
     {
         get => _isDockHighlighted;
-        set
-        {
-            if (_isDockHighlighted != value)
-            {
-                _isDockHighlighted = value;
-                InvalidateVisual();
-            }
-        }
+        set => _isDockHighlighted = value;
+        // NOTE: no InvalidateVisual() — invalidating a large panel triggers expensive
+        // re-rendering of all child controls. DockIndicatorWindow provides visual feedback.
     }
 
     #region Reorder Preview State
@@ -260,6 +267,8 @@ public class DockTabPanel : Selector
         AddHandler(PreviewMouseWheelEvent, new MouseWheelEventHandler(OnMouseWheelHandler));
 
         Items.CollectionChanged += OnDockItemsChanged;
+
+        AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnPanelMouseDown), true);
 
         // Register with DockManager for cross-window hit-testing.
         // Both Loaded and constructor register to handle re-parenting (e.g. DockToEdge
@@ -1009,7 +1018,7 @@ public class DockTabPanel : Selector
                 return false;
         }
 
-        tabTopLeftRadius = isLeftEdgeTab ? 0 : baseTabTopRadius;
+        tabTopLeftRadius = baseTabTopRadius;
         tabTopRightRadius = baseTabTopRadius;
 
         var availableLeftJoin = isLeftEdgeTab
@@ -1062,44 +1071,8 @@ public class DockTabPanel : Selector
                     new CornerRadius(contentCornerRadius));
             }
 
-            if (stripRect.Width > 0 && stripRect.Height > 0)
-            {
-                var contentRect = _contentRect.Width > 0 && _contentRect.Height > 0
-                    ? _contentRect
-                    : new Rect(0, topY, ActualWidth, contentHeight);
-                var contentCornerRadius = ResolveChromeCornerRadius(contentRect.Width, contentRect.Height);
-
-                // Leave the selected-tab pocket open so the panel background can visually flow
-                // into the custom join curve without showing strip-colored AA under it.
-                if (TryGetSelectedTabOutlineMetrics(
-                        stripRect.X,
-                        stripRect.Right,
-                        stripRect.Y,
-                        topY,
-                        contentCornerRadius,
-                        out _,
-                        out _,
-                        out _,
-                        out _,
-                        out _,
-                        out _,
-                        out var gapLeft,
-                        out var gapRight,
-                        out _))
-                {
-                    var clampedGapLeft = Math.Clamp(gapLeft, stripRect.X, stripRect.Right);
-                    var clampedGapRight = Math.Clamp(gapRight, stripRect.X, stripRect.Right);
-
-                    if (clampedGapLeft > stripRect.X)
-                        dc.DrawRectangle(tabStripBrush, null, new Rect(stripRect.X, stripRect.Y, clampedGapLeft - stripRect.X, stripRect.Height));
-                    if (clampedGapRight < stripRect.Right)
-                        dc.DrawRectangle(tabStripBrush, null, new Rect(clampedGapRight, stripRect.Y, stripRect.Right - clampedGapRight, stripRect.Height));
-                }
-                else
-                {
-                    dc.DrawRectangle(tabStripBrush, null, stripRect);
-                }
-            }
+            // Join curve fills are drawn in OnPostRender (after children) so
+            // they appear on top of the tab items.
         }
         else
         {
@@ -1194,10 +1167,6 @@ public class DockTabPanel : Selector
             var outerBorderRect = new Rect(leftEdge, topY, Math.Max(0, w - leftEdge), Math.Max(0, h - topY));
             const double k = 0.5522847498; // cubic bezier approximation for quarter circle
 
-            // Use the native rounded-rect stroke for the outer shell so the four corners stay
-            // on the crisp SDF path instead of the softer custom path-stroke renderer.
-            dc.DrawRoundedRectangle(null, topBorderPen, outerBorderRect, contentR, contentR);
-
             if (!TryGetSelectedTabOutlineMetrics(
                     leftEdge,
                     w,
@@ -1214,40 +1183,114 @@ public class DockTabPanel : Selector
                     out var gapRight,
                     out var isLeftEdgeTab))
             {
+                // No selected tab — use the crisp SDF rounded-rect for content border.
+                dc.DrawRoundedRectangle(null, topBorderPen, outerBorderRect, contentR, contentR);
                 return;
             }
 
-            var panelBackground = ResolvePanelBackgroundBrush();
-            var maskLeft = Math.Clamp(gapLeft + 0.5, leftEdge, w);
-            var maskRight = Math.Clamp(gapRight - 0.5, leftEdge, w);
-            if (maskRight > maskLeft)
+            // Fill the concave join curve pockets with the selected tab's background
+            // so the tab visually flows into the content area.  This runs in OnPostRender
+            // (after child rendering) so the fill paints on top of the tab items.
+            var selectedItem = GetSelectedDockItem();
+            var joinFillBrush = selectedItem?.ResolveSelectedBackgroundBrush()
+                                ?? ResolvePanelBackgroundBrush();
+            if (!isLeftEdgeTab && leftJoinR > 0)
             {
-                dc.DrawRectangle(panelBackground, null, new Rect(maskLeft, topY - 1, maskRight - maskLeft, 2));
+                var leftCurve = new PathFigure
+                {
+                    StartPoint = new Point(gapLeft, topY),
+                    IsClosed = true,
+                    IsFilled = true,
+                };
+                leftCurve.Segments.Add(new BezierSegment(
+                    new Point(selectedTabX - leftJoinR * (1 - k), topY),
+                    new Point(selectedTabX, topY - leftJoinR * (1 - k)),
+                    new Point(selectedTabX, topY - leftJoinR)));
+                leftCurve.Segments.Add(new LineSegment(new Point(selectedTabX, topY)));
+                var leftGeo = new PathGeometry();
+                leftGeo.Figures.Add(leftCurve);
+                dc.DrawGeometry(joinFillBrush, null, leftGeo);
             }
-            if (isLeftEdgeTab && contentR > 0)
+            if (rightJoinR > 0)
             {
-                dc.DrawRectangle(panelBackground, null, new Rect(0, topY, contentR + 1, contentR + 1));
-                dc.DrawLine(topBorderPen, new Point(leftEdge, topY), new Point(leftEdge, topY + contentR));
+                var rightCurve = new PathFigure
+                {
+                    StartPoint = new Point(selectedTabX + selectedTabWidth, topY),
+                    IsClosed = true,
+                    IsFilled = true,
+                };
+                rightCurve.Segments.Add(new LineSegment(new Point(selectedTabX + selectedTabWidth, topY - rightJoinR)));
+                rightCurve.Segments.Add(new BezierSegment(
+                    new Point(selectedTabX + selectedTabWidth, topY - rightJoinR * (1 - k)),
+                    new Point(selectedTabX + selectedTabWidth + rightJoinR * (1 - k), topY),
+                    new Point(gapRight, topY)));
+                var rightGeo = new PathGeometry();
+                rightGeo.Figures.Add(rightCurve);
+                dc.DrawGeometry(joinFillBrush, null, rightGeo);
             }
 
+            // Draw the entire content + tab outline as a single unified path so the
+            // stroke thickness and anti-aliasing are perfectly consistent everywhere.
             double tx = selectedTabX;
             double tw = selectedTabWidth;
+
             var borderFigure = new PathFigure
             {
-                StartPoint = new Point(gapLeft, topY),
-                IsClosed = false,
+                StartPoint = new Point(gapRight, topY),
+                IsClosed = true,
                 IsFilled = false,
             };
 
-            if (!isLeftEdgeTab && leftJoinR > 0)
+            // Content top edge — right of tab gap to top-right corner
+            borderFigure.Segments.Add(new LineSegment(new Point(w - contentR, topY)));
+            // Content top-right corner
+            borderFigure.Segments.Add(new BezierSegment(
+                new Point(w - contentR * (1 - k), topY),
+                new Point(w, topY + contentR * (1 - k)),
+                new Point(w, topY + contentR)));
+            // Content right side
+            borderFigure.Segments.Add(new LineSegment(new Point(w, h - contentR)));
+            // Content bottom-right corner
+            borderFigure.Segments.Add(new BezierSegment(
+                new Point(w, h - contentR * (1 - k)),
+                new Point(w - contentR * (1 - k), h),
+                new Point(w - contentR, h)));
+            // Content bottom edge
+            borderFigure.Segments.Add(new LineSegment(new Point(leftEdge + contentR, h)));
+            // Content bottom-left corner
+            borderFigure.Segments.Add(new BezierSegment(
+                new Point(leftEdge + contentR * (1 - k), h),
+                new Point(leftEdge, h - contentR * (1 - k)),
+                new Point(leftEdge, h - contentR)));
+
+            if (isLeftEdgeTab)
             {
+                // Left side goes straight up into the tab — no content top-left corner
+                borderFigure.Segments.Add(new LineSegment(new Point(tx, topEdge + tabTopLeftR)));
+            }
+            else
+            {
+                // Content left side up to content top-left corner
+                borderFigure.Segments.Add(new LineSegment(new Point(leftEdge, topY + contentR)));
+                // Content top-left corner
                 borderFigure.Segments.Add(new BezierSegment(
-                    new Point(tx - leftJoinR * (1 - k), topY),
-                    new Point(tx, topY - leftJoinR * (1 - k)),
-                    new Point(tx, topY - leftJoinR)));
+                    new Point(leftEdge, topY + contentR * (1 - k)),
+                    new Point(leftEdge + contentR * (1 - k), topY),
+                    new Point(leftEdge + contentR, topY)));
+                // Content top edge — left of tab gap
+                borderFigure.Segments.Add(new LineSegment(new Point(gapLeft, topY)));
+                // Left join curve (content top edge into tab left side)
+                if (leftJoinR > 0)
+                {
+                    borderFigure.Segments.Add(new BezierSegment(
+                        new Point(tx - leftJoinR * (1 - k), topY),
+                        new Point(tx, topY - leftJoinR * (1 - k)),
+                        new Point(tx, topY - leftJoinR)));
+                }
+                borderFigure.Segments.Add(new LineSegment(new Point(tx, topEdge + tabTopLeftR)));
             }
 
-            borderFigure.Segments.Add(new LineSegment(new Point(tx, topEdge + tabTopLeftR)));
+            // Tab top-left corner
             if (tabTopLeftR > 0)
             {
                 borderFigure.Segments.Add(new BezierSegment(
@@ -1260,12 +1303,16 @@ public class DockTabPanel : Selector
                 borderFigure.Segments.Add(new LineSegment(new Point(tx, topEdge)));
             }
 
+            // Tab top edge
             borderFigure.Segments.Add(new LineSegment(new Point(tx + tw - tabTopRightR, topEdge)));
+            // Tab top-right corner
             borderFigure.Segments.Add(new BezierSegment(
                 new Point(tx + tw - tabTopRightR * (1 - k), topEdge),
                 new Point(tx + tw, topEdge + tabTopRightR * (1 - k)),
                 new Point(tx + tw, topEdge + tabTopRightR)));
+            // Tab right side down to join
             borderFigure.Segments.Add(new LineSegment(new Point(tx + tw, topY - rightJoinR)));
+            // Right join curve (tab right side back to content top edge)
             if (rightJoinR > 0)
             {
                 borderFigure.Segments.Add(new BezierSegment(
@@ -1334,10 +1381,32 @@ public class DockTabPanel : Selector
 
     private Brush ResolveTabStripBorderBrush()
     {
+        if (IsPanelFocused)
+            return ResolveBrush("OneBorderFocused", "DockTabStripBorderFocused", s_fallbackAccentBrush);
+
         if (HasLocalValue(TabStripBorderBrushProperty) && TabStripBorderBrush != null)
             return TabStripBorderBrush;
 
         return ResolveBrush("OneBorderDefault", "DockTabStripBorder", s_fallbackBorderBrush);
+    }
+
+    internal void SetPanelFocusedInternal(bool focused)
+    {
+        if (IsPanelFocused == focused) return;
+        SetValue(IsPanelFocusedPropertyKey.DependencyProperty, focused);
+        _topBorderPen = null;
+        _topBorderPenBrush = null;
+        InvalidateVisual();
+        foreach (var child in Items)
+        {
+            if (child is DockItem item)
+                item.InvalidateVisual();
+        }
+    }
+
+    private void OnPanelMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        DockManager.SetActivePanel(this);
     }
 
     private Brush ResolveAccentBrush()

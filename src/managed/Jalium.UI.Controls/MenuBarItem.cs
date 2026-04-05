@@ -82,7 +82,7 @@ public class MenuBarItem : Control
         if (!string.IsNullOrEmpty(Title))
         {
             var formattedText = new Jalium.UI.Media.FormattedText(
-                Title, FontFamily ?? "Segoe UI", fontSize);
+                Title, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize);
             TextMeasurement.MeasureText(formattedText);
             textWidth = formattedText.Width;
         }
@@ -115,7 +115,7 @@ public class MenuBarItem : Control
             var fontSize = FontSize > 0 ? FontSize : 14;
             var textBrush = ResolveForegroundBrush();
             var textFormatted = new Jalium.UI.Media.FormattedText(
-                Title, FontFamily ?? "Segoe UI", fontSize) { Foreground = textBrush };
+                Title, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
             TextMeasurement.MeasureText(textFormatted);
             dc.DrawText(textFormatted,
                 new Point((RenderSize.Width - textFormatted.Width) / 2,

@@ -226,7 +226,7 @@ public class CalendarItem : Control
 
         for (var i = 0; i < DaysPerWeek; i++)
         {
-            var formattedText = new FormattedText(dayNames[i], FontFamily ?? "Segoe UI", 12)
+            var formattedText = new FormattedText(dayNames[i], FontFamily ?? FrameworkElement.DefaultFontFamilyName, 12)
             {
                 Foreground = fgBrush
             };

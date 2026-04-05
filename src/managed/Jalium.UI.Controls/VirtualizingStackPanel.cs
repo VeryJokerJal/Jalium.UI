@@ -303,11 +303,43 @@ public class VirtualizingStackPanel : VirtualizingPanel, IScrollInfo
             ? new RealizationWindow(startIndex, endIndex)
             : RealizationWindow.Empty;
 
-        // Fast path: if the realization window hasn't changed, skip re-realize and recycle
+        // Fast path: if the realization window hasn't changed, skip re-realize and recycle.
+        // However, we must still re-measure any child whose measure has been invalidated
+        // (e.g. a TreeViewItem that expanded/collapsed), so height offsets stay correct.
         if (newWindow.Equals(_currentWindow) && _realizedContainers.Count > 0)
         {
+            var anyHeightChanged = false;
+            for (int i = 0; i < _realizedContainers.Count; i++)
+            {
+                var child = _realizedContainers.Values[i];
+                if (!child.IsMeasureValid)
+                {
+                    var childAvailable = Orientation == Orientation.Vertical
+                        ? new Size(availableSize.Width, double.PositiveInfinity)
+                        : new Size(double.PositiveInfinity, availableSize.Height);
+                    child.Measure(childAvailable);
+                    var axis = GetAxisSize(child.DesiredSize);
+                    var idx = _realizedContainers.Keys[i];
+                    var oldHeight = _heightIndex.GetHeightAt(idx);
+                    if (Math.Abs(axis - oldHeight) > 0.5)
+                    {
+                        _heightIndex.SetMeasuredHeight(idx, axis);
+                        anyHeightChanged = true;
+                    }
+                }
+            }
+
             UpdateExtent(itemCount, availableSize);
-            return CoerceDesiredSize(availableSize);
+
+            if (anyHeightChanged)
+            {
+                // Heights changed — the realization window boundaries may have shifted,
+                // so fall through to the full realization path below.
+            }
+            else
+            {
+                return CoerceDesiredSize(availableSize);
+            }
         }
 
         endIndex = RealizeWindow(startIndex, windowEndOffset, availableSize);

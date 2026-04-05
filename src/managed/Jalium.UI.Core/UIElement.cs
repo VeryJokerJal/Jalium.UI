@@ -434,7 +434,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Gets or sets the visibility of this element.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
-    public Visibility Visibility
+    public virtual Visibility Visibility
     {
         get => (Visibility)GetValue(VisibilityProperty)!;
         set => SetValue(VisibilityProperty, value);
@@ -479,7 +479,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Gets or sets the opacity of this element.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public double Opacity
+    public virtual double Opacity
     {
         get => (double)GetValue(OpacityProperty)!;
         set => SetValue(OpacityProperty, value);

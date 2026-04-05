@@ -177,10 +177,10 @@ float4 main(PsInput input) : SV_Target
     float2 p = input.localPos - halfSize;
 
     float4 r = float4(
+        input.cornerRadius.z,
         input.cornerRadius.y,
         input.cornerRadius.x,
-        input.cornerRadius.w,
-        input.cornerRadius.z);
+        input.cornerRadius.w);
 
     float maxR = min(halfSize.x, halfSize.y);
     r = min(r, maxR);
@@ -202,6 +202,7 @@ float4 main(PsInput input) : SV_Target
         float lenSq  = dot(dir, dir);
         float t = (lenSq > 0.0) ? dot(input.localPos - start, dir) / lenSq : 0.0;
         fill = SampleGradient(input, t);
+        fill.rgb *= fill.a;
     }
     else if (input.gradientType == 2)
     {
@@ -210,6 +211,7 @@ float4 main(PsInput input) : SV_Target
         float2 d = (input.localPos - center) / max(radius, float2(0.001, 0.001));
         float t = length(d);
         fill = SampleGradient(input, t);
+        fill.rgb *= fill.a;
     }
     else
     {
@@ -1026,6 +1028,437 @@ float4 main(PsInput input) : SV_Target
     result.rgb = max(refracted.rgb, 0.0) * glassMask;
     result.a = glassMask;
     return result;
+}
+)HLSL";
+
+// ============================================================================
+// Vello CPU-pipeline fine rasterization shader (embedded — no #include support)
+// Must match vello_fine.cs.hlsl + inlined vello_shared.hlsli constants/structs.
+// ============================================================================
+static const char kVelloFineCS[] = R"HLSL(
+// Vello fine rasterization — CPU pipeline (embedded)
+#define TILE_WIDTH  16u
+#define TILE_HEIGHT 16u
+#define PTCL_INITIAL_ALLOC 64u
+#define CMD_END        0u
+#define CMD_FILL       1u
+#define CMD_SOLID      3u
+#define CMD_COLOR      5u
+#define CMD_LIN_GRAD   6u
+#define CMD_RAD_GRAD   7u
+#define CMD_SWEEP_GRAD 8u
+#define CMD_IMAGE      9u
+#define CMD_BEGIN_CLIP 10u
+#define CMD_END_CLIP   11u
+#define CMD_JUMP       12u
+#define CMD_BLUR_RECT  13u
+#define BLEND_STACK_SPLIT 4u
+#define GRAD_RAMP_WIDTH 256u
+struct Segment { float2 point0; float2 point1; float y_edge; };
+
+cbuffer VelloConfig : register(b0)
+{
+    uint width_in_tiles;
+    uint height_in_tiles;
+    uint target_width;
+    uint target_height;
+    uint base_color;
+    uint n_drawobj;
+    uint n_path;
+    uint n_clip;
+    uint bin_data_start;
+    uint lines_size;
+    uint binning_size;
+    uint tiles_size;
+    uint seg_counts_size;
+    uint segments_size;
+    uint blend_size;
+    uint ptcl_size;
+    uint num_segments;
+    uint pad0, pad1, pad2, pad3, pad4, pad5, pad6;
+};
+
+StructuredBuffer<Segment>  seg_data     : register(t0);
+ByteAddressBuffer          ptcl         : register(t1);
+StructuredBuffer<uint>     gradRamps    : register(t2);
+ByteAddressBuffer          info_data    : register(t3);
+Texture2D<float4>          imageAtlas   : register(t4);
+SamplerState               imageSampler : register(s0);
+
+RWTexture2D<float4>        output       : register(u0);
+RWByteAddressBuffer        blend_spill  : register(u1);
+
+float fill_path(float2 tile_xy, Segment seg, float area)
+{
+    float2 p0 = seg.point0;
+    float2 p1 = seg.point1;
+    float2 delta = p1 - p0;
+    float y = p0.y - tile_xy.y;
+    float y0 = clamp(y, 0.0, 1.0);
+    float y1 = clamp(y + delta.y, 0.0, 1.0);
+    float dy = y0 - y1;
+    if (dy != 0.0) {
+        float vec_y_recip = 1.0 / delta.y;
+        float t0 = (y0 - y) * vec_y_recip;
+        float t1 = (y1 - y) * vec_y_recip;
+        float startx = p0.x - tile_xy.x;
+        float x0 = startx + t0 * delta.x;
+        float x1 = startx + t1 * delta.x;
+        float xmin0 = min(x0, x1);
+        float xmax0 = max(x0, x1);
+        float xmin = min(xmin0, 1.0) - 1e-6;
+        float xmax = xmax0;
+        float b = min(xmax, 1.0);
+        float c = max(b, 0.0);
+        float d = max(xmin, 0.0);
+        float a = (b + 0.5 * (d * d - c * c) - xmin) / (xmax - xmin);
+        area += a * dy;
+    }
+    area += sign(delta.x) * clamp(tile_xy.y - seg.y_edge + 1.0, 0.0, 1.0);
+    return area;
+}
+
+float4 SampleGradient(uint gradIndex, float t)
+{
+    t = clamp(t, 0.0, 1.0);
+    float fi = t * (float)(GRAD_RAMP_WIDTH - 1);
+    uint i0 = (uint)fi;
+    uint i1 = min(i0 + 1, GRAD_RAMP_WIDTH - 1);
+    float frac = fi - (float)i0;
+    uint base = gradIndex * GRAD_RAMP_WIDTH;
+    uint rgba0 = gradRamps[base + i0];
+    uint rgba1 = gradRamps[base + i1];
+    float4 c0 = float4(
+        (float)(rgba0 & 0xFF) / 255.0,
+        (float)((rgba0 >> 8) & 0xFF) / 255.0,
+        (float)((rgba0 >> 16) & 0xFF) / 255.0,
+        (float)((rgba0 >> 24) & 0xFF) / 255.0);
+    float4 c1 = float4(
+        (float)(rgba1 & 0xFF) / 255.0,
+        (float)((rgba1 >> 8) & 0xFF) / 255.0,
+        (float)((rgba1 >> 16) & 0xFF) / 255.0,
+        (float)((rgba1 >> 24) & 0xFF) / 255.0);
+    return lerp(c0, c1, frac);
+}
+
+#define PIXELS_PER_THREAD 4u
+
+[numthreads(4, 16, 1)]
+void main(uint3 gId : SV_GroupID, uint3 lId : SV_GroupThreadID)
+{
+    uint tx = gId.x, ty = gId.y;
+    if (tx >= width_in_tiles || ty >= height_in_tiles) return;
+    uint tIdx = ty * width_in_tiles + tx;
+    uint pixelX = tx * TILE_WIDTH + lId.x * PIXELS_PER_THREAD;
+    uint pixelY = ty * TILE_HEIGHT + lId.y;
+    uint cmd_ix = tIdx * PTCL_INITIAL_ALLOC;
+    uint blend_ix = ptcl.Load(cmd_ix * 4);
+    cmd_ix += 1u;
+
+    float4 rgba[4];
+    [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) rgba[pi] = float4(0,0,0,0);
+    float4 clip_stack[4];
+    uint clip_depth = 0u;
+    float area[4];
+
+    [loop] for (uint safety = 0; safety < 4096; safety++) {
+        uint cmd = ptcl.Load(cmd_ix * 4); cmd_ix++;
+        if (cmd == CMD_END) break;
+        if (cmd == CMD_JUMP) { cmd_ix = ptcl.Load(cmd_ix * 4); continue; }
+
+        if (cmd == CMD_FILL) {
+            uint size_and_rule = ptcl.Load(cmd_ix * 4); cmd_ix++;
+            uint seg_base = ptcl.Load(cmd_ix * 4); cmd_ix++;
+            int backdrop = asint(ptcl.Load(cmd_ix * 4)); cmd_ix++;
+            uint n_segs = size_and_rule >> 1u;
+            bool even_odd = (size_and_rule & 1u) != 0u;
+            n_segs = min(n_segs, 4096u);
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) area[pi] = (float)backdrop;
+            for (uint si = 0; si < n_segs; si++) {
+                Segment seg = seg_data[seg_base + si];
+                [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                    float2 tile_xy = float2((float)(lId.x * PIXELS_PER_THREAD + pi), (float)lId.y);
+                    area[pi] = fill_path(tile_xy, seg, area[pi]);
+                }
+            }
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                if (even_odd) area[pi] = abs(area[pi] - 2.0 * round(0.5 * area[pi]));
+                else area[pi] = min(abs(area[pi]), 1.0);
+            }
+        }
+        else if (cmd == CMD_SOLID) {
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) area[pi] = 1.0;
+        }
+        else if (cmd == CMD_COLOR) {
+            uint packed_rgba = ptcl.Load(cmd_ix * 4); cmd_ix++;
+            float4 color;
+            color.r = (float)(packed_rgba & 0xFF) / 255.0;
+            color.g = (float)((packed_rgba >> 8) & 0xFF) / 255.0;
+            color.b = (float)((packed_rgba >> 16) & 0xFF) / 255.0;
+            color.a = (float)((packed_rgba >> 24) & 0xFF) / 255.0;
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                if (area[pi] > 1.0/255.0) { float4 src = color * area[pi]; rgba[pi] = src + rgba[pi] * (1.0 - src.a); }
+                area[pi] = 0.0;
+            }
+        }
+        else if (cmd == CMD_LIN_GRAD) {
+            uint gradIndex = ptcl.Load(cmd_ix*4); cmd_ix++;
+            float p0x = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float p0y = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float p1x = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float p1y = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float extF = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float dummy1 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float dummy2 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                if (area[pi] > 1.0/255.0) {
+                    float px = (float)(pixelX+pi)+0.5; float py = (float)pixelY+0.5;
+                    float2 dd = float2(p1x-p0x, p1y-p0y); float lenSq = dot(dd,dd);
+                    float t = (lenSq > 1e-9) ? dot(float2(px-p0x, py-p0y), dd)/lenSq : 0.0;
+                    float4 col = SampleGradient(gradIndex, t);
+                    float4 src = col * area[pi]; rgba[pi] = src + rgba[pi] * (1.0 - src.a);
+                }
+                area[pi] = 0.0;
+            }
+        }
+        else if (cmd == CMD_RAD_GRAD) {
+            uint gradIndex = ptcl.Load(cmd_ix*4); cmd_ix++;
+            float cx = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float cy = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float rx = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float ry = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float ox = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float oy = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float extF2 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                if (area[pi] > 1.0/255.0) {
+                    float px = (float)(pixelX+pi)+0.5; float py = (float)pixelY+0.5;
+                    float ddx = (rx>1e-6)?(px-cx)/rx:0.0; float ddy = (ry>1e-6)?(py-cy)/ry:0.0;
+                    float t = sqrt(ddx*ddx+ddy*ddy);
+                    float4 col = SampleGradient(gradIndex, t);
+                    float4 src = col * area[pi]; rgba[pi] = src + rgba[pi] * (1.0 - src.a);
+                }
+                area[pi] = 0.0;
+            }
+        }
+        else if (cmd == CMD_SWEEP_GRAD) {
+            uint gradIndex = ptcl.Load(cmd_ix*4); cmd_ix++;
+            float scx = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float scy = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float st0 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float st1 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float extF3 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float dummy3 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float dummy4 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                if (area[pi] > 1.0/255.0) {
+                    float px = (float)(pixelX+pi)+0.5; float py = (float)pixelY+0.5;
+                    float angle = atan2(py-scy, px-scx);
+                    float t = (angle / (2.0*3.14159265359) + 0.5);
+                    t = st0 + t*(st1-st0);
+                    float4 col = SampleGradient(gradIndex, t);
+                    float4 src = col * area[pi]; rgba[pi] = src + rgba[pi] * (1.0 - src.a);
+                }
+                area[pi] = 0.0;
+            }
+        }
+        else if (cmd == CMD_IMAGE) {
+            uint atlasIdx = ptcl.Load(cmd_ix*4); cmd_ix++;
+            float u0 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float v0 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float u1 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float v1 = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            float opacity = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                if (area[pi] > 1.0/255.0) {
+                    float px = (float)(pixelX+pi)+0.5; float py = (float)pixelY+0.5;
+                    float u = u0 + (u1-u0)*(px/(float)target_width);
+                    float v = v0 + (v1-v0)*(py/(float)target_height);
+                    float4 col = imageAtlas.SampleLevel(imageSampler, float2(u,v), 0);
+                    col *= opacity;
+                    float4 src = col * area[pi]; rgba[pi] = src + rgba[pi] * (1.0 - src.a);
+                }
+                area[pi] = 0.0;
+            }
+        }
+        else if (cmd == CMD_BEGIN_CLIP) {
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                if (clip_depth < BLEND_STACK_SPLIT) clip_stack[clip_depth] = rgba[pi];
+                rgba[pi] = float4(0,0,0,0);
+            }
+            clip_depth++;
+        }
+        else if (cmd == CMD_END_CLIP) {
+            uint blend_mode = ptcl.Load(cmd_ix*4); cmd_ix++;
+            float clip_alpha = asfloat(ptcl.Load(cmd_ix*4)); cmd_ix++;
+            clip_depth--;
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                float4 bg = (clip_depth < BLEND_STACK_SPLIT) ? clip_stack[clip_depth] : float4(0,0,0,0);
+                float4 fg = rgba[pi]; fg *= area[pi] * clip_alpha;
+                rgba[pi] = fg + bg * (1.0 - fg.a); area[pi] = 0.0;
+            }
+        }
+        else if (cmd == CMD_BLUR_RECT) {
+            uint info_off = ptcl.Load(cmd_ix*4); cmd_ix++;
+            uint packed_rgba = ptcl.Load(cmd_ix*4); cmd_ix++;
+            float4 color;
+            color.r = (float)(packed_rgba & 0xFF)/255.0;
+            color.g = (float)((packed_rgba>>8)&0xFF)/255.0;
+            color.b = (float)((packed_rgba>>16)&0xFF)/255.0;
+            color.a = (float)((packed_rgba>>24)&0xFF)/255.0;
+            [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+                if (area[pi] > 1.0/255.0) { float4 src = color*area[pi]; rgba[pi] = src + rgba[pi]*(1.0-src.a); }
+                area[pi] = 0.0;
+            }
+        }
+    }
+
+    [unroll] for (uint pi = 0; pi < PIXELS_PER_THREAD; pi++) {
+        uint ox = pixelX + pi; uint oy = pixelY;
+        if (ox < target_width && oy < target_height) {
+            float4 bg;
+            bg.r = (float)(base_color & 0xFF)/255.0;
+            bg.g = (float)((base_color>>8)&0xFF)/255.0;
+            bg.b = (float)((base_color>>16)&0xFF)/255.0;
+            bg.a = (float)((base_color>>24)&0xFF)/255.0;
+            output[uint2(ox, oy)] = rgba[pi] + bg * (1.0 - rgba[pi].a);
+        }
+    }
+}
+)HLSL";
+
+// ============================================================================
+// Vello blur / filter compute shaders (16x16 thread groups, 1 pixel per thread)
+// All use root sig: b0=constants, t0=SRV Texture2D, u0=UAV RWTexture2D
+// ============================================================================
+
+static const char kVelloBlurHorizCS[] = R"HLSL(
+cbuffer CB : register(b0) { uint texWidth, texHeight, kernelSize, pad0; float kernel[16]; };
+Texture2D<float4> g_Input : register(t0);
+RWTexture2D<float4> g_Output : register(u0);
+[numthreads(16,16,1)]
+void main(uint3 dtid : SV_DispatchThreadID) {
+    if (dtid.x >= texWidth || dtid.y >= texHeight) return;
+    int r = (int)kernelSize / 2;
+    float4 sum = float4(0,0,0,0);
+    for (int k = -r; k <= r; k++) {
+        int sx = clamp((int)dtid.x + k, 0, (int)texWidth - 1);
+        sum += g_Input.Load(int3(sx, dtid.y, 0)) * kernel[k + r];
+    }
+    g_Output[dtid.xy] = sum;
+}
+)HLSL";
+
+static const char kVelloBlurVertCS[] = R"HLSL(
+cbuffer CB : register(b0) { uint texWidth, texHeight, kernelSize, pad0; float kernel[16]; };
+Texture2D<float4> g_Input : register(t0);
+RWTexture2D<float4> g_Output : register(u0);
+[numthreads(16,16,1)]
+void main(uint3 dtid : SV_DispatchThreadID) {
+    if (dtid.x >= texWidth || dtid.y >= texHeight) return;
+    int r = (int)kernelSize / 2;
+    float4 sum = float4(0,0,0,0);
+    for (int k = -r; k <= r; k++) {
+        int sy = clamp((int)dtid.y + k, 0, (int)texHeight - 1);
+        sum += g_Input.Load(int3(dtid.x, sy, 0)) * kernel[k + r];
+    }
+    g_Output[dtid.xy] = sum;
+}
+)HLSL";
+
+static const char kVelloDownsampleCS[] = R"HLSL(
+cbuffer CB : register(b0) { uint texWidth, texHeight, srcWidth, srcHeight; };
+Texture2D<float4> g_Input : register(t0);
+RWTexture2D<float4> g_Output : register(u0);
+[numthreads(16,16,1)]
+void main(uint3 dtid : SV_DispatchThreadID) {
+    if (dtid.x >= texWidth || dtid.y >= texHeight) return;
+    int sx = min((int)dtid.x * 2, (int)srcWidth - 1);
+    int sy = min((int)dtid.y * 2, (int)srcHeight - 1);
+    int sx1 = min(sx + 1, (int)srcWidth - 1);
+    int sy1 = min(sy + 1, (int)srcHeight - 1);
+    float4 a = g_Input.Load(int3(sx, sy, 0));
+    float4 b = g_Input.Load(int3(sx1, sy, 0));
+    float4 c = g_Input.Load(int3(sx, sy1, 0));
+    float4 d = g_Input.Load(int3(sx1, sy1, 0));
+    g_Output[dtid.xy] = (a + b + c + d) * 0.25;
+}
+)HLSL";
+
+static const char kVelloUpsampleCS[] = R"HLSL(
+cbuffer CB : register(b0) { uint texWidth, texHeight, srcWidth, srcHeight; };
+Texture2D<float4> g_Input : register(t0);
+RWTexture2D<float4> g_Output : register(u0);
+[numthreads(16,16,1)]
+void main(uint3 dtid : SV_DispatchThreadID) {
+    if (dtid.x >= texWidth || dtid.y >= texHeight) return;
+    float sx = ((float)dtid.x + 0.5) * (float)srcWidth / (float)texWidth - 0.5;
+    float sy = ((float)dtid.y + 0.5) * (float)srcHeight / (float)texHeight - 0.5;
+    int ix = (int)floor(sx); int iy = (int)floor(sy);
+    float fx = sx - (float)ix; float fy = sy - (float)iy;
+    int ix1 = min(ix + 1, (int)srcWidth - 1);
+    int iy1 = min(iy + 1, (int)srcHeight - 1);
+    ix = clamp(ix, 0, (int)srcWidth - 1);
+    iy = clamp(iy, 0, (int)srcHeight - 1);
+    float4 a = g_Input.Load(int3(ix, iy, 0));
+    float4 b = g_Input.Load(int3(ix1, iy, 0));
+    float4 c = g_Input.Load(int3(ix, iy1, 0));
+    float4 d = g_Input.Load(int3(ix1, iy1, 0));
+    g_Output[dtid.xy] = lerp(lerp(a, b, fx), lerp(c, d, fx), fy);
+}
+)HLSL";
+
+static const char kVelloColorMatrixCS[] = R"HLSL(
+cbuffer CB : register(b0) { uint texWidth, texHeight, p0, p1; float4 row0, row1, row2, row3; float4 offsets; };
+Texture2D<float4> g_Input : register(t0);
+RWTexture2D<float4> g_Output : register(u0);
+[numthreads(16,16,1)]
+void main(uint3 dtid : SV_DispatchThreadID) {
+    if (dtid.x >= texWidth || dtid.y >= texHeight) return;
+    float4 c = g_Input.Load(int3(dtid.xy, 0));
+    float4 o;
+    o.r = dot(c, row0) + offsets.x;
+    o.g = dot(c, row1) + offsets.y;
+    o.b = dot(c, row2) + offsets.z;
+    o.a = dot(c, row3) + offsets.w;
+    g_Output[dtid.xy] = saturate(o);
+}
+)HLSL";
+
+static const char kVelloOffsetCS[] = R"HLSL(
+cbuffer CB : register(b0) { uint texWidth, texHeight; int offsetX, offsetY; };
+Texture2D<float4> g_Input : register(t0);
+RWTexture2D<float4> g_Output : register(u0);
+[numthreads(16,16,1)]
+void main(uint3 dtid : SV_DispatchThreadID) {
+    if (dtid.x >= texWidth || dtid.y >= texHeight) return;
+    int sx = (int)dtid.x - offsetX;
+    int sy = (int)dtid.y - offsetY;
+    if (sx >= 0 && sx < (int)texWidth && sy >= 0 && sy < (int)texHeight)
+        g_Output[dtid.xy] = g_Input.Load(int3(sx, sy, 0));
+    else
+        g_Output[dtid.xy] = float4(0,0,0,0);
+}
+)HLSL";
+
+static const char kVelloMorphologyCS[] = R"HLSL(
+cbuffer CB : register(b0) { uint texWidth, texHeight; int radiusX, radiusY; uint isDilate, p0, p1, p2; };
+Texture2D<float4> g_Input : register(t0);
+RWTexture2D<float4> g_Output : register(u0);
+[numthreads(16,16,1)]
+void main(uint3 dtid : SV_DispatchThreadID) {
+    if (dtid.x >= texWidth || dtid.y >= texHeight) return;
+    float4 result = g_Input.Load(int3(dtid.xy, 0));
+    for (int dy = -radiusY; dy <= radiusY; dy++) {
+        for (int dx = -radiusX; dx <= radiusX; dx++) {
+            int sx = clamp((int)dtid.x + dx, 0, (int)texWidth - 1);
+            int sy = clamp((int)dtid.y + dy, 0, (int)texHeight - 1);
+            float4 s = g_Input.Load(int3(sx, sy, 0));
+            if (isDilate) result = max(result, s);
+            else result = min(result, s);
+        }
+    }
+    g_Output[dtid.xy] = result;
 }
 )HLSL";
 

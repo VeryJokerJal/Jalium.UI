@@ -56,6 +56,7 @@ public sealed class SolidColorBrush : Brush
 /// <summary>
 /// Base class for gradient brushes.
 /// </summary>
+[ContentProperty("GradientStops")]
 public abstract class GradientBrush : Brush
 {
     /// <summary>
@@ -157,24 +158,45 @@ public sealed class RadialGradientBrush : GradientBrush
 /// <summary>
 /// Describes a single color and its position in a gradient.
 /// </summary>
-public sealed class GradientStop
+public sealed class GradientStop : DependencyObject
 {
+    /// <summary>
+    /// Identifies the <see cref="Color"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty ColorProperty =
+        DependencyProperty.Register(nameof(Color), typeof(Color), typeof(GradientStop),
+            new PropertyMetadata(Color.Transparent));
+
+    /// <summary>
+    /// Identifies the <see cref="Offset"/> dependency property.
+    /// </summary>
+    public static readonly DependencyProperty OffsetProperty =
+        DependencyProperty.Register(nameof(Offset), typeof(double), typeof(GradientStop),
+            new PropertyMetadata(0.0));
+
     /// <summary>
     /// Gets or sets the color at this stop.
     /// </summary>
-    public Color Color { get; set; }
+    public Color Color
+    {
+        get => (Color)GetValue(ColorProperty)!;
+        set => SetValue(ColorProperty, value);
+    }
 
     /// <summary>
     /// Gets or sets the position of this stop (0.0 - 1.0).
     /// </summary>
-    public double Offset { get; set; }
+    public double Offset
+    {
+        get => (double)GetValue(OffsetProperty)!;
+        set => SetValue(OffsetProperty, Math.Clamp(value, 0.0, 1.0));
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="GradientStop"/> class.
     /// </summary>
     public GradientStop()
     {
-        Color = Color.Transparent;
     }
 
     /// <summary>

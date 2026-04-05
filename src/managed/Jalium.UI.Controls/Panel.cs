@@ -90,38 +90,62 @@ public abstract class Panel : FrameworkElement
         if (!_zOrderDirty && _zOrderMap != null && _zOrderMap.Length == Children.Count)
             return;
 
-        var count = Children.Count;
-        _zOrderMap = new int[count];
-
-        // Pre-fetch all ZIndex values to avoid repeated DP reads during sort
-        if (_zIndexValues == null || _zIndexValues.Length < count)
-            _zIndexValues = new int[count];
-
-        for (int i = 0; i < count; i++)
+        try
         {
-            _zOrderMap[i] = i;
-            _zIndexValues[i] = GetZIndex(Children[i]);
+            var children = Children;
+            var count = children.Count;
+            var map = new int[count];
+
+            // Pre-fetch all ZIndex values to avoid repeated DP reads during sort
+            if (_zIndexValues == null || _zIndexValues.Length < count)
+                _zIndexValues = new int[count];
+
+            var zValues = _zIndexValues;
+            for (int i = 0; i < count; i++)
+            {
+                map[i] = i;
+                zValues[i] = GetZIndex(children[i]);
+            }
+
+            Array.Sort(map, (a, b) =>
+            {
+                var za = zValues[a];
+                var zb = zValues[b];
+                return za != zb ? za.CompareTo(zb) : a.CompareTo(b);
+            });
+
+            _zOrderMap = map;
+            _zOrderDirty = false;
         }
-
-        var zValues = _zIndexValues;
-        Array.Sort(_zOrderMap, (a, b) =>
+        catch (ArgumentOutOfRangeException)
         {
-            var za = zValues[a];
-            var zb = zValues[b];
-            return za != zb ? za.CompareTo(zb) : a.CompareTo(b);
-        });
-
-        _zOrderDirty = false;
+            // Children collection was modified during map construction
+            // (e.g. rapid input triggering layout changes on another dispatcher frame).
+            // Leave _zOrderDirty unchanged so the map is rebuilt on the next access.
+            // GetVisualChild has bounds checks that safely handle a stale map.
+        }
     }
 
     /// <inheritdoc />
     public override Visual? GetVisualChild(int index)
     {
-        if (Children.Count == 0 || index < 0 || index >= Children.Count)
-            throw new ArgumentOutOfRangeException(nameof(index));
+        var children = Children;
+        var count = children.Count;
+
+        if (count == 0 || index < 0 || index >= count)
+            return null;
 
         EnsureZOrderMap();
-        return Children[_zOrderMap![index]];
+
+        var map = _zOrderMap!;
+        if ((uint)index >= (uint)map.Length)
+            return null;
+
+        var mapped = map[index];
+        if ((uint)mapped >= (uint)children.Count)
+            return null;
+
+        return children[mapped];
     }
 
     /// <inheritdoc />

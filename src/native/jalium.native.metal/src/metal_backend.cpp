@@ -641,7 +641,7 @@ void MetalRenderTarget::FillPath(float startX, float startY, const float* comman
 #endif
 }
 
-void MetalRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap)
+void MetalRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount, float dashOffset)
 {
 #ifdef __APPLE__
     if (!cgContext_ || !brush) return;
@@ -1167,7 +1167,8 @@ Brush* MetalBackend::CreateSolidBrush(float r, float g, float b, float a)
 
 Brush* MetalBackend::CreateLinearGradientBrush(
     float startX, float startY, float endX, float endY,
-    const JaliumGradientStop* stops, uint32_t stopCount)
+    const JaliumGradientStop* stops, uint32_t stopCount,
+    uint32_t /*spreadMethod*/)
 {
     return new MetalLinearGradientBrush(startX, startY, endX, endY, stops, stopCount);
 }
@@ -1175,7 +1176,8 @@ Brush* MetalBackend::CreateLinearGradientBrush(
 Brush* MetalBackend::CreateRadialGradientBrush(
     float centerX, float centerY, float radiusX, float radiusY,
     float originX, float originY,
-    const JaliumGradientStop* stops, uint32_t stopCount)
+    const JaliumGradientStop* stops, uint32_t stopCount,
+    uint32_t /*spreadMethod*/)
 {
     return new MetalRadialGradientBrush(centerX, centerY, radiusX, radiusY, originX, originY, stops, stopCount);
 }

@@ -368,8 +368,11 @@ public sealed class Stroke : INotifyPropertyChanged
     }
 
     /// <summary>
-    /// Builds a variable-width stroke outline for pressure-sensitive or tapered strokes.
-    /// The outline is a single filled geometry (no pen needed).
+    /// Builds a variable-width stroke as a chain of overlapping circles.
+    /// Each stylus point gets a filled circle whose radius is modulated by
+    /// pressure and taper.  This approach naturally produces capsule-shaped
+    /// endpoints, handles self-intersecting paths (circles, figure-eights),
+    /// and avoids the polygon self-intersection issues of outline-based rendering.
     /// </summary>
     private void BuildVariableWidthCache(Color color)
     {
@@ -390,101 +393,61 @@ public sealed class Stroke : INotifyPropertyChanged
             return;
         }
 
-        // Compute radius at each stylus point
-        var radii = new double[totalPoints];
+        // Build circle chain with interpolation between stylus points.
+        // For each pair of adjacent points, if the gap exceeds half the local
+        // radius we insert intermediate circles so there are no visible seams.
+        var collector = new EllipseBatchCollector();
+
         for (int i = 0; i < totalPoints; i++)
         {
+            var pt = _stylusPoints[i].ToPoint();
             var pressure = _drawingAttributes.IgnorePressure ? 1.0 : _stylusPoints[i].PressureFactor;
             var progress = (double)i / (totalPoints - 1);
             var animR = ApplyAnimationScale(radiusX * pressure, radiusY * pressure, progress);
-            radii[i] = Math.Max(animR.X, animR.Y);
+            collector.Add((float)pt.X, (float)pt.Y, (float)animR.X, (float)animR.Y, color);
+
+            // Interpolate to next point if gap is too large
+            if (i < totalPoints - 1)
+            {
+                var nextPt = _stylusPoints[i + 1].ToPoint();
+                var dx = nextPt.X - pt.X;
+                var dy = nextPt.Y - pt.Y;
+                var dist = Math.Sqrt(dx * dx + dy * dy);
+                var stepR = Math.Max(animR.X, animR.Y) * 0.3;
+                if (stepR < 0.5) stepR = 0.5;
+                if (dist > stepR)
+                {
+                    int steps = (int)Math.Ceiling(dist / stepR);
+                    var nextPressure = _drawingAttributes.IgnorePressure ? 1.0 : _stylusPoints[i + 1].PressureFactor;
+                    var nextProgress = (double)(i + 1) / (totalPoints - 1);
+                    for (int s = 1; s < steps; s++)
+                    {
+                        var t = (double)s / steps;
+                        var ix = pt.X + dx * t;
+                        var iy = pt.Y + dy * t;
+                        var ip = pressure + (nextPressure - pressure) * t;
+                        var iprog = progress + (nextProgress - progress) * t;
+                        var iR = ApplyAnimationScale(radiusX * ip, radiusY * ip, iprog);
+                        collector.Add((float)ix, (float)iy, (float)iR.X, (float)iR.Y, color);
+                    }
+                }
+            }
         }
 
-        // Build outline: forward pass (left side) + backward pass (right side)
-        var leftSide = new Point[totalPoints];
-        var rightSide = new Point[totalPoints];
+        _cachedEllipseBatchData = collector.GetData();
+        _cachedEllipseBatchCount = collector.Count;
 
-        for (int i = 0; i < totalPoints; i++)
+        // Also build a DrawingGroup fallback for non-GPU contexts
+        _cachedDrawing = new DrawingGroup();
+        using var cacheDc = _cachedDrawing.Open();
+        var brush = new SolidColorBrush(color);
+        for (int i = 0; i < collector.Count; i++)
         {
-            var p = _stylusPoints[i].ToPoint();
-            double nx, ny;
-
-            if (totalPoints == 1)
-            {
-                nx = 0; ny = 1;
-            }
-            else if (i == 0)
-            {
-                var next = _stylusPoints[i + 1].ToPoint();
-                var dx = next.X - p.X; var dy = next.Y - p.Y;
-                var len = Math.Sqrt(dx * dx + dy * dy);
-                if (len < 0.001) { nx = 0; ny = 1; }
-                else { nx = -dy / len; ny = dx / len; }
-            }
-            else if (i == totalPoints - 1)
-            {
-                var prev = _stylusPoints[i - 1].ToPoint();
-                var dx = p.X - prev.X; var dy = p.Y - prev.Y;
-                var len = Math.Sqrt(dx * dx + dy * dy);
-                if (len < 0.001) { nx = 0; ny = 1; }
-                else { nx = -dy / len; ny = dx / len; }
-            }
-            else
-            {
-                var prev = _stylusPoints[i - 1].ToPoint();
-                var next = _stylusPoints[i + 1].ToPoint();
-                var dx = next.X - prev.X; var dy = next.Y - prev.Y;
-                var len = Math.Sqrt(dx * dx + dy * dy);
-                if (len < 0.001) { nx = 0; ny = 1; }
-                else { nx = -dy / len; ny = dx / len; }
-            }
-
-            var r = radii[i];
-            leftSide[i] = new Point(p.X + nx * r, p.Y + ny * r);
-            rightSide[i] = new Point(p.X - nx * r, p.Y - ny * r);
+            var off = i * 5;
+            cacheDc.DrawEllipse(brush, null,
+                new Point(_cachedEllipseBatchData[off], _cachedEllipseBatchData[off + 1]),
+                _cachedEllipseBatchData[off + 2], _cachedEllipseBatchData[off + 3]);
         }
-
-        // Build a closed path: left side forward, round cap at end, right side backward, round cap at start
-        var geometry = new StreamGeometry();
-        using (var ctx = geometry.Open())
-        {
-            ctx.BeginFigure(leftSide[0], true, true);
-
-            if (_drawingAttributes.FitToCurve && totalPoints > 2)
-            {
-                // Smooth left side forward with Catmull-Rom → Bézier
-                EmitCatmullRomBeziers(ctx, i => leftSide[i], totalPoints);
-            }
-            else
-            {
-                for (int i = 1; i < totalPoints; i++)
-                    ctx.LineTo(leftSide[i], true, true);
-            }
-
-            // Round cap at end (semicircle from left to right)
-            var endR = radii[totalPoints - 1];
-            ctx.ArcTo(rightSide[totalPoints - 1],
-                new Size(endR, endR), 0, false, SweepDirection.Clockwise, true, true);
-
-            if (_drawingAttributes.FitToCurve && totalPoints > 2)
-            {
-                // Smooth right side backward with Catmull-Rom → Bézier
-                EmitCatmullRomBeziers(ctx, i => rightSide[totalPoints - 1 - i], totalPoints);
-            }
-            else
-            {
-                for (int i = totalPoints - 2; i >= 0; i--)
-                    ctx.LineTo(rightSide[i], true, true);
-            }
-
-            // Round cap at start (semicircle from right to left)
-            var startR = radii[0];
-            ctx.ArcTo(leftSide[0],
-                new Size(startR, startR), 0, false, SweepDirection.Clockwise, true, true);
-        }
-
-        _cachedGeometry = geometry;
-        _cachedBrush = new SolidColorBrush(color);
     }
 
     /// <summary>

@@ -53,7 +53,7 @@ public static class Fonts
     {
         var families = new List<FontFamily>();
         // Common system fonts
-        families.Add(new FontFamily("Segoe UI"));
+        families.Add(new FontFamily(Jalium.UI.FrameworkElement.DefaultFontFamilyName));
         families.Add(new FontFamily("Arial"));
         families.Add(new FontFamily("Times New Roman"));
         families.Add(new FontFamily("Consolas"));

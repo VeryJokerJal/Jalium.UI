@@ -1,5 +1,6 @@
 using Jalium.UI.Controls;
 using Jalium.UI.Input;
+using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Threading;
@@ -437,6 +438,44 @@ public abstract class TextBoxBase : Control
     /// <param name="text">The text to measure.</param>
     /// <returns>The width of the text.</returns>
     protected abstract double MeasureTextWidth(string text);
+
+    /// <summary>
+    /// Gets the X position of a character at a given column within a line of text.
+    /// Uses DirectWrite's native hit testing to ensure the position matches
+    /// the actual character layout used during text rendering.
+    /// Falls back to prefix substring measurement if native context is unavailable.
+    /// </summary>
+    /// <param name="lineText">The full line text.</param>
+    /// <param name="column">The column index (0-based).</param>
+    /// <returns>The X pixel offset from the start of the line.</returns>
+    protected double GetCharacterXInLine(string lineText, int column)
+    {
+        if (string.IsNullOrEmpty(lineText) || column <= 0)
+            return 0;
+
+        int clampedColumn = Math.Clamp(column, 0, lineText.Length);
+        if (clampedColumn <= 0)
+            return 0;
+
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize > 0 ? FontSize : 14;
+
+        if (clampedColumn < lineText.Length)
+        {
+            if (TextMeasurement.HitTestTextPosition(lineText, fontFamily, fontSize, (uint)clampedColumn, false, out var hitResult)
+                && hitResult.CaretX > 0)
+                return hitResult.CaretX;
+        }
+        else
+        {
+            if (TextMeasurement.HitTestTextPosition(lineText, fontFamily, fontSize, (uint)(clampedColumn - 1), true, out var hitResult)
+                && hitResult.CaretX > 0)
+                return hitResult.CaretX;
+        }
+
+        // Fallback: measure prefix substring
+        return MeasureTextWidth(lineText.Substring(0, clampedColumn));
+    }
 
     /// <summary>
     /// Gets the line count.
@@ -1114,10 +1153,10 @@ public abstract class TextBoxBase : Control
         if (lineIndex < 0) lineIndex = 0;
         if (columnIndex < 0) columnIndex = 0;
 
-        // Get the text before the caret to measure its width
+        // Get the character X position within the line using native hit testing
         var lineText = GetLineTextInternal(lineIndex);
-        var textBeforeCaret = lineText.Substring(0, Math.Clamp(lineText.Length, 0, columnIndex));
-        var caretX = Math.Round(MeasureTextWidth(textBeforeCaret));
+        var clampedColumn = Math.Clamp(columnIndex, 0, lineText.Length);
+        var caretX = Math.Round(GetCharacterXInLine(lineText, clampedColumn));
         var caretY = lineIndex * lineHeight;
 
         // Horizontal scrolling
@@ -1128,6 +1167,20 @@ public abstract class TextBoxBase : Control
         else if (caretX > _horizontalOffset + contentWidth - 2)
         {
             _horizontalOffset = caretX - contentWidth + 2;
+        }
+
+        // Clamp horizontal offset so we don't over-scroll when text gets shorter (e.g. after deletion).
+        // Measure the full line width and ensure we never scroll past the point where the text ends.
+        var fullLineWidth = Math.Round(GetCharacterXInLine(lineText, lineText.Length));
+        if (fullLineWidth > contentWidth)
+        {
+            var maxOffset = fullLineWidth - contentWidth + 2;
+            if (_horizontalOffset > maxOffset)
+                _horizontalOffset = maxOffset;
+        }
+        else
+        {
+            _horizontalOffset = 0;
         }
 
         // Vertical scrolling
@@ -1182,7 +1235,23 @@ public abstract class TextBoxBase : Control
         var lineText = GetLineTextInternal(lineIndex);
         var lineStart = GetLineStartIndex(lineIndex);
 
-        // Binary search or linear search for the column that matches contentX
+        if (string.IsNullOrEmpty(lineText))
+            return lineStart;
+
+        // Use DirectWrite's native hit testing for accurate character mapping.
+        // This ensures the hit position matches exactly how DirectWrite lays out
+        // characters within the rendered text, avoiding prefix-measurement drift.
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        var fontSize = FontSize > 0 ? FontSize : 14;
+        if (TextMeasurement.HitTestPoint(lineText, fontFamily, fontSize, (float)contentX, out var hitResult))
+        {
+            int column = (int)hitResult.TextPosition;
+            if (hitResult.IsTrailingHit != 0)
+                column++;
+            return lineStart + Math.Clamp(column, 0, lineText.Length);
+        }
+
+        // Fallback: linear search using prefix measurement
         int columnIndex = 0;
         double prevWidth = 0;
 
@@ -1191,7 +1260,6 @@ public abstract class TextBoxBase : Control
             var width = MeasureTextWidth(lineText.Substring(0, i));
             if (width >= contentX)
             {
-                // Determine if we're closer to this position or the previous
                 if (i > 0 && (contentX - prevWidth) < (width - contentX))
                 {
                     columnIndex = i - 1;

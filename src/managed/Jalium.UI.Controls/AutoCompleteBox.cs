@@ -3,6 +3,7 @@ using System.Collections.ObjectModel;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
 
@@ -22,19 +23,19 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
     #region Static Brushes & Pens
 
-    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
-    private static readonly SolidColorBrush s_watermarkBrush = new(Color.FromRgb(128, 128, 128));
+    private static readonly SolidColorBrush s_focusBorderBrush = new(ThemeColors.ControlBorderFocused);
+    private static readonly SolidColorBrush s_watermarkBrush = new(ThemeColors.TextPlaceholder);
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
-    private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
-    private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
-    private static readonly SolidColorBrush s_compositionUnderlineBrush = new(Color.FromRgb(200, 200, 100));
+    private static readonly SolidColorBrush s_compositionBgBrush = new(ThemeColors.CompositionBackground);
+    private static readonly SolidColorBrush s_compositionTextBrush = new(ThemeColors.CompositionText);
+    private static readonly SolidColorBrush s_compositionUnderlineBrush = new(ThemeColors.CompositionUnderline);
     private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
-    private static readonly SolidColorBrush s_dropdownShadowBrush = new(Color.FromArgb(40, 0, 0, 0));
-    private static readonly SolidColorBrush s_dropdownBgBrush = new(Color.FromRgb(50, 50, 50));
-    private static readonly SolidColorBrush s_dropdownBorderFallbackBrush = new(Color.FromRgb(100, 100, 100));
-    private static readonly SolidColorBrush s_dropdownSelectionBrush = new(Color.FromRgb(0, 120, 215));
-    private static readonly SolidColorBrush s_transparentBrush = new(Color.FromArgb(0, 0, 0, 0));
-    private static readonly SolidColorBrush s_dropdownHoverBrush = new(Color.FromRgb(70, 70, 70));
+    private static readonly SolidColorBrush s_dropdownShadowBrush = new(ThemeColors.DropdownShadow);
+    private static readonly SolidColorBrush s_dropdownBgBrush = new(ThemeColors.DropdownBackground);
+    private static readonly SolidColorBrush s_dropdownBorderFallbackBrush = new(ThemeColors.ControlBorder);
+    private static readonly SolidColorBrush s_dropdownSelectionBrush = new(ThemeColors.SelectedItemBackground);
+    private static readonly SolidColorBrush s_transparentBrush = new(Color.Transparent);
+    private static readonly SolidColorBrush s_dropdownHoverBrush = new(ThemeColors.HighlightBackground);
 
     #endregion
 
@@ -513,7 +514,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
@@ -525,7 +526,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
 
         if (_cachedFontFamily != fontFamily || _cachedFontSize != fontSize)
@@ -1124,7 +1125,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         // Draw text or watermark
         if (string.IsNullOrEmpty(_text) && !string.IsNullOrEmpty(Watermark))
         {
-            var watermarkText = new FormattedText(Watermark, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var watermarkText = new FormattedText(Watermark, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = ResolvePlaceholderBrush(),
                 MaxTextWidth = contentRect.Width,
@@ -1137,7 +1138,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         }
         else if (!string.IsNullOrEmpty(_text))
         {
-            var formattedText = new FormattedText(_text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var formattedText = new FormattedText(_text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = ResolveTextForegroundBrush(),
                 MaxTextWidth = contentRect.Width,
@@ -1195,7 +1196,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         var compositionWidth = MeasureTextWidth(_imeCompositionString);
         dc.DrawRectangle(s_compositionBgBrush, null, new Rect(x, textY, compositionWidth, lineHeight));
 
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? "Segoe UI", FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -1268,7 +1269,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
 
             // Draw item text
             var itemText = GetItemText(FilteredItems[i]);
-            var formattedText = new FormattedText(itemText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 13)
+            var formattedText = new FormattedText(itemText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 13)
             {
                 Foreground = Foreground ?? s_whiteBrush
             };

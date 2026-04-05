@@ -292,7 +292,7 @@ public abstract class Visual : DependencyObject
         }
 
         var childCount = VisualChildrenCount;
-        for (int i = 0; i < childCount; i++)
+        for (int i = 0; i < childCount && i < VisualChildrenCount; i++)
         {
             var child = GetVisualChild(i);
             if (child == null) continue;

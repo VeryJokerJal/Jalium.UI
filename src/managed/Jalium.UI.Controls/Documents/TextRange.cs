@@ -229,14 +229,6 @@ public sealed class TextRange
         if (IsEmpty)
             return;
 
-        // For now, we need to find the containing elements and modify them
-        // This is a simplified implementation that handles basic cases
-
-        var paragraph = _start.Paragraph;
-        if (paragraph == null)
-            return;
-
-        // Find the run(s) containing the selection
         int startOffset = _start.DocumentOffset;
         int endOffset = _end.DocumentOffset;
 
@@ -249,10 +241,85 @@ public sealed class TextRange
 
             startRun.Text = text.Substring(0, localStart) + text.Substring(localEnd);
 
-            // Update end position to match start
+            // Remove empty runs
+            if (startRun.Text.Length == 0 && startRun.Parent is Paragraph p && p.Inlines.Count > 1)
+            {
+                p.Inlines.Remove(startRun);
+            }
+
             _end = _start;
+            return;
         }
-        // More complex cases would require additional handling
+
+        // General case: deletion spans multiple elements within the same paragraph
+        var paragraph = _start.Paragraph;
+        if (paragraph == null)
+            return;
+
+        int currentOffset = 0;
+        // Calculate paragraph base offset
+        foreach (var block in _start.Document.Blocks)
+        {
+            if (block == paragraph)
+                break;
+            currentOffset += GetBlockLength(block);
+        }
+
+        // Process each inline in the paragraph
+        var inlinesToRemove = new List<Inline>();
+        int inlineOffset = currentOffset;
+
+        foreach (var inline in paragraph.Inlines)
+        {
+            int inlineLength = GetInlineLength(inline);
+            int inlineEnd = inlineOffset + inlineLength;
+
+            if (inline is Run run)
+            {
+                if (inlineOffset >= startOffset && inlineEnd <= endOffset)
+                {
+                    // Entire run is within selection - mark for removal
+                    inlinesToRemove.Add(run);
+                }
+                else if (inlineOffset < startOffset && inlineEnd > endOffset)
+                {
+                    // Selection is entirely within this run
+                    int localStart = startOffset - inlineOffset;
+                    int localEnd = endOffset - inlineOffset;
+                    run.Text = run.Text.Substring(0, localStart) + run.Text.Substring(localEnd);
+                }
+                else if (inlineOffset < startOffset && inlineEnd > startOffset)
+                {
+                    // Selection starts within this run
+                    int localStart = startOffset - inlineOffset;
+                    run.Text = run.Text.Substring(0, localStart);
+                }
+                else if (inlineOffset < endOffset && inlineEnd > endOffset)
+                {
+                    // Selection ends within this run
+                    int localEnd = endOffset - inlineOffset;
+                    run.Text = run.Text.Substring(localEnd);
+                }
+            }
+
+            inlineOffset = inlineEnd;
+        }
+
+        // Remove fully-deleted runs (but keep at least one inline)
+        foreach (var inline in inlinesToRemove)
+        {
+            if (paragraph.Inlines.Count > 1)
+            {
+                paragraph.Inlines.Remove(inline);
+            }
+            else if (inline is Run emptyRun)
+            {
+                emptyRun.Text = string.Empty;
+            }
+        }
+
+        // Update positions
+        _end = _start;
     }
 
     private void InsertTextAtPosition(TextPointer position, string text)

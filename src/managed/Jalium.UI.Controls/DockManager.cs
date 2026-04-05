@@ -25,6 +25,17 @@ internal static partial class DockManager
         _panels.Remove(panel);
     }
 
+    /// <summary>
+    /// Sets the given panel as the active (focused) panel, deactivating all others.
+    /// </summary>
+    internal static void SetActivePanel(DockTabPanel activePanel)
+    {
+        foreach (var panel in _panels)
+        {
+            panel.SetPanelFocusedInternal(panel == activePanel);
+        }
+    }
+
     #endregion
 
     #region Root Layout Registration
@@ -48,15 +59,11 @@ internal static partial class DockManager
     /// Finds a <see cref="DockTabPanel"/> whose bounds contain the given screen point.
     /// Excludes panels in the same window as the excluded panel (the floating window being dragged).
     /// </summary>
-    internal static DockTabPanel? HitTestPanel(int screenX, int screenY, DockTabPanel? exclude)
+    internal static DockTabPanel? HitTestPanel(int screenX, int screenY, Window? excludeWindow)
     {
-        var excludeWindow = exclude != null ? FindParentWindow(exclude) : null;
-
         foreach (var panel in _panels)
         {
-            if (panel == exclude) continue;
-
-            // Skip panels in the same window as the excluded panel (the floating window being dragged)
+            // Skip panels in the excluded window (the floating window being dragged)
             if (excludeWindow != null)
             {
                 var panelWindow = FindParentWindow(panel);
@@ -76,10 +83,8 @@ internal static partial class DockManager
     /// Finds the <see cref="DockLayout"/> whose bounds contain the given screen point.
     /// Excludes layouts that belong to the floating window containing the excluded panel.
     /// </summary>
-    internal static DockLayout? HitTestLayout(int screenX, int screenY, DockTabPanel? exclude)
+    internal static DockLayout? HitTestLayout(int screenX, int screenY, Window? excludeWindow)
     {
-        var excludeWindow = exclude != null ? FindParentWindow(exclude) : null;
-
         foreach (var layout in _layouts)
         {
             // Skip layouts in the same window as the excluded panel (the floating window)
@@ -96,17 +101,13 @@ internal static partial class DockManager
     }
 
     /// <summary>
-    /// Gets the screen rectangle of a FrameworkElement (in physical pixels).
-    /// Uses ClientToScreen to get the exact client area origin, which aligns
-    /// with TransformToAncestor(null) coordinates.
+    /// Gets the screen rectangle of a FrameworkElement (in physical pixels),
+    /// using a pre-resolved parent window to avoid redundant visual tree walks.
     /// </summary>
-    private static Rect? GetElementScreenRect(FrameworkElement element)
+    private static Rect? GetElementScreenRect(FrameworkElement element, Window? window)
     {
-        var window = FindParentWindow(element);
         if (window == null || window.Handle == nint.Zero) return null;
 
-        // Get client area origin in screen coordinates.
-        // This matches the coordinate system of TransformToAncestor(null).
         var clientOrigin = new POINT { x = 0, y = 0 };
         if (!ClientToScreen(window.Handle, ref clientOrigin))
             return null;
@@ -123,14 +124,24 @@ internal static partial class DockManager
     }
 
     /// <summary>
-    /// Converts screen pixel coordinates to an element's local DIP coordinates.
+    /// Gets the screen rectangle of a FrameworkElement (in physical pixels).
+    /// Uses ClientToScreen to get the exact client area origin, which aligns
+    /// with TransformToAncestor(null) coordinates.
     /// </summary>
-    private static Point? ScreenToLocal(FrameworkElement element, int screenX, int screenY)
+    private static Rect? GetElementScreenRect(FrameworkElement element)
     {
-        var screenRect = GetElementScreenRect(element);
+        return GetElementScreenRect(element, FindParentWindow(element));
+    }
+
+    /// <summary>
+    /// Converts screen pixel coordinates to an element's local DIP coordinates,
+    /// using a pre-resolved parent window to avoid redundant visual tree walks.
+    /// </summary>
+    private static Point? ScreenToLocal(FrameworkElement element, Window? window, int screenX, int screenY)
+    {
+        var screenRect = GetElementScreenRect(element, window);
         if (screenRect == null) return null;
 
-        var window = FindParentWindow(element);
         var dpi = window?.DpiScale ?? 1.0;
 
         return new Point(
@@ -167,6 +178,10 @@ internal static partial class DockManager
     /// </summary>
     internal static DockPosition CurrentDockPosition => _currentDockPosition;
 
+    // Cached exclude window to avoid repeated FindParentWindow during a drag session
+    private static Window? _cachedExcludeWindow;
+    private static DockTabPanel? _cachedExcludePanel;
+
     /// <summary>
     /// Updates dock indicator state during a floating window drag.
     /// Performs hit-testing against both center cross buttons and edge buttons.
@@ -174,18 +189,24 @@ internal static partial class DockManager
     /// </summary>
     internal static void UpdateHighlight(int screenX, int screenY, DockTabPanel? exclude)
     {
-        var targetPanel = HitTestPanel(screenX, screenY, exclude);
-        var targetLayout = HitTestLayout(screenX, screenY, exclude);
+        // Cache the exclude window lookup for the duration of the drag
+        if (exclude != _cachedExcludePanel)
+        {
+            _cachedExcludePanel = exclude;
+            _cachedExcludeWindow = exclude != null ? FindParentWindow(exclude) : null;
+        }
+
+        var targetPanel = HitTestPanel(screenX, screenY, _cachedExcludeWindow);
+        var targetLayout = HitTestLayout(screenX, screenY, _cachedExcludeWindow);
+
+        bool panelChanged = targetPanel != _currentHighlight;
+        bool layoutChanged = targetLayout != _currentEdgeLayout;
 
         // Update panel highlight if target changed
-        if (targetPanel != _currentHighlight)
+        if (panelChanged)
         {
-            if (_currentHighlight != null)
-            {
-                _currentHighlight.IsDockHighlighted = false;
-                _currentHighlight.InvalidateVisual();
-            }
             _currentHighlight = targetPanel;
+            _highlightParentWindow = null; // Clear cached window for new target
             _currentDockPosition = DockPosition.None;
 
             // Dispose old center indicator window; will be recreated if needed
@@ -197,14 +218,10 @@ internal static partial class DockManager
         }
 
         // Update edge layout highlight if target changed
-        if (targetLayout != _currentEdgeLayout)
+        if (layoutChanged)
         {
-            if (_currentEdgeLayout != null)
-            {
-                _currentEdgeLayout.IsDockHighlighted = false;
-                _currentEdgeLayout.InvalidateVisual();
-            }
             _currentEdgeLayout = targetLayout;
+            _edgeLayoutParentWindow = null; // Clear cached window for new target
 
             // Dispose old edge indicator window; will be recreated if needed
             if (_edgeIndicatorWindow != null)
@@ -223,7 +240,8 @@ internal static partial class DockManager
         // First: check edge buttons on the root layout (higher priority for edge areas)
         if (_currentEdgeLayout != null)
         {
-            var localPoint = ScreenToLocal(_currentEdgeLayout, screenX, screenY);
+            var edgeWindow = FindParentWindow(_currentEdgeLayout);
+            var localPoint = ScreenToLocal(_currentEdgeLayout, edgeWindow, screenX, screenY);
             if (localPoint.HasValue)
             {
                 newPosition = DockIndicator.HitTestEdge(
@@ -236,7 +254,8 @@ internal static partial class DockManager
         // Second: check center cross buttons on the target panel
         if (newPosition == DockPosition.None && _currentHighlight != null)
         {
-            var localPoint = ScreenToLocal(_currentHighlight, screenX, screenY);
+            var panelWindow = FindParentWindow(_currentHighlight);
+            var localPoint = ScreenToLocal(_currentHighlight, panelWindow, screenX, screenY);
             if (localPoint.HasValue)
             {
                 newPosition = DockIndicator.HitTestCenter(
@@ -251,19 +270,12 @@ internal static partial class DockManager
         {
             _currentDockPosition = newPosition;
 
-            // Update highlight border on target panel
-            if (_currentHighlight != null)
-            {
-                _currentHighlight.IsDockHighlighted = true;
-                _currentHighlight.InvalidateVisual();
-            }
-
-            // Update highlight border on edge layout
-            if (_currentEdgeLayout != null)
-            {
-                _currentEdgeLayout.IsDockHighlighted = true;
-                _currentEdgeLayout.InvalidateVisual();
-            }
+            // NOTE: Do NOT call InvalidateVisual() on _currentHighlight or _currentEdgeLayout
+            // here. DockLayout is the root container — invalidating it triggers a full-window
+            // re-render of the entire visual tree (all child controls), because its dirty region
+            // covers >50% of the window area and gets promoted to a full render.
+            // The DockIndicatorWindow already renders dock indicators and preview overlays
+            // in a separate lightweight topmost window, so the accent border is unnecessary.
 
             // Update indicator windows with new hovered position
             _centerIndicatorWindow?.UpdateIndicator(
@@ -273,6 +285,10 @@ internal static partial class DockManager
         }
     }
 
+    // Cached parent windows for current highlight targets to avoid repeated lookups
+    private static Window? _highlightParentWindow;
+    private static Window? _edgeLayoutParentWindow;
+
     /// <summary>
     /// Creates or repositions the center indicator window over the current target panel.
     /// </summary>
@@ -280,11 +296,13 @@ internal static partial class DockManager
     {
         if (_currentHighlight == null) return;
 
-        var screenRect = GetElementScreenRect(_currentHighlight);
+        _highlightParentWindow ??= FindParentWindow(_currentHighlight);
+        var window = _highlightParentWindow;
+        if (window == null) return;
+
+        var screenRect = GetElementScreenRect(_currentHighlight, window);
         if (screenRect == null) return;
 
-        var window = FindParentWindow(_currentHighlight);
-        if (window == null) return;
         var dpi = window.DpiScale;
 
         var sx = (int)screenRect.Value.X;
@@ -310,11 +328,13 @@ internal static partial class DockManager
     {
         if (_currentEdgeLayout == null) return;
 
-        var screenRect = GetElementScreenRect(_currentEdgeLayout);
+        _edgeLayoutParentWindow ??= FindParentWindow(_currentEdgeLayout);
+        var window = _edgeLayoutParentWindow;
+        if (window == null) return;
+
+        var screenRect = GetElementScreenRect(_currentEdgeLayout, window);
         if (screenRect == null) return;
 
-        var window = FindParentWindow(_currentEdgeLayout);
-        if (window == null) return;
         var dpi = window.DpiScale;
 
         var sx = (int)screenRect.Value.X;
@@ -346,21 +366,14 @@ internal static partial class DockManager
         // Clean up indicator windows
         DisposeIndicatorWindows();
 
-        if (_currentHighlight != null)
-        {
-            _currentHighlight.IsDockHighlighted = false;
-            _currentHighlight.InvalidateVisual();
-            _currentHighlight = null;
-        }
-
-        if (_currentEdgeLayout != null)
-        {
-            _currentEdgeLayout.IsDockHighlighted = false;
-            _currentEdgeLayout.InvalidateVisual();
-            _currentEdgeLayout = null;
-        }
-
+        _currentHighlight = null;
+        _currentEdgeLayout = null;
         _currentDockPosition = DockPosition.None;
+        _cachedExcludePanel = null;
+        _cachedExcludeWindow = null;
+        _highlightParentWindow = null;
+        _edgeLayoutParentWindow = null;
+        DockIndicator.InvalidateResourceCache();
 
         return (panel, layout, position);
     }
@@ -370,21 +383,14 @@ internal static partial class DockManager
         // Clean up indicator windows
         DisposeIndicatorWindows();
 
-        if (_currentHighlight != null)
-        {
-            _currentHighlight.IsDockHighlighted = false;
-            _currentHighlight.InvalidateVisual();
-            _currentHighlight = null;
-        }
-
-        if (_currentEdgeLayout != null)
-        {
-            _currentEdgeLayout.IsDockHighlighted = false;
-            _currentEdgeLayout.InvalidateVisual();
-            _currentEdgeLayout = null;
-        }
-
+        _currentHighlight = null;
+        _currentEdgeLayout = null;
         _currentDockPosition = DockPosition.None;
+        _cachedExcludePanel = null;
+        _cachedExcludeWindow = null;
+        _highlightParentWindow = null;
+        _edgeLayoutParentWindow = null;
+        DockIndicator.InvalidateResourceCache();
     }
 
     private static void DisposeIndicatorWindows()

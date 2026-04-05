@@ -160,7 +160,7 @@ public class MenuFlyoutItem : Control
         double textWidth = 0;
         if (!string.IsNullOrEmpty(Text))
         {
-            var formattedText = new FormattedText(Text, FontFamily ?? "Segoe UI", fontSize);
+            var formattedText = new FormattedText(Text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize);
             TextMeasurement.MeasureText(formattedText);
             textWidth = formattedText.Width;
         }
@@ -225,7 +225,7 @@ public class MenuFlyoutItem : Control
         if (!string.IsNullOrEmpty(Text))
         {
             var textFormatted = new FormattedText(
-                Text, FontFamily ?? "Segoe UI", fontSize) { Foreground = textBrush };
+                Text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, fontSize) { Foreground = textBrush };
             TextMeasurement.MeasureText(textFormatted);
             dc.DrawText(textFormatted, new Point(x, (RenderSize.Height - textFormatted.Height) / 2));
         }
@@ -235,7 +235,7 @@ public class MenuFlyoutItem : Control
         {
             var accelBrush = ResolveBrush("OneTextSecondary", "TextSecondary", s_fallbackAcceleratorBrush);
             var accelFormatted = new FormattedText(
-                KeyboardAcceleratorTextOverride, FontFamily ?? "Segoe UI", 12) { Foreground = accelBrush };
+                KeyboardAcceleratorTextOverride, FontFamily ?? FrameworkElement.DefaultFontFamilyName, 12) { Foreground = accelBrush };
             TextMeasurement.MeasureText(accelFormatted);
             var accelX = RenderSize.Width - accelFormatted.Width - RightPadding;
             dc.DrawText(accelFormatted, new Point(accelX, (RenderSize.Height - accelFormatted.Height) / 2));

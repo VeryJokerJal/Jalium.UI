@@ -1,4 +1,5 @@
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
@@ -12,8 +13,8 @@ public class ContextMenu : ItemsControl
 {
     #region Static Brushes
 
-    private static readonly SolidColorBrush s_defaultBackgroundBrush = new(Color.FromRgb(45, 45, 48));
-    private static readonly SolidColorBrush s_defaultBorderBrush = new(Color.FromRgb(67, 67, 70));
+    private static readonly SolidColorBrush s_defaultBackgroundBrush = new(ThemeColors.ControlBackground);
+    private static readonly SolidColorBrush s_defaultBorderBrush = new(ThemeColors.ControlBorder);
 
     #endregion
 

@@ -10,7 +10,6 @@
         <Setter Property="Padding" Value="14,6,14,6" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="MinWidth" Value="96" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />

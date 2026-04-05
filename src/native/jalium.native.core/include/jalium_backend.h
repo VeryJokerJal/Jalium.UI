@@ -1,6 +1,7 @@
 #pragma once
 
 #include "jalium_types.h"
+#include <algorithm>
 #include <memory>
 #include <string>
 
@@ -66,15 +67,19 @@ public:
     virtual Brush* CreateSolidBrush(float r, float g, float b, float a) = 0;
 
     /// Creates a linear gradient brush.
+    /// spreadMethod: 0=Pad (clamp), 1=Repeat (tile), 2=Reflect (mirror)
     virtual Brush* CreateLinearGradientBrush(
         float startX, float startY, float endX, float endY,
-        const JaliumGradientStop* stops, uint32_t stopCount) = 0;
+        const JaliumGradientStop* stops, uint32_t stopCount,
+        uint32_t spreadMethod = 0) = 0;
 
     /// Creates a radial gradient brush.
+    /// spreadMethod: 0=Pad (clamp), 1=Repeat (tile), 2=Reflect (mirror)
     virtual Brush* CreateRadialGradientBrush(
         float centerX, float centerY, float radiusX, float radiusY,
         float originX, float originY,
-        const JaliumGradientStop* stops, uint32_t stopCount) = 0;
+        const JaliumGradientStop* stops, uint32_t stopCount,
+        uint32_t spreadMethod = 0) = 0;
 
     /// Creates a text format.
     virtual TextFormat* CreateTextFormat(
@@ -170,6 +175,22 @@ public:
     /// Draws a rounded rectangle outline.
     virtual void DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth) = 0;
 
+    /// Draws a filled rounded rectangle with per-corner radii.
+    virtual void FillPerCornerRoundedRectangle(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, Brush* brush)
+    {
+        float maxR = std::max(std::max(tl, tr), std::max(br, bl));
+        FillRoundedRectangle(x, y, w, h, maxR, maxR, brush);
+    }
+
+    /// Draws a rounded rectangle outline with per-corner radii.
+    virtual void DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, Brush* brush, float strokeWidth)
+    {
+        float maxR = std::max(std::max(tl, tr), std::max(br, bl));
+        DrawRoundedRectangle(x, y, w, h, maxR, maxR, brush, strokeWidth);
+    }
+
     /// Draws a filled ellipse.
     virtual void FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) = 0;
 
@@ -205,7 +226,8 @@ public:
 
     /// Strokes a path defined by a command buffer (lines + bezier curves).
     /// lineCap: 0 = Butt, 1 = Square, 2 = Round.
-    virtual void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0) = 0;
+    virtual void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0,
+        const float* dashPattern = nullptr, uint32_t dashCount = 0, float dashOffset = 0.0f) = 0;
 
     /// Draws a content area border: fills a rect with bottom-only rounded corners,
     /// then strokes a U-shape (left + bottom + right, no top) with the same radii.

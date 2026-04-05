@@ -1,0 +1,12 @@
+#IncludeRegexLine: ^[ 	]*[#%][ 	]*(include|import)[ 	]*[<"]([^">]+)([">])
+
+#IncludeRegexScan: ^.*$
+
+#IncludeRegexComplain: ^$
+
+#IncludeRegexTransform: 
+
+D:/Users/suppe/source/repos/Jalium.UI/src/native/build-nmake/jalium.native.core/jalium.native.core/version.rc
+winver.h
+-
+

@@ -10,6 +10,11 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class CommandBar : Control
 {
+    private const double MoreButtonWidth = 40;
+    private const double OverflowMinWidth = 200;
+    private const double OverflowCornerRadius = 8;
+    private const double OverflowPadding = 4;
+
     private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(Color.FromRgb(45, 45, 45));
     private static readonly SolidColorBrush s_fallbackBorderBrush = new(Color.FromRgb(61, 61, 61));
 
@@ -184,7 +189,7 @@ public class CommandBar : Control
 
         if (_moreButton != null)
         {
-            _moreButton.Measure(new Size(40, availableSize.Height));
+            _moreButton.Measure(new Size(MoreButtonWidth, availableSize.Height));
         }
 
         var width = (_primaryItemsPanel?.DesiredSize.Width ?? 0) +
@@ -200,14 +205,14 @@ public class CommandBar : Control
     /// <inheritdoc />
     protected override Size ArrangeOverride(Size finalSize)
     {
-        var moreButtonWidth = _moreButton?.Visibility == Visibility.Visible ? 40.0 : 0;
+        var moreButtonWidth = _moreButton?.Visibility == Visibility.Visible ? MoreButtonWidth : 0;
         var primaryWidth = finalSize.Width - moreButtonWidth;
 
         _primaryItemsPanel?.Arrange(new Rect(0, 0, primaryWidth, finalSize.Height));
 
         if (_moreButton?.Visibility == Visibility.Visible)
         {
-            _moreButton.Arrange(new Rect(primaryWidth, 0, 40, finalSize.Height));
+            _moreButton.Arrange(new Rect(primaryWidth, 0, MoreButtonWidth, finalSize.Height));
         }
 
         return finalSize;
@@ -257,7 +262,7 @@ public class CommandBar : Control
         _moreButton = new Button
         {
             Content = "\u22EF", // 閳?horizontal ellipsis
-            Width = 40,
+            Width = MoreButtonWidth,
             Focusable = true,
             Background = Jalium.UI.Media.Brushes.Transparent,
             BorderThickness = new Thickness(0),
@@ -285,10 +290,10 @@ public class CommandBar : Control
         _overflowBorder = new Border
         {
             BorderThickness = new Thickness(1),
-            CornerRadius = new CornerRadius(8),
-            Padding = new Thickness(4),
+            CornerRadius = new CornerRadius(OverflowCornerRadius),
+            Padding = new Thickness(OverflowPadding),
             Child = _secondaryItemsPanel,
-            MinWidth = 200
+            MinWidth = OverflowMinWidth
         };
         UpdateOverflowChrome();
         _overflowPopup.Child = _overflowBorder;

@@ -1,6 +1,7 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
+using Jalium.UI.Media.Animation;
 
 namespace Jalium.UI.Controls;
 
@@ -9,6 +10,17 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class ComboBox : Selector
 {
+    private const double DefaultToggleButtonWidth = 28;
+    private const double ArrowOpenDurationMs = 260;
+    private const double ArrowCloseDurationMs = 180;
+    private const double PopupOpenDurationMs = 250;
+    private const double PopupCloseDurationMs = 150;
+    private const double PopupSlideOffsetY = -6;
+    private static readonly CubicEase s_arrowOpenEase = new() { EasingMode = EasingMode.EaseOut };
+    private static readonly CubicEase s_arrowCloseEase = new() { EasingMode = EasingMode.EaseInOut };
+    private static readonly BackEase s_popupOpenEase = new() { EasingMode = EasingMode.EaseOut, Amplitude = 0.85 };
+    private static readonly CubicEase s_popupCloseEase = new() { EasingMode = EasingMode.EaseInOut };
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -27,6 +39,8 @@ public class ComboBox : Selector
     private Shapes.Path? _arrowPath;
     private RotateTransform? _arrowRotate;
     private bool _isCloseAnimating;
+    private Threading.DispatcherTimer? _arrowAnimTimer;
+    private Threading.DispatcherTimer? _popupAnimTimer;
 
     #region Dependency Properties
 
@@ -295,11 +309,7 @@ public class ComboBox : Selector
         if (_toggleButton != null)
             _toggleButton.IsChecked = false;
 
-        if (_arrowRotate != null)
-        {
-            _arrowRotate.Angle = 0;
-            _arrowPath?.InvalidateVisual();
-        }
+        AnimateArrowRotation(0, ArrowCloseDurationMs, s_arrowCloseEase);
 
         SetValue(IsDropDownOpenProperty, false);
         DropDownClosed?.Invoke(this, EventArgs.Empty);
@@ -680,7 +690,7 @@ public class ComboBox : Selector
 
         if (toggleWidth <= 0)
         {
-            toggleWidth = 28;
+            toggleWidth = DefaultToggleButtonWidth;
         }
 
         return position.X >= Math.Max(0, RenderSize.Width - toggleWidth);
@@ -801,41 +811,128 @@ public class ComboBox : Selector
 
     private void AnimateOpen()
     {
+        _popupAnimTimer?.Stop();
+
         var popupChild = _popup?.Child as FrameworkElement;
         if (popupChild != null)
         {
-            popupChild.Opacity = 1;
-            popupChild.RenderOffset = default;
+            popupChild.Opacity = 0;
+            popupChild.RenderOffset = new Point(0, PopupSlideOffsetY);
+
+            var startTick = Environment.TickCount64;
+            _popupAnimTimer = new Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
+            };
+            _popupAnimTimer.Tick += (_, _) =>
+            {
+                var elapsed = Environment.TickCount64 - startTick;
+                var progress = Math.Clamp(elapsed / PopupOpenDurationMs, 0.0, 1.0);
+                var eased = s_popupOpenEase.Ease(progress);
+
+                popupChild.Opacity = eased;
+                popupChild.RenderOffset = new Point(0, PopupSlideOffsetY * (1.0 - eased));
+
+                if (progress >= 1.0)
+                {
+                    popupChild.Opacity = 1;
+                    popupChild.RenderOffset = default;
+                    _popupAnimTimer.Stop();
+                    _popupAnimTimer = null;
+                }
+            };
+            _popupAnimTimer.Start();
         }
 
-        if (_arrowRotate != null)
-        {
-            _arrowRotate.Angle = 180;
-            _arrowPath?.InvalidateVisual();
-        }
+        AnimateArrowRotation(180, ArrowOpenDurationMs, s_arrowOpenEase);
     }
 
     private void AnimateClose()
     {
+        _popupAnimTimer?.Stop();
+
         var popupChild = _popup?.Child as FrameworkElement;
         if (popupChild != null)
         {
-            popupChild.Opacity = 1;
-            popupChild.RenderOffset = default;
+            var startOpacity = popupChild.Opacity;
+            var startOffsetY = popupChild.RenderOffset.Y;
+            var startTick = Environment.TickCount64;
+
+            _popupAnimTimer = new Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
+            };
+            _popupAnimTimer.Tick += (_, _) =>
+            {
+                var elapsed = Environment.TickCount64 - startTick;
+                var progress = Math.Clamp(elapsed / PopupCloseDurationMs, 0.0, 1.0);
+                var eased = s_popupCloseEase.Ease(progress);
+
+                popupChild.Opacity = startOpacity * (1.0 - eased);
+                popupChild.RenderOffset = new Point(0, startOffsetY + (PopupSlideOffsetY - startOffsetY) * eased);
+
+                if (progress >= 1.0)
+                {
+                    _popupAnimTimer.Stop();
+                    _popupAnimTimer = null;
+
+                    popupChild.Opacity = 1;
+                    popupChild.RenderOffset = default;
+
+                    _isCloseAnimating = true;
+                    if (_popup != null)
+                    {
+                        _popup.IsOpen = false;
+                    }
+                    _isCloseAnimating = false;
+                }
+            };
+            _popupAnimTimer.Start();
+        }
+        else
+        {
+            _isCloseAnimating = true;
+            if (_popup != null)
+            {
+                _popup.IsOpen = false;
+            }
+            _isCloseAnimating = false;
         }
 
-        if (_arrowRotate != null)
+        AnimateArrowRotation(0, ArrowCloseDurationMs, s_arrowCloseEase);
+    }
+
+    private void AnimateArrowRotation(double toAngle, double durationMs, EasingFunctionBase ease)
+    {
+        if (_arrowRotate == null) return;
+
+        _arrowAnimTimer?.Stop();
+
+        var fromAngle = _arrowRotate.Angle;
+        var startTick = Environment.TickCount64;
+
+        _arrowAnimTimer = new Threading.DispatcherTimer
         {
-            _arrowRotate.Angle = 0;
+            Interval = TimeSpan.FromMilliseconds(Math.Max(1, CompositionTarget.FrameIntervalMs))
+        };
+
+        _arrowAnimTimer.Tick += (_, _) =>
+        {
+            var elapsed = Environment.TickCount64 - startTick;
+            var progress = Math.Clamp(elapsed / durationMs, 0.0, 1.0);
+            var easedProgress = ease.Ease(progress);
+
+            _arrowRotate.Angle = fromAngle + (toAngle - fromAngle) * easedProgress;
             _arrowPath?.InvalidateVisual();
-        }
 
-        _isCloseAnimating = true;
-        if (_popup != null)
-        {
-            _popup.IsOpen = false;
-        }
-        _isCloseAnimating = false;
+            if (progress >= 1.0)
+            {
+                _arrowAnimTimer.Stop();
+                _arrowAnimTimer = null;
+            }
+        };
+
+        _arrowAnimTimer.Start();
     }
 
     private static T? FindDescendant<T>(Visual? root) where T : Visual

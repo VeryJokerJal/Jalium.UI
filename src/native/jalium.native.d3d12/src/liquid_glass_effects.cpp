@@ -535,8 +535,8 @@ LiquidGlassEffect::LiquidGlassEffect() {
     constants_.tintB = 0.08f;
     constants_.tintOpacity = 0.3f;
     constants_.highlightOpacity = 0.85f;
-    constants_.lightDirX = 0.0f;
-    constants_.lightDirY = -1.0f;
+    constants_.lightPosX = 0.0f;
+    constants_.lightPosY = -1.0f;
     constants_.shadowOffset = 3.0f;
     constants_.shadowRadius = 8.0f;
     constants_.shadowOpacity = 0.12f;
@@ -740,13 +740,13 @@ D2D1_VECTOR_4F LiquidGlassEffect::GetTintColor() const {
 HRESULT LiquidGlassEffect::SetTintAndHighlight(D2D1_VECTOR_4F value) {
     constants_.tintOpacity = value.x;
     constants_.highlightOpacity = value.y;
-    constants_.lightDirX = value.z;
-    constants_.lightDirY = value.w;
+    constants_.lightPosX = value.z;
+    constants_.lightPosY = value.w;
     return S_OK;
 }
 
 D2D1_VECTOR_4F LiquidGlassEffect::GetTintAndHighlight() const {
-    return {constants_.tintOpacity, constants_.highlightOpacity, constants_.lightDirX, constants_.lightDirY};
+    return {constants_.tintOpacity, constants_.highlightOpacity, constants_.lightPosX, constants_.lightPosY};
 }
 
 HRESULT LiquidGlassEffect::SetShadowParams(D2D1_VECTOR_4F value) {

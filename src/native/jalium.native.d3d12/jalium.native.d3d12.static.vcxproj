@@ -84,6 +84,7 @@
     <ClInclude Include="include\d3d12_render_target.h" />
     <ClInclude Include="include\d3d12_resources.h" />
     <ClInclude Include="include\d3d12_triangulate.h" />
+    <ClInclude Include="include\d3d12_vello.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\d3d12_backend.cpp" />
@@ -95,6 +96,7 @@
     <ClCompile Include="src\d3d12_direct_renderer.cpp" />
     <ClCompile Include="src\d3d12_glyph_atlas.cpp" />
     <ClCompile Include="src\d3d12_pipeline.cpp" />
+    <ClCompile Include="src\d3d12_vello.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\jalium.native.core\jalium.native.core.static.vcxproj">

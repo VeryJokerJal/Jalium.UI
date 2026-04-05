@@ -9,12 +9,10 @@
          where the control inserts its TextBoxContentHost for text rendering. -->
     <Style TargetType="TextBox">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
@@ -53,9 +51,7 @@
     <!-- TextBlock Style -->
     <!-- ============================================== -->
     <Style TargetType="TextBlock">
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
     </Style>
 
     <!-- ============================================== -->
@@ -64,15 +60,15 @@
     <!-- PasswordBox uses direct rendering (doesn't extend TextBoxBase for security reasons) -->
     <Style TargetType="PasswordBox">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="PasswordChar" Value="*" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
 
         <Style.Triggers>
@@ -94,12 +90,10 @@
     <!-- ============================================== -->
     <Style TargetType="NumberBox">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
@@ -180,12 +174,10 @@
     <!-- ============================================== -->
     <Style TargetType="AutoCompleteBox">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="MaxDropDownHeight" Value="200" />
@@ -246,7 +238,6 @@
     <!-- ============================================== -->
     <Style TargetType="RichTextBox">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="4" />
@@ -269,7 +260,6 @@
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="FontFamily" Value="{DynamicResource MonoFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
         <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
         <Setter Property="LineNumberForeground" Value="{DynamicResource TextSecondary}" />

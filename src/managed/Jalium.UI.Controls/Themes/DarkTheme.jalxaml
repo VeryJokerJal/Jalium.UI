@@ -29,4 +29,10 @@
     <SolidColorBrush x:Key="EditorSyntaxBindingOperator" Color="#90D6FF" />
     <SolidColorBrush x:Key="EditorSyntaxError" Color="#F44747" />
 
+    <!-- Terminal Colors -->
+    <SolidColorBrush x:Key="TerminalBackground" Color="#0C0C0C" />
+    <SolidColorBrush x:Key="TerminalForeground" Color="#CCCCCC" />
+    <SolidColorBrush x:Key="TerminalCaret" Color="#CCCCCC" />
+    <SolidColorBrush x:Key="TerminalSelectionBackground" Color="#264F78" />
+
 </ResourceDictionary>

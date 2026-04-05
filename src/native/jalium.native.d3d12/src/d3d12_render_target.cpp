@@ -1,6 +1,7 @@
 #include "d3d12_render_target.h"
 #include "d3d12_resources.h"
 #include "d3d12_triangulate.h"
+#include "d3d12_vello.h"
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -276,6 +277,11 @@ JaliumResult D3D12RenderTarget::EndDraw() {
     if (!isDrawing_) return JALIUM_ERROR_INVALID_STATE;
     if (!directRenderer_) { isDrawing_ = false; return JALIUM_ERROR_INVALID_STATE; }
 
+    // Flush any pending Vello paths before ending the frame
+    if (directRenderer_->HasVelloPaths()) {
+        directRenderer_->FlushVelloPaths();
+    }
+
     UINT syncInterval = vsyncEnabled_ ? 1 : 0;
     UINT presentFlags = (!vsyncEnabled_ && tearingSupported_ && !isComposition_)
         ? DXGI_PRESENT_ALLOW_TEARING : 0;
@@ -387,8 +393,18 @@ void D3D12RenderTarget::Clear(float r, float g, float b, float a) {
     }
 }
 
+void D3D12RenderTarget::FlushVelloIfNeeded() {
+    // Mid-frame Vello flush is disabled: Dispatch may reallocate GPU buffers
+    // (lineSegBuffer_, ptclBuffer_, etc.) which frees resources still referenced
+    // by the current command list, causing OBJECT_DELETED_WHILE_STILL_IN_USE.
+    // Vello paths are flushed once at EndDraw instead.
+    // TODO: Implement deferred buffer management to support mid-frame flush
+    // for correct Z-ordering of Vello paths with non-path draws.
+}
+
 void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
+    FlushVelloIfNeeded();
     if (directRenderer_->IsInOffscreenCapture()) {
         char buf[256];
         sprintf_s(buf, "[FillRect] OFFSCREEN CALL x=%.1f y=%.1f w=%.1f h=%.1f\n", x, y, w, h);
@@ -404,6 +420,7 @@ void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush*
 
 void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
+    FlushVelloIfNeeded();
     float r, g, b, a;
     if (ExtractBrushColor(brush, r, g, b, a)) {
         SdfRectInstance inst = {};
@@ -417,6 +434,7 @@ void D3D12RenderTarget::DrawRectangle(float x, float y, float w, float h, Brush*
 
 void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
+    FlushVelloIfNeeded();
     if (directRenderer_->IsInOffscreenCapture()) {
         char buf[256];
         sprintf_s(buf, "[FillRoundedRect] OFFSCREEN x=%.1f y=%.1f w=%.1f h=%.1f brushType=%d\n",
@@ -441,11 +459,44 @@ void D3D12RenderTarget::FillRoundedRectangle(float x, float y, float w, float h,
 
 void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
+    FlushVelloIfNeeded();
+
     float r, g, b, a;
     if (ExtractBrushColor(brush, r, g, b, a)) {
         SdfRectInstance inst = {};
         inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
         inst.cornerTL = rx; inst.cornerTR = rx; inst.cornerBR = rx; inst.cornerBL = rx;
+        inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
+        inst.borderWidth = strokeWidth;
+        inst.opacity = directRenderer_->GetOpacity();
+        directRenderer_->AddSdfRect(inst);
+    }
+}
+
+void D3D12RenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w, float h,
+    float tl, float tr, float br, float bl, Brush* brush) {
+    if (!isDrawing_ || !brush || !directRenderer_) return;
+    FlushVelloIfNeeded();
+
+    SdfRectInstance inst = {};
+    if (FillBrushToInstance(brush, inst)) {
+        inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
+        inst.cornerTL = tl; inst.cornerTR = tr; inst.cornerBR = br; inst.cornerBL = bl;
+        inst.opacity = directRenderer_->GetOpacity();
+        directRenderer_->AddSdfRect(inst);
+    }
+}
+
+void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
+    float tl, float tr, float br, float bl, Brush* brush, float strokeWidth) {
+    if (!isDrawing_ || !brush || !directRenderer_) return;
+    FlushVelloIfNeeded();
+
+    float r, g, b, a;
+    if (ExtractBrushColor(brush, r, g, b, a)) {
+        SdfRectInstance inst = {};
+        inst.posX = x; inst.posY = y; inst.sizeX = w; inst.sizeY = h;
+        inst.cornerTL = tl; inst.cornerTR = tr; inst.cornerBR = br; inst.cornerBL = bl;
         inst.borderR = r; inst.borderG = g; inst.borderB = b; inst.borderA = a;
         inst.borderWidth = strokeWidth;
         inst.opacity = directRenderer_->GetOpacity();
@@ -459,6 +510,8 @@ void D3D12RenderTarget::DrawRoundedRectangle(float x, float y, float w, float h,
 
 void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
+    FlushVelloIfNeeded();
+
     SdfRectInstance inst = {};
     if (FillBrushToInstance(brush, inst)) {
         inst.posX = cx - rx; inst.posY = cy - ry;
@@ -471,6 +524,7 @@ void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brus
 
 void D3D12RenderTarget::FillEllipseBatch(const float* data, uint32_t count) {
     if (!isDrawing_ || !directRenderer_ || !data || count == 0) return;
+    FlushVelloIfNeeded();
     // Layout per element (stride = 5): cx, cy, rx, ry, packedRGBA
     // packedRGBA is a uint32 stored as float bits: R | (G<<8) | (B<<16) | (A<<24)
     constexpr uint32_t kStride = 5;
@@ -501,6 +555,7 @@ void D3D12RenderTarget::FillEllipseBatch(const float* data, uint32_t count) {
 
 void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
+    FlushVelloIfNeeded();
     float r, g, b, a;
     if (ExtractBrushColor(brush, r, g, b, a)) {
         SdfRectInstance inst = {};
@@ -520,6 +575,7 @@ void D3D12RenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Brus
 
 void D3D12RenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
+    FlushVelloIfNeeded();
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
@@ -567,8 +623,37 @@ static bool IsConvexPolygon(const float* points, uint32_t count) {
     return true;
 }
 
-void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t /*fillRule*/) {
+void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) {
     if (!isDrawing_ || !brush || !directRenderer_ || pointCount < 3) return;
+
+    // Route non-solid brushes (gradients) through Vello for GPU rendering
+    if (brush->GetType() != JALIUM_BRUSH_SOLID) {
+        auto* vello = directRenderer_->GetVelloRenderer();
+        if (vello) {
+            directRenderer_->ApplyScissorToVello();
+            // Build LineTo command buffer from polygon points
+            std::vector<float> cmds;
+            cmds.reserve(pointCount * 3);
+            for (uint32_t i = 1; i < pointCount; i++) {
+                cmds.push_back(0); // LineTo tag
+                cmds.push_back(points[i * 2]);
+                cmds.push_back(points[i * 2 + 1]);
+            }
+            cmds.push_back(5); // ClosePath tag
+            float opacity = directRenderer_->GetOpacity();
+            auto t = directRenderer_->GetCurrentTransform();
+            float dpiScale = directRenderer_->GetDpiScale();
+            float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
+            float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
+            float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
+            if (vello->EncodeFillPathBrush(points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
+                    brush, (uint32_t)fillRule, opacity,
+                    vm11, vm12, vm21, vm22, vdx, vdy))
+                return;
+        }
+    }
+
+    FlushVelloIfNeeded();
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
@@ -618,6 +703,7 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
 void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed,
     int32_t /*lineJoin*/, float /*miterLimit*/) {
     if (!isDrawing_ || !brush || !directRenderer_ || pointCount < 2) return;
+    FlushVelloIfNeeded();
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
@@ -650,6 +736,27 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
 
 void D3D12RenderTarget::FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
+
+    // Route through Vello GPU path renderer when available
+    auto* vello = directRenderer_->GetVelloRenderer();
+    if (vello) {
+        // Pass current scissor to Vello for per-path bbox clamping
+        directRenderer_->ApplyScissorToVello();
+        float opacity = directRenderer_->GetOpacity();
+        auto t = directRenderer_->GetCurrentTransform();
+        float dpiScale = directRenderer_->GetDpiScale();
+        // Scale DIP coordinates to physical pixels for Vello's pixel-space rendering
+        float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
+        float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
+        float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
+        if (vello->EncodeFillPathBrush(startX, startY, commands, commandLength,
+                brush, (uint32_t)fillRule, opacity,
+                vm11, vm12, vm21, vm22, vdx, vdy))
+            return;
+        // Vello encoding failed (unsupported brush, degenerate path, etc.) — fall through to CPU
+    }
+
+    // CPU triangulation fallback
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
 
@@ -727,9 +834,30 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
 }
 
 void D3D12RenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed,
-    int32_t lineJoin, float miterLimit, int32_t /*lineCap*/) {
+    int32_t lineJoin, float miterLimit, int32_t lineCap,
+    const float* dashPattern, uint32_t dashCount, float dashOffset) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
-    // Flatten to polyline, then stroke as polygon outline
+
+    // Route through Vello GPU path renderer when available
+    auto* vello = directRenderer_->GetVelloRenderer();
+    if (vello) {
+        directRenderer_->ApplyScissorToVello();
+        float opacity = directRenderer_->GetOpacity();
+        auto t = directRenderer_->GetCurrentTransform();
+        float dpiScale = directRenderer_->GetDpiScale();
+        // Scale DIP coordinates to physical pixels for Vello's pixel-space rendering
+        float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
+        float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
+        float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
+        if (vello->EncodeStrokePathBrush(startX, startY, commands, commandLength,
+                brush, strokeWidth, closed, lineJoin, miterLimit, opacity,
+                lineCap, dashPattern, dashCount, dashOffset,
+                vm11, vm12, vm21, vm22, vdx, vdy))
+            return;
+        // Vello encoding failed — fall through to CPU
+    }
+
+    // CPU polyline fallback: flatten to polyline, then stroke as polygon outline
     std::vector<float> pts;
     pts.push_back(startX);
     pts.push_back(startY);
@@ -779,6 +907,7 @@ void D3D12RenderTarget::DrawContentBorder(float x, float y, float w, float h,
     Brush* fillBrush, Brush* strokeBrush, float strokeWidth)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    FlushVelloIfNeeded();
     // Fill with bottom corner radii
     if (fillBrush) {
         SdfRectInstance inst = {};
@@ -815,6 +944,8 @@ void D3D12RenderTarget::RenderText(
     Brush* brush)
 {
     if (!isDrawing_ || !directRenderer_ || !format || !text || textLength == 0) return;
+    FlushVelloIfNeeded();
+
     auto* tf = static_cast<D3D12TextFormat*>(format);
     float r = 1, g = 1, b = 1, a = 1;
     ExtractBrushColor(brush, r, g, b, a);
@@ -830,6 +961,8 @@ void D3D12RenderTarget::RenderText(
 
 void D3D12RenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity) {
     if (!isDrawing_ || !directRenderer_ || !bitmap) return;
+    FlushVelloIfNeeded();
+
     auto* d3d12Bmp = static_cast<D3D12Bitmap*>(bitmap);
     auto* cl = directRenderer_->GetCommandList();
     auto* tex = d3d12Bmp->GetOrCreateD3D12Texture(backend_->GetDevice(), cl);

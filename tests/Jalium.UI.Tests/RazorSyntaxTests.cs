@@ -435,6 +435,198 @@ public class RazorSyntaxTests
         Assert.Contains("Razor expression compile failed", ex.Message);
     }
 
+    [Fact]
+    public void RazorForLoop_ShouldGenerateRepeatedChildren()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @for(var i = 0; i < 3; i++) {
+              <TextBlock Text="@(i.ToString())" />
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Equal(3, panel.Children.Count);
+        Assert.Equal("0", ((TextBlock)panel.Children[0]).Text);
+        Assert.Equal("1", ((TextBlock)panel.Children[1]).Text);
+        Assert.Equal("2", ((TextBlock)panel.Children[2]).Text);
+    }
+
+    [Fact]
+    public void RazorForeach_ShouldGenerateChildrenFromCollection()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @foreach(var name in new[]{"Alice", "Bob", "Charlie"}) {
+              <TextBlock Text="@name" />
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Equal(3, panel.Children.Count);
+        Assert.Equal("Alice", ((TextBlock)panel.Children[0]).Text);
+        Assert.Equal("Bob", ((TextBlock)panel.Children[1]).Text);
+        Assert.Equal("Charlie", ((TextBlock)panel.Children[2]).Text);
+    }
+
+    [Fact]
+    public void RazorForeach_WithExpression_ShouldEvaluatePerIteration()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @foreach(var item in new[]{1, 2, 3}) {
+              <TextBlock Text="@(item * 10)" />
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Equal(3, panel.Children.Count);
+        Assert.Equal("10", ((TextBlock)panel.Children[0]).Text);
+        Assert.Equal("20", ((TextBlock)panel.Children[1]).Text);
+        Assert.Equal("30", ((TextBlock)panel.Children[2]).Text);
+    }
+
+    [Fact]
+    public void RazorWhile_ShouldGenerateRepeatedChildren()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{ var n = 0; }
+              @while(n < 2) {
+              <Border Width="@(n * 10)" />
+              @{ n++; }
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Equal(2, panel.Children.Count);
+    }
+
+    [Fact]
+    public void RazorSwitch_ShouldExpandMatchingCase()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @switch("B") {
+                case "A":
+                  <TextBlock Text="Alpha" />
+                  break;
+                case "B":
+                  <TextBlock Text="Beta" />
+                  break;
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Single(panel.Children);
+        Assert.Equal("Beta", ((TextBlock)panel.Children[0]).Text);
+    }
+
+    [Fact]
+    public void RazorDoWhile_ShouldGenerateRepeatedChildren()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{ var k = 0; }
+              @do {
+              <Border />
+              @{ k++; }
+              } while(k < 3);
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Equal(3, panel.Children.Count);
+    }
+
+    [Fact]
+    public void RazorTryCatch_ShouldExpandTryBlock()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @try {
+              <TextBlock Text="OK" />
+              } catch(System.Exception) {
+              <TextBlock Text="Error" />
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Single(panel.Children);
+        Assert.Equal("OK", ((TextBlock)panel.Children[0]).Text);
+    }
+
+    [Fact]
+    public void RazorComment_ShouldBeStripped()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @* This is a Razor comment and should not appear *@
+              <TextBlock Text="Visible" />
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Single(panel.Children);
+        Assert.Equal("Visible", ((TextBlock)panel.Children[0]).Text);
+    }
+
+    [Fact]
+    public void RazorUsing_ShouldExpandBlock()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @using(var writer = new System.IO.StringWriter()) {
+              <TextBlock Text="@(writer.GetType().Name)" />
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Single(panel.Children);
+        Assert.Equal("StringWriter", ((TextBlock)panel.Children[0]).Text);
+    }
+
+    [Fact]
+    public void RazorAwaitForeach_ShouldExpandAsyncEnumerable()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @await foreach(var item in AsyncItems()) {
+              <TextBlock Text="@item" />
+              }
+            </StackPanel>
+            """;
+
+        // await foreach is compiled by Roslyn scripting — needs the helper method in scope.
+        // Since the preprocessor uses CSharpScript which supports top-level await,
+        // we test with a simple async enumerable via inline code.
+        const string xamlWithHelper = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{
+                async System.Collections.Generic.IAsyncEnumerable<string> Produce() {
+                  yield return "X";
+                  yield return "Y";
+                }
+              }
+              @await foreach(var item in Produce()) {
+              <TextBlock Text="@item" />
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xamlWithHelper);
+        Assert.Equal(2, panel.Children.Count);
+        Assert.Equal("X", ((TextBlock)panel.Children[0]).Text);
+        Assert.Equal("Y", ((TextBlock)panel.Children[1]).Text);
+    }
+
     private static void LoadComponent(object component, string resourceName)
     {
         XamlReader.LoadComponent(component, resourceName, typeof(RazorSyntaxTests).Assembly);

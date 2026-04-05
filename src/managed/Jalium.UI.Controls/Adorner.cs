@@ -267,7 +267,8 @@ public class AdornerDecorator : FrameworkElement
 /// </summary>
 internal sealed class ValidationErrorAdorner : Adorner
 {
-    private static readonly Pen _errorPen = new(new SolidColorBrush(Color.FromRgb(255, 0, 0)), 1.5);
+    private const double ValidationErrorBorderWidth = 1.5;
+    private static readonly Pen _errorPen = new(new SolidColorBrush(Color.FromRgb(255, 0, 0)), ValidationErrorBorderWidth);
 
     public ValidationErrorAdorner(UIElement adornedElement) : base(adornedElement)
     {

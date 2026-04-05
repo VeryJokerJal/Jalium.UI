@@ -6,6 +6,8 @@
     <Description>Input handling for Jalium.UI framework including Mouse, Keyboard, and Touch.</Description>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Input</PackageId>
+    <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>

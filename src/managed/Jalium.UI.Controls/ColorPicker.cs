@@ -1,4 +1,5 @@
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -18,7 +19,7 @@ public class ColorPicker : Control
 
     // Cached brushes and pens for OnRender
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
-    private static readonly SolidColorBrush s_grayBorderBrush = new(Color.FromRgb(100, 100, 100));
+    private static readonly SolidColorBrush s_grayBorderBrush = new(ThemeColors.ControlBorder);
     private static readonly SolidColorBrush s_checkerLightBrush = new(Color.FromRgb(200, 200, 200));
     private static readonly SolidColorBrush s_checkerDarkBrush = new(Color.FromRgb(150, 150, 150));
 
@@ -526,7 +527,7 @@ public class ColorPicker : Control
             if (IsHexInputVisible)
             {
                 var hexText = $"#{_alpha:X2}{Color.R:X2}{Color.G:X2}{Color.B:X2}";
-                var formattedText = new FormattedText(hexText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+                var formattedText = new FormattedText(hexText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
                 {
                     Foreground = ResolveForegroundBrush()
                 };

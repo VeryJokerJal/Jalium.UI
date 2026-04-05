@@ -118,6 +118,8 @@ public class SplitButton : ContentControl
         if (_primaryButton != null)
         {
             _primaryButton.Click += OnPrimaryButtonClick;
+
+
         }
 
         if (_secondaryButton != null)

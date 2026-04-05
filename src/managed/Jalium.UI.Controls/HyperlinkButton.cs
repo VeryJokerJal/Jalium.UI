@@ -173,7 +173,7 @@ public class HyperlinkButton : ButtonBase
 
         if (Content is string text)
         {
-            var fontFamily = FontFamily ?? "Segoe UI";
+            var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = FontSize > 0 ? FontSize : 14;
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             TextMeasurement.MeasureText(formattedText);
@@ -282,43 +282,3 @@ public class HyperlinkButton : ButtonBase
     #endregion
 }
 
-/// <summary>
-/// Provides cursor types for controls.
-/// </summary>
-public static class Cursors
-{
-    /// <summary>
-    /// Gets the default arrow cursor.
-    /// </summary>
-    public static object Arrow { get; } = "Arrow";
-
-    /// <summary>
-    /// Gets the hand (pointer) cursor.
-    /// </summary>
-    public static object Hand { get; } = "Hand";
-
-    /// <summary>
-    /// Gets the I-beam text cursor.
-    /// </summary>
-    public static object IBeam { get; } = "IBeam";
-
-    /// <summary>
-    /// Gets the wait/busy cursor.
-    /// </summary>
-    public static object Wait { get; } = "Wait";
-
-    /// <summary>
-    /// Gets the crosshair cursor.
-    /// </summary>
-    public static object Cross { get; } = "Cross";
-
-    /// <summary>
-    /// Gets the resize horizontal cursor.
-    /// </summary>
-    public static object SizeWE { get; } = "SizeWE";
-
-    /// <summary>
-    /// Gets the resize vertical cursor.
-    /// </summary>
-    public static object SizeNS { get; } = "SizeNS";
-}

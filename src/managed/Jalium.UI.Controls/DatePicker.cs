@@ -1,6 +1,7 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -168,7 +169,7 @@ public class DatePicker : Control
 
     #region Static Brushes & Pens
 
-    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_focusBorderBrush = new(ThemeColors.ControlBorderFocused);
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
     private static readonly SolidColorBrush s_iconBrush = new(Color.FromRgb(160, 160, 160));
@@ -382,7 +383,7 @@ public class DatePicker : Control
 
         if (Header is string headerText)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14);
+            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
             TextMeasurement.MeasureText(headerFormatted);
             headerHeight = headerFormatted.Height + 4;
         }
@@ -410,7 +411,7 @@ public class DatePicker : Control
         // Draw header
         if (Header is string headerText && Foreground != null)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = Foreground
             };
@@ -459,7 +460,7 @@ public class DatePicker : Control
             textBrush = ResolvePlaceholderBrush();
         }
 
-        var textFormatted = new FormattedText(displayText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+        var textFormatted = new FormattedText(displayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
         {
             Foreground = textBrush
         };

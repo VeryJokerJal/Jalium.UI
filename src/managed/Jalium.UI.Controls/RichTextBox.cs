@@ -423,6 +423,7 @@ public class RichTextBox : Control, IImeSupport
         _selection = new TextRange(_document.ContentStart, _document.ContentStart);
 
         Focusable = true;
+        Cursor = Cursors.IBeam;
         _lastCaretBlink = DateTime.Now;
         _lastClickTime = DateTime.MinValue;
 
@@ -731,6 +732,116 @@ public class RichTextBox : Control, IImeSupport
     #region Protected Methods
 
     /// <summary>
+    /// Inserts a paragraph break at the current caret position, splitting the current paragraph into two.
+    /// </summary>
+    protected void InsertParagraphBreak()
+    {
+        if (IsReadOnly)
+            return;
+
+        PushUndo();
+
+        if (_selection != null && !_selection.IsEmpty)
+        {
+            DeleteSelectionInternal();
+        }
+
+        if (_caretPosition == null)
+            return;
+
+        if (_caretPosition.Parent is Run run)
+        {
+            var paragraph = run.Parent as Paragraph;
+            if (paragraph == null)
+                return;
+
+            var offset = _caretPosition.Offset;
+            var textBefore = run.Text.Substring(0, offset);
+            var textAfter = run.Text.Substring(offset);
+
+            // Find the index of this run in the paragraph
+            var runIndex = paragraph.Inlines.IndexOf(run);
+
+            // Create the new paragraph with the text after the split point
+            var newParagraph = new Paragraph();
+
+            // Add remaining text from current run to new paragraph
+            if (!string.IsNullOrEmpty(textAfter))
+            {
+                newParagraph.Inlines.Add(new Run(textAfter));
+            }
+
+            // Move all inlines after the current run to the new paragraph
+            for (int i = paragraph.Inlines.Count - 1; i > runIndex; i--)
+            {
+                var inline = paragraph.Inlines[i];
+                paragraph.Inlines.RemoveAt(i);
+                newParagraph.Inlines.Insert(0, inline);
+            }
+
+            // Update the current run to only contain text before the split
+            run.Text = textBefore;
+
+            // If current run is now empty, remove it (but keep paragraph)
+            if (string.IsNullOrEmpty(textBefore) && paragraph.Inlines.Count > 1)
+            {
+                paragraph.Inlines.Remove(run);
+            }
+
+            // If new paragraph has no inlines, add an empty run
+            if (newParagraph.Inlines.Count == 0)
+            {
+                newParagraph.Inlines.Add(new Run(string.Empty));
+            }
+
+            // Insert the new paragraph after the current one
+            var blockIndex = _document.Blocks.IndexOf(paragraph);
+            if (blockIndex >= 0 && blockIndex < _document.Blocks.Count - 1)
+            {
+                _document.Blocks.Insert(blockIndex + 1, newParagraph);
+            }
+            else
+            {
+                _document.Blocks.Add(newParagraph);
+            }
+
+            // Move caret to the start of the new paragraph
+            _caretPosition = _document.GetPositionAtOffset(
+                _caretPosition.DocumentOffset + 1, LogicalDirection.Forward) ?? _document.ContentEnd;
+            _selection = new TextRange(_caretPosition, _caretPosition);
+        }
+        else if (_caretPosition.Parent is Paragraph para)
+        {
+            // Caret is directly in the paragraph (no runs), add a new empty paragraph
+            var newParagraph = new Paragraph(new Run(string.Empty));
+            var blockIndex = _document.Blocks.IndexOf(para);
+            if (blockIndex >= 0 && blockIndex < _document.Blocks.Count - 1)
+            {
+                _document.Blocks.Insert(blockIndex + 1, newParagraph);
+            }
+            else
+            {
+                _document.Blocks.Add(newParagraph);
+            }
+
+            _caretPosition = _document.GetPositionAtOffset(
+                _caretPosition.DocumentOffset + 1, LogicalDirection.Forward) ?? _document.ContentEnd;
+            _selection = new TextRange(_caretPosition, _caretPosition);
+        }
+        else
+        {
+            // Fallback: just insert newline as text
+            InsertText("\n");
+            return;
+        }
+
+        ResetCaretBlink();
+        EnsureCaretVisible();
+        InvalidateLayout();
+        InvalidateVisual();
+    }
+
+    /// <summary>
     /// Inserts text at the current caret position.
     /// </summary>
     protected void InsertText(string textToInsert)
@@ -773,16 +884,42 @@ public class RichTextBox : Control, IImeSupport
         }
         else if (position.Parent is Paragraph paragraph)
         {
-            // Insert a new Run at the position
-            var newRun = new Run(text);
+            // Find the appropriate Run to insert into based on offset within the paragraph
+            int paragraphOffset = position.Offset;
+            int accumulated = 0;
 
-            if (position.Offset == 0 && paragraph.Inlines.Count > 0)
+            // Try to find the Run at or near the offset position
+            Run? targetRun = null;
+            int insertOffset = 0;
+
+            foreach (var inline in paragraph.Inlines)
             {
-                paragraph.Inlines.Insert(0, newRun);
+                if (inline is Run r)
+                {
+                    if (paragraphOffset >= accumulated && paragraphOffset <= accumulated + r.Text.Length)
+                    {
+                        targetRun = r;
+                        insertOffset = paragraphOffset - accumulated;
+                        break;
+                    }
+                    accumulated += r.Text.Length;
+                }
+            }
+
+            if (targetRun != null)
+            {
+                // Insert into the existing Run
+                targetRun.Text = targetRun.Text.Insert(insertOffset, text);
+            }
+            else if (paragraph.Inlines.Count > 0 && paragraph.Inlines[paragraph.Inlines.Count - 1] is Run lastRun)
+            {
+                // Append to the last Run
+                lastRun.Text += text;
             }
             else
             {
-                paragraph.Inlines.Add(newRun);
+                // Create a new Run
+                paragraph.Inlines.Add(new Run(text));
             }
 
             // Update caret position
@@ -792,9 +929,12 @@ public class RichTextBox : Control, IImeSupport
         else if (_document.Blocks.Count == 0)
         {
             // Document is empty, create a new paragraph
-            var newParagraph = new Paragraph(new Run(text));
+            var newRun = new Run(text);
+            var newParagraph = new Paragraph(newRun);
             _document.Blocks.Add(newParagraph);
-            _caretPosition = _document.ContentEnd;
+
+            // Point caret to the Run, not the Paragraph
+            _caretPosition = _document.GetPositionAtOffset(text.Length, LogicalDirection.Forward);
         }
 
         // Update selection to be empty at new caret position
@@ -903,6 +1043,53 @@ public class RichTextBox : Control, IImeSupport
     /// </summary>
     protected void EnsureCaretVisible()
     {
+        if (_caretPosition == null)
+        {
+            UpdateImeWindowIfComposing();
+            return;
+        }
+
+        var contentBounds = GetContentBounds();
+        if (contentBounds.Width <= 0 || contentBounds.Height <= 0)
+        {
+            UpdateImeWindowIfComposing();
+            return;
+        }
+
+        var caretPos = GetCaretScreenPosition(contentBounds);
+        if (caretPos == null)
+        {
+            UpdateImeWindowIfComposing();
+            return;
+        }
+
+        var lineHeight = GetDefaultLineHeight();
+        var caretX = caretPos.Value.X;
+        var caretY = caretPos.Value.Y;
+
+        // Horizontal scrolling: adjust so caret is within content bounds
+        if (caretX < contentBounds.Left)
+        {
+            _horizontalOffset -= (contentBounds.Left - caretX);
+        }
+        else if (caretX > contentBounds.Right - 2)
+        {
+            _horizontalOffset += (caretX - contentBounds.Right + 2);
+        }
+
+        // Vertical scrolling: adjust so caret line is within content bounds
+        if (caretY < contentBounds.Top)
+        {
+            _verticalOffset -= (contentBounds.Top - caretY);
+        }
+        else if (caretY + lineHeight > contentBounds.Bottom)
+        {
+            _verticalOffset += (caretY + lineHeight - contentBounds.Bottom);
+        }
+
+        _horizontalOffset = Math.Max(0, Math.Round(_horizontalOffset));
+        _verticalOffset = Math.Max(0, Math.Round(_verticalOffset));
+
         UpdateImeWindowIfComposing();
     }
 
@@ -1054,7 +1241,7 @@ public class RichTextBox : Control, IImeSupport
                     ?? ResolveDocumentForegroundBrush();
                 var fontFamily = runLayout.Run.FontFamily
                     ?? _document.FontFamily
-                    ?? "Segoe UI";
+                    ?? FrameworkElement.DefaultFontFamilyName;
                 var fontSize = runLayout.Run.FontSize;
                 if (fontSize <= 0)
                     fontSize = _document.FontSize;
@@ -1075,11 +1262,90 @@ public class RichTextBox : Control, IImeSupport
 
     private void RenderSelection(DrawingContext dc, Rect contentBounds)
     {
-        if (ResolveSelectionBrush() == null)
+        var selBrush = ResolveSelectionBrush();
+        if (selBrush == null || _selection == null || _selection.IsEmpty)
             return;
 
-        // Simplified selection rendering - just highlight the text area
-        // Full implementation would calculate exact selection rectangles
+        var layout = EnsureLayout(contentBounds.Width);
+        if (layout == null)
+            return;
+
+        var selStart = _selection.Start.DocumentOffset;
+        var selEnd = _selection.End.DocumentOffset;
+        if (selStart > selEnd)
+            (selStart, selEnd) = (selEnd, selStart);
+
+        var y = contentBounds.Top - _verticalOffset;
+
+        foreach (var blockLayout in layout.Blocks)
+        {
+            RenderSelectionInBlock(dc, blockLayout, contentBounds, selBrush, selStart, selEnd,
+                contentBounds.Left - _horizontalOffset, ref y);
+        }
+    }
+
+    private void RenderSelectionInBlock(DrawingContext dc, BlockLayoutInfo blockLayout, Rect contentBounds,
+        Brush selBrush, int selStart, int selEnd, double baseX, ref double y)
+    {
+        var x = baseX + blockLayout.Margin.Left;
+
+        foreach (var lineLayout in blockLayout.Lines)
+        {
+            // Check if this line intersects the selection
+            if (lineLayout.EndOffset > selStart && lineLayout.StartOffset < selEnd)
+            {
+                // Calculate the X range of the selection within this line
+                double startX, endX;
+
+                if (selStart <= lineLayout.StartOffset)
+                {
+                    startX = x;
+                }
+                else
+                {
+                    startX = x + GetXOffsetInLine(lineLayout, selStart);
+                }
+
+                if (selEnd >= lineLayout.EndOffset)
+                {
+                    endX = x + lineLayout.Width;
+                }
+                else
+                {
+                    endX = x + GetXOffsetInLine(lineLayout, selEnd);
+                }
+
+                if (endX > startX && y + lineLayout.Height > contentBounds.Top && y < contentBounds.Bottom)
+                {
+                    dc.DrawRectangle(selBrush, null,
+                        new Rect(startX, y, endX - startX, lineLayout.Height));
+                }
+            }
+            y += lineLayout.Height;
+        }
+
+        foreach (var childLayout in blockLayout.ChildBlocks)
+        {
+            RenderSelectionInBlock(dc, childLayout, contentBounds, selBrush, selStart, selEnd, x, ref y);
+        }
+
+        y += blockLayout.Margin.Bottom;
+    }
+
+    private double GetXOffsetInLine(LineLayoutInfo lineLayout, int targetOffset)
+    {
+        foreach (var runLayout in lineLayout.Runs)
+        {
+            if (targetOffset >= runLayout.StartOffset && targetOffset <= runLayout.EndOffset && runLayout.Run != null)
+            {
+                var offsetInRun = targetOffset - runLayout.StartOffset;
+                var textBefore = runLayout.Run.Text.Substring(0, Math.Min(offsetInRun, runLayout.Run.Text.Length));
+                return runLayout.X + MeasureText(textBefore, runLayout.Run);
+            }
+        }
+
+        // If past all runs, return line width
+        return lineLayout.Width;
     }
 
     private void RenderCaret(DrawingContext dc, Rect contentBounds)
@@ -1235,7 +1501,7 @@ public class RichTextBox : Control, IImeSupport
 
         var fontFamily = run.FontFamily
             ?? _document.FontFamily
-            ?? "Segoe UI";
+            ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = run.FontSize;
         if (fontSize <= 0)
             fontSize = _document.FontSize;
@@ -1440,7 +1706,7 @@ public class RichTextBox : Control, IImeSupport
             var text = run.Text;
             var fontFamily = run.FontFamily
                 ?? _document.FontFamily
-                ?? "Segoe UI";
+                ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = run.FontSize;
             if (fontSize <= 0)
                 fontSize = _document.FontSize;
@@ -1575,7 +1841,7 @@ public class RichTextBox : Control, IImeSupport
                 break;
 
             case Key.Enter:
-                InsertText("\n");
+                InsertParagraphBreak();
                 e.Handled = true;
                 break;
 
@@ -1910,7 +2176,7 @@ public class RichTextBox : Control, IImeSupport
         var text = run.Text;
         var fontFamily = run.FontFamily
             ?? _document.FontFamily
-            ?? "Segoe UI";
+            ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = run.FontSize;
         if (fontSize <= 0)
             fontSize = _document.FontSize;
@@ -2105,8 +2371,7 @@ public class RichTextBox : Control, IImeSupport
 
     private void HandleUpKey(bool shift)
     {
-        // Simplified: move to start
-        var newPosition = _document.ContentStart;
+        var newPosition = FindPositionOnAdjacentLine(-1);
 
         if (shift)
         {
@@ -2125,8 +2390,7 @@ public class RichTextBox : Control, IImeSupport
 
     private void HandleDownKey(bool shift)
     {
-        // Simplified: move to end
-        var newPosition = _document.ContentEnd;
+        var newPosition = FindPositionOnAdjacentLine(1);
 
         if (shift)
         {
@@ -2141,6 +2405,94 @@ public class RichTextBox : Control, IImeSupport
         ResetCaretBlink();
         EnsureCaretVisible();
         InvalidateVisual();
+    }
+
+    private TextPointer FindPositionOnAdjacentLine(int direction)
+    {
+        if (_caretPosition == null)
+            return direction < 0 ? _document.ContentStart : _document.ContentEnd;
+
+        var contentBounds = GetContentBounds();
+        var layout = EnsureLayout(contentBounds.Width);
+        if (layout == null)
+            return direction < 0 ? _document.ContentStart : _document.ContentEnd;
+
+        // Find the current caret screen position to preserve horizontal position
+        var caretPos = GetCaretScreenPosition(contentBounds);
+        if (caretPos == null)
+            return direction < 0 ? _document.ContentStart : _document.ContentEnd;
+
+        var caretOffset = _caretPosition.DocumentOffset;
+        var lineHeight = GetDefaultLineHeight();
+
+        // Collect all lines in order with their Y positions
+        var allLines = new List<(LineLayoutInfo line, double y, double x)>();
+        var y = contentBounds.Top - _verticalOffset;
+        CollectAllLines(layout.Blocks, contentBounds.Left - _horizontalOffset, ref y, allLines);
+
+        // Find which line the caret is on
+        int currentLineIndex = -1;
+        for (int i = 0; i < allLines.Count; i++)
+        {
+            var (line, _, _) = allLines[i];
+            if (caretOffset >= line.StartOffset && caretOffset <= line.EndOffset)
+            {
+                currentLineIndex = i;
+                break;
+            }
+        }
+
+        if (currentLineIndex < 0)
+            return direction < 0 ? _document.ContentStart : _document.ContentEnd;
+
+        int targetLineIndex = currentLineIndex + direction;
+        if (targetLineIndex < 0)
+            return _document.ContentStart;
+        if (targetLineIndex >= allLines.Count)
+            return _document.ContentEnd;
+
+        // Use the current caret X position to find the nearest character on the target line
+        var targetLine = allLines[targetLineIndex];
+        var targetY = targetLine.y + lineHeight / 2;
+        var targetX = caretPos.Value.X - (contentBounds.Left - _horizontalOffset);
+
+        // Find the position on the target line at the same X offset
+        foreach (var runLayout in targetLine.line.Runs)
+        {
+            if (runLayout.Run != null && targetX >= targetLine.x + runLayout.X &&
+                targetX <= targetLine.x + runLayout.X + runLayout.Width)
+            {
+                var localX = targetX - targetLine.x - runLayout.X;
+                var charIndex = FindCharIndexFromX(runLayout.Run, localX);
+                var offset = runLayout.StartOffset + charIndex;
+                return _document.GetPositionAtOffset(offset, LogicalDirection.Forward) ?? _document.ContentEnd;
+            }
+        }
+
+        // X is past the end of the target line
+        if (targetX > targetLine.x + targetLine.line.Width)
+            return _document.GetPositionAtOffset(targetLine.line.EndOffset, LogicalDirection.Forward) ?? _document.ContentEnd;
+
+        // X is before the start of the target line
+        return _document.GetPositionAtOffset(targetLine.line.StartOffset, LogicalDirection.Forward) ?? _document.ContentStart;
+    }
+
+    private void CollectAllLines(List<BlockLayoutInfo> blocks, double baseX, ref double y,
+        List<(LineLayoutInfo line, double y, double x)> result)
+    {
+        foreach (var blockLayout in blocks)
+        {
+            var x = baseX + blockLayout.Margin.Left;
+
+            foreach (var lineLayout in blockLayout.Lines)
+            {
+                result.Add((lineLayout, y, x));
+                y += lineLayout.Height;
+            }
+
+            CollectAllLines(blockLayout.ChildBlocks, x, ref y, result);
+            y += blockLayout.Margin.Bottom;
+        }
     }
 
     private void HandleHomeKey(bool shift, bool ctrl)
@@ -2510,6 +2862,12 @@ public class RichTextBox : Control, IImeSupport
         _isImeComposing = false;
         _imeCompositionString = string.Empty;
         _imeCompositionCursor = 0;
+
+        if (!string.IsNullOrEmpty(resultString) && !IsReadOnly)
+        {
+            InsertText(resultString);
+        }
+
         _imeCompositionStart = _caretPosition?.DocumentOffset ?? 0;
         InvalidateVisual();
     }
@@ -2547,12 +2905,12 @@ public class RichTextBox : Control, IImeSupport
     {
         if (position?.Parent is Run run)
         {
-            string fontFamily = !string.IsNullOrWhiteSpace(run.FontFamily) ? run.FontFamily : (_document.FontFamily ?? "Segoe UI");
+            string fontFamily = !string.IsNullOrWhiteSpace(run.FontFamily) ? run.FontFamily : (_document.FontFamily ?? FrameworkElement.DefaultFontFamilyName);
             double fontSize = run.FontSize > 0 ? run.FontSize : _document.FontSize;
             return (fontFamily, fontSize, run.FontWeight, run.FontStyle);
         }
 
-        return (_document.FontFamily ?? "Segoe UI", _document.FontSize, FontWeights.Normal, FontStyles.Normal);
+        return (_document.FontFamily ?? FrameworkElement.DefaultFontFamilyName, _document.FontSize, FontWeights.Normal, FontStyles.Normal);
     }
 
     private double GetLineHeightForFormatting(double fontSize)

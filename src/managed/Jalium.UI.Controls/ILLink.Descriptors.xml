@@ -1,0 +1,6 @@
+<linker>
+  <!-- Preserve ThemeManager and theme infrastructure so styles load under trimming/AOT -->
+  <assembly fullname="Jalium.UI.Controls">
+    <type fullname="Jalium.UI.Controls.Themes.ThemeManager" preserve="all" />
+  </assembly>
+</linker>

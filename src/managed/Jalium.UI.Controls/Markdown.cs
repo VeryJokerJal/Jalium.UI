@@ -267,7 +267,7 @@ public class Markdown : Control
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             CanContentScroll = false,
             TransitionProperty = "None",
-            IsScrollInertiaEnabled = false,
+            IsScrollInertiaEnabled = true,
             IsScrollBarAutoHideEnabled = false
         };
 
@@ -689,7 +689,7 @@ public class Markdown : Control
 
     private string ResolveBodyFontFamily() =>
         string.IsNullOrWhiteSpace(FontFamily)
-            ? (TryFindResource("BodyFontFamily") as string ?? "Segoe UI")
+            ? (TryFindResource("BodyFontFamily") as string ?? FrameworkElement.DefaultFontFamilyName)
             : FontFamily;
 
     private string ResolveMonoFontFamily() =>

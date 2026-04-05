@@ -268,6 +268,34 @@ JALIUM_API void jalium_draw_rounded_rectangle(
     }
 }
 
+JALIUM_API void jalium_fill_per_corner_rounded_rectangle(
+    JaliumRenderTarget* rt,
+    float x, float y, float width, float height,
+    float tl, float tr, float br, float bl,
+    JaliumBrush* brush)
+{
+    if (rt && brush) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->FillPerCornerRoundedRectangle(
+            x, y, width, height, tl, tr, br, bl,
+            reinterpret_cast<jalium::Brush*>(brush));
+    }
+}
+
+JALIUM_API void jalium_draw_per_corner_rounded_rectangle(
+    JaliumRenderTarget* rt,
+    float x, float y, float width, float height,
+    float tl, float tr, float br, float bl,
+    JaliumBrush* brush,
+    float strokeWidth)
+{
+    if (rt && brush) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawPerCornerRoundedRectangle(
+            x, y, width, height, tl, tr, br, bl,
+            reinterpret_cast<jalium::Brush*>(brush),
+            strokeWidth);
+    }
+}
+
 JALIUM_API void jalium_draw_fill_ellipse(
     JaliumRenderTarget* rt,
     float centerX, float centerY, float radiusX, float radiusY,
@@ -378,13 +406,17 @@ JALIUM_API void jalium_stroke_path(
     int32_t closed,
     int32_t lineJoin,
     float miterLimit,
-    int32_t lineCap)
+    int32_t lineCap,
+    const float* dashPattern,
+    uint32_t dashCount,
+    float dashOffset)
 {
     if (rt && brush && commands && commandLength > 0) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->StrokePath(
             startX, startY, commands, commandLength,
             reinterpret_cast<jalium::Brush*>(brush),
-            strokeWidth, closed != 0, lineJoin, miterLimit, lineCap);
+            strokeWidth, closed != 0, lineJoin, miterLimit, lineCap,
+            dashPattern, dashCount, dashOffset);
     }
 }
 

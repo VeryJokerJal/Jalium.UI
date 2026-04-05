@@ -1,4 +1,6 @@
 using Jalium.UI.Controls.Editor;
+using Jalium.UI.Controls.Editor.LanguageServer.Client;
+using Jalium.UI.Controls.Editor.LanguageServer.Protocol;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
@@ -78,6 +80,36 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     private IEditProfiler? _profiler;
     private readonly Dictionary<TokenClassification, Brush> _classificationBrushCache = [];
     private IReactiveSyntaxHighlighter? _reactiveSyntaxHighlighter;
+
+    // LSP integration
+    private EditControlLspIntegration? _lspIntegration;
+    private IFoldingStrategy? _lspFoldingStrategy;
+    private int _lspDiagnosticRenderVersion = -1;
+
+    // LSP visual state
+    private static readonly SolidColorBrush s_diagnosticErrorBrush = new(Color.FromRgb(244, 71, 71));
+    private static readonly SolidColorBrush s_diagnosticWarningBrush = new(Color.FromRgb(255, 199, 51));
+    private static readonly SolidColorBrush s_diagnosticInfoBrush = new(Color.FromRgb(75, 156, 211));
+    private static readonly SolidColorBrush s_diagnosticHintBrush = new(Color.FromRgb(140, 184, 120));
+    private static readonly Pen s_diagnosticErrorPen = new(s_diagnosticErrorBrush, 1.2) { DashStyle = new DashStyle([2, 2], 0) };
+    private static readonly Pen s_diagnosticWarningPen = new(s_diagnosticWarningBrush, 1.2) { DashStyle = new DashStyle([2, 2], 0) };
+    private static readonly Pen s_diagnosticInfoPen = new(s_diagnosticInfoBrush, 1.0);
+    private static readonly Pen s_diagnosticHintPen = new(s_diagnosticHintBrush, 1.0) { DashStyle = new DashStyle([4, 4], 0) };
+    private static readonly SolidColorBrush s_completionPopupBackgroundBrush = new(Color.FromArgb(240, 37, 37, 38));
+    private static readonly Pen s_completionPopupBorderPen = new(new SolidColorBrush(Color.FromArgb(220, 69, 69, 70)), 1);
+    private static readonly SolidColorBrush s_completionSelectedBrush = new(Color.FromArgb(120, 4, 89, 168));
+    private static readonly SolidColorBrush s_completionTextBrush = new(Color.FromRgb(220, 220, 220));
+    private static readonly SolidColorBrush s_completionDetailBrush = new(Color.FromRgb(155, 155, 155));
+    private static readonly SolidColorBrush s_hoverPopupBackgroundBrush = new(Color.FromArgb(245, 37, 37, 38));
+    private static readonly Pen s_hoverPopupBorderPen = new(new SolidColorBrush(Color.FromArgb(220, 69, 69, 70)), 1);
+    private static readonly SolidColorBrush s_hoverTextBrush = new(Color.FromRgb(220, 220, 220));
+    private static readonly SolidColorBrush s_signaturePopupBackgroundBrush = new(Color.FromArgb(245, 37, 37, 38));
+    private static readonly Pen s_signaturePopupBorderPen = new(new SolidColorBrush(Color.FromArgb(220, 69, 69, 70)), 1);
+    private static readonly SolidColorBrush s_signatureTextBrush = new(Color.FromRgb(220, 220, 220));
+    private static readonly SolidColorBrush s_signatureActiveParamBrush = new(Color.FromRgb(86, 156, 214));
+    private static readonly SolidColorBrush s_inlayHintBrush = new(Color.FromArgb(160, 148, 163, 184));
+    private static readonly SolidColorBrush s_inlayHintBackgroundBrush = new(Color.FromArgb(32, 148, 163, 184));
+    private static readonly SolidColorBrush s_codeLensBrush = new(Color.FromArgb(180, 148, 163, 184));
 
     // Input state
     private bool _isDragging;
@@ -511,6 +543,36 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     public event EventHandler? FoldingChanged;
 
+    /// <summary>
+    /// Raised when LSP diagnostics are updated for this document.
+    /// </summary>
+    public event Action<Diagnostic[]>? LspDiagnosticsUpdated;
+
+    /// <summary>
+    /// Raised when the LSP server requests navigation to a location.
+    /// </summary>
+    public event Action<Location[]>? LspNavigationRequested;
+
+    /// <summary>
+    /// Raised when a multi-file workspace edit is requested by the LSP server.
+    /// </summary>
+    public event Func<WorkspaceEdit, Task<bool>>? LspWorkspaceEditRequested;
+
+    /// <summary>
+    /// Raised when the LSP server sends a message (log or show).
+    /// </summary>
+    public event Action<string, MessageType>? LspServerMessage;
+
+    /// <summary>
+    /// Gets the LSP integration instance (null if LSP is not active).
+    /// </summary>
+    internal EditControlLspIntegration? LspIntegration => _lspIntegration;
+
+    /// <summary>
+    /// Gets whether an LSP server is active for this editor.
+    /// </summary>
+    public bool IsLspActive => _lspIntegration?.IsActive == true;
+
     internal bool IsVerticalScrollBarVisibleForTesting => _isVerticalScrollBarVisible;
 
     internal bool IsHorizontalScrollBarVisibleForTesting => _isHorizontalScrollBarVisible;
@@ -754,10 +816,16 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 DrawImeComposition(dc, fontFamily, fontSize);
                 if (applyGutterOverflowShield)
                     DrawGutterOverflowShield(dc, contentHeight, fontFamily, fontSize);
+                DrawLspDiagnosticUnderlines(dc, fontFamily, fontSize);
+                DrawLspInlayHints(dc, fontFamily, fontSize);
+                DrawLspCodeLenses(dc, fontFamily, fontSize);
                 DrawFoldingMarkers(dc, contentWidth, contentHeight);
                 bool hasFoldedHintTooltip = DrawFoldedSectionHoverTooltip(dc, contentWidth, contentHeight, fontFamily, fontSize);
                 if (!hasFoldedHintTooltip)
                     DrawScopeGuideHoverTooltip(dc, contentWidth, contentHeight, fontFamily, fontSize);
+                DrawLspCompletionPopup(dc, fontFamily, fontSize);
+                DrawLspHoverTooltip(dc, fontFamily, fontSize);
+                DrawLspSignatureHelp(dc, fontFamily, fontSize);
             }
             finally
             {
@@ -862,6 +930,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
         if (TryHandleDirectShortcut(e, ctrl, shift))
             return;
+
+        // LSP keyboard handling (completion navigation, shortcuts)
+        HandleLspKeyDown(e.Key, e.KeyboardModifiers);
 
         switch (e.Key)
         {
@@ -1067,6 +1138,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             return;
 
         InsertText(text);
+        HandleLspTextInput(text);
         e.Handled = true;
     }
 
@@ -1123,6 +1195,14 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         else
         {
             // Single click
+            if (e.KeyboardModifiers.HasFlag(ModifierKeys.Control) && _lspIntegration?.IsActive == true)
+            {
+                // Ctrl+Click = Go to Definition
+                GoToDefinition(offset);
+                e.Handled = true;
+                return;
+            }
+
             if (e.KeyboardModifiers.HasFlag(ModifierKeys.Shift))
             {
                 _selection.ExtendTo(offset);
@@ -1249,6 +1329,14 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
             bool scopeHoverChanged = UpdateHoveredScopeGuide(position, contentWidth, contentHeight);
             bool foldedHintHoverChanged = UpdateHoveredFoldedHint(position, contentWidth, contentHeight);
+
+            // LSP hover on mouse position
+            if (_lspIntegration?.IsActive == true)
+            {
+                int hoverOffset = _view.GetOffsetFromPoint(position, ShowLineNumbers);
+                RequestHover(hoverOffset);
+            }
+
             if (minimapHoverChanged || scopeHoverChanged || foldedHintHoverChanged || _hoveredScopeGuideSection != null || _hoveredFoldedHintSection != null)
                 InvalidateVisual();
             return;
@@ -3453,6 +3541,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             editor.ApplyLanguageDefaults((string)(e.NewValue ?? "plaintext"));
             editor.UpdateFoldingState();
             editor.InvalidateVisual();
+            editor.ActivateLspForLanguage((string)(e.NewValue ?? "plaintext"));
         }
     }
 
@@ -3501,6 +3590,9 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             _activeFindResult = _findReplace.CurrentResult;
             SearchResultsChanged?.Invoke(this, EventArgs.Empty);
         }
+
+        // Dismiss LSP popups on text change
+        _lspIntegration?.DismissHover();
 
         TextChanged?.Invoke(this, e);
         InvalidateVisual();
@@ -3755,7 +3847,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     private Brush ResolveSelectedTextOccurrenceBrush()
     {
-        return ResolveThemeBrush("HighlightBackground", s_selectedTextOccurrenceBrush, "SelectionBackground");
+        return ResolveThemeBrush("OneEditorWordHighlight", s_selectedTextOccurrenceBrush, "OneAccentSubtle");
     }
 
     private Brush ResolveSymbolOccurrenceBrush()
@@ -5613,14 +5705,21 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     private static bool IsXmlLikeLanguage(string normalizedLanguage)
     {
-        return normalizedLanguage is "xml" or "xaml" or "jalxaml" or "axaml";
+        return normalizedLanguage is "xml" or "xaml" or "jalxaml" or "axaml"
+            or "csproj" or "props" or "targets" or "fsproj" or "vbproj"
+            or "nuspec" or "resx" or "config" or "xsd" or "xslt" or "svg";
     }
 
     private static (string start, string end) GetBlockCommentMarkers(string language)
     {
         return language.ToLowerInvariant() switch
         {
-            "xml" or "xaml" or "jalxaml" or "axaml" or "html" => ("<!--", "-->"),
+            "xml" or "xaml" or "jalxaml" or "axaml" or "html"
+                or "csproj" or "props" or "targets" or "fsproj" or "vbproj"
+                or "nuspec" or "resx" or "config" or "xsd" or "xslt" or "svg" => ("<!--", "-->"),
+            "python" or "py" => ("#", ""), // single-line only
+            "lua" => ("--[[", "]]"),
+            "powershell" or "ps1" or "psm1" => ("<#", "#>"),
             _ => ("/*", "*/")
         };
     }
@@ -5651,23 +5750,29 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     {
         var normalized = (language ?? "plaintext").ToLowerInvariant();
         bool isXmlLike = IsXmlLikeLanguage(normalized);
+
+        // Priority: 1) registered highlighters, 2) JalxamlSyntaxHighlighter for XML-like,
+        // 3) built-in regex highlighters for all common languages
         if (SyntaxHighlighterRegistry.TryCreate(this, normalized, out var registeredHighlighter))
         {
             SyntaxHighlighter = registeredHighlighter;
         }
+        else if (normalized is "jalxaml" or "xml" or "xaml" or "axaml" or "csproj" or "props" or "targets"
+                 or "fsproj" or "vbproj" or "nuspec" or "resx" or "config" or "xsd" or "xslt" or "svg")
+        {
+            SyntaxHighlighter = JalxamlSyntaxHighlighter.Create();
+        }
         else
         {
-            SyntaxHighlighter = normalized switch
-            {
-                "csharp" or "cs" => RegexSyntaxHighlighter.CreateCSharpHighlighter(),
-                "jalxaml" or "xml" or "xaml" or "axaml" => JalxamlSyntaxHighlighter.Create(),
-                _ => null
-            };
+            SyntaxHighlighter = RegexSyntaxHighlighter.CreateForLanguage(normalized);
         }
 
-        _foldingStrategy = isXmlLike
-            ? new XmlFoldingStrategy()
-            : new BraceFoldingStrategy();
+        _foldingStrategy = normalized switch
+        {
+            "jalxaml" => new JalxamlFoldingStrategy(),
+            _ when isXmlLike => new XmlFoldingStrategy(),
+            _ => new BraceFoldingStrategy(),
+        };
     }
 
     private void AttachReactiveHighlighter(IReactiveSyntaxHighlighter? reactiveHighlighter)
@@ -5870,7 +5975,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
         _foldingRefreshTimer?.Stop();
 
         int previousVersion = _foldingManager.Version;
-        _foldingManager.UpdateFoldings(_foldingStrategy);
+        var strategy = _lspFoldingStrategy ?? _foldingStrategy;
+        _foldingManager.UpdateFoldings(strategy);
         bool foldingChanged = _foldingManager.Version != previousVersion;
         if (forceViewInvalidation || foldingChanged)
             _view.InvalidateVisibleLines();
@@ -5982,6 +6088,809 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             parent = parent.VisualParent;
         }
     }
+
+    #endregion
+
+    #region LSP Integration
+
+    /// <summary>
+    /// Activates the LSP server for the given language asynchronously.
+    /// </summary>
+    private void ActivateLspForLanguage(string language)
+    {
+        if (!LanguageServerRegistry.TryGetConfig(language, out _))
+        {
+            // No server registered for this language — deactivate if active
+            if (_lspIntegration != null)
+                _ = _lspIntegration.DeactivateAsync();
+            return;
+        }
+
+        EnsureLspIntegration();
+        _ = _lspIntegration!.ActivateAsync(language);
+    }
+
+    private void EnsureLspIntegration()
+    {
+        if (_lspIntegration != null) return;
+
+        _lspIntegration = new EditControlLspIntegration(this);
+        _lspIntegration.DiagnosticsUpdated += OnLspDiagnosticsUpdated;
+        _lspIntegration.CompletionUpdated += OnLspCompletionUpdated;
+        _lspIntegration.HoverUpdated += OnLspHoverUpdated;
+        _lspIntegration.SignatureHelpUpdated += OnLspSignatureHelpUpdated;
+        _lspIntegration.InlayHintsUpdated += OnLspInlayHintsUpdated;
+        _lspIntegration.CodeLensesUpdated += OnLspCodeLensesUpdated;
+        _lspIntegration.NavigationRequested += locs => LspNavigationRequested?.Invoke(locs);
+        _lspIntegration.WorkspaceEditRequested += edit =>
+            LspWorkspaceEditRequested != null ? LspWorkspaceEditRequested(edit) : Task.FromResult(false);
+        _lspIntegration.ServerMessage += (msg, type) => LspServerMessage?.Invoke(msg, type);
+    }
+
+    private void OnLspDiagnosticsUpdated(Diagnostic[] diagnostics)
+    {
+        _lspDiagnosticRenderVersion++;
+        Dispatcher.BeginInvoke(() =>
+        {
+            InvalidateVisual();
+            LspDiagnosticsUpdated?.Invoke(diagnostics);
+        });
+    }
+
+    private void OnLspCompletionUpdated(CompletionList? list)
+    {
+        Dispatcher.BeginInvoke(() => InvalidateVisual());
+    }
+
+    private void OnLspHoverUpdated(Hover? hover)
+    {
+        Dispatcher.BeginInvoke(() => InvalidateVisual());
+    }
+
+    private void OnLspSignatureHelpUpdated(SignatureHelp? help)
+    {
+        Dispatcher.BeginInvoke(() => InvalidateVisual());
+    }
+
+    private void OnLspInlayHintsUpdated(InlayHint[] hints)
+    {
+        Dispatcher.BeginInvoke(() => InvalidateVisual());
+    }
+
+    private void OnLspCodeLensesUpdated(CodeLens[] lenses)
+    {
+        Dispatcher.BeginInvoke(() => InvalidateVisual());
+    }
+
+    internal void SetLspFoldingProvider(LspFoldingProvider provider)
+    {
+        _lspFoldingStrategy = provider;
+        provider.FoldingRangesUpdated += () =>
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                UpdateFoldingState();
+                InvalidateVisual();
+            });
+        };
+        _ = provider.RefreshAsync();
+    }
+
+    internal void ClearLspFoldingProvider()
+    {
+        _lspFoldingStrategy = null;
+    }
+
+    private void UpdateFoldingStateWithLsp()
+    {
+        if (_lspFoldingStrategy != null)
+        {
+            _foldingManager.UpdateFoldings(_lspFoldingStrategy);
+        }
+        else
+        {
+            _foldingManager.UpdateFoldings(_foldingStrategy);
+        }
+    }
+
+    #region LSP Public API
+
+    /// <summary>
+    /// Triggers LSP completion at the current caret position.
+    /// </summary>
+    public void TriggerCompletion()
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = _lspIntegration.TriggerCompletionAsync();
+    }
+
+    /// <summary>
+    /// Requests hover info at the given offset.
+    /// </summary>
+    public void RequestHover(int offset)
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = _lspIntegration.RequestHoverAsync(offset);
+    }
+
+    /// <summary>
+    /// Triggers signature help at the current caret position.
+    /// </summary>
+    public void TriggerSignatureHelp()
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = _lspIntegration.RequestSignatureHelpAsync();
+    }
+
+    /// <summary>
+    /// Requests go-to-definition at the given offset.
+    /// </summary>
+    public void GoToDefinition(int offset)
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = _lspIntegration.GoToDefinitionAsync(offset);
+    }
+
+    /// <summary>
+    /// Requests go-to-declaration at the given offset.
+    /// </summary>
+    public void GoToDeclaration(int offset)
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = _lspIntegration.GoToDeclarationAsync(offset);
+    }
+
+    /// <summary>
+    /// Requests go-to-implementation at the given offset.
+    /// </summary>
+    public void GoToImplementation(int offset)
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = _lspIntegration.GoToImplementationAsync(offset);
+    }
+
+    /// <summary>
+    /// Formats the entire document using LSP.
+    /// </summary>
+    public void FormatDocument()
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = _lspIntegration.FormatDocumentAsync();
+    }
+
+    /// <summary>
+    /// Formats the selected range using LSP.
+    /// </summary>
+    public void FormatSelection()
+    {
+        if (_lspIntegration?.IsActive != true || !_selection.HasSelection) return;
+        _ = _lspIntegration.FormatRangeAsync(_selection.StartOffset, _selection.EndOffset);
+    }
+
+    /// <summary>
+    /// Initiates a rename at the current caret position.
+    /// </summary>
+    public void InitiateRename()
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = HandleRenameAsync();
+    }
+
+    private async Task HandleRenameAsync()
+    {
+        if (_lspIntegration == null) return;
+        var prepare = await _lspIntegration.PrepareRenameAsync(_caret.Offset).ConfigureAwait(false);
+        if (prepare == null) return;
+        // For now, use the placeholder. A real implementation would show an inline rename UI.
+        // This is a placeholder that demonstrates the flow works.
+        string newName = prepare.Placeholder;
+        if (!string.IsNullOrEmpty(newName))
+            await _lspIntegration.RenameAsync(_caret.Offset, newName).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Requests code actions at the current caret/selection position.
+    /// </summary>
+    public async Task<CodeAction[]?> GetCodeActionsAsync(CancellationToken ct = default)
+    {
+        if (_lspIntegration?.IsActive != true) return null;
+        int start = _selection.HasSelection ? _selection.StartOffset : _caret.Offset;
+        int end = _selection.HasSelection ? _selection.EndOffset : _caret.Offset;
+        return await _lspIntegration.RequestCodeActionsAsync(start, end, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Applies a code action.
+    /// </summary>
+    public void ApplyCodeAction(CodeAction action)
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = _lspIntegration.ApplyCodeActionAsync(action);
+    }
+
+    /// <summary>
+    /// Requests document symbols.
+    /// </summary>
+    public async Task<DocumentSymbol[]?> GetDocumentSymbolsAsync(CancellationToken ct = default)
+    {
+        if (_lspIntegration?.IsActive != true) return null;
+        return await _lspIntegration.RequestDocumentSymbolsAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Finds all references at the given offset.
+    /// </summary>
+    public async Task<Location[]?> FindReferencesAsync(int offset, CancellationToken ct = default)
+    {
+        if (_lspIntegration?.IsActive != true) return null;
+        return await _lspIntegration.FindReferencesAsync(offset, ct: ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Notifies the LSP server that the document was saved.
+    /// </summary>
+    public void NotifyDocumentSaved()
+    {
+        if (_lspIntegration?.IsActive != true) return;
+        _ = _lspIntegration.NotifyDocumentSavedAsync();
+    }
+
+    #endregion
+
+    #region LSP Rendering
+
+    private void DrawLspDiagnosticUnderlines(DrawingContext dc, string fontFamily, double fontSize)
+    {
+        var integration = _lspIntegration;
+        if (integration == null || integration.Diagnostics.Length == 0) return;
+        if (_view.LineHeight <= 0 || _document.TextLength == 0) return;
+
+        double charWidth = _view.CharWidth;
+        if (charWidth <= 0) return;
+
+        foreach (var diag in integration.Diagnostics)
+        {
+            var pen = diag.Severity switch
+            {
+                DiagnosticSeverity.Error => s_diagnosticErrorPen,
+                DiagnosticSeverity.Warning => s_diagnosticWarningPen,
+                DiagnosticSeverity.Information => s_diagnosticInfoPen,
+                DiagnosticSeverity.Hint => s_diagnosticHintPen,
+                _ => s_diagnosticInfoPen,
+            };
+
+            int startLine = diag.Range.Start.Line + 1; // 0-based to 1-based
+            int endLine = diag.Range.End.Line + 1;
+
+            for (int lineNum = startLine; lineNum <= endLine; lineNum++)
+            {
+                if (_foldingManager.IsLineHidden(lineNum)) continue;
+
+                double lineY = _view.GetLineTop(lineNum);
+                if (lineY < -_view.LineHeight || lineY > _effectiveViewportHeight + _view.LineHeight)
+                    continue;
+
+                if (lineNum < 1 || lineNum > _document.LineCount) continue;
+                var docLine = _document.GetLineByNumber(lineNum);
+
+                int startChar = lineNum == startLine ? diag.Range.Start.Character : 0;
+                int endChar = lineNum == endLine ? diag.Range.End.Character : docLine.Length;
+
+                if (startChar == endChar && docLine.Length > 0)
+                    endChar = Math.Min(startChar + 1, docLine.Length);
+                if (startChar >= endChar) continue;
+
+                double gutterWidth = _view.GutterWidth;
+                double x1 = gutterWidth + startChar * charWidth - _view.HorizontalOffset;
+                double x2 = gutterWidth + endChar * charWidth - _view.HorizontalOffset;
+                double y = lineY + _view.LineHeight - 2;
+
+                // Draw wavy underline using line segments
+                DrawWavyUnderline(dc, pen, x1, x2, y);
+            }
+        }
+    }
+
+    private static void DrawWavyUnderline(DrawingContext dc, Pen pen, double x1, double x2, double y)
+    {
+        const double waveHeight = 2;
+        const double waveWidth = 4;
+
+        double x = x1;
+        bool up = true;
+        while (x < x2)
+        {
+            double nextX = Math.Min(x + waveWidth, x2);
+            double y1 = up ? y - waveHeight : y;
+            double y2 = up ? y : y - waveHeight;
+            dc.DrawLine(pen, new Point(x, y1), new Point(nextX, y2));
+            x = nextX;
+            up = !up;
+        }
+    }
+
+    private void DrawLspInlayHints(DrawingContext dc, string fontFamily, double fontSize)
+    {
+        var integration = _lspIntegration;
+        if (integration == null || integration.InlayHints.Length == 0) return;
+        if (_view.LineHeight <= 0) return;
+
+        double charWidth = _view.CharWidth;
+        double gutterWidth = _view.GutterWidth;
+        double hintFontSize = fontSize * 0.85;
+
+        foreach (var hint in integration.InlayHints)
+        {
+            int lineNum = hint.Position.Line + 1;
+            if (_foldingManager.IsLineHidden(lineNum)) continue;
+
+            double lineY = _view.GetLineTop(lineNum);
+            if (lineY < -_view.LineHeight || lineY > _effectiveViewportHeight + _view.LineHeight)
+                continue;
+
+            string label = hint.Label is string s ? s : GetInlayHintLabelText(hint.Label);
+            if (string.IsNullOrEmpty(label)) continue;
+
+            bool padLeft = hint.PaddingLeft == true;
+            bool padRight = hint.PaddingRight == true;
+            string displayLabel = (padLeft ? " " : "") + label + (padRight ? " " : "");
+
+            double x = gutterWidth + hint.Position.Character * charWidth - _view.HorizontalOffset;
+            double textY = lineY + (_view.LineHeight - hintFontSize) / 2;
+
+            // Draw background
+            var labelWidth = displayLabel.Length * charWidth * 0.85;
+            var bgRect = new Rect(x, lineY + 2, labelWidth, _view.LineHeight - 4);
+            dc.DrawRoundedRectangle(s_inlayHintBackgroundBrush, null, bgRect, 3, 3);
+
+            // Draw text
+            DrawLspText(dc, displayLabel, new Point(x + 1, textY), s_inlayHintBrush, fontFamily, hintFontSize);
+        }
+    }
+
+    private static string GetInlayHintLabelText(object label)
+    {
+        if (label is System.Text.Json.JsonElement je)
+        {
+            if (je.ValueKind == System.Text.Json.JsonValueKind.String)
+                return je.GetString() ?? "";
+            if (je.ValueKind == System.Text.Json.JsonValueKind.Array)
+            {
+                var sb = new System.Text.StringBuilder();
+                foreach (var part in je.EnumerateArray())
+                {
+                    if (part.TryGetProperty("value", out var val))
+                        sb.Append(val.GetString());
+                }
+                return sb.ToString();
+            }
+        }
+        return label?.ToString() ?? "";
+    }
+
+    private void DrawLspCodeLenses(DrawingContext dc, string fontFamily, double fontSize)
+    {
+        var integration = _lspIntegration;
+        if (integration == null || integration.CodeLenses.Length == 0) return;
+        if (_view.LineHeight <= 0) return;
+
+        double lensFontSize = fontSize * 0.85;
+        double gutterWidth = _view.GutterWidth;
+
+        foreach (var lens in integration.CodeLenses)
+        {
+            if (lens.Command == null) continue;
+
+            int lineNum = lens.Range.Start.Line + 1;
+            if (_foldingManager.IsLineHidden(lineNum)) continue;
+
+            double lineY = _view.GetLineTop(lineNum);
+            if (lineY < -_view.LineHeight || lineY > _effectiveViewportHeight + _view.LineHeight)
+                continue;
+
+            // Draw above the line
+            double textY = lineY - lensFontSize - 2;
+            double x = gutterWidth + 4 - _view.HorizontalOffset;
+
+            DrawLspText(dc, lens.Command.Title, new Point(x, textY), s_codeLensBrush, fontFamily, lensFontSize);
+        }
+    }
+
+    private void DrawLspCompletionPopup(DrawingContext dc, string fontFamily, double fontSize)
+    {
+        var integration = _lspIntegration;
+        if (integration == null || !integration.IsCompletionActive) return;
+        var list = integration.ActiveCompletionList;
+        if (list == null || list.Items.Length == 0) return;
+
+        double charWidth = _view.CharWidth;
+        double lineHeight = _view.LineHeight;
+        double gutterWidth = _view.GutterWidth;
+
+        // Position below the caret
+        var (caretLine, caretCol) = _caret.GetLineColumn(_document);
+        double caretRenderY = _view.GetLineTop(caretLine);
+        double popupX = gutterWidth + caretCol * charWidth - _view.HorizontalOffset;
+        double popupY = caretRenderY + lineHeight + 2;
+
+        int maxVisible = Math.Min(list.Items.Length, 12);
+        double itemHeight = lineHeight;
+        double popupWidth = 320;
+        double popupHeight = maxVisible * itemHeight + 4;
+
+        // Clamp popup position within viewport
+        if (popupY + popupHeight > _effectiveViewportHeight)
+            popupY = caretRenderY - popupHeight - 2;
+        if (popupX + popupWidth > _effectiveTextViewportWidth)
+            popupX = Math.Max(gutterWidth, _effectiveTextViewportWidth - popupWidth);
+
+        var popupRect = new Rect(popupX, popupY, popupWidth, popupHeight);
+        dc.DrawRoundedRectangle(s_completionPopupBackgroundBrush, s_completionPopupBorderPen, popupRect, 4, 4);
+
+        int selectedIndex = integration.ActiveCompletionIndex;
+
+        // Scrolling offset
+        int scrollOffset = 0;
+        if (selectedIndex >= maxVisible)
+            scrollOffset = selectedIndex - maxVisible + 1;
+
+        for (int i = 0; i < maxVisible && (scrollOffset + i) < list.Items.Length; i++)
+        {
+            int itemIndex = scrollOffset + i;
+            var item = list.Items[itemIndex];
+            double itemY = popupY + 2 + i * itemHeight;
+
+            if (itemIndex == selectedIndex)
+            {
+                dc.DrawRectangle(s_completionSelectedBrush, null,
+                    new Rect(popupX + 1, itemY, popupWidth - 2, itemHeight));
+            }
+
+            // Draw kind icon as text prefix
+            string kindPrefix = GetCompletionKindPrefix(item.Kind);
+            double textX = popupX + 6;
+
+            if (!string.IsNullOrEmpty(kindPrefix))
+            {
+                DrawLspText(dc, kindPrefix, new Point(textX, itemY + (itemHeight - fontSize) / 2),
+                    s_completionDetailBrush, fontFamily, fontSize * 0.8);
+                textX += 20;
+            }
+
+            // Draw label
+            string label = item.Label;
+            if (label.Length > 40)
+                label = label.Substring(0, 37) + "...";
+
+            DrawLspText(dc, label, new Point(textX, itemY + (itemHeight - fontSize) / 2),
+                s_completionTextBrush, fontFamily, fontSize);
+
+            // Draw detail on the right
+            if (item.Detail != null)
+            {
+                string detail = item.Detail.Length > 20 ? item.Detail.Substring(0, 17) + "..." : item.Detail;
+                double detailX = popupX + popupWidth - 8 - detail.Length * charWidth * 0.8;
+                DrawLspText(dc, detail, new Point(detailX, itemY + (itemHeight - fontSize * 0.8) / 2),
+                    s_completionDetailBrush, fontFamily, fontSize * 0.8);
+            }
+        }
+    }
+
+    private static string GetCompletionKindPrefix(CompletionItemKind? kind) => kind switch
+    {
+        CompletionItemKind.Method or CompletionItemKind.Function => "f",
+        CompletionItemKind.Variable => "v",
+        CompletionItemKind.Field => "F",
+        CompletionItemKind.Class => "C",
+        CompletionItemKind.Interface => "I",
+        CompletionItemKind.Module or CompletionItemKind.Folder => "M",
+        CompletionItemKind.Property => "P",
+        CompletionItemKind.Enum => "E",
+        CompletionItemKind.EnumMember => "e",
+        CompletionItemKind.Keyword => "K",
+        CompletionItemKind.Snippet => "S",
+        CompletionItemKind.Struct => "s",
+        CompletionItemKind.Event => "V",
+        CompletionItemKind.Constant => "c",
+        CompletionItemKind.TypeParameter => "T",
+        _ => "",
+    };
+
+    private void DrawLspHoverTooltip(DrawingContext dc, string fontFamily, double fontSize)
+    {
+        var integration = _lspIntegration;
+        if (integration?.ActiveHover == null) return;
+
+        var hover = integration.ActiveHover;
+        string text = hover.Contents.Value;
+        if (string.IsNullOrWhiteSpace(text)) return;
+
+        // Strip markdown code fences for display
+        text = StripMarkdownFences(text);
+
+        double charWidth = _view.CharWidth;
+        double lineHeight = _view.LineHeight;
+        double gutterWidth = _view.GutterWidth;
+        double hoverFontSize = fontSize * 0.9;
+
+        // Position near the hover range or mouse position
+        double posX, posY;
+        if (hover.Range != null)
+        {
+            int line = hover.Range.Start.Line + 1;
+            posX = gutterWidth + hover.Range.Start.Character * charWidth - _view.HorizontalOffset;
+            posY = _view.GetLineTop(line) - 4;
+        }
+        else if (_hasPointerPosition)
+        {
+            posX = _lastPointerPosition.X;
+            posY = _lastPointerPosition.Y - lineHeight - 4;
+        }
+        else return;
+
+        // Calculate tooltip size
+        var lines = text.Split('\n');
+        int maxLineLength = 0;
+        foreach (var l in lines)
+            maxLineLength = Math.Max(maxLineLength, l.TrimEnd().Length);
+
+        maxLineLength = Math.Min(maxLineLength, 100);
+        double tooltipWidth = Math.Max(100, maxLineLength * charWidth * 0.9 + 16);
+        double tooltipHeight = Math.Max(lineHeight, lines.Length * (hoverFontSize + 2) + 12);
+
+        // Clamp
+        if (posX + tooltipWidth > _effectiveTextViewportWidth)
+            posX = Math.Max(gutterWidth, _effectiveTextViewportWidth - tooltipWidth);
+        if (posY - tooltipHeight < 0)
+            posY = posY + lineHeight + 8 + tooltipHeight;
+
+        double tooltipY = posY - tooltipHeight;
+        var rect = new Rect(posX, tooltipY, tooltipWidth, tooltipHeight);
+        dc.DrawRoundedRectangle(s_hoverPopupBackgroundBrush, s_hoverPopupBorderPen, rect, 4, 4);
+
+        for (int i = 0; i < lines.Length && i < 30; i++)
+        {
+            string line = lines[i].TrimEnd();
+            if (line.Length > 100) line = line.Substring(0, 97) + "...";
+            DrawLspText(dc, line, new Point(posX + 8, tooltipY + 6 + i * (hoverFontSize + 2)),
+                s_hoverTextBrush, fontFamily, hoverFontSize);
+        }
+    }
+
+    private void DrawLspSignatureHelp(DrawingContext dc, string fontFamily, double fontSize)
+    {
+        var integration = _lspIntegration;
+        if (integration?.ActiveSignatureHelp == null) return;
+
+        var sigHelp = integration.ActiveSignatureHelp;
+        if (sigHelp.Signatures.Length == 0) return;
+
+        int activeIndex = sigHelp.ActiveSignature ?? 0;
+        if (activeIndex >= sigHelp.Signatures.Length)
+            activeIndex = 0;
+
+        var sig = sigHelp.Signatures[activeIndex];
+        string label = sig.Label;
+        if (string.IsNullOrEmpty(label)) return;
+
+        double charWidth = _view.CharWidth;
+        double lineHeight = _view.LineHeight;
+        double gutterWidth = _view.GutterWidth;
+
+        var (caretLine, caretCol) = _caret.GetLineColumn(_document);
+        double caretRenderY = _view.GetLineTop(caretLine);
+
+        double popupWidth = Math.Max(200, label.Length * charWidth + 16);
+        popupWidth = Math.Min(popupWidth, _effectiveTextViewportWidth - gutterWidth);
+        double popupHeight = lineHeight + 8;
+
+        double popupX = gutterWidth + caretCol * charWidth - _view.HorizontalOffset;
+        double popupY = caretRenderY - popupHeight - 2;
+
+        if (popupY < 0)
+            popupY = caretRenderY + lineHeight + 2;
+
+        if (popupX + popupWidth > _effectiveTextViewportWidth)
+            popupX = Math.Max(gutterWidth, _effectiveTextViewportWidth - popupWidth);
+
+        var rect = new Rect(popupX, popupY, popupWidth, popupHeight);
+        dc.DrawRoundedRectangle(s_signaturePopupBackgroundBrush, s_signaturePopupBorderPen, rect, 4, 4);
+
+        // Draw the full signature label
+        double textY = popupY + 4;
+        DrawLspText(dc, label, new Point(popupX + 8, textY), s_signatureTextBrush, fontFamily, fontSize);
+
+        // Highlight active parameter
+        int activeParam = sigHelp.ActiveParameter ?? sig.ActiveParameter ?? 0;
+        if (sig.Parameters != null && activeParam < sig.Parameters.Length)
+        {
+            var paramInfo = sig.Parameters[activeParam];
+            int paramStart = label.IndexOf(paramInfo.Label, StringComparison.Ordinal);
+            if (paramStart >= 0)
+            {
+                double highlightX = popupX + 8 + paramStart * charWidth;
+                double highlightWidth = paramInfo.Label.Length * charWidth;
+                dc.DrawRectangle(null, new Pen(s_signatureActiveParamBrush, 1),
+                    new Rect(highlightX, textY - 1, highlightWidth, fontSize + 2));
+            }
+        }
+
+        // Show counter if multiple signatures
+        if (sigHelp.Signatures.Length > 1)
+        {
+            string counter = $"{activeIndex + 1}/{sigHelp.Signatures.Length}";
+            DrawLspText(dc, counter, new Point(popupX + popupWidth - counter.Length * charWidth * 0.8 - 8, textY),
+                s_completionDetailBrush, fontFamily, fontSize * 0.8);
+        }
+    }
+
+    private void DrawLspText(DrawingContext dc, string text, Point position, Brush foreground,
+        string fontFamily, double fontSize)
+    {
+        var ft = new FormattedText(text, fontFamily, fontSize) { Foreground = foreground };
+        dc.DrawText(ft, position);
+    }
+
+    private static string StripMarkdownFences(string text)
+    {
+        if (text.StartsWith("```"))
+        {
+            int firstNewline = text.IndexOf('\n');
+            if (firstNewline >= 0)
+                text = text.Substring(firstNewline + 1);
+            if (text.EndsWith("```"))
+                text = text.Substring(0, text.Length - 3);
+        }
+        return text.TrimEnd();
+    }
+
+    #endregion
+
+    #region LSP Keyboard Handling
+
+    internal void HandleLspKeyDown(Key key, ModifierKeys modifiers)
+    {
+        if (_lspIntegration == null) return;
+
+        // Completion navigation
+        if (_lspIntegration.IsCompletionActive)
+        {
+            switch (key)
+            {
+                case Key.Down:
+                    if (_lspIntegration.ActiveCompletionList != null)
+                    {
+                        _lspIntegration.ActiveCompletionIndex = Math.Min(
+                            _lspIntegration.ActiveCompletionIndex + 1,
+                            _lspIntegration.ActiveCompletionList.Items.Length - 1);
+                        InvalidateVisual();
+                    }
+                    return;
+
+                case Key.Up:
+                    _lspIntegration.ActiveCompletionIndex = Math.Max(
+                        _lspIntegration.ActiveCompletionIndex - 1, 0);
+                    InvalidateVisual();
+                    return;
+
+                case Key.Tab:
+                case Key.Enter:
+                    if (_lspIntegration.ActiveCompletionList != null &&
+                        _lspIntegration.ActiveCompletionIndex >= 0 &&
+                        _lspIntegration.ActiveCompletionIndex < _lspIntegration.ActiveCompletionList.Items.Length)
+                    {
+                        _lspIntegration.ApplyCompletion(
+                            _lspIntegration.ActiveCompletionList.Items[_lspIntegration.ActiveCompletionIndex]);
+                    }
+                    return;
+
+                case Key.Escape:
+                    _lspIntegration.DismissCompletion();
+                    InvalidateVisual();
+                    return;
+            }
+        }
+
+        // LSP shortcuts
+        if (modifiers == ModifierKeys.Control)
+        {
+            switch (key)
+            {
+                case Key.Space:
+                    TriggerCompletion();
+                    return;
+
+                case Key.OemPeriod: // Ctrl+. = code action (quick fix)
+                    _ = HandleCodeActionShortcutAsync();
+                    return;
+            }
+        }
+
+        if (modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            switch (key)
+            {
+                case Key.Space:
+                    TriggerSignatureHelp();
+                    return;
+
+                case Key.I: // Ctrl+Shift+I = format document
+                    FormatDocument();
+                    return;
+            }
+        }
+
+        if (key == Key.F12 && modifiers == ModifierKeys.None)
+        {
+            GoToDefinition(_caret.Offset);
+            return;
+        }
+
+        if (key == Key.F12 && modifiers == ModifierKeys.Shift)
+        {
+            _ = FindReferencesAsync(_caret.Offset);
+            return;
+        }
+
+        if (key == Key.F2 && modifiers == ModifierKeys.None)
+        {
+            InitiateRename();
+            return;
+        }
+    }
+
+    private async Task HandleCodeActionShortcutAsync()
+    {
+        var actions = await GetCodeActionsAsync().ConfigureAwait(false);
+        if (actions != null && actions.Length > 0)
+        {
+            // Apply the first preferred action, or the first action
+            var preferred = Array.Find(actions, a => a.IsPreferred == true) ?? actions[0];
+            ApplyCodeAction(preferred);
+        }
+    }
+
+    /// <summary>
+    /// Handles text input for LSP features (auto-trigger completion/signature on trigger characters).
+    /// </summary>
+    internal void HandleLspTextInput(string text)
+    {
+        if (_lspIntegration?.IsActive != true || text.Length == 0) return;
+
+        var caps = _lspIntegration.ServerCapabilities;
+        if (caps == null) return;
+
+        // Check completion trigger characters
+        var completionTriggers = caps.CompletionProvider?.TriggerCharacters;
+        if (completionTriggers != null && Array.IndexOf(completionTriggers, text) >= 0)
+        {
+            _ = _lspIntegration.TriggerCompletionAsync(CompletionTriggerKind.TriggerCharacter, text);
+            return;
+        }
+
+        // Check signature help trigger characters
+        var sigTriggers = caps.SignatureHelpProvider?.TriggerCharacters;
+        if (sigTriggers != null && Array.IndexOf(sigTriggers, text) >= 0)
+        {
+            _ = _lspIntegration.RequestSignatureHelpAsync(SignatureHelpTriggerKind.TriggerCharacter, text);
+            return;
+        }
+
+        // Re-trigger for incomplete completions
+        if (_lspIntegration.IsCompletionActive && _lspIntegration.ActiveCompletionList?.IsIncomplete == true)
+        {
+            _ = _lspIntegration.TriggerCompletionAsync(CompletionTriggerKind.TriggerForIncompleteCompletions);
+        }
+
+        // On-type formatting
+        var onType = caps.DocumentOnTypeFormattingProvider;
+        if (onType != null)
+        {
+            _ = _lspIntegration.FormatOnTypeAsync(_caret.Offset, text);
+        }
+    }
+
+    #endregion
 
     #endregion
 }

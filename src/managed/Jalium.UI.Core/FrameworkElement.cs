@@ -1,12 +1,127 @@
 using System.IO;
+using System.Runtime.InteropServices;
 
 namespace Jalium.UI;
 
 /// <summary>
 /// Provides a framework-level set of properties, events, and methods for UI elements.
 /// </summary>
-public class FrameworkElement : UIElement
+public partial class FrameworkElement : UIElement
 {
+    /// <summary>
+    /// The default font family name used across the UI framework.
+    /// Initialized from the Windows system message font (NONCLIENTMETRICS.lfMessageFont).
+    /// </summary>
+    public static readonly string DefaultFontFamilyName = GetSystemMessageFontName() ?? "Segoe UI";
+
+    /// <summary>
+    /// The default font size used across the UI framework.
+    /// Initialized from the Windows system message font height.
+    /// </summary>
+    public static readonly double DefaultFontSize = GetSystemMessageFontSize() ?? 14.0;
+
+    #region System Font P/Invoke
+
+    private const uint SPI_GETNONCLIENTMETRICS = 0x0029;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct LOGFONTW
+    {
+        public int lfHeight;
+        public int lfWidth;
+        public int lfEscapement;
+        public int lfOrientation;
+        public int lfWeight;
+        public byte lfItalic;
+        public byte lfUnderline;
+        public byte lfStrikeOut;
+        public byte lfCharSet;
+        public byte lfOutPrecision;
+        public byte lfClipPrecision;
+        public byte lfQuality;
+        public byte lfPitchAndFamily;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string lfFaceName;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct NONCLIENTMETRICSW
+    {
+        public uint cbSize;
+        public int iBorderWidth;
+        public int iScrollWidth;
+        public int iScrollHeight;
+        public int iCaptionWidth;
+        public int iCaptionHeight;
+        public LOGFONTW lfCaptionFont;
+        public int iSmCaptionWidth;
+        public int iSmCaptionHeight;
+        public LOGFONTW lfSmCaptionFont;
+        public int iMenuWidth;
+        public int iMenuHeight;
+        public LOGFONTW lfMenuFont;
+        public LOGFONTW lfStatusFont;
+        public LOGFONTW lfMessageFont;
+        public int iPaddedBorderWidth;
+    }
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SystemParametersInfoW(
+        uint uiAction, uint uiParam, ref NONCLIENTMETRICSW pvParam, uint fWinIni);
+
+    private static string? GetSystemMessageFontName()
+    {
+        try
+        {
+            var ncm = new NONCLIENTMETRICSW();
+            ncm.cbSize = (uint)Marshal.SizeOf<NONCLIENTMETRICSW>();
+            if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, ncm.cbSize, ref ncm, 0))
+            {
+                var name = ncm.lfMessageFont.lfFaceName;
+                if (!string.IsNullOrWhiteSpace(name))
+                    return name;
+            }
+        }
+        catch
+        {
+            // Fallback to default on any platform error
+        }
+        return null;
+    }
+
+    private static double? GetSystemMessageFontSize()
+    {
+        try
+        {
+            var ncm = new NONCLIENTMETRICSW();
+            ncm.cbSize = (uint)Marshal.SizeOf<NONCLIENTMETRICSW>();
+            if (SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, ncm.cbSize, ref ncm, 0))
+            {
+                int height = ncm.lfMessageFont.lfHeight;
+                if (height != 0)
+                {
+                    // lfHeight is negative for character height; convert to DIPs (96 DPI base).
+                    // Absolute value gives the em height in logical pixels at system DPI.
+                    double abs = Math.Abs(height);
+                    // Convert from logical pixels to WPF-style DIPs (96 DPI reference).
+                    // System DPI is typically 96 on standard displays; the value is already
+                    // in logical units so we use it directly as approximate DIP size.
+                    if (abs >= 6 && abs <= 72)
+                        return abs;
+                }
+            }
+        }
+        catch
+        {
+            // Fallback to default on any platform error
+        }
+        return null;
+    }
+
+    #endregion
+
     private static double SnapLayoutValue(double value)
     {
         if (!double.IsFinite(value))
@@ -151,17 +266,17 @@ public class FrameworkElement : UIElement
     /// <summary>
     /// Occurs when either ActualWidth or ActualHeight properties change value.
     /// </summary>
-    public event SizeChangedEventHandler? SizeChanged;
+    public virtual event SizeChangedEventHandler? SizeChanged;
 
     /// <summary>
     /// Occurs when the element is laid out, rendered, and ready for interaction (added to visual tree).
     /// </summary>
-    public event RoutedEventHandler? Loaded;
+    public virtual event RoutedEventHandler? Loaded;
 
     /// <summary>
     /// Occurs when the element is removed from the visual tree.
     /// </summary>
-    public event RoutedEventHandler? Unloaded;
+    public virtual event RoutedEventHandler? Unloaded;
 
     /// <summary>
     /// Called when the render size changes.
@@ -469,11 +584,31 @@ public class FrameworkElement : UIElement
 
     /// <summary>
     /// Gets or sets the data context for data binding.
+    /// When no local value is set, the value is inherited from the nearest ancestor
+    /// that has a DataContext, matching WPF's inherited-property behaviour.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Data)]
     public object? DataContext
     {
-        get => GetValue(DataContextProperty);
+        get
+        {
+            // If a local value is set (even null), honour it — the user explicitly
+            // cleared or assigned DataContext on this element.
+            if (HasLocalValue(DataContextProperty))
+                return GetValue(DataContextProperty);
+
+            // Walk up the visual tree to find inherited DataContext,
+            // matching WPF's inherited-property behaviour.
+            var parent = VisualParent as FrameworkElement;
+            while (parent != null)
+            {
+                if (parent.HasLocalValue(DataContextProperty))
+                    return parent.GetValue(DataContextProperty);
+                parent = parent.VisualParent as FrameworkElement;
+            }
+
+            return null;
+        }
         set => SetValue(DataContextProperty, value);
     }
 

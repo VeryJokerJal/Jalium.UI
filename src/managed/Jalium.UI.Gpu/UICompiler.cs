@@ -21,6 +21,7 @@ public sealed class UICompiler
     private readonly List<TextureRef> _textures = new();
     private readonly List<GlyphAtlasRef> _glyphAtlases = new();
     private readonly List<PathCache> _pathCaches = new();
+    private readonly List<string> _pathDataStrings = new();
     private readonly List<InteractiveRegion> _interactiveRegions = new();
     private readonly List<StateTransition> _stateTransitions = new();
     private readonly List<byte> _vertexData = new();
@@ -1364,6 +1365,9 @@ public sealed class UICompiler
             Textures = _textures.ToArray(),
             GlyphAtlases = _glyphAtlases.ToArray(),
             PathCaches = _pathCaches.ToArray(),
+            VertexData = _vertexData.ToArray(),
+            IndexData = _indexData.ToArray(),
+            PathDataStrings = _pathDataStrings.ToArray(),
             InteractiveRegions = _interactiveRegions.ToArray(),
             StateTransitions = _stateTransitions.ToArray(),
             BackdropFilterParams = _backdropFilterParams.ToArray()
@@ -1613,6 +1617,7 @@ public sealed class UICompiler
 
         var index = (uint)_pathCaches.Count;
         _pathCaches.Add(cache);
+        _pathDataStrings.Add(element.PathData ?? string.Empty);
         return index;
     }
 

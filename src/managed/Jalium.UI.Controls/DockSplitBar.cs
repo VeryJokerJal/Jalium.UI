@@ -15,7 +15,6 @@ public sealed class DockSplitBar : Control
     private static readonly SolidColorBrush s_fallbackDraggingBrush = new(ThemeColors.Accent);
     private static readonly SolidColorBrush s_fallbackHoverBrush = new(ThemeColors.DockSplitterHover);
     private static readonly SolidColorBrush s_fallbackBackgroundBrush = new(ThemeColors.DockSplitterBackground);
-    private static readonly SolidColorBrush s_fallbackEdgeBrush = new(ThemeColors.DockTabStripBorder);
 
     internal DockSplitPanel? Owner { get; set; }
     internal int PaneIndex1 { get; set; }
@@ -146,32 +145,7 @@ public sealed class DockSplitBar : Control
         else
             bgBrush = ResolveBackgroundBrush();
 
-        // Fill the splitter interior first, keeping 1px edges for border continuity.
-        Rect fillRect;
-        if (isVerticalBar && ActualWidth > 2)
-            fillRect = new Rect(1, 0, ActualWidth - 2, ActualHeight);
-        else if (!isVerticalBar && ActualHeight > 2)
-            fillRect = new Rect(0, 1, ActualWidth, ActualHeight - 2);
-        else
-            fillRect = bounds;
-
-        dc.DrawRectangle(bgBrush, null, fillRect);
-
-        // Draw subtle edge lines so DockTabPanel borders are not visually "covered" by the splitter.
-        var edgeBrush = ResolveEdgeBrush();
-        if (isVerticalBar)
-        {
-            dc.DrawRectangle(edgeBrush, null, new Rect(0, 0, 1, ActualHeight));
-            dc.DrawRectangle(edgeBrush, null, new Rect(Math.Max(0, ActualWidth - 1), 0, 1, ActualHeight));
-            // Keep top strip border visually continuous across splitter gap.
-            dc.DrawRectangle(edgeBrush, null, new Rect(0, 0, ActualWidth, 1));
-        }
-        else
-        {
-            dc.DrawRectangle(edgeBrush, null, new Rect(0, 0, ActualWidth, 1));
-            dc.DrawRectangle(edgeBrush, null, new Rect(0, Math.Max(0, ActualHeight - 1), ActualWidth, 1));
-            dc.DrawRectangle(edgeBrush, null, new Rect(0, 0, 1, ActualHeight));
-        }
+        dc.DrawRectangle(bgBrush, null, bounds);
     }
 
     private Brush ResolveDraggingBrush()
@@ -193,11 +167,6 @@ public sealed class DockSplitBar : Control
         if (TryFindResource("DockSplitterBackground") is Brush secondary)
             return secondary;
         return s_fallbackBackgroundBrush;
-    }
-
-    private Brush ResolveEdgeBrush()
-    {
-        return ResolveBrush("OneBorderDefault", "DockTabStripBorder", s_fallbackEdgeBrush);
     }
 
     private Brush ResolveBrush(string primaryKey, string secondaryKey, Brush fallback)

@@ -54,28 +54,20 @@ public sealed class NativeBrush : IDisposable
 
     internal NativeBrush(RenderContext context,
         float startX, float startY, float endX, float endY,
-        float[] stops, uint stopCount)
+        float[] stops, uint stopCount, uint extendMode = 0)
     {
         _handle = NativeMethods.BrushCreateLinearGradient(
-            context.Handle, startX, startY, endX, endY, stops, stopCount);
-        if (_handle == nint.Zero)
-        {
-            throw new InvalidOperationException("Failed to create linear gradient brush");
-        }
+            context.Handle, startX, startY, endX, endY, stops, stopCount, extendMode);
     }
 
     internal NativeBrush(RenderContext context,
         float centerX, float centerY, float radiusX, float radiusY,
         float originX, float originY,
-        float[] stops, uint stopCount)
+        float[] stops, uint stopCount, uint extendMode = 0)
     {
         _handle = NativeMethods.BrushCreateRadialGradient(
             context.Handle, centerX, centerY, radiusX, radiusY,
-            originX, originY, stops, stopCount);
-        if (_handle == nint.Zero)
-        {
-            throw new InvalidOperationException("Failed to create radial gradient brush");
-        }
+            originX, originY, stops, stopCount, extendMode);
     }
 
     /// <inheritdoc />

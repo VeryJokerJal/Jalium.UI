@@ -40,6 +40,8 @@ public:
     void DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth) override;
     void FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush) override;
     void DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth) override;
+    void FillPerCornerRoundedRectangle(float x, float y, float w, float h, float tl, float tr, float br, float bl, Brush* brush) override;
+    void DrawPerCornerRoundedRectangle(float x, float y, float w, float h, float tl, float tr, float br, float bl, Brush* brush, float strokeWidth) override;
     void FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) override;
     void FillEllipseBatch(const float* data, uint32_t count) override;
     void DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) override;
@@ -49,7 +51,8 @@ public:
         int32_t lineJoin = 0, float miterLimit = 10.0f) override;
     void FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule) override;
     void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed,
-        int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0) override;
+        int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0,
+        const float* dashPattern = nullptr, uint32_t dashCount = 0, float dashOffset = 0.0f) override;
     void DrawContentBorder(float x, float y, float w, float h,
         float blRadius, float brRadius,
         Brush* fillBrush, Brush* strokeBrush, float strokeWidth) override;
@@ -148,6 +151,10 @@ private:
 
     bool CreateSwapChain();
     void WaitForAllFrames();
+
+    // Flush pending Vello paths before non-Vello draws to maintain correct Z-order.
+    // Call this before any non-path draw (FillRect, DrawText, DrawBitmap, etc.).
+    void FlushVelloIfNeeded();
 
     // Brush → SdfRectInstance helpers
     bool FillBrushToInstance(Brush* brush, SdfRectInstance& inst);

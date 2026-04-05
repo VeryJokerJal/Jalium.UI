@@ -1,4 +1,5 @@
-﻿using System.Reflection;
+﻿using System.Diagnostics.CodeAnalysis;
+using System.Reflection;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Themes;
@@ -92,6 +93,12 @@ public static class ThemeManager
     public static string CurrentMonospaceFontFamily { get; private set; } = "Cascadia Code";
 
     /// <summary>
+    /// Gets the current body font size used by controls.
+    /// Initialized from the system message font size.
+    /// </summary>
+    public static double CurrentBodyFontSize { get; private set; } = FrameworkElement.DefaultFontSize;
+
+    /// <summary>
     /// Initializes the default theme for the application.
     /// Call this method once at application startup.
     /// </summary>
@@ -134,7 +141,7 @@ public static class ThemeManager
         }
 
         _accentDictionary = BuildAccentDictionary(CurrentAccentColor);
-        _typographyDictionary = BuildTypographyDictionary(CurrentDisplayFontFamily, CurrentBodyFontFamily, CurrentMonospaceFontFamily);
+        _typographyDictionary = BuildTypographyDictionary(CurrentDisplayFontFamily, CurrentBodyFontFamily, CurrentMonospaceFontFamily, CurrentBodyFontSize);
 
         app.Resources.MergedDictionaries.Add(_accentDictionary);
         app.Resources.MergedDictionaries.Add(_typographyDictionary);
@@ -185,16 +192,25 @@ public static class ThemeManager
     /// </summary>
     public static void ApplyTypography(string display, string body, string mono)
     {
+        ApplyTypography(display, body, mono, CurrentBodyFontSize);
+    }
+
+    /// <summary>
+    /// Applies runtime typography tokens including font size.
+    /// </summary>
+    public static void ApplyTypography(string display, string body, string mono, double bodyFontSize)
+    {
         CurrentDisplayFontFamily = NormalizeFontFamily(display, "Segoe UI");
         CurrentBodyFontFamily = NormalizeFontFamily(body, "Segoe UI");
         CurrentMonospaceFontFamily = NormalizeFontFamily(mono, "Cascadia Code");
+        CurrentBodyFontSize = bodyFontSize > 0 ? bodyFontSize : FrameworkElement.DefaultFontSize;
 
         if (_application == null)
             return;
 
         ReplaceManagedDictionary(
             ref _typographyDictionary,
-            BuildTypographyDictionary(CurrentDisplayFontFamily, CurrentBodyFontFamily, CurrentMonospaceFontFamily));
+            BuildTypographyDictionary(CurrentDisplayFontFamily, CurrentBodyFontFamily, CurrentMonospaceFontFamily, CurrentBodyFontSize));
 
         ForceThemeRefresh();
     }
@@ -299,6 +315,7 @@ public static class ThemeManager
         CurrentDisplayFontFamily = "Segoe UI";
         CurrentBodyFontFamily = "Segoe UI";
         CurrentMonospaceFontFamily = "Cascadia Code";
+        CurrentBodyFontSize = FrameworkElement.DefaultFontSize;
 
         ResourceDictionary.CurrentThemeKey = null;
     }
@@ -408,13 +425,16 @@ public static class ThemeManager
         return dictionary;
     }
 
-    private static ResourceDictionary BuildTypographyDictionary(string display, string body, string mono)
+    private static ResourceDictionary BuildTypographyDictionary(string display, string body, string mono, double bodyFontSize)
     {
         return new ResourceDictionary
         {
             ["DisplayFontFamily"] = display,
             ["BodyFontFamily"] = body,
-            ["MonoFontFamily"] = mono
+            ["MonoFontFamily"] = mono,
+            ["BodyFontSize"] = bodyFontSize,
+            ["CaptionFontSize"] = Math.Max(bodyFontSize - 2, 8.0),
+            ["SmallFontSize"] = Math.Max(bodyFontSize - 4, 6.0)
         };
     }
 
@@ -423,6 +443,14 @@ public static class ThemeManager
         return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "ThemeLoader is preserved via DynamicDependency attributes")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072:Target parameter argument",
+        Justification = "ThemeLoader is preserved via DynamicDependency attributes")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "ThemeLoader is preserved via DynamicDependency attributes")]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicMethods | DynamicallyAccessedMemberTypes.NonPublicMethods,
+        ThemeLoaderTypeName, XamlAssemblyName)]
     private static void EnsureXamlLoaderRegistered()
     {
         if (XamlLoader != null)
@@ -481,6 +509,14 @@ public static class ThemeManager
         CurrentTheme = variant;
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "TypeResolver and XamlTypeRegistry are preserved via DynamicDependency")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072:Target parameter argument",
+        Justification = "TypeResolver and XamlTypeRegistry are preserved via DynamicDependency")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "TypeResolver and XamlTypeRegistry are preserved via DynamicDependency")]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.NonPublicProperties, "Jalium.UI.TypeResolver", "Jalium.UI.Core")]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicMethods, "Jalium.UI.Markup.XamlTypeRegistry", XamlAssemblyName)]
     private static void TryRegisterTypeResolver(Assembly xamlAssembly)
     {
         try

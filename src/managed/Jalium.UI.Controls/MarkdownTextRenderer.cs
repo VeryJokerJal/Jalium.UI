@@ -34,7 +34,7 @@ internal sealed class MarkdownTextRenderer : FrameworkElement
         }
     }
 
-    public string TextFontFamily { get; set; } = "Segoe UI";
+    public string TextFontFamily { get; set; } = FrameworkElement.DefaultFontFamilyName;
     public string MonoFontFamily { get; set; } = "Cascadia Code";
     public double TextFontSize { get; set; } = 14;
     public FontWeight DefaultFontWeight { get; set; } = FontWeights.Normal;

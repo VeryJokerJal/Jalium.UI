@@ -39,14 +39,9 @@ public class DockLayout : ContentControl
     internal bool IsDockHighlighted
     {
         get => _isDockHighlighted;
-        set
-        {
-            if (_isDockHighlighted != value)
-            {
-                _isDockHighlighted = value;
-                InvalidateVisual();
-            }
-        }
+        set => _isDockHighlighted = value;
+        // NOTE: no InvalidateVisual() — DockLayout is the root container and invalidating
+        // it triggers a full-window re-render. The DockIndicatorWindow provides visual feedback.
     }
 
     public DockLayout()

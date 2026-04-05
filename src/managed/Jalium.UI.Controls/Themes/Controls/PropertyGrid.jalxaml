@@ -1,0 +1,119 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- PropertyGrid Style                              -->
+    <!-- ============================================== -->
+    <!-- A property editor grid with search, categorized properties,
+         and a description area. -->
+    <Style TargetType="PropertyGrid">
+        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="CornerRadius" Value="4" />
+        <Setter Property="Padding" Value="0" />
+        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="MinWidth" Value="200" />
+        <Setter Property="MinHeight" Value="200" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="PropertyGrid">
+                <Border Name="RootBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        ClipToBounds="True">
+                    <Grid>
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="*" />
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
+                        </Grid.RowDefinitions>
+
+                        <!-- Toolbar -->
+                        <Border Name="PART_ToolBar"
+                                Grid.Row="0"
+                                Background="{DynamicResource ControlBackground}"
+                                BorderBrush="{DynamicResource ControlBorder}"
+                                BorderThickness="0,0,0,1"
+                                Padding="4,2,4,2">
+                            <StackPanel Orientation="Horizontal">
+                                <Button Name="PART_CategorizedButton"
+                                        Content="Categorized"
+                                        Margin="0,0,4,0"
+                                        Padding="8,4,8,4"
+                                        MinWidth="0"
+                                        MinHeight="0" />
+                                <Button Name="PART_AlphabeticalButton"
+                                        Content="Alphabetical"
+                                        Padding="8,4,8,4"
+                                        MinWidth="0"
+                                        MinHeight="0" />
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Search Box -->
+                        <Border Name="PART_SearchBox"
+                                Grid.Row="1"
+                                Background="{DynamicResource ControlBackground}"
+                                BorderBrush="{DynamicResource ControlBorder}"
+                                BorderThickness="0,0,0,1"
+                                Padding="4">
+                            <TextBox Name="PART_SearchTextBox"
+                                     PlaceholderText="Search properties..."
+                                     BorderThickness="1" />
+                        </Border>
+
+                        <!-- Properties Host -->
+                        <ScrollViewer Name="PART_PropertiesHost"
+                                      Grid.Row="2"
+                                      VerticalScrollBarVisibility="Auto"
+                                      HorizontalScrollBarVisibility="Disabled">
+                            <StackPanel Name="PART_PropertiesPanel"
+                                        Orientation="Vertical" />
+                        </ScrollViewer>
+
+                        <!-- Splitter -->
+                        <Border Name="PART_Splitter"
+                                Grid.Row="3"
+                                Background="{DynamicResource ControlBorder}"
+                                Height="4"
+                                Cursor="SizeNS" />
+
+                        <!-- Description Area -->
+                        <Border Name="PART_DescriptionArea"
+                                Grid.Row="4"
+                                Background="{DynamicResource ControlBackground}"
+                                BorderBrush="{DynamicResource ControlBorder}"
+                                BorderThickness="0,1,0,0"
+                                Padding="8,6,8,6"
+                                MinHeight="48">
+                            <StackPanel Orientation="Vertical">
+                                <TextBlock Name="PART_PropertyNameText"
+                                           FontWeight="SemiBold"
+                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                           Margin="0,0,0,2" />
+                                <TextBlock Name="PART_PropertyDescriptionText"
+                                           Foreground="{DynamicResource TextSecondary}"
+                                           FontSize="11"
+                                           TextWrapping="Wrap" />
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+                </Border>
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Opacity" Value="0.65" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+</ResourceDictionary>

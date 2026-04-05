@@ -4,6 +4,7 @@ using Jalium.UI.Controls.Automation;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -59,7 +60,7 @@ public class TextBox : TextBoxBase, IImeSupport
     private List<FormattedRegion> _formattedRegions = new();
 
     // Fallback brushes & pens for rendering (used when theme resources are unavailable)
-    private static readonly SolidColorBrush s_fallbackFocusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_fallbackFocusBorderBrush = new(ThemeColors.ControlBorderFocused);
     private static readonly SolidColorBrush s_fallbackPlaceholderTextBrush = new(Color.FromRgb(128, 128, 128));
     private static readonly SolidColorBrush s_fallbackWhiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_spellErrorBrush = new(Color.FromRgb(255, 0, 0));
@@ -393,7 +394,7 @@ public class TextBox : TextBoxBase, IImeSupport
     /// <inheritdoc />
     protected override double GetLineHeight()
     {
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontMetrics = TextMeasurement.GetFontMetrics(fontFamily, fontSize);
         return fontMetrics.LineHeight;
@@ -405,7 +406,7 @@ public class TextBox : TextBoxBase, IImeSupport
         if (string.IsNullOrEmpty(text))
             return 0;
 
-        var fontFamily = FontFamily ?? "Segoe UI";
+        var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
         var fontSize = FontSize > 0 ? FontSize : 14;
         var fontWeight = FontWeight.ToOpenTypeWeight();
         var fontStyle = FontStyle.ToOpenTypeStyle();
@@ -884,7 +885,7 @@ public class TextBox : TextBoxBase, IImeSupport
                 var placeholderBrush = ResolvePlaceholderBrush();
                 var roundedHorizontalOffset = Math.Round(_horizontalOffset);
                 var roundedVerticalOffset = Math.Round(_verticalOffset);
-                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily ?? "Segoe UI", FontSize)
+                var formattedPlaceholder = new FormattedText(PlaceholderText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
                 {
                     Foreground = placeholderBrush,
                     MaxTextWidth = contentRect.Width,
@@ -956,7 +957,7 @@ public class TextBox : TextBoxBase, IImeSupport
                 continue;
 
             var lineText = text.Substring(line.StartIndex, line.Length);
-            var formattedText = new FormattedText(lineText, FontFamily ?? "Segoe UI", FontSize)
+            var formattedText = new FormattedText(lineText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
             {
                 Foreground = textBrush,
                 MaxTextWidth = Math.Max(0, contentRect.Width + roundedHorizontalOffset),
@@ -1015,11 +1016,9 @@ public class TextBox : TextBoxBase, IImeSupport
                     if (endInLine > startInLine)
                     {
                         var lineText = text.Substring(line.StartIndex, line.Length);
-                        var textBefore = lineText.Substring(0, startInLine);
-                        var errorText = lineText.Substring(startInLine, endInLine - startInLine);
 
-                        var startX = Math.Round(contentRect.X + MeasureTextWidth(textBefore) - roundedHorizontalOffset);
-                        var endX = startX + MeasureTextWidth(errorText);
+                        var startX = Math.Round(contentRect.X + GetCharacterXInLine(lineText, startInLine) - roundedHorizontalOffset);
+                        var endX = Math.Round(contentRect.X + GetCharacterXInLine(lineText, endInLine) - roundedHorizontalOffset);
                         var underlineY = y + lineHeight - 2;
 
                         // Draw wavy underline
@@ -1084,14 +1083,12 @@ public class TextBox : TextBoxBase, IImeSupport
                 if (endInLine > startInLine)
                 {
                     var lineText = text.Substring(line.StartIndex, line.Length);
-                    var textBefore = lineText.Substring(0, startInLine);
-                    var selectedText = lineText.Substring(startInLine, endInLine - startInLine);
 
-                    // Use measured text widths for accurate selection positioning
-                    var startX = Math.Round(contentRect.X + MeasureTextWidth(textBefore) - roundedHorizontalOffset);
-                    var width = MeasureTextWidth(selectedText);
-                    // Ensure minimum width for visibility (especially for spaces)
-                    width = Math.Max(Math.Round(width), 1);
+                    // Use native hit testing for accurate selection positioning
+                    var startXOffset = GetCharacterXInLine(lineText, startInLine);
+                    var endXOffset = GetCharacterXInLine(lineText, endInLine);
+                    var startX = Math.Round(contentRect.X + startXOffset - roundedHorizontalOffset);
+                    var width = Math.Max(Math.Round(endXOffset - startXOffset), 1);
 
                     var selRect = new Rect(startX, y, width, lineHeight);
                     dc.DrawRectangle(selectionBrush, null, selRect);
@@ -1101,7 +1098,7 @@ public class TextBox : TextBoxBase, IImeSupport
                 if (selectionEnd > lineEnd && i < _lines.Count - 1)
                 {
                     var lineText = text.Substring(line.StartIndex, line.Length);
-                    var startX = Math.Round(contentRect.X + MeasureTextWidth(lineText) - roundedHorizontalOffset);
+                    var startX = Math.Round(contentRect.X + GetCharacterXInLine(lineText, lineText.Length) - roundedHorizontalOffset);
                     var selRect = new Rect(startX, y, Math.Round(FontSize * 0.3), lineHeight);
                     dc.DrawRectangle(selectionBrush, null, selRect);
                 }
@@ -1122,13 +1119,13 @@ public class TextBox : TextBoxBase, IImeSupport
         if (columnIndex < 0) columnIndex = 0;
 
         var lineText = GetLineTextInternal(lineIndex);
-        var textBeforeCaret = lineText.Substring(0, Math.Min(columnIndex, lineText.Length));
+        var clampedColumn = Math.Clamp(columnIndex, 0, lineText.Length);
 
         // Round scroll offsets to prevent sub-pixel jittering
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
         var roundedVerticalOffset = Math.Round(_verticalOffset);
 
-        var x = Math.Round(contentRect.X + MeasureTextWidth(textBeforeCaret) - roundedHorizontalOffset);
+        var x = Math.Round(contentRect.X + GetCharacterXInLine(lineText, clampedColumn) - roundedHorizontalOffset);
         // Round y position to prevent sub-pixel jittering from floating-point accumulation errors
         var y = Math.Round(contentRect.Y + lineIndex * lineHeight - roundedVerticalOffset);
 
@@ -1138,7 +1135,7 @@ public class TextBox : TextBoxBase, IImeSupport
         dc.DrawRectangle(compositionBgBrush, null, new Rect(x, y, compositionWidth, lineHeight));
 
         // Draw composition text
-        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? "Segoe UI", FontSize)
+        var compositionText = new FormattedText(_imeCompositionString, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize)
         {
             Foreground = s_compositionTextBrush,
             MaxTextWidth = contentRect.Width,
@@ -1187,13 +1184,13 @@ public class TextBox : TextBoxBase, IImeSupport
         if (columnIndex < 0) columnIndex = 0;
 
         var lineText = GetLineTextInternal(lineIndex);
-        var textBeforeCaret = lineText.Substring(0, Math.Min(columnIndex, lineText.Length));
+        var clampedColumn = Math.Clamp(columnIndex, 0, lineText.Length);
 
         // Round scroll offsets to prevent sub-pixel jittering
         var roundedHorizontalOffset = Math.Round(_horizontalOffset);
         var roundedVerticalOffset = Math.Round(_verticalOffset);
 
-        var x = Math.Round(contentRect.X + MeasureTextWidth(textBeforeCaret) - roundedHorizontalOffset);
+        var x = Math.Round(contentRect.X + GetCharacterXInLine(lineText, clampedColumn) - roundedHorizontalOffset);
         // Round y position to prevent sub-pixel jittering from floating-point accumulation errors
         var y = Math.Round(contentRect.Y + lineIndex * lineHeight - roundedVerticalOffset);
 
@@ -1403,10 +1400,10 @@ public class TextBox : TextBoxBase, IImeSupport
         if (columnIndex < 0) columnIndex = 0;
 
         var lineText = GetLineTextInternal(lineIndex);
-        var textBeforeCaret = lineText.Substring(0, Math.Min(columnIndex, lineText.Length));
+        var clampedColumn = Math.Clamp(columnIndex, 0, lineText.Length);
 
-        // Calculate x position using measured text width
-        double x = Padding.Left - _horizontalOffset + MeasureTextWidth(textBeforeCaret);
+        // Calculate x position using native hit testing for accuracy
+        double x = Padding.Left - _horizontalOffset + GetCharacterXInLine(lineText, clampedColumn);
 
         // Calculate y position
         double y = Padding.Top + (lineIndex * lineHeight) - _verticalOffset;

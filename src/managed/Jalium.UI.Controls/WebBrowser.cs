@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace Jalium.UI.Controls;
 
@@ -168,10 +169,11 @@ public class WebBrowser : FrameworkElement
 
     private static string BuildScriptInvocation(string scriptName, object[] args)
     {
-        var encodedName = JsonSerializer.Serialize(scriptName);
+        var encodedName = JsonSerializer.Serialize(scriptName, WebBrowserJsonContext.Default.String);
         var encodedArgs = args.Length == 0
             ? string.Empty
-            : string.Join(", ", args.Select(static arg => JsonSerializer.Serialize(arg)));
+            : string.Join(", ", args.Select(static arg =>
+                JsonSerializer.Serialize(arg, WebBrowserJsonContext.Default.Object)));
 
         return $"(function(){{const name={encodedName};const fn=name.split('.').reduce((current, part)=>current?.[part], globalThis);if(typeof fn!=='function'){{throw new Error('Script function not found: '+name);}}return fn({encodedArgs});}})();";
     }
@@ -234,3 +236,7 @@ public sealed class WebBrowserNavigatedEventArgs : EventArgs
     /// <summary>Gets extra data associated with the navigation.</summary>
     public object? ExtraData { get; init; }
 }
+
+[JsonSerializable(typeof(string))]
+[JsonSerializable(typeof(object))]
+internal partial class WebBrowserJsonContext : JsonSerializerContext;

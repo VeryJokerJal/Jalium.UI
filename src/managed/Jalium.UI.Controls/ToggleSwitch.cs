@@ -346,9 +346,11 @@ public class ToggleSwitch : Control
         _switchThumb.Height = thumbH;
         _switchThumb.CornerRadius = new CornerRadius(thumbH / 2.0);
 
-        // Thumb position — VerticalAlignment is Top, so we compute the vertical
-        // centering ourselves with pixel rounding to avoid subpixel jitter.
-        double marginLeft = ComputeThumbMarginLeft(progress, thumbW);
+        // Thumb position — use the TARGET width for margin calculation so that
+        // underdamped size oscillations don't cause the thumb to jitter horizontally.
+        // VerticalAlignment is Top, so we compute the vertical centering ourselves
+        // with pixel rounding to avoid subpixel jitter.
+        double marginLeft = ComputeThumbMarginLeft(progress, _thumbWidthSpring.Target);
         double marginTop = Math.Round((TrackInnerHeight - thumbH) / 2.0);
         _switchThumb.Margin = new Thickness(marginLeft, marginTop, 0, 0);
 

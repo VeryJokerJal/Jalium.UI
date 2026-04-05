@@ -1,6 +1,7 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -135,11 +136,11 @@ public class TimePicker : Control
     private const double FlyoutMaxHeight = 260;
 
     // Highlight colors
-    private static readonly SolidColorBrush SelectedItemBg = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush SelectedItemBg = new(ThemeColors.SelectedItemBackground);
     private static readonly SolidColorBrush TransparentBg = new(Color.Transparent);
 
     // Static brushes & pens for rendering
-    private static readonly SolidColorBrush s_focusBorderBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_focusBorderBrush = new(ThemeColors.ControlBorderFocused);
     private static readonly SolidColorBrush s_whiteBrush = new(Color.White);
     private static readonly SolidColorBrush s_placeholderBrush = new(Color.FromRgb(128, 128, 128));
     private static readonly SolidColorBrush s_iconBrush = new(Color.FromRgb(160, 160, 160));
@@ -224,7 +225,7 @@ public class TimePicker : Control
             Height = ItemHeight,
             HorizontalAlignment = HorizontalAlignment.Stretch,
             HorizontalContentAlignment = HorizontalAlignment.Center,
-            Background = ResolvePopupBrush("AccentBrush", new SolidColorBrush(Color.FromRgb(0, 120, 212))),
+            Background = ResolvePopupBrush("AccentBrush", new SolidColorBrush(ThemeColors.Accent)),
             Foreground = ResolvePopupBrush("TextPrimary", new SolidColorBrush(Color.White)),
             FontSize = 18,
             CornerRadius = new CornerRadius(0, 0, 6, 6),
@@ -586,7 +587,7 @@ public class TimePicker : Control
 
         if (Header is string headerText)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14);
+            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
             TextMeasurement.MeasureText(headerFormatted);
             headerHeight = headerFormatted.Height + 4;
         }
@@ -614,7 +615,7 @@ public class TimePicker : Control
         // Draw header
         if (Header is string headerText && Foreground != null)
         {
-            var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = Foreground
             };
@@ -662,7 +663,7 @@ public class TimePicker : Control
             textBrush = ResolvePlaceholderBrush();
         }
 
-        var textFormatted = new FormattedText(displayText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+        var textFormatted = new FormattedText(displayText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
         {
             Foreground = textBrush
         };

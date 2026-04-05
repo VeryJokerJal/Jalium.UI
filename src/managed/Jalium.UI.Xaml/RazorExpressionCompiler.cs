@@ -19,34 +19,61 @@ internal static class RazorExpressionRuntimeCompiler
 
     public static void EnsureCompiled(RazorExpressionPlan plan)
     {
-        if (!RazorScriptingFeature.IsSupported)
+        // If a pre-compiled evaluator exists (from build-time), nothing to do.
+        if (RazorExpressionRegistry.TryGetEvaluator(plan.Expression, out _))
             return;
 
-        var key = $"{plan.Expression}::{string.Join("|", plan.RootIdentifiers)}";
-        _ = Cache.GetOrAdd(key, _ => Compile(plan));
+        // The lightweight evaluator handles most expressions without Roslyn.
+        // Defer Roslyn compilation to Evaluate() time — only invoked if the
+        // lightweight path actually fails, avoiding the heavy upfront cost
+        // of spinning up the Roslyn compiler pipeline for every expression.
     }
 
     public static object? Evaluate(RazorExpressionPlan plan, Func<string, object?> resolver)
     {
-        // Prefer build-time pre-compiled evaluator (always available, AOT-safe).
-        if (RazorExpressionRegistry.TryGetEvaluator(plan.Expression, out var preCompiled))
-            return preCompiled(resolver);
+        // Build-time pre-compiled evaluators use 'dynamic' which requires Microsoft.CSharp.
+        // Only use them when the runtime binder is available.
+        if (IsDynamicSupported &&
+            RazorExpressionRegistry.TryGetEvaluator(plan.Expression, out var preCompiled))
+        {
+            try { return preCompiled(resolver); }
+            catch { /* fall through to lightweight */ }
+        }
 
-        if (!RazorScriptingFeature.IsSupported)
-            throw new PlatformNotSupportedException("Razor runtime scripting is not supported under NativeAOT. Pre-compile Razor expressions using the Jalium build task.");
+        // Lightweight AOT-safe evaluator (no Roslyn, no dynamic)
+        return RazorLightweightExpressionEvaluator.Evaluate(plan.Expression, resolver);
+    }
 
-        var key = $"{plan.Expression}::{string.Join("|", plan.RootIdentifiers)}";
-        var compiled = Cache.GetOrAdd(key, _ => Compile(plan));
-        var globals = new RazorScriptGlobals { Resolve = resolver };
-        return compiled.Runner(globals).GetAwaiter().GetResult();
+    internal static readonly bool IsDynamicSupported = CheckDynamicSupport();
+    private static bool CheckDynamicSupport()
+    {
+        try { return Type.GetType("Microsoft.CSharp.RuntimeBinder.Binder, Microsoft.CSharp") != null; }
+        catch { return false; }
     }
 
     public static bool TryEvaluate(RazorExpressionPlan plan, Func<string, object?> resolver, out object? value)
     {
-        if (!RazorScriptingFeature.IsSupported)
+        // Build-time pre-compiled evaluators use 'dynamic' — skip when not available
+        if (IsDynamicSupported &&
+            RazorExpressionRegistry.TryGetEvaluator(plan.Expression, out var preCompiledEval))
         {
-            value = null;
-            return false;
+            try { value = preCompiledEval(resolver); return true; }
+            catch { /* fall through */ }
+        }
+
+        // Lightweight AOT-safe evaluator (no dynamic, no Roslyn)
+        try
+        {
+            value = RazorLightweightExpressionEvaluator.Evaluate(plan.Expression, resolver);
+            return true;
+        }
+        catch
+        {
+            if (!RazorScriptingFeature.IsSupported)
+            {
+                value = null;
+                return false;
+            }
         }
 
         if (RazorEvaluationGuards.ShouldShortCircuitMissingRoot(plan) &&
@@ -105,14 +132,15 @@ internal static class RazorTemplateRuntimeCompiler
 
     public static void EnsureCompiled(RazorTemplate template)
     {
-        if (!RazorScriptingFeature.IsSupported)
-            return;
-
         if (!template.HasCodeBlocks)
             return;
 
         var key = BuildCacheKey(template);
-        _ = Cache.GetOrAdd(key, _ => Compile(template));
+        if (RazorExpressionRegistry.TryGetTemplateEvaluator(key, out _))
+            return;
+
+        // Defer Roslyn compilation — the lightweight evaluator handles most
+        // templates without Roslyn. Compile on-demand only when needed.
     }
 
     public static bool TryEvaluate(RazorTemplate template, Func<string, object?> resolver, out object? value)
@@ -124,9 +152,10 @@ internal static class RazorTemplateRuntimeCompiler
             return false;
         }
 
-        // Prefer build-time pre-compiled template evaluator (AOT-safe).
+        // Build-time pre-compiled template evaluators use 'dynamic' — skip when not available
         var key = BuildCacheKey(template);
-        if (RazorExpressionRegistry.TryGetTemplateEvaluator(key, out var preCompiled))
+        if (RazorExpressionRuntimeCompiler.IsDynamicSupported &&
+            RazorExpressionRegistry.TryGetTemplateEvaluator(key, out var preCompiled))
         {
             try
             {

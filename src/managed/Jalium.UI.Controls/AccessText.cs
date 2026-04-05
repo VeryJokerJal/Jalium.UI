@@ -32,7 +32,7 @@ public class AccessText : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontSizeProperty =
         DependencyProperty.Register(nameof(FontSize), typeof(double), typeof(AccessText),
-            new PropertyMetadata(12.0));
+            new PropertyMetadata(FrameworkElement.DefaultFontSize));
 
     /// <summary>
     /// Identifies the FontWeight dependency property.

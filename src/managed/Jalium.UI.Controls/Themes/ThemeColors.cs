@@ -314,6 +314,34 @@ public static class ThemeColors
 
     #endregion
 
+    #region IME / Composition Colors
+
+    /// <summary>
+    /// IME composition background color.
+    /// </summary>
+    public static Color CompositionBackground => Color.FromRgb(60, 60, 80);
+
+    /// <summary>
+    /// IME composition text color.
+    /// </summary>
+    public static Color CompositionText => Color.FromRgb(255, 255, 200);
+
+    /// <summary>
+    /// IME composition underline color.
+    /// </summary>
+    public static Color CompositionUnderline => Color.FromRgb(200, 200, 100);
+
+    #endregion
+
+    #region Dropdown Colors
+
+    /// <summary>
+    /// Dropdown shadow color.
+    /// </summary>
+    public static Color DropdownShadow => Color.FromArgb(40, 0, 0, 0);
+
+    #endregion
+
     #region Title Bar Colors
 
     /// <summary>

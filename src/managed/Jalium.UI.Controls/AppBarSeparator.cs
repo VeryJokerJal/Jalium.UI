@@ -1,3 +1,4 @@
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -7,7 +8,7 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class AppBarSeparator : Control, ICommandBarElement
 {
-    private static readonly SolidColorBrush s_fallbackSeparatorBrush = new(Color.FromRgb(80, 80, 80));
+    private static readonly SolidColorBrush s_fallbackSeparatorBrush = new(ThemeColors.ControlBorder);
 
     #region Dependency Properties
 

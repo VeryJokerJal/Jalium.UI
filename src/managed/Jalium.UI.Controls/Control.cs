@@ -35,7 +35,7 @@ public class Control : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty ForegroundProperty =
         TextElement.ForegroundProperty.AddOwner(typeof(Control),
-            new PropertyMetadata(new SolidColorBrush(Color.Black), OnVisualPropertyChanged, null, inherits: true));
+            new PropertyMetadata(new SolidColorBrush(Themes.ThemeColors.TextPrimary), OnVisualPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the BorderBrush dependency property.
@@ -68,7 +68,7 @@ public class Control : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public static readonly DependencyProperty FontFamilyProperty =
         TextElement.FontFamilyProperty.AddOwner(typeof(Control),
-            new PropertyMetadata("Segoe UI", OnVisualPropertyChanged, null, inherits: true));
+            new PropertyMetadata(FrameworkElement.DefaultFontFamilyName, OnVisualPropertyChanged, null, inherits: true));
 
     /// <summary>
     /// Identifies the FontSize dependency property.
@@ -205,7 +205,7 @@ public class Control : FrameworkElement
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
     public string FontFamily
     {
-        get => (string)(GetValue(FontFamilyProperty) ?? "Segoe UI");
+        get => (string)(GetValue(FontFamilyProperty) ?? FrameworkElement.DefaultFontFamilyName);
         set => SetValue(FontFamilyProperty, value);
     }
 
@@ -481,6 +481,12 @@ public class Control : FrameworkElement
             parent.RegisterName(element.Name, element);
         }
 
+        // If this element is a Control that has already applied its own template,
+        // do NOT descend into its template children — they belong to this control's
+        // template, not the outer parent's template.
+        if (element is Control control && control._templateApplied)
+            return;
+
         // Process visual children
         var childCount = element.VisualChildrenCount;
         for (int i = 0; i < childCount; i++)
@@ -535,6 +541,11 @@ public class Control : FrameworkElement
             element,
             DependencyObject.LayerValueSource.ParentTemplate);
 
+        // If this element is a Control that has already applied its own template,
+        // do NOT descend into its template children.
+        if (element is Control control && control._templateApplied)
+            return;
+
         // Process visual children
         var childCount = element.VisualChildrenCount;
         for (int i = 0; i < childCount; i++)
@@ -586,6 +597,11 @@ public class Control : FrameworkElement
     {
         // Reactivate bindings on this element
         element.ReactivateBindings();
+
+        // If this element is a Control that has already applied its own template,
+        // do NOT descend into its template children.
+        if (element is Control control && control._templateApplied)
+            return;
 
         // Process visual children
         var childCount = element.VisualChildrenCount;
@@ -683,7 +699,7 @@ public class Control : FrameworkElement
 
     #region Property Changed Callbacks
 
-    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    internal static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is Control control)
         {

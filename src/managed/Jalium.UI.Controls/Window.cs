@@ -23,6 +23,30 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         return new Jalium.UI.Controls.Automation.WindowAutomationPeer(this);
     }
 
+    /// <summary>
+    /// Returns the <see cref="Window"/> that hosts the specified <see cref="DependencyObject"/>,
+    /// by walking up the visual tree.
+    /// </summary>
+    /// <param name="dependencyObject">The element whose host window is to be found.</param>
+    /// <returns>The hosting <see cref="Window"/>, or <c>null</c> if not found.</returns>
+    public static Window? GetWindow(DependencyObject dependencyObject)
+    {
+        if (dependencyObject is Window w)
+            return w;
+
+        if (dependencyObject is Visual visual)
+        {
+            Visual? current = visual;
+            while (current != null)
+            {
+                if (current is Window window)
+                    return window;
+                current = current.VisualParent;
+            }
+        }
+        return null;
+    }
+
     private readonly LayoutManager _layoutManager = new();
     private double _dpiScale = 1.0;
     private Dispatcher? _dispatcher; // UI thread Dispatcher, captured in Show()
@@ -219,6 +243,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private readonly object _dirtyLock = new(); // Protects _dirtyElements from cross-thread access
     private int _appliedDwmTopMarginPhysical = -1;
     private bool _attemptedAutoWindowIcon;
+    private bool _isActive;
+    private bool _contentRendered;
+    private bool _isSyncingPosition;
+    private Rect _restoreBounds;
+    private readonly List<Window> _ownedWindows = [];
     private const double DefaultTitleBarHeightDip = 32.0;
     private const int GpuBusyRetryDelayMs = 1;
     private const int RenderRecoveryRetryInitialDelayMs = 120;
@@ -376,6 +405,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             new PropertyMetadata(true, OnWindowTitleBarPresentationChanged));
 
     /// <summary>
+    /// Identifies the HasSystemMenu dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty HasSystemMenuProperty =
+        DependencyProperty.Register(nameof(HasSystemMenu), typeof(bool), typeof(Window),
+            new PropertyMetadata(true));
+
+    /// <summary>
     /// Identifies the TitleBarHeight dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
@@ -390,6 +427,46 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     public static readonly DependencyProperty WindowIconProperty =
         DependencyProperty.Register(nameof(WindowIcon), typeof(ImageSource), typeof(Window),
             new PropertyMetadata(null, OnWindowTitleBarPresentationChanged));
+
+    /// <summary>
+    /// Identifies the Left dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty LeftProperty =
+        DependencyProperty.Register(nameof(Left), typeof(double), typeof(Window),
+            new PropertyMetadata(double.NaN, OnPositionChanged));
+
+    /// <summary>
+    /// Identifies the Top dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty TopProperty =
+        DependencyProperty.Register(nameof(Top), typeof(double), typeof(Window),
+            new PropertyMetadata(double.NaN, OnPositionChanged));
+
+    /// <summary>
+    /// Identifies the WindowStartupLocation dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty WindowStartupLocationProperty =
+        DependencyProperty.Register(nameof(WindowStartupLocation), typeof(WindowStartupLocation), typeof(Window),
+            new PropertyMetadata(WindowStartupLocation.Manual));
+
+    /// <summary>
+    /// Identifies the ShowInTaskbar dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty ShowInTaskbarProperty =
+        DependencyProperty.Register(nameof(ShowInTaskbar), typeof(bool), typeof(Window),
+            new PropertyMetadata(true, OnShowInTaskbarChanged));
+
+    /// <summary>
+    /// Identifies the ShowActivated dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty ShowActivatedProperty =
+        DependencyProperty.Register(nameof(ShowActivated), typeof(bool), typeof(Window),
+            new PropertyMetadata(true));
 
     #endregion
 
@@ -583,6 +660,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     }
 
     /// <summary>
+    /// Gets or sets whether the system menu (right-click menu on title bar) is enabled.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool HasSystemMenu
+    {
+        get => (bool)GetValue(HasSystemMenuProperty)!;
+        set => SetValue(HasSystemMenuProperty, value);
+    }
+
+    /// <summary>
     /// Gets or sets the height, in DIPs, of the custom title bar.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
@@ -603,9 +690,105 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     }
 
     /// <summary>
+    /// Gets or sets the position of the window's left edge, in DIPs, relative to the desktop.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public double Left
+    {
+        get => (double)GetValue(LeftProperty)!;
+        set => SetValue(LeftProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the position of the window's top edge, in DIPs, relative to the desktop.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public double Top
+    {
+        get => (double)GetValue(TopProperty)!;
+        set => SetValue(TopProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the position of the window when first shown.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public WindowStartupLocation WindowStartupLocation
+    {
+        get => (WindowStartupLocation)GetValue(WindowStartupLocationProperty)!;
+        set => SetValue(WindowStartupLocationProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets a value indicating whether the window has a task bar button.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool ShowInTaskbar
+    {
+        get => (bool)GetValue(ShowInTaskbarProperty)!;
+        set => SetValue(ShowInTaskbarProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets a value that indicates whether a window is activated when first shown.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool ShowActivated
+    {
+        get => (bool)GetValue(ShowActivatedProperty)!;
+        set => SetValue(ShowActivatedProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the opacity of the window (0.0 to 1.0).
+    /// When <see cref="AllowsTransparency"/> is <c>true</c>, this controls the native window opacity.
+    /// </summary>
+    public override double Opacity
+    {
+        get => base.Opacity;
+        set
+        {
+            base.Opacity = value;
+            ApplyLayeredWindowOpacity(value);
+        }
+    }
+
+    /// <summary>
+    /// Gets a value that indicates whether this window has been loaded (shown at least once).
+    /// </summary>
+    public bool IsLoaded => _contentRendered;
+
+    /// <summary>
+    /// Gets the size and location of a window before being either minimized or maximized.
+    /// </summary>
+    public Rect RestoreBounds => _restoreBounds;
+
+    /// <summary>
+    /// Gets a collection of windows that are owned by this window.
+    /// </summary>
+    public IReadOnlyList<Window> OwnedWindows => _ownedWindows;
+
+    /// <summary>
+    /// Gets or sets a value that indicates whether the window allows transparency.
+    /// Must be set before the window is shown.
+    /// </summary>
+    public bool AllowsTransparency { get; set; }
+
+    /// <summary>
     /// Gets or sets the window that owns this window.
     /// </summary>
-    public Window? Owner { get; set; }
+    public Window? Owner
+    {
+        get => _owner;
+        set
+        {
+            if (_owner == value) return;
+            _owner?.RemoveOwnedWindow(this);
+            _owner = value;
+            _owner?.AddOwnedWindow(this);
+        }
+    }
+    private Window? _owner;
 
     /// <summary>
     /// Gets or sets the dialog result value, which is the return value of the ShowDialog method.
@@ -616,25 +799,160 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     #region Events
 
-    /// <summary>
-    /// Occurs when the window is loaded.
-    /// </summary>
-    public new event EventHandler? Loaded;
-
-    /// <summary>
-    /// Occurs when the window is closing. Set Cancel to true to prevent closing.
-    /// </summary>
+    public override event RoutedEventHandler? Loaded;
+    public override event RoutedEventHandler? Unloaded;
+    public override event SizeChangedEventHandler? SizeChanged;
     public event EventHandler<System.ComponentModel.CancelEventArgs>? Closing;
-
-    /// <summary>
-    /// Occurs when the window is closed.
-    /// </summary>
     public event EventHandler? Closed;
-
-    /// <summary>
-    /// Occurs when the window location changes.
-    /// </summary>
     public event EventHandler? LocationChanged;
+    public event EventHandler? Activated;
+    public event EventHandler? Deactivated;
+    public event EventHandler? StateChanged;
+    public event EventHandler? ContentRendered;
+    public event EventHandler? SourceInitialized;
+    public event DpiChangedEventHandler? DpiChanged;
+    public event EventHandler? SystemSettingsChanged;
+    public event EventHandler<SessionEndingCancelEventArgs>? SessionEnding;
+    public event EventHandler? Shown;
+    public event EventHandler? Hiding;
+
+    public bool IsActive => _isActive;
+
+    #endregion
+
+    #region Event Virtual Methods
+
+    protected virtual void OnActivated(EventArgs e) => Activated?.Invoke(this, e);
+    protected virtual void OnDeactivated(EventArgs e) => Deactivated?.Invoke(this, e);
+    protected virtual void OnStateChanged(EventArgs e) => StateChanged?.Invoke(this, e);
+    protected virtual void OnContentRendered(EventArgs e) => ContentRendered?.Invoke(this, e);
+    protected virtual void OnSourceInitialized(EventArgs e) => SourceInitialized?.Invoke(this, e);
+    protected virtual void OnLocationChanged(EventArgs e) => LocationChanged?.Invoke(this, e);
+    protected virtual void OnClosing(System.ComponentModel.CancelEventArgs e) => Closing?.Invoke(this, e);
+    protected virtual void OnClosed(EventArgs e) => Closed?.Invoke(this, e);
+    protected virtual void OnDpiChanged(DpiChangedEventArgs e) => DpiChanged?.Invoke(this, e);
+    protected virtual void OnSizeChanged(SizeChangedEventArgs e) => SizeChanged?.Invoke(this, e);
+    protected virtual void OnSystemSettingsChanged(EventArgs e) => SystemSettingsChanged?.Invoke(this, e);
+    protected virtual void OnSessionEnding(SessionEndingCancelEventArgs e) => SessionEnding?.Invoke(this, e);
+    protected virtual void OnLoaded(RoutedEventArgs e) => Loaded?.Invoke(this, e);
+    protected virtual void OnUnloaded(RoutedEventArgs e) => Unloaded?.Invoke(this, e);
+    protected virtual void OnShown(EventArgs e) => Shown?.Invoke(this, e);
+    protected virtual void OnHiding(EventArgs e) => Hiding?.Invoke(this, e);
+    protected virtual bool OnPreviewWindowKeyDown(Key key, ModifierKeys modifiers, bool isRepeat) => false;
+    protected virtual bool OnPreviewWindowKeyUp(Key key, ModifierKeys modifiers) => false;
+    protected virtual bool OnPreviewWindowMouseDown(MouseButton button, Point position, int clickCount) => false;
+    protected virtual bool OnPreviewWindowMouseUp(MouseButton button, Point position) => false;
+    protected virtual bool OnPreviewWindowMouseMove(Point position) => false;
+    protected virtual bool OnPreviewWindowMouseWheel(int delta, Point position) => false;
+
+    #endregion
+
+    #region Base Class Overrides
+
+    protected override void OnPropertyChanged(DependencyPropertyChangedEventArgs e) => base.OnPropertyChanged(e);
+    internal override object? GetLayoutClip() => null;
+    public override string ToString() => $"Window: \"{Title}\" ({Width:F0}x{Height:F0})";
+
+    protected override void OnContentChanged(object? oldContent, object? newContent)
+    {
+        base.OnContentChanged(oldContent, newContent);
+        InvalidateMeasure();
+        RequestFullInvalidation();
+    }
+
+    protected override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+        InvalidateMeasure();
+    }
+
+    protected override void OnIsEnabledChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsEnabledChanged(oldValue, newValue);
+        if (Handle != nint.Zero)
+            EnableWindow(Handle, newValue);
+    }
+
+    protected override void OnDataContextChanged(object? oldValue, object? newValue)
+    {
+        base.OnDataContextChanged(oldValue, newValue);
+        if (TitleBar != null)
+            TitleBar.DataContext = newValue;
+    }
+
+    protected override void OnResourcesChanged()
+    {
+        base.OnResourcesChanged();
+        if (Handle != nint.Zero)
+        {
+            EnsureImplicitStyles();
+            InvalidateMeasure();
+            RequestFullInvalidation();
+        }
+    }
+
+    protected override void OnIsMouseOverChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsMouseOverChanged(oldValue, newValue);
+        if (!newValue && TitleBarStyle == WindowTitleBarStyle.Custom)
+            ClearTitleBarInteractionState();
+    }
+
+    protected override void OnIsKeyboardFocusWithinChanged(bool isFocusWithin)
+    {
+        base.OnIsKeyboardFocusWithinChanged(isFocusWithin);
+        RequestFullInvalidation();
+    }
+
+    public override Visibility Visibility
+    {
+        get => base.Visibility;
+        set
+        {
+            base.Visibility = value;
+            if (Handle == nint.Zero) return;
+            _ = ShowWindow(Handle, value == Visibility.Visible
+                ? (ShowActivated ? SW_SHOW : SW_SHOWNOACTIVATE)
+                : SW_HIDE);
+        }
+    }
+
+    protected override void OnVisualChildrenChanged(Visual? visualAdded, Visual? visualRemoved)
+    {
+        base.OnVisualChildrenChanged(visualAdded, visualRemoved);
+        InvalidateMeasure();
+    }
+
+    protected override void OnIsKeyboardFocusedChanged(bool isFocused)
+    {
+        base.OnIsKeyboardFocusedChanged(isFocused);
+        RequestFullInvalidation();
+    }
+
+    protected override void OnIsFocusedChanged(bool oldValue, bool newValue)
+    {
+        base.OnIsFocusedChanged(oldValue, newValue);
+        RequestFullInvalidation();
+    }
+
+    protected override void OnLostMouseCapture()
+    {
+        base.OnLostMouseCapture();
+        if (TitleBarStyle == WindowTitleBarStyle.Custom)
+            ClearTitleBarInteractionState();
+    }
+
+    protected override void OnBackdropEffectChanged(IBackdropEffect? oldValue, IBackdropEffect? newValue)
+    {
+        base.OnBackdropEffectChanged(oldValue, newValue);
+        RequestFullInvalidation();
+    }
+
+    protected override void OnEffectChanged(object? oldValue, object? newValue)
+    {
+        base.OnEffectChanged(oldValue, newValue);
+        RequestFullInvalidation();
+    }
 
     #endregion
 
@@ -749,7 +1067,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void ApplyTitleBarPresentation()
     {
         EnsureAutoWindowIcon();
-
+        
         if (TitleBar == null)
         {
             return;
@@ -830,7 +1148,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         if (Handle != nint.Zero)
         {
-            _ = ShowWindow(Handle, SW_MINIMIZE);
+            WindowState = WindowState.Minimized;
         }
     }
 
@@ -843,12 +1161,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         if (WindowState == WindowState.Maximized)
         {
-            _ = ShowWindow(Handle, SW_RESTORE);
             WindowState = WindowState.Normal;
         }
         else
         {
-            _ = ShowWindow(Handle, SW_MAXIMIZE);
             WindowState = WindowState.Maximized;
         }
     }
@@ -856,6 +1172,40 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnTitleBarCloseClicked(object? sender, EventArgs e)
     {
         Close();
+    }
+
+    /// <summary>
+    /// Shows the system menu (right-click menu) at the specified screen coordinates.
+    /// </summary>
+    private void ShowSystemMenu(int screenX, int screenY)
+    {
+        if (!HasSystemMenu || Handle == nint.Zero)
+            return;
+
+        nint hMenu = GetSystemMenu(Handle, false);
+        if (hMenu == nint.Zero)
+            return;
+
+        // Update menu item states to match current window state
+        bool isMaximized = WindowState == WindowState.Maximized;
+        bool isMinimized = WindowState == WindowState.Minimized;
+        bool canResize = ResizeMode == ResizeMode.CanResize || ResizeMode == ResizeMode.CanResizeWithGrip;
+        bool canMinimize = ResizeMode != ResizeMode.NoResize;
+
+        EnableMenuItem(hMenu, SC_RESTORE, MF_BYCOMMAND | (isMaximized || isMinimized ? MF_ENABLED : MF_GRAYED));
+        EnableMenuItem(hMenu, SC_MOVE, MF_BYCOMMAND | (isMaximized ? MF_GRAYED : MF_ENABLED));
+        EnableMenuItem(hMenu, SC_SIZE, MF_BYCOMMAND | (isMaximized || !canResize ? MF_GRAYED : MF_ENABLED));
+        EnableMenuItem(hMenu, SC_MINIMIZE, MF_BYCOMMAND | (canMinimize ? MF_ENABLED : MF_GRAYED));
+        EnableMenuItem(hMenu, SC_MAXIMIZE, MF_BYCOMMAND | (!isMaximized && canResize ? MF_ENABLED : MF_GRAYED));
+
+        // Set the default menu item (double-click action)
+        SetMenuDefaultItem(hMenu, isMaximized ? SC_RESTORE : SC_MAXIMIZE, 0);
+
+        int cmd = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_LEFTBUTTON, screenX, screenY, 0, Handle, nint.Zero);
+        if (cmd != 0)
+        {
+            PostMessage(Handle, WM_SYSCOMMAND, (nint)cmd, nint.Zero);
+        }
     }
 
     private int HandleNcHitTest(nint lParam)
@@ -1645,7 +1995,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Shows the window.
     /// </summary>
-    public void Show()
+    public virtual void Show()
     {
         // Ensure implicit styles are applied to the entire visual tree.
         // This handles the case where elements (e.g., TitleBar) were created in the
@@ -1656,38 +2006,149 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         _dispatcher = Dispatcher.CurrentDispatcher;
         CompositionTarget.FrameStarting += OnFrameStarting;
+
+        // Capture desired state before EnsureHandle, because Win32 calls inside
+        // EnsureHandle (SetWindowPos for DPI / frame-change) can trigger WM_SIZE
+        // which resets WindowState back to Normal.
+        var desiredState = WindowState;
+
         EnsureHandle();
 
         // Detect monitor refresh rate and update CompositionTarget for adaptive frame rate
         var refreshRate = DetectMonitorRefreshRate();
         CompositionTarget.UpdateRefreshRate(refreshRate);
 
-        _ = ShowWindow(Handle, SW_SHOW);
+        // Apply startup location before showing
+        ApplyWindowStartupLocation();
 
-        // For custom title bar, trigger frame change after show to remove native title bar
-        // This preserves animations while hiding the native caption
-        if (TitleBarStyle == WindowTitleBarStyle.Custom)
+        var showCmd = desiredState switch
         {
-            _ = SetWindowPos(Handle, nint.Zero, 0, 0, 0, 0,
-                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER);
+            WindowState.Maximized => SW_MAXIMIZE,
+            WindowState.Minimized => SW_MINIMIZE,
+            _ => ShowActivated ? SW_SHOW : SW_SHOWNOACTIVATE
+        };
+
+        // Restore the desired state in case EnsureHandle's WM_SIZE overwrote it.
+        if (WindowState != desiredState)
+        {
+            _isSyncingWindowState = true;
+            try { WindowState = desiredState; }
+            finally { _isSyncingWindowState = false; }
         }
+        _ = ShowWindow(Handle, showCmd);
 
-        _ = UpdateWindow(Handle);
+        // SWP_FRAMECHANGED for custom title bar was already applied in EnsureHandle
+        // (combined with DPI adjustment), so no additional call is needed here.
+        // Removing the duplicate saves a DWM roundtrip (~10-50ms).
 
-        // Fail fast if the first frame cannot be rendered.
+        // Render the first frame. UpdateWindow is intentionally omitted —
+        // ForceRenderFrame already performs a synchronous full render (layout +
+        // draw + present), and the preceding ShowWindow triggers a WM_PAINT
+        // that RenderFrame would handle.  Calling both caused two redundant
+        // full renders, adding 50-200ms of blocking time.
         ForceRenderFrame();
 
-        Loaded?.Invoke(this, EventArgs.Empty);
+        OnLoaded(new RoutedEventArgs());
+
+        if (!_contentRendered)
+        {
+            _contentRendered = true;
+            OnContentRendered(EventArgs.Empty);
+        }
+
+        OnShown(EventArgs.Empty);
     }
 
     /// <summary>
     /// Hides the window.
     /// </summary>
-    public void Hide()
+    public virtual void Hide()
     {
+        OnHiding(EventArgs.Empty);
+
         if (Handle != nint.Zero)
         {
             _ = ShowWindow(Handle, SW_HIDE);
+        }
+    }
+
+    /// <summary>
+    /// Attempts to bring the window to the foreground and activates it.
+    /// </summary>
+    /// <returns><c>true</c> if the window was successfully activated.</returns>
+    public virtual bool Activate()
+    {
+        if (Handle == nint.Zero)
+        {
+            return false;
+        }
+
+        // Restore if minimized
+        if (WindowState == WindowState.Minimized)
+        {
+            _ = ShowWindow(Handle, SW_RESTORE);
+        }
+
+        return SetForegroundWindow(Handle);
+    }
+
+    /// <summary>
+    /// Allows a window to be dragged by a mouse with its left button down over an exposed area of the window's client area.
+    /// </summary>
+    public virtual void DragMove()
+    {
+        if (Handle == nint.Zero)
+        {
+            return;
+        }
+
+        // Release mouse capture so the system can take over
+        UIElement.ForceReleaseMouseCapture();
+        _ = ReleaseCapture();
+
+        // Send WM_NCLBUTTONDOWN with HTCAPTION to initiate a window drag
+        _ = SendMessage(Handle, WM_NCLBUTTONDOWN, (nint)HTCAPTION, nint.Zero);
+    }
+
+    /// <summary>
+    /// Centers the window on the screen of the current monitor.
+    /// </summary>
+    public void CenterOnScreen()
+    {
+        if (Handle == nint.Zero) return;
+        var monitor = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
+        var monitorInfo = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+        if (GetMonitorInfo(monitor, ref monitorInfo))
+        {
+            int screenW = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+            int screenH = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+            int winW = (int)(Width * _dpiScale);
+            int winH = (int)(Height * _dpiScale);
+            int x = monitorInfo.rcWork.left + (screenW - winW) / 2;
+            int y = monitorInfo.rcWork.top + (screenH - winH) / 2;
+            _ = SetWindowPos(Handle, nint.Zero, x, y, 0, 0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
+    }
+
+    /// <summary>
+    /// Centers the window relative to its owner window.
+    /// </summary>
+    public void CenterOnOwner()
+    {
+        if (Handle == nint.Zero) return;
+        nint ownerHwnd = Owner?.Handle ?? nint.Zero;
+        if (ownerHwnd == nint.Zero) return;
+        if (GetWindowRect(ownerHwnd, out RECT ownerRect))
+        {
+            int ownerW = ownerRect.right - ownerRect.left;
+            int ownerH = ownerRect.bottom - ownerRect.top;
+            int winW = (int)(Width * _dpiScale);
+            int winH = (int)(Height * _dpiScale);
+            int x = ownerRect.left + (ownerW - winW) / 2;
+            int y = ownerRect.top + (ownerH - winH) / 2;
+            _ = SetWindowPos(Handle, nint.Zero, x, y, 0, 0,
+                SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
         }
     }
 
@@ -1696,7 +2157,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// <summary>
     /// Opens a window and returns only when the newly opened window is closed.
     /// </summary>
-    public bool? ShowDialog()
+    public virtual bool? ShowDialog()
     {
         DialogResult = null;
 
@@ -1761,7 +2222,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private bool _isClosing;
     private bool _isSyncingWindowState;
 
-    public void Close()
+    public virtual void Close()
     {
         if (_isClosing) return;
         _isClosing = true;
@@ -1772,7 +2233,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         CompositionTarget.FrameStarting -= OnFrameStarting;
 
         var closingArgs = new System.ComponentModel.CancelEventArgs();
-        Closing?.Invoke(this, closingArgs);
+        OnClosing(closingArgs);
         if (closingArgs.Cancel)
         {
             _isClosing = false;
@@ -1798,6 +2259,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         foreach (var popup in ActiveExternalPopups.ToList())
             popup.IsOpen = false;
         ActiveExternalPopups.Clear();
+
+        // Close all owned windows
+        foreach (var owned in _ownedWindows.ToList())
+            owned.Close();
+        _ownedWindows.Clear();
+
+        // Detach from owner
+        _owner?.RemoveOwnedWindow(this);
+        _owner = null;
 
         // Release large image resources before dropping the drawing context reference.
         // Avoid full ClearCache() here because text/brush teardown order can still be sensitive
@@ -1831,7 +2301,85 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             }
         }
 
-        Closed?.Invoke(this, EventArgs.Empty);
+        OnClosed(EventArgs.Empty);
+        OnUnloaded(new RoutedEventArgs());
+    }
+
+    private void ApplyLayeredWindowOpacity(double opacity)
+    {
+        if (!AllowsTransparency || Handle == nint.Zero)
+            return;
+        byte alpha = (byte)(Math.Clamp(opacity, 0.0, 1.0) * 255);
+        _ = SetLayeredWindowAttributes(Handle, 0, alpha, LWA_ALPHA);
+    }
+
+    private void CaptureRestoreBounds()
+    {
+        if (Handle != nint.Zero && GetWindowRect(Handle, out RECT rect))
+        {
+            double dpi = _dpiScale;
+            _restoreBounds = new Rect(
+                rect.left / dpi,
+                rect.top / dpi,
+                (rect.right - rect.left) / dpi,
+                (rect.bottom - rect.top) / dpi);
+        }
+    }
+
+    private void AddOwnedWindow(Window child)
+    {
+        if (!_ownedWindows.Contains(child))
+            _ownedWindows.Add(child);
+    }
+
+    private void RemoveOwnedWindow(Window child) => _ownedWindows.Remove(child);
+
+    private void ApplyWindowStartupLocation()
+    {
+        if (Handle == nint.Zero)
+        {
+            return;
+        }
+
+        switch (WindowStartupLocation)
+        {
+            case WindowStartupLocation.CenterScreen:
+            {
+                var monitor = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
+                var monitorInfo = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+                if (GetMonitorInfo(monitor, ref monitorInfo))
+                {
+                    int screenW = monitorInfo.rcWork.right - monitorInfo.rcWork.left;
+                    int screenH = monitorInfo.rcWork.bottom - monitorInfo.rcWork.top;
+                    int winW = (int)(Width * _dpiScale);
+                    int winH = (int)(Height * _dpiScale);
+                    int x = monitorInfo.rcWork.left + (screenW - winW) / 2;
+                    int y = monitorInfo.rcWork.top + (screenH - winH) / 2;
+                    _ = SetWindowPos(Handle, nint.Zero, x, y, 0, 0,
+                        SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                }
+                break;
+            }
+            case WindowStartupLocation.CenterOwner:
+            {
+                if (Owner?.Handle is nint ownerHwnd and not 0)
+                {
+                    if (GetWindowRect(ownerHwnd, out RECT ownerRect))
+                    {
+                        int ownerW = ownerRect.right - ownerRect.left;
+                        int ownerH = ownerRect.bottom - ownerRect.top;
+                        int winW = (int)(Width * _dpiScale);
+                        int winH = (int)(Height * _dpiScale);
+                        int x = ownerRect.left + (ownerW - winW) / 2;
+                        int y = ownerRect.top + (ownerH - winH) / 2;
+                        _ = SetWindowPos(Handle, nint.Zero, x, y, 0, 0,
+                            SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                    }
+                }
+                break;
+            }
+            // WindowStartupLocation.Manual: use Left/Top as-is (already applied via OnPositionChanged)
+        }
     }
 
     private void EnsureHandle()
@@ -1852,6 +2400,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             ? WS_EX_APPWINDOW
             : 0;
 
+        if (!ShowInTaskbar)
+        {
+            dwExStyle |= WS_EX_TOOLWINDOW;
+            dwExStyle &= ~WS_EX_APPWINDOW;
+        }
+
+        if (AllowsTransparency)
+        {
+            dwExStyle |= WS_EX_LAYERED;
+        }
+
         // Query system DPI for initial window sizing (before HWND exists)
         uint systemDpi = GetDpiForSystem();
         _dpiScale = systemDpi / 96.0;
@@ -1864,14 +2423,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         PrepareTaskbarRelaunchIdentity();
 
         // Create the window
+        // Use Left/Top if set, otherwise default placement
+        int x = double.IsNaN(Left) ? CW_USEDEFAULT : (int)(Left * _dpiScale);
+        int y = double.IsNaN(Top) ? CW_USEDEFAULT : (int)(Top * _dpiScale);
+
         Handle = CreateWindowEx(
             dwExStyle,
             WindowClassName,
             Title,
             dwStyle,
-            CW_USEDEFAULT, CW_USEDEFAULT,
+            x, y,
             physicalWidth, physicalHeight,
-            nint.Zero,
+            Owner?.Handle ?? nint.Zero,
             nint.Zero,
             GetModuleHandle(null),
             nint.Zero);
@@ -1886,25 +2449,39 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // Store reference for message handling
         _windows[Handle] = this;
 
-        // Refine DPI from actual window monitor (may differ from system DPI)
+        // Refine DPI from actual window monitor (may differ from system DPI).
+        // For custom title bar, also apply SWP_FRAMECHANGED so NCCALCSIZE semantics
+        // are active on the first displayed frame. Combining these into one SetWindowPos
+        // call avoids an extra DWM roundtrip (~10-50ms).
         uint windowDpi = GetDpiForWindow(Handle);
-        if (windowDpi != 0 && windowDpi != systemDpi)
-        {
-            _dpiScale = windowDpi / 96.0;
-            physicalWidth = (int)(Width * _dpiScale);
-            physicalHeight = (int)(Height * _dpiScale);
-            _ = SetWindowPos(Handle, nint.Zero, 0, 0, physicalWidth, physicalHeight,
-                SWP_NOMOVE | SWP_NOZORDER | SWP_NOOWNERZORDER);
-        }
+        bool needsDpiAdjust = windowDpi != 0 && windowDpi != systemDpi;
+        bool isCustomTitleBar = TitleBarStyle == WindowTitleBarStyle.Custom;
 
-        // For custom title bar, enable DWM effects for rounded corners and animations.
-        if (TitleBarStyle == WindowTitleBarStyle.Custom)
+        if (isCustomTitleBar)
         {
             EnableRoundedCorners();
-            // Ensure NC metrics are applied immediately so custom NCCALCSIZE
-            // semantics are active on the first displayed frame.
-            _ = SetWindowPos(Handle, nint.Zero, 0, 0, 0, 0,
-                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE);
+        }
+
+        if (needsDpiAdjust || isCustomTitleBar)
+        {
+            if (needsDpiAdjust)
+            {
+                _dpiScale = windowDpi / 96.0;
+                physicalWidth = (int)(Width * _dpiScale);
+                physicalHeight = (int)(Height * _dpiScale);
+            }
+
+            uint flags = SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE;
+            if (isCustomTitleBar)
+                flags |= SWP_FRAMECHANGED;
+            if (!needsDpiAdjust)
+                flags |= SWP_NOMOVE | SWP_NOSIZE;
+
+            _ = SetWindowPos(Handle, nint.Zero,
+                0, 0,
+                needsDpiAdjust ? physicalWidth : 0,
+                needsDpiAdjust ? physicalHeight : 0,
+                needsDpiAdjust ? (flags | SWP_NOMOVE) : flags);
         }
 
         // Create render target for this window.
@@ -1928,6 +2505,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         OleDropTarget.RegisterWindow(this);
 
         UpdateInputMethodAssociation();
+
+        OnSourceInitialized(EventArgs.Empty);
     }
 
     private void EnableRoundedCorners()
@@ -1941,6 +2520,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // DWMWCP_ROUND = 2 (rounded corners)
         int cornerPreference = DWMWCP_ROUND;
         _ = DwmSetWindowAttribute(Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref cornerPreference, sizeof(int));
+
+        // Enable dark mode so DWM-owned UI (title bar, system menu, scrollbars) uses dark theme.
+        int useDarkMode = 1;
+        _ = DwmSetWindowAttribute(Handle, DWMWA_USE_IMMERSIVE_DARK_MODE, ref useDarkMode, sizeof(int));
+
+        // Enable dark mode for popup menus (TrackPopupMenu) via undocumented uxtheme APIs.
+        _ = SetPreferredAppMode(PreferredAppMode.ForceDark);
+        _ = AllowDarkModeForWindow(Handle, true);
+        FlushMenuThemes();
 
         // Set DWM caption/border color to dark to prevent white flash during resize.
         // DWMWA_CAPTION_COLOR = 35, DWMWA_BORDER_COLOR = 34
@@ -2403,6 +2991,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         if (d is Window window && e.NewValue is WindowState newState)
         {
+            // Capture restore bounds when leaving Normal state
+            if (e.OldValue is WindowState.Normal && newState != WindowState.Normal
+                && window.Handle != nint.Zero)
+            {
+                window.CaptureRestoreBounds();
+            }
+
             window.ApplyTitleBarPresentation();
 
             // Sync the native window state when set programmatically.
@@ -2417,6 +3012,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 };
                 _ = ShowWindow(window.Handle, cmd);
             }
+
+            window.OnStateChanged(EventArgs.Empty);
         }
     }
 
@@ -2481,6 +3078,44 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         window.ApplyTitleBarPresentation();
         window.InvalidateMeasure();
         window.UpdateCustomTitleBarFrameMargins();
+    }
+
+    private static void OnPositionChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Window window && window.Handle != nint.Zero && !window._isSyncingPosition)
+        {
+            int x = double.IsNaN(window.Left) ? 0 : (int)(window.Left * window._dpiScale);
+            int y = double.IsNaN(window.Top) ? 0 : (int)(window.Top * window._dpiScale);
+            uint flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+            if (double.IsNaN(window.Left) || double.IsNaN(window.Top))
+            {
+                return;
+            }
+            _ = SetWindowPos(window.Handle, nint.Zero, x, y, 0, 0, flags);
+        }
+    }
+
+    private static void OnShowInTaskbarChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Window window && window.Handle != nint.Zero)
+        {
+            bool show = e.NewValue is true;
+            long exStyle = GetWindowLong(window.Handle, GWL_EXSTYLE);
+            if (show)
+            {
+                exStyle &= ~(long)WS_EX_TOOLWINDOW;
+                exStyle |= WS_EX_APPWINDOW;
+            }
+            else
+            {
+                exStyle |= WS_EX_TOOLWINDOW;
+                exStyle &= ~(long)WS_EX_APPWINDOW;
+            }
+            _ = SetWindowLong(window.Handle, GWL_EXSTYLE, exStyle);
+            // Force the shell to re-evaluate taskbar presence
+            _ = SetWindowPos(window.Handle, nint.Zero, 0, 0, 0, 0,
+                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+        }
     }
 
     #endregion
@@ -2884,6 +3519,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             switch (msg)
             {
+                case WM_GETMINMAXINFO:
+                {
+                    var mmi = Marshal.PtrToStructure<MINMAXINFO>(lParam);
+                    double dpi = window._dpiScale;
+                    double minW = window.MinWidth;
+                    double minH = window.MinHeight;
+                    double maxW = window.MaxWidth;
+                    double maxH = window.MaxHeight;
+                    if (!double.IsNaN(minW) && minW > 0)
+                        mmi.ptMinTrackSize.X = (int)(minW * dpi);
+                    if (!double.IsNaN(minH) && minH > 0)
+                        mmi.ptMinTrackSize.Y = (int)(minH * dpi);
+                    if (!double.IsInfinity(maxW) && maxW > 0)
+                        mmi.ptMaxTrackSize.X = (int)(maxW * dpi);
+                    if (!double.IsInfinity(maxH) && maxH > 0)
+                        mmi.ptMaxTrackSize.Y = (int)(maxH * dpi);
+                    Marshal.StructureToPtr(mmi, lParam, true);
+                    return nint.Zero;
+                }
+
                 case WM_CLOSE:
                     // Route through Close() so Closing event can cancel
                     window.Close();
@@ -3040,7 +3695,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     break;
 
                 case WM_NCRBUTTONDOWN:
-                case WM_NCRBUTTONUP:
                     if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
                     {
                         if (window.ShouldUseWin11SnapNcRouting())
@@ -3048,15 +3702,35 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                             break;
                         }
 
-                        // Only suppress right-click when over a TitleBarButton
-                        // Allow system menu on caption area (normal Windows behavior)
+                        int ncRbDownX = (short)(lParam.ToInt64() & 0xFFFF);
+                        int ncRbDownY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+                        POINT ncRbDownPt = new() { X = ncRbDownX, Y = ncRbDownY };
+                        _ = ScreenToClient(hWnd, ref ncRbDownPt);
+                        if (window.GetTitleBarButtonAtPoint(new Point(ncRbDownPt.X / window._dpiScale, ncRbDownPt.Y / window._dpiScale)) != null)
+                        {
+                            return nint.Zero;
+                        }
+                    }
+                    break;
+
+                case WM_NCRBUTTONUP:
+                    if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
+                    {
                         int ncRbX = (short)(lParam.ToInt64() & 0xFFFF);
                         int ncRbY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
                         POINT ncRbPt = new() { X = ncRbX, Y = ncRbY };
                         _ = ScreenToClient(hWnd, ref ncRbPt);
-                        // Convert physical client pixels to DIPs
+                        // Suppress right-click on title bar buttons
                         if (window.GetTitleBarButtonAtPoint(new Point(ncRbPt.X / window._dpiScale, ncRbPt.Y / window._dpiScale)) != null)
                         {
+                            return nint.Zero;
+                        }
+
+                        // Show system menu on caption area right-click
+                        int ncHitTest = (int)wParam.ToInt64();
+                        if (ncHitTest == HTCAPTION || ncHitTest == HTSYSMENU)
+                        {
+                            window.ShowSystemMenu(ncRbX, ncRbY);
                             return nint.Zero;
                         }
                     }
@@ -3114,10 +3788,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     break; // Allow default processing
 
                 case WM_MOVE:
-                    window.LocationChanged?.Invoke(window, EventArgs.Empty);
+                {
+                    // Sync Left/Top from native window rect (outer bounds)
+                    if (GetWindowRect(hWnd, out RECT windowRect))
+                    {
+                        window._isSyncingPosition = true;
+                        try
+                        {
+                            window.Left = windowRect.left / window._dpiScale;
+                            window.Top = windowRect.top / window._dpiScale;
+                        }
+                        finally
+                        {
+                            window._isSyncingPosition = false;
+                        }
+                    }
+                    window.OnLocationChanged(EventArgs.Empty);
                     // Re-detect refresh rate (window may have moved to a different monitor)
                     CompositionTarget.UpdateRefreshRate(window.DetectMonitorRefreshRate());
                     return nint.Zero;
+                }
 
                 case WM_DISPLAYCHANGE:
                     // Display settings changed (resolution, refresh rate, etc.)
@@ -3127,11 +3817,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 case WM_DPICHANGED:
                 {
                     // Per-monitor DPI change (window moved to different DPI monitor)
+                    var oldDpiScale = window._dpiScale;
                     uint newDpi = (uint)((wParam.ToInt64() >> 16) & 0xFFFF);
                     window._dpiScale = newDpi / 96.0;
 
                     // Update DPI BEFORE SetWindowPos: SetWindowPos triggers WM_SIZE
-                    // synchronously, which calls Resize() 鈫?CreateSnapshotResources().
+                    // synchronously, which calls Resize() → CreateSnapshotResources().
                     // Snapshot bitmaps bake DPI into their D2D1_BITMAP_PROPERTIES1,
                     // so dpiX_/dpiY_ must already reflect the new DPI at that point.
                     window.RenderTarget?.SetDpi((float)newDpi, (float)newDpi);
@@ -3149,6 +3840,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
                     // Re-detect refresh rate (different monitor may have different rate)
                     CompositionTarget.UpdateRefreshRate(window.DetectMonitorRefreshRate());
+
+                    window.OnDpiChanged(new DpiChangedEventArgs(
+                        new DpiScale(oldDpiScale, oldDpiScale),
+                        new DpiScale(window._dpiScale, window._dpiScale)));
 
                     return nint.Zero;
                 }
@@ -3379,6 +4074,31 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 case WM_KILLFOCUS:
                     window.OnKillFocus(wParam);
                     break;
+
+                case WM_SETTINGCHANGE:
+                case WM_THEMECHANGED:
+                    window.OnSystemSettingsChanged(EventArgs.Empty);
+                    break;
+
+                case WM_QUERYENDSESSION:
+                {
+                    // lParam bit 0 set = shutdown, else logoff
+                    var reason = (lParam.ToInt64() & 1) != 0
+                        ? ReasonSessionEnding.Shutdown
+                        : ReasonSessionEnding.Logoff;
+                    var args = new SessionEndingCancelEventArgs(reason);
+                    window.OnSessionEnding(args);
+                    // Return 0 to prevent, non-zero to allow
+                    return args.Cancel ? nint.Zero : 1;
+                }
+
+                case WM_ENDSESSION:
+                    if (wParam != nint.Zero)
+                    {
+                        // Session is definitely ending — close gracefully
+                        window.Close();
+                    }
+                    return nint.Zero;
             }
         }
 
@@ -3420,6 +4140,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
+        var previousWidth = Width;
+        var previousHeight = Height;
+
         // Convert physical pixels to DIPs for layout
         Width = physicalWidth / _dpiScale;
         Height = physicalHeight / _dpiScale;
@@ -3427,7 +4150,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // Always use WM_SIZE client dimensions as the single source of truth.
         // This keeps layout and swapchain size stable during drag resize.
         TryResizeRenderTarget(physicalWidth, physicalHeight, "OnSizeChanged");
+
+        // After swap chain resize, DXGI discards all buffer contents.
+        // Must request full invalidation so RenderFrame takes the full-render path
+        // instead of partial dirty-rect rendering (which would leave stale/black areas).
+        RequestFullInvalidation();
         InvalidateMeasure();
+
+        bool widthChanged = previousWidth != Width;
+        bool heightChanged = previousHeight != Height;
+        if (widthChanged || heightChanged)
+        {
+            OnSizeChanged(new SizeChangedEventArgs(
+                new SizeChangedInfo(this, new Size(previousWidth, previousHeight), widthChanged, heightChanged)));
+        }
     }
 
     private void TryResizeRenderTarget(int physicalWidth, int physicalHeight, string stage)
@@ -3953,9 +4689,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
             // VSync disabled — let the compositor / display handle pacing.
             // This minimizes input-to-display latency for all scenarios.
-            RenderTarget.SetVSyncEnabled(false);
-
-            // VSync disabled — no frame rate limiting.
             RenderTarget.SetVSyncEnabled(false);
 
             if (fullInvalidation)
@@ -4526,6 +5259,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         bool isRepeat = ((lParam.ToInt64() >> 30) & 1) != 0;
         int timestamp = Environment.TickCount;
 
+        // Allow subclass to intercept before any processing
+        if (OnPreviewWindowKeyDown(key, modifiers, isRepeat))
+        {
+            return true;
+        }
+
         // F3 toggles debug HUD
         if (key == Key.F3 && !isRepeat)
         {
@@ -4764,6 +5503,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         var modifiers = GetModifierKeys();
         int timestamp = Environment.TickCount;
 
+        // Allow subclass to intercept before any processing
+        if (OnPreviewWindowKeyUp(key, modifiers))
+        {
+            return true;
+        }
+
         // Route keyboard events to the focused element, or the window if no element has focus
         var target = Keyboard.FocusedElement as UIElement ?? this;
 
@@ -4792,11 +5537,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         if (activateState == WA_INACTIVE)
         {
+            if (_isActive)
+            {
+                _isActive = false;
+                OnDeactivated(EventArgs.Empty);
+            }
             HandleWindowDeactivated(newForegroundWindow, clearKeyboardFocus: true);
             _suppressEscapeUntilTick = 0;
             return;
         }
 
+        if (!_isActive)
+        {
+            _isActive = true;
+            OnActivated(EventArgs.Empty);
+        }
         ArmEscapeSuppressionIfNeeded();
         WakeRenderPipeline();
     }
@@ -5166,6 +5921,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnMouseMove(nint wParam, nint lParam)
     {
         var position = GetMousePosition(lParam);
+
+        // Allow subclass to intercept
+        if (OnPreviewWindowMouseMove(position))
+            return;
+
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
         var modifiers = GetModifierKeys();
         int timestamp = Environment.TickCount;
@@ -5407,6 +6167,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnMouseButtonDown(MouseButton button, nint wParam, nint lParam, int clickCount = 1)
     {
         var position = GetMousePosition(lParam);
+
+        // Allow subclass to intercept
+        if (OnPreviewWindowMouseDown(button, position, clickCount))
+            return;
+
         var topLevelMenuItemBehindOverlay = OverlayLayer.HasLightDismissPopups
             ? HitTopLevelMenuItemBehindOverlay(position)
             : null;
@@ -5460,6 +6225,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         if (button == MouseButton.Left)
         {
             ActivateMousePressedChain(target);
+
+            // Activate the DockTabPanel that contains the click target
+            UIElement? walk = target;
+            while (walk != null)
+            {
+                if (walk is DockTabPanel dockPanel)
+                {
+                    DockManager.SetActivePanel(dockPanel);
+                    break;
+                }
+                walk = walk.VisualParent as UIElement;
+            }
         }
 
         // Update button state for the pressed button
@@ -5519,6 +6296,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
 
         var position = GetMousePosition(lParam);
+
+        // Allow subclass to intercept
+        if (OnPreviewWindowMouseUp(button, position))
+            return;
+
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
         var modifiers = GetModifierKeys();
         int timestamp = Environment.TickCount;
@@ -5756,17 +6538,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnMouseWheel(nint wParam, nint lParam)
     {
         // WM_MOUSEWHEEL lParam contains SCREEN coordinates (physical pixels).
-        // Extract raw physical coords 鈫?ScreenToClient 鈫?convert to DIPs.
+        // Extract raw physical coords → ScreenToClient → convert to DIPs.
         int screenX = (short)(lParam.ToInt64() & 0xFFFF);
         int screenY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
         POINT pt = new() { X = screenX, Y = screenY };
         _ = ScreenToClient(Handle, ref pt);
-        // ScreenToClient returns physical client pixels 鈫?convert to DIPs
+        // ScreenToClient returns physical client pixels → convert to DIPs
         Point position = new(pt.X / _dpiScale, pt.Y / _dpiScale);
+
+        int delta = (short)((wParam.ToInt64() >> 16) & 0xFFFF);
+
+        // Allow subclass to intercept
+        if (OnPreviewWindowMouseWheel(delta, position))
+            return;
 
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
         var modifiers = GetModifierKeys();
-        int delta = (short)((wParam.ToInt64() >> 16) & 0xFFFF);
         int timestamp = Environment.TickCount;
 
         // If an element has captured the mouse, it receives all mouse events
@@ -5950,6 +6737,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         touchDevice.UpdatePosition(pointerData.Position);
         touchDevice.DirectlyOver = target;
 
+        // --- Touch → Stylus promotion ---
+        // Feed touch input through the RealTimeStylus / StylusPlugIn pipeline so that
+        // controls like InkCanvas (which rely on StylusPlugIns) work with touch.
+        PromoteTouchToStylus(target, pointerData, isDown, isUp, timestamp);
+
         RoutedEvent previewEvent = isDown ? PreviewTouchDownEvent : (isUp ? PreviewTouchUpEvent : PreviewTouchMoveEvent);
         RoutedEvent bubbleEvent = isDown ? TouchDownEvent : (isUp ? TouchUpEvent : TouchMoveEvent);
 
@@ -5971,7 +6763,81 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             touchDevice.Deactivate();
             Touch.UnregisterTouchPoint((int)pointerData.PointerId);
+
+            // Clean up the promoted stylus device.
+            _activeStylusDevices.Remove(pointerData.PointerId);
         }
+    }
+
+    /// <summary>
+    /// Promotes a touch pointer into the Stylus pipeline so that StylusPlugIns
+    /// (DynamicRenderer, InkCollectionStylusPlugIn, etc.) receive the input.
+    /// </summary>
+    private void PromoteTouchToStylus(
+        UIElement target,
+        Win32PointerData pointerData,
+        bool isDown,
+        bool isUp,
+        int timestamp)
+    {
+        if (!_activeStylusDevices.TryGetValue(pointerData.PointerId, out var stylusDevice))
+        {
+            stylusDevice = new PointerStylusDevice((int)pointerData.PointerId, $"Touch{pointerData.PointerId}");
+            _activeStylusDevices[pointerData.PointerId] = stylusDevice;
+        }
+
+        var properties = pointerData.Point.Properties;
+        float pressure = properties.Pressure;
+
+        stylusDevice.UpdateState(
+            pointerData.Position,
+            pointerData.StylusPoints,
+            inAir: !pointerData.Point.IsInContact,
+            inverted: false,
+            inRange: pointerData.IsInRange,
+            barrelPressed: false,
+            eraserPressed: false,
+            directlyOver: target);
+
+        StylusInputAction inputAction = ResolveStylusInputAction(isDown, isUp, pointerData.Point.IsInContact);
+        RealTimeStylusProcessResult processResult = _realTimeStylus.Process(
+            pointerData.PointerId,
+            target,
+            inputAction,
+            stylusDevice.GetStylusPoints(target),
+            timestamp,
+            inAir: !pointerData.Point.IsInContact,
+            inRange: pointerData.IsInRange,
+            barrelButtonPressed: false,
+            eraserPressed: false,
+            inverted: false,
+            pointerCanceled: pointerData.IsCanceled);
+
+        // Update stylus device with any modifications made by plugins.
+        stylusDevice.UpdateState(
+            pointerData.Position,
+            processResult.RawStylusInput.GetStylusPoints(),
+            inAir: !pointerData.Point.IsInContact,
+            inverted: false,
+            inRange: pointerData.IsInRange,
+            barrelPressed: false,
+            eraserPressed: false,
+            directlyOver: target);
+
+        // Raise Stylus RoutedEvents (Preview + Bubble) so handlers see touch as stylus.
+        RoutedEvent previewEvent = isDown ? PreviewStylusDownEvent : (isUp ? PreviewStylusUpEvent : PreviewStylusMoveEvent);
+        RoutedEvent bubbleEvent = isDown ? StylusDownEvent : (isUp ? StylusUpEvent : StylusMoveEvent);
+
+        StylusEventArgs previewArgs = CreateStylusEventArgs(stylusDevice, timestamp, previewEvent, isDown);
+        target.RaiseEvent(previewArgs);
+
+        if (!previewArgs.Handled && !processResult.Canceled)
+        {
+            StylusEventArgs bubbleArgs = CreateStylusEventArgs(stylusDevice, timestamp, bubbleEvent, isDown);
+            target.RaiseEvent(bubbleArgs);
+        }
+
+        _realTimeStylus.QueueProcessedCallbacks(processResult);
     }
 
     private void DispatchStylusSourcePipeline(
@@ -6723,7 +7589,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private const uint WS_MAXIMIZEBOX = 0x00010000;
     private const uint WS_SYSMENU = 0x00080000;
     private const uint WS_EX_APPWINDOW = 0x00040000;
+    private const uint WS_EX_TOOLWINDOW = 0x00000080;
+    private const uint WS_EX_LAYERED = 0x00080000;
     private const uint WS_EX_NOREDIRECTIONBITMAP = 0x00200000;
+    private const uint LWA_ALPHA = 0x02;
     private const int GWL_STYLE = -16;
     private const int GWL_EXSTYLE = -20;
     private const uint SWP_FRAMECHANGED = 0x0020;
@@ -6736,11 +7605,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private static readonly nint HWND_NOTOPMOST = new(-2);
     private const int CW_USEDEFAULT = unchecked((int)0x80000000);
     private const int SW_SHOW = 5;
+    private const int SW_SHOWNOACTIVATE = 8;
     private const int SW_HIDE = 0;
     private const int SW_MINIMIZE = 6;
     private const int SW_MAXIMIZE = 3;
     private const int SW_RESTORE = 9;
     private const uint WM_CLOSE = 0x0010;
+    private const uint WM_GETMINMAXINFO = 0x0024;
+    private const uint WM_QUERYENDSESSION = 0x0011;
+    private const uint WM_ENDSESSION = 0x0016;
+    private const uint WM_SETTINGCHANGE = 0x001A;
+    private const uint WM_THEMECHANGED = 0x031A;
     private const uint WM_DESTROY = 0x0002;
     private const uint WM_MOVE = 0x0003;
     private const uint WM_SIZE = 0x0005;
@@ -6753,6 +7628,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private const int HTNOWHERE = 0;
     private const int HTCLIENT = 1;
     private const int HTCAPTION = 2;
+    private const int HTSYSMENU = 3;
     private const int HTMINBUTTON = 8;
     private const int HTMAXBUTTON = 9;
     private const int HTLEFT = 10;
@@ -6764,6 +7640,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private const int HTBOTTOMLEFT = 16;
     private const int HTBOTTOMRIGHT = 17;
     private const int HTCLOSE = 20;
+
+    // System command constants
+    private const int SC_SIZE = 0xF000;
+    private const int SC_MOVE = 0xF010;
+    private const int SC_MINIMIZE = 0xF020;
+    private const int SC_MAXIMIZE = 0xF030;
+    private const int SC_CLOSE = 0xF060;
+    private const int SC_RESTORE = 0xF120;
+
+    // TrackPopupMenu flags
+    private const uint TPM_RETURNCMD = 0x0100;
+    private const uint TPM_LEFTBUTTON = 0x0000;
+
+    // Menu item flags
+    private const uint MF_BYCOMMAND = 0x00000000;
+    private const uint MF_ENABLED = 0x00000000;
+    private const uint MF_GRAYED = 0x00000001;
 
     // DWM window corner preference
     private const int DWMWA_WINDOW_CORNER_PREFERENCE = 33;
@@ -6874,6 +7767,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private const uint WM_NCLBUTTONDBLCLK = 0x00A3;
     private const uint WM_NCRBUTTONDOWN = 0x00A4;
     private const uint WM_NCRBUTTONUP = 0x00A5;
+    private const uint WM_SYSCOMMAND = 0x0112;
     private const uint WM_NCMOUSELEAVE = 0x02A2;
 
     // TrackMouseEvent flags
@@ -6955,6 +7849,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         public int left, top, right, bottom;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MINMAXINFO
+    {
+        public POINT ptReserved;
+        public POINT ptMaxSize;
+        public POINT ptMaxPosition;
+        public POINT ptMinTrackSize;
+        public POINT ptMaxTrackSize;
+    }
+
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     private static extern ushort RegisterClassEx(ref WNDCLASSEX lpWndClass);
 
@@ -7023,6 +7927,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     [LibraryImport("user32.dll", EntryPoint = "PostMessageW")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool PostMessage(nint hWnd, uint msg, nint wParam, nint lParam);
+
+    [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
+    private static partial nint SendMessage(nint hWnd, uint msg, nint wParam, nint lParam);
 
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -7104,6 +8011,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     [LibraryImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static partial bool SetForegroundWindow(nint hWnd);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool SetLayeredWindowAttributes(nint hWnd, uint crKey, byte bAlpha, uint dwFlags);
 
     [StructLayout(LayoutKind.Sequential)]
     private struct TRACKMOUSEEVENT
@@ -7217,6 +8128,39 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     [DllImport("user32.dll", EntryPoint = "DispatchMessageW")]
     private static extern nint DispatchMessage(ref MSG lpMsg);
 
+    [DllImport("user32.dll")]
+    private static extern nint GetSystemMenu(nint hWnd, [MarshalAs(UnmanagedType.Bool)] bool bRevert);
+
+    [DllImport("user32.dll")]
+    private static extern int TrackPopupMenu(nint hMenu, uint uFlags, int x, int y, int nReserved, nint hWnd, nint prcRect);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnableMenuItem(nint hMenu, int uIDEnableItem, uint uEnable);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetMenuDefaultItem(nint hMenu, int uItem, uint fByPos);
+
+    // Undocumented uxtheme APIs for dark-mode popup menus (used by Explorer, Notepad, Terminal, etc.)
+    [LibraryImport("uxtheme.dll", EntryPoint = "#135")]
+    private static partial int SetPreferredAppMode(PreferredAppMode mode);
+
+    [LibraryImport("uxtheme.dll", EntryPoint = "#133")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AllowDarkModeForWindow(nint hWnd, [MarshalAs(UnmanagedType.Bool)] bool allow);
+
+    [LibraryImport("uxtheme.dll", EntryPoint = "#136")]
+    private static partial void FlushMenuThemes();
+
+    private enum PreferredAppMode
+    {
+        Default = 0,
+        AllowDark = 1,
+        ForceDark = 2,
+        ForceLight = 3,
+    }
+
     #endregion
 }
 
@@ -7322,5 +8266,61 @@ public enum WindowStyle
     /// A fixed tool window.
     /// </summary>
     ToolWindow
+}
+
+/// <summary>
+/// Specifies the position that a Window will be shown in when it is first opened.
+/// </summary>
+public enum WindowStartupLocation
+{
+    /// <summary>
+    /// The startup location of a Window is set from code, or defers to the default Windows position.
+    /// </summary>
+    Manual,
+
+    /// <summary>
+    /// The startup location of a Window is the center of the screen.
+    /// </summary>
+    CenterScreen,
+
+    /// <summary>
+    /// The startup location of a Window is the center of the Window that owns it.
+    /// </summary>
+    CenterOwner
+}
+
+/// <summary>
+/// Specifies the reason a user session is ending.
+/// </summary>
+public enum ReasonSessionEnding
+{
+    /// <summary>
+    /// The user is logging off.
+    /// </summary>
+    Logoff,
+
+    /// <summary>
+    /// The operating system is shutting down.
+    /// </summary>
+    Shutdown
+}
+
+/// <summary>
+/// Provides data for the <see cref="Window.SessionEnding"/> event.
+/// </summary>
+public sealed class SessionEndingCancelEventArgs : System.ComponentModel.CancelEventArgs
+{
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SessionEndingCancelEventArgs"/> class.
+    /// </summary>
+    public SessionEndingCancelEventArgs(ReasonSessionEnding reasonSessionEnding)
+    {
+        ReasonSessionEnding = reasonSessionEnding;
+    }
+
+    /// <summary>
+    /// Gets the reason the session is ending.
+    /// </summary>
+    public ReasonSessionEnding ReasonSessionEnding { get; }
 }
 

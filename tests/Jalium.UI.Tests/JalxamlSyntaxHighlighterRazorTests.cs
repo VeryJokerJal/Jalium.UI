@@ -92,6 +92,54 @@ public class JalxamlSyntaxHighlighterRazorTests
         Assert.Contains(tokens, token => token.Text == "test" && token.Classification == TokenClassification.Method);
     }
 
+    [Fact]
+    public void HighlightLine_RazorForBlockMultiLine_HighlightsCSharpInBody()
+    {
+        // @for (var i = 0; i < length; i++)
+        // {
+        // StringBuilder stringBuilder = new StringBuilder();
+        // }
+        var lines = new[]
+        {
+            "@for (var i = 0; i < length; i++)",
+            "{",
+            "StringBuilder stringBuilder = new StringBuilder();",
+            "}",
+        };
+
+        var allTokens = HighlightMultiLine(lines);
+
+        // Line 0: @for keyword and expression
+        var line0 = allTokens[0];
+        Assert.Contains(line0, t => t.Text == "@" && t.Classification == TokenClassification.Operator);
+        Assert.Contains(line0, t => t.Text == "for" && t.Classification == TokenClassification.ControlKeyword);
+        Assert.Contains(line0, t => t.Text == "var" && t.Classification == TokenClassification.Keyword);
+        Assert.Contains(line0, t => t.Text == "0" && t.Classification == TokenClassification.Number);
+
+        // Line 2: C# code inside the block should be highlighted
+        var line2 = allTokens[2];
+        Assert.Contains(line2, t => t.Text == "new" && t.Classification == TokenClassification.Keyword);
+        Assert.Contains(line2, t => t.Text == "StringBuilder" && t.Classification is TokenClassification.Identifier or TokenClassification.Method);
+    }
+
+    [Fact]
+    public void HighlightLine_RazorForeachBlockMultiLine_HighlightsCSharpInBody()
+    {
+        var lines = new[]
+        {
+            "@foreach (var item in collection)",
+            "{",
+            "    var name = item.Name;",
+            "}",
+        };
+
+        var allTokens = HighlightMultiLine(lines);
+
+        // Line 2: C# inside foreach body
+        var line2 = allTokens[2];
+        Assert.Contains(line2, t => t.Text == "var" && t.Classification == TokenClassification.Keyword);
+    }
+
     private static IReadOnlyList<(string Text, TokenClassification Classification)> Highlight(string line)
     {
         var highlighter = JalxamlSyntaxHighlighter.Create();
@@ -101,5 +149,24 @@ public class JalxamlSyntaxHighlighterRazorTests
             .Where(token => token.Length > 0 && token.Classification != TokenClassification.PlainText)
             .Select(token => (line.Substring(token.StartOffset, token.Length), token.Classification))
             .ToArray();
+    }
+
+    private static IReadOnlyList<(string Text, TokenClassification Classification)>[] HighlightMultiLine(string[] lines)
+    {
+        var highlighter = JalxamlSyntaxHighlighter.Create();
+        object? state = highlighter.GetInitialState();
+        var result = new IReadOnlyList<(string Text, TokenClassification Classification)>[lines.Length];
+
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var (tokens, nextState) = highlighter.HighlightLine(i + 1, lines[i], state);
+            result[i] = tokens
+                .Where(t => t.Length > 0 && t.Classification != TokenClassification.PlainText)
+                .Select(t => (lines[i].Substring(t.StartOffset, t.Length), t.Classification))
+                .ToArray();
+            state = nextState;
+        }
+
+        return result;
     }
 }

@@ -759,7 +759,7 @@ public class MenuItem : HeaderedItemsControl
             // Top-level: just header
             if (Header is string headerText)
             {
-                var formattedText = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14);
+                var formattedText = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
                 TextMeasurement.MeasureText(formattedText);
                 width += formattedText.Width;
             }
@@ -771,7 +771,7 @@ public class MenuItem : HeaderedItemsControl
 
             if (Header is string headerText)
             {
-                var formattedText = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14);
+                var formattedText = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14);
                 TextMeasurement.MeasureText(formattedText);
                 width += formattedText.Width + MenuItemPadding * 2;
             }
@@ -845,7 +845,7 @@ public class MenuItem : HeaderedItemsControl
             // Top-level menu item
             if (Header is string headerText)
             {
-                var formattedText = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+                var formattedText = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
                 {
                     Foreground = fgBrush
                 };
@@ -880,7 +880,7 @@ public class MenuItem : HeaderedItemsControl
             // Draw header
             if (Header is string headerText)
             {
-                var headerFormatted = new FormattedText(headerText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+                var headerFormatted = new FormattedText(headerText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
                 {
                     Foreground = fgBrush
                 };
@@ -891,7 +891,7 @@ public class MenuItem : HeaderedItemsControl
             // Draw input gesture text
             if (!string.IsNullOrEmpty(InputGestureText))
             {
-                var gestureFormatted = new FormattedText(InputGestureText, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 12)
+                var gestureFormatted = new FormattedText(InputGestureText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
                 {
                     Foreground = ResolveMenuBrush("TextSecondary", s_gestureBrush)
                 };

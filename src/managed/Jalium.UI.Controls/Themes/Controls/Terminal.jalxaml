@@ -1,0 +1,46 @@
+<ResourceDictionary
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
+
+    <!-- ============================================== -->
+    <!-- Terminal Style -->
+    <!-- ============================================== -->
+    <!-- A terminal emulator control with VT100/ANSI support.
+         Uses direct rendering (no PART_ContentHost) for character grid drawing. -->
+    <Style TargetType="Terminal">
+        <Setter Property="Background" Value="{DynamicResource TerminalBackground}" />
+        <Setter Property="Foreground" Value="{DynamicResource TerminalForeground}" />
+        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="BorderThickness" Value="1" />
+        <Setter Property="Padding" Value="4" />
+        <Setter Property="FontFamily" Value="{DynamicResource MonospaceFontFamily}" />
+        <Setter Property="FontSize" Value="14" />
+        <Setter Property="CornerRadius" Value="8" />
+        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{DynamicResource TerminalCaret}" />
+        <Setter Property="MinWidth" Value="200" />
+        <Setter Property="MinHeight" Value="100" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="Terminal">
+                <Border Name="OuterBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        CornerRadius="{TemplateBinding CornerRadius}" />
+            </ControlTemplate>
+        </Setter>
+
+        <Style.Triggers>
+            <PropertyTrigger Property="IsMouseOver" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsFocused" Value="True">
+                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+            </PropertyTrigger>
+            <PropertyTrigger Property="IsEnabled" Value="False">
+                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+            </PropertyTrigger>
+        </Style.Triggers>
+    </Style>
+
+</ResourceDictionary>

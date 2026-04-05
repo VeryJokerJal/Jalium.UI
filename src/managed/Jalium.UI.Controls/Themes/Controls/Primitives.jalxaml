@@ -38,7 +38,7 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="Padding" Value="8,2,8,2" />
-        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
 
@@ -91,7 +91,6 @@
     <!-- ============================================== -->
     <Style TargetType="Label">
         <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Label">
@@ -130,7 +129,7 @@
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontSize" Value="12" />
+        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ToolTip">
                 <Border Background="{TemplateBinding Background}"

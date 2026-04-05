@@ -14,7 +14,7 @@ public sealed class FontFamily
     /// <summary>
     /// Initializes a new instance of the <see cref="FontFamily"/> class using the default font family.
     /// </summary>
-    public FontFamily() : this("Segoe UI")
+    public FontFamily() : this(Jalium.UI.FrameworkElement.DefaultFontFamilyName)
     {
     }
 

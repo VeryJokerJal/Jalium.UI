@@ -17,6 +17,12 @@ namespace Jalium.UI.Markup;
 /// </summary>
 public static class XamlReader
 {
+    private sealed class RazorIfBlockEntry
+    {
+        public string EffectiveCondition { get; set; } = "";
+        public List<string> ChainBranchConditions { get; } = new();
+    }
+
     // Shared DynamicallyAccessedMemberTypes for AOT compatibility
     private const DynamicallyAccessedMemberTypes XamlMemberTypes =
         DynamicallyAccessedMemberTypes.PublicConstructors |
@@ -34,9 +40,8 @@ public static class XamlReader
     {
         ArgumentNullException.ThrowIfNull(xaml);
 
-        // Expand @{ } code blocks for dynamically provided JALXAML (not build-processed)
-        if (RazorScriptingFeature.IsSupported)
-            xaml = RazorCodeBlockPreprocessor.Process(xaml);
+        // Expand @{ } code blocks (uses AOT-safe lightweight interpreter)
+        xaml = RazorCodeBlockPreprocessor.Process(xaml);
 
         using var reader = new StringReader(xaml);
         return Load(reader);
@@ -143,8 +148,12 @@ public static class XamlReader
         }
 
         using (stream)
-        using (var textReader = new StreamReader(stream))
         {
+            var content = new StreamReader(stream).ReadToEnd();
+
+            // Pre-process Razor code blocks (uses AOT-safe lightweight interpreter)
+            content = RazorCodeBlockPreprocessor.Process(content);
+
             var settings = new XmlReaderSettings
             {
                 IgnoreComments = true,
@@ -152,14 +161,24 @@ public static class XamlReader
                 IgnoreProcessingInstructions = true
             };
 
-            // Create base URI from resource name (use file-like path for relative resolution)
             var baseUri = new Uri($"resource:///{assembly.GetName().Name}/{resourceName}", UriKind.Absolute);
 
-            using var xmlReader = XmlReader.Create(textReader, settings);
+            using var stringReader = new StringReader(content);
+            using var xmlReader = XmlReader.Create(stringReader, settings);
             LoadInternal(xmlReader, component, baseUri, assembly, namedElementsOut: namedElements);
         }
 
         HotReloadRuntime.RegisterComponent(component);
+    }
+
+    // Per-assembly cache of manifest resource names for O(1) case-insensitive lookup.
+    // Avoids repeated GetManifestResourceNames() calls during theme loading (~30+ dictionaries).
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Assembly, HashSet<string>> _manifestNameCache = new();
+
+    private static HashSet<string> GetManifestNameSet(Assembly assembly)
+    {
+        return _manifestNameCache.GetOrAdd(assembly, static asm =>
+            new HashSet<string>(asm.GetManifestResourceNames(), StringComparer.OrdinalIgnoreCase));
     }
 
     private static Stream? GetResourceStream(string resourceName, Assembly assembly)
@@ -180,36 +199,48 @@ public static class XamlReader
         stream = assembly.GetManifestResourceStream($"{assemblyName}.{normalizedName}");
         if (stream != null) return stream;
 
-        // Fallback 1: exact resource name lookup with case-insensitive comparison.
-        var resourceNames = assembly.GetManifestResourceNames();
-        var exactIgnoreCase = resourceNames.FirstOrDefault(n =>
-            string.Equals(n, resourceName, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(n, normalizedName, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(n, $"{assemblyName}.{resourceName}", StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(n, $"{assemblyName}.{normalizedName}", StringComparison.OrdinalIgnoreCase));
+        // Fallback: use cached manifest name set for O(1) case-insensitive lookup
+        // instead of linear scanning GetManifestResourceNames() on every call.
+        var nameSet = GetManifestNameSet(assembly);
 
-        if (exactIgnoreCase != null)
+        // Check known candidate names via the hash set
+        string[] candidates =
+        [
+            resourceName,
+            normalizedName,
+            $"{assemblyName}.{resourceName}",
+            $"{assemblyName}.{normalizedName}"
+        ];
+
+        foreach (var candidate in candidates)
         {
-            stream = assembly.GetManifestResourceStream(exactIgnoreCase);
-            if (stream != null) return stream;
+            if (nameSet.TryGetValue(candidate, out var actual))
+            {
+                stream = assembly.GetManifestResourceStream(actual);
+                if (stream != null) return stream;
+            }
         }
 
         // Fallback 2: suffix match (handles namespace/path drift, e.g. Views/Foo.jalxaml vs Foo.jalxaml).
         var fileName = GetResourceFileName(resourceName);
-        var suffixes = new[]
-        {
+        string[] suffixes =
+        [
             $".{normalizedName}",
             $".{resourceName}",
             $".{fileName}"
-        };
+        ];
 
-        var suffixMatch = resourceNames.FirstOrDefault(n =>
-            suffixes.Any(s => n.EndsWith(s, StringComparison.OrdinalIgnoreCase)));
-
-        if (suffixMatch != null)
+        foreach (var name in nameSet)
         {
-            stream = assembly.GetManifestResourceStream(suffixMatch);
-            if (stream != null) return stream;
+            foreach (var suffix in suffixes)
+            {
+                if (name.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    stream = assembly.GetManifestResourceStream(name);
+                    if (stream != null) return stream;
+                    break;
+                }
+            }
         }
 
         return null;
@@ -390,6 +421,11 @@ public static class XamlReader
             else if (instance is DataTemplate dataTemplate && !reader.IsEmptyElement)
             {
                 ParseDataTemplateContent(reader, dataTemplate, context);
+            }
+            // Special handling for ItemsPanelTemplate - capture inner XML for deferred parsing
+            else if (instance is ItemsPanelTemplate itemsPanelTemplate && !reader.IsEmptyElement)
+            {
+                ParseItemsPanelTemplateContent(reader, itemsPanelTemplate, context);
             }
             // Parse child content normally
             else if (!reader.IsEmptyElement)
@@ -607,7 +643,7 @@ public static class XamlReader
     private static object ParseContent(XmlReader reader, object instance, XamlParserContext context)
     {
         int depth = reader.Depth;
-        var ifDirectiveStack = new Stack<string>();
+        var ifDirectiveStack = new Stack<RazorIfBlockEntry>();
 
         while (reader.Read())
         {
@@ -681,11 +717,11 @@ public static class XamlReader
         return RazorBindingEngine.EvaluateConditionOnce(parentInstance, context.CodeBehindInstance, conditionExpression);
     }
 
-    private static string BuildCombinedIfConditionExpression(IEnumerable<string> expressions)
+    private static string BuildCombinedIfConditionExpression(IEnumerable<RazorIfBlockEntry> entries)
     {
-        var parts = expressions
+        var parts = entries
             .Reverse()
-            .Select(static expr => $"({expr})")
+            .Select(static entry => $"({entry.EffectiveCondition})")
             .ToArray();
 
         return parts.Length == 1 ? parts[0] : string.Join(" && ", parts);
@@ -710,7 +746,7 @@ public static class XamlReader
         return typeof(UIElement).IsAssignableFrom(property.PropertyType);
     }
 
-    private static bool TryConsumeRazorIfDirectiveText(string rawText, Stack<string> ifDirectiveStack)
+    private static bool TryConsumeRazorIfDirectiveText(string rawText, Stack<RazorIfBlockEntry> ifDirectiveStack)
     {
         if (string.IsNullOrWhiteSpace(rawText))
             return true;
@@ -732,14 +768,59 @@ public static class XamlReader
                 if (ifDirectiveStack.Count == 0)
                     throw new XamlParseException("Unexpected Razor @if block terminator '}'.");
 
-                ifDirectiveStack.Pop();
+                var popped = ifDirectiveStack.Pop();
                 i++;
+
+                // Check for else / else if after the closing brace
+                var afterBrace = i;
+                while (afterBrace < span.Length && char.IsWhiteSpace(span[afterBrace]))
+                    afterBrace++;
+
+                if (TryMatchElse(span, afterBrace, out var elseConsumed, out var elseIfExpression))
+                {
+                    // Build the negation of all prior branch conditions in this chain
+                    var chainConditions = popped.ChainBranchConditions;
+
+                    if (elseIfExpression != null)
+                    {
+                        // else if(expr): effective = !(c1) && !(c2) && ... && (expr)
+                        var parts = new List<string>(chainConditions.Count + 1);
+                        foreach (var cond in chainConditions)
+                            parts.Add($"!({cond})");
+                        parts.Add($"({elseIfExpression})");
+                        var effective = string.Join(" && ", parts);
+
+                        var newEntry = new RazorIfBlockEntry { EffectiveCondition = effective };
+                        newEntry.ChainBranchConditions.AddRange(chainConditions);
+                        newEntry.ChainBranchConditions.Add(elseIfExpression);
+                        ifDirectiveStack.Push(newEntry);
+                    }
+                    else
+                    {
+                        // else: effective = !(c1) && !(c2) && ...
+                        var parts = new List<string>(chainConditions.Count);
+                        foreach (var cond in chainConditions)
+                            parts.Add($"!({cond})");
+                        var effective = parts.Count == 1 ? parts[0] : string.Join(" && ", parts);
+
+                        var newEntry = new RazorIfBlockEntry { EffectiveCondition = effective };
+                        newEntry.ChainBranchConditions.AddRange(chainConditions);
+                        ifDirectiveStack.Push(newEntry);
+                    }
+
+                    i = afterBrace + elseConsumed;
+                    continue;
+                }
+
+                // No else follows; the chain is done.
                 continue;
             }
 
             if (TryParseRazorIfStartDirectiveAt(span[i..], out var consumedLength, out var expression))
             {
-                ifDirectiveStack.Push(expression);
+                var entry = new RazorIfBlockEntry { EffectiveCondition = expression };
+                entry.ChainBranchConditions.Add(expression);
+                ifDirectiveStack.Push(entry);
                 i += consumedLength;
                 continue;
             }
@@ -748,6 +829,100 @@ public static class XamlReader
         }
 
         return true;
+    }
+
+    /// <summary>
+    /// Tries to match "else if(expr) {" or "else {" starting at the given position.
+    /// Returns true if matched, with consumedLength set to characters consumed from <paramref name="startIndex"/>,
+    /// and elseIfExpression set to the expression (or null for plain else).
+    /// </summary>
+    private static bool TryMatchElse(ReadOnlySpan<char> span, int startIndex, out int consumedLength, out string? elseIfExpression)
+    {
+        consumedLength = 0;
+        elseIfExpression = null;
+
+        var remaining = span[startIndex..];
+        if (remaining.Length < 4)
+            return false;
+
+        if (remaining[0] != 'e' || remaining[1] != 'l' || remaining[2] != 's' || remaining[3] != 'e')
+            return false;
+
+        var i = 4;
+        // Need whitespace or '(' or '{' after "else"
+        if (i >= remaining.Length)
+            return false;
+
+        // Skip whitespace after "else"
+        while (i < remaining.Length && char.IsWhiteSpace(remaining[i]))
+            i++;
+
+        if (i >= remaining.Length)
+            return false;
+
+        if (remaining[i] == 'i' && i + 1 < remaining.Length && remaining[i + 1] == 'f')
+        {
+            // else if(expr) {
+            i += 2;
+            while (i < remaining.Length && char.IsWhiteSpace(remaining[i]))
+                i++;
+
+            if (i >= remaining.Length || remaining[i] != '(')
+                return false;
+
+            i++; // skip '('
+            var exprStart = i;
+            var depth = 1;
+            var inString = false;
+            var escaped = false;
+            var quote = '\0';
+
+            for (; i < remaining.Length; i++)
+            {
+                var c = remaining[i];
+                if (escaped) { escaped = false; continue; }
+                if (inString)
+                {
+                    if (c == '\\') escaped = true;
+                    else if (c == quote) { inString = false; quote = '\0'; }
+                    continue;
+                }
+                if (c == '"' || c == '\'') { inString = true; quote = c; continue; }
+                if (c == '(') { depth++; continue; }
+                if (c == ')')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        elseIfExpression = remaining[exprStart..i].ToString().Trim();
+                        i++;
+                        break;
+                    }
+                }
+            }
+
+            if (depth != 0 || string.IsNullOrWhiteSpace(elseIfExpression))
+                return false;
+
+            while (i < remaining.Length && char.IsWhiteSpace(remaining[i]))
+                i++;
+
+            if (i >= remaining.Length || remaining[i] != '{')
+                return false;
+
+            consumedLength = i + 1;
+            return true;
+        }
+
+        if (remaining[i] == '{')
+        {
+            // plain else {
+            consumedLength = i + 1;
+            elseIfExpression = null;
+            return true;
+        }
+
+        return false;
     }
 
     private static bool TryParseRazorIfStartDirectiveAt(ReadOnlySpan<char> text, out int consumedLength, out string expression)
@@ -917,7 +1092,7 @@ public static class XamlReader
                 else
                 {
                     // Set property value
-                    if (!TryApplyDynamicResourceReference(instance, property, childValue))
+                    if (!TryApplyDynamicResourceReference(instance, property, childValue, context))
                     {
                         property.SetValue(instance, childValue);
                     }
@@ -1146,6 +1321,57 @@ public static class XamlReader
 
             // Register the XAML parser callback if not already set
             DataTemplate.XamlParser ??= ParseTemplateXaml;
+        }
+    }
+
+    private static void ParseItemsPanelTemplateContent(XmlReader reader, ItemsPanelTemplate template, XamlParserContext context)
+    {
+        int depth = reader.Depth;
+        var visualTreeXaml = new System.Text.StringBuilder();
+        bool hasVisualTree = false;
+        bool skipRead = false;
+
+        while (skipRead || reader.Read())
+        {
+            skipRead = false;
+
+            if (reader.NodeType == XmlNodeType.EndElement && reader.Depth == depth)
+            {
+                break;
+            }
+
+            if (reader.NodeType != XmlNodeType.Element)
+            {
+                continue;
+            }
+
+            if (reader.LocalName.Contains('.'))
+            {
+                ParsePropertyElement(reader, template, context);
+            }
+            else if (!hasVisualTree)
+            {
+                // Capture the visual tree as XML
+                visualTreeXaml.Append(reader.ReadOuterXml());
+                hasVisualTree = true;
+
+                // ReadOuterXml advances the reader past this element to the next node.
+                skipRead = true;
+            }
+            else
+            {
+                throw new XamlParseException("ItemsPanelTemplate can only have one visual tree root element.");
+            }
+        }
+
+        // Store the captured XAML for deferred parsing
+        if (hasVisualTree)
+        {
+            template.VisualTreeXaml = visualTreeXaml.ToString();
+            template.SourceAssembly = context.SourceAssembly;
+
+            // Register the XAML parser callback if not already set
+            ItemsPanelTemplate.XamlParser ??= ParseTemplateXaml;
         }
     }
 
@@ -1615,7 +1841,7 @@ public static class XamlReader
 
         if (value != null)
         {
-            if (TryApplyDynamicResourceReference(instance, property, value))
+            if (TryApplyDynamicResourceReference(instance, property, value, context))
                 return instance;
 
             property.SetValue(instance, value);
@@ -2074,7 +2300,7 @@ public static class XamlReader
                     if (property.CanWrite)
                     {
                         child = ResolveMarkupExtensionValueIfNeeded(child, parent, property, context)!;
-                        if (!TryApplyDynamicResourceReference(parent, property, child))
+                        if (!TryApplyDynamicResourceReference(parent, property, child, context))
                         {
                             property.SetValue(parent, child);
                         }
@@ -2113,20 +2339,38 @@ public static class XamlReader
         }
     }
 
-    private static bool TryApplyDynamicResourceReference(object targetObject, PropertyInfo property, object? value)
+    private static bool TryApplyDynamicResourceReference(object targetObject, PropertyInfo property, object? value, XamlParserContext? context = null)
     {
         if (value is not IDynamicResourceReference dynamicReference)
             return false;
 
-        if (targetObject is not FrameworkElement frameworkElement)
-            return false;
+        if (targetObject is FrameworkElement frameworkElement)
+        {
+            var dependencyProperty = XamlParserContext.ResolveDependencyProperty(property.Name, frameworkElement.GetType());
+            if (dependencyProperty == null)
+                return false;
 
-        var dependencyProperty = XamlParserContext.ResolveDependencyProperty(property.Name, frameworkElement.GetType());
-        if (dependencyProperty == null)
-            return false;
+            DynamicResourceBindingOperations.SetDynamicResource(frameworkElement, dependencyProperty, dynamicReference.ResourceKey);
+            return true;
+        }
 
-        DynamicResourceBindingOperations.SetDynamicResource(frameworkElement, dependencyProperty, dynamicReference.ResourceKey);
-        return true;
+        // Non-FrameworkElement DependencyObject support (e.g. GradientStop),
+        // analogous to WPF's Freezable inheritance context.
+        if (targetObject is DependencyObject dependencyObject && context != null)
+        {
+            var dependencyProperty = XamlParserContext.ResolveDependencyProperty(property.Name, dependencyObject.GetType());
+            if (dependencyProperty == null)
+                return false;
+
+            var host = context.FindParent<FrameworkElement>();
+            if (host != null)
+            {
+                DynamicResourceBindingOperations.SetDynamicResourceForNonVisual(host, dependencyObject, dependencyProperty, dynamicReference.ResourceKey);
+                return true;
+            }
+        }
+
+        return false;
     }
 
 }
@@ -2511,6 +2755,7 @@ public static class XamlTypeRegistry
 
         // Register all known XAML types
         RegisterCoreTypes(types);
+        RegisterMarkupTypes(types);
         RegisterControlTypes(types);
         RegisterMediaTypes(types);
         RegisterShapeTypes(types);
@@ -2556,6 +2801,11 @@ public static class XamlTypeRegistry
         Register<GridLength>(types);
     }
 
+    private static void RegisterMarkupTypes(Dictionary<string, Type> types)
+    {
+        Register<Markup.RazorSectionHost>(types);
+    }
+
     private static void RegisterControlTypes(Dictionary<string, Type> types)
     {
         // Jalium.UI.Controls namespace
@@ -2593,6 +2843,8 @@ public static class XamlTypeRegistry
         Register<DataGridRow>(types);
         Register<DataGridCell>(types);
         Register<Jalium.UI.Controls.DataGridColumnHeader>(types);
+        Register<TreeDataGrid>(types);
+        Register<TreeDataGridRow>(types);
         Register<Slider>(types);
         Register<ProgressBar>(types);
         Register<TabControl>(types);
@@ -2845,6 +3097,13 @@ public static class XamlTypeRegistry
     /// <param name="component">The component instance to apply the bundle to.</param>
     /// <param name="bundle">The compiled UI bundle.</param>
     public static void ApplyBundle(object component, Gpu.CompiledUIBundle bundle)
+        => ApplyBundle(component, bundle, null);
+
+    /// <summary>
+    /// Applies a compiled UI bundle with AOT-safe named element output.
+    /// Named elements are collected into the provided dictionary instead of being wired via reflection.
+    /// </summary>
+    public static void ApplyBundle(object component, Gpu.CompiledUIBundle bundle, Dictionary<string, object>? namedElements)
     {
         ArgumentNullException.ThrowIfNull(component);
         ArgumentNullException.ThrowIfNull(bundle);
@@ -2861,7 +3120,6 @@ public static class XamlTypeRegistry
         var nodeElements = BuildNodeElements(bundle);
 
         // Wire up named elements if the bundle/node metadata provides names.
-        var componentType = component.GetType();
         foreach (var node in bundle.Nodes)
         {
             var nodeName = GetNodeName(bundle, node);
@@ -2871,12 +3129,22 @@ public static class XamlTypeRegistry
             if (!nodeElements.TryGetValue(node.Id, out var element))
                 continue;
 
-            var field = componentType.GetField(nodeName,
-                BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public);
-
-            if (field != null && field.FieldType.IsAssignableFrom(element.GetType()))
+            if (namedElements != null)
             {
-                field.SetValue(component, element);
+                // AOT-safe: output to dictionary, let caller wire fields
+                namedElements[nodeName] = element;
+            }
+            else
+            {
+                // Reflection path (non-AOT)
+                var componentType = component.GetType();
+                var field = componentType.GetField(nodeName,
+                    BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Public);
+
+                if (field != null && field.FieldType.IsAssignableFrom(element.GetType()))
+                {
+                    field.SetValue(component, element);
+                }
             }
         }
 

@@ -30,6 +30,12 @@ public class InkCanvas : FrameworkElement
     private readonly InkCollectionStylusPlugIn _inkCollectionStylusPlugIn;
 
     /// <summary>
+    /// Tracks per-touch-pointer active strokes for multi-touch drawing.
+    /// Key = touch pointer ID, Value = active stroke data.
+    /// </summary>
+    private readonly Dictionary<int, TouchStrokeSession> _activeTouchStrokes = new();
+
+    /// <summary>
     /// Minimum distance (in pixels) between consecutive points to avoid jitter.
     /// </summary>
     private const double MinPointDistance = 2.0;
@@ -116,6 +122,13 @@ public class InkCanvas : FrameworkElement
         AddHandler(PreviewStylusDownEvent, new Input.StylusDownEventHandler((s, e) => OnPreviewStylusInputHandler(s, e)));
         AddHandler(PreviewStylusMoveEvent, new Input.StylusEventHandler(OnPreviewStylusInputHandler));
         AddHandler(PreviewStylusUpEvent, new Input.StylusEventHandler(OnPreviewStylusInputHandler));
+
+        // Touch event handlers — provide a direct fallback path for touch input.
+        // This allows multi-touch drawing even when touch → stylus promotion is not
+        // available or when the stylus plugin pipeline does not consume the event.
+        AddHandler(TouchDownEvent, new TouchEventHandler(OnTouchDownHandler));
+        AddHandler(TouchMoveEvent, new TouchEventHandler(OnTouchMoveHandler));
+        AddHandler(TouchUpEvent, new TouchEventHandler(OnTouchUpHandler));
     }
 
     #endregion
@@ -284,8 +297,14 @@ public class InkCanvas : FrameworkElement
         // Draw committed strokes (each stroke caches its own geometry internally)
         Strokes?.Draw(dc);
 
-        // Draw the current stroke being drawn
+        // Draw the current stroke being drawn (mouse path)
         _currentStroke?.Draw(dc);
+
+        // Draw active touch strokes (multi-touch paths)
+        foreach (var session in _activeTouchStrokes.Values)
+        {
+            session.Stroke.Draw(dc);
+        }
 
         // Draw stylus real-time preview
         _dynamicRenderer.DrawPreview(dc);
@@ -370,6 +389,151 @@ public class InkCanvas : FrameworkElement
             e.Handled = true;
         }
     }
+
+    #region Touch Input
+
+    private void OnTouchDownHandler(object sender, TouchEventArgs e)
+    {
+        var touchDevice = e.TouchDevice;
+        var position = touchDevice.GetTouchPoint(this).Position;
+        float pressure = GetTouchPressure(e);
+
+        switch (EditingMode)
+        {
+            case InkCanvasEditingMode.Ink:
+                StartTouchDrawing(touchDevice.Id, position, pressure);
+                touchDevice.Capture(this);
+                break;
+
+            case InkCanvasEditingMode.EraseByStroke:
+            case InkCanvasEditingMode.EraseByPoint:
+                EraseStrokesAt(position);
+                touchDevice.Capture(this);
+                break;
+        }
+
+        e.Handled = true;
+    }
+
+    private void OnTouchMoveHandler(object sender, TouchEventArgs e)
+    {
+        var touchDevice = e.TouchDevice;
+        var position = touchDevice.GetTouchPoint(this).Position;
+        float pressure = GetTouchPressure(e);
+
+        switch (EditingMode)
+        {
+            case InkCanvasEditingMode.Ink:
+                ContinueTouchDrawing(touchDevice.Id, position, pressure);
+                break;
+
+            case InkCanvasEditingMode.EraseByStroke:
+            case InkCanvasEditingMode.EraseByPoint:
+                EraseStrokesAt(position);
+                break;
+        }
+
+        e.Handled = true;
+    }
+
+    private void OnTouchUpHandler(object sender, TouchEventArgs e)
+    {
+        var touchDevice = e.TouchDevice;
+        var position = touchDevice.GetTouchPoint(this).Position;
+
+        switch (EditingMode)
+        {
+            case InkCanvasEditingMode.Ink:
+                FinishTouchDrawing(touchDevice.Id);
+                break;
+
+            case InkCanvasEditingMode.EraseByStroke:
+            case InkCanvasEditingMode.EraseByPoint:
+                EraseStrokesAt(position);
+                break;
+        }
+
+        touchDevice.Capture(null);
+        e.Handled = true;
+    }
+
+    private void StartTouchDrawing(int pointerId, Point position, float pressure)
+    {
+        var points = new InkStylusPointCollection();
+        points.Add(new InkStylusPoint(position.X, position.Y, pressure));
+
+        var stroke = new Stroke(points, DefaultDrawingAttributes.Clone())
+        {
+            TaperMode = DefaultStrokeTaperMode
+        };
+
+        _activeTouchStrokes[pointerId] = new TouchStrokeSession(points, stroke);
+        InvalidateVisual();
+    }
+
+    private void ContinueTouchDrawing(int pointerId, Point position, float pressure)
+    {
+        if (!_activeTouchStrokes.TryGetValue(pointerId, out var session))
+            return;
+
+        var points = session.Points;
+        if (points.Count > 0)
+        {
+            var lastPoint = points[points.Count - 1];
+            var dx = position.X - lastPoint.X;
+            var dy = position.Y - lastPoint.Y;
+            if (dx * dx + dy * dy < MinPointDistance * MinPointDistance)
+                return;
+        }
+
+        points.Add(new InkStylusPoint(position.X, position.Y, pressure));
+        InvalidateVisual();
+    }
+
+    private void FinishTouchDrawing(int pointerId)
+    {
+        if (!_activeTouchStrokes.TryGetValue(pointerId, out var session))
+            return;
+
+        _activeTouchStrokes.Remove(pointerId);
+
+        if (session.Points.Count > 0)
+        {
+            Strokes.Add(session.Stroke);
+            OnStrokeCollected(new InkCanvasStrokeCollectedEventArgs(session.Stroke));
+        }
+
+        InvalidateVisual();
+    }
+
+    /// <summary>
+    /// Extracts pressure from a touch event. Returns the device pressure
+    /// if available, otherwise the default pressure.
+    /// </summary>
+    private static float GetTouchPressure(TouchEventArgs e)
+    {
+        // TouchPoint itself doesn't carry pressure in the base API.
+        // When touch → stylus promotion is active, the stylus pipeline handles pressure.
+        // For the direct touch path, use default pressure.
+        return InkStylusPoint.DefaultPressure;
+    }
+
+    /// <summary>
+    /// Represents an active multi-touch stroke drawing session.
+    /// </summary>
+    private sealed class TouchStrokeSession
+    {
+        public InkStylusPointCollection Points { get; }
+        public Stroke Stroke { get; }
+
+        public TouchStrokeSession(InkStylusPointCollection points, Stroke stroke)
+        {
+            Points = points;
+            Stroke = stroke;
+        }
+    }
+
+    #endregion
 
     #endregion
 
@@ -537,6 +701,9 @@ public class InkCanvas : FrameworkElement
                 canvas.ReleaseMouseCapture();
                 canvas.InvalidateVisual();
             }
+
+            // Cancel any active touch drawing sessions.
+            canvas._activeTouchStrokes.Clear();
 
             canvas._dynamicRenderer?.Reset();
             canvas._inkCollectionStylusPlugIn?.Reset();

@@ -7,7 +7,6 @@
     <!-- ============================================== -->
     <Style TargetType="TreeView">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Template">
@@ -50,7 +49,6 @@
     <!-- ============================================== -->
     <Style TargetType="TreeViewItem">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="Padding" Value="4,2,4,2" />
         <Setter Property="HorizontalAlignment" Value="Stretch" />
         <Setter Property="Template">
@@ -78,7 +76,7 @@
                                     Width="16"
                                     Visibility="Collapsed">
                                 <Path Name="PART_ExpanderArrow"
-                                      Data="M333.414 23.989 l557.904 393.923 c58.785 42.21 58.785 147.737 0 189.948 l-557.904 395.106 c-58.785 42.21-155.948 11.943-155.948-72.478 v-835.205 c0-84.421 97.162-113.505 155.948-71.293 Z"
+                                      Data="M 841.90,426.67 L 273.07,0 A 170.67,170.67,0,0,0,0,136.53 V 989.87 A 170.67,170.67,0,0,0,273.07,1126.40 L 841.90,699.73 A 170.67,170.67,0,0,0,841.90,426.67 Z"
                                       Fill="{TemplateBinding Foreground}"
                                       Width="8"
                                       Height="8"

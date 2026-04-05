@@ -1,4 +1,5 @@
 using Jalium.UI.Input;
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -16,11 +17,11 @@ public class Slider : Control
 
     // Cached brushes and pens for OnRender
     private static readonly SolidColorBrush s_trackBrush = new(Color.FromRgb(60, 60, 60));
-    private static readonly SolidColorBrush s_accentBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_accentBrush = new(ThemeColors.SliderThumb);
     private static readonly SolidColorBrush s_accentPressedBrush = new(Color.FromRgb(0, 100, 190));
     private static readonly SolidColorBrush s_tickBrush = new(Color.FromRgb(100, 100, 100));
     private static readonly Pen s_tickPen = new(s_tickBrush, 1);
-    private static readonly SolidColorBrush s_whiteBrush = new(Color.FromRgb(255, 255, 255));
+    private static readonly SolidColorBrush s_whiteBrush = new(ThemeColors.CheckMark);
     private static readonly Pen s_thumbBorderPen = new(s_whiteBrush, 2);
 
     #region Dependency Properties

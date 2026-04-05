@@ -7,13 +7,12 @@
     <!-- ============================================== -->
     <Style TargetType="TabControl">
         <Setter Property="Background" Value="{DynamicResource TabContentBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource TabStripBorder}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="TabStripBackground" Value="{DynamicResource TabStripBackground}" />
         <Setter Property="TabStripBorderBrush" Value="{DynamicResource TabStripBorder}" />
         <Setter Property="TabStripHeight" Value="36" />
-        <Setter Property="FontSize" Value="13" />
+        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
 
         <Style.Triggers>
@@ -30,7 +29,7 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
         <Setter Property="Padding" Value="16,10,16,10" />
-        <Setter Property="FontSize" Value="13" />
+        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
         <Setter Property="IndicatorBrush" Value="{DynamicResource TabItemIndicator}" />
         <Setter Property="IndicatorHeight" Value="2" />

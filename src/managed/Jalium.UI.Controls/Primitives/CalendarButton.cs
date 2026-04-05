@@ -126,7 +126,7 @@ public sealed class CalendarButton : Button
                 fgBrush = Foreground ?? new SolidColorBrush(Color.White);
             }
 
-            var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 14)
+            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = fgBrush
             };

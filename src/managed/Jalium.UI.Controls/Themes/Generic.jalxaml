@@ -30,6 +30,7 @@
         <ResourceDictionary Source="Controls/TitleBar.jalxaml" />
         <ResourceDictionary Source="Controls/TreeView.jalxaml" />
         <ResourceDictionary Source="Controls/DataGrid.jalxaml" />
+        <ResourceDictionary Source="Controls/TreeDataGrid.jalxaml" />
         <ResourceDictionary Source="Controls/ScrollBar.jalxaml" />
         <ResourceDictionary Source="Controls/Calendar.jalxaml" />
         <ResourceDictionary Source="Controls/Dialogs.jalxaml" />
@@ -37,6 +38,13 @@
         <ResourceDictionary Source="Controls/Media.jalxaml" />
         <ResourceDictionary Source="Controls/DockLayout.jalxaml" />
         <ResourceDictionary Source="Controls/MenusToolbars.jalxaml" />
+        <ResourceDictionary Source="Controls/Terminal.jalxaml" />
+        <ResourceDictionary Source="Controls/DiffViewer.jalxaml" />
+        <ResourceDictionary Source="Controls/HexEditor.jalxaml" />
+        <ResourceDictionary Source="Controls/JsonTreeViewer.jalxaml" />
+        <ResourceDictionary Source="Controls/PropertyGrid.jalxaml" />
+        <ResourceDictionary Source="Controls/Charts.jalxaml" />
+        <ResourceDictionary Source="Controls/Maps.jalxaml" />
     </ResourceDictionary.MergedDictionaries>
 
 </ResourceDictionary>

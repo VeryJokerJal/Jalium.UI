@@ -187,7 +187,7 @@ public class StatusBarItem : ContentControl
 
         if (Content is string text)
         {
-            var fontFamily = FontFamily ?? "Segoe UI";
+            var fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
             var fontSize = FontSize > 0 ? FontSize : 12;
             var formattedText = new FormattedText(text, fontFamily, fontSize);
             Interop.TextMeasurement.MeasureText(formattedText);
@@ -248,7 +248,7 @@ public class StatusBarItem : ContentControl
         if (Content is string text)
         {
             var fgBrush = ResolveForegroundBrush();
-            var formattedText = new FormattedText(text, FontFamily ?? "Segoe UI", FontSize > 0 ? FontSize : 12)
+            var formattedText = new FormattedText(text, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 12)
             {
                 Foreground = fgBrush
             };

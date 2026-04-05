@@ -363,6 +363,23 @@ JALIUM_API void jalium_draw_rounded_rectangle(
     float strokeWidth
 );
 
+/// Draws a filled rounded rectangle with per-corner radii.
+JALIUM_API void jalium_fill_per_corner_rounded_rectangle(
+    JaliumRenderTarget* rt,
+    float x, float y, float width, float height,
+    float tl, float tr, float br, float bl,
+    JaliumBrush* brush
+);
+
+/// Draws a rounded rectangle outline with per-corner radii.
+JALIUM_API void jalium_draw_per_corner_rounded_rectangle(
+    JaliumRenderTarget* rt,
+    float x, float y, float width, float height,
+    float tl, float tr, float br, float bl,
+    JaliumBrush* brush,
+    float strokeWidth
+);
+
 // ============================================================================
 // Transform Stack
 // ============================================================================

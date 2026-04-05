@@ -14,12 +14,22 @@ internal static class RazorValueResolver
         object? codeBehind,
         string path)
     {
+        // 1. Try DataContext on the target element or its visual ancestors
         if (TryResolveDataContext(targetObject, path, out var foundInDataContext, out var valueFromDataContext) && foundInDataContext)
         {
             if (!RazorEvaluationGuards.IsUnavailableBindingValue(valueFromDataContext))
                 return valueFromDataContext;
         }
 
+        // 2. If codeBehind has a DataContext, try resolving on that first
+        if (codeBehind is FrameworkElement cbElement)
+        {
+            var cbDc = cbElement.GetValue(FrameworkElement.DataContextProperty);
+            if (cbDc != null && TryResolvePath(cbDc, path, out var foundInCbDc, out var valueFromCbDc) && foundInCbDc)
+                return valueFromCbDc;
+        }
+
+        // 3. Fall back to codeBehind itself (Page properties)
         if (codeBehind != null && TryResolvePath(codeBehind, path, out var foundInCodeBehind, out var valueFromCodeBehind) && foundInCodeBehind)
         {
             return valueFromCodeBehind;
@@ -93,6 +103,14 @@ internal static class RazorValueResolver
 
     private static bool TryReadMember(object source, string memberName, out object? value)
     {
+        // AOT-safe: try pre-registered accessor first (no reflection)
+        var sourceType = source.GetType();
+        if (RazorExpressionRegistry.TryGetPropertyAccessor(sourceType, memberName, out var accessor))
+        {
+            value = accessor(source);
+            return true;
+        }
+
         if (source is DependencyObject dependencyObject)
         {
             var dpField = source.GetType().GetField(
@@ -746,6 +764,101 @@ public static class RazorExpressionRegistry
     internal static bool TryGetTemplateEvaluator(string templateKey, out Func<Func<string, object?>, object?[]> evaluator)
     {
         return CompiledTemplateEvaluators.TryGetValue(templateKey, out evaluator!);
+    }
+
+    // ── Namespace type registry (populated by build-time generated code) ──
+
+    private static readonly ConcurrentDictionary<string, Type> RegisteredNamespaceTypes = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Registers a type by its simple name so that Razor expressions can resolve it
+    /// without a fully qualified name. Called from build-time generated module initializers
+    /// based on @using directives found in .jalxaml files.
+    /// </summary>
+    public static void RegisterNamespaceType(string simpleName, Type type)
+    {
+        if (!string.IsNullOrWhiteSpace(simpleName) && type != null)
+            RegisteredNamespaceTypes.TryAdd(simpleName, type);
+    }
+
+    internal static Type? TryResolveRegisteredType(string name)
+    {
+        return RegisteredNamespaceTypes.TryGetValue(name, out var type) ? type : null;
+    }
+
+    // ── Global section registry (cross-file @section / @RenderSection) ──
+
+    private static readonly ConcurrentDictionary<string, string> GlobalSections = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Registers a named section's XAML content globally so it can be
+    /// referenced via <c>@RenderSection("Name")</c> from any JALXAML file.
+    /// </summary>
+    /// <summary>Raised when a section is registered or updated.</summary>
+    public static event Action<string>? SectionRegistered;
+
+    /// <summary>Raised when a section is unregistered.</summary>
+    public static event Action<string>? SectionUnregistered;
+
+    public static void RegisterSection(string name, string xamlContent)
+    {
+        if (!string.IsNullOrWhiteSpace(name) && xamlContent != null)
+        {
+            GlobalSections[name] = xamlContent;
+            SectionRegistered?.Invoke(name);
+        }
+    }
+
+    /// <summary>
+    /// Removes a globally registered section.
+    /// </summary>
+    public static void UnregisterSection(string name)
+    {
+        if (!string.IsNullOrWhiteSpace(name))
+        {
+            GlobalSections.TryRemove(name, out _);
+            SectionUnregistered?.Invoke(name);
+        }
+    }
+
+    internal static bool TryGetGlobalSection(string name, out string content)
+    {
+        return GlobalSections.TryGetValue(name, out content!);
+    }
+
+    // ── AOT-safe property accessor registry ──
+
+    private static readonly ConcurrentDictionary<(Type, string), Func<object, object?>> PropertyAccessors = new();
+
+    /// <summary>
+    /// Registers a direct property accessor for a type+property combination.
+    /// Called from build-time generated code to avoid reflection in AOT.
+    /// </summary>
+    public static void RegisterPropertyAccessor(Type type, string propertyName, Func<object, object?> accessor)
+    {
+        if (type != null && !string.IsNullOrWhiteSpace(propertyName) && accessor != null)
+        {
+            PropertyAccessors[(type, propertyName)] = accessor;
+            PropertyAccessorRegistry.Register(type, propertyName, accessor);
+        }
+    }
+
+    /// <summary>
+    /// Registers property accessors for all properties on a type using a factory.
+    /// </summary>
+    public static void RegisterPropertyAccessors(Type type, IEnumerable<(string Name, Func<object, object?> Accessor)> accessors)
+    {
+        if (type == null || accessors == null) return;
+        foreach (var (name, accessor) in accessors)
+        {
+            PropertyAccessors[(type, name)] = accessor;
+            PropertyAccessorRegistry.Register(type, name, accessor);
+        }
+    }
+
+    internal static bool TryGetPropertyAccessor(Type type, string propertyName, out Func<object, object?> accessor)
+    {
+        return PropertyAccessors.TryGetValue((type, propertyName), out accessor!);
     }
 
     internal sealed record ExpressionMetadata(string ExpressionId, string Expression, IReadOnlyList<string> Dependencies);

@@ -245,8 +245,10 @@ public partial class DockItem : HeaderedContentControl
                 }
             }
 
-            // Select tab and begin potential drag
+            // Select tab, activate panel focus, and begin potential drag
             OwnerPanel?.SelectTab(this);
+            if (OwnerPanel != null)
+                DockManager.SetActivePanel(OwnerPanel);
             _isMouseDown = true;
             // Track in OwnerPanel's coordinate space 閳?stable during tab reorder
             _mouseDownPos = e.GetPosition((UIElement?)OwnerPanel ?? this);
@@ -600,6 +602,12 @@ public partial class DockItem : HeaderedContentControl
         _isDraggingFloatingWindow = false;
         ReleaseMouseCapture();
 
+        // Final position update with the actual cursor location at release time,
+        // so a stale _currentDockPosition from an earlier mousemove doesn't cause
+        // an unintended dock when the cursor has since moved off the indicator button.
+        GetCursorPos(out var finalCursor);
+        DockManager.UpdateHighlight(finalCursor.X, finalCursor.Y, OwnerPanel);
+
         var (targetPanel, targetLayout, dockPosition) = DockManager.FinishHighlight();
 
         if (_floatingDragWindow != null && dockPosition != DockPosition.None)
@@ -672,33 +680,6 @@ public partial class DockItem : HeaderedContentControl
                 Content = content;
                 _floatingDragWindow = windowToClose;
             }
-        }
-        else if (targetPanel != null && _floatingDragWindow != null)
-        {
-            // Cursor is over a panel but not on any indicator button 閳?add as tab (fallback)
-            var content = Content;
-            var headerText = Header?.ToString() ?? "Panel";
-            var floatingPanel2 = OwnerPanel;
-            Content = null;
-
-            // Defensive: ensure content is fully detached
-            if (content is UIElement ce2 && ce2.VisualParent != null)
-            {
-                if (ce2.VisualParent is DockTabPanel oldPanel2)
-                    oldPanel2.ReleaseContentElement(ce2);
-            }
-
-            var windowToClose = _floatingDragWindow;
-            _floatingDragWindow = null;
-
-            var newItem = CreateTransferredDockItem(content, headerText);
-            targetPanel.Items.Add(newItem);
-            targetPanel.SelectTab(newItem);
-
-            if (floatingPanel2 != null)
-                DockManager.Unregister(floatingPanel2);
-            SuppressFloatingWindowRestore();
-            windowToClose.Close();
         }
         else
         {
@@ -1074,7 +1055,7 @@ public partial class DockItem : HeaderedContentControl
     {
         var headerText = Header?.ToString() ?? "";
         var fontSize = FontSize > 0 ? FontSize : 12;
-        var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : "Segoe UI";
+        var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : FrameworkElement.DefaultFontFamilyName;
         var formatted = new FormattedText(headerText, fontFamily, fontSize);
         TextMeasurement.MeasureText(formatted);
 
@@ -1138,13 +1119,12 @@ public partial class DockItem : HeaderedContentControl
 
         var placement = OwnerPanel?.TabStripPlacement ?? Dock.Top;
         var tabCornerRadius = ResolveTabCornerRadius(ActualWidth, ActualHeight + 1);
-        var isLeadingEdgeTab = IsSelected && IsAtTabStripLeadingEdge();
         var activeCorners = placement switch
         {
-            Dock.Bottom => new CornerRadius(0, 0, tabCornerRadius, isLeadingEdgeTab ? 0 : tabCornerRadius),
-            Dock.Left => new CornerRadius(isLeadingEdgeTab ? 0 : tabCornerRadius, 0, 0, tabCornerRadius),
-            Dock.Right => new CornerRadius(0, isLeadingEdgeTab ? 0 : tabCornerRadius, tabCornerRadius, 0),
-            _ => new CornerRadius(isLeadingEdgeTab ? 0 : tabCornerRadius, tabCornerRadius, 0, 0),
+            Dock.Bottom => new CornerRadius(0, 0, tabCornerRadius, tabCornerRadius),
+            Dock.Left => new CornerRadius(tabCornerRadius, 0, 0, tabCornerRadius),
+            Dock.Right => new CornerRadius(0, tabCornerRadius, tabCornerRadius, 0),
+            _ => new CornerRadius(tabCornerRadius, tabCornerRadius, 0, 0),
         };
 
         if (IsSelected)
@@ -1250,27 +1230,7 @@ public partial class DockItem : HeaderedContentControl
         return Math.Min(radius, maxAllowed);
     }
 
-    private bool IsAtTabStripLeadingEdge()
-    {
-        var ownerPanel = OwnerPanel;
-        if (ownerPanel == null)
-            return false;
 
-        try
-        {
-            var position = TransformToAncestor(ownerPanel);
-            return ownerPanel.TabStripPlacement switch
-            {
-                Dock.Bottom or Dock.Top => position.X <= ownerPanel.TabHeadersViewportRect.X + 0.5,
-                Dock.Left or Dock.Right => position.Y <= ownerPanel.TabHeadersViewportRect.Y + 0.5,
-                _ => false,
-            };
-        }
-        catch
-        {
-            return false;
-        }
-    }
 
     internal FormattedText? CreateHeaderTextLayoutForTesting(double availableWidth, double availableHeight)
     {
@@ -1291,7 +1251,7 @@ public partial class DockItem : HeaderedContentControl
             return null;
 
         var fontSize = FontSize > 0 ? FontSize : 12;
-        var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : "Segoe UI";
+        var fontFamily = !string.IsNullOrEmpty(FontFamily) ? FontFamily : FrameworkElement.DefaultFontFamilyName;
         if (!ShouldConstrainHeaderTextWidth())
         {
             var naturalText = new FormattedText(headerText, fontFamily, fontSize)
@@ -1374,8 +1334,12 @@ public partial class DockItem : HeaderedContentControl
         return measured.Width;
     }
 
-    private Brush ResolveSelectedBackgroundBrush()
+    internal Brush ResolveSelectedBackgroundBrush()
     {
+        var isFocused = OwnerPanel?.IsPanelFocused == true;
+        if (isFocused)
+            return ResolveBrush("OneTabActiveBackgroundFocused", "DockTabItemSelectedBackgroundFocused", s_fallbackSelectedBackgroundBrush);
+
         if (HasLocalValue(SelectedBackgroundProperty) && SelectedBackground != null)
             return SelectedBackground;
 

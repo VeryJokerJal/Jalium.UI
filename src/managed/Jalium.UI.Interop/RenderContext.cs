@@ -247,10 +247,10 @@ public sealed class RenderContext : IDisposable
     /// </summary>
     public NativeBrush CreateLinearGradientBrush(
         float startX, float startY, float endX, float endY,
-        float[] stops, uint stopCount)
+        float[] stops, uint stopCount, uint extendMode = 0)
     {
         ThrowIfDisposed();
-        return new NativeBrush(this, startX, startY, endX, endY, stops, stopCount);
+        return new NativeBrush(this, startX, startY, endX, endY, stops, stopCount, extendMode);
     }
 
     /// <summary>
@@ -259,11 +259,11 @@ public sealed class RenderContext : IDisposable
     public NativeBrush CreateRadialGradientBrush(
         float centerX, float centerY, float radiusX, float radiusY,
         float originX, float originY,
-        float[] stops, uint stopCount)
+        float[] stops, uint stopCount, uint extendMode = 0)
     {
         ThrowIfDisposed();
         return new NativeBrush(this, centerX, centerY, radiusX, radiusY,
-            originX, originY, stops, stopCount);
+            originX, originY, stops, stopCount, extendMode);
     }
 
     /// <summary>

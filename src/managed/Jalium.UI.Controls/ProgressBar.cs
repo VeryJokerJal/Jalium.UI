@@ -1,3 +1,4 @@
+using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -15,7 +16,7 @@ public class ProgressBar : Control
 
     // Cached brushes for OnRender
     private static readonly SolidColorBrush s_trackBrush = new(Color.FromRgb(45, 45, 45));
-    private static readonly SolidColorBrush s_accentBrush = new(Color.FromRgb(0, 120, 212));
+    private static readonly SolidColorBrush s_accentBrush = new(ThemeColors.ProgressBarFill);
     private static readonly SolidColorBrush s_disabledAccentBrush = new(Color.FromRgb(90, 90, 90));
     private static readonly CornerRadius s_defaultCornerRadius = new(4);
 

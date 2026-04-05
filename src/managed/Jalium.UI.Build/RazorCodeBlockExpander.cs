@@ -17,17 +17,19 @@ internal static class RazorCodeBlockExpander
     /// </summary>
     public static string? Expand(string xaml)
     {
-        if (!xaml.Contains("@{"))
+        if (!xaml.Contains('@'))
             return null;
 
         var blocks = FindCodeBlocksInTextContent(xaml);
         if (blocks.Count == 0)
             return null;
 
+        var merged = MergeAdjacentBlocks(xaml, blocks);
+
         var sb = new StringBuilder(xaml.Length * 2);
         var lastEnd = 0;
 
-        foreach (var block in blocks)
+        foreach (var block in merged)
         {
             sb.Append(xaml, lastEnd, block.Start - lastEnd);
             var expanded = ExpandCodeBlock(block.Code);
@@ -37,6 +39,40 @@ internal static class RazorCodeBlockExpander
 
         sb.Append(xaml, lastEnd, xaml.Length - lastEnd);
         return sb.ToString();
+    }
+
+    private static List<CodeBlockInfo> MergeAdjacentBlocks(string xaml, List<CodeBlockInfo> blocks)
+    {
+        if (blocks.Count <= 1)
+            return blocks;
+
+        var result = new List<CodeBlockInfo>();
+        var groupStart = blocks[0].Start;
+        var groupEnd = blocks[0].End;
+        var groupCode = new StringBuilder(blocks[0].Code);
+
+        for (var i = 1; i < blocks.Count; i++)
+        {
+            var gap = xaml.AsSpan(groupEnd, blocks[i].Start - groupEnd);
+            if (gap.IsWhiteSpace())
+            {
+                if (groupCode.Length > 0 && blocks[i].Code.Length > 0)
+                    groupCode.AppendLine();
+                groupCode.Append(blocks[i].Code);
+                groupEnd = blocks[i].End;
+            }
+            else
+            {
+                result.Add(new CodeBlockInfo(groupStart, groupEnd, groupCode.ToString()));
+                groupStart = blocks[i].Start;
+                groupEnd = blocks[i].End;
+                groupCode.Clear();
+                groupCode.Append(blocks[i].Code);
+            }
+        }
+
+        result.Add(new CodeBlockInfo(groupStart, groupEnd, groupCode.ToString()));
+        return result;
     }
 
     #region Find code blocks in text content
@@ -128,17 +164,48 @@ internal static class RazorCodeBlockExpander
                 continue;
             }
 
-            if (xaml[i] == '@' && i + 1 < xaml.Length && xaml[i + 1] == '{')
+            if (xaml[i] == '@' && i + 1 < xaml.Length)
             {
-                var start = i;
-                var codeStart = i + 2;
-                var codeEnd = FindMatchingBrace(xaml, codeStart);
-                if (codeEnd >= 0)
+                // @* comment *@
+                if (xaml[i + 1] == '*')
                 {
-                    var code = xaml[codeStart..codeEnd].Trim();
-                    blocks.Add(new CodeBlockInfo(start, codeEnd + 1, code));
-                    i = codeEnd + 1;
-                    continue;
+                    var commentEnd = xaml.IndexOf("*@", i + 2, StringComparison.Ordinal);
+                    if (commentEnd >= 0)
+                    {
+                        blocks.Add(new CodeBlockInfo(i, commentEnd + 2, ""));
+                        i = commentEnd + 2;
+                        continue;
+                    }
+                }
+
+                // @{ code block }
+                if (xaml[i + 1] == '{')
+                {
+                    var start = i;
+                    var codeStart = i + 2;
+                    var codeEnd = FindMatchingBrace(xaml, codeStart);
+                    if (codeEnd >= 0)
+                    {
+                        var code = xaml[codeStart..codeEnd].Trim();
+                        blocks.Add(new CodeBlockInfo(start, codeEnd + 1, code));
+                        i = codeEnd + 1;
+                        continue;
+                    }
+                }
+
+                // @keyword directives: for, foreach, while, switch, using, lock, do, try
+                if (char.IsLetter(xaml[i + 1]))
+                {
+                    int dEnd;
+                    string dCode;
+                    if (TryMatchBlockDirective(xaml, i, out dEnd, out dCode)
+                        || TryMatchDoWhileDirective(xaml, i, out dEnd, out dCode)
+                        || TryMatchTryCatchDirective(xaml, i, out dEnd, out dCode))
+                    {
+                        blocks.Add(new CodeBlockInfo(i, dEnd, dCode));
+                        i = dEnd;
+                        continue;
+                    }
                 }
             }
 
@@ -242,12 +309,277 @@ internal static class RazorCodeBlockExpander
         return -1;
     }
 
+    private static int FindMatchingParen(string input, int start)
+    {
+        var p = start;
+        var depth = 1;
+        var inString = false;
+        var inChar = false;
+        var escaped = false;
+        var verbatimString = false;
+        char stringQuote = '\0';
+
+        while (p < input.Length && depth > 0)
+        {
+            var c = input[p];
+            if (escaped) { escaped = false; p++; continue; }
+            if (inString)
+            {
+                if (!verbatimString && c == '\\') { escaped = true; p++; continue; }
+                if (c == stringQuote)
+                {
+                    if (verbatimString && p + 1 < input.Length && input[p + 1] == stringQuote) { p += 2; continue; }
+                    inString = false; verbatimString = false; stringQuote = '\0';
+                }
+                p++; continue;
+            }
+            if (inChar)
+            {
+                if (c == '\\') { escaped = true; p++; continue; }
+                if (c == '\'') inChar = false;
+                p++; continue;
+            }
+            if (c == '\'') { inChar = true; p++; continue; }
+            if (c == '"')
+            {
+                inString = true;
+                verbatimString = p > 0 && input[p - 1] == '@';
+                stringQuote = '"';
+                p++; continue;
+            }
+            if (c == '(') { depth++; p++; continue; }
+            if (c == ')')
+            {
+                depth--;
+                if (depth == 0) return p + 1;
+            }
+            p++;
+        }
+
+        return -1;
+    }
+
+    private static bool TryMatchBlockDirective(string input, int atPos, out int blockEnd, out string code)
+    {
+        blockEnd = 0;
+        code = "";
+
+        var pos = atPos + 1;
+        var remaining = input.Length - pos;
+
+        // Optional "await" prefix (for "await foreach" / "await using")
+        if (remaining >= 6 && input.AsSpan(pos, 5).SequenceEqual("await") &&
+            !char.IsLetterOrDigit(input[pos + 5]))
+        {
+            var afterAwait = pos + 5;
+            while (afterAwait < input.Length && char.IsWhiteSpace(input[afterAwait])) afterAwait++;
+            var r = input.Length - afterAwait;
+
+            var isAwaitForeach = r >= 7 && input.AsSpan(afterAwait, 7).SequenceEqual("foreach") &&
+                (r == 7 || !char.IsLetterOrDigit(input[afterAwait + 7]));
+            var isAwaitUsing = r >= 5 && input.AsSpan(afterAwait, 5).SequenceEqual("using") &&
+                (r == 5 || !char.IsLetterOrDigit(input[afterAwait + 5]));
+
+            if (isAwaitForeach || isAwaitUsing)
+            {
+                pos = afterAwait;
+                remaining = r;
+            }
+            else
+            {
+                return false;
+            }
+        }
+
+        int keywordLen;
+        if (remaining >= 7 && input.AsSpan(pos, 7).SequenceEqual("foreach") &&
+            (remaining == 7 || !char.IsLetterOrDigit(input[pos + 7])))
+            keywordLen = 7;
+        else if (remaining >= 6 && input.AsSpan(pos, 6).SequenceEqual("switch") &&
+                 (remaining == 6 || !char.IsLetterOrDigit(input[pos + 6])))
+            keywordLen = 6;
+        else if (remaining >= 5 && input.AsSpan(pos, 5).SequenceEqual("while") &&
+                 (remaining == 5 || !char.IsLetterOrDigit(input[pos + 5])))
+            keywordLen = 5;
+        else if (remaining >= 5 && input.AsSpan(pos, 5).SequenceEqual("using") &&
+                 (remaining == 5 || !char.IsLetterOrDigit(input[pos + 5])))
+            keywordLen = 5;
+        else if (remaining >= 4 && input.AsSpan(pos, 4).SequenceEqual("lock") &&
+                 (remaining == 4 || !char.IsLetterOrDigit(input[pos + 4])))
+            keywordLen = 4;
+        else if (remaining >= 3 && input.AsSpan(pos, 3).SequenceEqual("for") &&
+                 (remaining == 3 || !char.IsLetterOrDigit(input[pos + 3])))
+            keywordLen = 3;
+        else
+            return false;
+
+        var p = pos + keywordLen;
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+        if (p >= input.Length || input[p] != '(') return false;
+
+        var afterParen = FindMatchingParen(input, p + 1);
+        if (afterParen < 0) return false;
+        p = afterParen;
+
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+        if (p >= input.Length || input[p] != '{') return false;
+
+        var braceEnd = FindMatchingBrace(input, p + 1);
+        if (braceEnd < 0) return false;
+
+        blockEnd = braceEnd + 1;
+        code = input[(atPos + 1)..blockEnd].Trim();
+        return true;
+    }
+
+    private static bool TryMatchDoWhileDirective(string input, int atPos, out int blockEnd, out string code)
+    {
+        blockEnd = 0;
+        code = "";
+
+        var pos = atPos + 1;
+        var remaining = input.Length - pos;
+
+        if (remaining < 2 || input[pos] != 'd' || input[pos + 1] != 'o')
+            return false;
+        if (remaining > 2 && char.IsLetterOrDigit(input[pos + 2]))
+            return false;
+
+        var p = pos + 2;
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+        if (p >= input.Length || input[p] != '{') return false;
+
+        var braceEnd = FindMatchingBrace(input, p + 1);
+        if (braceEnd < 0) return false;
+        p = braceEnd + 1;
+
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+        if (p + 5 > input.Length || !input.AsSpan(p, 5).SequenceEqual("while"))
+            return false;
+        if (p + 5 < input.Length && char.IsLetterOrDigit(input[p + 5]))
+            return false;
+        p += 5;
+
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+        if (p >= input.Length || input[p] != '(') return false;
+
+        var afterParen = FindMatchingParen(input, p + 1);
+        if (afterParen < 0) return false;
+        p = afterParen;
+
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+        if (p < input.Length && input[p] == ';') p++;
+
+        blockEnd = p;
+        code = input[(atPos + 1)..blockEnd].Trim();
+        return true;
+    }
+
+    private static bool TryMatchTryCatchDirective(string input, int atPos, out int blockEnd, out string code)
+    {
+        blockEnd = 0;
+        code = "";
+
+        var pos = atPos + 1;
+        var remaining = input.Length - pos;
+
+        if (remaining < 3 || input[pos] != 't' || input[pos + 1] != 'r' || input[pos + 2] != 'y')
+            return false;
+        if (remaining > 3 && char.IsLetterOrDigit(input[pos + 3]))
+            return false;
+
+        var p = pos + 3;
+        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+        if (p >= input.Length || input[p] != '{') return false;
+
+        var braceEnd = FindMatchingBrace(input, p + 1);
+        if (braceEnd < 0) return false;
+        p = braceEnd + 1;
+
+        var hasCatchOrFinally = false;
+
+        while (true)
+        {
+            var save = p;
+            while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+            if (p + 5 <= input.Length && input.AsSpan(p, 5).SequenceEqual("catch") &&
+                (p + 5 >= input.Length || !char.IsLetterOrDigit(input[p + 5])))
+            {
+                hasCatchOrFinally = true;
+                p += 5;
+                while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+                if (p < input.Length && input[p] == '(')
+                {
+                    var afterParen = FindMatchingParen(input, p + 1);
+                    if (afterParen < 0) return false;
+                    p = afterParen;
+                    while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+                }
+
+                if (p + 4 <= input.Length && input.AsSpan(p, 4).SequenceEqual("when") &&
+                    (p + 4 >= input.Length || !char.IsLetterOrDigit(input[p + 4])))
+                {
+                    p += 4;
+                    while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+                    if (p < input.Length && input[p] == '(')
+                    {
+                        var afterWhen = FindMatchingParen(input, p + 1);
+                        if (afterWhen < 0) return false;
+                        p = afterWhen;
+                        while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+                    }
+                }
+
+                if (p >= input.Length || input[p] != '{') return false;
+                braceEnd = FindMatchingBrace(input, p + 1);
+                if (braceEnd < 0) return false;
+                p = braceEnd + 1;
+                continue;
+            }
+
+            p = save;
+            break;
+        }
+
+        {
+            var save = p;
+            while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+
+            if (p + 7 <= input.Length && input.AsSpan(p, 7).SequenceEqual("finally") &&
+                (p + 7 >= input.Length || !char.IsLetterOrDigit(input[p + 7])))
+            {
+                hasCatchOrFinally = true;
+                p += 7;
+                while (p < input.Length && char.IsWhiteSpace(input[p])) p++;
+                if (p >= input.Length || input[p] != '{') return false;
+                braceEnd = FindMatchingBrace(input, p + 1);
+                if (braceEnd < 0) return false;
+                p = braceEnd + 1;
+            }
+            else
+            {
+                p = save;
+            }
+        }
+
+        if (!hasCatchOrFinally) return false;
+
+        blockEnd = p;
+        code = input[(atPos + 1)..blockEnd].Trim();
+        return true;
+    }
+
     #endregion
 
     #region Expand code block
 
     private static string ExpandCodeBlock(string code)
     {
+        if (string.IsNullOrWhiteSpace(code))
+            return string.Empty;
         var script = BuildCodeBlockScript(code);
         return ExecuteScript(script);
     }
@@ -501,8 +833,41 @@ internal static class RazorCodeBlockExpander
                     continue;
                 }
 
+                // @* comment *@
+                if (markup[i + 1] == '*')
+                {
+                    FlushLiteral(sb, literal);
+                    var commentEnd = markup.IndexOf("*@", i + 2, StringComparison.Ordinal);
+                    if (commentEnd >= 0) { i = commentEnd + 2; continue; }
+                }
+
+                // @{ inline code }
+                if (markup[i + 1] == '{')
+                {
+                    FlushLiteral(sb, literal);
+                    var codeStart = i + 2;
+                    var codeEnd = FindMatchingBrace(markup, codeStart);
+                    if (codeEnd >= 0)
+                    {
+                        sb.AppendLine(markup[codeStart..codeEnd].Trim());
+                        i = codeEnd + 1;
+                        continue;
+                    }
+                }
+
+                // @keyword(...){}  or  @identifier
                 if (char.IsLetter(markup[i + 1]) || markup[i + 1] == '_')
                 {
+                    if (TryParseBlockDirectiveInMarkup(markup, i, out var dEnd, out var dHeader, out var dBody))
+                    {
+                        FlushLiteral(sb, literal);
+                        sb.AppendLine(dHeader);
+                        EmitMarkupAsWrite(sb, dBody);
+                        sb.AppendLine("}");
+                        i = dEnd;
+                        continue;
+                    }
+
                     FlushLiteral(sb, literal);
                     var idStart = i + 1;
                     var p = idStart;
@@ -532,6 +897,62 @@ internal static class RazorCodeBlockExpander
             .Replace("\n", "\\n");
         sb.AppendLine($"__sb.Append(\"{escaped}\");");
         literal.Clear();
+    }
+
+    private static bool TryParseBlockDirectiveInMarkup(string markup, int atPos, out int directiveEnd, out string header, out string body)
+    {
+        directiveEnd = 0;
+        header = "";
+        body = "";
+
+        var pos = atPos + 1;
+        var remaining = markup.Length - pos;
+
+        int keywordLen;
+        if (remaining >= 7 && markup.AsSpan(pos, 7).SequenceEqual("foreach") &&
+            (remaining == 7 || !char.IsLetterOrDigit(markup[pos + 7])))
+            keywordLen = 7;
+        else if (remaining >= 6 && markup.AsSpan(pos, 6).SequenceEqual("switch") &&
+                 (remaining == 6 || !char.IsLetterOrDigit(markup[pos + 6])))
+            keywordLen = 6;
+        else if (remaining >= 5 && markup.AsSpan(pos, 5).SequenceEqual("while") &&
+                 (remaining == 5 || !char.IsLetterOrDigit(markup[pos + 5])))
+            keywordLen = 5;
+        else if (remaining >= 5 && markup.AsSpan(pos, 5).SequenceEqual("using") &&
+                 (remaining == 5 || !char.IsLetterOrDigit(markup[pos + 5])))
+            keywordLen = 5;
+        else if (remaining >= 4 && markup.AsSpan(pos, 4).SequenceEqual("lock") &&
+                 (remaining == 4 || !char.IsLetterOrDigit(markup[pos + 4])))
+            keywordLen = 4;
+        else if (remaining >= 3 && markup.AsSpan(pos, 3).SequenceEqual("for") &&
+                 (remaining == 3 || !char.IsLetterOrDigit(markup[pos + 3])))
+            keywordLen = 3;
+        else if (remaining >= 2 && markup.AsSpan(pos, 2).SequenceEqual("if") &&
+                 (remaining == 2 || !char.IsLetterOrDigit(markup[pos + 2])))
+            keywordLen = 2;
+        else
+            return false;
+
+        var p = pos + keywordLen;
+        while (p < markup.Length && char.IsWhiteSpace(markup[p])) p++;
+        if (p >= markup.Length || markup[p] != '(') return false;
+
+        var afterParen = FindMatchingParen(markup, p + 1);
+        if (afterParen < 0) return false;
+
+        var hp = afterParen;
+        while (hp < markup.Length && char.IsWhiteSpace(markup[hp])) hp++;
+        if (hp >= markup.Length || markup[hp] != '{') return false;
+
+        header = markup[pos..(hp + 1)];
+
+        var bodyStart = hp + 1;
+        var bodyEnd = FindMatchingBrace(markup, bodyStart);
+        if (bodyEnd < 0) return false;
+
+        body = markup[bodyStart..bodyEnd];
+        directiveEnd = bodyEnd + 1;
+        return true;
     }
 
     private static string ExecuteScript(string script)

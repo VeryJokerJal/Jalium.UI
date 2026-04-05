@@ -29,7 +29,6 @@
     <!-- ============================================== -->
     <Style TargetType="Markdown">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="LinkForeground" Value="{DynamicResource HyperlinkForeground}" />
@@ -43,7 +42,6 @@
         <Setter Property="TableHeaderBackground" Value="{DynamicResource ControlBackground}" />
         <Setter Property="Padding" Value="12" />
         <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="CornerRadius" Value="12" />
         <Setter Property="MinHeight" Value="120" />
         <Setter Property="Template">

@@ -450,11 +450,13 @@ public sealed class BindingExpression : BindingExpressionBase
         ResolveDataSource();
 
         // If the source couldn't be resolved (visual tree not ready for DataContext inheritance,
-        // or FindAncestor can't find ancestor), don't mark as active so we can retry later
-        // when visual parent changes and ReactivateBindings() is called
+        // or FindAncestor can't find ancestor), subscribe to DataContextChanged so we can
+        // activate when the visual tree is built and DataContext becomes available.
         if (ResolvedSource == null && _binding.Source == null)
         {
             Status = BindingStatus.Unattached;
+            if (Target is FrameworkElement pendingFe)
+                pendingFe.DataContextChanged += OnDataContextChanged;
             return;
         }
 
@@ -903,9 +905,9 @@ public sealed class BindingExpression : BindingExpressionBase
         for (int i = 0; i < segments.Length - 1; i++)
         {
             if (current == null) return;
-            var prop = current.GetType().GetProperty(segments[i]);
-            if (prop == null) return;
-            current = prop.GetValue(current);
+            if (!PropertyAccessorRegistry.TryReadProperty(current, segments[i], out var next))
+                return;
+            current = next;
         }
 
         if (current == null) return;
@@ -932,11 +934,10 @@ public sealed class BindingExpression : BindingExpressionBase
             if (current == null)
                 return _binding.FallbackValue;
 
-            var property = current.GetType().GetProperty(segment);
-            if (property == null)
+            if (!PropertyAccessorRegistry.TryReadProperty(current, segment, out var next))
                 return _binding.FallbackValue;
 
-            current = property.GetValue(current);
+            current = next;
         }
 
         return current ?? _binding.TargetNullValue;

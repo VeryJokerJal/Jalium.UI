@@ -6,6 +6,8 @@
     <Description>Native interop layer for Jalium.UI framework providing P/Invoke definitions and native libraries.</Description>
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Interop</PackageId>
+    <IsTrimmable>true</IsTrimmable>
+    <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
   <ItemGroup>

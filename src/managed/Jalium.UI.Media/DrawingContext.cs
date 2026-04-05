@@ -64,7 +64,7 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <param name="pen">The pen for the outline, or null for no outline.</param>
     /// <param name="rectangle">The rectangle to draw.</param>
     /// <param name="cornerRadius">The corner radius for each corner.</param>
-    public void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, CornerRadius cornerRadius)
+    public virtual void DrawRoundedRectangle(Brush? brush, Pen? pen, Rect rectangle, CornerRadius cornerRadius)
     {
         cornerRadius = cornerRadius.Normalize(rectangle.Width, rectangle.Height);
 

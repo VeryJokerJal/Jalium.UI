@@ -264,7 +264,6 @@
     <!-- ============================================== -->
     <Style TargetType="MenuFlyoutItem">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="MinHeight" Value="32" />
     </Style>
 
@@ -281,7 +280,6 @@
     <!-- ============================================== -->
     <Style TargetType="ToggleMenuFlyoutItem">
         <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-        <Setter Property="FontSize" Value="14" />
         <Setter Property="MinHeight" Value="32" />
     </Style>
 

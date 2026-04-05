@@ -276,29 +276,3 @@ public abstract class Shape : FrameworkElement
     #endregion
 }
 
-/// <summary>
-/// Specifies how content is stretched to fill its allocated space.
-/// </summary>
-public enum Stretch
-{
-    /// <summary>
-    /// The content preserves its original size.
-    /// </summary>
-    None,
-
-    /// <summary>
-    /// The content is resized to fill the destination dimensions.
-    /// </summary>
-    Fill,
-
-    /// <summary>
-    /// The content is resized to fit in the destination dimensions while preserving aspect ratio.
-    /// </summary>
-    Uniform,
-
-    /// <summary>
-    /// The content is resized to fill the destination dimensions while preserving aspect ratio.
-    /// Source content is clipped if necessary.
-    /// </summary>
-    UniformToFill
-}

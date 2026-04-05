@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using System.Linq;
 using System.Text.RegularExpressions;
@@ -46,6 +47,10 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
         @"(?:^|,)\s*(?:(?:this|params|ref|out|in)\s+)*(?:[_a-zA-Z]\w*(?:\s*<[^()]+>)?(?:\[\])?\s+)+(?<name>[_a-zA-Z]\w*)\s*(?:=[^,]+)?\s*(?=,|$)",
         RegexOptions.Compiled);
 
+    private static readonly Regex UsingDirectiveRegex = new(
+        @"@using\s+(?![\s(])([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)\s*;",
+        RegexOptions.Compiled);
+
     [Required]
     public ITaskItem[]? SourceFiles { get; set; }
 
@@ -53,6 +58,11 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
     public string? OutputDirectory { get; set; }
 
     public string? ProjectDirectory { get; set; }
+
+    /// <summary>
+    /// Reference assembly paths for scanning namespace types from @using directives.
+    /// </summary>
+    public ITaskItem[]? ReferencePaths { get; set; }
 
     [Output]
     public ITaskItem[]? TransformedFiles { get; set; }
@@ -80,6 +90,7 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
         var transformed = new List<ITaskItem>();
         var metadataRows = new List<(string Id, string Expression, string[] Dependencies)>();
         var templateRows = new List<TemplateInfo>();
+        var usingNamespaces = new HashSet<string>(StringComparer.Ordinal);
         var outputRoot = Path.GetFullPath(OutputDirectory);
         var seenSourcePaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -114,14 +125,36 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
 
             var content = File.ReadAllText(sourcePath);
 
-            // Expand @{ } Razor code blocks at build time
+            // Extract @using Namespace; directives
+            foreach (Match m in UsingDirectiveRegex.Matches(content))
+                usingNamespaces.Add(m.Groups[1].Value);
+
+            // Expand @{ } Razor code blocks at build time.
+            // Protect @section and @RenderSection directives — these are handled at runtime.
+            const string escapedSectionPlaceholder = "\x01__ESCSECTION__\x01";
+            const string escapedRenderSectionPlaceholder = "\x01__ESCRENDERSECTION__\x01";
+            const string sectionPlaceholder = "\x01__SECTION__\x01";
+            const string renderSectionPlaceholder = "\x01__RENDERSECTION__\x01";
             try
             {
-                var expanded = RazorCodeBlockExpander.Expand(content);
+                var protected_ = content
+                    .Replace("@@section ", escapedSectionPlaceholder)
+                    .Replace("@@RenderSection(", escapedRenderSectionPlaceholder)
+                    .Replace("@section ", sectionPlaceholder)
+                    .Replace("@RenderSection(", renderSectionPlaceholder);
+                var expanded = RazorCodeBlockExpander.Expand(protected_);
                 if (expanded != null)
                 {
                     Log.LogMessage(MessageImportance.Normal, "Expanded Razor code blocks in: {0}", sourcePath);
-                    content = expanded;
+                    content = expanded
+                        .Replace(sectionPlaceholder, "@section ")
+                        .Replace(renderSectionPlaceholder, "@RenderSection(")
+                        .Replace(escapedSectionPlaceholder, "@@section ")
+                        .Replace(escapedRenderSectionPlaceholder, "@@RenderSection(");
+                }
+                else
+                {
+                    content = content; // no expansion needed, keep original with @section/@RenderSection intact
                 }
             }
             catch (Exception ex)
@@ -151,11 +184,14 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
             }
         }
 
+        // Resolve types from @using namespaces by scanning referenced assemblies
+        var namespaceTypes = ResolveNamespaceTypes(usingNamespaces);
+
         var generated = new List<ITaskItem>();
-        if (metadataRows.Count > 0 || templateRows.Count > 0)
+        if (metadataRows.Count > 0 || templateRows.Count > 0 || namespaceTypes.Count > 0)
         {
             var generatedPath = Path.Combine(OutputDirectory!, "Jalxaml.RazorMetadata.g.cs");
-            File.WriteAllText(generatedPath, GenerateRegistryCode(metadataRows, templateRows), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+            File.WriteAllText(generatedPath, GenerateRegistryCode(metadataRows, templateRows, namespaceTypes), new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
             generated.Add(new TaskItem(generatedPath));
         }
 
@@ -300,6 +336,72 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
             break;
 
         nextScan:
+            ;
+        }
+
+        // Also scan for "else if(expr)" patterns (no @ prefix).
+        i = 0;
+        while (i < content.Length)
+        {
+            // Look for "else" keyword followed by optional whitespace then "if("
+            if (i + 7 < content.Length &&
+                content[i] == 'e' && content[i + 1] == 'l' && content[i + 2] == 's' && content[i + 3] == 'e')
+            {
+                var j = i + 4;
+                while (j < content.Length && char.IsWhiteSpace(content[j]))
+                    j++;
+
+                if (j + 2 < content.Length && content[j] == 'i' && content[j + 1] == 'f')
+                {
+                    j += 2;
+                    while (j < content.Length && char.IsWhiteSpace(content[j]))
+                        j++;
+
+                    if (j < content.Length && content[j] == '(')
+                    {
+                        j++; // skip '('
+                        var exprStart = j;
+                        var depth = 1;
+                        var inStr = false;
+                        var esc = false;
+                        var qt = '\0';
+
+                        while (j < content.Length)
+                        {
+                            var c = content[j];
+                            if (esc) { esc = false; j++; continue; }
+                            if (inStr)
+                            {
+                                if (c == '\\') esc = true;
+                                else if (c == qt) { inStr = false; qt = '\0'; }
+                                j++;
+                                continue;
+                            }
+                            if (c == '"' || c == '\'') { inStr = true; qt = c; j++; continue; }
+                            if (c == '(') { depth++; }
+                            else if (c == ')')
+                            {
+                                depth--;
+                                if (depth == 0)
+                                {
+                                    var expr = content.Substring(exprStart, j - exprStart).Trim();
+                                    if (!string.IsNullOrWhiteSpace(expr))
+                                        expressions.Add(expr);
+                                    i = j + 1;
+                                    goto nextElseIfScan;
+                                }
+                            }
+                            j++;
+                        }
+                        break; // unclosed
+                    }
+                }
+            }
+
+            i++;
+            continue;
+
+        nextElseIfScan:
             ;
         }
 
@@ -650,7 +752,8 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
 
     private static string GenerateRegistryCode(
         IEnumerable<(string Id, string Expression, string[] Dependencies)> rows,
-        IEnumerable<TemplateInfo> templates)
+        IEnumerable<TemplateInfo> templates,
+        IReadOnlyList<(string SimpleName, string FullName)> namespaceTypes = null!)
     {
         var uniqueRows = rows
             .GroupBy(static r => r.Expression, StringComparer.Ordinal)
@@ -667,12 +770,14 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
         var sb = new StringBuilder();
         sb.AppendLine("// <auto-generated/>");
         sb.AppendLine("#nullable enable");
+        sb.AppendLine("using System.Diagnostics.CodeAnalysis;");
         sb.AppendLine("using System.Runtime.CompilerServices;");
         sb.AppendLine("using Jalium.UI.Markup;");
         sb.AppendLine();
         sb.AppendLine("internal static class JalxamlRazorMetadataRegistry");
         sb.AppendLine("{");
         sb.AppendLine("    [ModuleInitializer]");
+        sb.AppendLine("    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(JalxamlRazorMetadataRegistry))]");
         sb.AppendLine("    internal static void Register()");
         sb.AppendLine("    {");
         foreach (var row in uniqueRows)
@@ -704,6 +809,20 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
                 .Append(ToStringLiteral(template.Key)).Append(", ")
                 .Append(body)
                 .AppendLine(");");
+        }
+
+        // Register types discovered from @using directives
+        if (namespaceTypes is { Count: > 0 })
+        {
+            sb.AppendLine();
+            sb.AppendLine("        // Types from @using directives");
+            foreach (var (simpleName, fullName) in namespaceTypes)
+            {
+                sb.Append("        RazorExpressionRegistry.RegisterNamespaceType(")
+                    .Append(ToStringLiteral(simpleName)).Append(", typeof(global::")
+                    .Append(fullName)
+                    .AppendLine("));");
+            }
         }
 
         sb.AppendLine("    }");
@@ -1248,5 +1367,84 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
 
         sb.Append("return __parts.ToArray(); }");
         return sb.ToString();
+    }
+
+    // ── @using namespace type resolution ──
+
+    private IReadOnlyList<(string SimpleName, string FullName)> ResolveNamespaceTypes(IReadOnlySet<string> namespaces)
+    {
+        if (namespaces.Count == 0 || ReferencePaths == null || ReferencePaths.Length == 0)
+            return Array.Empty<(string, string)>();
+
+        var result = new List<(string SimpleName, string FullName)>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        // Collect assembly paths to scan
+        var assemblyPaths = new List<string>();
+        foreach (var item in ReferencePaths)
+        {
+            var path = item.GetMetadata("FullPath");
+            if (string.IsNullOrWhiteSpace(path))
+                path = item.ItemSpec;
+            if (!string.IsNullOrWhiteSpace(path) && File.Exists(path))
+                assemblyPaths.Add(path);
+        }
+
+        if (assemblyPaths.Count == 0)
+            return Array.Empty<(string, string)>();
+
+        try
+        {
+            // Use MetadataLoadContext for safe, reflection-only scanning
+            var resolver = new PathAssemblyResolver(assemblyPaths);
+            using var mlc = new MetadataLoadContext(resolver);
+
+            foreach (var assemblyPath in assemblyPaths)
+            {
+                try
+                {
+                    var assembly = mlc.LoadFromAssemblyPath(assemblyPath);
+
+                    foreach (var type in assembly.GetExportedTypes())
+                    {
+                        if (type.Namespace != null && namespaces.Contains(type.Namespace))
+                        {
+                            var simpleName = type.Name;
+                            // Skip generic types with backtick (e.g. List`1)
+                            if (simpleName.Contains('`'))
+                                continue;
+                            // Skip compiler-generated types
+                            if (simpleName.StartsWith('<'))
+                                continue;
+                            // First-seen wins (mimics C# using resolution)
+                            if (seen.Add(simpleName))
+                            {
+                                result.Add((simpleName, type.FullName!));
+                            }
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.LogMessage(MessageImportance.Low,
+                        "Could not scan assembly '{0}' for @using types: {1}", assemblyPath, ex.Message);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.LogMessage(MessageImportance.Low,
+                "Could not initialize MetadataLoadContext for @using type resolution: {0}", ex.Message);
+        }
+
+        if (result.Count > 0)
+        {
+            Log.LogMessage(MessageImportance.Normal,
+                "Resolved {0} types from @using directives: {1}",
+                result.Count,
+                string.Join(", ", namespaces));
+        }
+
+        return result;
     }
 }
