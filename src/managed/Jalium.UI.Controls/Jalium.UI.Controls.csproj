@@ -1,46 +1,48 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <RootNamespace>Jalium.UI.Controls</RootNamespace>
-    <AssemblyName>Jalium.UI.Controls</AssemblyName>
-    <Description>Control library for Jalium.UI framework including Button, TextBox, Panel, and Window.</Description>
-    <IsPackable>true</IsPackable>
-    <PackageId>Jalium.UI.Controls</PackageId>
-    <IsTrimmable>true</IsTrimmable>
-    <IsAotCompatible>true</IsAotCompatible>
-  </PropertyGroup>
+	<PropertyGroup>
+		<RootNamespace>Jalium.UI.Controls</RootNamespace>
+		<AssemblyName>Jalium.UI.Controls</AssemblyName>
+		<Description>Control library for Jalium.UI framework including Button, TextBox, Panel, and Window.</Description>
+		<IsPackable>true</IsPackable>
+		<PackageId>Jalium.UI.Controls</PackageId>
+		<TargetFramework>net10.0-windows10.0.17763.0</TargetFramework>
+		<IsTrimmable>true</IsTrimmable>
+		<IsAotCompatible>true</IsAotCompatible>
+	</PropertyGroup>
 
-  <ItemGroup>
-    <InternalsVisibleTo Include="Jalium.UI.Xaml" />
-    <InternalsVisibleTo Include="Jalium.UI.Tests" />
-  </ItemGroup>
+	<ItemGroup>
+		<InternalsVisibleTo Include="Jalium.UI.Xaml" />
+		<InternalsVisibleTo Include="Jalium.UI.Tests" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
-    <ProjectReference Include="..\Jalium.UI.Media\Jalium.UI.Media.csproj" />
-    <ProjectReference Include="..\Jalium.UI.Input\Jalium.UI.Input.csproj" />
-    <ProjectReference Include="..\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
-  </ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+		<ProjectReference Include="..\Jalium.UI.Media\Jalium.UI.Media.csproj" />
+		<ProjectReference Include="..\Jalium.UI.Input\Jalium.UI.Input.csproj" />
+		<ProjectReference Include="..\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260318" />
-    <PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
-    <PackageReference Include="QRCoder" Version="*" />
-    <PackageReference Include="SoundFlow" Version="1.4.0" />
-    <PackageReference Include="SoundFlow.Codecs.FFMpeg" Version="1.4.0" />
-    <PackageReference Include="System.Drawing.Common" Version="*" />
-  </ItemGroup>
+	<ItemGroup>
+		<PackageReference Include="Microsoft.Toolkit.Uwp.Notifications" Version="7.1.3" />
+		<PackageReference Include="OpenCvSharp4" Version="4.13.0.20260318" />
+		<PackageReference Include="OpenCvSharp4.runtime.win" Version="4.13.0.20260302" />
+		<PackageReference Include="QRCoder" Version="*" />
+		<PackageReference Include="SoundFlow" Version="1.4.0" />
+		<PackageReference Include="SoundFlow.Codecs.FFMpeg" Version="1.4.0" />
+		<PackageReference Include="System.Drawing.Common" Version="*" />
+	</ItemGroup>
 
-  <!-- ILLink descriptor to preserve types accessed via reflection (AOT/trimming) -->
-  <ItemGroup>
-    <EmbeddedResource Include="ILLink.Descriptors.xml">
-      <LogicalName>ILLink.Descriptors.xml</LogicalName>
-    </EmbeddedResource>
-  </ItemGroup>
+	<!-- ILLink descriptor to preserve types accessed via reflection (AOT/trimming) -->
+	<ItemGroup>
+		<EmbeddedResource Include="ILLink.Descriptors.xml">
+			<LogicalName>ILLink.Descriptors.xml</LogicalName>
+		</EmbeddedResource>
+	</ItemGroup>
 
-  <!-- Embed theme files as resources (default naming: Jalium.UI.Controls.Themes.{path}.{filename}.jalxaml) -->
-  <ItemGroup>
-    <EmbeddedResource Include="Themes\**\*.jalxaml" />
-  </ItemGroup>
+	<!-- Embed theme files as resources (default naming: Jalium.UI.Controls.Themes.{path}.{filename}.jalxaml) -->
+	<ItemGroup>
+		<EmbeddedResource Include="Themes\**\*.jalxaml" />
+	</ItemGroup>
 
 </Project>
