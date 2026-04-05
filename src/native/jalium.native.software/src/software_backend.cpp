@@ -244,6 +244,511 @@ JaliumResult SoftwareTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
 }
 
 // ============================================================================
+// Helper: Box Blur (separable two-pass)
+// ============================================================================
+
+void SoftwareRenderTarget::BoxBlur(std::vector<uint8_t>& pixels, int32_t w, int32_t h, int32_t radius)
+{
+    if (radius <= 0 || w <= 0 || h <= 0) return;
+    // Three-pass box blur approximates Gaussian blur
+    std::vector<uint8_t> temp(pixels.size());
+
+    auto blurPass = [&](std::vector<uint8_t>& src, std::vector<uint8_t>& dst, bool horizontal) {
+        int32_t outerLimit = horizontal ? h : w;
+        int32_t innerLimit = horizontal ? w : h;
+
+        for (int32_t outer = 0; outer < outerLimit; outer++) {
+            // Running sum for each channel
+            int32_t sumR = 0, sumG = 0, sumB = 0, sumA = 0;
+            int32_t count = 0;
+
+            // Initialize window for first pixel
+            for (int32_t k = -radius; k <= radius; k++) {
+                int32_t idx = std::clamp(k, 0, innerLimit - 1);
+                size_t pix;
+                if (horizontal)
+                    pix = ((size_t)outer * w + idx) * 4;
+                else
+                    pix = ((size_t)idx * w + outer) * 4;
+                sumB += src[pix + 0];
+                sumG += src[pix + 1];
+                sumR += src[pix + 2];
+                sumA += src[pix + 3];
+                count++;
+            }
+
+            for (int32_t inner = 0; inner < innerLimit; inner++) {
+                size_t outPix;
+                if (horizontal)
+                    outPix = ((size_t)outer * w + inner) * 4;
+                else
+                    outPix = ((size_t)inner * w + outer) * 4;
+
+                dst[outPix + 0] = (uint8_t)(sumB / count);
+                dst[outPix + 1] = (uint8_t)(sumG / count);
+                dst[outPix + 2] = (uint8_t)(sumR / count);
+                dst[outPix + 3] = (uint8_t)(sumA / count);
+
+                // Slide window: add right/bottom, remove left/top
+                int32_t addIdx = std::min(inner + radius + 1, innerLimit - 1);
+                int32_t remIdx = std::max(inner - radius, 0);
+
+                size_t addPix, remPix;
+                if (horizontal) {
+                    addPix = ((size_t)outer * w + addIdx) * 4;
+                    remPix = ((size_t)outer * w + remIdx) * 4;
+                } else {
+                    addPix = ((size_t)addIdx * w + outer) * 4;
+                    remPix = ((size_t)remIdx * w + outer) * 4;
+                }
+
+                if (inner + radius + 1 < innerLimit) {
+                    sumB += src[addPix + 0] - src[remPix + 0];
+                    sumG += src[addPix + 1] - src[remPix + 1];
+                    sumR += src[addPix + 2] - src[remPix + 2];
+                    sumA += src[addPix + 3] - src[remPix + 3];
+                } else if (inner - radius >= 0) {
+                    sumB -= src[remPix + 0];
+                    sumG -= src[remPix + 1];
+                    sumR -= src[remPix + 2];
+                    sumA -= src[remPix + 3];
+                    // Add clamped edge pixel
+                    size_t edgePix;
+                    if (horizontal)
+                        edgePix = ((size_t)outer * w + (innerLimit - 1)) * 4;
+                    else
+                        edgePix = ((size_t)(innerLimit - 1) * w + outer) * 4;
+                    sumB += src[edgePix + 0];
+                    sumG += src[edgePix + 1];
+                    sumR += src[edgePix + 2];
+                    sumA += src[edgePix + 3];
+                }
+            }
+        }
+    };
+
+    // Three-pass box blur (approximates Gaussian)
+    for (int pass = 0; pass < 3; pass++) {
+        blurPass(pixels, temp, true);   // horizontal
+        blurPass(temp, pixels, false);  // vertical
+    }
+}
+
+void SoftwareRenderTarget::CopyRegion(const SoftwareFramebuffer& src, SoftwareFramebuffer& dst,
+    int32_t srcX, int32_t srcY, int32_t w, int32_t h)
+{
+    dst.Resize(w, h);
+    for (int32_t row = 0; row < h; row++) {
+        int32_t sy = srcY + row;
+        if (sy < 0 || sy >= src.height) continue;
+        for (int32_t col = 0; col < w; col++) {
+            int32_t sx = srcX + col;
+            if (sx < 0 || sx >= src.width) continue;
+            size_t srcIdx = ((size_t)sy * src.width + sx) * 4;
+            size_t dstIdx = ((size_t)row * w + col) * 4;
+            dst.pixels[dstIdx + 0] = src.pixels[srcIdx + 0];
+            dst.pixels[dstIdx + 1] = src.pixels[srcIdx + 1];
+            dst.pixels[dstIdx + 2] = src.pixels[srcIdx + 2];
+            dst.pixels[dstIdx + 3] = src.pixels[srcIdx + 3];
+        }
+    }
+}
+
+void SoftwareRenderTarget::BlitBuffer(const SoftwareFramebuffer& src, int32_t dstX, int32_t dstY, float opacity)
+{
+    for (int32_t row = 0; row < src.height; row++) {
+        int32_t dy = dstY + row;
+        if (dy < 0 || dy >= fb_.height) continue;
+        for (int32_t col = 0; col < src.width; col++) {
+            int32_t dx = dstX + col;
+            if (dx < 0 || dx >= fb_.width) continue;
+            size_t srcIdx = ((size_t)row * src.width + col) * 4;
+            uint8_t sb = src.pixels[srcIdx + 0];
+            uint8_t sg = src.pixels[srcIdx + 1];
+            uint8_t sr = src.pixels[srcIdx + 2];
+            uint8_t sa = (uint8_t)(src.pixels[srcIdx + 3] * opacity);
+            if (sa > 0)
+                fb_.BlendPixel(dx, dy, sr, sg, sb, sa);
+        }
+    }
+}
+
+// ============================================================================
+// Helper: Adaptive Bezier Flattening
+// ============================================================================
+
+void SoftwareRenderTarget::FlattenCubicBezier(std::vector<float>& pts,
+    float x0, float y0, float cp1x, float cp1y,
+    float cp2x, float cp2y, float x1, float y1, float tolerance)
+{
+    // Flatness test: max distance of control points from line (x0,y0)→(x1,y1)
+    float dx = x1 - x0, dy = y1 - y0;
+    float d1 = std::abs((cp1x - x1) * dy - (cp1y - y1) * dx);
+    float d2 = std::abs((cp2x - x1) * dy - (cp2y - y1) * dx);
+    float dSq = dx * dx + dy * dy;
+
+    if ((d1 + d2) * (d1 + d2) <= tolerance * tolerance * dSq || dSq < 0.25f) {
+        pts.push_back(x1);
+        pts.push_back(y1);
+        return;
+    }
+
+    // Subdivide at t=0.5
+    float m01x = (x0 + cp1x) * 0.5f, m01y = (y0 + cp1y) * 0.5f;
+    float m12x = (cp1x + cp2x) * 0.5f, m12y = (cp1y + cp2y) * 0.5f;
+    float m23x = (cp2x + x1) * 0.5f, m23y = (cp2y + y1) * 0.5f;
+    float m012x = (m01x + m12x) * 0.5f, m012y = (m01y + m12y) * 0.5f;
+    float m123x = (m12x + m23x) * 0.5f, m123y = (m12y + m23y) * 0.5f;
+    float mx = (m012x + m123x) * 0.5f, my = (m012y + m123y) * 0.5f;
+
+    FlattenCubicBezier(pts, x0, y0, m01x, m01y, m012x, m012y, mx, my, tolerance);
+    FlattenCubicBezier(pts, mx, my, m123x, m123y, m23x, m23y, x1, y1, tolerance);
+}
+
+void SoftwareRenderTarget::FlattenQuadBezier(std::vector<float>& pts,
+    float x0, float y0, float cpx, float cpy,
+    float x1, float y1, float tolerance)
+{
+    // Flatness test
+    float dx = x1 - x0, dy = y1 - y0;
+    float d = std::abs((cpx - x1) * dy - (cpy - y1) * dx);
+    float dSq = dx * dx + dy * dy;
+
+    if (d * d <= tolerance * tolerance * dSq || dSq < 0.25f) {
+        pts.push_back(x1);
+        pts.push_back(y1);
+        return;
+    }
+
+    // Subdivide at t=0.5
+    float m01x = (x0 + cpx) * 0.5f, m01y = (y0 + cpy) * 0.5f;
+    float m12x = (cpx + x1) * 0.5f, m12y = (cpy + y1) * 0.5f;
+    float mx = (m01x + m12x) * 0.5f, my = (m01y + m12y) * 0.5f;
+
+    FlattenQuadBezier(pts, x0, y0, m01x, m01y, mx, my, tolerance);
+    FlattenQuadBezier(pts, mx, my, m12x, m12y, x1, y1, tolerance);
+}
+
+// ============================================================================
+// Helper: Stroke Outline Generation
+// ============================================================================
+
+void SoftwareRenderTarget::GenerateStrokeOutline(const std::vector<float>& pts, uint32_t ptCount,
+    float strokeWidth, bool closed, int32_t lineJoin, float miterLimit,
+    int32_t lineCap, std::vector<std::vector<float>>& outContours)
+{
+    if (ptCount < 2) return;
+    float halfW = strokeWidth * 0.5f;
+    outContours.clear();
+
+    struct Vec2 { float x, y; };
+
+    uint32_t segCount = closed ? ptCount : ptCount - 1;
+    std::vector<Vec2> normals(segCount);
+    for (uint32_t i = 0; i < segCount; i++) {
+        uint32_t j = (i + 1) % ptCount;
+        float dx = pts[j * 2] - pts[i * 2];
+        float dy = pts[j * 2 + 1] - pts[i * 2 + 1];
+        float len = std::sqrt(dx * dx + dy * dy);
+        if (len < 1e-6f) len = 1e-6f;
+        normals[i] = { -dy / len, dx / len };
+    }
+
+    std::vector<float> leftSide, rightSide;
+
+    auto emitJoint = [&](float px, float py, const Vec2& n0, const Vec2& n1) {
+        float avgNx = n0.x + n1.x, avgNy = n0.y + n1.y;
+        float avgLen = std::sqrt(avgNx * avgNx + avgNy * avgNy);
+
+        if (avgLen < 1e-6f) {
+            leftSide.push_back(px + n0.x * halfW);
+            leftSide.push_back(py + n0.y * halfW);
+            rightSide.push_back(px - n0.x * halfW);
+            rightSide.push_back(py - n0.y * halfW);
+            return;
+        }
+        avgNx /= avgLen;
+        avgNy /= avgLen;
+
+        float dot = n0.x * n1.x + n0.y * n1.y;
+        float miterLen = halfW / std::max(0.001f, std::sqrt(0.5f * (1.0f + dot)));
+
+        if (lineJoin == 2) {
+            // Round join
+            float angle0 = std::atan2(n0.y, n0.x);
+            float angle1 = std::atan2(n1.y, n1.x);
+            float diff = angle1 - angle0;
+            if (diff > 3.14159f) diff -= 6.28318f;
+            if (diff < -3.14159f) diff += 6.28318f;
+            int segs = std::max(2, (int)(std::abs(diff) * halfW / 2));
+            for (int s = 0; s <= segs; s++) {
+                float a = angle0 + diff * s / segs;
+                leftSide.push_back(px + std::cos(a) * halfW);
+                leftSide.push_back(py + std::sin(a) * halfW);
+            }
+            for (int s = 0; s <= segs; s++) {
+                float a = angle0 + 3.14159f + diff * s / segs;
+                rightSide.push_back(px + std::cos(a) * halfW);
+                rightSide.push_back(py + std::sin(a) * halfW);
+            }
+        } else if (lineJoin == 1 || miterLen > halfW * miterLimit) {
+            // Bevel join
+            leftSide.push_back(px + n0.x * halfW);
+            leftSide.push_back(py + n0.y * halfW);
+            leftSide.push_back(px + n1.x * halfW);
+            leftSide.push_back(py + n1.y * halfW);
+            rightSide.push_back(px - n0.x * halfW);
+            rightSide.push_back(py - n0.y * halfW);
+            rightSide.push_back(px - n1.x * halfW);
+            rightSide.push_back(py - n1.y * halfW);
+        } else {
+            // Miter join
+            leftSide.push_back(px + avgNx * miterLen);
+            leftSide.push_back(py + avgNy * miterLen);
+            rightSide.push_back(px - avgNx * miterLen);
+            rightSide.push_back(py - avgNy * miterLen);
+        }
+    };
+
+    for (uint32_t i = 0; i < ptCount; i++) {
+        float px = pts[i * 2], py = pts[i * 2 + 1];
+
+        if (!closed && i == 0) {
+            float nx = normals[0].x, ny = normals[0].y;
+            if (lineCap == 1) {
+                leftSide.push_back(px + nx * halfW - ny * halfW);
+                leftSide.push_back(py + ny * halfW + nx * halfW);
+            } else if (lineCap == 2) {
+                float baseAngle = std::atan2(ny, nx);
+                int segs = std::max(4, (int)(halfW * 2));
+                for (int s = segs; s >= 0; s--) {
+                    float a = baseAngle - 3.14159f * s / segs;
+                    leftSide.push_back(px + std::cos(a) * halfW);
+                    leftSide.push_back(py + std::sin(a) * halfW);
+                }
+            } else {
+                leftSide.push_back(px + nx * halfW);
+                leftSide.push_back(py + ny * halfW);
+            }
+            rightSide.push_back(px - nx * halfW);
+            rightSide.push_back(py - ny * halfW);
+        } else if (!closed && i == ptCount - 1) {
+            uint32_t lastSeg = segCount - 1;
+            float nx = normals[lastSeg].x, ny = normals[lastSeg].y;
+            leftSide.push_back(px + nx * halfW);
+            leftSide.push_back(py + ny * halfW);
+            if (lineCap == 1) {
+                rightSide.push_back(px - nx * halfW + ny * halfW);
+                rightSide.push_back(py - ny * halfW - nx * halfW);
+            } else if (lineCap == 2) {
+                float baseAngle = std::atan2(-ny, -nx);
+                int segs = std::max(4, (int)(halfW * 2));
+                for (int s = 0; s <= segs; s++) {
+                    float a = baseAngle - 3.14159f * s / segs;
+                    rightSide.push_back(px + std::cos(a) * halfW);
+                    rightSide.push_back(py + std::sin(a) * halfW);
+                }
+            } else {
+                rightSide.push_back(px - nx * halfW);
+                rightSide.push_back(py - ny * halfW);
+            }
+        } else {
+            uint32_t prevSeg = (i == 0) ? segCount - 1 : i - 1;
+            uint32_t nextSeg = i % segCount;
+            emitJoint(px, py, normals[prevSeg], normals[nextSeg]);
+        }
+    }
+
+    if (closed) {
+        // For closed paths: output two separate closed contours (outer + inner).
+        // rightSide = outer contour (offset away from path, same winding as path).
+        // leftSide reversed = inner contour (opposite winding, creates the hole).
+        if (rightSide.size() >= 6)
+            outContours.push_back(rightSide);
+        if (leftSide.size() >= 6) {
+            // Reverse leftSide to give opposite winding
+            std::vector<float> innerReversed;
+            innerReversed.reserve(leftSide.size());
+            for (size_t i = leftSide.size(); i >= 2; i -= 2) {
+                innerReversed.push_back(leftSide[i - 2]);
+                innerReversed.push_back(leftSide[i - 1]);
+            }
+            outContours.push_back(std::move(innerReversed));
+        }
+    } else {
+        // For open paths: combine left + reversed right into one closed polygon
+        std::vector<float> poly;
+        poly.reserve(leftSide.size() + rightSide.size());
+        for (size_t i = 0; i < leftSide.size(); i++)
+            poly.push_back(leftSide[i]);
+        for (size_t i = rightSide.size(); i >= 2; i -= 2) {
+            poly.push_back(rightSide[i - 2]);
+            poly.push_back(rightSide[i - 1]);
+        }
+        if (poly.size() >= 6)
+            outContours.push_back(std::move(poly));
+    }
+}
+
+void SoftwareRenderTarget::FillMultiContour(const std::vector<std::vector<float>>& contours, Brush* brush)
+{
+    if (!brush || contours.empty()) return;
+
+    // Collect all edges from all contours, transform, compute bounds
+    struct Edge { float x0, y0, x1, y1; };
+    std::vector<Edge> allEdges;
+    float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+
+    for (auto& contour : contours) {
+        uint32_t pc = (uint32_t)(contour.size() / 2);
+        if (pc < 3) continue;
+
+        std::vector<float> tpts(contour.size());
+        for (uint32_t j = 0; j < pc; j++) {
+            currentTransform_.Apply(contour[j * 2], contour[j * 2 + 1],
+                tpts[j * 2], tpts[j * 2 + 1]);
+            minX = std::min(minX, tpts[j * 2]);
+            maxX = std::max(maxX, tpts[j * 2]);
+            minY = std::min(minY, tpts[j * 2 + 1]);
+            maxY = std::max(maxY, tpts[j * 2 + 1]);
+        }
+
+        for (uint32_t j = 0; j < pc; j++) {
+            uint32_t k = (j + 1) % pc;
+            allEdges.push_back({tpts[j * 2], tpts[j * 2 + 1],
+                                tpts[k * 2], tpts[k * 2 + 1]});
+        }
+    }
+
+    if (allEdges.empty()) return;
+
+    int32_t iy0 = std::max(0, (int32_t)minY);
+    int32_t iy1 = std::min(height_, (int32_t)(maxY + 1));
+
+    // NonZero winding fill across all contours
+    for (int32_t scanY = iy0; scanY < iy1; scanY++) {
+        float sy = (float)scanY + 0.5f;
+
+        std::vector<std::pair<float, int>> crossings;
+        for (auto& e : allEdges) {
+            if ((e.y0 <= sy && e.y1 > sy) || (e.y1 <= sy && e.y0 > sy)) {
+                float t = (sy - e.y0) / (e.y1 - e.y0);
+                float ix = e.x0 + t * (e.x1 - e.x0);
+                int dir = (e.y1 > e.y0) ? 1 : -1;
+                crossings.push_back({ix, dir});
+            }
+        }
+        std::sort(crossings.begin(), crossings.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+
+        int winding = 0;
+        for (size_t ci = 0; ci < crossings.size(); ci++) {
+            int prevW = winding;
+            winding += crossings[ci].second;
+
+            // Fill span when transitioning between zero and non-zero
+            if ((prevW != 0) && (winding == 0)) {
+                // End of filled span — find where it started
+                float spanStart = crossings[ci].first;
+                int w2 = 0;
+                for (size_t k = 0; k <= ci; k++) {
+                    int prev2 = w2;
+                    w2 += crossings[k].second;
+                    if (prev2 == 0 && w2 != 0) spanStart = crossings[k].first;
+                }
+                int32_t xStart = std::max(0, (int32_t)spanStart);
+                int32_t xEnd = std::min(width_ - 1, (int32_t)crossings[ci].first);
+                for (int32_t x = xStart; x <= xEnd; x++) {
+                    if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
+                    uint8_t r, g, b, a;
+                    GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
+                    fb_.BlendPixel(x, scanY, r, g, b, a);
+                }
+            }
+        }
+    }
+}
+
+void SoftwareRenderTarget::ApplyDashPattern(const std::vector<float>& pts, uint32_t ptCount,
+    const float* dashPattern, uint32_t dashCount, float dashOffset,
+    std::vector<std::vector<float>>& segments)
+{
+    if (ptCount < 2 || dashCount == 0) return;
+
+    // Compute total pattern length
+    float patternLen = 0;
+    for (uint32_t i = 0; i < dashCount; i++) patternLen += dashPattern[i];
+    if (patternLen <= 0) return;
+
+    // Normalize offset into pattern
+    float offset = std::fmod(dashOffset, patternLen);
+    if (offset < 0) offset += patternLen;
+
+    // Walk along the polyline, producing dash segments
+    float dist = -offset; // start behind by offset
+    uint32_t dashIdx = 0;
+    bool drawing = true;
+    float dashRemain = dashPattern[0];
+
+    // Adjust for offset
+    while (dist + dashRemain < 0) {
+        dist += dashRemain;
+        drawing = !drawing;
+        dashIdx = (dashIdx + 1) % dashCount;
+        dashRemain = dashPattern[dashIdx];
+    }
+    if (dist < 0) {
+        dashRemain += dist;
+        dist = 0;
+    }
+
+    std::vector<float> current;
+    float accumDist = 0;
+
+    for (uint32_t i = 0; i + 1 < ptCount; i++) {
+        float x0 = pts[i * 2], y0 = pts[i * 2 + 1];
+        float x1 = pts[(i + 1) * 2], y1 = pts[(i + 1) * 2 + 1];
+        float segDx = x1 - x0, segDy = y1 - y0;
+        float segLen = std::sqrt(segDx * segDx + segDy * segDy);
+        if (segLen < 1e-6f) continue;
+
+        float segConsumed = 0;
+        while (segConsumed < segLen) {
+            float remain = segLen - segConsumed;
+            float take = std::min(remain, dashRemain);
+            float t0 = segConsumed / segLen;
+            float t1 = (segConsumed + take) / segLen;
+
+            if (drawing) {
+                if (current.empty()) {
+                    current.push_back(x0 + segDx * t0);
+                    current.push_back(y0 + segDy * t0);
+                }
+                current.push_back(x0 + segDx * t1);
+                current.push_back(y0 + segDy * t1);
+            }
+
+            segConsumed += take;
+            dashRemain -= take;
+
+            if (dashRemain <= 1e-6f) {
+                if (drawing && !current.empty()) {
+                    segments.push_back(std::move(current));
+                    current.clear();
+                }
+                drawing = !drawing;
+                dashIdx = (dashIdx + 1) % dashCount;
+                dashRemain = dashPattern[dashIdx];
+            }
+        }
+    }
+
+    if (drawing && !current.empty()) {
+        segments.push_back(std::move(current));
+    }
+}
+
+// ============================================================================
 // SoftwareRenderTarget
 // ============================================================================
 
@@ -309,9 +814,37 @@ void SoftwareRenderTarget::Clear(float r, float g, float b, float a)
 bool SoftwareRenderTarget::IsClipped(float px, float py) const
 {
     if (clipStack_.empty()) return false;
-    // Check all clip rects (simplified: only check top)
+    // Clip stack uses intersection — only need to check top (already intersected).
+    // But rounded-rect clips need per-pixel testing since intersection doesn't shrink radii.
     auto& clip = const_cast<std::stack<SoftwareClipRect>&>(clipStack_).top();
     return !clip.Contains(px, py);
+}
+
+bool SoftwareRenderTarget::IsInsidePerCornerRoundedRect(float px, float py, float w, float h,
+    float tl, float tr, float br, float bl)
+{
+    if (px < 0 || px > w || py < 0 || py > h) return false;
+    // Top-left corner
+    if (px < tl && py < tl) {
+        float dx = (px - tl) / tl, dy = (py - tl) / tl;
+        if (dx * dx + dy * dy > 1.0f) return false;
+    }
+    // Top-right corner
+    if (px > w - tr && py < tr) {
+        float dx = (px - (w - tr)) / tr, dy = (py - tr) / tr;
+        if (dx * dx + dy * dy > 1.0f) return false;
+    }
+    // Bottom-right corner
+    if (px > w - br && py > h - br) {
+        float dx = (px - (w - br)) / br, dy = (py - (h - br)) / br;
+        if (dx * dx + dy * dy > 1.0f) return false;
+    }
+    // Bottom-left corner
+    if (px < bl && py > h - bl) {
+        float dx = (px - bl) / bl, dy = (py - (h - bl)) / bl;
+        if (dx * dx + dy * dy > 1.0f) return false;
+    }
+    return true;
 }
 
 void SoftwareRenderTarget::GetBrushColor(Brush* brush, float px, float py,
@@ -546,6 +1079,73 @@ void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float
     }
 }
 
+void SoftwareRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w, float h,
+    float tl, float tr, float br, float bl, Brush* brush)
+{
+    if (!brush) return;
+    tl = std::min(tl, std::min(w, h) * 0.5f);
+    tr = std::min(tr, std::min(w, h) * 0.5f);
+    br = std::min(br, std::min(w, h) * 0.5f);
+    bl = std::min(bl, std::min(w, h) * 0.5f);
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
+    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+
+    for (int32_t row = 0; row < ih; row++) {
+        for (int32_t col = 0; col < iw; col++) {
+            if (IsInsidePerCornerRoundedRect((float)col, (float)row, w, h, tl, tr, br, bl)) {
+                int32_t fx = ix + col, fy = iy + row;
+                if (!clipStack_.empty() && IsClipped((float)fx, (float)fy)) continue;
+                uint8_t r, g, b, a;
+                GetBrushColor(brush, (float)fx, (float)fy, r, g, b, a);
+                fb_.BlendPixel(fx, fy, r, g, b, a);
+            }
+        }
+    }
+}
+
+void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
+    float tl, float tr, float br, float bl, Brush* brush, float strokeWidth)
+{
+    if (!brush) return;
+    tl = std::min(tl, std::min(w, h) * 0.5f);
+    tr = std::min(tr, std::min(w, h) * 0.5f);
+    br = std::min(br, std::min(w, h) * 0.5f);
+    bl = std::min(bl, std::min(w, h) * 0.5f);
+    float sw = strokeWidth;
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
+    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+
+    float iTl = std::max(0.0f, tl - sw), iTr = std::max(0.0f, tr - sw);
+    float iBr = std::max(0.0f, br - sw), iBl = std::max(0.0f, bl - sw);
+    float innerW = w - sw * 2, innerH = h - sw * 2;
+
+    for (int32_t row = 0; row < ih; row++) {
+        for (int32_t col = 0; col < iw; col++) {
+            bool insideOuter = IsInsidePerCornerRoundedRect((float)col, (float)row, w, h, tl, tr, br, bl);
+            if (!insideOuter) continue;
+
+            bool insideInner = false;
+            if (innerW > 0 && innerH > 0) {
+                float icx = (float)col - sw, icy = (float)row - sw;
+                insideInner = IsInsidePerCornerRoundedRect(icx, icy, innerW, innerH, iTl, iTr, iBr, iBl);
+            }
+            if (insideInner) continue;
+
+            int32_t fx = ix + col, fy = iy + row;
+            if (!clipStack_.empty() && IsClipped((float)fx, (float)fy)) continue;
+            uint8_t r, g, b, a;
+            GetBrushColor(brush, (float)fx, (float)fy, r, g, b, a);
+            fb_.BlendPixel(fx, fy, r, g, b, a);
+        }
+    }
+}
+
 void SoftwareRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush)
 {
     if (!brush) return;
@@ -731,132 +1331,246 @@ void SoftwareRenderTarget::DrawPolygon(const float* points, uint32_t pointCount,
     }
 }
 
-void SoftwareRenderTarget::FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule)
-{
-    if (!brush) return;
+// Helper: parse path commands into a list of sub-path contours.
+// Each contour is {points[], closed}.
+struct SubPath {
+    std::vector<float> points;
+    bool closed = false;
+};
 
-    // Flatten path to polygon points, then fill
-    std::vector<float> flatPoints;
-    flatPoints.push_back(startX);
-    flatPoints.push_back(startY);
+static void ParsePathToSubPaths(float startX, float startY,
+    const float* commands, uint32_t commandLength,
+    std::vector<SubPath>& subPaths)
+{
+    const float tolerance = 0.25f;
+    subPaths.clear();
+
+    SubPath current;
+    float subPathStartX = startX, subPathStartY = startY;
+    current.points.push_back(startX);
+    current.points.push_back(startY);
 
     uint32_t i = 0;
     while (i < commandLength) {
         int tag = (int)commands[i];
         if (tag == 0 && i + 2 < commandLength) {
-            flatPoints.push_back(commands[i + 1]);
-            flatPoints.push_back(commands[i + 2]);
+            // LineTo
+            current.points.push_back(commands[i + 1]);
+            current.points.push_back(commands[i + 2]);
             i += 3;
         } else if (tag == 1 && i + 6 < commandLength) {
-            // Flatten cubic bezier into line segments
-            float px = flatPoints[flatPoints.size() - 2];
-            float py = flatPoints[flatPoints.size() - 1];
-            float cp1x = commands[i + 1], cp1y = commands[i + 2];
-            float cp2x = commands[i + 3], cp2y = commands[i + 4];
-            float ex = commands[i + 5], ey = commands[i + 6];
-
-            const int segments = 24;
-            for (int s = 1; s <= segments; s++) {
-                float t = (float)s / segments;
-                float it = 1 - t;
-                float bx = it * it * it * px + 3 * it * it * t * cp1x + 3 * it * t * t * cp2x + t * t * t * ex;
-                float by = it * it * it * py + 3 * it * it * t * cp1y + 3 * it * t * t * cp2y + t * t * t * ey;
-                flatPoints.push_back(bx);
-                flatPoints.push_back(by);
-            }
+            // CubicBezierTo
+            float px = current.points[current.points.size() - 2];
+            float py = current.points[current.points.size() - 1];
+            SoftwareRenderTarget::FlattenCubicBezier(current.points, px, py,
+                commands[i + 1], commands[i + 2],
+                commands[i + 3], commands[i + 4],
+                commands[i + 5], commands[i + 6], tolerance);
             i += 7;
         } else if (tag == 2 && i + 2 < commandLength) {
-            // MoveTo: new sub-path — for software backend, just add points inline
-            flatPoints.push_back(commands[i + 1]);
-            flatPoints.push_back(commands[i + 2]);
+            // MoveTo: finish current sub-path, start new one
+            if (current.points.size() >= 4) {
+                subPaths.push_back(std::move(current));
+            }
+            current = SubPath{};
+            subPathStartX = commands[i + 1];
+            subPathStartY = commands[i + 2];
+            current.points.push_back(subPathStartX);
+            current.points.push_back(subPathStartY);
             i += 3;
         } else if (tag == 3 && i + 4 < commandLength) {
-            // QuadTo: flatten quadratic bezier
-            float px = flatPoints[flatPoints.size() - 2];
-            float py = flatPoints[flatPoints.size() - 1];
-            float cpx = commands[i + 1], cpy = commands[i + 2];
-            float ex = commands[i + 3], ey = commands[i + 4];
-            const int segments = 16;
-            for (int s = 1; s <= segments; s++) {
-                float t = (float)s / segments;
-                float it = 1 - t;
-                flatPoints.push_back(it * it * px + 2 * it * t * cpx + t * t * ex);
-                flatPoints.push_back(it * it * py + 2 * it * t * cpy + t * t * ey);
-            }
+            // QuadBezierTo
+            float px = current.points[current.points.size() - 2];
+            float py = current.points[current.points.size() - 1];
+            SoftwareRenderTarget::FlattenQuadBezier(current.points, px, py,
+                commands[i + 1], commands[i + 2],
+                commands[i + 3], commands[i + 4], tolerance);
             i += 5;
         } else if (tag == 5) {
-            // ClosePath — no-op for fill
+            // ClosePath: close current sub-path
+            current.closed = true;
+            // Add closing segment back to sub-path start if not already there
+            float lastX = current.points[current.points.size() - 2];
+            float lastY = current.points[current.points.size() - 1];
+            if (std::abs(lastX - subPathStartX) > 0.01f || std::abs(lastY - subPathStartY) > 0.01f) {
+                current.points.push_back(subPathStartX);
+                current.points.push_back(subPathStartY);
+            }
+            subPaths.push_back(std::move(current));
+            current = SubPath{};
+            // Next commands continue from the sub-path start
+            current.points.push_back(subPathStartX);
+            current.points.push_back(subPathStartY);
             i += 1;
         } else {
             break;
         }
     }
 
-    FillPolygon(flatPoints.data(), (uint32_t)(flatPoints.size() / 2), brush, fillRule);
+    // Push remaining sub-path
+    if (current.points.size() >= 4) {
+        subPaths.push_back(std::move(current));
+    }
+}
+
+void SoftwareRenderTarget::FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule)
+{
+    if (!brush) return;
+
+    // Parse into sub-paths (contours)
+    std::vector<SubPath> subPaths;
+    ParsePathToSubPaths(startX, startY, commands, commandLength, subPaths);
+    if (subPaths.empty()) return;
+
+    // For fill: collect ALL edges from all contours and do scanline fill.
+    // Each contour is a closed polygon for fill purposes.
+    // Merge all contour points, tracking contour boundaries for edge generation.
+
+    // Compute bounding box across all contours
+    float minX = 1e9f, maxX = -1e9f, minY = 1e9f, maxY = -1e9f;
+    struct Edge { float x0, y0, x1, y1; };
+    std::vector<Edge> allEdges;
+
+    for (auto& sp : subPaths) {
+        uint32_t pc = (uint32_t)(sp.points.size() / 2);
+        if (pc < 2) continue;
+
+        // Transform points
+        std::vector<float> tpts(sp.points.size());
+        for (uint32_t j = 0; j < pc; j++) {
+            currentTransform_.Apply(sp.points[j * 2], sp.points[j * 2 + 1],
+                tpts[j * 2], tpts[j * 2 + 1]);
+            minX = std::min(minX, tpts[j * 2]);
+            maxX = std::max(maxX, tpts[j * 2]);
+            minY = std::min(minY, tpts[j * 2 + 1]);
+            maxY = std::max(maxY, tpts[j * 2 + 1]);
+        }
+
+        // Add edges for this contour (always closed for fill)
+        for (uint32_t j = 0; j < pc; j++) {
+            uint32_t k = (j + 1) % pc;
+            allEdges.push_back({tpts[j * 2], tpts[j * 2 + 1],
+                                tpts[k * 2], tpts[k * 2 + 1]});
+        }
+    }
+
+    if (allEdges.empty()) return;
+
+    int32_t iy0 = std::max(0, (int32_t)minY);
+    int32_t iy1 = std::min(height_, (int32_t)(maxY + 1));
+    bool useWinding = (fillRule == 1);
+
+    for (int32_t scanY = iy0; scanY < iy1; scanY++) {
+        float sy = (float)scanY + 0.5f;
+
+        if (useWinding) {
+            std::vector<std::pair<float, int>> crossings;
+            for (auto& e : allEdges) {
+                if ((e.y0 <= sy && e.y1 > sy) || (e.y1 <= sy && e.y0 > sy)) {
+                    float t = (sy - e.y0) / (e.y1 - e.y0);
+                    float ix = e.x0 + t * (e.x1 - e.x0);
+                    int dir = (e.y1 > e.y0) ? 1 : -1;
+                    crossings.push_back({ix, dir});
+                }
+            }
+            std::sort(crossings.begin(), crossings.end(),
+                [](const auto& a, const auto& b) { return a.first < b.first; });
+
+            int winding = 0;
+            for (size_t ci = 0; ci < crossings.size(); ci++) {
+                int prevW = winding;
+                winding += crossings[ci].second;
+                if (prevW == 0 && winding != 0) {
+                    // Start of filled span
+                } else if (prevW != 0 && winding == 0) {
+                    // Find span start (backtrack to where winding became non-zero)
+                    float spanStart = crossings[ci].first;
+                    int w2 = 0;
+                    for (size_t k = 0; k <= ci; k++) {
+                        int prev2 = w2;
+                        w2 += crossings[k].second;
+                        if (prev2 == 0 && w2 != 0) spanStart = crossings[k].first;
+                    }
+                    int32_t xStart = std::max(0, (int32_t)spanStart);
+                    int32_t xEnd = std::min(width_ - 1, (int32_t)crossings[ci].first);
+                    for (int32_t x = xStart; x <= xEnd; x++) {
+                        if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
+                        uint8_t r, g, b, a;
+                        GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
+                        fb_.BlendPixel(x, scanY, r, g, b, a);
+                    }
+                }
+            }
+        } else {
+            // Even-odd rule
+            std::vector<float> intersections;
+            for (auto& e : allEdges) {
+                if ((e.y0 <= sy && e.y1 > sy) || (e.y1 <= sy && e.y0 > sy)) {
+                    float t = (sy - e.y0) / (e.y1 - e.y0);
+                    intersections.push_back(e.x0 + t * (e.x1 - e.x0));
+                }
+            }
+            std::sort(intersections.begin(), intersections.end());
+            for (size_t ci = 0; ci + 1 < intersections.size(); ci += 2) {
+                int32_t xStart = std::max(0, (int32_t)intersections[ci]);
+                int32_t xEnd = std::min(width_ - 1, (int32_t)intersections[ci + 1]);
+                for (int32_t x = xStart; x <= xEnd; x++) {
+                    if (!clipStack_.empty() && IsClipped((float)x, (float)scanY)) continue;
+                    uint8_t r, g, b, a;
+                    GetBrushColor(brush, (float)x, (float)scanY, r, g, b, a);
+                    fb_.BlendPixel(x, scanY, r, g, b, a);
+                }
+            }
+        }
+    }
 }
 
 void SoftwareRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount, float dashOffset)
 {
     if (!brush) return;
 
-    // Flatten path to polygon points, then stroke
-    std::vector<float> flatPoints;
-    flatPoints.push_back(startX);
-    flatPoints.push_back(startY);
+    // Parse into sub-paths
+    std::vector<SubPath> subPaths;
+    ParsePathToSubPaths(startX, startY, commands, commandLength, subPaths);
+    if (subPaths.empty()) return;
 
-    uint32_t i = 0;
-    while (i < commandLength) {
-        int tag = (int)commands[i];
-        if (tag == 0 && i + 2 < commandLength) {
-            flatPoints.push_back(commands[i + 1]);
-            flatPoints.push_back(commands[i + 2]);
-            i += 3;
-        } else if (tag == 1 && i + 6 < commandLength) {
-            float px = flatPoints[flatPoints.size() - 2];
-            float py = flatPoints[flatPoints.size() - 1];
-            float cp1x = commands[i + 1], cp1y = commands[i + 2];
-            float cp2x = commands[i + 3], cp2y = commands[i + 4];
-            float ex = commands[i + 5], ey = commands[i + 6];
+    // Stroke each sub-path independently
+    for (auto& sp : subPaths) {
+        uint32_t ptCount = (uint32_t)(sp.points.size() / 2);
+        if (ptCount < 2) continue;
 
-            const int segments = 24;
-            for (int s = 1; s <= segments; s++) {
-                float t = (float)s / segments;
-                float it = 1 - t;
-                float bx = it * it * it * px + 3 * it * it * t * cp1x + 3 * it * t * t * cp2x + t * t * t * ex;
-                float by = it * it * it * py + 3 * it * it * t * cp1y + 3 * it * t * t * cp2y + t * t * t * ey;
-                flatPoints.push_back(bx);
-                flatPoints.push_back(by);
+        bool subClosed = sp.closed || closed;
+
+        // Remove duplicated closing point if present
+        if (subClosed && ptCount >= 3) {
+            float fx = sp.points[0], fy = sp.points[1];
+            float lx = sp.points[(ptCount - 1) * 2], ly = sp.points[(ptCount - 1) * 2 + 1];
+            if (std::abs(fx - lx) < 0.01f && std::abs(fy - ly) < 0.01f) {
+                ptCount--;
             }
-            i += 7;
-        } else if (tag == 2 && i + 2 < commandLength) {
-            // MoveTo: new sub-path
-            flatPoints.push_back(commands[i + 1]);
-            flatPoints.push_back(commands[i + 2]);
-            i += 3;
-        } else if (tag == 3 && i + 4 < commandLength) {
-            // QuadTo: flatten quadratic bezier
-            float px = flatPoints[flatPoints.size() - 2];
-            float py = flatPoints[flatPoints.size() - 1];
-            float cpx = commands[i + 1], cpy = commands[i + 2];
-            float ex = commands[i + 3], ey = commands[i + 4];
-            const int segments = 16;
-            for (int s = 1; s <= segments; s++) {
-                float t = (float)s / segments;
-                float it = 1 - t;
-                flatPoints.push_back(it * it * px + 2 * it * t * cpx + t * t * ex);
-                flatPoints.push_back(it * it * py + 2 * it * t * cpy + t * t * ey);
+        }
+        if (ptCount < 2) continue;
+
+        // For thick strokes (> 2px), use outline polygon approach for proper joins.
+        // For thin strokes, use direct line drawing (more reliable at small sizes).
+        if (strokeWidth > 2.0f && !dashPattern) {
+            std::vector<std::vector<float>> contours;
+            GenerateStrokeOutline(sp.points, ptCount, strokeWidth, subClosed, lineJoin, miterLimit, lineCap, contours);
+            FillMultiContour(contours, brush);
+        } else if (dashPattern && dashCount > 0) {
+            std::vector<std::vector<float>> dashSegments;
+            ApplyDashPattern(sp.points, ptCount, dashPattern, dashCount, dashOffset, dashSegments);
+            for (auto& seg : dashSegments) {
+                uint32_t segPts = (uint32_t)(seg.size() / 2);
+                if (segPts < 2) continue;
+                // Draw each dash segment
+                DrawPolygon(seg.data(), segPts, brush, strokeWidth, false, lineJoin, miterLimit);
             }
-            i += 5;
-        } else if (tag == 5) {
-            // ClosePath
-            closed = true;
-            i += 1;
         } else {
-            break;
+            // Direct line drawing for each segment of the sub-path
+            DrawPolygon(sp.points.data(), ptCount, brush, strokeWidth, subClosed, lineJoin, miterLimit);
         }
     }
-
-    DrawPolygon(flatPoints.data(), (uint32_t)(flatPoints.size() / 2), brush, strokeWidth, closed);
 }
 
 void SoftwareRenderTarget::DrawContentBorder(float x, float y, float w, float h,
@@ -1141,20 +1855,74 @@ void SoftwareRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w,
 
 void SoftwareRenderTarget::DrawBackdropFilter(
     float x, float y, float w, float h,
-    const char*, const char*, const char*,
-    float tintOpacity, float,
-    float, float, float, float)
+    const char* backdropFilter, const char* material, const char* materialTint,
+    float tintOpacity, float blurRadius,
+    float cornerRadiusTL, float cornerRadiusTR,
+    float cornerRadiusBR, float cornerRadiusBL)
 {
-    // Simple tint overlay for software rasterizer
-    uint8_t a = FloatToU8(tintOpacity * currentOpacity_);
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
     int32_t ix = (int32_t)tx, iy = (int32_t)ty;
     int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
 
-    for (int32_t row = iy; row < iy + ih; row++) {
-        for (int32_t col = ix; col < ix + iw; col++) {
-            fb_.BlendPixel(col, row, 128, 128, 128, a);
+    // Clamp to framebuffer bounds
+    int32_t x0 = std::max(0, ix), y0 = std::max(0, iy);
+    int32_t x1 = std::min(fb_.width, ix + iw), y1 = std::min(fb_.height, iy + ih);
+    int32_t rw = x1 - x0, rh = y1 - y0;
+    if (rw <= 0 || rh <= 0) return;
+
+    bool hasCorners = (cornerRadiusTL > 0 || cornerRadiusTR > 0 || cornerRadiusBR > 0 || cornerRadiusBL > 0);
+
+    // Step 1: Copy region and apply blur
+    if (blurRadius > 0) {
+        SoftwareFramebuffer blurred;
+        CopyRegion(fb_, blurred, x0, y0, rw, rh);
+        BoxBlur(blurred.pixels, rw, rh, (int32_t)(blurRadius * 0.5f + 0.5f));
+
+        // Write blurred pixels back (respecting rounded corners)
+        for (int32_t row = 0; row < rh; row++) {
+            for (int32_t col = 0; col < rw; col++) {
+                if (hasCorners) {
+                    float lx = (float)(x0 + col - ix), ly = (float)(y0 + row - iy);
+                    if (!IsInsidePerCornerRoundedRect(lx, ly, w, h,
+                        cornerRadiusTL, cornerRadiusTR, cornerRadiusBR, cornerRadiusBL))
+                        continue;
+                }
+                if (!clipStack_.empty() && IsClipped((float)(x0 + col), (float)(y0 + row))) continue;
+                size_t srcIdx = ((size_t)row * rw + col) * 4;
+                fb_.SetPixel(x0 + col, y0 + row,
+                    blurred.pixels[srcIdx + 2], blurred.pixels[srcIdx + 1],
+                    blurred.pixels[srcIdx + 0], blurred.pixels[srcIdx + 3]);
+            }
+        }
+    }
+
+    // Step 2: Parse tint color from materialTint (hex like "#RRGGBB")
+    uint8_t tintR = 128, tintG = 128, tintB = 128;
+    if (materialTint && materialTint[0] == '#' && std::strlen(materialTint) >= 7) {
+        auto hex2 = [](const char* s) -> uint8_t {
+            auto c = [](char ch) -> int { return (ch >= 'a') ? ch - 'a' + 10 : (ch >= 'A') ? ch - 'A' + 10 : ch - '0'; };
+            return (uint8_t)(c(s[0]) * 16 + c(s[1]));
+        };
+        tintR = hex2(materialTint + 1);
+        tintG = hex2(materialTint + 3);
+        tintB = hex2(materialTint + 5);
+    }
+
+    // Step 3: Apply tint overlay
+    if (tintOpacity > 0) {
+        uint8_t a = FloatToU8(tintOpacity * currentOpacity_);
+        for (int32_t row = y0; row < y1; row++) {
+            for (int32_t col = x0; col < x1; col++) {
+                if (hasCorners) {
+                    float lx = (float)(col - ix), ly = (float)(row - iy);
+                    if (!IsInsidePerCornerRoundedRect(lx, ly, w, h,
+                        cornerRadiusTL, cornerRadiusTR, cornerRadiusBR, cornerRadiusBL))
+                        continue;
+                }
+                if (!clipStack_.empty() && IsClipped((float)col, (float)row)) continue;
+                fb_.BlendPixel(col, row, tintR, tintG, tintB, a);
+            }
         }
     }
 }
@@ -1220,6 +1988,738 @@ void SoftwareRenderTarget::DrawRippleEffect(
         0, glowColorR, glowColorG, glowColorB,
         strokeWidth * (1.0f - rippleProgress * 0.5f), 0,
         dimOpacity * alpha, screenWidth, screenHeight);
+}
+
+// ============================================================================
+// PushClipAliased
+// ============================================================================
+
+void SoftwareRenderTarget::PushClipAliased(float x, float y, float w, float h)
+{
+    // Same as PushClip for software backend (no AA distinction)
+    PushClip(x, y, w, h);
+}
+
+// ============================================================================
+// FillEllipseBatch
+// ============================================================================
+
+void SoftwareRenderTarget::FillEllipseBatch(const float* data, uint32_t count)
+{
+    if (!data) return;
+    // data layout: [cx, cy, rx, ry, packedColor] × count
+    for (uint32_t i = 0; i < count; i++) {
+        float cx = data[i * 5 + 0];
+        float cy = data[i * 5 + 1];
+        float rx = data[i * 5 + 2];
+        float ry = data[i * 5 + 3];
+        // Unpack RGBA from float
+        uint32_t packed;
+        std::memcpy(&packed, &data[i * 5 + 4], sizeof(uint32_t));
+        float cr = ((packed >> 0) & 0xFF) / 255.0f;
+        float cg = ((packed >> 8) & 0xFF) / 255.0f;
+        float cb = ((packed >> 16) & 0xFF) / 255.0f;
+        float ca = ((packed >> 24) & 0xFF) / 255.0f;
+
+        // Rasterize ellipse directly with the color
+        float tx, ty;
+        currentTransform_.Apply(cx, cy, tx, ty);
+        int32_t irx = (int32_t)(rx + 0.5f), iry = (int32_t)(ry + 0.5f);
+        uint8_t r = FloatToU8(cr), g = FloatToU8(cg), b = FloatToU8(cb), a = FloatToU8(ca * currentOpacity_);
+
+        for (int32_t dy = -iry; dy <= iry; dy++) {
+            for (int32_t dx = -irx; dx <= irx; dx++) {
+                float ex = (float)dx / rx;
+                float ey = (float)dy / ry;
+                if (ex * ex + ey * ey <= 1.0f) {
+                    int32_t px = (int32_t)tx + dx;
+                    int32_t py = (int32_t)ty + dy;
+                    if (!clipStack_.empty() && IsClipped((float)px, (float)py)) continue;
+                    fb_.BlendPixel(px, py, r, g, b, a);
+                }
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Effect Capture Pipeline
+// ============================================================================
+
+void SoftwareRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
+{
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    effectCaptureX_ = tx;
+    effectCaptureY_ = ty;
+    effectCaptureW_ = w;
+    effectCaptureH_ = h;
+
+    // Save current framebuffer state
+    savedFb_.width = fb_.width;
+    savedFb_.height = fb_.height;
+    savedFb_.pixels = fb_.pixels;
+
+    // Clear the capture region so we render effect content in isolation
+    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
+    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+    for (int32_t row = std::max(0, iy); row < std::min(fb_.height, iy + ih); row++) {
+        for (int32_t col = std::max(0, ix); col < std::min(fb_.width, ix + iw); col++) {
+            fb_.SetPixel(col, row, 0, 0, 0, 0);
+        }
+    }
+    effectCaptureActive_ = true;
+}
+
+void SoftwareRenderTarget::EndEffectCapture()
+{
+    if (!effectCaptureActive_) return;
+
+    // Copy the rendered content from capture region into effectCaptureFb_
+    int32_t ix = (int32_t)effectCaptureX_, iy = (int32_t)effectCaptureY_;
+    int32_t iw = (int32_t)(effectCaptureW_ + 0.5f), ih = (int32_t)(effectCaptureH_ + 0.5f);
+    CopyRegion(fb_, effectCaptureFb_, ix, iy, iw, ih);
+
+    // Restore the original framebuffer
+    fb_.pixels = savedFb_.pixels;
+    effectCaptureActive_ = false;
+}
+
+void SoftwareRenderTarget::DrawBlurEffect(float x, float y, float w, float h, float radius,
+    float uvOffsetX, float uvOffsetY)
+{
+    if (effectCaptureFb_.pixels.empty()) return;
+
+    // Apply blur to the captured content
+    SoftwareFramebuffer blurred;
+    blurred.width = effectCaptureFb_.width;
+    blurred.height = effectCaptureFb_.height;
+    blurred.pixels = effectCaptureFb_.pixels;
+
+    if (radius > 0) {
+        BoxBlur(blurred.pixels, blurred.width, blurred.height, (int32_t)(radius * 0.5f + 0.5f));
+    }
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t dstX = (int32_t)(tx + uvOffsetX);
+    int32_t dstY = (int32_t)(ty + uvOffsetY);
+    BlitBuffer(blurred, dstX, dstY, currentOpacity_);
+}
+
+void SoftwareRenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float uvOffsetX, float uvOffsetY,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+{
+    if (effectCaptureFb_.pixels.empty()) return;
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t iw = effectCaptureFb_.width;
+    int32_t ih = effectCaptureFb_.height;
+
+    // Create shadow mask from captured alpha channel
+    SoftwareFramebuffer shadow;
+    shadow.Resize(iw, ih);
+    uint8_t sr = FloatToU8(r), sg = FloatToU8(g), sb = FloatToU8(b);
+    for (int32_t row = 0; row < ih; row++) {
+        for (int32_t col = 0; col < iw; col++) {
+            size_t idx = ((size_t)row * iw + col) * 4;
+            uint8_t alpha = effectCaptureFb_.pixels[idx + 3];
+            float sa = (alpha / 255.0f) * a;
+            shadow.pixels[idx + 0] = (uint8_t)(sb * sa);
+            shadow.pixels[idx + 1] = (uint8_t)(sg * sa);
+            shadow.pixels[idx + 2] = (uint8_t)(sr * sa);
+            shadow.pixels[idx + 3] = (uint8_t)(sa * 255.0f);
+        }
+    }
+
+    // Blur the shadow
+    if (blurRadius > 0) {
+        BoxBlur(shadow.pixels, iw, ih, (int32_t)(blurRadius * 0.5f + 0.5f));
+    }
+
+    // Draw shadow (offset)
+    int32_t dstX = (int32_t)(tx + offsetX + uvOffsetX);
+    int32_t dstY = (int32_t)(ty + offsetY + uvOffsetY);
+    BlitBuffer(shadow, dstX, dstY, currentOpacity_);
+
+    // Draw original content on top
+    int32_t origX = (int32_t)(tx + uvOffsetX);
+    int32_t origY = (int32_t)(ty + uvOffsetY);
+    BlitBuffer(effectCaptureFb_, origX, origY, currentOpacity_);
+}
+
+void SoftwareRenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
+    float glowSize, float r, float g, float b, float a, float intensity,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+{
+    if (effectCaptureFb_.pixels.empty()) return;
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t iw = effectCaptureFb_.width;
+    int32_t ih = effectCaptureFb_.height;
+
+    // Expand the buffer for glow spread
+    int32_t expand = (int32_t)(glowSize + 0.5f);
+    int32_t gw = iw + expand * 2;
+    int32_t gh = ih + expand * 2;
+
+    // Create glow mask from alpha, placed centered in expanded buffer
+    SoftwareFramebuffer glow;
+    glow.Resize(gw, gh);
+    uint8_t gr = FloatToU8(r), gg = FloatToU8(g), gb = FloatToU8(b);
+    for (int32_t row = 0; row < ih; row++) {
+        for (int32_t col = 0; col < iw; col++) {
+            size_t srcIdx = ((size_t)row * iw + col) * 4;
+            uint8_t alpha = effectCaptureFb_.pixels[srcIdx + 3];
+            float ga = (alpha / 255.0f) * a * intensity;
+            size_t dstIdx = ((size_t)(row + expand) * gw + col + expand) * 4;
+            glow.pixels[dstIdx + 0] = (uint8_t)(gb * std::min(1.0f, ga));
+            glow.pixels[dstIdx + 1] = (uint8_t)(gg * std::min(1.0f, ga));
+            glow.pixels[dstIdx + 2] = (uint8_t)(gr * std::min(1.0f, ga));
+            glow.pixels[dstIdx + 3] = FloatToU8(std::min(1.0f, ga));
+        }
+    }
+
+    // Blur the glow
+    BoxBlur(glow.pixels, gw, gh, expand);
+
+    // Draw glow (shifted by expand)
+    int32_t dstX = (int32_t)tx - expand;
+    int32_t dstY = (int32_t)ty - expand;
+    BlitBuffer(glow, dstX, dstY, currentOpacity_);
+
+    // Draw original content on top
+    BlitBuffer(effectCaptureFb_, (int32_t)tx, (int32_t)ty, currentOpacity_);
+}
+
+void SoftwareRenderTarget::DrawInnerShadowEffect(float x, float y, float w, float h,
+    float blurRadius, float offsetX, float offsetY,
+    float r, float g, float b, float a,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+{
+    if (effectCaptureFb_.pixels.empty()) return;
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t iw = effectCaptureFb_.width;
+    int32_t ih = effectCaptureFb_.height;
+
+    // Draw original content first
+    BlitBuffer(effectCaptureFb_, (int32_t)tx, (int32_t)ty, currentOpacity_);
+
+    // Create inverted alpha mask (shadow where content exists, weighted by distance from edge)
+    SoftwareFramebuffer shadow;
+    shadow.Resize(iw, ih);
+    uint8_t sr = FloatToU8(r), sg = FloatToU8(g), sb = FloatToU8(b);
+
+    int32_t offX = (int32_t)offsetX, offY = (int32_t)offsetY;
+    for (int32_t row = 0; row < ih; row++) {
+        for (int32_t col = 0; col < iw; col++) {
+            // Sample from offset position
+            int32_t sx = col - offX, sy = row - offY;
+            float srcAlpha = 0;
+            if (sx >= 0 && sx < iw && sy >= 0 && sy < ih) {
+                size_t srcIdx = ((size_t)sy * iw + sx) * 4;
+                srcAlpha = effectCaptureFb_.pixels[srcIdx + 3] / 255.0f;
+            }
+            // Inner shadow: visible where source has alpha AND offset source is transparent
+            size_t myIdx = ((size_t)row * iw + col) * 4;
+            float myAlpha = effectCaptureFb_.pixels[myIdx + 3] / 255.0f;
+            float shadowA = myAlpha * (1.0f - srcAlpha) * a;
+
+            size_t dstIdx = ((size_t)row * iw + col) * 4;
+            shadow.pixels[dstIdx + 0] = (uint8_t)(sb * shadowA);
+            shadow.pixels[dstIdx + 1] = (uint8_t)(sg * shadowA);
+            shadow.pixels[dstIdx + 2] = (uint8_t)(sr * shadowA);
+            shadow.pixels[dstIdx + 3] = FloatToU8(shadowA);
+        }
+    }
+
+    // Blur the inner shadow
+    if (blurRadius > 0) {
+        BoxBlur(shadow.pixels, iw, ih, (int32_t)(blurRadius * 0.5f + 0.5f));
+    }
+
+    // Composite inner shadow on top (clipped to original alpha)
+    for (int32_t row = 0; row < ih; row++) {
+        int32_t dy = (int32_t)ty + row;
+        if (dy < 0 || dy >= fb_.height) continue;
+        for (int32_t col = 0; col < iw; col++) {
+            int32_t dx = (int32_t)tx + col;
+            if (dx < 0 || dx >= fb_.width) continue;
+
+            size_t srcIdx = ((size_t)row * iw + col) * 4;
+            size_t origIdx = ((size_t)row * iw + col) * 4;
+            float origAlpha = effectCaptureFb_.pixels[origIdx + 3] / 255.0f;
+            uint8_t sa = (uint8_t)(shadow.pixels[srcIdx + 3] * origAlpha * currentOpacity_);
+            if (sa > 0) {
+                fb_.BlendPixel(dx, dy, shadow.pixels[srcIdx + 2],
+                    shadow.pixels[srcIdx + 1], shadow.pixels[srcIdx + 0], sa);
+            }
+        }
+    }
+}
+
+void SoftwareRenderTarget::DrawColorMatrixEffect(float x, float y, float w, float h,
+    const float* matrix)
+{
+    if (effectCaptureFb_.pixels.empty() || !matrix) return;
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t iw = effectCaptureFb_.width;
+    int32_t ih = effectCaptureFb_.height;
+
+    // Apply 5x4 color matrix transform to each pixel
+    // Matrix layout (row-major): [R_in * m[0] + G_in * m[1] + B_in * m[2] + A_in * m[3] + m[4]] = R_out
+    SoftwareFramebuffer result;
+    result.width = iw;
+    result.height = ih;
+    result.pixels = effectCaptureFb_.pixels;
+
+    for (int32_t row = 0; row < ih; row++) {
+        for (int32_t col = 0; col < iw; col++) {
+            size_t idx = ((size_t)row * iw + col) * 4;
+            float oB = result.pixels[idx + 0] / 255.0f;
+            float oG = result.pixels[idx + 1] / 255.0f;
+            float oR = result.pixels[idx + 2] / 255.0f;
+            float oA = result.pixels[idx + 3] / 255.0f;
+
+            float nR = oR * matrix[0] + oG * matrix[1] + oB * matrix[2] + oA * matrix[3] + matrix[4];
+            float nG = oR * matrix[5] + oG * matrix[6] + oB * matrix[7] + oA * matrix[8] + matrix[9];
+            float nB = oR * matrix[10] + oG * matrix[11] + oB * matrix[12] + oA * matrix[13] + matrix[14];
+            float nA = oR * matrix[15] + oG * matrix[16] + oB * matrix[17] + oA * matrix[18] + matrix[19];
+
+            result.pixels[idx + 0] = FloatToU8(nB);
+            result.pixels[idx + 1] = FloatToU8(nG);
+            result.pixels[idx + 2] = FloatToU8(nR);
+            result.pixels[idx + 3] = FloatToU8(nA);
+        }
+    }
+
+    BlitBuffer(result, (int32_t)tx, (int32_t)ty, currentOpacity_);
+}
+
+void SoftwareRenderTarget::DrawEmbossEffect(float x, float y, float w, float h,
+    float amount, float lightDirX, float lightDirY, float relief)
+{
+    if (effectCaptureFb_.pixels.empty()) return;
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t iw = effectCaptureFb_.width;
+    int32_t ih = effectCaptureFb_.height;
+
+    // Normalize light direction
+    float ldLen = std::sqrt(lightDirX * lightDirX + lightDirY * lightDirY);
+    if (ldLen < 1e-6f) { lightDirX = 1; lightDirY = 0; }
+    else { lightDirX /= ldLen; lightDirY /= ldLen; }
+
+    int32_t offX = (int32_t)(lightDirX * relief + 0.5f);
+    int32_t offY = (int32_t)(lightDirY * relief + 0.5f);
+    if (offX == 0 && offY == 0) offX = 1;
+
+    SoftwareFramebuffer result;
+    result.width = iw;
+    result.height = ih;
+    result.pixels = effectCaptureFb_.pixels;
+
+    for (int32_t row = 0; row < ih; row++) {
+        for (int32_t col = 0; col < iw; col++) {
+            size_t idx = ((size_t)row * iw + col) * 4;
+
+            // Get luminance of current and offset pixels
+            auto getLum = [&](int32_t c, int32_t r) -> float {
+                c = std::clamp(c, 0, iw - 1);
+                r = std::clamp(r, 0, ih - 1);
+                size_t i = ((size_t)r * iw + c) * 4;
+                return (effectCaptureFb_.pixels[i + 0] + effectCaptureFb_.pixels[i + 1] + effectCaptureFb_.pixels[i + 2]) / (3.0f * 255.0f);
+            };
+
+            float lumCur = getLum(col, row);
+            float lumOff = getLum(col + offX, row + offY);
+            float diff = (lumCur - lumOff) * amount;
+
+            // Apply emboss: shift brightness
+            float oR = effectCaptureFb_.pixels[idx + 2] / 255.0f + diff;
+            float oG = effectCaptureFb_.pixels[idx + 1] / 255.0f + diff;
+            float oB = effectCaptureFb_.pixels[idx + 0] / 255.0f + diff;
+
+            result.pixels[idx + 0] = FloatToU8(oB);
+            result.pixels[idx + 1] = FloatToU8(oG);
+            result.pixels[idx + 2] = FloatToU8(oR);
+            // Alpha unchanged
+        }
+    }
+
+    BlitBuffer(result, (int32_t)tx, (int32_t)ty, currentOpacity_);
+}
+
+void SoftwareRenderTarget::DrawShaderEffect(float x, float y, float w, float h,
+    const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
+    const float* constants, uint32_t constantFloatCount)
+{
+    // Custom shaders cannot be executed in software — just blit the captured content as-is
+    if (effectCaptureFb_.pixels.empty()) return;
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    BlitBuffer(effectCaptureFb_, (int32_t)tx, (int32_t)ty, currentOpacity_);
+}
+
+// ============================================================================
+// Desktop Capture
+// ============================================================================
+
+void SoftwareRenderTarget::CaptureDesktopArea(int32_t screenX, int32_t screenY, int32_t width, int32_t height)
+{
+#ifdef _WIN32
+    HDC screenDC = GetDC(nullptr);
+    if (!screenDC) return;
+
+    HDC memDC = CreateCompatibleDC(screenDC);
+    HBITMAP hBmp = CreateCompatibleBitmap(screenDC, width, height);
+    HGDIOBJ oldBmp = SelectObject(memDC, hBmp);
+
+    BitBlt(memDC, 0, 0, width, height, screenDC, screenX, screenY, SRCCOPY);
+
+    BITMAPINFO bmi{};
+    bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    bmi.bmiHeader.biWidth = width;
+    bmi.bmiHeader.biHeight = -height; // top-down
+    bmi.bmiHeader.biPlanes = 1;
+    bmi.bmiHeader.biBitCount = 32;
+    bmi.bmiHeader.biCompression = BI_RGB;
+
+    desktopCaptureFb_.Resize(width, height);
+    GetDIBits(memDC, hBmp, 0, height, desktopCaptureFb_.pixels.data(), &bmi, DIB_RGB_COLORS);
+
+    SelectObject(memDC, oldBmp);
+    DeleteObject(hBmp);
+    DeleteDC(memDC);
+    ReleaseDC(nullptr, screenDC);
+#else
+    desktopCaptureFb_.Resize(width, height);
+    desktopCaptureFb_.Clear(64, 64, 64, 255);
+#endif
+}
+
+void SoftwareRenderTarget::DrawDesktopBackdrop(
+    float x, float y, float w, float h,
+    float blurRadius,
+    float tintR, float tintG, float tintB, float tintOpacity,
+    float noiseIntensity, float saturation)
+{
+    if (desktopCaptureFb_.pixels.empty()) return;
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t dstX = (int32_t)tx, dstY = (int32_t)ty;
+    int32_t iw = desktopCaptureFb_.width, ih = desktopCaptureFb_.height;
+
+    // Copy and blur
+    SoftwareFramebuffer blurred;
+    blurred.width = iw;
+    blurred.height = ih;
+    blurred.pixels = desktopCaptureFb_.pixels;
+
+    if (blurRadius > 0) {
+        BoxBlur(blurred.pixels, iw, ih, (int32_t)(blurRadius * 0.5f + 0.5f));
+    }
+
+    // Apply saturation adjustment
+    if (std::abs(saturation - 1.0f) > 0.01f) {
+        for (int32_t row = 0; row < ih; row++) {
+            for (int32_t col = 0; col < iw; col++) {
+                size_t idx = ((size_t)row * iw + col) * 4;
+                float bv = blurred.pixels[idx + 0] / 255.0f;
+                float gv = blurred.pixels[idx + 1] / 255.0f;
+                float rv = blurred.pixels[idx + 2] / 255.0f;
+                float lum = rv * 0.299f + gv * 0.587f + bv * 0.114f;
+                rv = lum + (rv - lum) * saturation;
+                gv = lum + (gv - lum) * saturation;
+                bv = lum + (bv - lum) * saturation;
+                blurred.pixels[idx + 0] = FloatToU8(bv);
+                blurred.pixels[idx + 1] = FloatToU8(gv);
+                blurred.pixels[idx + 2] = FloatToU8(rv);
+            }
+        }
+    }
+
+    // Blit blurred desktop
+    BlitBuffer(blurred, dstX, dstY, currentOpacity_);
+
+    // Apply tint overlay
+    if (tintOpacity > 0) {
+        uint8_t ta = FloatToU8(tintOpacity * currentOpacity_);
+        uint8_t tr = FloatToU8(tintR), tg = FloatToU8(tintG), tb = FloatToU8(tintB);
+        for (int32_t row = 0; row < ih && dstY + row < fb_.height; row++) {
+            for (int32_t col = 0; col < iw && dstX + col < fb_.width; col++) {
+                fb_.BlendPixel(dstX + col, dstY + row, tr, tg, tb, ta);
+            }
+        }
+    }
+
+    // Apply noise overlay
+    if (noiseIntensity > 0) {
+        uint32_t seed = 12345;
+        for (int32_t row = 0; row < ih && dstY + row < fb_.height; row++) {
+            for (int32_t col = 0; col < iw && dstX + col < fb_.width; col++) {
+                // Simple PRNG for noise
+                seed = seed * 1103515245 + 12345;
+                float noise = ((seed >> 16) & 0x7FFF) / (float)0x7FFF;
+                uint8_t nv = (uint8_t)(noise * 255.0f * noiseIntensity);
+                uint8_t na = (uint8_t)(noiseIntensity * 30 * currentOpacity_);
+                fb_.BlendPixel(dstX + col, dstY + row, nv, nv, nv, na);
+            }
+        }
+    }
+}
+
+// ============================================================================
+// Transition Capture & Shader
+// ============================================================================
+
+void SoftwareRenderTarget::BeginTransitionCapture(int slot, float x, float y, float w, float h)
+{
+    if (slot < 0 || slot > 1) return;
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    transitionX_[slot] = tx;
+    transitionY_[slot] = ty;
+    transitionW_[slot] = w;
+    transitionH_[slot] = h;
+    transitionCaptureActive_[slot] = true;
+
+    // Clear region for capturing
+    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
+    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+    for (int32_t row = std::max(0, iy); row < std::min(fb_.height, iy + ih); row++) {
+        for (int32_t col = std::max(0, ix); col < std::min(fb_.width, ix + iw); col++) {
+            fb_.SetPixel(col, row, 0, 0, 0, 0);
+        }
+    }
+}
+
+void SoftwareRenderTarget::EndTransitionCapture(int slot)
+{
+    if (slot < 0 || slot > 1 || !transitionCaptureActive_[slot]) return;
+
+    int32_t ix = (int32_t)transitionX_[slot], iy = (int32_t)transitionY_[slot];
+    int32_t iw = (int32_t)(transitionW_[slot] + 0.5f), ih = (int32_t)(transitionH_[slot] + 0.5f);
+    CopyRegion(fb_, transitionCaptureFb_[slot], ix, iy, iw, ih);
+    transitionCaptureActive_[slot] = false;
+}
+
+void SoftwareRenderTarget::DrawTransitionShader(float x, float y, float w, float h, float progress, int mode)
+{
+    if (transitionCaptureFb_[0].pixels.empty() || transitionCaptureFb_[1].pixels.empty()) return;
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t dstX = (int32_t)tx, dstY = (int32_t)ty;
+    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+
+    auto& oldFb = transitionCaptureFb_[0];
+    auto& newFb = transitionCaptureFb_[1];
+
+    for (int32_t row = 0; row < ih; row++) {
+        for (int32_t col = 0; col < iw; col++) {
+            int32_t dx = dstX + col, dy = dstY + row;
+            if (dx < 0 || dx >= fb_.width || dy < 0 || dy >= fb_.height) continue;
+
+            // Sample from both captures
+            float u = (float)col / iw, v = (float)row / ih;
+            int32_t srcCol0 = std::min((int32_t)(u * oldFb.width), oldFb.width - 1);
+            int32_t srcRow0 = std::min((int32_t)(v * oldFb.height), oldFb.height - 1);
+            int32_t srcCol1 = std::min((int32_t)(u * newFb.width), newFb.width - 1);
+            int32_t srcRow1 = std::min((int32_t)(v * newFb.height), newFb.height - 1);
+
+            size_t idx0 = ((size_t)srcRow0 * oldFb.width + srcCol0) * 4;
+            size_t idx1 = ((size_t)srcRow1 * newFb.width + srcCol1) * 4;
+
+            float t = progress; // blending factor
+
+            // Mode-specific transition
+            switch (mode) {
+            case 1: // Wipe left-to-right
+                t = (u < progress) ? 1.0f : 0.0f;
+                break;
+            case 2: // Wipe top-to-bottom
+                t = (v < progress) ? 1.0f : 0.0f;
+                break;
+            case 3: // Circular reveal
+            {
+                float cx = 0.5f, cy = 0.5f;
+                float dist = std::sqrt((u - cx) * (u - cx) + (v - cy) * (v - cy)) / 0.707f;
+                t = (dist < progress) ? 1.0f : 0.0f;
+                break;
+            }
+            case 4: // Dissolve (noise-based)
+            {
+                uint32_t hash = (uint32_t)(col * 73856093 ^ row * 19349663);
+                float noise = (hash & 0xFFFF) / 65535.0f;
+                t = (noise < progress) ? 1.0f : 0.0f;
+                break;
+            }
+            case 5: // Slide left
+            {
+                int32_t offset = (int32_t)((1.0f - progress) * iw);
+                int32_t newCol = col - offset;
+                if (newCol >= 0 && newCol < newFb.width) {
+                    idx1 = ((size_t)srcRow1 * newFb.width + newCol) * 4;
+                    t = 1.0f;
+                } else {
+                    int32_t oldCol = col + (int32_t)(progress * iw);
+                    if (oldCol >= 0 && oldCol < oldFb.width) {
+                        idx0 = ((size_t)srcRow0 * oldFb.width + oldCol) * 4;
+                    }
+                    t = 0.0f;
+                }
+                break;
+            }
+            default: // Crossfade (mode 0 and default)
+                break;
+            }
+
+            // Lerp between old and new
+            float it = 1.0f - t;
+            uint8_t rb = (uint8_t)(oldFb.pixels[idx0 + 0] * it + newFb.pixels[idx1 + 0] * t);
+            uint8_t rg = (uint8_t)(oldFb.pixels[idx0 + 1] * it + newFb.pixels[idx1 + 1] * t);
+            uint8_t rr = (uint8_t)(oldFb.pixels[idx0 + 2] * it + newFb.pixels[idx1 + 2] * t);
+            uint8_t ra = (uint8_t)(oldFb.pixels[idx0 + 3] * it + newFb.pixels[idx1 + 3] * t);
+
+            fb_.SetPixel(dx, dy, rr, rg, rb, ra);
+        }
+    }
+}
+
+void SoftwareRenderTarget::DrawCapturedTransition(int slot, float x, float y, float w, float h, float opacity)
+{
+    if (slot < 0 || slot > 1 || transitionCaptureFb_[slot].pixels.empty()) return;
+
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    BlitBuffer(transitionCaptureFb_[slot], (int32_t)tx, (int32_t)ty, opacity * currentOpacity_);
+}
+
+// ============================================================================
+// Liquid Glass Approximation
+// ============================================================================
+
+void SoftwareRenderTarget::DrawLiquidGlass(
+    float x, float y, float w, float h,
+    float cornerRadius,
+    float blurRadius,
+    float refractionAmount,
+    float chromaticAberration,
+    float tintR, float tintG, float tintB, float tintOpacity,
+    float lightX, float lightY,
+    float highlightBoost,
+    int shapeType,
+    float shapeExponent,
+    int neighborCount,
+    float fusionRadius,
+    const float* neighborData)
+{
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
+    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+
+    // Clamp to fb bounds
+    int32_t x0 = std::max(0, ix), y0 = std::max(0, iy);
+    int32_t x1 = std::min(fb_.width, ix + iw), y1 = std::min(fb_.height, iy + ih);
+    int32_t rw = x1 - x0, rh = y1 - y0;
+    if (rw <= 0 || rh <= 0) return;
+
+    float cr = std::min(cornerRadius, std::min(w, h) * 0.5f);
+
+    // Step 1: Capture and blur background
+    SoftwareFramebuffer blurred;
+    CopyRegion(fb_, blurred, x0, y0, rw, rh);
+    if (blurRadius > 0) {
+        BoxBlur(blurred.pixels, rw, rh, (int32_t)(blurRadius * 0.5f + 0.5f));
+    }
+
+    // Step 2: Composite: blurred background + refraction distortion + tint + highlight
+    for (int32_t row = 0; row < rh; row++) {
+        for (int32_t col = 0; col < rw; col++) {
+            float lx = (float)(x0 + col - ix), ly = (float)(y0 + row - iy);
+
+            // Check rounded rect containment
+            if (cr > 0 && !IsInsidePerCornerRoundedRect(lx, ly, w, h, cr, cr, cr, cr))
+                continue;
+
+            if (!clipStack_.empty() && IsClipped((float)(x0 + col), (float)(y0 + row))) continue;
+
+            // Normalized coordinates within the glass element
+            float nu = lx / w, nv = ly / h;
+
+            // Simple refraction distortion (SDF-based displacement)
+            float distFromEdge = std::min({lx, ly, w - lx, h - ly}) / (w * 0.5f);
+            distFromEdge = std::clamp(distFromEdge, 0.0f, 1.0f);
+            float refrX = (nu - 0.5f) * refractionAmount * (1.0f - distFromEdge);
+            float refrY = (nv - 0.5f) * refractionAmount * (1.0f - distFromEdge);
+
+            // Sample blurred background with displacement
+            int32_t srcCol = std::clamp((int32_t)(col + refrX * rw), 0, rw - 1);
+            int32_t srcRow = std::clamp((int32_t)(row + refrY * rh), 0, rh - 1);
+            size_t srcIdx = ((size_t)srcRow * rw + srcCol) * 4;
+
+            float rb = blurred.pixels[srcIdx + 0] / 255.0f;
+            float rg = blurred.pixels[srcIdx + 1] / 255.0f;
+            float rr = blurred.pixels[srcIdx + 2] / 255.0f;
+
+            // Apply chromatic aberration (shift R and B channels slightly)
+            if (chromaticAberration > 0) {
+                int32_t caOffset = (int32_t)(chromaticAberration * 2);
+                int32_t rCol = std::clamp(srcCol + caOffset, 0, rw - 1);
+                int32_t bCol = std::clamp(srcCol - caOffset, 0, rw - 1);
+                size_t rIdx = ((size_t)srcRow * rw + rCol) * 4;
+                size_t bIdx = ((size_t)srcRow * rw + bCol) * 4;
+                rr = blurred.pixels[rIdx + 2] / 255.0f;
+                rb = blurred.pixels[bIdx + 0] / 255.0f;
+            }
+
+            // Apply tint
+            rr = rr * (1.0f - tintOpacity) + tintR * tintOpacity;
+            rg = rg * (1.0f - tintOpacity) + tintG * tintOpacity;
+            rb = rb * (1.0f - tintOpacity) + tintB * tintOpacity;
+
+            // Highlight: bright specular spot based on light direction
+            if (highlightBoost > 0) {
+                float hlX = nu - lightX, hlY = nv - lightY;
+                float hlDist = std::sqrt(hlX * hlX + hlY * hlY);
+                float hl = std::max(0.0f, 1.0f - hlDist * 3.0f) * highlightBoost;
+                rr = std::min(1.0f, rr + hl);
+                rg = std::min(1.0f, rg + hl);
+                rb = std::min(1.0f, rb + hl);
+            }
+
+            fb_.SetPixel(x0 + col, y0 + row, FloatToU8(rr), FloatToU8(rg), FloatToU8(rb), 255);
+        }
+    }
+
+    // Step 3: Inner shadow for depth effect
+    uint8_t edgeAlpha = FloatToU8(0.15f * currentOpacity_);
+    for (int32_t row = 0; row < rh; row++) {
+        for (int32_t col = 0; col < rw; col++) {
+            float lx = (float)(x0 + col - ix), ly = (float)(y0 + row - iy);
+            if (cr > 0 && !IsInsidePerCornerRoundedRect(lx, ly, w, h, cr, cr, cr, cr))
+                continue;
+
+            float edgeDist = std::min({lx, ly, w - lx, h - ly});
+            if (edgeDist < 3.0f) {
+                uint8_t ea = (uint8_t)(edgeAlpha * (1.0f - edgeDist / 3.0f));
+                fb_.BlendPixel(x0 + col, y0 + row, 0, 0, 0, ea);
+            }
+        }
+    }
 }
 
 // ============================================================================

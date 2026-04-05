@@ -1,4 +1,4 @@
-﻿#if WINDOWS
+﻿#if WINDOWS10_0_17763_0_OR_GREATER
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Microsoft.Toolkit.Uwp.Notifications;

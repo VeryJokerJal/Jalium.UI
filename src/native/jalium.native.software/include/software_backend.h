@@ -270,7 +270,76 @@ public:
         float dimOpacity,
         float screenWidth, float screenHeight) override;
 
+    // Per-corner rounded rectangles
+    void FillPerCornerRoundedRectangle(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, Brush* brush) override;
+    void DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, Brush* brush, float strokeWidth) override;
+
+    // Batch ellipse
+    void FillEllipseBatch(const float* data, uint32_t count) override;
+
+    // Aliased clip
+    void PushClipAliased(float x, float y, float w, float h) override;
+
+    // Desktop capture
+    void CaptureDesktopArea(int32_t screenX, int32_t screenY, int32_t width, int32_t height) override;
+    void DrawDesktopBackdrop(
+        float x, float y, float w, float h,
+        float blurRadius,
+        float tintR, float tintG, float tintB, float tintOpacity,
+        float noiseIntensity, float saturation) override;
+
+    // Transition capture
+    void BeginTransitionCapture(int slot, float x, float y, float w, float h) override;
+    void EndTransitionCapture(int slot) override;
+    void DrawTransitionShader(float x, float y, float w, float h, float progress, int mode) override;
+    void DrawCapturedTransition(int slot, float x, float y, float w, float h, float opacity) override;
+
+    // Effect capture
+    void BeginEffectCapture(float x, float y, float w, float h) override;
+    void EndEffectCapture() override;
+    void DrawBlurEffect(float x, float y, float w, float h, float radius,
+        float uvOffsetX = 0, float uvOffsetY = 0) override;
+    void DrawDropShadowEffect(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float uvOffsetX = 0, float uvOffsetY = 0,
+        float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0) override;
+    void DrawOuterGlowEffect(float x, float y, float w, float h,
+        float glowSize, float r, float g, float b, float a, float intensity,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
+    void DrawInnerShadowEffect(float x, float y, float w, float h,
+        float blurRadius, float offsetX, float offsetY,
+        float r, float g, float b, float a,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
+    void DrawColorMatrixEffect(float x, float y, float w, float h,
+        const float* matrix) override;
+    void DrawEmbossEffect(float x, float y, float w, float h,
+        float amount, float lightDirX, float lightDirY, float relief) override;
+    void DrawShaderEffect(float x, float y, float w, float h,
+        const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
+        const float* constants, uint32_t constantFloatCount) override;
+
+    // Liquid glass approximation
+    void DrawLiquidGlass(
+        float x, float y, float w, float h,
+        float cornerRadius,
+        float blurRadius,
+        float refractionAmount,
+        float chromaticAberration,
+        float tintR, float tintG, float tintB, float tintOpacity,
+        float lightX, float lightY,
+        float highlightBoost = 0.0f,
+        int shapeType = 0,
+        float shapeExponent = 4.0f,
+        int neighborCount = 0,
+        float fusionRadius = 30.0f,
+        const float* neighborData = nullptr) override;
+
     const SoftwareFramebuffer& GetFramebuffer() const { return fb_; }
+
+    friend class SoftwareBackend;
 
 private:
     void FillScanlineRect(float x, float y, float w, float h, Brush* brush);
@@ -279,6 +348,45 @@ private:
     void DrawBresenhamLine(float x1, float y1, float x2, float y2, uint8_t r, uint8_t g, uint8_t b, uint8_t a, float strokeWidth);
     void GetBrushColor(Brush* brush, float px, float py, uint8_t& r, uint8_t& g, uint8_t& b, uint8_t& a);
     bool IsClipped(float px, float py) const;
+
+    // Helper: test if point is inside a per-corner rounded rect (local coords)
+    static bool IsInsidePerCornerRoundedRect(float px, float py, float w, float h,
+        float tl, float tr, float br, float bl);
+
+    // Helper: box blur (separable, in-place on BGRA8 buffer)
+    static void BoxBlur(std::vector<uint8_t>& pixels, int32_t w, int32_t h, int32_t radius);
+
+    // Helper: copy a region from framebuffer to a separate buffer
+    void CopyRegion(const SoftwareFramebuffer& src, SoftwareFramebuffer& dst,
+        int32_t srcX, int32_t srcY, int32_t w, int32_t h);
+
+    // Helper: blit a buffer onto framebuffer with alpha
+    void BlitBuffer(const SoftwareFramebuffer& src, int32_t dstX, int32_t dstY, float opacity = 1.0f);
+
+public:
+    // Helper: adaptive bezier flattening (public for use by path parser)
+    static void FlattenCubicBezier(std::vector<float>& pts,
+        float x0, float y0, float cp1x, float cp1y,
+        float cp2x, float cp2y, float x1, float y1, float tolerance);
+    static void FlattenQuadBezier(std::vector<float>& pts,
+        float x0, float y0, float cpx, float cpy,
+        float x1, float y1, float tolerance);
+private:
+
+    // Helper: generate stroke outline with line joins and caps.
+    // For open paths: outputs 1 contour (single closed polygon).
+    // For closed paths: outputs 2 contours (outer + inner rings with opposite winding).
+    void GenerateStrokeOutline(const std::vector<float>& pts, uint32_t ptCount,
+        float strokeWidth, bool closed, int32_t lineJoin, float miterLimit,
+        int32_t lineCap, std::vector<std::vector<float>>& outContours);
+
+    // Helper: fill multiple contours using scanline (NonZero winding rule)
+    void FillMultiContour(const std::vector<std::vector<float>>& contours, Brush* brush);
+
+    // Helper: apply dash pattern to a polyline
+    static void ApplyDashPattern(const std::vector<float>& pts, uint32_t ptCount,
+        const float* dashPattern, uint32_t dashCount, float dashOffset,
+        std::vector<std::vector<float>>& segments);
 
     SoftwareFramebuffer fb_;
     std::stack<SoftwareTransform> transformStack_;
@@ -289,6 +397,22 @@ private:
     float dpiX_ = 96.0f;
     float dpiY_ = 96.0f;
     bool fullInvalidation_ = true;
+
+    // Effect capture state
+    SoftwareFramebuffer effectCaptureFb_;
+    SoftwareFramebuffer savedFb_;
+    float effectCaptureX_ = 0, effectCaptureY_ = 0;
+    float effectCaptureW_ = 0, effectCaptureH_ = 0;
+    bool effectCaptureActive_ = false;
+
+    // Transition capture state
+    SoftwareFramebuffer transitionCaptureFb_[2];
+    float transitionX_[2] = {}, transitionY_[2] = {};
+    float transitionW_[2] = {}, transitionH_[2] = {};
+    bool transitionCaptureActive_[2] = {};
+
+    // Desktop capture state
+    SoftwareFramebuffer desktopCaptureFb_;
 
 #ifdef _WIN32
     void* hwnd_ = nullptr;

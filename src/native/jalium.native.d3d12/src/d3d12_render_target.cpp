@@ -712,23 +712,80 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
     float hw = strokeWidth * 0.5f;
 
     uint32_t segCount = closed ? pointCount : pointCount - 1;
+
+    // Pre-compute per-segment normals (perpendicular, scaled by half-width)
+    struct Vec2 { float x, y; };
+    std::vector<Vec2> normals(segCount);
+    for (uint32_t i = 0; i < segCount; i++) {
+        uint32_t j = (i + 1) % pointCount;
+        float dx = points[j * 2] - points[i * 2];
+        float dy = points[j * 2 + 1] - points[i * 2 + 1];
+        float len = std::sqrt(dx * dx + dy * dy);
+        if (len < 0.001f) len = 0.001f;
+        normals[i] = { -dy / len * hw, dx / len * hw };
+    }
+
+    // Compute miter offset at each vertex (shared by adjacent segments).
+    // For vertex i, the miter is the average of normals from the incoming and
+    // outgoing segments, scaled so that the perpendicular distance from the
+    // stroke center-line equals hw.
+    uint32_t jointCount = closed ? pointCount : pointCount;
+    struct MiterPt { float lx, ly, rx, ry; }; // left (+normal) and right (-normal) miter offsets
+    std::vector<MiterPt> miters(pointCount);
+
+    for (uint32_t i = 0; i < pointCount; i++) {
+        float px = points[i * 2], py = points[i * 2 + 1];
+
+        bool isStart = (i == 0 && !closed);
+        bool isEnd   = (i == pointCount - 1 && !closed);
+
+        if (isStart) {
+            miters[i] = { px + normals[0].x, py + normals[0].y,
+                          px - normals[0].x, py - normals[0].y };
+        } else if (isEnd) {
+            uint32_t lastSeg = segCount - 1;
+            miters[i] = { px + normals[lastSeg].x, py + normals[lastSeg].y,
+                          px - normals[lastSeg].x, py - normals[lastSeg].y };
+        } else {
+            // Joint between incoming segment (prevSeg) and outgoing segment (nextSeg)
+            uint32_t prevSeg = (i == 0) ? segCount - 1 : i - 1;
+            uint32_t nextSeg = i % segCount;
+
+            float n0x = normals[prevSeg].x, n0y = normals[prevSeg].y;
+            float n1x = normals[nextSeg].x, n1y = normals[nextSeg].y;
+
+            float avgNx = n0x + n1x, avgNy = n0y + n1y;
+            float avgLen = std::sqrt(avgNx * avgNx + avgNy * avgNy);
+
+            if (avgLen < 1e-6f) {
+                // Nearly 180-degree turn: use either normal
+                miters[i] = { px + n0x, py + n0y, px - n0x, py - n0y };
+            } else {
+                avgNx /= avgLen;
+                avgNy /= avgLen;
+                float dot = (n0x * n1x + n0y * n1y) / (hw * hw);
+                float miterLen = hw / std::max(0.1f, std::sqrt(0.5f * (1.0f + dot)));
+                // Clamp miter to 4× half-width to prevent spikes on very sharp angles
+                miterLen = std::min(miterLen, hw * 4.0f);
+                miters[i] = { px + avgNx * miterLen, py + avgNy * miterLen,
+                              px - avgNx * miterLen, py - avgNy * miterLen };
+            }
+        }
+    }
+
+    // Build quads using miter points at each vertex for seamless joins
     std::vector<TriangleVertex> verts;
     verts.reserve(segCount * 6);
 
     for (uint32_t i = 0; i < segCount; i++) {
         uint32_t j = (i + 1) % pointCount;
-        float x1 = points[i * 2], y1 = points[i * 2 + 1];
-        float x2 = points[j * 2], y2 = points[j * 2 + 1];
-        float dx = x2 - x1, dy = y2 - y1;
-        float len = std::sqrt(dx * dx + dy * dy);
-        if (len < 0.001f) continue;
-        float nx = -dy / len * hw, ny = dx / len * hw;
-        verts.push_back({ x1 + nx, y1 + ny, pr, pg, pb, pa });
-        verts.push_back({ x1 - nx, y1 - ny, pr, pg, pb, pa });
-        verts.push_back({ x2 + nx, y2 + ny, pr, pg, pb, pa });
-        verts.push_back({ x2 + nx, y2 + ny, pr, pg, pb, pa });
-        verts.push_back({ x1 - nx, y1 - ny, pr, pg, pb, pa });
-        verts.push_back({ x2 - nx, y2 - ny, pr, pg, pb, pa });
+        // Quad from vertex i miters to vertex j miters
+        verts.push_back({ miters[i].lx, miters[i].ly, pr, pg, pb, pa });
+        verts.push_back({ miters[i].rx, miters[i].ry, pr, pg, pb, pa });
+        verts.push_back({ miters[j].lx, miters[j].ly, pr, pg, pb, pa });
+        verts.push_back({ miters[j].lx, miters[j].ly, pr, pg, pb, pa });
+        verts.push_back({ miters[i].rx, miters[i].ry, pr, pg, pb, pa });
+        verts.push_back({ miters[j].rx, miters[j].ry, pr, pg, pb, pa });
     }
     if (!verts.empty())
         directRenderer_->AddTriangles(verts.data(), (uint32_t)verts.size());
