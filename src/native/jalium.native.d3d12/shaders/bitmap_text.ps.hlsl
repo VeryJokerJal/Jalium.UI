@@ -1,5 +1,5 @@
-Texture2D<float> glyphAtlas : register(t1);
-SamplerState glyphSampler : register(s0);
+Texture2D<float4> glyphAtlas : register(t1);
+SamplerState glyphSampler : register(s1);  // point sampler for pixel-exact glyph sampling
 
 struct PsInput
 {
@@ -8,16 +8,32 @@ struct PsInput
     float4 color   : COLOR0;
 };
 
-float4 main(PsInput input) : SV_Target
+// Dual-source blending output for ClearType sub-pixel rendering.
+// SV_Target0 = premultiplied color weighted by per-channel coverage
+// SV_Target1 = per-channel coverage for INV_SRC1_COLOR destination blend
+struct PsOutput
 {
-    float alpha = glyphAtlas.Sample(glyphSampler, input.uv);
-    float contrast = saturate(alpha * 1.2 - 0.1);
-    alpha = lerp(alpha, contrast, 0.3);
+    float4 color    : SV_Target0;
+    float4 coverage : SV_Target1;
+};
 
-    float4 color = input.color;
-    color.a *= alpha;
-    color.rgb *= color.a;
+PsOutput main(PsInput input)
+{
+    // Atlas is R8G8B8A8_UNORM: .rgb = per-channel sub-pixel coverage, .a = max coverage
+    float4 atlas = glyphAtlas.Sample(glyphSampler, input.uv);
+    float3 coverage = atlas.rgb;
 
-    if (color.a < 1.0 / 255.0) discard;
-    return color;
+    // Apply contrast enhancement per channel for ClearType sharpness
+    float3 contrast = saturate(coverage * 1.2 - 0.1);
+    coverage = lerp(coverage, contrast, 0.3);
+
+    float maxCoverage = max(coverage.r, max(coverage.g, coverage.b));
+    if (maxCoverage < 1.0 / 255.0) discard;
+
+    // input.color is already premultiplied (rgb = textColor * textAlpha, a = textAlpha)
+    // Scale each channel by its sub-pixel coverage
+    PsOutput o;
+    o.color = float4(input.color.rgb * coverage, input.color.a * maxCoverage);
+    o.coverage = float4(coverage * input.color.a, maxCoverage * input.color.a);
+    return o;
 }

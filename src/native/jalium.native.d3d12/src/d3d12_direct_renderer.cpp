@@ -1,5 +1,7 @@
 #include "d3d12_direct_renderer.h"
+#include "d3d12_vello.h"
 #include "d3d12_shader_source.h"
+#include "d3d12_shader_bytecode.h"
 #include <d3dcompiler.h>
 #include <cassert>
 #include <algorithm>
@@ -259,6 +261,16 @@ bool D3D12DirectRenderer::Initialize(IDXGISwapChain3* swapChain, UINT frameCount
         }
     }
 
+    // Initialize Vello GPU path renderer
+    velloRenderer_ = std::make_unique<D3D12VelloRenderer>(device_, nullptr);
+    if (!velloRenderer_->Initialize()) {
+        OutputDebugStringA("[D3D12DirectRenderer] Vello init failed (non-fatal, falling back to CPU triangulation)\n");
+        velloRenderer_.reset();
+    } else {
+        velloRenderer_->SetGPUPipeline(true);
+        // Vello GPU pipeline enabled
+    }
+
     initialized_ = true;
     return true;
 }
@@ -300,6 +312,8 @@ void D3D12DirectRenderer::Shutdown()
         CloseHandle(fenceEvent_);
         fenceEvent_ = nullptr;
     }
+
+    velloRenderer_.reset();
 
     initialized_ = false;
 }
@@ -451,7 +465,8 @@ bool D3D12DirectRenderer::CreateRootSignature()
     // Root signature layout (version 1.0 for compatibility):
     //   [0] Root CBV b0 — FrameConstants (screenSize, invScreenSize)
     //   [1] Descriptor Table — SRV t0-t1 (instances + glyph atlas)
-    //   Static sampler s0 — linear clamp for text
+    //   Static sampler s0 — linear clamp (general)
+    //   Static sampler s1 — point clamp (ClearType text)
 
     D3D12_DESCRIPTOR_RANGE srvRange = {};
     srvRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
@@ -480,20 +495,30 @@ bool D3D12DirectRenderer::CreateRootSignature()
     params[2].Constants.Num32BitValues = 8;
     params[2].ShaderVisibility = D3D12_SHADER_VISIBILITY_VERTEX;
 
-    // Static sampler for text glyph atlas
-    D3D12_STATIC_SAMPLER_DESC sampler = {};
-    sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-    sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
-    sampler.ShaderRegister = 0;
-    sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+    // Static samplers
+    D3D12_STATIC_SAMPLER_DESC samplers[2] = {};
+
+    // s0 — linear clamp (general texture sampling)
+    samplers[0].Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    samplers[0].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[0].ShaderRegister = 0;
+    samplers[0].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+
+    // s1 — point clamp (pixel-exact ClearType text sampling)
+    samplers[1].Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+    samplers[1].AddressU = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[1].AddressV = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[1].AddressW = D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    samplers[1].ShaderRegister = 1;
+    samplers[1].ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
     D3D12_ROOT_SIGNATURE_DESC rootSigDesc = {};
     rootSigDesc.NumParameters = 3;
     rootSigDesc.pParameters = params;
-    rootSigDesc.NumStaticSamplers = 1;
-    rootSigDesc.pStaticSamplers = &sampler;
+    rootSigDesc.NumStaticSamplers = 2;
+    rootSigDesc.pStaticSamplers = samplers;
     // ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT is required for PSOs that use vertex input
     // layouts (e.g. triangle PSO). PSOs without input layouts are unaffected.
     rootSigDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
@@ -511,46 +536,28 @@ bool D3D12DirectRenderer::CreateRootSignature()
 
 bool D3D12DirectRenderer::CreatePSOs()
 {
-    // Compile shaders from embedded HLSL source strings (no external files needed)
-    UINT compileFlags = 0;
-#ifdef _DEBUG
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-    compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
-#endif
+    // Use pre-compiled bytecode from d3d12_shader_bytecode.h (fxc /T *s_5_1 /O3).
+    // This eliminates ~500ms+ of runtime D3DCompile on every window creation.
+    using namespace shader_bytecode;
 
-    auto compileShader = [&](const char* source, size_t sourceLen, const char* debugName,
-                             const char* target, ID3DBlob** blob) -> bool {
-        ComPtr<ID3DBlob> errors;
-        HRESULT hr = D3DCompile(source, sourceLen, debugName,
-                                nullptr, nullptr, "main", target,
-                                compileFlags, 0, blob, &errors);
-        if (FAILED(hr) && errors) {
-            OutputDebugStringA((const char*)errors->GetBufferPointer());
-        }
-        return SUCCEEDED(hr);
+    // Wrap pre-compiled bytecode into ID3DBlob for downstream code that references blob pointers.
+    auto wrapBytecode = [](const unsigned char* data, unsigned int size, ID3DBlob** blob) -> bool {
+        HRESULT hr = D3DCreateBlob(size, blob);
+        if (FAILED(hr)) return false;
+        memcpy((*blob)->GetBufferPointer(), data, size);
+        return true;
     };
 
-    using namespace shader_source;
+    if (!wrapBytecode(ksdf_rect_vs, ksdf_rect_vsSize, &sdfRectVS_)) return false;
+    if (!wrapBytecode(ksdf_rect_ps, ksdf_rect_psSize, &sdfRectPS_)) return false;
+    if (!wrapBytecode(kbitmap_text_vs, kbitmap_text_vsSize, &textVS_)) return false;
+    if (!wrapBytecode(kbitmap_text_ps, kbitmap_text_psSize, &textPS_)) return false;
+    if (!wrapBytecode(kbitmap_quad_vs, kbitmap_quad_vsSize, &bitmapVS_)) return false;
+    if (!wrapBytecode(kbitmap_quad_ps, kbitmap_quad_psSize, &bitmapPS_)) return false;
+    if (!wrapBytecode(kcustom_effect_vs, kcustom_effect_vsSize, &customEffectVS_)) return false;
+    if (!wrapBytecode(ktriangle_vs, ktriangle_vsSize, &triangleVS_)) return false;
+    if (!wrapBytecode(ktriangle_ps, ktriangle_psSize, &trianglePS_)) return false;
 
-    if (!compileShader(kSdfRectVS, sizeof(kSdfRectVS) - 1, "sdf_rect.vs.hlsl", "vs_5_1", &sdfRectVS_))
-        return false;
-    if (!compileShader(kSdfRectPS, sizeof(kSdfRectPS) - 1, "sdf_rect.ps.hlsl", "ps_5_1", &sdfRectPS_))
-        return false;
-    if (!compileShader(kBitmapTextVS, sizeof(kBitmapTextVS) - 1, "bitmap_text.vs.hlsl", "vs_5_1", &textVS_))
-        return false;
-    if (!compileShader(kBitmapTextPS, sizeof(kBitmapTextPS) - 1, "bitmap_text.ps.hlsl", "ps_5_1", &textPS_))
-        return false;
-    if (!compileShader(kBitmapQuadVS, sizeof(kBitmapQuadVS) - 1, "bitmap_quad.vs.hlsl", "vs_5_1", &bitmapVS_))
-        return false;
-    if (!compileShader(kBitmapQuadPS, sizeof(kBitmapQuadPS) - 1, "bitmap_quad.ps.hlsl", "ps_5_1", &bitmapPS_))
-        return false;
-    if (!compileShader(kCustomEffectVS, sizeof(kCustomEffectVS) - 1, "custom_effect.vs.hlsl", "vs_5_1", &customEffectVS_))
-        return false;
-    if (!compileShader(kTriangleVS, sizeof(kTriangleVS) - 1, "triangle.vs.hlsl", "vs_5_1", &triangleVS_))
-        return false;
-    if (!compileShader(kTrianglePS, sizeof(kTrianglePS) - 1, "triangle.ps.hlsl", "ps_5_1", &trianglePS_))
-        return false;
     // SDF Rect PSO — no input layout (vertices from SV_VertexID, instances from StructuredBuffer)
     D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
     psoDesc.pRootSignature = rootSignature_.Get();
@@ -582,11 +589,25 @@ bool D3D12DirectRenderer::CreatePSOs()
     if (FAILED(device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&sdfRectPSO_))))
         return false;
 
-    // Text PSO — same blend state, different shaders
+    // Text PSO — ClearType dual-source blending for per-channel sub-pixel alpha
     psoDesc.VS = { textVS_->GetBufferPointer(), textVS_->GetBufferSize() };
     psoDesc.PS = { textPS_->GetBufferPointer(), textPS_->GetBufferSize() };
+    psoDesc.BlendState.RenderTarget[0].BlendEnable = TRUE;
+    psoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;              // premultiplied color * coverage already in shader
+    psoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC1_COLOR;  // per-channel (1 - coverage) from SV_Target1
+    psoDesc.BlendState.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    psoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    psoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC1_ALPHA;
+    psoDesc.BlendState.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    psoDesc.BlendState.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
     if (FAILED(device_->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&textPSO_))))
         return false;
+
+    // Restore standard premultiplied alpha blend for subsequent PSOs
+    psoDesc.BlendState.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+    psoDesc.BlendState.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    psoDesc.BlendState.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    psoDesc.BlendState.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
 
     // Bitmap PSO — same blend state, bitmap quad shaders
     psoDesc.VS = { bitmapVS_->GetBufferPointer(), bitmapVS_->GetBufferSize() };
@@ -765,6 +786,11 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     while (!transformStack_.empty()) transformStack_.pop();
     transformStack_.push(Transform2D::Identity());
 
+    // Begin Vello frame
+    if (velloRenderer_) {
+        velloRenderer_->BeginFrame(width, height);
+    }
+
     inFrame_ = true;
     return true;
 }
@@ -804,6 +830,9 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
 {
     if (!inFrame_) return JALIUM_ERROR_INVALID_STATE;
     inFrame_ = false;
+
+    // Flush Vello paths before recording graphics commands
+    FlushVelloPaths();
 
     // Upload instance data + record draw commands
     UploadInstances();
@@ -1222,6 +1251,51 @@ void D3D12DirectRenderer::PopScissor()
     }
 }
 
+void D3D12DirectRenderer::ApplyScissorToVello()
+{
+    if (!velloRenderer_) return;
+    if (!scissorStack_.empty()) {
+        auto& s = scissorStack_.top();
+        velloRenderer_->SetScissorRect(
+            (float)s.left, (float)s.top,
+            (float)s.right, (float)s.bottom);
+    } else {
+        velloRenderer_->ClearScissorRect();
+    }
+}
+
+bool D3D12DirectRenderer::HasVelloPaths() const
+{
+    return velloRenderer_ && velloRenderer_->HasWork();
+}
+
+void D3D12DirectRenderer::FlushVelloPaths()
+{
+    if (!velloRenderer_ || !velloRenderer_->HasWork() || !inFrame_) return;
+
+    FlushGraphicsForCompute();
+
+    // Pass current scissor to Vello for tile culling
+    if (!scissorStack_.empty()) {
+        auto& s = scissorStack_.top();
+        velloRenderer_->SetScissorRect(
+            (float)s.left, (float)s.top,
+            (float)s.right, (float)s.bottom);
+    } else {
+        velloRenderer_->ClearScissorRect();
+    }
+
+    if (velloRenderer_->Dispatch(commandList_.Get(), currentFrame_)) {
+        ID3D12Resource* output = velloRenderer_->GetOutputTexture();
+        if (output) {
+            // Composite Vello output as a full-viewport bitmap
+            float w = (float)viewportWidth_ / dpiScale_;
+            float h = (float)viewportHeight_ / dpiScale_;
+            AddBitmap(0, 0, w, h, 1.0f, output, DXGI_FORMAT_R8G8B8A8_UNORM, 1.0f, 1.0f);
+        }
+    }
+}
+
 // ============================================================================
 // Upload + Record
 // ============================================================================
@@ -1348,7 +1422,7 @@ void D3D12DirectRenderer::UploadInstances()
             D3D12_SHADER_RESOURCE_VIEW_DESC atlasSrv = {};
             atlasSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             atlasSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            atlasSrv.Format = DXGI_FORMAT_R8_UNORM;
+            atlasSrv.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
             atlasSrv.Texture2D.MipLevels = 1;
             device_->CreateShaderResourceView(glyphAtlas_->GetAtlasResource(), &atlasSrv, handle);
         }
@@ -1374,7 +1448,7 @@ void D3D12DirectRenderer::UploadInstances()
             D3D12_SHADER_RESOURCE_VIEW_DESC atlasSrv2 = {};
             atlasSrv2.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
             atlasSrv2.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            atlasSrv2.Format = DXGI_FORMAT_R8_UNORM;
+            atlasSrv2.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
             atlasSrv2.Texture2D.MipLevels = 1;
             device_->CreateShaderResourceView(glyphAtlas_->GetAtlasResource(), &atlasSrv2, atlasHandle);
         }
@@ -1384,14 +1458,6 @@ void D3D12DirectRenderer::UploadInstances()
 void D3D12DirectRenderer::RecordDrawCommands()
 {
     if (batches_.empty()) return;
-
-    {
-        char buf[256];
-        sprintf_s(buf, "[RecordDrawCommands] batches=%zu inOffscreen=%d screenW=%.1f screenH=%.1f\n",
-            batches_.size(), (int)inOffscreenCapture_,
-            currentFrameConstants_.screenWidth, currentFrameConstants_.screenHeight);
-        OutputDebugStringA(buf);
-    }
 
     // Set root signature + descriptor heap
     commandList_->SetGraphicsRootSignature(rootSignature_.Get());
@@ -1580,24 +1646,12 @@ bool D3D12DirectRenderer::CreateBlurResources()
 {
     if (!device_) return false;
 
-    // --- Compile compute shader ---
-    UINT compileFlags = 0;
-#ifdef _DEBUG
-    compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
-#else
-    compileFlags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
-#endif
-
+    // Use pre-compiled bytecode for Gaussian blur compute shader.
     {
-        using namespace shader_source;
-        ComPtr<ID3DBlob> errors;
-        HRESULT hr = D3DCompile(kGaussianBlurCS, sizeof(kGaussianBlurCS) - 1,
-                                "gaussian_blur.cs.hlsl", nullptr, nullptr,
-                                "main", "cs_5_1", compileFlags, 0, &blurCS_, &errors);
-        if (FAILED(hr)) {
-            if (errors) OutputDebugStringA((const char*)errors->GetBufferPointer());
-            return false;
-        }
+        using namespace shader_bytecode;
+        HRESULT hr = D3DCreateBlob(kgaussian_blur_csSize, &blurCS_);
+        if (FAILED(hr)) return false;
+        memcpy(blurCS_->GetBufferPointer(), kgaussian_blur_cs, kgaussian_blur_csSize);
     }
 
     // --- Root signature for blur compute ---
