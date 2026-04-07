@@ -405,7 +405,7 @@ public partial class Popup : FrameworkElement
                     || screenPos.X < workArea.Left;
             }
 
-            if (overflowsWindow || overflowsScreen)
+            if ((overflowsWindow || overflowsScreen) && Platform.PlatformFactory.IsWindows)
             {
                 OpenAsExternalWindow(adjustedPos, popupSize);
             }

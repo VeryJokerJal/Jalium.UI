@@ -102,7 +102,7 @@ internal static class RazorExpressionRuntimeCompiler
 
     private static CompiledExpression Compile(RazorExpressionPlan plan)
     {
-        var wrapper = RazorRoslynScriptCompiler.CompileExpression(plan);
+        var wrapper = RazorLightweightExpressionCompiler.CompileExpression(plan);
         return new CompiledExpression { Runner = wrapper.Runner };
     }
 
@@ -241,7 +241,7 @@ internal static class RazorTemplateRuntimeCompiler
 
     private static CompiledTemplate Compile(RazorTemplate template)
     {
-        var wrapper = RazorRoslynScriptCompiler.CompileTemplate(template);
+        var wrapper = RazorLightweightExpressionCompiler.CompileTemplate(template);
         return new CompiledTemplate { Runner = wrapper.Runner };
     }
 

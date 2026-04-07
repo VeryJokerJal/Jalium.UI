@@ -8,6 +8,7 @@
 #include <Windows.h>
 #endif
 
+
 static std::atomic<bool> s_registered{false};
 
 namespace jalium {

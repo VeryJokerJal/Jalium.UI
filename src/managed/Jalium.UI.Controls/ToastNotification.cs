@@ -1,4 +1,5 @@
 using Jalium.UI.Media;
+using Jalium.UI.Notifications;
 
 namespace Jalium.UI.Controls;
 
@@ -285,27 +286,57 @@ public sealed class ToastNotifier
     #region Platform Implementation Hooks
 
     /// <summary>
-    /// Shows the notification (platform-specific implementation).
+    /// Shows the notification via the cross-platform <see cref="SystemNotificationManager"/>.
     /// </summary>
     private void ShowInternal(ToastNotification notification)
     {
-        // Windows: Use Windows.UI.Notifications API
+        var svc = SystemNotificationManager.Current;
+        if (!svc.IsSupported) return;
+
+        try
+        {
+            var content = new NotificationContent
+            {
+                Title = notification.Content, // Content is XML; service will parse as title fallback
+                Tag = notification.Tag,
+                Group = notification.Group,
+                Silent = !notification.PlaySound,
+                Priority = notification.Priority == ToastNotificationPriority.High
+                    ? NotificationPriority.High : NotificationPriority.Default
+            };
+
+            var handle = svc.Show(content);
+
+            handle.Activated += (_, args) =>
+                notification.RaiseActivated(args.ActionId ?? string.Empty);
+            handle.Dismissed += (_, args) =>
+                notification.RaiseDismissed((ToastDismissalReason)(int)args.Reason);
+            handle.Failed += (_, ex) =>
+                notification.RaiseFailed(ex);
+        }
+        catch (Exception ex)
+        {
+            notification.RaiseFailed(ex);
+        }
     }
 
     /// <summary>
-    /// Hides the notification (platform-specific implementation).
+    /// Hides the notification via the cross-platform <see cref="NotificationService"/>.
     /// </summary>
     private void HideInternal(ToastNotification notification)
     {
-        // Platform-specific implementation
+        if (!string.IsNullOrEmpty(notification.Tag))
+            SystemNotificationManager.Current.Remove(notification.Tag, notification.Group);
     }
 
     /// <summary>
-    /// Gets the notification setting (platform-specific implementation).
+    /// Gets the notification setting.
     /// </summary>
     private NotificationSetting GetSettingInternal()
     {
-        return NotificationSetting.Enabled;
+        return SystemNotificationManager.Current.IsSupported
+            ? NotificationSetting.Enabled
+            : NotificationSetting.DisabledForApplication;
     }
 
     /// <summary>
@@ -313,7 +344,7 @@ public sealed class ToastNotifier
     /// </summary>
     private void AddToScheduleInternal(ScheduledToastNotification notification)
     {
-        // Platform-specific implementation
+        // Scheduled notifications are not yet supported in the cross-platform backend.
     }
 
     /// <summary>
@@ -321,7 +352,7 @@ public sealed class ToastNotifier
     /// </summary>
     private void RemoveFromScheduleInternal(ScheduledToastNotification notification)
     {
-        // Platform-specific implementation
+        // Scheduled notifications are not yet supported in the cross-platform backend.
     }
 
     /// <summary>
@@ -430,27 +461,29 @@ public sealed class ToastNotificationHistory
     #region Platform Implementation Hooks
 
     /// <summary>
-    /// Clears all notifications (platform-specific implementation).
+    /// Clears all notifications via <see cref="NotificationService"/>.
     /// </summary>
     private void ClearInternal()
     {
-        // Platform-specific implementation
+        SystemNotificationManager.Current.ClearAll();
     }
 
     /// <summary>
-    /// Removes notifications (platform-specific implementation).
+    /// Removes notifications via <see cref="NotificationService"/>.
     /// </summary>
     private void RemoveInternal(string tag, string? group)
     {
-        // Platform-specific implementation
+        SystemNotificationManager.Current.Remove(tag, group);
     }
 
     /// <summary>
-    /// Removes group notifications (platform-specific implementation).
+    /// Removes group notifications. Delegates to <see cref="NotificationService"/>.
     /// </summary>
     private void RemoveGroupInternal(string group)
     {
-        // Platform-specific implementation
+        // The cross-platform backend removes by tag+group; removing by group alone
+        // is not directly supported. ClearAll is the closest fallback.
+        SystemNotificationManager.Current.ClearAll();
     }
 
     #endregion

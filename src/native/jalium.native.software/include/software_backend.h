@@ -2,6 +2,12 @@
 
 #include "jalium_backend.h"
 
+#ifdef JALIUM_HAS_TEXT_ENGINE
+#include "text_engine.h"
+#include "text_layout.h"
+#include "glyph_atlas.h"
+#endif
+
 #include <vector>
 #include <stack>
 #include <string>
@@ -9,8 +15,12 @@
 #include <cstring>
 #include <cmath>
 #include <algorithm>
+#include <memory>
 
 namespace jalium {
+
+// Forward declarations
+class SoftwareBackend;
 
 // ============================================================================
 // Resource Classes
@@ -194,7 +204,7 @@ struct SoftwareClipRect {
 
 class SoftwareRenderTarget : public RenderTarget {
 public:
-    SoftwareRenderTarget(int32_t width, int32_t height);
+    SoftwareRenderTarget(SoftwareBackend* backend, int32_t width, int32_t height);
     ~SoftwareRenderTarget() override;
 
     JaliumResult Resize(int32_t width, int32_t height) override;
@@ -342,6 +352,21 @@ public:
     friend class SoftwareBackend;
 
 private:
+    // Text rendering sub-methods (dispatched from RenderText)
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    void RenderTextWithGlyphAtlas(const wchar_t* text, uint32_t textLength,
+        FreeTypeTextFormat* ftFormat, float x, float y, float w, float h,
+        SoftwareSolidBrush* brush);
+#endif
+#ifdef _WIN32
+    void RenderTextWithGDI(const wchar_t* text, uint32_t textLength,
+        SoftwareTextFormat* stf, float x, float y, float w, float h,
+        SoftwareSolidBrush* brush);
+#endif
+    void RenderTextPlaceholder(const wchar_t* text, uint32_t textLength,
+        TextFormat* format, float x, float y, float w, float h,
+        SoftwareSolidBrush* brush);
+
     void FillScanlineRect(float x, float y, float w, float h, Brush* brush);
     void StrokeScanlineRect(float x, float y, float w, float h, Brush* brush, float strokeWidth);
     void DrawHLine(int32_t x0, int32_t x1, int32_t y, uint8_t r, uint8_t g, uint8_t b, uint8_t a);
@@ -388,6 +413,8 @@ private:
         const float* dashPattern, uint32_t dashCount, float dashOffset,
         std::vector<std::vector<float>>& segments);
 
+    SoftwareBackend* backend_ = nullptr;  // non-owning back-pointer for text engine access
+
     SoftwareFramebuffer fb_;
     std::stack<SoftwareTransform> transformStack_;
     std::stack<SoftwareClipRect> clipStack_;
@@ -396,6 +423,8 @@ private:
     float currentOpacity_ = 1.0f;
     float dpiX_ = 96.0f;
     float dpiY_ = 96.0f;
+    float scaleX_ = 1.0f;
+    float scaleY_ = 1.0f;
     bool fullInvalidation_ = true;
 
     // Effect capture state
@@ -414,6 +443,9 @@ private:
     // Desktop capture state
     SoftwareFramebuffer desktopCaptureFb_;
 
+    // Platform-neutral surface descriptor for non-Windows present
+    JaliumSurfaceDescriptor surfaceDescriptor_{};
+
 #ifdef _WIN32
     void* hwnd_ = nullptr;
     void* cachedTextDC_ = nullptr; // HDC cached for text rendering
@@ -426,14 +458,16 @@ private:
 
 class SoftwareBackend : public IRenderBackend {
 public:
-    SoftwareBackend() = default;
-    ~SoftwareBackend() override = default;
+    SoftwareBackend();
+    ~SoftwareBackend() override;
 
     JaliumBackend GetType() const override { return JALIUM_BACKEND_SOFTWARE; }
     const wchar_t* GetName() const override { return L"Software"; }
 
     RenderTarget* CreateRenderTarget(void* hwnd, int32_t width, int32_t height) override;
     RenderTarget* CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height) override;
+    RenderTarget* CreateRenderTargetForSurface(
+        const JaliumSurfaceDescriptor* surface, int32_t width, int32_t height) override;
     Brush* CreateSolidBrush(float r, float g, float b, float a) override;
     Brush* CreateLinearGradientBrush(
         float startX, float startY, float endX, float endY,
@@ -455,6 +489,17 @@ public:
         uint32_t width,
         uint32_t height,
         uint32_t stride) override;
+
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    TextEngine* GetTextEngine() const { return textEngine_.get(); }
+#else
+    void* GetTextEngine() const { return nullptr; }
+#endif
+
+private:
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    std::unique_ptr<TextEngine> textEngine_;
+#endif
 };
 
 IRenderBackend* CreateSoftwareBackend();

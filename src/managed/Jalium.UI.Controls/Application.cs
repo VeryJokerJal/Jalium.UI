@@ -1,6 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Input;
@@ -131,7 +132,15 @@ public partial class Application
         // Make the process DPI-aware before any framework HWND is created so
         // consumer apps launched from the NuGet quick-start path stay crisp on
         // scaled displays even without a custom app.manifest.
-        _ = TryEnablePerMonitorDpiAwareness();
+        if (PlatformFactory.IsWindows)
+        {
+            _ = TryEnablePerMonitorDpiAwareness();
+        }
+        else
+        {
+            // Initialize the cross-platform native platform library
+            PlatformFactory.InitializePlatform();
+        }
 
         _current = this;
         CurrentChanged?.Invoke(this, EventArgs.Empty);
@@ -146,6 +155,15 @@ public partial class Application
 
         // Initialize keyboard/focus system
         Keyboard.Initialize();
+
+        // Subscribe to Android lifecycle events
+        if (PlatformFactory.IsAndroid)
+        {
+            AndroidActivityBridge.Paused += OnAndroidPause;
+            AndroidActivityBridge.Resumed += OnAndroidResume;
+            AndroidActivityBridge.Destroying += OnAndroidDestroy;
+            AndroidActivityBridge.LowMemory += OnAndroidLowMemory;
+        }
 
         // Register application resource lookup callback
         ResourceLookup.ApplicationResourceLookup = LookupApplicationResource;
@@ -264,23 +282,31 @@ public partial class Application
         var exitCode = 0;
         try
         {
-            // Message loop
-            while (true)
+            if (PlatformFactory.IsWindows)
             {
-                var messageResult = GetMessage(out var msg, nint.Zero, 0, 0);
-                if (messageResult == 0)
+                // Win32 message loop
+                while (true)
                 {
-                    exitCode = unchecked((int)msg.wParam);
-                    break;
-                }
+                    var messageResult = GetMessage(out var msg, nint.Zero, 0, 0);
+                    if (messageResult == 0)
+                    {
+                        exitCode = unchecked((int)msg.wParam);
+                        break;
+                    }
 
-                if (messageResult < 0)
-                {
-                    throw new InvalidOperationException("The application message loop failed while retrieving a window message.");
-                }
+                    if (messageResult < 0)
+                    {
+                        throw new InvalidOperationException("The application message loop failed while retrieving a window message.");
+                    }
 
-                TranslateMessage(ref msg);
-                DispatchMessage(ref msg);
+                    TranslateMessage(ref msg);
+                    DispatchMessage(ref msg);
+                }
+            }
+            else
+            {
+                // Cross-platform message loop (Linux X11 / Android)
+                exitCode = PlatformFactory.RunMessageLoop();
             }
         }
         finally
@@ -293,8 +319,49 @@ public partial class Application
         return exitCode;
     }
 
+    #region Android Lifecycle
+
+    private static void OnAndroidPause()
+    {
+        CompositionTarget.SuspendRendering();
+    }
+
+    private static void OnAndroidResume()
+    {
+        CompositionTarget.ResumeRendering();
+
+        // Request a full re-render of all windows
+        if (_current?.MainWindow is Window mainWindow)
+        {
+            mainWindow.RequestFullInvalidation();
+            mainWindow.InvalidateWindow();
+        }
+    }
+
+    private static void OnAndroidDestroy()
+    {
+        _current?.Shutdown();
+    }
+
+    private static void OnAndroidLowMemory()
+    {
+        // Trim bitmap and render caches to free memory
+        TextMeasurement.ClearCache();
+    }
+
+    #endregion
+
     private void Cleanup()
     {
+        // Unsubscribe Android lifecycle events
+        if (PlatformFactory.IsAndroid)
+        {
+            AndroidActivityBridge.Paused -= OnAndroidPause;
+            AndroidActivityBridge.Resumed -= OnAndroidResume;
+            AndroidActivityBridge.Destroying -= OnAndroidDestroy;
+            AndroidActivityBridge.LowMemory -= OnAndroidLowMemory;
+        }
+
         _workingSetTrimController?.Dispose();
 
         // Stop all active animations
@@ -386,7 +453,10 @@ public partial class Application
     /// <param name="exitCode">The process exit code returned by <see cref="Run()"/>.</param>
     public void Shutdown(int exitCode)
     {
-        PostQuitMessage(exitCode);
+        if (PlatformFactory.IsWindows)
+            PostQuitMessage(exitCode);
+        else
+            PlatformFactory.QuitMessageLoop(exitCode);
     }
 
     /// <summary>

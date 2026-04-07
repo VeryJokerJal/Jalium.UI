@@ -1,4 +1,3 @@
-using System.Drawing;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -44,12 +43,12 @@ public partial class WebView : FrameworkElement, IDisposable
     private readonly Dispatcher _dispatcher;
     private readonly ScrollChangedEventHandler _scrollChangedHandler;
     private DispatcherTimer? _positionSyncTimer;
-    private Rectangle _lastHostRect = Rectangle.Empty;
-    private Rectangle _lastControllerBounds = Rectangle.Empty;
+    private PixelRect _lastHostRect = PixelRect.Empty;
+    private PixelRect _lastControllerBounds = PixelRect.Empty;
     private bool _isHostVisible;
     private int _visualAttachmentVersion;
     private string? _lastDebugPlacementSignature;
-    private Rectangle _lastDebugPunchRect = Rectangle.Empty;
+    private PixelRect _lastDebugPunchRect = PixelRect.Empty;
 
     private static readonly Jalium.UI.Media.SolidColorBrush s_debugFrameBrush =
         new(Media.Color.FromArgb(255, 255, 99, 71));
@@ -319,12 +318,12 @@ public partial class WebView : FrameworkElement, IDisposable
             return;
         }
 
-        Rectangle hostRect;
-        Rectangle controllerBounds;
+        PixelRect hostRect;
+        PixelRect controllerBounds;
         if (!TryGetHostPlacement(out hostRect, out controllerBounds))
         {
-            hostRect = new Rectangle(0, 0, 1, 1);
-            controllerBounds = new Rectangle(0, 0, 1, 1);
+            hostRect = new PixelRect(0, 0, 1, 1);
+            controllerBounds = new PixelRect(0, 0, 1, 1);
         }
 
         if (!_isWindowlessComposition)
@@ -381,7 +380,7 @@ public partial class WebView : FrameworkElement, IDisposable
         // Apply initial settings
         _controller.ZoomFactor = ZoomFactor;
         var bg = DefaultBackgroundColor;
-        _controller.DefaultBackgroundColor = System.Drawing.Color.FromArgb(bg.A, bg.R, bg.G, bg.B);
+        _controller.DefaultBackgroundColor = Media.Color.FromArgb(bg.A, bg.R, bg.G, bg.B);
 
         // Re-compute host placement now that the render target may have been
         // swapped to composition mode (which triggers ForceRenderFrame → layout).
@@ -390,8 +389,8 @@ public partial class WebView : FrameworkElement, IDisposable
         // top-left corner.
         if (!TryGetHostPlacement(out hostRect, out controllerBounds))
         {
-            hostRect = new Rectangle(0, 0, 1, 1);
-            controllerBounds = new Rectangle(0, 0, 1, 1);
+            hostRect = new PixelRect(0, 0, 1, 1);
+            controllerBounds = new PixelRect(0, 0, 1, 1);
         }
 
         UpdateCompositionVisualPlacement(hostRect, controllerBounds);
@@ -399,7 +398,7 @@ public partial class WebView : FrameworkElement, IDisposable
         // within the parent HWND.  This is used for popups, context menus and
         // other windowed features.  The DComp visual handles the actual
         // rendering position; Bounds only provides the coordinate reference.
-        _controller.Bounds = new Rectangle(
+        _controller.Bounds = new PixelRect(
             hostRect.X + controllerBounds.X,
             hostRect.Y + controllerBounds.Y,
             controllerBounds.Width, controllerBounds.Height);
@@ -408,8 +407,8 @@ public partial class WebView : FrameworkElement, IDisposable
         _controller.IsVisible = true;
         _controller.NotifyParentWindowPositionChanged();
         _isHostVisible = true;
-        _lastHostRect = Rectangle.Empty;
-        _lastControllerBounds = Rectangle.Empty;
+        _lastHostRect = PixelRect.Empty;
+        _lastControllerBounds = PixelRect.Empty;
 
         // Track parent window movement so composition bounds stay in sync.
         _parentWindow.LocationChanged -= OnParentWindowLocationChanged;
@@ -487,10 +486,10 @@ public partial class WebView : FrameworkElement, IDisposable
         _positionSyncTimer = null;
     }
 
-    private bool TryGetHostPlacement(out Rectangle hostRect, out Rectangle controllerBounds)
+    private bool TryGetHostPlacement(out PixelRect hostRect, out PixelRect controllerBounds)
     {
-        hostRect = Rectangle.Empty;
-        controllerBounds = Rectangle.Empty;
+        hostRect = PixelRect.Empty;
+        controllerBounds = PixelRect.Empty;
 
         if (_parentWindow == null || _parentWindow.Handle == nint.Zero || ActualWidth <= 0 || ActualHeight <= 0)
             return false;
@@ -622,7 +621,7 @@ public partial class WebView : FrameworkElement, IDisposable
         return false;
     }
 
-    private static Rectangle DipRectToPixelRect(Rect rect, double dpi)
+    private static PixelRect DipRectToPixelRect(Rect rect, double dpi)
     {
         var left = (int)Math.Floor(rect.X * dpi);
         var top = (int)Math.Floor(rect.Y * dpi);
@@ -634,12 +633,12 @@ public partial class WebView : FrameworkElement, IDisposable
         if (bottom <= top)
             bottom = top + 1;
 
-        return Rectangle.FromLTRB(left, top, right, bottom);
+        return PixelRect.FromLTRB(left, top, right, bottom);
     }
 
-    internal static Rectangle CalculateControllerBounds(Rectangle rawPx, Rectangle visiblePx)
+    internal static PixelRect CalculateControllerBounds(PixelRect rawPx, PixelRect visiblePx)
     {
-        return new Rectangle(
+        return new PixelRect(
             rawPx.X - visiblePx.X,
             rawPx.Y - visiblePx.Y,
             rawPx.Width,
@@ -703,8 +702,8 @@ public partial class WebView : FrameworkElement, IDisposable
             return;
 
         var attachedToWindow = IsAttachedToParentWindow();
-        Rectangle hostRect;
-        Rectangle controllerBounds;
+        PixelRect hostRect;
+        PixelRect controllerBounds;
         bool hasPlacement = TryGetHostPlacement(out hostRect, out controllerBounds);
         bool shouldBeVisible = attachedToWindow
             && Visibility == Visibility.Visible
@@ -735,7 +734,7 @@ public partial class WebView : FrameworkElement, IDisposable
 
         // Bounds = position within parent HWND (for popup/screen coordinate calc).
         // DComp visual handles the rendering position separately.
-        var positionedBounds = new Rectangle(
+        var positionedBounds = new PixelRect(
             hostRect.X + controllerBounds.X,
             hostRect.Y + controllerBounds.Y,
             controllerBounds.Width, controllerBounds.Height);
@@ -748,7 +747,7 @@ public partial class WebView : FrameworkElement, IDisposable
         DebugLogPlacement("update", hostRect, controllerBounds, attachedToWindow, hasPlacement, force);
     }
 
-    private void UpdateCompositionVisualPlacement(Rectangle hostRect, Rectangle controllerBounds)
+    private void UpdateCompositionVisualPlacement(PixelRect hostRect, PixelRect controllerBounds)
     {
         if (_compositionVisualOwner == null || _compositionRootVisualHandle == nint.Zero)
             return;
@@ -756,7 +755,7 @@ public partial class WebView : FrameworkElement, IDisposable
         _compositionVisualOwner.SetWebViewCompositionVisualPlacement(
             _compositionRootVisualHandle,
             hostRect,
-            new System.Drawing.Point(controllerBounds.X, controllerBounds.Y));
+            new PixelPoint(controllerBounds.X, controllerBounds.Y));
     }
 
     private bool IsAttachedToParentWindow()
@@ -813,7 +812,7 @@ public partial class WebView : FrameworkElement, IDisposable
         {
             var color = (Media.Color)e.NewValue!;
             webView._controller.DefaultBackgroundColor =
-                System.Drawing.Color.FromArgb(color.A, color.R, color.G, color.B);
+                Media.Color.FromArgb(color.A, color.R, color.G, color.B);
         }
     }
 
@@ -910,7 +909,7 @@ public partial class WebView : FrameworkElement, IDisposable
 
             if (_debugEnabled)
             {
-                var roundedPunchRect = new Rectangle(
+                var roundedPunchRect = new PixelRect(
                     0,
                     0,
                     (int)Math.Round(ActualWidth),
@@ -1017,7 +1016,7 @@ public partial class WebView : FrameworkElement, IDisposable
             return false;
 
         var dpi = _parentWindow.DpiScale;
-        var pointPx = new System.Drawing.Point(
+        var pointPx = new PixelPoint(
             (int)Math.Round(pointDip.X * dpi),
             (int)Math.Round(pointDip.Y * dpi));
         var virtualKeys = GetMouseVirtualKeys(e);
@@ -1177,8 +1176,8 @@ public partial class WebView : FrameworkElement, IDisposable
 
     private void DebugLogPlacement(
         string stage,
-        Rectangle hostRect,
-        Rectangle controllerBounds,
+        PixelRect hostRect,
+        PixelRect controllerBounds,
         bool attachedToWindow,
         bool hasPlacement,
         bool force)
@@ -1209,7 +1208,7 @@ public partial class WebView : FrameworkElement, IDisposable
         return $"wv:{_debugInstanceId} {initState} {visState}\nhost={host} ctrl={controller} local={Math.Round(ActualWidth)}x{Math.Round(ActualHeight)}";
     }
 
-    private static string FormatRect(Rectangle rect)
+    private static string FormatRect(PixelRect rect)
     {
         return $"[{rect.X},{rect.Y},{rect.Width}x{rect.Height}]";
     }
@@ -1281,8 +1280,8 @@ public partial class WebView : FrameworkElement, IDisposable
         _isInitialized = false;
         _isNavigating = false;
         _isHostVisible = false;
-        _lastHostRect = Rectangle.Empty;
-        _lastControllerBounds = Rectangle.Empty;
+        _lastHostRect = PixelRect.Empty;
+        _lastControllerBounds = PixelRect.Empty;
 
         if (clearEnvironment)
             _environment = null;

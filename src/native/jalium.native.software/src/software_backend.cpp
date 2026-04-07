@@ -3,6 +3,7 @@
 #include <cstring>
 #include <cmath>
 #include <cstdlib>
+#include <memory>
 
 #ifdef _WIN32
 #include <Windows.h>
@@ -16,6 +17,29 @@ using Microsoft::WRL::ComPtr;
 #ifdef __APPLE__
 #include <CoreGraphics/CoreGraphics.h>
 #include <CoreText/CoreText.h>
+#endif
+
+#ifdef __ANDROID__
+#include <android/native_window.h>
+#include <android/hardware_buffer.h>
+#include <android/log.h>
+#define LOGI_SW(...) __android_log_print(ANDROID_LOG_INFO, "JaliumSoftware", __VA_ARGS__)
+#define LOGE_SW(...) __android_log_print(ANDROID_LOG_ERROR, "JaliumSoftware", __VA_ARGS__)
+#endif
+
+#if defined(__linux__) || defined(__ANDROID__)
+// stb_image for cross-platform image decoding (Software backend non-Windows)
+#ifndef STB_IMAGE_IMPLEMENTATION
+#define STB_IMAGE_IMPLEMENTATION
+#endif
+#define STBI_NO_STDIO
+#define STBI_FAILURE_USERMSG
+#include <stb_image.h>
+#endif
+
+#if defined(JALIUM_SOFTWARE_X11_PRESENT)
+#include <X11/Xlib.h>
+#include <X11/Xutil.h>
 #endif
 
 namespace jalium {
@@ -752,7 +776,8 @@ void SoftwareRenderTarget::ApplyDashPattern(const std::vector<float>& pts, uint3
 // SoftwareRenderTarget
 // ============================================================================
 
-SoftwareRenderTarget::SoftwareRenderTarget(int32_t width, int32_t height)
+SoftwareRenderTarget::SoftwareRenderTarget(SoftwareBackend* backend, int32_t width, int32_t height)
+    : backend_(backend)
 {
     width_ = width;
     height_ = height;
@@ -779,11 +804,24 @@ JaliumResult SoftwareRenderTarget::Resize(int32_t width, int32_t height)
 
 JaliumResult SoftwareRenderTarget::BeginDraw()
 {
+    // Push a root DPI scale transform so all draw calls in DIPs are
+    // automatically mapped to physical pixels on high-density displays.
+    if (scaleX_ != 1.0f || scaleY_ != 1.0f) {
+        SoftwareTransform dpiScale = {{ scaleX_, 0, 0, scaleY_, 0, 0 }};
+        float m[6] = { dpiScale.m[0], dpiScale.m[1], dpiScale.m[2],
+                        dpiScale.m[3], dpiScale.m[4], dpiScale.m[5] };
+        PushTransform(m);
+    }
     return JALIUM_OK;
 }
 
 JaliumResult SoftwareRenderTarget::EndDraw()
 {
+    // Pop the root DPI scale transform pushed in BeginDraw
+    if (scaleX_ != 1.0f || scaleY_ != 1.0f) {
+        PopTransform();
+    }
+
 #ifdef _WIN32
     // Present to window via GDI
     if (hwnd_) {
@@ -800,6 +838,69 @@ JaliumResult SoftwareRenderTarget::EndDraw()
             SetDIBitsToDevice(hdc, 0, 0, width_, height_, 0, 0, 0, height_,
                 fb_.pixels.data(), &bmi, DIB_RGB_COLORS);
             ReleaseDC((HWND)hwnd_, hdc);
+        }
+    }
+#elif defined(JALIUM_SOFTWARE_X11_PRESENT)
+    // Present to X11 window via XPutImage
+    if (surfaceDescriptor_.platform == JALIUM_PLATFORM_LINUX_X11 &&
+        surfaceDescriptor_.handle0 != 0 && surfaceDescriptor_.handle1 != 0)
+    {
+        Display* dpy = reinterpret_cast<Display*>(surfaceDescriptor_.handle0);
+        ::Window xwin = static_cast<::Window>(surfaceDescriptor_.handle1);
+        int screen = DefaultScreen(dpy);
+
+        XImage* image = XCreateImage(dpy, DefaultVisual(dpy, screen),
+            DefaultDepth(dpy, screen), ZPixmap, 0,
+            reinterpret_cast<char*>(fb_.pixels.data()),
+            width_, height_, 32, width_ * 4);
+        if (image) {
+            GC gc = DefaultGC(dpy, screen);
+            XPutImage(dpy, xwin, gc, image, 0, 0, 0, 0, width_, height_);
+            image->data = nullptr; // Don't let XDestroyImage free our buffer
+            XDestroyImage(image);
+            XFlush(dpy);
+        }
+    }
+#elif defined(__ANDROID__)
+    // Present to Android ANativeWindow
+    LOGI_SW("EndDraw: platform=%d, handle0=%p, fb=%dx%d",
+            surfaceDescriptor_.platform, (void*)surfaceDescriptor_.handle0, width_, height_);
+    if (surfaceDescriptor_.platform == JALIUM_PLATFORM_ANDROID &&
+        surfaceDescriptor_.handle0 != 0)
+    {
+        ANativeWindow* nativeWindow = reinterpret_cast<ANativeWindow*>(surfaceDescriptor_.handle0);
+
+        ANativeWindow_Buffer buffer;
+        int lockResult = ANativeWindow_lock(nativeWindow, &buffer, nullptr);
+        LOGI_SW("ANativeWindow_lock result=%d, buffer=%dx%d stride=%d", lockResult, buffer.width, buffer.height, buffer.stride);
+        if (lockResult >= 0)
+        {
+            auto* dst = static_cast<uint8_t*>(buffer.bits);
+            const auto* src = fb_.pixels.data();
+            int32_t copyHeight = std::min(height_, buffer.height);
+            int32_t copyWidth = std::min(width_, buffer.width);
+            uint32_t dstStride = buffer.stride * 4; // stride is in pixels
+
+            // BGRA → RGBA channel swap + copy (ANativeWindow uses RGBA)
+            for (int32_t y = 0; y < copyHeight; y++)
+            {
+                const uint8_t* srcRow = src + y * width_ * 4;
+                uint8_t* dstRow = dst + y * dstStride;
+                for (int32_t x = 0; x < copyWidth; x++)
+                {
+                    dstRow[x * 4 + 0] = srcRow[x * 4 + 2]; // R ← B
+                    dstRow[x * 4 + 1] = srcRow[x * 4 + 1]; // G ← G
+                    dstRow[x * 4 + 2] = srcRow[x * 4 + 0]; // B ← R
+                    dstRow[x * 4 + 3] = srcRow[x * 4 + 3]; // A ← A
+                }
+            }
+
+            ANativeWindow_unlockAndPost(nativeWindow);
+            LOGI_SW("ANativeWindow_unlockAndPost done");
+        }
+        else
+        {
+            LOGE_SW("ANativeWindow_lock failed: %d", lockResult);
         }
     }
 #endif
@@ -889,16 +990,17 @@ void SoftwareRenderTarget::DrawHLine(int32_t x0, int32_t x1, int32_t y,
 
 void SoftwareRenderTarget::FillScanlineRect(float x, float y, float w, float h, Brush* brush)
 {
-    float tx, ty;
+    float tx, ty, tx2, ty2;
     currentTransform_.Apply(x, y, tx, ty);
+    currentTransform_.Apply(x + w, y + h, tx2, ty2);
 
     int32_t ix = (int32_t)tx;
     int32_t iy = (int32_t)ty;
-    int32_t iw = (int32_t)(w + 0.5f);
-    int32_t ih = (int32_t)(h + 0.5f);
+    int32_t ix2 = (int32_t)(tx2 + 0.5f);
+    int32_t iy2 = (int32_t)(ty2 + 0.5f);
 
-    for (int32_t row = iy; row < iy + ih; row++) {
-        for (int32_t col = ix; col < ix + iw; col++) {
+    for (int32_t row = iy; row < iy2; row++) {
+        for (int32_t col = ix; col < ix2; col++) {
             if (!clipStack_.empty() && IsClipped((float)col, (float)row)) continue;
             uint8_t r, g, b, a;
             GetBrushColor(brush, (float)col, (float)row, r, g, b, a);
@@ -935,7 +1037,9 @@ void SoftwareRenderTarget::DrawBresenhamLine(float x1, float y1, float x2, float
     int32_t sy = iy1 < iy2 ? 1 : -1;
     int32_t err = dx - dy;
 
-    int32_t halfStroke = std::max(0, (int32_t)(strokeWidth * 0.5f));
+    // Scale strokeWidth by the average scale factor of the current transform
+    float avgScale = (std::abs(currentTransform_.m[0]) + std::abs(currentTransform_.m[3])) * 0.5f;
+    int32_t halfStroke = std::max(0, (int32_t)(strokeWidth * avgScale * 0.5f));
 
     while (true) {
         for (int32_t dy2 = -halfStroke; dy2 <= halfStroke; dy2++) {
@@ -970,33 +1074,38 @@ void SoftwareRenderTarget::FillRoundedRectangle(float x, float y, float w, float
     rx = std::min(rx, w * 0.5f);
     ry = std::min(ry, h * 0.5f);
 
-    float tx, ty;
+    float tx, ty, tx2, ty2;
     currentTransform_.Apply(x, y, tx, ty);
+    currentTransform_.Apply(x + w, y + h, tx2, ty2);
+    float tw = tx2 - tx;
+    float th = ty2 - ty;
+    float sx = (w > 0) ? (tw / w) : 1.0f;
+    float sy = (h > 0) ? (th / h) : 1.0f;
+    float trx = rx * sx, try_ = ry * sy;
+
     int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+    int32_t iw = (int32_t)(tw + 0.5f), ih = (int32_t)(th + 0.5f);
 
     for (int32_t row = 0; row < ih; row++) {
         for (int32_t col = 0; col < iw; col++) {
-            float px = (float)col, py = (float)row;
-            // Check if inside rounded rect
-            float cx = px, cy = py;
+            float cx = (float)col, cy = (float)row;
             bool inside = true;
-            // Check corners
-            if (cx < rx && cy < ry) {
-                float dx = (cx - rx) / rx;
-                float dy = (cy - ry) / ry;
+            // Check corners using transformed radii
+            if (cx < trx && cy < try_) {
+                float dx = (cx - trx) / trx;
+                float dy = (cy - try_) / try_;
                 inside = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx > w - rx && cy < ry) {
-                float dx = (cx - (w - rx)) / rx;
-                float dy = (cy - ry) / ry;
+            } else if (cx > tw - trx && cy < try_) {
+                float dx = (cx - (tw - trx)) / trx;
+                float dy = (cy - try_) / try_;
                 inside = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx < rx && cy > h - ry) {
-                float dx = (cx - rx) / rx;
-                float dy = (cy - (h - ry)) / ry;
+            } else if (cx < trx && cy > th - try_) {
+                float dx = (cx - trx) / trx;
+                float dy = (cy - (th - try_)) / try_;
                 inside = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx > w - rx && cy > h - ry) {
-                float dx = (cx - (w - rx)) / rx;
-                float dy = (cy - (h - ry)) / ry;
+            } else if (cx > tw - trx && cy > th - try_) {
+                float dx = (cx - (tw - trx)) / trx;
+                float dy = (cy - (th - try_)) / try_;
                 inside = (dx * dx + dy * dy) <= 1.0f;
             }
 
@@ -1016,15 +1125,21 @@ void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float
     if (!brush) return;
     rx = std::min(rx, w * 0.5f);
     ry = std::min(ry, h * 0.5f);
-    float sw = strokeWidth;
-    float innerRx = std::max(0.0f, rx - sw);
-    float innerRy = std::max(0.0f, ry - sw);
 
-    float tx, ty;
+    float tx, ty, tx2, ty2;
     currentTransform_.Apply(x, y, tx, ty);
+    currentTransform_.Apply(x + w, y + h, tx2, ty2);
+    float tw = tx2 - tx;
+    float th = ty2 - ty;
+    float sx = (w > 0) ? (tw / w) : 1.0f;
+    float sy = (h > 0) ? (th / h) : 1.0f;
+    float trx = rx * sx, try_ = ry * sy;
+    float tsw = strokeWidth * std::min(sx, sy);
+    float innerRx = std::max(0.0f, trx - tsw);
+    float innerRy = std::max(0.0f, try_ - tsw);
+
     int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
-    int32_t isw = (int32_t)(sw + 0.5f);
+    int32_t iw = (int32_t)(tw + 0.5f), ih = (int32_t)(th + 0.5f);
 
     // Rasterize only the stroke ring by testing outer and inner rounded rects
     for (int32_t row = 0; row < ih; row++) {
@@ -1032,24 +1147,24 @@ void SoftwareRenderTarget::DrawRoundedRectangle(float x, float y, float w, float
             float cx = (float)col, cy = (float)row;
             // Check if inside outer rounded rect
             bool insideOuter = true;
-            if (cx < rx && cy < ry) {
-                float dx = (cx - rx) / rx; float dy = (cy - ry) / ry;
+            if (cx < trx && cy < try_) {
+                float dx = (cx - trx) / trx; float dy = (cy - try_) / try_;
                 insideOuter = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx > w - rx && cy < ry) {
-                float dx = (cx - (w - rx)) / rx; float dy = (cy - ry) / ry;
+            } else if (cx > tw - trx && cy < try_) {
+                float dx = (cx - (tw - trx)) / trx; float dy = (cy - try_) / try_;
                 insideOuter = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx < rx && cy > h - ry) {
-                float dx = (cx - rx) / rx; float dy = (cy - (h - ry)) / ry;
+            } else if (cx < trx && cy > th - try_) {
+                float dx = (cx - trx) / trx; float dy = (cy - (th - try_)) / try_;
                 insideOuter = (dx * dx + dy * dy) <= 1.0f;
-            } else if (cx > w - rx && cy > h - ry) {
-                float dx = (cx - (w - rx)) / rx; float dy = (cy - (h - ry)) / ry;
+            } else if (cx > tw - trx && cy > th - try_) {
+                float dx = (cx - (tw - trx)) / trx; float dy = (cy - (th - try_)) / try_;
                 insideOuter = (dx * dx + dy * dy) <= 1.0f;
             }
             if (!insideOuter) continue;
 
             // Check if outside inner rounded rect (i.e., in the stroke ring)
-            float icx = cx - sw, icy = cy - sw;
-            float innerW = w - sw * 2, innerH = h - sw * 2;
+            float icx = cx - tsw, icy = cy - tsw;
+            float innerW = tw - tsw * 2, innerH = th - tsw * 2;
             bool insideInner = false;
             if (innerW > 0 && innerH > 0 && icx >= 0 && icy >= 0 && icx <= innerW && icy <= innerH) {
                 insideInner = true;
@@ -1088,14 +1203,22 @@ void SoftwareRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float
     br = std::min(br, std::min(w, h) * 0.5f);
     bl = std::min(bl, std::min(w, h) * 0.5f);
 
-    float tx, ty;
+    float tx, ty, tx2, ty2;
     currentTransform_.Apply(x, y, tx, ty);
+    currentTransform_.Apply(x + w, y + h, tx2, ty2);
+    float tw = tx2 - tx;
+    float th = ty2 - ty;
+    float sx = (w > 0) ? (tw / w) : 1.0f;
+    float sy = (h > 0) ? (th / h) : 1.0f;
+    float s = std::min(sx, sy);
+    float ttl = tl * s, ttr = tr * s, tbr = br * s, tbl = bl * s;
+
     int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+    int32_t iw = (int32_t)(tw + 0.5f), ih = (int32_t)(th + 0.5f);
 
     for (int32_t row = 0; row < ih; row++) {
         for (int32_t col = 0; col < iw; col++) {
-            if (IsInsidePerCornerRoundedRect((float)col, (float)row, w, h, tl, tr, br, bl)) {
+            if (IsInsidePerCornerRoundedRect((float)col, (float)row, tw, th, ttl, ttr, tbr, tbl)) {
                 int32_t fx = ix + col, fy = iy + row;
                 if (!clipStack_.empty() && IsClipped((float)fx, (float)fy)) continue;
                 uint8_t r, g, b, a;
@@ -1114,25 +1237,33 @@ void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float
     tr = std::min(tr, std::min(w, h) * 0.5f);
     br = std::min(br, std::min(w, h) * 0.5f);
     bl = std::min(bl, std::min(w, h) * 0.5f);
-    float sw = strokeWidth;
 
-    float tx, ty;
+    float tx, ty, tx2, ty2;
     currentTransform_.Apply(x, y, tx, ty);
-    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
-    int32_t iw = (int32_t)(w + 0.5f), ih = (int32_t)(h + 0.5f);
+    currentTransform_.Apply(x + w, y + h, tx2, ty2);
+    float tw = tx2 - tx;
+    float th = ty2 - ty;
+    float sx = (w > 0) ? (tw / w) : 1.0f;
+    float sy = (h > 0) ? (th / h) : 1.0f;
+    float s = std::min(sx, sy);
+    float ttl = tl * s, ttr = tr * s, tbr = br * s, tbl = bl * s;
+    float tsw = strokeWidth * s;
 
-    float iTl = std::max(0.0f, tl - sw), iTr = std::max(0.0f, tr - sw);
-    float iBr = std::max(0.0f, br - sw), iBl = std::max(0.0f, bl - sw);
-    float innerW = w - sw * 2, innerH = h - sw * 2;
+    int32_t ix = (int32_t)tx, iy = (int32_t)ty;
+    int32_t iw = (int32_t)(tw + 0.5f), ih = (int32_t)(th + 0.5f);
+
+    float iTl = std::max(0.0f, ttl - tsw), iTr = std::max(0.0f, ttr - tsw);
+    float iBr = std::max(0.0f, tbr - tsw), iBl = std::max(0.0f, tbl - tsw);
+    float innerW = tw - tsw * 2, innerH = th - tsw * 2;
 
     for (int32_t row = 0; row < ih; row++) {
         for (int32_t col = 0; col < iw; col++) {
-            bool insideOuter = IsInsidePerCornerRoundedRect((float)col, (float)row, w, h, tl, tr, br, bl);
+            bool insideOuter = IsInsidePerCornerRoundedRect((float)col, (float)row, tw, th, ttl, ttr, tbr, tbl);
             if (!insideOuter) continue;
 
             bool insideInner = false;
             if (innerW > 0 && innerH > 0) {
-                float icx = (float)col - sw, icy = (float)row - sw;
+                float icx = (float)col - tsw, icy = (float)row - tsw;
                 insideInner = IsInsidePerCornerRoundedRect(icx, icy, innerW, innerH, iTl, iTr, iBr, iBl);
             }
             if (insideInner) continue;
@@ -1149,14 +1280,16 @@ void SoftwareRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float
 void SoftwareRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush)
 {
     if (!brush) return;
-    float tx, ty;
+    float tx, ty, tx2, ty2;
     currentTransform_.Apply(cx, cy, tx, ty);
-    int32_t irx = (int32_t)(rx + 0.5f), iry = (int32_t)(ry + 0.5f);
+    currentTransform_.Apply(cx + rx, cy + ry, tx2, ty2);
+    float trx = tx2 - tx, try_ = ty2 - ty;
+    int32_t irx = (int32_t)(trx + 0.5f), iry = (int32_t)(try_ + 0.5f);
 
     for (int32_t dy = -iry; dy <= iry; dy++) {
         for (int32_t dx = -irx; dx <= irx; dx++) {
-            float ex = (float)dx / rx;
-            float ey = (float)dy / ry;
+            float ex = (float)dx / trx;
+            float ey = (float)dy / try_;
             if (ex * ex + ey * ey <= 1.0f) {
                 int32_t px = (int32_t)tx + dx;
                 int32_t py = (int32_t)ty + dy;
@@ -1175,13 +1308,17 @@ void SoftwareRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, B
     uint8_t r, g, b, a;
     GetBrushColor(brush, cx, cy, r, g, b, a);
 
-    float tx, ty;
+    float tx, ty, tx2, ty2;
     currentTransform_.Apply(cx, cy, tx, ty);
+    currentTransform_.Apply(cx + rx, cy + ry, tx2, ty2);
+    float trx = tx2 - tx, try_ = ty2 - ty;
+    float s = std::min(trx / std::max(rx, 0.001f), try_ / std::max(ry, 0.001f));
+    float tsw = strokeWidth * s;
 
     // Midpoint ellipse algorithm for outline
-    float outerRx = rx, outerRy = ry;
-    float innerRx = std::max(0.0f, rx - strokeWidth);
-    float innerRy = std::max(0.0f, ry - strokeWidth);
+    float outerRx = trx, outerRy = try_;
+    float innerRx = std::max(0.0f, trx - tsw);
+    float innerRy = std::max(0.0f, try_ - tsw);
 
     int32_t irx = (int32_t)(outerRx + 0.5f), iry = (int32_t)(outerRy + 0.5f);
     for (int32_t dy = -iry; dy <= iry; dy++) {
@@ -1609,14 +1746,130 @@ void SoftwareRenderTarget::RenderText(
 {
     if (!text || textLength == 0 || !format || !brush) return;
 
-    auto* stf = dynamic_cast<SoftwareTextFormat*>(format);
-    if (!stf) return;
+    auto* solid = dynamic_cast<SoftwareSolidBrush*>(brush);
+    if (!solid) return;
 
-    // Use platform text rendering if available, otherwise draw placeholder rectangles
-#if defined(_WIN32)
-    // Use GDI for text rendering with cached HDC
-    uint8_t r, g, b, a;
-    GetBrushColor(brush, x, y, r, g, b, a);
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    // Path 1: FreeType glyph atlas rendering (preferred on all platforms)
+    auto* ftFormat = dynamic_cast<FreeTypeTextFormat*>(format);
+    if (ftFormat && backend_ && backend_->GetTextEngine()) {
+        RenderTextWithGlyphAtlas(text, textLength, ftFormat, x, y, w, h, solid);
+        return;
+    }
+#endif
+
+#ifdef _WIN32
+    // Path 2: GDI rendering (Windows fallback when TextEngine unavailable)
+    auto* stf = dynamic_cast<SoftwareTextFormat*>(format);
+    if (stf) {
+        RenderTextWithGDI(text, textLength, stf, x, y, w, h, solid);
+        return;
+    }
+#endif
+
+    // Path 3: Placeholder (last resort)
+    RenderTextPlaceholder(text, textLength, format, x, y, w, h, solid);
+}
+
+// ============================================================================
+// Text Rendering Path 1: FreeType Glyph Atlas (cross-platform)
+// ============================================================================
+
+#ifdef JALIUM_HAS_TEXT_ENGINE
+void SoftwareRenderTarget::RenderTextWithGlyphAtlas(
+    const wchar_t* text, uint32_t textLength,
+    FreeTypeTextFormat* ftFormat,
+    float x, float y, float w, float h,
+    SoftwareSolidBrush* brush)
+{
+    // Transform origin to screen coordinates
+    float tx, ty;
+    currentTransform_.Apply(x, y, tx, ty);
+
+    // Extract text color
+    uint8_t textR = FloatToU8(brush->r);
+    uint8_t textG = FloatToU8(brush->g);
+    uint8_t textB = FloatToU8(brush->b);
+    float textAlpha = brush->a * currentOpacity_;
+
+    // Generate positioned glyph quads via HarfBuzz shaping + FreeType rasterization.
+    // When DPI scaling is active, pass the scale so glyphs are rasterized at
+    // physical pixel resolution rather than DIP resolution.
+    float textRenderScale = (scaleX_ != 1.0f || scaleY_ != 1.0f) ? scaleY_ : 1.0f;
+    std::vector<TextGlyphQuad> quads;
+    ftFormat->GenerateGlyphQuads(
+        text, textLength, w, h,
+        brush->r, brush->g, brush->b, textAlpha,
+        tx, ty, quads, textRenderScale);
+
+    if (quads.empty()) return;
+
+    // Get glyph atlas pixel data
+    GlyphAtlas* atlas = backend_->GetTextEngine()->GetGlyphAtlas();
+    const uint8_t* atlasData = atlas->GetPixelData();
+    uint32_t atlasW = atlas->GetWidth();
+    uint32_t atlasH = atlas->GetHeight();
+
+    // Blit each glyph quad from atlas onto framebuffer
+    for (const auto& quad : quads) {
+        int32_t dstX = static_cast<int32_t>(std::floor(quad.posX));
+        int32_t dstY = static_cast<int32_t>(std::floor(quad.posY));
+        int32_t qw = static_cast<int32_t>(std::ceil(quad.sizeX));
+        int32_t qh = static_cast<int32_t>(std::ceil(quad.sizeY));
+
+        // Atlas source coordinates from UV
+        int32_t srcX = static_cast<int32_t>(quad.uvMinX * atlasW);
+        int32_t srcY = static_cast<int32_t>(quad.uvMinY * atlasH);
+
+        // Early rejection: quad completely outside framebuffer
+        if (dstX + qw <= 0 || dstX >= width_ || dstY + qh <= 0 || dstY >= height_)
+            continue;
+
+        for (int32_t row = 0; row < qh; ++row) {
+            int32_t dy = dstY + row;
+            int32_t sy = srcY + row;
+            if (dy < 0 || dy >= height_ || sy < 0 || sy >= static_cast<int32_t>(atlasH))
+                continue;
+
+            for (int32_t col = 0; col < qw; ++col) {
+                int32_t dx = dstX + col;
+                int32_t sx = srcX + col;
+                if (dx < 0 || dx >= width_ || sx < 0 || sx >= static_cast<int32_t>(atlasW))
+                    continue;
+
+                // Clip stack check
+                if (IsClipped(dx + 0.5f, dy + 0.5f))
+                    continue;
+
+                // Sample coverage from glyph atlas (RGBA8: A = max coverage)
+                size_t atlasIdx = (static_cast<size_t>(sy) * atlasW + sx) * 4;
+                uint8_t coverage = atlasData[atlasIdx + 3];
+                if (coverage == 0) continue;
+
+                // Final alpha = text opacity * glyph coverage
+                uint8_t alpha = static_cast<uint8_t>(textAlpha * 255.0f * coverage / 255.0f);
+                fb_.BlendPixel(dx, dy, textR, textG, textB, alpha);
+            }
+        }
+    }
+}
+#endif
+
+// ============================================================================
+// Text Rendering Path 2: GDI (Windows fallback)
+// ============================================================================
+
+#ifdef _WIN32
+void SoftwareRenderTarget::RenderTextWithGDI(
+    const wchar_t* text, uint32_t textLength,
+    SoftwareTextFormat* stf,
+    float x, float y, float w, float h,
+    SoftwareSolidBrush* brush)
+{
+    uint8_t r = FloatToU8(brush->r);
+    uint8_t g = FloatToU8(brush->g);
+    uint8_t b = FloatToU8(brush->b);
+    uint8_t a = FloatToU8(brush->a * currentOpacity_);
 
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
@@ -1626,6 +1879,7 @@ void SoftwareRenderTarget::RenderText(
     }
     HDC hdc = static_cast<HDC>(cachedTextDC_);
     if (!hdc) return;
+
     BITMAPINFO bmi{};
     bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
     bmi.bmiHeader.biWidth = (int32_t)w;
@@ -1661,18 +1915,18 @@ void SoftwareRenderTarget::RenderText(
         DrawTextW(hdc, text, textLength, &rc, dtFlags);
 
         // Copy rendered text to framebuffer with alpha blending
-        uint8_t* textBits = (uint8_t*)bits;
-        int32_t ix = (int32_t)tx, iy = (int32_t)ty;
+        uint8_t* textBits = static_cast<uint8_t*>(bits);
+        int32_t ix = static_cast<int32_t>(tx), iy = static_cast<int32_t>(ty);
         for (int32_t row = 0; row < (int32_t)h && iy + row < height_; row++) {
             for (int32_t col = 0; col < (int32_t)w && ix + col < width_; col++) {
                 int srcIdx = (row * (int32_t)w + col) * 4;
                 uint8_t sr = textBits[srcIdx + 2];
                 uint8_t sg = textBits[srcIdx + 1];
                 uint8_t sb = textBits[srcIdx + 0];
-                // Use luminance as alpha for ClearType
-                uint8_t sa = (uint8_t)std::min(255, (sr + sg + sb) / 3);
+                // Use luminance as alpha for ClearType simulation
+                uint8_t sa = static_cast<uint8_t>(std::min(255, (sr + sg + sb) / 3));
                 if (sa > 0) {
-                    sa = (uint8_t)((sa / 255.0f) * a);
+                    sa = static_cast<uint8_t>((sa / 255.0f) * a);
                     fb_.BlendPixel(ix + col, iy + row, r, g, b, sa);
                 }
             }
@@ -1683,29 +1937,34 @@ void SoftwareRenderTarget::RenderText(
         SelectObject(hdc, oldBm);
         DeleteObject(hbm);
     }
-#else
-    // Fallback: draw placeholder rectangles representing text bounds
-    auto* solid = dynamic_cast<SoftwareSolidBrush*>(brush);
-    if (!solid) return;
+}
+#endif
 
-    float charWidth = stf->fontSize * 0.6f;
-    float lineHeight = stf->fontSize * 1.2f;
-    float baseline = stf->fontSize * 0.8f;
+// ============================================================================
+// Text Rendering Path 3: Placeholder (last resort fallback)
+// ============================================================================
+
+void SoftwareRenderTarget::RenderTextPlaceholder(
+    const wchar_t* text, uint32_t textLength,
+    TextFormat* format, float x, float y, float w, float h,
+    SoftwareSolidBrush* brush)
+{
+    (void)format; (void)h;
+
+    float charWidth = 12.0f * 0.6f; // approximate
+    float baseline = 12.0f * 0.8f;
     float tx, ty;
     currentTransform_.Apply(x, y + baseline, tx, ty);
 
-    // Draw a thin underline to indicate text position
-    uint8_t cr = FloatToU8(solid->r);
-    uint8_t cg = FloatToU8(solid->g);
-    uint8_t cb = FloatToU8(solid->b);
-    uint8_t ca = FloatToU8(solid->a * currentOpacity_ * 0.3f);
+    uint8_t cr = FloatToU8(brush->r);
+    uint8_t cg = FloatToU8(brush->g);
+    uint8_t cb = FloatToU8(brush->b);
+    uint8_t ca = FloatToU8(brush->a * currentOpacity_ * 0.3f);
     float textWidth = std::min(textLength * charWidth, w);
+
     for (int32_t col = 0; col < (int32_t)textWidth; col++) {
         fb_.BlendPixel((int32_t)tx + col, (int32_t)ty, cr, cg, cb, ca);
     }
-
-    (void)h; (void)lineHeight;
-#endif
 }
 
 void SoftwareRenderTarget::PushTransform(const float* matrix)
@@ -1728,18 +1987,24 @@ void SoftwareRenderTarget::PushClip(float x, float y, float w, float h)
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
 
+    // Transform the bottom-right corner to get the scaled width/height
+    float tx2, ty2;
+    currentTransform_.Apply(x + w, y + h, tx2, ty2);
+    float tw = tx2 - tx;
+    float th = ty2 - ty;
+
     SoftwareClipRect clip;
     if (!clipStack_.empty()) {
         // Intersect with current clip
         auto& top = clipStack_.top();
         clip.x = std::max(tx, top.x);
         clip.y = std::max(ty, top.y);
-        float right = std::min(tx + w, top.x + top.w);
-        float bottom = std::min(ty + h, top.y + top.h);
+        float right = std::min(tx + tw, top.x + top.w);
+        float bottom = std::min(ty + th, top.y + top.h);
         clip.w = std::max(0.0f, right - clip.x);
         clip.h = std::max(0.0f, bottom - clip.y);
     } else {
-        clip = {tx, ty, w, h};
+        clip = {tx, ty, tw, th};
     }
     clipStack_.push(clip);
 }
@@ -1754,20 +2019,26 @@ void SoftwareRenderTarget::PushRoundedRectClip(float x, float y, float w, float 
     float tx, ty;
     currentTransform_.Apply(x, y, tx, ty);
 
+    // Transform dimensions through the current transform
+    float tx2, ty2;
+    currentTransform_.Apply(x + w, y + h, tx2, ty2);
+    float tw = tx2 - tx;
+    float th = ty2 - ty;
+
     SoftwareClipRect clip;
     if (!clipStack_.empty()) {
         auto& top = clipStack_.top();
         clip.x = std::max(tx, top.x);
         clip.y = std::max(ty, top.y);
-        float right = std::min(tx + w, top.x + top.w);
-        float bottom = std::min(ty + h, top.y + top.h);
+        float right = std::min(tx + tw, top.x + top.w);
+        float bottom = std::min(ty + th, top.y + top.h);
         clip.w = std::max(0.0f, right - clip.x);
         clip.h = std::max(0.0f, bottom - clip.y);
     } else {
-        clip = {tx, ty, w, h};
+        clip = {tx, ty, tw, th};
     }
-    clip.rx = rx;
-    clip.ry = ry;
+    clip.rx = rx * scaleX_;
+    clip.ry = ry * scaleY_;
     clipStack_.push(clip);
 }
 
@@ -1809,6 +2080,8 @@ void SoftwareRenderTarget::SetDpi(float dpiX, float dpiY)
 {
     dpiX_ = dpiX;
     dpiY_ = dpiY;
+    scaleX_ = dpiX / 96.0f;
+    scaleY_ = dpiY / 96.0f;
 }
 
 void SoftwareRenderTarget::AddDirtyRect(float x, float y, float w, float h)
@@ -2726,9 +2999,20 @@ void SoftwareRenderTarget::DrawLiquidGlass(
 // SoftwareBackend
 // ============================================================================
 
+SoftwareBackend::SoftwareBackend()
+{
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    textEngine_ = std::make_unique<TextEngine>();
+    if (textEngine_->Initialize() != JALIUM_OK)
+        textEngine_.reset();
+#endif
+}
+
+SoftwareBackend::~SoftwareBackend() = default;
+
 RenderTarget* SoftwareBackend::CreateRenderTarget(void* hwnd, int32_t width, int32_t height)
 {
-    auto* rt = new SoftwareRenderTarget(width, height);
+    auto* rt = new SoftwareRenderTarget(this, width, height);
 #ifdef _WIN32
     rt->hwnd_ = hwnd;
 #else
@@ -2740,6 +3024,20 @@ RenderTarget* SoftwareBackend::CreateRenderTarget(void* hwnd, int32_t width, int
 RenderTarget* SoftwareBackend::CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height)
 {
     return CreateRenderTarget(hwnd, width, height);
+}
+
+RenderTarget* SoftwareBackend::CreateRenderTargetForSurface(
+    const JaliumSurfaceDescriptor* surface, int32_t width, int32_t height)
+{
+    auto* rt = new SoftwareRenderTarget(this, width, height);
+    if (surface) {
+        rt->surfaceDescriptor_ = *surface;
+#ifdef _WIN32
+        if (surface->platform == JALIUM_PLATFORM_WINDOWS)
+            rt->hwnd_ = reinterpret_cast<void*>(surface->handle0);
+#endif
+    }
+    return rt;
 }
 
 Brush* SoftwareBackend::CreateSolidBrush(float r, float g, float b, float a)
@@ -2770,6 +3068,10 @@ TextFormat* SoftwareBackend::CreateTextFormat(
     int32_t fontWeight,
     int32_t fontStyle)
 {
+#ifdef JALIUM_HAS_TEXT_ENGINE
+    if (textEngine_)
+        return textEngine_->CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+#endif
     return new SoftwareTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
 }
 
@@ -2817,6 +3119,29 @@ Bitmap* SoftwareBackend::CreateBitmapFromMemory(const uint8_t* data, uint32_t da
     if (FAILED(hr)) return nullptr;
 
     return new SoftwareBitmap(width, height, std::move(pixels));
+#elif defined(__linux__) || defined(__ANDROID__)
+    // Cross-platform: use stb_image for decoding
+    int imgWidth = 0, imgHeight = 0, channels = 0;
+    stbi_uc* decoded = stbi_load_from_memory(data, static_cast<int>(dataSize),
+        &imgWidth, &imgHeight, &channels, STBI_rgb_alpha);
+    if (!decoded || imgWidth <= 0 || imgHeight <= 0) {
+        if (decoded) stbi_image_free(decoded);
+        return nullptr;
+    }
+
+    // Convert RGBA -> BGRA for consistency
+    size_t pixelDataSize = static_cast<size_t>(imgWidth) * imgHeight * 4u;
+    std::vector<uint8_t> bgraPixels(pixelDataSize);
+    for (size_t offset = 0; offset + 3 < pixelDataSize; offset += 4u) {
+        bgraPixels[offset + 0] = decoded[offset + 2]; // B
+        bgraPixels[offset + 1] = decoded[offset + 1]; // G
+        bgraPixels[offset + 2] = decoded[offset + 0]; // R
+        bgraPixels[offset + 3] = decoded[offset + 3]; // A
+    }
+    stbi_image_free(decoded);
+
+    return new SoftwareBitmap(static_cast<uint32_t>(imgWidth), static_cast<uint32_t>(imgHeight),
+                              std::move(bgraPixels));
 #else
     (void)dataSize;
     return nullptr;

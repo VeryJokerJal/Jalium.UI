@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls.Platform;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
@@ -13,6 +14,7 @@ namespace Jalium.UI.Controls;
 internal sealed partial class DockIndicatorWindow : IDisposable
 {
     private nint _hwnd;
+    private IPlatformWindow? _platformWindow;
     private RenderTarget? _renderTarget;
     private RenderTargetDrawingContext? _drawingContext;
     private readonly DockIndicatorVisual _visual;
@@ -52,12 +54,27 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     /// </summary>
     internal void Show(nint parentHwnd, int screenX, int screenY, int width, int height, double dpiScale)
     {
-        if (_hwnd != nint.Zero) return; // Already shown
+        if (PlatformFactory.IsAndroid) return; // No dock indicators on Android (single full-screen window)
+        if (_hwnd != nint.Zero || _platformWindow != null) return; // Already shown
 
         _width = width;
         _height = height;
         _dpiScale = dpiScale;
+        _screenX = screenX;
+        _screenY = screenY;
 
+        if (PlatformFactory.IsWindows)
+        {
+            ShowWin32(parentHwnd, screenX, screenY, width, height);
+        }
+        else
+        {
+            ShowCrossPlatform(screenX, screenY, width, height);
+        }
+    }
+
+    private void ShowWin32(nint parentHwnd, int screenX, int screenY, int width, int height)
+    {
         RegisterWindowClass();
 
         _hwnd = CreateWindowEx(
@@ -89,6 +106,31 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         ScheduleRender();
     }
 
+    private void ShowCrossPlatform(int screenX, int screenY, int width, int height)
+    {
+        PlatformFactory.InitializePlatform();
+
+        // POPUP | TOPMOST | TRANSPARENT style flags (matches JaliumWindowStyle enum in jalium_platform.h)
+        uint style = (1u << 7) | (1u << 6) | (1u << 8); // POPUP=0x80, TOPMOST=0x40, TRANSPARENT=0x100
+
+        _platformWindow = PlatformFactory.CreateWindow("", screenX, screenY, width, height, style, nint.Zero);
+        if (_platformWindow == null) return;
+
+        _hwnd = _platformWindow.NativeHandle;
+
+        try
+        {
+            EnsureRenderTarget();
+        }
+        catch (RenderPipelineException ex) when (IsRecoverableRenderPipelineException(ex))
+        {
+            ScheduleRenderRecoveryRetry();
+        }
+
+        _platformWindow.Show();
+        ScheduleRender();
+    }
+
     /// <summary>
     /// Updates the hovered dock position and re-renders.
     /// </summary>
@@ -106,7 +148,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
     internal void MoveTo(int screenX, int screenY, int width, int height)
     {
-        if (_hwnd == nint.Zero) return;
+        if (_hwnd == nint.Zero && _platformWindow == null) return;
 
         bool sizeChanged = width != _width || height != _height;
         bool posChanged = screenX != _screenX || screenY != _screenY;
@@ -118,8 +160,17 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         _width = width;
         _height = height;
 
-        _ = SetWindowPos(_hwnd, HWND_TOPMOST, screenX, screenY, width, height,
-            SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        if (_platformWindow != null)
+        {
+            _platformWindow.Move(screenX, screenY);
+            if (sizeChanged)
+                _platformWindow.Resize(width, height);
+        }
+        else
+        {
+            _ = SetWindowPos(_hwnd, HWND_TOPMOST, screenX, screenY, width, height,
+                SWP_NOACTIVATE | SWP_NOOWNERZORDER);
+        }
 
         if (sizeChanged && _renderTarget != null)
             TryResizeRenderTarget(width, height, "MoveToResize");
@@ -132,17 +183,19 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     /// </summary>
     internal void Hide()
     {
-        if (_hwnd != nint.Zero)
+        if (_platformWindow != null)
+            _platformWindow.Hide();
+        else if (_hwnd != nint.Zero)
             _ = ShowWindow(_hwnd, SW_HIDE);
     }
 
-    internal bool IsVisible => _hwnd != nint.Zero;
+    internal bool IsVisible => _hwnd != nint.Zero || _platformWindow != null;
 
     #region Rendering
 
     private void EnsureRenderTarget(bool forceReplaceContext = false)
     {
-        if (_hwnd == nint.Zero)
+        if (_hwnd == nint.Zero && _platformWindow == null)
         {
             return;
         }
@@ -156,7 +209,15 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         _renderTarget = null;
 
         var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto, forceReplace: forceReplaceContext);
-        _renderTarget = context.CreateRenderTargetForComposition(_hwnd, Math.Max(1, _width), Math.Max(1, _height));
+        if (_platformWindow != null)
+        {
+            var surface = _platformWindow.GetSurface();
+            _renderTarget = context.CreateRenderTargetForComposition(surface, Math.Max(1, _width), Math.Max(1, _height));
+        }
+        else
+        {
+            _renderTarget = context.CreateRenderTargetForComposition(_hwnd, Math.Max(1, _width), Math.Max(1, _height));
+        }
 
         var dpi = (float)(_dpiScale * 96.0);
         _renderTarget.SetDpi(dpi, dpi);
@@ -164,7 +225,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
     private void ScheduleRender()
     {
-        if (_hwnd == nint.Zero || _disposed) return;
+        if ((_hwnd == nint.Zero && _platformWindow == null) || _disposed) return;
 
         if ((Volatile.Read(ref _renderState) & RenderFlag_Rendering) != 0)
         {
@@ -183,7 +244,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     private void ProcessRender()
     {
         { int p, n; do { p = Volatile.Read(ref _renderState); n = p & ~RenderFlag_Scheduled; } while (Interlocked.CompareExchange(ref _renderState, n, p) != p); }
-        if (_hwnd == nint.Zero || _disposed) return;
+        if ((_hwnd == nint.Zero && _platformWindow == null) || _disposed) return;
         RenderFrame();
     }
 
@@ -304,7 +365,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     private bool TryRecoverFromRenderPipelineFailure(RenderPipelineException exception, string stage)
     {
         if (!IsRecoverableRenderPipelineException(exception) ||
-            _hwnd == nint.Zero ||
+            (_hwnd == nint.Zero && _platformWindow == null) ||
             _disposed ||
             _renderRecoveryInProgress)
         {
@@ -342,7 +403,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
     private void ScheduleRenderAfterRecovery()
     {
-        if (_hwnd == nint.Zero || _disposed)
+        if ((_hwnd == nint.Zero && _platformWindow == null) || _disposed)
         {
             return;
         }
@@ -357,7 +418,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
 
     private void ScheduleRenderRecoveryRetry()
     {
-        if (_hwnd == nint.Zero || _disposed)
+        if ((_hwnd == nint.Zero && _platformWindow == null) || _disposed)
         {
             return;
         }
@@ -383,7 +444,7 @@ internal sealed partial class DockIndicatorWindow : IDisposable
     {
         _renderRecoveryRetryTimer?.Stop();
 
-        if (_hwnd == nint.Zero || _disposed)
+        if ((_hwnd == nint.Zero && _platformWindow == null) || _disposed)
         {
             return;
         }
@@ -495,7 +556,13 @@ internal sealed partial class DockIndicatorWindow : IDisposable
             _renderTarget = null;
         }
 
-        if (_hwnd != nint.Zero)
+        if (_platformWindow != null)
+        {
+            _platformWindow.Close();
+            _platformWindow = null;
+            _hwnd = nint.Zero;
+        }
+        else if (_hwnd != nint.Zero)
         {
             _ = _windows.Remove(_hwnd);
             _ = DestroyWindow(_hwnd);

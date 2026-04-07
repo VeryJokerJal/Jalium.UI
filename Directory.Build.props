@@ -1,7 +1,11 @@
 <Project>
   <PropertyGroup>
     <!-- Common settings for all projects -->
-    <TargetFramework>net10.0-windows</TargetFramework>
+    <!-- Multi-platform TFM: default cross-platform, platform entry packages set JaliumPlatform -->
+    <TargetFramework Condition="'$(JaliumPlatform)' == ''">net10.0</TargetFramework>
+    <TargetFramework Condition="'$(JaliumPlatform)' == 'windows'">net10.0-windows</TargetFramework>
+    <TargetFramework Condition="'$(JaliumPlatform)' == 'linux'">net10.0</TargetFramework>
+    <TargetFramework Condition="'$(JaliumPlatform)' == 'android'">net10.0-android</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <LangVersion>preview</LangVersion>
@@ -10,9 +14,9 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- Versioning -->
-    <Version>26.9.10</Version>
-    <AssemblyVersion>26.9.10.0</AssemblyVersion>
-    <FileVersion>26.9.10.0</FileVersion>
+    <Version>26.10.0-preview</Version>
+    <AssemblyVersion>26.10.0.0</AssemblyVersion>
+    <FileVersion>26.10.0.0</FileVersion>
 
     <!-- NuGet Package Metadata -->
     <Authors>Jal</Authors>

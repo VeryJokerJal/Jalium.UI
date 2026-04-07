@@ -12,7 +12,7 @@ public partial class FrameworkElement : UIElement
     /// The default font family name used across the UI framework.
     /// Initialized from the Windows system message font (NONCLIENTMETRICS.lfMessageFont).
     /// </summary>
-    public static readonly string DefaultFontFamilyName = GetSystemMessageFontName() ?? "Segoe UI";
+    public static readonly string DefaultFontFamilyName = GetSystemMessageFontName() ?? GetPlatformDefaultFontName();
 
     /// <summary>
     /// The default font size used across the UI framework.
@@ -120,7 +120,23 @@ public partial class FrameworkElement : UIElement
         return null;
     }
 
+    private static string GetPlatformDefaultFontName()
+    {
+        if (OperatingSystem.IsAndroid() || OperatingSystem.IsLinux())
+            return "Roboto";
+        if (OperatingSystem.IsMacOS() || OperatingSystem.IsIOS())
+            return "SF Pro";
+        return "Segoe UI";
+    }
+
     #endregion
+
+    /// <summary>
+    /// The DPI scale factor used for pixel-snapping layout values.
+    /// Set by Window during initialization and DPI changes.
+    /// A value of 2.625 means each DIP is 2.625 physical pixels.
+    /// </summary>
+    internal static double LayoutDpiScale { get; set; } = 1.0;
 
     private static double SnapLayoutValue(double value)
     {
@@ -129,7 +145,14 @@ public partial class FrameworkElement : UIElement
             return 0;
         }
 
-        return Math.Round(value, MidpointRounding.AwayFromZero);
+        double scale = LayoutDpiScale;
+        if (scale <= 1.0)
+        {
+            return Math.Round(value, MidpointRounding.AwayFromZero);
+        }
+
+        // Snap to nearest physical pixel boundary to prevent sub-pixel misalignment
+        return Math.Round(value * scale, MidpointRounding.AwayFromZero) / scale;
     }
 
     #region Dependency Properties

@@ -1,6 +1,9 @@
+using System.Reflection;
 using System.Text;
-using Microsoft.CodeAnalysis.CSharp.Scripting;
-using Microsoft.CodeAnalysis.Scripting;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
+using static Microsoft.CodeAnalysis.CSharp.SyntaxFactory;
 
 namespace Jalium.UI.Build;
 
@@ -8,6 +11,7 @@ namespace Jalium.UI.Build;
 /// Expands <c>@{ }</c> Razor code blocks in JALXAML content at build time.
 /// Code blocks may contain C# control flow mixed with inline XML markup (Razor-style),
 /// which is compiled and executed to produce valid XAML.
+/// Uses SyntaxFactory API to programmatically construct C# syntax trees for compilation.
 /// </summary>
 internal static class RazorCodeBlockExpander
 {
@@ -955,14 +959,133 @@ internal static class RazorCodeBlockExpander
         return true;
     }
 
+    /// <summary>
+    /// Compiles and executes the generated script using SyntaxFactory to construct a
+    /// complete C# syntax tree, then compiles it with CSharpCompilation and runs the
+    /// emitted assembly in-memory.
+    /// </summary>
     private static string ExecuteScript(string script)
     {
-        var options = ScriptOptions.Default
-            .WithReferences(typeof(object).Assembly, typeof(Enumerable).Assembly)
-            .WithImports("System", "System.Linq", "System.Collections.Generic", "System.Text");
+        // Build a complete compilation unit using SyntaxFactory:
+        //
+        //   using System;
+        //   using System.Linq;
+        //   using System.Collections.Generic;
+        //   using System.Text;
+        //
+        //   public static class __RazorCodeBlockRunner
+        //   {
+        //       public static string Run()
+        //       {
+        //           <user script body>
+        //       }
+        //   }
 
-        var result = CSharpScript.EvaluateAsync<string>(script, options).GetAwaiter().GetResult();
+        var usingDirectives = List(new UsingDirectiveSyntax[]
+        {
+            UsingDirective(IdentifierName("System")),
+            UsingDirective(QualifiedName(IdentifierName("System"), IdentifierName("Linq"))),
+            UsingDirective(QualifiedName(
+                QualifiedName(IdentifierName("System"), IdentifierName("Collections")),
+                IdentifierName("Generic"))),
+            UsingDirective(QualifiedName(IdentifierName("System"), IdentifierName("Text"))),
+        });
+
+        // Parse the script body as statements — the script is dynamically generated from
+        // code blocks, so we parse it rather than constructing each statement with SyntaxFactory.
+        var bodyStatements = ParseStatementList(script);
+
+        var runMethod = MethodDeclaration(
+                PredefinedType(Token(SyntaxKind.StringKeyword)),
+                Identifier("Run"))
+            .AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.StaticKeyword))
+            .WithBody(Block(bodyStatements));
+
+        var classDecl = ClassDeclaration("__RazorCodeBlockRunner")
+            .AddModifiers(Token(SyntaxKind.PublicKeyword), Token(SyntaxKind.StaticKeyword))
+            .AddMembers(runMethod);
+
+        var compilationUnit = CompilationUnit()
+            .WithUsings(usingDirectives)
+            .AddMembers(classDecl)
+            .NormalizeWhitespace();
+
+        var syntaxTree = CSharpSyntaxTree.Create(compilationUnit);
+
+        // Gather references: core runtime assemblies needed for StringBuilder, Linq, etc.
+        var references = GetMetadataReferences();
+
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "__RazorCodeBlock_" + Guid.NewGuid().ToString("N"),
+            syntaxTrees: [syntaxTree],
+            references: references,
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary)
+                .WithOptimizationLevel(OptimizationLevel.Release));
+
+        using var ms = new System.IO.MemoryStream();
+        var emitResult = compilation.Emit(ms);
+
+        if (!emitResult.Success)
+        {
+            var errors = emitResult.Diagnostics
+                .Where(static d => d.Severity == DiagnosticSeverity.Error)
+                .Select(static d => d.ToString());
+            throw new InvalidOperationException(
+                $"Razor code block compilation failed:\n{string.Join("\n", errors)}\n\nGenerated source:\n{compilationUnit.ToFullString()}");
+        }
+
+        ms.Seek(0, System.IO.SeekOrigin.Begin);
+        var assembly = Assembly.Load(ms.ToArray());
+        var type = assembly.GetType("__RazorCodeBlockRunner")!;
+        var method = type.GetMethod("Run", BindingFlags.Public | BindingFlags.Static)!;
+        var result = (string?)method.Invoke(null, null);
         return result ?? string.Empty;
+    }
+
+    /// <summary>
+    /// Parses a sequence of C# statements from script text.
+    /// Uses SyntaxFactory.ParseStatement to parse individual statements while handling
+    /// the script as a sequence of top-level statements.
+    /// </summary>
+    private static SyntaxList<StatementSyntax> ParseStatementList(string script)
+    {
+        // Parse as a method body by wrapping in a method, then extracting statements.
+        var wrapper = $"void __M() {{ {script} }}";
+        var tree = CSharpSyntaxTree.ParseText(wrapper);
+        var root = tree.GetRoot();
+
+        var method = root.DescendantNodes().OfType<MethodDeclarationSyntax>().FirstOrDefault();
+        if (method?.Body != null)
+            return method.Body.Statements;
+
+        // Fallback: parse as a single statement block
+        var block = (BlockSyntax)ParseStatement($"{{ {script} }}");
+        return block.Statements;
+    }
+
+    /// <summary>
+    /// Collects metadata references for the core runtime assemblies needed by the generated code.
+    /// </summary>
+    private static MetadataReference[] GetMetadataReferences()
+    {
+        var trustedAssemblies = AppContext.GetData("TRUSTED_PLATFORM_ASSEMBLIES") as string;
+        if (string.IsNullOrEmpty(trustedAssemblies))
+        {
+            // Fallback: use currently loaded assemblies
+            return AppDomain.CurrentDomain.GetAssemblies()
+                .Where(static a => !a.IsDynamic && !string.IsNullOrWhiteSpace(a.Location))
+                .Select(static a => (MetadataReference)MetadataReference.CreateFromFile(a.Location))
+                .ToArray();
+        }
+
+        var separator = System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+            System.Runtime.InteropServices.OSPlatform.Windows) ? ';' : ':';
+
+        return trustedAssemblies
+            .Split(separator, StringSplitOptions.RemoveEmptyEntries)
+            .Where(static p => System.IO.File.Exists(p))
+            .Select(static p => (MetadataReference)MetadataReference.CreateFromFile(p))
+            .ToArray();
     }
 
     #endregion

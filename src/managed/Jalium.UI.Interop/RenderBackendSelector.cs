@@ -15,13 +15,15 @@ internal static class RenderBackendSelector
         string? backendOverride = null,
         bool? isWindows = null,
         bool? isMacOS = null,
-        bool? isLinux = null)
+        bool? isLinux = null,
+        bool? isAndroid = null)
     {
         isAvailable ??= backend => NativeMethods.IsBackendAvailable(backend) != 0;
         backendOverride ??= Environment.GetEnvironmentVariable(BackendOverrideEnvironmentVariable)?.Trim();
         isWindows ??= RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
         isMacOS ??= RuntimeInformation.IsOSPlatform(OSPlatform.OSX);
         isLinux ??= RuntimeInformation.IsOSPlatform(OSPlatform.Linux);
+        isAndroid ??= IsAndroidPlatform();
 
         if (TryParseBackend(backendOverride, out var requestedBackend) &&
             requestedBackend != RenderBackend.Auto &&
@@ -30,7 +32,7 @@ internal static class RenderBackendSelector
             return requestedBackend;
         }
 
-        foreach (var backend in GetPreferredOrder(isWindows.Value, isMacOS.Value, isLinux.Value))
+        foreach (var backend in GetPreferredOrder(isWindows.Value, isMacOS.Value, isLinux.Value, isAndroid.Value))
         {
             if (isAvailable(backend))
             {
@@ -40,6 +42,9 @@ internal static class RenderBackendSelector
 
         return RenderBackend.Auto;
     }
+
+    internal static bool IsAndroidPlatform()
+        => RuntimeInformation.RuntimeIdentifier?.Contains("android", StringComparison.OrdinalIgnoreCase) ?? false;
 
     internal static bool TryParseBackend(string? value, out RenderBackend backend)
     {
@@ -92,43 +97,24 @@ internal static class RenderBackendSelector
         return result;
     }
 
-    private static RenderBackend[] GetPreferredOrder(bool isWindows, bool isMacOS, bool isLinux)
+    private static RenderBackend[] GetPreferredOrder(bool isWindows, bool isMacOS, bool isLinux, bool isAndroid = false)
     {
+        // Each platform uses exactly one GPU backend + Software fallback.
         if (isWindows)
         {
-            return
-            [
-                RenderBackend.D3D12,
-                RenderBackend.Vulkan,
-                RenderBackend.Software
-            ];
+            return [RenderBackend.D3D12, RenderBackend.Software];
         }
 
         if (isMacOS)
         {
-            return
-            [
-                RenderBackend.Metal,
-                RenderBackend.Vulkan,
-                RenderBackend.Software
-            ];
+            return [RenderBackend.Metal, RenderBackend.Software];
         }
 
-        if (isLinux)
+        if (isAndroid || isLinux)
         {
-            return
-            [
-                RenderBackend.Vulkan,
-                RenderBackend.Software
-            ];
+            return [RenderBackend.Vulkan, RenderBackend.Software];
         }
 
-        return
-        [
-            RenderBackend.D3D12,
-            RenderBackend.Metal,
-            RenderBackend.Vulkan,
-            RenderBackend.Software
-        ];
+        return [RenderBackend.D3D12, RenderBackend.Software];
     }
 }

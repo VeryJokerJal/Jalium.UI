@@ -24,6 +24,38 @@ public enum MouseButtonState
 }
 
 /// <summary>
+/// Normalized mouse button states for platform-independent input dispatch.
+/// Both Win32 wParam parsing and PlatformEvent.Modifiers produce this struct.
+/// </summary>
+public readonly struct MouseButtonStates
+{
+    public MouseButtonState Left { get; init; }
+    public MouseButtonState Middle { get; init; }
+    public MouseButtonState Right { get; init; }
+    public MouseButtonState XButton1 { get; init; }
+    public MouseButtonState XButton2 { get; init; }
+
+    public static MouseButtonStates AllReleased => new()
+    {
+        Left = MouseButtonState.Released,
+        Middle = MouseButtonState.Released,
+        Right = MouseButtonState.Released,
+        XButton1 = MouseButtonState.Released,
+        XButton2 = MouseButtonState.Released,
+    };
+
+    public MouseButtonStates WithButton(MouseButton button, MouseButtonState state) => button switch
+    {
+        MouseButton.Left => this with { Left = state },
+        MouseButton.Middle => this with { Middle = state },
+        MouseButton.Right => this with { Right = state },
+        MouseButton.XButton1 => this with { XButton1 = state },
+        MouseButton.XButton2 => this with { XButton2 = state },
+        _ => this,
+    };
+}
+
+/// <summary>
 /// Provides data for mouse events.
 /// </summary>
 public class MouseEventArgs : InputEventArgs

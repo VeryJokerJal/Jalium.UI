@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
@@ -12,7 +13,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a window in the Jalium.UI framework.
 /// </summary>
-public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
+public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, IInputDispatcherHost
 {
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
     private static readonly bool DebugRender = IsEnvironmentSwitchEnabled("JALIUM_DEBUG_RENDER");
@@ -48,8 +49,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     }
 
     private readonly LayoutManager _layoutManager = new();
+    private readonly WindowInputDispatcher _inputDispatcher;
     private double _dpiScale = 1.0;
     private Dispatcher? _dispatcher; // UI thread Dispatcher, captured in Show()
+
+    // Android platform state
+    private Thickness _safeAreaInsets;
+    private bool _softKeyboardVisible;
+    private double _softKeyboardHeight;
+    private DeviceOrientation _deviceOrientation;
     // Render state machine — all flags packed into a single int for atomic access.
     // Prevents race conditions where multiple threads check-then-set individual bools.
     private int _renderState; // Bitfield of RenderStateFlags, accessed via Interlocked
@@ -413,6 +421,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             new PropertyMetadata(true));
 
     /// <summary>
+    /// Identifies the TitleBarFontSize dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty TitleBarFontSizeProperty =
+        DependencyProperty.Register(nameof(TitleBarFontSize), typeof(double), typeof(Window),
+            new PropertyMetadata(14.0, OnWindowTitleBarPresentationChanged));
+
+    /// <summary>
     /// Identifies the TitleBarHeight dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
@@ -520,6 +536,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     public nint Handle { get; private set; }
 
     /// <summary>
+    /// The cross-platform window implementation (null on Windows, which uses
+    /// the existing Win32 code path directly).
+    /// </summary>
+    private IPlatformWindow? _platformWindow;
+
+    /// <summary>
     /// Gets the render target for this window.
     /// </summary>
     public RenderTarget? RenderTarget { get; private set; }
@@ -528,6 +550,35 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// Gets the DPI scale factor for this window (1.0 = 96 DPI = 100%).
     /// </summary>
     public double DpiScale => _dpiScale;
+
+    /// <summary>
+    /// Gets the safe area insets (in DIPs) for notch/cutout/status bar avoidance on mobile.
+    /// </summary>
+    public Thickness SafeAreaInsets => _safeAreaInsets;
+
+    /// <summary>
+    /// Gets whether the soft keyboard is currently visible.
+    /// </summary>
+    public bool IsSoftKeyboardVisible => _softKeyboardVisible;
+
+    /// <summary>
+    /// Gets the soft keyboard height in DIPs (0 when hidden).
+    /// </summary>
+    public double SoftKeyboardHeight => _softKeyboardVisible ? _softKeyboardHeight : 0;
+
+    /// <summary>
+    /// Gets the current device orientation.
+    /// </summary>
+    public DeviceOrientation DeviceOrientation => _deviceOrientation;
+
+    /// <summary>Raised when safe area insets change.</summary>
+    public event EventHandler? SafeAreaInsetsChanged;
+
+    /// <summary>Raised when soft keyboard visibility or height changes.</summary>
+    public event EventHandler? SoftKeyboardVisibilityChanged;
+
+    /// <summary>Raised when device orientation changes.</summary>
+    public event EventHandler? OrientationChanged;
 
     /// <summary>
     /// Gets the overlay layer for hosting popup content within the window's visual tree.
@@ -670,9 +721,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     }
 
     /// <summary>
-    /// Gets or sets the height, in DIPs, of the custom title bar.
+    /// Gets or sets the font size of the custom title bar text, in DIPs.
     /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public double TitleBarFontSize
+    {
+        get => (double)GetValue(TitleBarFontSizeProperty)!;
+        set => SetValue(TitleBarFontSizeProperty, value);
+    }
+
     public double TitleBarHeight
     {
         get => (double)GetValue(TitleBarHeightProperty)!;
@@ -911,9 +968,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             base.Visibility = value;
             if (Handle == nint.Zero) return;
-            _ = ShowWindow(Handle, value == Visibility.Visible
-                ? (ShowActivated ? SW_SHOW : SW_SHOWNOACTIVATE)
-                : SW_HIDE);
+            if (_platformWindow != null)
+            {
+                if (value == Visibility.Visible) _platformWindow.Show();
+                else _platformWindow.Hide();
+            }
+            else
+            {
+                _ = ShowWindow(Handle, value == Visibility.Visible
+                    ? (ShowActivated ? SW_SHOW : SW_SHOWNOACTIVATE)
+                    : SW_HIDE);
+            }
         }
     }
 
@@ -990,7 +1055,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     public Window()
     {
-        DragDropPlatform.EnsureInitialized();
+        _inputDispatcher = new WindowInputDispatcher(this);
+
+        if (PlatformFactory.IsWindows)
+            DragDropPlatform.EnsureInitialized();
 
         Width = 800;
         Height = 600;
@@ -1074,6 +1142,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         }
 
         TitleBar.Height = GetEffectiveTitleBarHeightDip();
+        TitleBar.FontSize = TitleBarFontSize;
         TitleBar.Title = Title;
         TitleBar.IsMaximized = WindowState == WindowState.Maximized;
         TitleBar.ShowMinimizeButton = IsShowMinimizeButton;
@@ -1094,12 +1163,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void ClearTitleBarInteractionState()
     {
-        UpdateTitleBarButtonHover(null);
-        if (_pressedTitleBarButton != null)
-        {
-            _pressedTitleBarButton.SetIsPressed(false);
-            _pressedTitleBarButton = null;
-        }
+        _inputDispatcher.ClearTitleBarInteractionState();
     }
 
     private void EnsureAutoWindowIcon()
@@ -1119,28 +1183,25 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private static ImageSource? TryCreateDefaultWindowIcon()
     {
-        System.Drawing.Icon? icon = null;
         try
         {
             var processPath = Environment.ProcessPath;
-            if (!string.IsNullOrWhiteSpace(processPath) && System.IO.File.Exists(processPath))
+            if (string.IsNullOrWhiteSpace(processPath) || !System.IO.File.Exists(processPath))
             {
-                icon = System.Drawing.Icon.ExtractAssociatedIcon(processPath);
+                return null;
             }
 
-            icon ??= (System.Drawing.Icon)System.Drawing.SystemIcons.Application.Clone();
-            using var bitmap = icon.ToBitmap();
-            using var stream = new System.IO.MemoryStream();
-            bitmap.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
-            return BitmapImage.FromBytes(stream.ToArray());
+            var pngBytes = Helpers.IconHelper.ExtractProcessIconAsPng(processPath);
+            if (pngBytes == null || pngBytes.Length == 0)
+            {
+                return null;
+            }
+
+            return BitmapImage.FromBytes(pngBytes);
         }
         catch
         {
             return null;
-        }
-        finally
-        {
-            icon?.Dispose();
         }
     }
 
@@ -1560,20 +1621,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         if (!IsTitleBarVisible())
         {
-            UpdateTitleBarButtonHover(null);
+            _inputDispatcher.UpdateTitleBarButtonHover(null);
             return;
         }
 
-        // Get cursor position in screen coordinates (physical pixels)
         int x = (short)(lParam.ToInt64() & 0xFFFF);
         int y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
-
-        // Convert to client coordinates (physical) then to DIPs
         POINT pt = new() { X = x, Y = y };
         _ = ScreenToClient(Handle, ref pt);
 
         var button = GetTitleBarButtonAtPoint(new Point(pt.X / _dpiScale, pt.Y / _dpiScale));
-        UpdateTitleBarButtonHover(button);
+        _inputDispatcher.UpdateTitleBarButtonHover(button);
 
         // Track non-client mouse leave
         TRACKMOUSEEVENT tme = new()
@@ -1590,7 +1648,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void OnNcMouseLeave()
     {
-        UpdateTitleBarButtonHover(null);
+        _inputDispatcher.UpdateTitleBarButtonHover(null);
     }
 
     private bool TryInjectSnapProxyNcMouseMessage(uint msg, nint lParam)
@@ -1776,19 +1834,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return false;
         }
 
-        _pressedTitleBarButton = button;
-        button.SetIsPressed(true);  // triggers InvalidateVisual() 鈫?dirty rect
+        _inputDispatcher.PressedTitleBarButtonField = button;
+        button.SetIsPressed(true);
         return true;
     }
 
     private bool OnNcLButtonUp(nint wParam, nint lParam)
     {
         if (!IsTitleBarVisible())
-        {
             return false;
-        }
 
-        // Get cursor position (physical pixels) 鈫?client 鈫?DIPs
         int x = (short)(lParam.ToInt64() & 0xFFFF);
         int y = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
         POINT pt = new() { X = x, Y = y };
@@ -1798,16 +1853,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         var button = GetTitleBarButtonAtPoint(new Point(pt.X / _dpiScale, pt.Y / _dpiScale)) ??
                      GetTitleBarButtonByNcHit(hitTest);
 
-        if (_pressedTitleBarButton != null)
+        var pressedButton = _inputDispatcher.PressedTitleBarButtonField;
+        if (pressedButton != null)
         {
-            _pressedTitleBarButton.SetIsPressed(false);
+            pressedButton.SetIsPressed(false);
 
-            // If released on the same button, trigger click
-            bool isReleaseOnPressedButton = button == _pressedTitleBarButton ||
-                                            (button == null && IsNcHitMatchingButtonKind(hitTest, _pressedTitleBarButton.Kind));
+            bool isReleaseOnPressedButton = button == pressedButton ||
+                                            (button == null && IsNcHitMatchingButtonKind(hitTest, pressedButton.Kind));
             if (isReleaseOnPressedButton)
             {
-                switch (_pressedTitleBarButton.Kind)
+                switch (pressedButton.Kind)
                 {
                     case TitleBarButtonKind.Minimize:
                         TitleBar?.RaiseMinimizeClicked();
@@ -1822,8 +1877,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 }
             }
 
-            _pressedTitleBarButton = null;
-            // SetIsPressed(false) above already triggers InvalidateVisual() 鈫?dirty rect
+            _inputDispatcher.PressedTitleBarButtonField = null;
             return true;
         }
 
@@ -1869,16 +1923,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void UpdateTitleBarButtonHover(TitleBarButton? newHoveredButton)
     {
-        if (_hoveredTitleBarButton == newHoveredButton)
-        {
-            return;
-        }
-
-        _hoveredTitleBarButton?.SetIsMouseOver(false);  // triggers InvalidateVisual() 鈫?dirty rect
-
-        _hoveredTitleBarButton = newHoveredButton;
-
-        _hoveredTitleBarButton?.SetIsMouseOver(true);  // triggers InvalidateVisual() 鈫?dirty rect
+        _inputDispatcher.UpdateTitleBarButtonHover(newHoveredButton);
     }
 
     #region Visual Children
@@ -1930,11 +1975,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         double titleBarHeight = 0;
 
+        // Apply safe area insets and soft keyboard on mobile platforms
+        double safeLeft = _safeAreaInsets.Left;
+        double safeTop = _safeAreaInsets.Top;
+        double safeRight = _safeAreaInsets.Right;
+        double safeBottom = _safeAreaInsets.Bottom;
+        if (_softKeyboardVisible && _softKeyboardHeight > safeBottom)
+            safeBottom = _softKeyboardHeight;
+
+        double contentWidth = Math.Max(0, availableSize.Width - safeLeft - safeRight);
+        double contentHeight = Math.Max(0, availableSize.Height - safeTop - safeBottom);
+
         // Measure title bar
         if (IsTitleBarVisible() && TitleBar != null)
         {
             double effectiveTitleBarHeight = GetEffectiveTitleBarHeightDip();
-            TitleBar.Measure(new Size(availableSize.Width, effectiveTitleBarHeight));
+            TitleBar.Measure(new Size(contentWidth, effectiveTitleBarHeight));
             titleBarHeight = GetElementHeightDip(TitleBar, effectiveTitleBarHeight);
         }
 
@@ -1943,8 +1999,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         if (contentElement != null)
         {
             Size contentAvailable = new(
-                availableSize.Width,
-                Math.Max(0, availableSize.Height - titleBarHeight));
+                contentWidth,
+                Math.Max(0, contentHeight - titleBarHeight));
             contentElement.Measure(contentAvailable);
         }
 
@@ -1959,24 +2015,35 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         double titleBarHeight = 0;
 
-        // Arrange title bar at top
+        // Apply safe area insets and soft keyboard on mobile platforms
+        double safeLeft = _safeAreaInsets.Left;
+        double safeTop = _safeAreaInsets.Top;
+        double safeRight = _safeAreaInsets.Right;
+        double safeBottom = _safeAreaInsets.Bottom;
+        if (_softKeyboardVisible && _softKeyboardHeight > safeBottom)
+            safeBottom = _softKeyboardHeight;
+
+        double contentWidth = Math.Max(0, finalSize.Width - safeLeft - safeRight);
+        double contentHeight = Math.Max(0, finalSize.Height - safeTop - safeBottom);
+
+        // Arrange title bar at top (offset by safe area)
         if (IsTitleBarVisible() && TitleBar != null)
         {
             titleBarHeight = GetCurrentTitleBarHeightDip();
-            Rect titleBarRect = new(0, 0, finalSize.Width, titleBarHeight);
+            Rect titleBarRect = new(safeLeft, safeTop, contentWidth, titleBarHeight);
             TitleBar.Arrange(titleBarRect);
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
         }
 
-        // Arrange content below title bar
+        // Arrange content below title bar (offset by safe area)
         var contentElement = ContentElement;
         if (contentElement is FrameworkElement contentFe)
         {
             Rect contentRect = new(
-                0,
-                titleBarHeight,
-                finalSize.Width,
-                Math.Max(0, finalSize.Height - titleBarHeight));
+                safeLeft,
+                safeTop + titleBarHeight,
+                contentWidth,
+                Math.Max(0, contentHeight - titleBarHeight));
             contentFe.Arrange(contentRect);
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
         }
@@ -2035,7 +2102,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             try { WindowState = desiredState; }
             finally { _isSyncingWindowState = false; }
         }
-        _ = ShowWindow(Handle, showCmd);
+        if (_platformWindow != null)
+        {
+            _platformWindow.Show();
+            if (desiredState == WindowState.Maximized)
+                _platformWindow.SetState(WindowState.Maximized);
+        }
+        else
+        {
+            _ = ShowWindow(Handle, showCmd);
+        }
 
         // SWP_FRAMECHANGED for custom title bar was already applied in EnsureHandle
         // (combined with DPI adjustment), so no additional call is needed here.
@@ -2068,7 +2144,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         if (Handle != nint.Zero)
         {
-            _ = ShowWindow(Handle, SW_HIDE);
+            if (_platformWindow != null)
+                _platformWindow.Hide();
+            else
+                _ = ShowWindow(Handle, SW_HIDE);
         }
     }
 
@@ -2083,7 +2162,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return false;
         }
 
-        // Restore if minimized
+        if (_platformWindow != null)
+        {
+            if (WindowState == WindowState.Minimized)
+                _platformWindow.SetState(WindowState.Normal);
+            _platformWindow.Show();
+            return true;
+        }
+
+        // Win32 path
         if (WindowState == WindowState.Minimized)
         {
             _ = ShowWindow(Handle, SW_RESTORE);
@@ -2104,8 +2191,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         // Release mouse capture so the system can take over
         UIElement.ForceReleaseMouseCapture();
-        _ = ReleaseCapture();
 
+        if (_platformWindow != null)
+        {
+            // Cross-platform: drag not directly supported by native platform lib yet
+            // TODO: Implement platform-specific drag move
+            return;
+        }
+
+        _ = ReleaseCapture();
         // Send WM_NCLBUTTONDOWN with HTCAPTION to initiate a window drag
         _ = SendMessage(Handle, WM_NCLBUTTONDOWN, (nint)HTCAPTION, nint.Zero);
     }
@@ -2115,7 +2209,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     public void CenterOnScreen()
     {
-        if (Handle == nint.Zero) return;
+        if (Handle == nint.Zero || _platformWindow != null) return;
         var monitor = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
         var monitorInfo = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
         if (GetMonitorInfo(monitor, ref monitorInfo))
@@ -2136,7 +2230,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     public void CenterOnOwner()
     {
-        if (Handle == nint.Zero) return;
+        if (Handle == nint.Zero || _platformWindow != null) return;
         nint ownerHwnd = Owner?.Handle ?? nint.Zero;
         if (ownerHwnd == nint.Zero) return;
         if (GetWindowRect(ownerHwnd, out RECT ownerRect))
@@ -2161,7 +2255,29 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         DialogResult = null;
 
-        // Disable owner window to make this dialog truly modal
+        if (_platformWindow != null)
+        {
+            // Cross-platform modal dialog: show window and block via Dispatcher
+            Show();
+            _isModal = true;
+            try
+            {
+                while (_isModal && Handle != nint.Zero)
+                {
+                    // Poll platform events + process dispatcher queue
+                    Interop.NativeMethods.PlatformPollEvents();
+                    _dispatcher?.ProcessQueue();
+                    Thread.Sleep(1);
+                }
+            }
+            finally
+            {
+                _isModal = false;
+            }
+            return DialogResult;
+        }
+
+        // Win32 modal dialog path
         nint ownerHandle = DialogOwnerResolver.Resolve(Owner?.Handle ?? nint.Zero);
         if (ownerHandle == Handle)
         {
@@ -2173,14 +2289,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             EnableWindow(ownerHandle, false);
         }
 
-        // Show the window
         Show();
 
-        // Run a nested message loop until the window is closed
         _isModal = true;
         try
         {
-            // Process Win32 messages until this window is closed
             while (_isModal && Handle != nint.Zero)
             {
                 if (GetMessage(out MSG msg, nint.Zero, 0, 0) > 0)
@@ -2193,7 +2306,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     break;
                 }
 
-                // Check if window was closed during message processing
                 if (Handle == nint.Zero)
                 {
                     _isModal = false;
@@ -2205,7 +2317,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             _isModal = false;
 
-            // Re-enable and activate owner window
             if (ownerHandle != nint.Zero)
             {
                 EnableWindow(ownerHandle, true);
@@ -2281,13 +2392,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
         if (Handle != nint.Zero)
         {
-            OleDropTarget.RevokeWindow(this);
+            if (PlatformFactory.IsWindows)
+                OleDropTarget.RevokeWindow(this);
 
             var handle = Handle;
             Handle = nint.Zero;
             // Remove from window map and destroy
             _windows.Remove(handle);
-            _ = DestroyWindow(handle);
+
+            if (_platformWindow != null)
+            {
+                _platformWindow.SetEventHandler(null);
+                _platformWindow.Dispose();
+                _platformWindow = null;
+            }
+            else
+            {
+                _ = DestroyWindow(handle);
+            }
 
             // Let Application decide whether to shut down based on ShutdownMode
             if (Jalium.UI.Application.Current is { } app)
@@ -2296,8 +2418,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             }
             else if (_windows.Count == 0)
             {
-                // No Application instance 鈥?fall back to quit when no windows remain
-                PostQuitMessage(0);
+                // No Application instance — fall back to quit when no windows remain
+                if (PlatformFactory.IsWindows)
+                    PostQuitMessage(0);
+                else
+                    PlatformFactory.QuitMessageLoop(0);
             }
         }
 
@@ -2315,6 +2440,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void CaptureRestoreBounds()
     {
+        if (_platformWindow != null)
+        {
+            // Cross-platform: capture current size as restore bounds
+            _restoreBounds = new Rect(Left, Top, Width, Height);
+            return;
+        }
         if (Handle != nint.Zero && GetWindowRect(Handle, out RECT rect))
         {
             double dpi = _dpiScale;
@@ -2338,6 +2469,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         if (Handle == nint.Zero)
         {
+            return;
+        }
+
+        // Cross-platform: skip Win32 monitor-based positioning
+        if (_platformWindow != null)
+        {
+            // On Linux/Android, startup location is handled by the window manager
+            // or defaults to (0,0). No monitor info APIs available.
             return;
         }
 
@@ -2389,6 +2528,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             return;
         }
 
+        if (!PlatformFactory.IsWindows)
+        {
+            EnsureHandleCrossPlatform();
+            return;
+        }
+
+        // ---- Windows code path (Win32) ----
+
         // Register window class if needed
         RegisterWindowClass();
 
@@ -2414,9 +2561,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         // Query system DPI for initial window sizing (before HWND exists)
         uint systemDpi = GetDpiForSystem();
         _dpiScale = systemDpi / 96.0;
+        FrameworkElement.LayoutDpiScale = _dpiScale;
 
         // CreateWindowEx takes physical pixel dimensions.
-        // Width/Height are in DIPs 鈥?scale to physical pixels.
+        // Width/Height are in DIPs — scale to physical pixels.
         int physicalWidth = (int)(Width * _dpiScale);
         int physicalHeight = (int)(Height * _dpiScale);
 
@@ -2467,6 +2615,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             if (needsDpiAdjust)
             {
                 _dpiScale = windowDpi / 96.0;
+                FrameworkElement.LayoutDpiScale = _dpiScale;
                 physicalWidth = (int)(Width * _dpiScale);
                 physicalHeight = (int)(Height * _dpiScale);
             }
@@ -2509,9 +2658,654 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         OnSourceInitialized(EventArgs.Empty);
     }
 
+    /// <summary>
+    /// Cross-platform window creation path (Linux X11 / Android).
+    /// Uses the jalium.native.platform library for window management.
+    /// </summary>
+    private void EnsureHandleCrossPlatform()
+    {
+        // Initialize platform if needed
+        PlatformFactory.InitializePlatform();
+
+        // Map window style
+        uint style = 0;
+        if (TitleBarStyle == WindowTitleBarStyle.Custom)
+            style |= 0x01; // JALIUM_WINDOW_STYLE_BORDERLESS
+        else
+            style |= 0x04 | 0x08; // TITLEBAR | CLOSABLE
+
+        if (ResizeMode != ResizeMode.NoResize && ResizeMode != ResizeMode.CanMinimize)
+            style |= 0x02; // RESIZABLE
+
+        style |= 0x10 | 0x20; // MINIMIZABLE | MAXIMIZABLE
+
+        if (Topmost)
+            style |= 0x40; // TOPMOST
+
+        if (AllowsTransparency)
+            style |= 0x100; // TRANSPARENT
+
+        // DPI
+        _dpiScale = NativeMethods.PlatformGetSystemDpiScale();
+        FrameworkElement.LayoutDpiScale = _dpiScale;
+
+        int physicalWidth = (int)(Width * _dpiScale);
+        int physicalHeight = (int)(Height * _dpiScale);
+        int x = double.IsNaN(Left) ? -1 : (int)(Left * _dpiScale);
+        int y = double.IsNaN(Top) ? -1 : (int)(Top * _dpiScale);
+
+        _platformWindow = PlatformFactory.CreateWindow(
+            Title ?? string.Empty, x, y, physicalWidth, physicalHeight,
+            style, Owner?.Handle ?? nint.Zero);
+
+        if (_platformWindow == null)
+            throw new InvalidOperationException("Failed to create platform window.");
+
+        Handle = _platformWindow.NativeHandle;
+
+        if (Handle == nint.Zero)
+            throw new InvalidOperationException("Platform window returned null handle.");
+
+        _windows[Handle] = this;
+
+        // Connect platform event handler for input/resize/paint routing
+        _platformWindow.SetEventHandler(OnPlatformEvent);
+
+        // On Android/Linux the native window (OS surface) determines the actual size.
+        // Always use the native surface dimensions on these platforms — any default
+        // Window Width/Height (e.g. 800×600) is meaningless on a full-screen device.
+        // On desktop platforms (macOS/other) only override when dimensions are missing.
+        bool alwaysUseNativeSize = PlatformFactory.IsAndroid || PlatformFactory.IsLinux;
+        if (alwaysUseNativeSize || physicalWidth <= 0 || physicalHeight <= 0 || double.IsNaN(Width) || double.IsNaN(Height))
+        {
+            int nativeW = _platformWindow.GetWidth();
+            int nativeH = _platformWindow.GetHeight();
+            if (nativeW > 0 && nativeH > 0)
+            {
+                physicalWidth = nativeW;
+                physicalHeight = nativeH;
+                if (_dpiScale > 0)
+                {
+                    Width = physicalWidth / _dpiScale;
+                    Height = physicalHeight / _dpiScale;
+                }
+            }
+        }
+
+        // Create render target
+        try
+        {
+            EnsureRenderTarget();
+            Console.Error.WriteLine($"[EnsureHandleCrossPlatform] RenderTarget={RenderTarget != null} size={physicalWidth}x{physicalHeight}");
+        }
+        catch (RenderPipelineException ex) when (IsRecoverableRenderPipelineException(ex))
+        {
+            Console.Error.WriteLine($"[EnsureHandleCrossPlatform] RenderPipelineException: {ex.Message}");
+            ScheduleRenderRecoveryRetry();
+        }
+        catch (InvalidOperationException ex)
+        {
+            Console.Error.WriteLine($"[EnsureHandleCrossPlatform] InvalidOperationException: {ex.Message}");
+            // Rendering backend unavailable (e.g., on first Android launch before surface is ready).
+            // Schedule recovery so rendering retries once the surface is established.
+            ScheduleRenderRecoveryRetry();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[EnsureHandleCrossPlatform] UNEXPECTED: {ex}");
+            ScheduleRenderRecoveryRetry();
+        }
+
+        OnSourceInitialized(EventArgs.Empty);
+    }
+
+    /// <summary>
+    /// Handles platform events from the native platform library (Linux/Android).
+    /// Maps cross-platform events to the same internal handlers used by WndProc on Windows.
+    /// </summary>
+    private void OnPlatformEvent(PlatformEvent evt)
+    {
+        switch (evt.Type)
+        {
+            case PlatformEventType.CloseRequested:
+                Close();
+                break;
+
+            case PlatformEventType.Destroyed:
+                _ = _windows.Remove(Handle);
+                break;
+
+            case PlatformEventType.Resize:
+                OnSizeChanged(evt.Width, evt.Height);
+                break;
+
+            case PlatformEventType.Paint:
+                RenderFrame();
+                break;
+
+            case PlatformEventType.FocusGained:
+                OnActivated(EventArgs.Empty);
+                break;
+
+            case PlatformEventType.FocusLost:
+                OnDeactivated(EventArgs.Empty);
+                _inputDispatcher.ClearMousePressedChain();
+                break;
+
+            case PlatformEventType.MouseMove:
+            {
+                var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
+                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                _inputDispatcher.HandleMouseMove(position, MouseButtonStates.AllReleased, modifiers, Environment.TickCount);
+                break;
+            }
+
+            case PlatformEventType.MouseDown:
+            {
+                var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
+                var button = MapPlatformMouseButton(evt.Button);
+                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                var buttons = MouseButtonStates.AllReleased.WithButton(button, MouseButtonState.Pressed);
+                _inputDispatcher.HandleMouseDown(button, position, buttons, modifiers, evt.ClickCount, Environment.TickCount);
+                break;
+            }
+
+            case PlatformEventType.MouseUp:
+            {
+                var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
+                var button = MapPlatformMouseButton(evt.Button);
+                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                _inputDispatcher.HandleMouseUp(button, position, MouseButtonStates.AllReleased, modifiers, Environment.TickCount);
+                break;
+            }
+
+            case PlatformEventType.MouseWheel:
+            {
+                var position = new Point(evt.MouseX / _dpiScale, evt.MouseY / _dpiScale);
+                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                int delta = (int)(evt.WheelDeltaY * 120); // Match Win32 WHEEL_DELTA
+                _inputDispatcher.HandleMouseWheel(position, delta, MouseButtonStates.AllReleased, modifiers, Environment.TickCount);
+                break;
+            }
+
+            case PlatformEventType.KeyDown:
+            {
+                Key key = (Key)evt.KeyCode;
+                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                bool isRepeat = evt.IsRepeat != 0;
+                _inputDispatcher.HandleKeyDown(key, modifiers, isRepeat, Environment.TickCount);
+                break;
+            }
+
+            case PlatformEventType.KeyUp:
+            {
+                Key key = (Key)evt.KeyCode;
+                var modifiers = MapPlatformModifiers(evt.Modifiers);
+                _inputDispatcher.HandleKeyUp(key, modifiers, Environment.TickCount);
+                break;
+            }
+
+            case PlatformEventType.CharInput:
+            {
+                if (evt.Codepoint >= 0x20 && evt.Codepoint != 0x7F)
+                {
+                    _inputDispatcher.HandleCharInput(((char)evt.Codepoint).ToString(), Environment.TickCount);
+                }
+                break;
+            }
+
+            case PlatformEventType.DpiChanged:
+            {
+                _dpiScale = evt.DpiX / 96.0;
+                FrameworkElement.LayoutDpiScale = _dpiScale;
+                int physicalWidth = (int)(Width * _dpiScale);
+                int physicalHeight = (int)(Height * _dpiScale);
+                RenderTarget?.SetDpi((float)evt.DpiX, (float)evt.DpiY);
+                TryResizeRenderTarget(physicalWidth, physicalHeight, "DpiChanged");
+                RequestFullInvalidation();
+                InvalidateMeasure();
+                break;
+            }
+
+            case PlatformEventType.MouseLeave:
+                _inputDispatcher.HandleMouseLeave();
+                break;
+
+            case PlatformEventType.Move:
+            {
+                _isSyncingPosition = true;
+                try
+                {
+                    Left = evt.X / _dpiScale;
+                    Top = evt.Y / _dpiScale;
+                }
+                finally
+                {
+                    _isSyncingPosition = false;
+                }
+                OnLocationChanged(EventArgs.Empty);
+                CompositionTarget.UpdateRefreshRate(DetectMonitorRefreshRate());
+                break;
+            }
+
+            case PlatformEventType.StateChanged:
+            {
+                _isSyncingWindowState = true;
+                try
+                {
+                    var newState = evt.NewState switch
+                    {
+                        1 => WindowState.Minimized,
+                        2 => WindowState.Maximized,
+                        _ => WindowState.Normal,
+                    };
+                    if (WindowState != newState)
+                    {
+                        WindowState = newState;
+                    }
+                }
+                finally
+                {
+                    _isSyncingWindowState = false;
+                }
+                break;
+            }
+
+            case PlatformEventType.PointerCancel:
+            {
+                var pointerData = BuildPointerInputData(evt);
+                _inputDispatcher.HandlePointerCancel(pointerData, Environment.TickCount);
+                break;
+            }
+
+            case PlatformEventType.AppPause:
+                CompositionTarget.SuspendRendering();
+                break;
+
+            case PlatformEventType.AppResume:
+                CompositionTarget.ResumeRendering();
+                RequestFullInvalidation();
+                InvalidateWindow();
+                break;
+
+            case PlatformEventType.AppDestroy:
+                Application.Current?.Shutdown();
+                break;
+
+            case PlatformEventType.LowMemory:
+                _drawingContext?.ClearBitmapCache();
+                break;
+
+            case PlatformEventType.SafeAreaChanged:
+            {
+                // Convert physical pixel insets to DIPs
+                var insets = new Thickness(
+                    evt.SafeAreaLeft / _dpiScale,
+                    evt.SafeAreaTop / _dpiScale,
+                    evt.SafeAreaRight / _dpiScale,
+                    evt.SafeAreaBottom / _dpiScale);
+                if (_safeAreaInsets != insets)
+                {
+                    _safeAreaInsets = insets;
+                    SafeAreaInsetsChanged?.Invoke(this, EventArgs.Empty);
+                    InvalidateMeasure();
+                }
+                break;
+            }
+
+            case PlatformEventType.KeyboardChanged:
+            {
+                bool visible = evt.KeyboardVisible != 0;
+                double heightDip = evt.KeyboardHeightPx / _dpiScale;
+                if (_softKeyboardVisible != visible || _softKeyboardHeight != heightDip)
+                {
+                    _softKeyboardVisible = visible;
+                    _softKeyboardHeight = heightDip;
+                    SoftKeyboardVisibilityChanged?.Invoke(this, EventArgs.Empty);
+                    InvalidateMeasure();
+                }
+                break;
+            }
+
+            case PlatformEventType.OrientationChanged:
+            {
+                var newOrientation = (DeviceOrientation)evt.Orientation;
+                if (_deviceOrientation != newOrientation)
+                {
+                    _deviceOrientation = newOrientation;
+                    OrientationChanged?.Invoke(this, EventArgs.Empty);
+                }
+                break;
+            }
+
+            case PlatformEventType.Quit:
+                Application.Current?.Shutdown();
+                break;
+
+            case PlatformEventType.PointerDown:
+            case PlatformEventType.PointerUp:
+            case PlatformEventType.PointerMove:
+            {
+                var pointerData = BuildPointerInputData(evt);
+                bool isDown = evt.Type == PlatformEventType.PointerDown;
+                bool isUp = evt.Type == PlatformEventType.PointerUp;
+                _inputDispatcher.HandlePointerInput(pointerData, isDown, isUp, Environment.TickCount);
+                break;
+            }
+        }
+    }
+
+    private static MouseButton MapPlatformMouseButton(int button) => button switch
+    {
+        0 => MouseButton.Left,
+        1 => MouseButton.Right,
+        2 => MouseButton.Middle,
+        3 => MouseButton.XButton1,
+        4 => MouseButton.XButton2,
+        _ => MouseButton.Left,
+    };
+
+    private static ModifierKeys MapPlatformModifiers(int modifiers)
+    {
+        var result = ModifierKeys.None;
+        if ((modifiers & 0x01) != 0) result |= ModifierKeys.Shift;
+        if ((modifiers & 0x02) != 0) result |= ModifierKeys.Control;
+        if ((modifiers & 0x04) != 0) result |= ModifierKeys.Alt;
+        if ((modifiers & 0x08) != 0) result |= ModifierKeys.Windows;
+        return result;
+    }
+
+    private PointerInputData BuildPointerInputData(Platform.PlatformEvent evt)
+    {
+        var position = new Point(evt.PointerX / _dpiScale, evt.PointerY / _dpiScale);
+        var modifiers = MapPlatformModifiers(evt.Modifiers);
+        bool isDown = evt.Type == Platform.PlatformEventType.PointerDown;
+        bool isUp = evt.Type == Platform.PlatformEventType.PointerUp;
+        bool isTouch = evt.PointerType == 1;
+
+        var deviceType = isTouch ? PointerDeviceType.Touch
+            : evt.PointerType == 0 ? PointerDeviceType.Mouse
+            : PointerDeviceType.Pen;
+        float pressure = evt.Pressure > 0 ? evt.Pressure : (isDown || !isUp ? 0.5f : 0f);
+        var kind = evt.PointerType switch
+        {
+            0 => PointerInputKind.Mouse,
+            1 => PointerInputKind.Touch,
+            2 => PointerInputKind.Pen,
+            _ => PointerInputKind.Unknown
+        };
+
+        var properties = new PointerPointProperties
+        {
+            IsLeftButtonPressed = isDown || !isUp,
+            Pressure = pressure,
+            XTilt = evt.TiltX,
+            YTilt = evt.TiltY,
+            Twist = evt.Twist,
+            PointerUpdateKind = isDown ? PointerUpdateKind.LeftButtonPressed
+                : isUp ? PointerUpdateKind.LeftButtonReleased
+                : PointerUpdateKind.Other,
+            IsPrimary = isTouch
+        };
+
+        var pointerPoint = new PointerPoint(
+            evt.PointerId, position, deviceType,
+            isDown || !isUp, properties, (ulong)Environment.TickCount, 0);
+
+        var stylusPoints = new StylusPointCollection(
+            [new StylusPoint(position.X, position.Y, pressure)]);
+
+        return new PointerInputData(
+            evt.PointerId, kind, pointerPoint, position, modifiers,
+            IsInRange: true, IsCanceled: false, stylusPoints);
+    }
+
+    /// <summary>
+    /// Tracks the first pointer that went down so we can synthesize mouse events
+    /// for backward compatibility (controls that only handle Mouse* events).
+    /// </summary>
+    private uint? _primaryTouchPointerId;
+
+    /// <summary>
+    /// Handles PointerDown/Up/Move from the cross-platform path (Android, Linux).
+    /// Routes through the full Touch → Stylus → Manipulation → Pointer pipeline,
+    /// matching the behavior of <see cref="OnPointerMessage"/> on Win32.
+    /// </summary>
+    private void OnCrossPlatformPointerEvent(PlatformEvent evt)
+    {
+        // Mouse pointer type: route through the existing mouse event handlers.
+        if (evt.PointerType == 0) // PointerTypeMouse
+        {
+            var fakeEvt = evt;
+            fakeEvt.MouseX = evt.PointerX;
+            fakeEvt.MouseY = evt.PointerY;
+            fakeEvt.Modifiers = evt.Modifiers;
+            switch (evt.Type)
+            {
+                case PlatformEventType.PointerDown:
+                    fakeEvt.Type = PlatformEventType.MouseDown;
+                    fakeEvt.Button = 0; // Left
+                    fakeEvt.ClickCount = 1;
+                    OnPlatformEvent(fakeEvt);
+                    break;
+                case PlatformEventType.PointerUp:
+                    fakeEvt.Type = PlatformEventType.MouseUp;
+                    fakeEvt.Button = 0;
+                    OnPlatformEvent(fakeEvt);
+                    break;
+                case PlatformEventType.PointerMove:
+                    fakeEvt.Type = PlatformEventType.MouseMove;
+                    OnPlatformEvent(fakeEvt);
+                    break;
+            }
+            return;
+        }
+
+        // Touch or Pen pointer: full pointer pipeline.
+        bool isDown = evt.Type == PlatformEventType.PointerDown;
+        bool isUp = evt.Type == PlatformEventType.PointerUp;
+        int timestamp = Environment.TickCount;
+        var position = new Point(evt.PointerX / _dpiScale, evt.PointerY / _dpiScale);
+        var modifiers = MapPlatformModifiers(evt.Modifiers);
+        bool isTouch = evt.PointerType == 1; // PointerTypeTouch
+        bool isPen = evt.PointerType == 2;   // PointerTypePen
+
+        // Build PointerPoint with correct device type.
+        var deviceType = isTouch ? PointerDeviceType.Touch : PointerDeviceType.Pen;
+        float pressure = evt.Pressure > 0 ? evt.Pressure : (isDown || !isUp ? 0.5f : 0f);
+        bool isPrimary = isTouch && (_primaryTouchPointerId == null || _primaryTouchPointerId == evt.PointerId);
+
+        var properties = new PointerPointProperties
+        {
+            IsLeftButtonPressed = isDown || !isUp,
+            Pressure = pressure,
+            XTilt = evt.TiltX,
+            YTilt = evt.TiltY,
+            Twist = evt.Twist,
+            PointerUpdateKind = isDown ? PointerUpdateKind.LeftButtonPressed
+                : isUp ? PointerUpdateKind.LeftButtonReleased
+                : PointerUpdateKind.Other,
+            IsPrimary = isPrimary
+        };
+
+        var pointerPoint = new PointerPoint(
+            evt.PointerId,
+            position,
+            deviceType,
+            isDown || !isUp, // isInContact
+            properties,
+            (ulong)timestamp,
+            0);
+
+        // Build StylusPointCollection for the stylus pipeline.
+        var stylusPoints = new StylusPointCollection(
+            new[] { new StylusPoint(position.X, position.Y, pressure) });
+
+        var pointerData = new PointerInputData(
+            evt.PointerId,
+            isTouch ? PointerInputKind.Touch : PointerInputKind.Pen,
+            pointerPoint,
+            position,
+            modifiers,
+            IsInRange: true,
+            IsCanceled: false,
+            stylusPoints);
+
+        // Track primary touch pointer for mouse synthesis.
+        if (isTouch && isDown && _primaryTouchPointerId == null)
+            _primaryTouchPointerId = evt.PointerId;
+
+        // Hit test and target resolution.
+        var captured = UIElement.MouseCapturedElement;
+        var hitTarget = HitTestElement(position, "pointer-route");
+        var fallbackTarget = captured ?? hitTarget ?? this;
+        var target = isDown
+            ? fallbackTarget
+            : (_activePointerTargets.TryGetValue(evt.PointerId, out var existingTarget)
+                ? existingTarget ?? fallbackTarget : fallbackTarget);
+
+        _activePointerTargets[evt.PointerId] = target;
+        _lastPointerPoints[evt.PointerId] = pointerPoint;
+
+        // Dispatch source-level events (Touch or Stylus).
+        bool sourceHandled = false;
+        bool sourceCanceled = false;
+
+        if (isTouch)
+        {
+            DispatchTouchSourcePipeline(target, pointerData, isDown, isUp, timestamp, ref sourceHandled, ref sourceCanceled);
+        }
+        else if (isPen)
+        {
+            DispatchStylusSourcePipeline(target, pointerData, isDown, isUp, timestamp, ref sourceHandled, ref sourceCanceled);
+        }
+
+        if (sourceCanceled)
+        {
+            CancelManipulationSession(evt.PointerId, timestamp);
+            RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
+            CleanupPointerSession(evt.PointerId);
+            if (isTouch && _primaryTouchPointerId == evt.PointerId)
+                _primaryTouchPointerId = null;
+            return;
+        }
+
+        // Manipulation pipeline.
+        DispatchManipulationPipeline(target, pointerData, isDown, isUp, sourceHandled, timestamp);
+
+        // Pointer events.
+        if (!sourceHandled)
+        {
+            if (isDown)
+                RaisePointerDownPipeline(target, pointerPoint, modifiers, timestamp);
+            else if (isUp)
+                RaisePointerUpPipeline(target, pointerPoint, modifiers, timestamp);
+            else
+                RaisePointerMovePipeline(target, pointerPoint, modifiers, timestamp);
+        }
+
+        // Synthesize mouse events for the primary touch pointer so that
+        // controls handling only Mouse* events (Button, ScrollViewer, etc.) work.
+        if (isTouch && _primaryTouchPointerId == evt.PointerId && !sourceHandled)
+        {
+            SynthesizeMouseFromTouch(evt, position, modifiers, isDown, isUp, hitTarget, timestamp);
+        }
+
+        if (isUp)
+        {
+            CleanupPointerSession(evt.PointerId);
+            if (isTouch && _primaryTouchPointerId == evt.PointerId)
+                _primaryTouchPointerId = null;
+        }
+    }
+
+    /// <summary>
+    /// Handles PointerCancel from the cross-platform path.
+    /// Cancels any active touch/manipulation session and raises pointer cancel events.
+    /// </summary>
+    private void OnCrossPlatformPointerCancel(PlatformEvent evt)
+    {
+        int timestamp = Environment.TickCount;
+        var position = new Point(evt.PointerX / _dpiScale, evt.PointerY / _dpiScale);
+        var modifiers = MapPlatformModifiers(evt.Modifiers);
+
+        if (_activePointerTargets.TryGetValue(evt.PointerId, out var target) && target != null)
+        {
+            if (!_lastPointerPoints.TryGetValue(evt.PointerId, out var point))
+            {
+                var deviceType = evt.PointerType == 1 ? PointerDeviceType.Touch : PointerDeviceType.Pen;
+                point = new PointerPoint(
+                    evt.PointerId, position, deviceType, false,
+                    new PointerPointProperties(), (ulong)timestamp);
+            }
+
+            // Deactivate touch device if this was a touch pointer.
+            if (evt.PointerType == 1) // Touch
+            {
+                var touchDevice = Touch.GetDevice((int)evt.PointerId);
+                if (touchDevice != null)
+                {
+                    touchDevice.Deactivate();
+                    Touch.UnregisterTouchPoint((int)evt.PointerId);
+                }
+                _activeStylusDevices.Remove(evt.PointerId);
+            }
+
+            CancelManipulationSession(evt.PointerId, timestamp);
+            RaisePointerCancelPipeline(target, point, modifiers, timestamp);
+        }
+
+        CleanupPointerSession(evt.PointerId);
+
+        if (_primaryTouchPointerId == evt.PointerId)
+        {
+            _primaryTouchPointerId = null;
+            // Synthesize mouse leave so controls reset hover state.
+            _inputDispatcher.HandleMouseLeave();
+        }
+    }
+
+    /// <summary>
+    /// Synthesizes mouse events from the primary touch pointer so that controls
+    /// that only handle Mouse* events continue to work on touch platforms.
+    /// </summary>
+    private void SynthesizeMouseFromTouch(
+        PlatformEvent evt, Point position, ModifierKeys modifiers,
+        bool isDown, bool isUp, UIElement? hitTarget, int timestamp)
+    {
+        var buttons = new MouseButtonStates
+        {
+            Left = isUp ? MouseButtonState.Released : MouseButtonState.Pressed
+        };
+
+        // Suppress mouse→pointer promotion: pointer events were already dispatched
+        // directly from the touch pipeline with the correct PointerDeviceType.Touch.
+        _inputDispatcher.SuppressMouseToPointerPromotion = true;
+        try
+        {
+            if (isDown)
+            {
+                _inputDispatcher.HandleMouseDown(
+                    MouseButton.Left, position, buttons, modifiers, clickCount: 1, timestamp);
+            }
+            else if (isUp)
+            {
+                _inputDispatcher.HandleMouseUp(MouseButton.Left, position, buttons, modifiers, timestamp);
+            }
+            else
+            {
+                _inputDispatcher.HandleMouseMove(position, buttons, modifiers, timestamp);
+            }
+        }
+        finally
+        {
+            _inputDispatcher.SuppressMouseToPointerPromotion = false;
+        }
+    }
+
     private void EnableRoundedCorners()
     {
-        if (Handle == nint.Zero)
+        if (Handle == nint.Zero || !PlatformFactory.IsWindows)
         {
             return;
         }
@@ -2543,7 +3337,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void UpdateCustomTitleBarFrameMargins()
     {
-        if (Handle == nint.Zero || TitleBarStyle != WindowTitleBarStyle.Custom)
+        if (!PlatformFactory.IsWindows || Handle == nint.Zero || TitleBarStyle != WindowTitleBarStyle.Custom)
         {
             return;
         }
@@ -2607,9 +3401,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void ApplySystemBackdrop(WindowBackdropType backdropType)
     {
-        if (Handle == nint.Zero)
+        if (Handle == nint.Zero || !PlatformFactory.IsWindows)
         {
-            return;
+            return; // System backdrops (Mica/Acrylic) only available on Windows
         }
 
         if (backdropType == WindowBackdropType.None)
@@ -2702,9 +3496,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void UpdateWindowStyle()
     {
-        if (Handle == nint.Zero)
+        if (Handle == nint.Zero || _platformWindow != null)
         {
-            return;
+            return; // Win32 window styles not applicable on cross-platform
         }
 
         long style = GetWindowLong(Handle, GWL_STYLE);
@@ -2759,9 +3553,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         => backend != RenderBackend.Auto && NativeMethods.IsBackendAvailable(backend) != 0;
 
     private static ReadOnlySpan<RenderBackend> GetBackendFallbackOrder()
-        => RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
-            ? [RenderBackend.D3D12, RenderBackend.Vulkan, RenderBackend.Software]
-            : [RenderBackend.Vulkan, RenderBackend.Software];
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            return [RenderBackend.D3D12, RenderBackend.Software];
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+            return [RenderBackend.Metal, RenderBackend.Software];
+        return [RenderBackend.Vulkan, RenderBackend.Software];
+    }
 
     private static int GetBackendFallbackIndex(RenderBackend backend)
     {
@@ -2818,57 +3616,77 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         int physicalHeight = (int)(Height * _dpiScale);
         if (physicalWidth <= 0 || physicalHeight <= 0 || Handle == nint.Zero)
         {
+            Console.Error.WriteLine($"[EnsureRenderTarget] BAIL: pw={physicalWidth} ph={physicalHeight} handle=0x{Handle:X}");
             return;
         }
 
         var requestedBackend = _renderBackendOverride != RenderBackend.Auto
             ? _renderBackendOverride
             : RenderBackend.Auto;
+
+        Console.Error.WriteLine($"[EnsureRenderTarget] creating context: requested={requestedBackend} size={physicalWidth}x{physicalHeight}");
         var context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
+        Console.Error.WriteLine($"[EnsureRenderTarget] context created: backend={context.Backend} valid={context.IsValid}");
 
         try
         {
-            bool useComposition = ShouldUseCompositionRenderTarget();
-            if (useComposition)
+            if (_platformWindow != null)
             {
-                RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
+                // Cross-platform path: use surface descriptor from platform window
+                var surface = _platformWindow.GetSurface();
+                Console.Error.WriteLine($"[EnsureRenderTarget] creating RT for surface: platform={surface.Platform} handle0=0x{surface.Handle0:X} size={physicalWidth}x{physicalHeight}");
+                RenderTarget = context.CreateRenderTarget(surface, physicalWidth, physicalHeight);
+                Console.Error.WriteLine($"[EnsureRenderTarget] RT created: {RenderTarget != null}");
             }
             else
             {
-                RenderTarget = context.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
+                // Win32 path: use HWND-based render target
+                bool useComposition = ShouldUseCompositionRenderTarget();
+                if (useComposition)
+                {
+                    RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
+                }
+                else
+                {
+                    RenderTarget = context.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
+                }
             }
         }
-        catch (Exception) when (context.GpuPreference != GpuPreference.Auto)
+        catch (Exception ex) when (context.GpuPreference != GpuPreference.Auto)
         {
-            // The preferred GPU (e.g. integrated) couldn't create a render target
-            // for this window. Fall back to a new context with default GPU selection.
+            Console.Error.WriteLine($"[EnsureRenderTarget] GPU fallback: {ex.Message}");
+            // The preferred GPU couldn't create a render target. Fall back to default GPU.
             context = RenderContext.GetOrCreateCurrent(requestedBackend, GpuPreference.Auto, forceReplace: true);
-
-            if (ShouldUseCompositionRenderTarget())
-            {
-                RenderTarget = context.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
-            }
-            else
-            {
-                RenderTarget = context.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
-            }
+            RenderTarget = CreateRenderTargetForPlatform(context, physicalWidth, physicalHeight);
         }
-        catch (Exception) when (requestedBackend != RenderBackend.Auto && TryAdvanceRenderBackendFallback(requestedBackend))
+        catch (Exception ex) when (requestedBackend != RenderBackend.Auto && TryAdvanceRenderBackendFallback(requestedBackend))
         {
+            Console.Error.WriteLine($"[EnsureRenderTarget] backend fallback: {ex.Message}");
             var fallbackContext = RenderContext.GetOrCreateCurrent(_renderBackendOverride, GpuPreference.Auto, forceReplace: true);
-            if (ShouldUseCompositionRenderTarget())
-            {
-                RenderTarget = fallbackContext.CreateRenderTargetForComposition(Handle, physicalWidth, physicalHeight);
-            }
-            else
-            {
-                RenderTarget = fallbackContext.CreateRenderTarget(Handle, physicalWidth, physicalHeight);
-            }
+            RenderTarget = CreateRenderTargetForPlatform(fallbackContext, physicalWidth, physicalHeight);
         }
 
         // Set D2D DPI so DIP coordinates map correctly to physical pixels
         float dpi = (float)(_dpiScale * 96.0);
         RenderTarget.SetDpi(dpi, dpi);
+        Console.Error.WriteLine($"[EnsureRenderTarget] DONE: dpi={dpi}");
+    }
+
+    /// <summary>
+    /// Creates a render target using the appropriate method for the current platform.
+    /// </summary>
+    private RenderTarget CreateRenderTargetForPlatform(RenderContext context, int width, int height)
+    {
+        if (_platformWindow != null)
+        {
+            var surface = _platformWindow.GetSurface();
+            return context.CreateRenderTarget(surface, width, height);
+        }
+
+        if (ShouldUseCompositionRenderTarget())
+            return context.CreateRenderTargetForComposition(Handle, width, height);
+
+        return context.CreateRenderTarget(Handle, width, height);
     }
 
     /// <summary>
@@ -2980,7 +3798,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             if (window.Handle != nint.Zero)
             {
-                _ = SetWindowText(window.Handle, (string?)e.NewValue ?? "");
+                if (window._platformWindow != null)
+                    window._platformWindow.SetTitle((string?)e.NewValue ?? "");
+                else
+                    _ = SetWindowText(window.Handle, (string?)e.NewValue ?? "");
             }
 
             window.ApplyTitleBarPresentation();
@@ -3004,13 +3825,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             // Skip if we're already syncing from WM_SIZE to avoid infinite loop.
             if (!window._isSyncingWindowState && window.Handle != nint.Zero)
             {
-                var cmd = newState switch
+                if (window._platformWindow != null)
                 {
-                    WindowState.Maximized => SW_MAXIMIZE,
-                    WindowState.Minimized => SW_MINIMIZE,
-                    _ => SW_RESTORE
-                };
-                _ = ShowWindow(window.Handle, cmd);
+                    window._platformWindow.SetState(newState);
+                }
+                else
+                {
+                    var cmd = newState switch
+                    {
+                        WindowState.Maximized => SW_MAXIMIZE,
+                        WindowState.Minimized => SW_MINIMIZE,
+                        _ => SW_RESTORE
+                    };
+                    _ = ShowWindow(window.Handle, cmd);
+                }
             }
 
             window.OnStateChanged(EventArgs.Empty);
@@ -3086,12 +3914,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             int x = double.IsNaN(window.Left) ? 0 : (int)(window.Left * window._dpiScale);
             int y = double.IsNaN(window.Top) ? 0 : (int)(window.Top * window._dpiScale);
-            uint flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
             if (double.IsNaN(window.Left) || double.IsNaN(window.Top))
             {
                 return;
             }
-            _ = SetWindowPos(window.Handle, nint.Zero, x, y, 0, 0, flags);
+
+            if (window._platformWindow != null)
+            {
+                window._platformWindow.Move(x, y);
+            }
+            else
+            {
+                uint flags = SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE;
+                _ = SetWindowPos(window.Handle, nint.Zero, x, y, 0, 0, flags);
+            }
         }
     }
 
@@ -3820,6 +4656,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     var oldDpiScale = window._dpiScale;
                     uint newDpi = (uint)((wParam.ToInt64() >> 16) & 0xFFFF);
                     window._dpiScale = newDpi / 96.0;
+                    FrameworkElement.LayoutDpiScale = window._dpiScale;
 
                     // Update DPI BEFORE SetWindowPos: SetWindowPos triggers WM_SIZE
                     // synchronously, which calls Resize() → CreateSnapshotResources().
@@ -4052,10 +4889,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                     return nint.Zero;
 
                 case WM_CAPTURECHANGED:
-                    // Native capture was lost (another window took it, or system released it).
-                    // Sync managed state 鈥?don't call ReleaseCapture again since it's already gone.
-                    UIElement.OnNativeCaptureChanged();
-                    window.ClearMousePressedChain();
+                    window._inputDispatcher.HandleNativeCaptureChanged();
                     return nint.Zero;
 
                 case WM_CANCELMODE:
@@ -4112,22 +4946,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void OnMouseLeave()
     {
-        // Clear title bar button hover state when mouse leaves the window
-        if (TitleBarStyle == WindowTitleBarStyle.Custom)
-        {
-            ClearTitleBarInteractionState();
-        }
-
-        ClearMousePressedChain();
-
-        // Clear general mouse over state
-        if (_lastMouseOverElement != null)
-        {
-            RaiseMouseLeaveChain(_lastMouseOverElement, null, Environment.TickCount);
-            _lastMouseOverElement = null;
-        }
-
-        _lastHitTestElement = null;
+        _inputDispatcher.HandleMouseLeave();
     }
 
     /// <summary>
@@ -4171,7 +4990,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         var renderTarget = RenderTarget;
         if (renderTarget == null || !renderTarget.IsValid)
         {
-            return;
+            // Render target not yet created (e.g., first RESIZE event on Android arrives
+            // before EnsureRenderTarget succeeded). Try to create it now that we have
+            // valid dimensions — Width/Height are already updated by the caller.
+            EnsureRenderTarget();
+            renderTarget = RenderTarget;
+            if (renderTarget == null || !renderTarget.IsValid)
+                return;
         }
 
         try
@@ -4613,6 +5438,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// - ProcessRender rate-limits to display refresh rate when no animation is active,
     ///   preventing GPU saturation from rapid input events (scrolling, mouse drag).
     /// </summary>
+    private int _renderFrameLogCount;
     private void RenderFrame()
     { _debugHud.OnRenderFrame();
         if (HasRenderFlag(RenderFlag_Rendering)) return;
@@ -4623,11 +5449,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         {
             if (RenderTarget == null || !RenderTarget.IsValid)
             {
+                if (_renderFrameLogCount < 3)
+                    Console.Error.WriteLine($"[RenderFrame] RT null/invalid, attempting EnsureRenderTarget");
                 EnsureRenderTarget();
             }
 
             if (RenderTarget == null || !RenderTarget.IsValid)
             {
+                if (_renderFrameLogCount++ < 3)
+                    Console.Error.WriteLine($"[RenderFrame] SKIP: RT still null/invalid after ensure");
                 return;
             }
 
@@ -5092,6 +5922,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         if (Handle == nint.Zero) return 60;
 
+        // Cross-platform path
+        if (_platformWindow != null)
+            return _platformWindow.GetMonitorRefreshRate();
+
+        // Win32 path
         var hMonitor = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
         MONITORINFOEX monitorInfoEx = new() { cbSize = (uint)Marshal.SizeOf<MONITORINFOEX>() };
 
@@ -5205,8 +6040,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     public void SetNativeCapture()
     {
-        if (Handle != nint.Zero)
-            SetCapture(Handle);
+        if (Handle == nint.Zero) return;
+
+        if (_platformWindow != null)
+        {
+            // Cross-platform: mouse capture managed at the framework level.
+            // Native capture is a Win32 concept; on Linux/Android, pointer
+            // events continue delivery to the focused window automatically.
+            return;
+        }
+
+        SetCapture(Handle);
     }
 
     /// <summary>
@@ -5214,6 +6058,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     public void ReleaseNativeCapture()
     {
+        if (_platformWindow != null)
+            return; // Cross-platform: no native capture to release
+
         _ = ReleaseCapture();
     }
 
@@ -5250,125 +6097,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private bool OnKeyDown(nint wParam, nint lParam)
     {
         Key key = (Key)(int)wParam;
-        if (ShouldSuppressReactivatedEscape(key, isKeyDown: true))
-        {
-            return true;
-        }
-
         var modifiers = GetModifierKeys();
         bool isRepeat = ((lParam.ToInt64() >> 30) & 1) != 0;
-        int timestamp = Environment.TickCount;
-
-        // Allow subclass to intercept before any processing
-        if (OnPreviewWindowKeyDown(key, modifiers, isRepeat))
-        {
-            return true;
-        }
-
-        // F3 toggles debug HUD
-        if (key == Key.F3 && !isRepeat)
-        {
-            _debugHud.Enabled = !_debugHud.Enabled;
-            _debugHudOverlay.Visibility = _debugHud.Enabled ? Visibility.Visible : Visibility.Collapsed;
-            RequestFullInvalidation();
-            InvalidateWindow();
-            return true;
-        }
-
-        // F12 opens DevTools (only in DEBUG builds)
-        // Skip if this window cannot open DevTools (e.g., DevToolsWindow itself)
-        if (key == Key.F12 && !isRepeat && CanOpenDevTools)
-        {
-            ToggleDevTools();
-            return true;
-        }
-
-        // Ctrl+Shift+C activates element picker (opens DevTools if not open)
-        if (key == Key.C && !isRepeat && CanOpenDevTools &&
-            (modifiers & ModifierKeys.Control) != 0 && (modifiers & ModifierKeys.Shift) != 0)
-        {
-            OpenDevTools();
-            _devToolsWindow?.ActivatePicker();
-            return true;
-        }
-
-        var target = GetKeyboardEventTarget();
-
-        if (!isRepeat && (key == Key.Space || key == Key.Enter))
-        {
-            ActivateKeyboardPressedChain(target);
-        }
-
-        // Raise tunnel event (PreviewKeyDown)
-        KeyEventArgs tunnelArgs = new(PreviewKeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp);
-        target.RaiseEvent(tunnelArgs);
-
-        // Raise bubble event (KeyDown) if not handled
-        if (!tunnelArgs.Handled)
-        {
-            KeyEventArgs bubbleArgs = new(KeyDownEvent, key, modifiers, isDown: true, isRepeat, timestamp);
-            target.RaiseEvent(bubbleArgs);
-
-            // Auto Tab/Shift+Tab focus navigation (if not handled by any control)
-            if (!bubbleArgs.Handled && key == Key.Tab)
-            {
-                var reverse = (modifiers & ModifierKeys.Shift) != 0;
-                if (target is UIElement targetElement)
-                {
-                    KeyboardNavigation.MoveFocus(targetElement, reverse);
-                    bubbleArgs.Handled = true;
-                }
-            }
-
-            // Auto arrow-key focus navigation when the focused control did not consume the key.
-            if (!bubbleArgs.Handled &&
-                modifiers == ModifierKeys.None &&
-                target is UIElement directionalTarget)
-            {
-                var direction = key switch
-                {
-                    Key.Left => FocusNavigationDirection.Left,
-                    Key.Right => FocusNavigationDirection.Right,
-                    Key.Up => FocusNavigationDirection.Up,
-                    Key.Down => FocusNavigationDirection.Down,
-                    _ => (FocusNavigationDirection?)null
-                };
-
-                if (direction.HasValue && KeyboardNavigation.MoveFocus(directionalTarget, direction.Value))
-                {
-                    bubbleArgs.Handled = true;
-                }
-            }
-
-            // IsDefault (Enter) / IsCancel (Escape) button handling
-            if (!bubbleArgs.Handled && !isRepeat)
-            {
-                if (key == Key.Enter)
-                {
-                    var buttonSearchRoot = (UIElement?)ActiveContentDialog ?? (UIElement?)FindContainingInPlaceDialog() ?? this;
-                    var defaultButton = FindButton(buttonSearchRoot, b => b.IsDefault);
-                    if (defaultButton != null)
-                    {
-                        defaultButton.PerformClick();
-                        bubbleArgs.Handled = true;
-                    }
-                }
-                else if (key == Key.Escape)
-                {
-                    var buttonSearchRoot = (UIElement?)ActiveContentDialog ?? (UIElement?)FindContainingInPlaceDialog() ?? this;
-                    var cancelButton = FindButton(buttonSearchRoot, b => b.IsCancel);
-                    if (cancelButton != null)
-                    {
-                        cancelButton.PerformClick();
-                        bubbleArgs.Handled = true;
-                    }
-                }
-            }
-
-            return bubbleArgs.Handled;
-        }
-
-        return true;
+        return _inputDispatcher.HandleKeyDown(key, modifiers, isRepeat, Environment.TickCount);
     }
 
     private UIElement GetKeyboardEventTarget()
@@ -5495,42 +6226,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private bool OnKeyUp(nint wParam, nint lParam)
     {
         Key key = (Key)(int)wParam;
-        if (ShouldSuppressReactivatedEscape(key, isKeyDown: false))
-        {
-            return true;
-        }
-
         var modifiers = GetModifierKeys();
-        int timestamp = Environment.TickCount;
-
-        // Allow subclass to intercept before any processing
-        if (OnPreviewWindowKeyUp(key, modifiers))
-        {
-            return true;
-        }
-
-        // Route keyboard events to the focused element, or the window if no element has focus
-        var target = Keyboard.FocusedElement as UIElement ?? this;
-
-        // Raise tunnel event (PreviewKeyUp)
-        KeyEventArgs tunnelArgs = new(PreviewKeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp);
-        target.RaiseEvent(tunnelArgs);
-        bool handled = tunnelArgs.Handled;
-
-        // Raise bubble event (KeyUp) if not handled
-        if (!handled)
-        {
-            KeyEventArgs bubbleArgs = new(KeyUpEvent, key, modifiers, isDown: false, isRepeat: false, timestamp);
-            target.RaiseEvent(bubbleArgs);
-            handled = bubbleArgs.Handled;
-        }
-
-        if (key == Key.Space || key == Key.Enter)
-        {
-            ClearKeyboardPressedChain();
-        }
-
-        return handled;
+        return _inputDispatcher.HandleKeyUp(key, modifiers, Environment.TickCount);
     }
 
     private void OnActivateChanged(int activateState, nint newForegroundWindow)
@@ -5542,8 +6239,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
                 _isActive = false;
                 OnDeactivated(EventArgs.Empty);
             }
-            HandleWindowDeactivated(newForegroundWindow, clearKeyboardFocus: true);
-            _suppressEscapeUntilTick = 0;
+            _inputDispatcher.HandleWindowDeactivated(newForegroundWindow, clearKeyboardFocus: true);
             return;
         }
 
@@ -5552,24 +6248,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
             _isActive = true;
             OnActivated(EventArgs.Empty);
         }
-        ArmEscapeSuppressionIfNeeded();
+        _inputDispatcher.ArmEscapeSuppressionIfNeeded();
         WakeRenderPipeline();
     }
 
     private void OnCancelMode()
     {
-        HandleWindowDeactivated(nint.Zero, clearKeyboardFocus: false);
+        _inputDispatcher.HandleCancelMode();
     }
 
     private void OnKillFocus(nint newFocusWindow)
     {
-        HandleWindowDeactivated(newFocusWindow, clearKeyboardFocus: true);
+        _inputDispatcher.HandleWindowDeactivated(newFocusWindow, clearKeyboardFocus: true);
     }
 
     private void OnSetFocus()
     {
-        UpdateInputMethodAssociation();
-        WakeRenderPipeline();
+        _inputDispatcher.HandleSetFocus();
     }
 
     private void HandleWindowDeactivated(nint newForegroundWindow, bool clearKeyboardFocus)
@@ -5681,29 +6376,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     {
         char c = (char)(int)wParam;
         if (char.IsControl(c) && c != '\r' && c != '\t')
-        {
-            return; // Skip control chars except Enter/Tab
-        }
-
-        string text = c.ToString();
-        int timestamp = Environment.TickCount;
-
-        var target = GetTextInputTarget();
-        if (target == null)
-        {
             return;
-        }
 
-        // Raise tunnel event (PreviewTextInput)
-        TextCompositionEventArgs tunnelArgs = new(PreviewTextInputEvent, text, timestamp);
-        target.RaiseEvent(tunnelArgs);
-
-        // Raise bubble event (TextInput) if not handled
-        if (!tunnelArgs.Handled)
-        {
-            TextCompositionEventArgs bubbleArgs = new(TextInputEvent, text, timestamp);
-            target.RaiseEvent(bubbleArgs);
-        }
+        _inputDispatcher.HandleCharInput(c.ToString(), Environment.TickCount);
     }
 
     #region IME Handling
@@ -5921,107 +6596,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnMouseMove(nint wParam, nint lParam)
     {
         var position = GetMousePosition(lParam);
-
-        // Allow subclass to intercept
-        if (OnPreviewWindowMouseMove(position))
-            return;
-
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
         var modifiers = GetModifierKeys();
-        int timestamp = Environment.TickCount;
-
-        // Check for title bar button hover (for custom title bar)
-        if (IsTitleBarVisible())
+        var buttons = new MouseButtonStates
         {
-            var titleBarButton = GetTitleBarButtonAtPoint(position);
-            UpdateTitleBarButtonHover(titleBarButton);
-
-            // Track mouse leave for client area
-            TRACKMOUSEEVENT tme = new()
-            {
-                cbSize = (uint)Marshal.SizeOf<TRACKMOUSEEVENT>(),
-                dwFlags = TME_LEAVE,
-                hwndTrack = Handle,
-                dwHoverTime = 0
-            };
-            _ = TrackMouseEvent(ref tme);
-        }
-
-        // If an element has captured the mouse, it receives all mouse events
-        // Otherwise, find the target element via hit testing
-        var captured = UIElement.MouseCapturedElement;
-        UIElement? hitElement = HitTestElement(position, "mouse-move");
-        if (captured == null && hitElement == OverlayLayer && OverlayLayer.HasLightDismissPopups)
-        {
-            // Keep WPF-like menu mode:
-            // when a menu popup is open, allow hover-switching between top-level
-            // menu headers behind the overlay, but keep all other controls blocked.
-            var topLevelMenuItem = HitTopLevelMenuItemBehindOverlay(position);
-            if (topLevelMenuItem != null)
-            {
-                hitElement = topLevelMenuItem;
-            }
-        }
-        var target = captured ?? hitElement ?? this;
-
-        // Track mouse over state and raise MouseEnter/MouseLeave events
-        var newMouseOverElement = hitElement;
-        if (newMouseOverElement != _lastMouseOverElement)
-        {
-            // Raise MouseLeave for the old element and its ancestors that are no longer under the mouse
-            if (_lastMouseOverElement != null)
-            {
-                RaiseMouseLeaveChain(_lastMouseOverElement, newMouseOverElement, timestamp);
-            }
-
-            // Raise MouseEnter for the new element and its ancestors that weren't previously under the mouse
-            if (newMouseOverElement != null)
-            {
-                RaiseMouseEnterChain(newMouseOverElement, _lastMouseOverElement, timestamp);
-            }
-
-            _lastMouseOverElement = newMouseOverElement;
-        }
-
-        // Raise tunnel event (PreviewMouseMove)
-        MouseEventArgs tunnelArgs = new(
-            PreviewMouseMoveEvent, position,
-            left, middle, right,
-            xButton1, xButton2, modifiers, timestamp);
-        target.RaiseEvent(tunnelArgs);
-
-        bool sourceHandled = tunnelArgs.Handled;
-        bool sourceCanceled = tunnelArgs.Cancel;
-
-        // Raise bubble event (MouseMove) if not handled
-        if (!tunnelArgs.Handled)
-        {
-            MouseEventArgs bubbleArgs = new(
-                MouseMoveEvent, position,
-                left, middle, right,
-                xButton1, xButton2, modifiers, timestamp);
-            target.RaiseEvent(bubbleArgs);
-            sourceHandled = sourceHandled || bubbleArgs.Handled;
-            sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
-        }
-
-        PointerPoint pointerPoint = CreateMousePointerPoint(
-            position,
-            left, middle, right, xButton1, xButton2,
-            modifiers,
-            timestamp,
-            PointerUpdateKind.Other);
-        _activePointerTargets[MousePointerId] = target;
-        _lastPointerPoints[MousePointerId] = pointerPoint;
-
-        if (sourceCanceled)
-        {
-            RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
-        }
-        else if (!sourceHandled)
-        {
-            RaisePointerMovePipeline(target, pointerPoint, modifiers, timestamp);
-        }
+            Left = left, Middle = middle, Right = right,
+            XButton1 = xButton1, XButton2 = xButton2
+        };
+        _inputDispatcher.HandleMouseMove(position, buttons, modifiers, Environment.TickCount);
     }
 
     private void RaiseMouseLeaveChain(UIElement oldElement, UIElement? newElement, int timestamp)
@@ -6167,228 +6749,27 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnMouseButtonDown(MouseButton button, nint wParam, nint lParam, int clickCount = 1)
     {
         var position = GetMousePosition(lParam);
-
-        // Allow subclass to intercept
-        if (OnPreviewWindowMouseDown(button, position, clickCount))
-            return;
-
-        var topLevelMenuItemBehindOverlay = OverlayLayer.HasLightDismissPopups
-            ? HitTopLevelMenuItemBehindOverlay(position)
-            : null;
-
-        // Check light dismiss via OverlayLayer 鈥?clicks outside popups close them
-        if (topLevelMenuItemBehindOverlay == null && OverlayLayer.TryHandleLightDismiss(position))
-        {
-            _suppressMouseUpButton = button;
-            return;
-        }
-
-        // Light dismiss for external popup windows (rendered outside the parent window)
-        if (ActiveExternalPopups.Count > 0)
-        {
-            var popupsToClose = ActiveExternalPopups.Where(p => !p.StaysOpen).ToList();
-            foreach (var popup in popupsToClose)
-                popup.IsOpen = false;
-            if (popupsToClose.Count > 0)
-            {
-                _suppressMouseUpButton = button;
-                return;
-            }
-        }
-
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
         var modifiers = GetModifierKeys();
-        int timestamp = Environment.TickCount;
-
-        // Handle title bar button press (for custom title bar)
-        if (IsTitleBarVisible() && button == MouseButton.Left)
+        var buttons = new MouseButtonStates
         {
-            var titleBarButton = GetTitleBarButtonAtPoint(position);
-            if (titleBarButton != null)
-            {
-                ClearMousePressedChain();
-                _pressedTitleBarButton = titleBarButton;
-                titleBarButton.SetIsPressed(true);  // triggers InvalidateVisual() 鈫?dirty rect
-                return; // Handled
-            }
-        }
-
-        // If an element has captured the mouse, it receives all mouse events
-        // Otherwise, find the target element via hit testing
-        var captured = UIElement.MouseCapturedElement;
-        var hitElement = topLevelMenuItemBehindOverlay ?? HitTestElement(position, "mouse-down");
-        UpdateMouseOverState(hitElement, timestamp);
-        var target = captured
-            ?? hitElement
-            ?? this;
-
-        if (button == MouseButton.Left)
-        {
-            ActivateMousePressedChain(target);
-
-            // Activate the DockTabPanel that contains the click target
-            UIElement? walk = target;
-            while (walk != null)
-            {
-                if (walk is DockTabPanel dockPanel)
-                {
-                    DockManager.SetActivePanel(dockPanel);
-                    break;
-                }
-                walk = walk.VisualParent as UIElement;
-            }
-        }
-
-        // Update button state for the pressed button
-        var currentState = MouseButtonState.Pressed;
-
-        // Raise tunnel event (PreviewMouseDown)
-        MouseButtonEventArgs tunnelArgs = new(
-            PreviewMouseDownEvent, position, button, currentState, clickCount,
-            left, middle, right,
-            xButton1, xButton2, modifiers, timestamp);
-        target.RaiseEvent(tunnelArgs);
-
-        bool sourceHandled = tunnelArgs.Handled;
-        bool sourceCanceled = tunnelArgs.Cancel;
-
-        // Raise bubble event (MouseDown) if not handled
-        if (!tunnelArgs.Handled)
-        {
-            MouseButtonEventArgs bubbleArgs = new(
-                MouseDownEvent, position, button, currentState, clickCount,
-                left, middle, right,
-                xButton1, xButton2, modifiers, timestamp);
-            target.RaiseEvent(bubbleArgs);
-            sourceHandled = sourceHandled || bubbleArgs.Handled;
-            sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
-        }
-
-        PointerPoint pointerPoint = CreateMousePointerPoint(
-            position,
-            left, middle, right, xButton1, xButton2,
-            modifiers,
-            timestamp,
-            MapMouseButtonToPointerUpdateKind(button, isPressed: true));
-        _activePointerTargets[MousePointerId] = target;
-        _lastPointerPoints[MousePointerId] = pointerPoint;
-
-        if (sourceCanceled)
-        {
-            RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
-        }
-        else if (!sourceHandled)
-        {
-            RaisePointerDownPipeline(target, pointerPoint, modifiers, timestamp);
-        }
+            Left = left, Middle = middle, Right = right,
+            XButton1 = xButton1, XButton2 = xButton2
+        };
+        _inputDispatcher.HandleMouseDown(button, position, buttons, modifiers, clickCount, Environment.TickCount);
     }
 
     private void OnMouseButtonUp(MouseButton button, nint wParam, nint lParam)
     {
-        if (_suppressMouseUpButton == button)
-        {
-            _suppressMouseUpButton = null;
-            if (button == MouseButton.Left)
-            {
-                ClearMousePressedChain();
-            }
-            return;
-        }
-
         var position = GetMousePosition(lParam);
-
-        // Allow subclass to intercept
-        if (OnPreviewWindowMouseUp(button, position))
-            return;
-
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
         var modifiers = GetModifierKeys();
-        int timestamp = Environment.TickCount;
-
-        // Handle title bar button release (for custom title bar)
-        if (IsTitleBarVisible() && button == MouseButton.Left && _pressedTitleBarButton != null)
+        var buttons = new MouseButtonStates
         {
-            var titleBarButton = GetTitleBarButtonAtPoint(position);
-            _pressedTitleBarButton.SetIsPressed(false);
-
-            // If released on the same button, trigger click
-            if (titleBarButton == _pressedTitleBarButton)
-            {
-                switch (_pressedTitleBarButton.Kind)
-                {
-                    case TitleBarButtonKind.Minimize:
-                        TitleBar?.RaiseMinimizeClicked();
-                        break;
-                    case TitleBarButtonKind.Maximize:
-                    case TitleBarButtonKind.Restore:
-                        TitleBar?.RaiseMaximizeRestoreClicked();
-                        break;
-                    case TitleBarButtonKind.Close:
-                        TitleBar?.RaiseCloseClicked();
-                        break;
-                }
-            }
-
-            _pressedTitleBarButton = null;
-            // SetIsPressed(false) above already triggers InvalidateVisual() 鈫?dirty rect
-            ClearMousePressedChain();
-            return; // Handled
-        }
-
-        // If an element has captured the mouse, it receives all mouse events
-        // Otherwise, find the target element via hit testing
-        var captured = UIElement.MouseCapturedElement;
-        var hitElement = HitTestElement(position, "mouse-up");
-        UpdateMouseOverState(hitElement, timestamp);
-        var target = captured ?? hitElement ?? this;
-
-        var currentState = MouseButtonState.Released;
-
-        // Raise tunnel event (PreviewMouseUp)
-        MouseButtonEventArgs tunnelArgs = new(
-            PreviewMouseUpEvent, position, button, currentState, clickCount: 1,
-            left, middle, right,
-            xButton1, xButton2, modifiers, timestamp);
-        target.RaiseEvent(tunnelArgs);
-
-        bool sourceHandled = tunnelArgs.Handled;
-        bool sourceCanceled = tunnelArgs.Cancel;
-
-        // Raise bubble event (MouseUp) if not handled
-        if (!tunnelArgs.Handled)
-        {
-            MouseButtonEventArgs bubbleArgs = new(
-                MouseUpEvent, position, button, currentState, clickCount: 1,
-                left, middle, right,
-                xButton1, xButton2, modifiers, timestamp);
-            target.RaiseEvent(bubbleArgs);
-            sourceHandled = sourceHandled || bubbleArgs.Handled;
-            sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
-        }
-
-        PointerPoint pointerPoint = CreateMousePointerPoint(
-            position,
-            left, middle, right, xButton1, xButton2,
-            modifiers,
-            timestamp,
-            MapMouseButtonToPointerUpdateKind(button, isPressed: false));
-        _lastPointerPoints[MousePointerId] = pointerPoint;
-
-        if (sourceCanceled)
-        {
-            RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
-        }
-        else if (!sourceHandled)
-        {
-            RaisePointerUpPipeline(target, pointerPoint, modifiers, timestamp);
-        }
-
-        if (button == MouseButton.Left)
-        {
-            ClearMousePressedChain();
-        }
-
-        _activePointerTargets.Remove(MousePointerId);
+            Left = left, Middle = middle, Right = right,
+            XButton1 = xButton1, XButton2 = xButton2
+        };
+        _inputDispatcher.HandleMouseUp(button, position, buttons, modifiers, Environment.TickCount);
     }
 
     private void UpdateMouseOverState(UIElement? newMouseOverElement, int timestamp)
@@ -6538,192 +6919,53 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     private void OnMouseWheel(nint wParam, nint lParam)
     {
         // WM_MOUSEWHEEL lParam contains SCREEN coordinates (physical pixels).
-        // Extract raw physical coords → ScreenToClient → convert to DIPs.
         int screenX = (short)(lParam.ToInt64() & 0xFFFF);
         int screenY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
         POINT pt = new() { X = screenX, Y = screenY };
         _ = ScreenToClient(Handle, ref pt);
-        // ScreenToClient returns physical client pixels → convert to DIPs
         Point position = new(pt.X / _dpiScale, pt.Y / _dpiScale);
 
         int delta = (short)((wParam.ToInt64() >> 16) & 0xFFFF);
-
-        // Allow subclass to intercept
-        if (OnPreviewWindowMouseWheel(delta, position))
-            return;
-
         var (left, middle, right, xButton1, xButton2) = GetMouseButtonStates(wParam);
         var modifiers = GetModifierKeys();
-        int timestamp = Environment.TickCount;
-
-        // If an element has captured the mouse, it receives all mouse events
-        // Otherwise, find the target element via hit testing
-        var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? HitTestElement(position, "mouse-wheel") ?? this;
-
-        // Raise tunnel event (PreviewMouseWheel)
-        MouseWheelEventArgs tunnelArgs = new(
-            PreviewMouseWheelEvent, position, delta,
-            left, middle, right,
-            xButton1, xButton2, modifiers, timestamp);
-        target.RaiseEvent(tunnelArgs);
-
-        bool sourceHandled = tunnelArgs.Handled;
-        bool sourceCanceled = tunnelArgs.Cancel;
-
-        // Raise bubble event (MouseWheel) if not handled
-        if (!tunnelArgs.Handled)
+        var buttons = new MouseButtonStates
         {
-            MouseWheelEventArgs bubbleArgs = new(
-                MouseWheelEvent, position, delta,
-                left, middle, right,
-                xButton1, xButton2, modifiers, timestamp);
-            target.RaiseEvent(bubbleArgs);
-            sourceHandled = sourceHandled || bubbleArgs.Handled;
-            sourceCanceled = sourceCanceled || bubbleArgs.Cancel;
-        }
-
-        PointerPoint pointerPoint = CreateMousePointerPoint(
-            position,
-            left, middle, right, xButton1, xButton2,
-            modifiers,
-            timestamp,
-            PointerUpdateKind.Other,
-            mouseWheelDelta: delta);
-        _lastPointerPoints[MousePointerId] = pointerPoint;
-
-        if (sourceCanceled)
-        {
-            RaisePointerCancelPipeline(target, pointerPoint, modifiers, timestamp);
-        }
-        else if (!sourceHandled)
-        {
-            RaisePointerWheelPipeline(target, pointerPoint, modifiers, timestamp);
-        }
+            Left = left, Middle = middle, Right = right,
+            XButton1 = xButton1, XButton2 = xButton2
+        };
+        _inputDispatcher.HandleMouseWheel(position, delta, buttons, modifiers, Environment.TickCount);
     }
 
     private void OnPointerMessage(uint msg, nint wParam, nint lParam)
     {
         if (!Win32PointerInterop.TryGetPointerData(Handle, wParam, _dpiScale, out var pointerData))
-        {
             return;
-        }
-
-        // Mouse pointer goes through the existing WM_MOUSE promotion path.
-        if (pointerData.Kind == Win32PointerKind.Mouse)
-        {
+        if (pointerData.Kind == PointerInputKind.Mouse)
             return;
-        }
 
         bool isDown = msg == Win32PointerInterop.WM_POINTERDOWN;
         bool isUp = msg == Win32PointerInterop.WM_POINTERUP;
-        int timestamp = Environment.TickCount;
-
-        var captured = UIElement.MouseCapturedElement;
-        var hitTarget = HitTestElement(pointerData.Position, "pointer-route");
-        var fallbackTarget = captured ?? hitTarget ?? this;
-        var target = isDown
-            ? fallbackTarget
-            : (_activePointerTargets.TryGetValue(pointerData.PointerId, out var existingTarget) ? existingTarget ?? fallbackTarget : fallbackTarget);
-
-        _activePointerTargets[pointerData.PointerId] = target;
-        _lastPointerPoints[pointerData.PointerId] = pointerData.Point;
-
-        bool sourceHandled = false;
-        bool sourceCanceled = pointerData.IsCanceled;
-
-        if (pointerData.Kind == Win32PointerKind.Touch)
-        {
-            DispatchTouchSourcePipeline(target, pointerData, isDown, isUp, timestamp, ref sourceHandled, ref sourceCanceled);
-        }
-        else if (pointerData.Kind == Win32PointerKind.Pen)
-        {
-            DispatchStylusSourcePipeline(target, pointerData, isDown, isUp, timestamp, ref sourceHandled, ref sourceCanceled);
-        }
-
-        if (sourceCanceled)
-        {
-            CancelManipulationSession(pointerData.PointerId, timestamp);
-            RaisePointerCancelPipeline(target, pointerData.Point, pointerData.Modifiers, timestamp);
-            CleanupPointerSession(pointerData.PointerId);
-            return;
-        }
-
-        DispatchManipulationPipeline(target, pointerData, isDown, isUp, sourceHandled, timestamp);
-
-        if (!sourceHandled)
-        {
-            if (isDown)
-            {
-                RaisePointerDownPipeline(target, pointerData.Point, pointerData.Modifiers, timestamp);
-            }
-            else if (isUp)
-            {
-                RaisePointerUpPipeline(target, pointerData.Point, pointerData.Modifiers, timestamp);
-            }
-            else
-            {
-                RaisePointerMovePipeline(target, pointerData.Point, pointerData.Modifiers, timestamp);
-            }
-        }
-
-        if (isUp)
-        {
-            CleanupPointerSession(pointerData.PointerId);
-        }
+        _inputDispatcher.HandlePointerInput(pointerData, isDown, isUp, Environment.TickCount);
     }
 
     private void OnPointerWheel(nint wParam, nint lParam)
     {
         if (!Win32PointerInterop.TryGetPointerData(Handle, wParam, _dpiScale, out var pointerData))
             return;
-
-        // Mouse wheel is already handled by WM_MOUSEWHEEL.
-        if (pointerData.Kind == Win32PointerKind.Mouse)
+        if (pointerData.Kind == PointerInputKind.Mouse)
             return;
-
-        int timestamp = Environment.TickCount;
-        var target = _activePointerTargets.TryGetValue(pointerData.PointerId, out var existingTarget)
-            ? existingTarget ?? this
-            : (HitTestElement(pointerData.Position, "pointer-wheel") ?? this);
-
-        if (pointerData.IsCanceled)
-        {
-            RaisePointerCancelPipeline(target, pointerData.Point, pointerData.Modifiers, timestamp);
-            CleanupPointerSession(pointerData.PointerId);
-            return;
-        }
-
-        RaisePointerWheelPipeline(target, pointerData.Point, pointerData.Modifiers, timestamp);
+        _inputDispatcher.HandlePointerWheel(pointerData, Environment.TickCount);
     }
 
     private void OnPointerCaptureChanged(nint wParam)
     {
         uint pointerId = Win32PointerInterop.GetPointerId(wParam);
-
-        if (_activePointerTargets.TryGetValue(pointerId, out var target) && target != null)
-        {
-            if (!_lastPointerPoints.TryGetValue(pointerId, out var point))
-            {
-                point = new PointerPoint(
-                    pointerId,
-                    new Point(0, 0),
-                    PointerDeviceType.Touch,
-                    false,
-                    new PointerPointProperties(),
-                    (ulong)Environment.TickCount);
-            }
-
-            CancelManipulationSession(pointerId, Environment.TickCount);
-            RaisePointerCancelPipeline(target, point, ModifierKeys.None, Environment.TickCount);
-        }
-
-        CleanupPointerSession(pointerId);
+        _inputDispatcher.HandlePointerCaptureChanged(pointerId, Environment.TickCount);
     }
 
     private void DispatchTouchSourcePipeline(
         UIElement target,
-        Win32PointerData pointerData,
+        PointerInputData pointerData,
         bool isDown,
         bool isUp,
         int timestamp,
@@ -6775,7 +7017,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
     /// </summary>
     private void PromoteTouchToStylus(
         UIElement target,
-        Win32PointerData pointerData,
+        PointerInputData pointerData,
         bool isDown,
         bool isUp,
         int timestamp)
@@ -6842,7 +7084,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void DispatchStylusSourcePipeline(
         UIElement target,
-        Win32PointerData pointerData,
+        PointerInputData pointerData,
         bool isDown,
         bool isUp,
         int timestamp,
@@ -7064,7 +7306,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
 
     private void DispatchManipulationPipeline(
         UIElement target,
-        Win32PointerData pointerData,
+        PointerInputData pointerData,
         bool isDown,
         bool isUp,
         bool sourceHandled,
@@ -8160,6 +8402,86 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost
         ForceDark = 2,
         ForceLight = 3,
     }
+
+    #endregion
+
+    #region IInputDispatcherHost
+
+    Window IInputDispatcherHost.Self => this;
+    nint IInputDispatcherHost.Handle => Handle;
+    double IInputDispatcherHost.DpiScale => _dpiScale;
+
+    UIElement? IInputDispatcherHost.HitTestElement(Point windowPosition, string tag) => HitTestElement(windowPosition, tag);
+    HitTestResult? IInputDispatcherHost.HitIgnoringOverlay(Point windowPosition) => HitIgnoringOverlay(windowPosition);
+
+    OverlayLayer IInputDispatcherHost.OverlayLayer => OverlayLayer;
+    IReadOnlyList<Popup> IInputDispatcherHost.ActiveExternalPopups => ActiveExternalPopups;
+    ContentDialog? IInputDispatcherHost.ActiveContentDialog => ActiveContentDialog;
+    IReadOnlyList<ContentDialog> IInputDispatcherHost.ActiveInPlaceDialogs => ActiveInPlaceDialogs;
+
+    bool IInputDispatcherHost.IsTitleBarVisible() => IsTitleBarVisible();
+    TitleBarButton? IInputDispatcherHost.GetTitleBarButtonAtPoint(Point point, double windowWidth) => GetTitleBarButtonAtPoint(point, windowWidth);
+    WindowTitleBarStyle IInputDispatcherHost.TitleBarStyle => TitleBarStyle;
+    TitleBar? IInputDispatcherHost.TitleBar => TitleBar;
+
+    UIElement IInputDispatcherHost.GetKeyboardEventTarget() => GetKeyboardEventTarget();
+    UIElement? IInputDispatcherHost.GetTextInputTarget() => GetTextInputTarget();
+    ContentDialog? IInputDispatcherHost.FindContainingInPlaceDialog() => FindContainingInPlaceDialog();
+    Button? IInputDispatcherHost.FindButton(UIElement root, Func<Button, bool> predicate) => FindButton(root, predicate);
+
+    bool IInputDispatcherHost.CanOpenDevTools => CanOpenDevTools;
+    void IInputDispatcherHost.ToggleDevTools() => ToggleDevTools();
+    void IInputDispatcherHost.OpenDevTools() => OpenDevTools();
+    void IInputDispatcherHost.ActivateDevToolsPicker() => _devToolsWindow?.ActivatePicker();
+
+    bool IInputDispatcherHost.DebugHudEnabled
+    {
+        get => _debugHud.Enabled;
+        set => _debugHud.Enabled = value;
+    }
+
+    Visibility IInputDispatcherHost.DebugHudOverlayVisibility
+    {
+        set => _debugHudOverlay.Visibility = value;
+    }
+
+    bool IInputDispatcherHost.OnPreviewWindowKeyDown(Key key, ModifierKeys modifiers, bool isRepeat) => OnPreviewWindowKeyDown(key, modifiers, isRepeat);
+    bool IInputDispatcherHost.OnPreviewWindowKeyUp(Key key, ModifierKeys modifiers) => OnPreviewWindowKeyUp(key, modifiers);
+    bool IInputDispatcherHost.OnPreviewWindowMouseDown(MouseButton button, Point position, int clickCount) => OnPreviewWindowMouseDown(button, position, clickCount);
+    bool IInputDispatcherHost.OnPreviewWindowMouseUp(MouseButton button, Point position) => OnPreviewWindowMouseUp(button, position);
+    bool IInputDispatcherHost.OnPreviewWindowMouseMove(Point position) => OnPreviewWindowMouseMove(position);
+    bool IInputDispatcherHost.OnPreviewWindowMouseWheel(int delta, Point position) => OnPreviewWindowMouseWheel(delta, position);
+
+    void IInputDispatcherHost.InvalidateWindow() => InvalidateWindow();
+    void IInputDispatcherHost.RequestFullInvalidation() => RequestFullInvalidation();
+
+    void IInputDispatcherHost.RequestTrackMouseLeave()
+    {
+        if (PlatformFactory.IsWindows && Handle != nint.Zero)
+        {
+            TRACKMOUSEEVENT tme = new()
+            {
+                cbSize = (uint)System.Runtime.InteropServices.Marshal.SizeOf<TRACKMOUSEEVENT>(),
+                dwFlags = TME_LEAVE,
+                hwndTrack = Handle,
+                dwHoverTime = 0
+            };
+            _ = TrackMouseEvent(ref tme);
+        }
+    }
+
+    void IInputDispatcherHost.SetPlatformCursor(int cursorType)
+    {
+        _platformWindow?.SetCursor(cursorType);
+    }
+
+    void IInputDispatcherHost.UpdateInputMethodAssociation() => UpdateInputMethodAssociation();
+
+    bool IInputDispatcherHost.IsPopupWindow(nint hwnd) => Primitives.PopupWindow.IsPopupWindow(hwnd);
+    bool IInputDispatcherHost.IsVirtualKeyDown(int nVirtKey) => IsVirtualKeyDown(nVirtKey);
+    void IInputDispatcherHost.WakeRenderPipeline() => WakeRenderPipeline();
+
+    Jalium.UI.Input.StylusPlugIns.RealTimeStylus IInputDispatcherHost.RealTimeStylus => _realTimeStylus;
 
     #endregion
 }

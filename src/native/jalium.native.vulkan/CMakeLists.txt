@@ -46,6 +46,18 @@ target_link_libraries(${PROJECT_NAME}
         jalium.native.core
 )
 
+# Link text engine on non-Windows platforms
+if(NOT WIN32)
+    target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+            jalium.native.text
+    )
+    target_include_directories(${PROJECT_NAME}
+        PRIVATE
+            ${CMAKE_CURRENT_SOURCE_DIR}/../jalium.native.text/include
+    )
+endif()
+
 if(WIN32)
     target_link_libraries(${PROJECT_NAME}
         PRIVATE
@@ -56,6 +68,13 @@ if(WIN32)
             dxgi
             d3d11
     )
+elseif(ANDROID)
+    target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+            vulkan
+            android
+            log
+    )
 elseif(UNIX AND NOT APPLE)
     find_package(X11 REQUIRED)
     target_include_directories(${PROJECT_NAME}
@@ -64,6 +83,7 @@ elseif(UNIX AND NOT APPLE)
     )
     target_link_libraries(${PROJECT_NAME}
         PRIVATE
+            vulkan
             ${X11_LIBRARIES}
             dl
     )

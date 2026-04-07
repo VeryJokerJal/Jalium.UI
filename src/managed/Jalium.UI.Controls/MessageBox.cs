@@ -177,6 +177,13 @@ public sealed class MessageBox
     private static MessageBoxResult ShowCore(IntPtr owner, string messageBoxText, string caption,
         MessageBoxButton button, MessageBoxImage icon, MessageBoxResult defaultResult, MessageBoxOptions options)
     {
+        if (!Platform.PlatformFactory.IsWindows)
+        {
+            var dialog = new MessageBoxDialog(messageBoxText, caption, button, icon, defaultResult);
+            dialog.ShowDialog();
+            return dialog.Result;
+        }
+
         uint flags = (uint)button | (uint)icon | (uint)options;
 
         // Set default button based on defaultResult

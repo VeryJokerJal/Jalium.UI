@@ -1,5 +1,14 @@
 #include "jalium_internal.h"
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LOGI_CTX(...) __android_log_print(ANDROID_LOG_INFO, "JaliumContext", __VA_ARGS__)
+#define LOGE_CTX(...) __android_log_print(ANDROID_LOG_ERROR, "JaliumContext", __VA_ARGS__)
+#else
+#define LOGI_CTX(...)
+#define LOGE_CTX(...)
+#endif
+
 // ============================================================================
 // C API
 // ============================================================================
@@ -8,6 +17,8 @@ extern "C" {
 
 JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
     auto& registry = jalium::GetBackendRegistry();
+
+    LOGI_CTX("jalium_context_create: requested backend=%d", (int)backend);
 
     JaliumBackend actualBackend = backend;
     if (backend == JALIUM_BACKEND_AUTO) {
@@ -27,25 +38,37 @@ JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
         };
 
         for (auto candidate : preferredOrder) {
-            if (registry.IsAvailable(candidate)) {
+            bool avail = registry.IsAvailable(candidate);
+            LOGI_CTX("  candidate %d: available=%d", (int)candidate, avail ? 1 : 0);
+            if (avail) {
                 actualBackend = candidate;
                 break;
             }
         }
 
         if (actualBackend == JALIUM_BACKEND_AUTO) {
+            LOGE_CTX("jalium_context_create: no backend available!");
             return nullptr;
         }
     }
 
+    LOGI_CTX("jalium_context_create: using backend=%d", (int)actualBackend);
+
     auto factory = registry.GetFactory(actualBackend);
-    if (!factory) return nullptr;
+    if (!factory) {
+        LOGE_CTX("jalium_context_create: no factory for backend %d", (int)actualBackend);
+        return nullptr;
+    }
 
     auto* rawBackend = reinterpret_cast<jalium::IRenderBackend*>(factory());
-    if (!rawBackend) return nullptr;
+    if (!rawBackend) {
+        LOGE_CTX("jalium_context_create: factory returned null for backend %d", (int)actualBackend);
+        return nullptr;
+    }
 
     auto backendImpl = std::unique_ptr<jalium::IRenderBackend>(rawBackend);
     auto* ctx = new jalium::Context(actualBackend, std::move(backendImpl));
+    LOGI_CTX("jalium_context_create: success, ctx=%p", (void*)ctx);
     return reinterpret_cast<JaliumContext*>(ctx);
 }
 

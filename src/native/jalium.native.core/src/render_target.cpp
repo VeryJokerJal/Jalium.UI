@@ -1,4 +1,5 @@
 #include "jalium_internal.h"
+#include "jalium_string_util.h"
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -445,11 +446,21 @@ JALIUM_API void jalium_draw_text(
     JaliumBrush* brush)
 {
     if (rt && text && format && brush) {
+#if defined(_WIN32)
         reinterpret_cast<jalium::RenderTarget*>(rt)->RenderText(
             text, textLength,
             reinterpret_cast<jalium::TextFormat*>(format),
             x, y, width, height,
             reinterpret_cast<jalium::Brush*>(brush));
+#else
+        // Managed code sends UTF-16 data but wchar_t is 4 bytes on Linux/Android.
+        auto wstr = jalium::ManagedToWString(text, textLength);
+        reinterpret_cast<jalium::RenderTarget*>(rt)->RenderText(
+            wstr.c_str(), static_cast<uint32_t>(wstr.size()),
+            reinterpret_cast<jalium::TextFormat*>(format),
+            x, y, width, height,
+            reinterpret_cast<jalium::Brush*>(brush));
+#endif
     }
 }
 
@@ -685,7 +696,9 @@ JALIUM_API void jalium_effect_begin_capture(
     JaliumRenderTarget* rt,
     float x, float y, float w, float h)
 {
+    #ifdef _WIN32
     OutputDebugStringA("[C API] jalium_effect_begin_capture CALLED\n");
+    #endif
     if (rt && w > 0 && h > 0) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->BeginEffectCapture(x, y, w, h);
     }
@@ -693,7 +706,9 @@ JALIUM_API void jalium_effect_begin_capture(
 
 JALIUM_API void jalium_effect_end_capture(JaliumRenderTarget* rt)
 {
+    #ifdef _WIN32
     OutputDebugStringA("[C API] jalium_effect_end_capture CALLED\n");
+    #endif
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->EndEffectCapture();
     }

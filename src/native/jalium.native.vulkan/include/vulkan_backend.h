@@ -7,6 +7,8 @@
 #include <dwrite.h>
 #include <wincodec.h>
 #include <wrl/client.h>
+#else
+#include "text_engine.h"
 #endif
 
 namespace jalium {
@@ -53,12 +55,16 @@ public:
 
 #ifdef _WIN32
     IDWriteFactory* GetDWriteFactory() const { return dwriteFactory_.Get(); }
+#else
+    TextEngine* GetTextEngine() const { return textEngine_.get(); }
 #endif
 
 private:
 #ifdef _WIN32
     Microsoft::WRL::ComPtr<IDWriteFactory> dwriteFactory_;
     Microsoft::WRL::ComPtr<IWICImagingFactory> wicFactory_;
+#else
+    std::unique_ptr<TextEngine> textEngine_;
 #endif
     bool initialized_ = false;
 };

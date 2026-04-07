@@ -3,7 +3,7 @@ namespace Jalium.UI.Input;
 /// <summary>
 /// Represents the keyboard input device and provides keyboard focus management.
 /// </summary>
-public static class Keyboard
+public static partial class Keyboard
 {
     private static readonly KeyboardFocusProvider _provider = new();
 
@@ -75,8 +75,8 @@ public static class Keyboard
     /// <returns>True if the key is pressed; otherwise, false.</returns>
     public static bool IsKeyDown(Key key)
     {
-        short state = NativeMethods.GetAsyncKeyState((int)key);
-        return (state & 0x8000) != 0;
+        short state = NativeMethods.GetKeyState((int)key);
+        return (state & 0x0001) != 0; // bit 0 = currently pressed
     }
 
     /// <summary>
@@ -93,16 +93,33 @@ public static class Keyboard
     /// <returns>True if the key is toggled on; otherwise, false.</returns>
     public static bool IsKeyToggled(Key key)
     {
-        short state = NativeMethods.GetAsyncKeyState((int)key);
-        return (state & 0x0001) != 0;
+        short state = NativeMethods.GetKeyState((int)key);
+        return (state & 0x0002) != 0; // bit 1 = toggled
     }
 
     #endregion
 
-    private static class NativeMethods
+    private static partial class NativeMethods
     {
+        private static readonly bool s_isWindows =
+            System.Runtime.InteropServices.RuntimeInformation.IsOSPlatform(
+                System.Runtime.InteropServices.OSPlatform.Windows);
+
+        public static short GetKeyState(int vKey)
+        {
+            if (s_isWindows)
+                return GetAsyncKeyState(vKey);
+
+            // Cross-platform: use jalium.native.platform
+            return InputGetKeyState(vKey);
+        }
+
         [System.Runtime.InteropServices.DllImport("user32.dll")]
-        public static extern short GetAsyncKeyState(int vKey);
+        private static extern short GetAsyncKeyState(int vKey);
+
+        [System.Runtime.InteropServices.LibraryImport("jalium.native.platform",
+            EntryPoint = "jalium_input_get_key_state")]
+        private static partial short InputGetKeyState(int virtualKey);
     }
 }
 

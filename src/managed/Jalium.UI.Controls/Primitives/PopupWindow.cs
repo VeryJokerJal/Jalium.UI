@@ -925,7 +925,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         if (!Win32PointerInterop.TryGetPointerData(_hwnd, wParam, _parentWindow.DpiScale, out var pointerData))
             return;
 
-        if (pointerData.Kind == Win32PointerKind.Mouse)
+        if (pointerData.Kind == PointerInputKind.Mouse)
             return;
 
         bool isDown = msg == Win32PointerInterop.WM_POINTERDOWN;
@@ -945,11 +945,11 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         bool sourceHandled = false;
         bool sourceCanceled = pointerData.IsCanceled;
 
-        if (pointerData.Kind == Win32PointerKind.Touch)
+        if (pointerData.Kind == PointerInputKind.Touch)
         {
             DispatchTouchSourcePipeline(target, pointerData, isDown, isUp, timestamp, ref sourceHandled, ref sourceCanceled);
         }
-        else if (pointerData.Kind == Win32PointerKind.Pen)
+        else if (pointerData.Kind == PointerInputKind.Pen)
         {
             DispatchStylusSourcePipeline(target, pointerData, isDown, isUp, timestamp, ref sourceHandled, ref sourceCanceled);
         }
@@ -991,7 +991,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         if (!Win32PointerInterop.TryGetPointerData(_hwnd, wParam, _parentWindow.DpiScale, out var pointerData))
             return;
 
-        if (pointerData.Kind == Win32PointerKind.Mouse)
+        if (pointerData.Kind == PointerInputKind.Mouse)
             return;
 
         int timestamp = Environment.TickCount;
@@ -1035,7 +1035,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void DispatchTouchSourcePipeline(
         UIElement target,
-        Win32PointerData pointerData,
+        PointerInputData pointerData,
         bool isDown,
         bool isUp,
         int timestamp,
@@ -1074,7 +1074,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void DispatchStylusSourcePipeline(
         UIElement target,
-        Win32PointerData pointerData,
+        PointerInputData pointerData,
         bool isDown,
         bool isUp,
         int timestamp,
@@ -1295,7 +1295,7 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
 
     private void DispatchManipulationPipeline(
         UIElement target,
-        Win32PointerData pointerData,
+        PointerInputData pointerData,
         bool isDown,
         bool isUp,
         bool sourceHandled,

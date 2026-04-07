@@ -1,5 +1,10 @@
 #include "vulkan_resources.h"
 
+#ifndef _WIN32
+#include "text_engine.h"
+#include "text_layout.h"
+#endif
+
 #include <algorithm>
 #include <cstring>
 
@@ -75,6 +80,7 @@ VulkanTextFormat::VulkanTextFormat(
 }
 #else
 VulkanTextFormat::VulkanTextFormat(
+    TextEngine* textEngine,
     const wchar_t* fontFamily,
     float fontSize,
     int32_t fontWeight,
@@ -82,10 +88,18 @@ VulkanTextFormat::VulkanTextFormat(
     : fontFamily_(fontFamily ? fontFamily : L"Sans")
     , fontSize_(fontSize)
 {
-    (void)fontWeight;
-    (void)fontStyle;
+    // Create a FreeTypeTextFormat if text engine is available
+    if (textEngine) {
+        auto* ftFormat = textEngine->CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+        if (ftFormat) {
+            ftTextFormat_.reset(static_cast<FreeTypeTextFormat*>(ftFormat));
+        }
+    }
 }
+
 #endif
+
+VulkanTextFormat::~VulkanTextFormat() = default;
 
 void VulkanTextFormat::SetAlignment(int32_t alignment)
 {
@@ -109,12 +123,17 @@ void VulkanTextFormat::SetAlignment(int32_t alignment)
     }
 
     format_->SetTextAlignment(textAlignment);
+#else
+    if (ftTextFormat_) ftTextFormat_->SetAlignment(alignment);
 #endif
 }
 
 void VulkanTextFormat::SetParagraphAlignment(int32_t alignment)
 {
     paragraphAlignment_ = alignment;
+#ifndef _WIN32
+    if (ftTextFormat_) ftTextFormat_->SetParagraphAlignment(alignment);
+#endif
 #ifdef _WIN32
     if (!format_) {
         return;
@@ -137,6 +156,9 @@ void VulkanTextFormat::SetParagraphAlignment(int32_t alignment)
 void VulkanTextFormat::SetTrimming(int32_t trimming)
 {
     trimming_ = trimming;
+#ifndef _WIN32
+    if (ftTextFormat_) ftTextFormat_->SetTrimming(trimming);
+#endif
 #ifdef _WIN32
     if (!format_ || !factory_) {
         return;
@@ -165,6 +187,9 @@ void VulkanTextFormat::SetTrimming(int32_t trimming)
 
 void VulkanTextFormat::SetWordWrapping(int32_t wrapping)
 {
+#ifndef _WIN32
+    if (ftTextFormat_) ftTextFormat_->SetWordWrapping(wrapping);
+#endif
 #ifdef _WIN32
     if (format_) {
         DWRITE_WORD_WRAPPING dw;
@@ -181,6 +206,9 @@ void VulkanTextFormat::SetWordWrapping(int32_t wrapping)
 
 void VulkanTextFormat::SetLineSpacing(int32_t method, float spacing, float baseline)
 {
+#ifndef _WIN32
+    if (ftTextFormat_) ftTextFormat_->SetLineSpacing(method, spacing, baseline);
+#endif
 #ifdef _WIN32
     if (format_) {
         DWRITE_LINE_SPACING_METHOD dwMethod;
@@ -194,7 +222,13 @@ void VulkanTextFormat::SetLineSpacing(int32_t method, float spacing, float basel
 #endif
 }
 
-void VulkanTextFormat::SetMaxLines(uint32_t) {}
+void VulkanTextFormat::SetMaxLines(uint32_t maxLines) {
+#ifndef _WIN32
+    if (ftTextFormat_) ftTextFormat_->SetMaxLines(maxLines);
+#else
+    (void)maxLines;
+#endif
+}
 
 JaliumResult VulkanTextFormat::HitTestPoint(
     const wchar_t* text, uint32_t textLength,
@@ -218,6 +252,9 @@ JaliumResult VulkanTextFormat::HitTestPoint(
     float cx, cy; DWRITE_HIT_TEST_METRICS cm = {};
     layout->HitTestTextPosition(m.textPosition, trailing, &cx, &cy, &cm);
     result->caretX = cx; result->caretY = cy; result->caretHeight = cm.height;
+#else
+    if (ftTextFormat_)
+        return ftTextFormat_->HitTestPoint(text, textLength, maxWidth, maxHeight, pointX, pointY, result);
 #endif
     return JALIUM_OK;
 }
@@ -241,6 +278,9 @@ JaliumResult VulkanTextFormat::HitTestTextPosition(
     result->isTrailingHit = isTrailingHit;
     result->isInside = 1;
     result->caretX = cx; result->caretY = cy; result->caretHeight = m.height;
+#else
+    if (ftTextFormat_)
+        return ftTextFormat_->HitTestTextPosition(text, textLength, maxWidth, maxHeight, textPosition, isTrailingHit, result);
 #endif
     return JALIUM_OK;
 }
@@ -271,8 +311,14 @@ JaliumResult VulkanTextFormat::MeasureText(
             }
         }
     }
+#else
+    // Cross-platform: delegate to FreeType text engine
+    if (ftTextFormat_) {
+        return ftTextFormat_->MeasureText(text, textLength, maxWidth, maxHeight, metrics);
+    }
 #endif
 
+    // Fallback: approximate metrics if no text engine available
     if (metrics->width == 0.0f && textLength > 0) {
         const float approxCharWidth = fontSize_ * 0.55f;
         metrics->width = std::min(maxWidth, approxCharWidth * static_cast<float>(textLength));
@@ -280,12 +326,14 @@ JaliumResult VulkanTextFormat::MeasureText(
         metrics->lineCount = 1;
     }
 
-    metrics->ascent = fontSize_ * 0.8f;
-    metrics->descent = fontSize_ * 0.2f;
-    metrics->lineGap = fontSize_ * 0.2f;
-    metrics->lineHeight = metrics->ascent + metrics->descent + metrics->lineGap;
-    metrics->baseline = metrics->ascent;
-    metrics->height = std::max(metrics->height, metrics->lineHeight);
+    if (metrics->ascent == 0.0f) {
+        metrics->ascent = fontSize_ * 0.8f;
+        metrics->descent = fontSize_ * 0.2f;
+        metrics->lineGap = fontSize_ * 0.2f;
+        metrics->lineHeight = metrics->ascent + metrics->descent + metrics->lineGap;
+        metrics->baseline = metrics->ascent;
+        metrics->height = std::max(metrics->height, metrics->lineHeight);
+    }
     return JALIUM_OK;
 }
 
@@ -296,6 +344,14 @@ JaliumResult VulkanTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
     }
 
     std::memset(metrics, 0, sizeof(JaliumTextMetrics));
+
+#ifndef _WIN32
+    if (ftTextFormat_) {
+        return ftTextFormat_->GetFontMetrics(metrics);
+    }
+#endif
+
+    // Fallback
     metrics->ascent = fontSize_ * 0.8f;
     metrics->descent = fontSize_ * 0.2f;
     metrics->lineGap = fontSize_ * 0.2f;

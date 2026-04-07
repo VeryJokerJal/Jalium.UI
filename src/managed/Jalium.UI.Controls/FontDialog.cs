@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Runtime.InteropServices;
-using GdiInstalledFontCollection = System.Drawing.Text.InstalledFontCollection;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -544,18 +543,13 @@ public sealed class FontDialog
     {
         try
         {
-            using var fontCollection = new GdiInstalledFontCollection();
-            var families = fontCollection.Families
-                .Select(static family => family.Name)
-                .Where(static name => !string.IsNullOrWhiteSpace(name) && !name.StartsWith('@'))
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .OrderBy(static name => name, StringComparer.CurrentCultureIgnoreCase)
-                .Select(static name => new FontFamily(name))
-                .ToArray();
-
-            if (families.Length > 0)
+            var names = Helpers.FontEnumerationHelper.EnumerateSystemFontFamilies();
+            if (names != null && names.Length > 0)
             {
-                return families;
+                return names
+                    .Where(static name => !name.StartsWith('@'))
+                    .Select(static name => new FontFamily(name))
+                    .ToArray();
             }
         }
         catch

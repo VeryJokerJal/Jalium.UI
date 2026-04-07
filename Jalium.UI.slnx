@@ -11,7 +11,9 @@
     <Project Path="src/managed/Jalium.UI.Xaml/Jalium.UI.Xaml.csproj" />
   </Folder>
   <Folder Name="/src/packaging/">
-    <Project Path="src/packaging/Jalium.UI.csproj" />
+    <Project Path="src/packaging/Jalium.UI/Jalium.UI.csproj" />
+    <Project Path="src/packaging/Jalium.UI.Desktop/Jalium.UI.Desktop.csproj" />
+    <Project Path="src/packaging/Jalium.UI.Android/Jalium.UI.Android.csproj" />
   </Folder>
   <Folder Name="/src/tools/">
     <Project Path="src/managed/Jalium.UI.Compiler/Jalium.UI.Compiler.csproj" />

@@ -119,11 +119,7 @@ public:
     std::vector<GlyphRun> runs;
     std::vector<TextDecoration> decorations;
 
-    /// DPI scale factor for pixel snapping.  Set to dpiScale_ (e.g. 1.5 for
-    /// 144 DPI) so DirectWrite snaps glyph advances to the physical pixel grid
-    /// instead of the coarse 96-DPI grid.  Without this, rounding errors
-    /// accumulate and create visible gaps ("b utt on" instead of "button").
-    float dpiScale = 1.0f;
+    float dpiScale = 1.0f;  // currently unused — ppd fixed at 1.0
 
     // IUnknown — stack-allocated, ref counting is a no-op.
     // DirectWrite's Draw() is synchronous and does not retain the renderer.
@@ -138,14 +134,17 @@ public:
         return E_NOINTERFACE;
     }
 
-    // IDWritePixelSnapping — report actual display DPI so glyph positions
-    // snap to the physical pixel grid, not the 96-DPI logical grid.
+    // IDWritePixelSnapping — enable snapping at 96 DPI (ppd = 1.0) so glyph
+    // advances are rounded to integer DIP boundaries.  This produces crisp,
+    // consistent character spacing because every glyph lands on the same
+    // sub-pixel grid.  Sub-pixel ClearType rendering is then handled by our
+    // own pipeline (CreateGlyphRunAnalysis with quantized offsets).
     HRESULT STDMETHODCALLTYPE IsPixelSnappingDisabled(void*, BOOL* disabled) override { *disabled = FALSE; return S_OK; }
     HRESULT STDMETHODCALLTYPE GetCurrentTransform(void*, DWRITE_MATRIX* transform) override {
         *transform = { 1, 0, 0, 1, 0, 0 };
         return S_OK;
     }
-    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* ppd) override { *ppd = dpiScale; return S_OK; }
+    HRESULT STDMETHODCALLTYPE GetPixelsPerDip(void*, FLOAT* ppd) override { *ppd = 1.0f; return S_OK; }
 
     // IDWriteTextRenderer
     HRESULT STDMETHODCALLTYPE DrawGlyphRun(void*, FLOAT baselineOriginX, FLOAT baselineOriginY,
@@ -274,7 +273,7 @@ bool D3D12GlyphAtlas::Initialize()
             1.0f,              // clearTypeLevel = 1.0 enables full ClearType sub-pixel rendering
             DWRITE_PIXEL_GEOMETRY_RGB,
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
-            DWRITE_GRID_FIT_MODE_DISABLED,
+            DWRITE_GRID_FIT_MODE_ENABLED,
             &params3);
         if (params3) {
             params3->QueryInterface(IID_PPV_ARGS(&renderingParams_));
@@ -347,7 +346,7 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
             nullptr,  // no transform
             DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
             DWRITE_MEASURING_MODE_NATURAL,
-            DWRITE_GRID_FIT_MODE_DISABLED,
+            DWRITE_GRID_FIT_MODE_ENABLED,   // snap horizontal strokes to pixel rows
             DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
             subpixelOffset, 0.0f,  // sub-pixel X offset baked into bounds
             &analysis);
@@ -500,9 +499,9 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     if (!layout || !initialized_) return 0;
 
     // Extract glyph runs from the text layout.
-    // Pass dpiScale_ so DirectWrite snaps to the physical pixel grid.
+    // Pixel snapping is disabled in the collector — DirectWrite reports exact
+    // layout positions, and we handle sub-pixel alignment ourselves.
     GlyphRunCollector collector;
-    collector.dpiScale = dpiScale_;
     layout->Draw(nullptr, &collector, originX, originY);
 
     uint32_t count = 0;
@@ -529,12 +528,10 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
                 offsetY = run.glyphOffsets[i].ascenderOffset;
             }
 
-            // Compute pen position in physical pixels to determine sub-pixel offset.
-            // ClearType rendering is sensitive to horizontal sub-pixel position —
-            // a glyph at x=10.0 looks different from one at x=10.33.
+            // Compute pen position in physical pixels for sub-pixel ClearType.
             float penXPhysical = (penX + offsetX) * dpiScale_;
             float subpixelF = penXPhysical - std::floor(penXPhysical);
-            // Quantize to 1/4 pixel (4 cached variants per glyph — balances quality vs cache size)
+            // Quantize to 1/4 pixel (4 cached variants per glyph)
             uint8_t subpixelQuant = (uint8_t)std::min((int)(subpixelF * 4.0f), 3);
 
             GlyphKey key;
@@ -553,10 +550,9 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
 
             auto& entry = it->second.entry;
             if (entry.valid && entry.w > 0 && entry.h > 0) {
-                // The glyph was rasterized with sub-pixel offset baked in via
-                // CreateGlyphRunAnalysis(baselineOriginX = subpixelQuant/4.0).
-                // bounds.left already includes that offset, so position the quad
-                // at the integer pixel boundary + bounds offset.
+                // Position the glyph quad at the integer-pixel base + bearing.
+                // bearingX (= bounds.left from ClearType analysis) includes the
+                // sub-pixel offset baked in during rasterization.
                 float glyphX = std::floor(penXPhysical) * invDpi + entry.bearingX * invDpi;
                 float glyphY = run.baselineY - offsetY - entry.bearingY * invDpi;
 

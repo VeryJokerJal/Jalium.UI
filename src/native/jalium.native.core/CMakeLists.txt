@@ -34,6 +34,11 @@ if(WIN32)
             kernel32
             user32
     )
+elseif(ANDROID)
+    target_link_libraries(${PROJECT_NAME}
+        PRIVATE
+            log
+    )
 endif()
 
 # Set output name

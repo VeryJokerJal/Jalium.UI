@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Core.Platform;
 
 namespace Jalium.UI;
 
@@ -28,6 +29,15 @@ public static partial class CompositionTarget
     private static nint _hrtHandle;
     private static Thread? _hrtThread;
     private static volatile bool _hrtRunning;
+
+    // Cross-platform frame timer (non-Windows: timerfd on Linux, clock_nanosleep on Android)
+    private static IFrameTimer? _nativeTimer;
+    private static Thread? _nativeTimerThread;
+    private static volatile bool _nativeTimerRunning;
+
+    private static volatile bool _suspended;
+
+    private static readonly bool s_isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
     private const uint HighResolutionTimerPeriodMs = 1;
 
@@ -119,6 +129,17 @@ public static partial class CompositionTarget
     }
 
     /// <summary>
+    /// Suspends rendering. Frame tick callbacks are skipped while suspended.
+    /// Used when the Android app is paused to save battery.
+    /// </summary>
+    internal static void SuspendRendering() => _suspended = true;
+
+    /// <summary>
+    /// Resumes rendering after a suspend. The next frame tick will dispatch normally.
+    /// </summary>
+    internal static void ResumeRendering() => _suspended = false;
+
+    /// <summary>
     /// Updates the detected refresh rate. Called by Window when the monitor changes.
     /// </summary>
     /// <param name="rate">The detected refresh rate in Hz.</param>
@@ -131,6 +152,18 @@ public static partial class CompositionTarget
     }
 
     private static void StartTimer()
+    {
+        if (s_isWindows)
+        {
+            StartTimerWindows();
+        }
+        else
+        {
+            StartTimerNative();
+        }
+    }
+
+    private static void StartTimerWindows()
     {
         // Try high-resolution waitable timer (Windows 10 1803+).
         // This provides guaranteed sub-ms one-shot timing independent of
@@ -160,8 +193,44 @@ public static partial class CompositionTarget
         _frameTimer = new Timer(OnFrameTick, null, FrameIntervalMs, Timeout.Infinite);
     }
 
+    private static void StartTimerNative()
+    {
+        // Cross-platform path: use jalium.native.platform timer (timerfd / clock_nanosleep)
+        try
+        {
+            _nativeTimer = new NativeFrameTimer();
+            _nativeTimerRunning = true;
+            _nativeTimer.Arm(FrameIntervalMs * 1000L); // microseconds
+            _nativeTimerThread = new Thread(NativeTimerLoop)
+            {
+                IsBackground = true,
+                Name = "Jalium.FrameTimer"
+            };
+            _nativeTimerThread.Start();
+        }
+        catch
+        {
+            // Fallback to System.Threading.Timer
+            _nativeTimer?.Dispose();
+            _nativeTimer = null;
+            _frameTimer = new Timer(OnFrameTick, null, FrameIntervalMs, Timeout.Infinite);
+        }
+    }
+
     private static void StopTimer()
     {
+        // Stop native cross-platform timer
+        if (_nativeTimer != null)
+        {
+            _nativeTimerRunning = false;
+            _nativeTimer.Arm(1); // Arm with tiny value to unblock wait
+            _nativeTimerThread?.Join(500);
+            _nativeTimerThread = null;
+            _nativeTimer.Dispose();
+            _nativeTimer = null;
+        }
+
+        // Stop Windows high-resolution timer
         if (_hrtHandle != nint.Zero)
         {
             _hrtRunning = false;
@@ -173,16 +242,16 @@ public static partial class CompositionTarget
             CloseHandle(_hrtHandle);
             _hrtHandle = nint.Zero;
         }
-        else
+        else if (_frameTimer != null)
         {
-            _frameTimer?.Dispose();
+            _frameTimer.Dispose();
             _frameTimer = null;
-            ReleaseHighResolutionTimer();
+            if (s_isWindows) ReleaseHighResolutionTimer();
         }
     }
 
     /// <summary>
-    /// Background thread loop for the high-resolution waitable timer path.
+    /// Background thread loop for the high-resolution waitable timer path (Windows).
     /// Waits for the timer to fire (one-shot), then dispatches OnFrameTick.
     /// The timer is re-armed by <see cref="RearmTimer"/> after rendering completes,
     /// preserving the one-shot guarantee: at most one RaiseRendering in-flight.
@@ -200,8 +269,31 @@ public static partial class CompositionTarget
         }
     }
 
+    /// <summary>
+    /// Background thread loop for the native cross-platform timer (Linux/Android).
+    /// </summary>
+    private static void NativeTimerLoop()
+    {
+        while (_nativeTimerRunning)
+        {
+            bool fired = _nativeTimer?.Wait(1000) ?? false;
+            if (!_nativeTimerRunning) break;
+            if (fired)
+            {
+                OnFrameTick(null);
+            }
+        }
+    }
+
     private static void OnFrameTick(object? state)
     {
+        // Skip rendering while suspended (e.g., Android app paused).
+        if (_suspended)
+        {
+            RearmTimer();
+            return;
+        }
+
         // One-shot: this callback fires exactly once. No guard needed.
         // Marshal to UI thread with one posted message per frame.
         var dispatcher = Dispatcher.MainDispatcher;
@@ -326,7 +418,11 @@ public static partial class CompositionTarget
         {
             if (_subscriberCount <= 0) return;
 
-            if (_hrtHandle != nint.Zero)
+            if (_nativeTimer != null)
+            {
+                _nativeTimer.Arm(FrameIntervalMs * 1000L); // microseconds
+            }
+            else if (_hrtHandle != nint.Zero)
             {
                 long dueTime = -10_000L * FrameIntervalMs;
                 SetWaitableTimerEx(_hrtHandle, in dueTime, 0, nint.Zero, nint.Zero, nint.Zero, 0);

@@ -11,7 +11,7 @@ public enum RenderBackend
     D3D12 = 1,
     Vulkan = 3,
     Metal = 5,
-    Software = 99
+    Software = 7
 }
 
 /// <summary>
@@ -80,15 +80,29 @@ internal static partial class NativeMethods
     private const string VulkanLib = "jalium.native.vulkan";
     private const string MetalLib = "jalium.native.metal";
     private const string SoftwareLib = "jalium.native.software";
+    private const string PlatformLib = "jalium.native.platform";
 
     /// <summary>
-    /// Static constructor to register all available backends.
+    /// Static constructor to register the platform-native backend.
+    /// Each platform uses exactly one GPU backend:
+    /// Windows → D3D12, macOS → Metal, Linux/Android → Vulkan.
     /// </summary>
     static NativeMethods()
     {
-        TryInitializeBackend(D3D12Init);
-        TryInitializeBackend(VulkanInit);
-        TryInitializeBackend(MetalInit);
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            TryInitializeBackend(D3D12Init);
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            TryInitializeBackend(MetalInit);
+        }
+        else
+        {
+            // Linux / Android
+            TryInitializeBackend(VulkanInit);
+        }
+
         TryInitializeBackend(SoftwareInit);
     }
 
@@ -110,14 +124,19 @@ internal static partial class NativeMethods
         {
             init();
         }
-        catch (DllNotFoundException)
+        catch (Exception ex) when (
+            ex is DllNotFoundException or
+            EntryPointNotFoundException or
+            BadImageFormatException or
+            TypeLoadException or
+            MarshalDirectiveException or
+            InvalidOperationException)
         {
+            // Backend library not available on this platform — safe to ignore.
         }
-        catch (EntryPointNotFoundException)
+        catch (Exception)
         {
-        }
-        catch (BadImageFormatException)
-        {
+            // Any other load failure is also non-fatal; the backend simply won't register.
         }
     }
 
@@ -811,4 +830,202 @@ internal static partial class NativeMethods
     internal static partial int IsBackendAvailable(RenderBackend backend);
 
     #endregion
+
+    #region Platform Library (jalium.native.platform)
+
+    // --- Platform Initialization ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_init")]
+    internal static partial int PlatformInit();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_shutdown")]
+    internal static partial void PlatformShutdown();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_get_current")]
+    internal static partial int PlatformGetCurrent();
+
+    // --- Window Management ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_create")]
+    internal static partial nint WindowCreate(ref NativePlatformWindowParams windowParams);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_destroy")]
+    internal static partial void WindowDestroy(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_show")]
+    internal static partial void WindowShow(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_hide")]
+    internal static partial void WindowHide(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_title", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial void WindowSetTitle(nint window, string title);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_resize")]
+    internal static partial void WindowResize(nint window, int width, int height);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_move")]
+    internal static partial void WindowMove(nint window, int x, int y);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_state")]
+    internal static partial void WindowSetState(nint window, int state);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_state")]
+    internal static partial int WindowGetState(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_native_handle")]
+    internal static partial nint WindowGetNativeHandle(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_surface")]
+    internal static partial NativeSurfaceDescriptor WindowGetSurface(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_invalidate")]
+    internal static partial void WindowInvalidate(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_set_cursor")]
+    internal static partial void WindowSetCursor(nint window, int cursorShape);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_client_size")]
+    internal static partial void WindowGetClientSize(nint window, out int width, out int height);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_position")]
+    internal static partial void WindowGetPosition(nint window, out int x, out int y);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_dpi_scale")]
+    internal static partial float WindowGetDpiScale(nint window);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_monitor_refresh_rate")]
+    internal static partial int WindowGetMonitorRefreshRate(nint window);
+
+    // --- Event Loop ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_run_message_loop")]
+    internal static partial int PlatformRunMessageLoop();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_poll_events")]
+    internal static partial int PlatformPollEvents();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_quit")]
+    internal static partial void PlatformQuit(int exitCode);
+
+    // --- Dispatcher ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_dispatcher_create")]
+    internal static partial int DispatcherCreate(out nint dispatcher);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_dispatcher_destroy")]
+    internal static partial void DispatcherDestroy(nint dispatcher);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_dispatcher_wake")]
+    internal static partial void DispatcherWake(nint dispatcher);
+
+    // --- Timer ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_create")]
+    internal static partial int TimerCreate(out nint timer);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_destroy")]
+    internal static partial void TimerDestroy(nint timer);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_arm")]
+    internal static partial void TimerArm(nint timer, long intervalMicroseconds);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_arm_repeating")]
+    internal static partial void TimerArmRepeating(nint timer, long intervalMicroseconds);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_disarm")]
+    internal static partial void TimerDisarm(nint timer);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_timer_wait")]
+    internal static partial int TimerWait(nint timer, uint timeoutMs);
+
+    // --- DPI ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_get_system_dpi_scale")]
+    internal static partial float PlatformGetSystemDpiScale();
+
+    // --- Input ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_input_get_key_state")]
+    internal static partial short InputGetKeyState(int virtualKey);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_input_get_cursor_pos")]
+    internal static partial void InputGetCursorPos(out float x, out float y);
+
+    // --- Clipboard ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_clipboard_get_text")]
+    internal static partial int ClipboardGetText(out nint text);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_clipboard_set_text", StringMarshalling = StringMarshalling.Utf16)]
+    internal static partial int ClipboardSetText(string text);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_platform_free")]
+    internal static partial void PlatformFree(nint ptr);
+
+    // --- Android-specific ---
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_set_native_window")]
+    internal static partial void AndroidSetNativeWindow(nint nativeWindow);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_set_density")]
+    internal static partial void AndroidSetDensity(float density);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_set_refresh_rate")]
+    internal static partial void AndroidSetRefreshRate(int refreshRate);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_on_pause")]
+    internal static partial void AndroidOnPause();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_on_resume")]
+    internal static partial void AndroidOnResume();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_on_destroy")]
+    internal static partial void AndroidOnDestroy();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_on_low_memory")]
+    internal static partial void AndroidOnLowMemory();
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_set_jni_env")]
+    internal static partial void AndroidSetJniEnv(nint javaVM, nint activity);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_set_safe_area_insets")]
+    internal static partial void AndroidSetSafeAreaInsets(float top, float bottom, float left, float right);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_set_keyboard_visible")]
+    internal static partial void AndroidSetKeyboardVisible(int visible, int heightPx);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_set_orientation")]
+    internal static partial void AndroidSetOrientation(int orientation);
+
+    // Input injection (called from managed Activity touch/key overrides)
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_inject_touch")]
+    internal static partial void AndroidInjectTouch(
+        int pointerId, float x, float y, float pressure,
+        int action, int pointerType, int modifiers);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_inject_key")]
+    internal static partial void AndroidInjectKey(
+        int androidKeyCode, int scanCode,
+        int action, int metaState, int repeatCount);
+
+    [LibraryImport(PlatformLib, EntryPoint = "jalium_android_inject_char")]
+    internal static partial void AndroidInjectChar(uint codepoint);
+
+    #endregion
+}
+
+/// <summary>
+/// Window creation parameters for the platform library.
+/// </summary>
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativePlatformWindowParams
+{
+    public nint Title;    // wchar_t*
+    public int X;
+    public int Y;
+    public int Width;
+    public int Height;
+    public uint Style;
+    public nint ParentHandle;
 }

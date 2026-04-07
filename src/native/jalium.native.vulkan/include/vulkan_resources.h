@@ -6,10 +6,14 @@
 #include <dwrite.h>
 #include <wincodec.h>
 #include <wrl/client.h>
+#else
+// Forward declarations for cross-platform text engine
+namespace jalium { class TextEngine; class FreeTypeTextFormat; }
 #endif
 
 #include <string>
 #include <vector>
+#include <memory>
 
 namespace jalium {
 
@@ -88,11 +92,14 @@ public:
         int32_t fontStyle);
 #else
     VulkanTextFormat(
+        TextEngine* textEngine,
         const wchar_t* fontFamily,
         float fontSize,
         int32_t fontWeight,
         int32_t fontStyle);
 #endif
+
+    ~VulkanTextFormat() override;
 
     void SetAlignment(int32_t alignment) override;
     void SetParagraphAlignment(int32_t alignment) override;
@@ -127,6 +134,10 @@ public:
     int32_t GetAlignment() const { return alignment_; }
     int32_t GetParagraphAlignment() const { return paragraphAlignment_; }
 
+#ifndef _WIN32
+    FreeTypeTextFormat* GetFreeTypeFormat() const { return ftTextFormat_.get(); }
+#endif
+
 private:
     std::wstring fontFamily_;
     float fontSize_ = 12.0f;
@@ -137,6 +148,9 @@ private:
 #ifdef _WIN32
     ComPtr<IDWriteFactory> factory_;
     ComPtr<IDWriteTextFormat> format_;
+#else
+    // FreeType + HarfBuzz text engine (non-Windows)
+    std::unique_ptr<FreeTypeTextFormat> ftTextFormat_;
 #endif
 };
 

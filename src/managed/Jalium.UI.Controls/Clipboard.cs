@@ -1,9 +1,12 @@
 using System.Runtime.InteropServices;
+using Jalium.UI.Controls.Platform;
+using Jalium.UI.Interop;
 
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// Provides clipboard operations via Windows API.
+/// Provides clipboard operations. Uses Windows API on Windows,
+/// and jalium.native.platform clipboard on Linux/Android.
 /// </summary>
 public static partial class Clipboard
 {
@@ -21,6 +24,9 @@ public static partial class Clipboard
     /// <returns>The text from the clipboard, or null if no text is available.</returns>
     public static string? GetText()
     {
+        if (!PlatformFactory.IsWindows)
+            return GetTextCrossPlatform();
+
         if (!OpenClipboard(nint.Zero))
             return null;
 
@@ -58,6 +64,9 @@ public static partial class Clipboard
     {
         if (text == null)
             return false;
+
+        if (!PlatformFactory.IsWindows)
+            return SetTextCrossPlatform(text);
 
         if (!OpenClipboard(nint.Zero))
             return false;
@@ -112,6 +121,9 @@ public static partial class Clipboard
     /// <returns>True if the clipboard contains text, false otherwise.</returns>
     public static bool ContainsText()
     {
+        if (!PlatformFactory.IsWindows)
+            return GetTextCrossPlatform() != null;
+
         return IsClipboardFormatAvailable(CF_UNICODETEXT);
     }
 
@@ -121,6 +133,9 @@ public static partial class Clipboard
     /// <returns>True if successful, false otherwise.</returns>
     public static bool Clear()
     {
+        if (!PlatformFactory.IsWindows)
+            return SetTextCrossPlatform(""); // Clear by setting empty
+
         if (!OpenClipboard(nint.Zero))
             return false;
 
@@ -140,6 +155,8 @@ public static partial class Clipboard
     /// <returns>True if the clipboard contains an image, false otherwise.</returns>
     public static bool ContainsImage()
     {
+        if (!PlatformFactory.IsWindows) return false; // Not supported on Linux/Android yet
+
         return IsClipboardFormatAvailable(CF_BITMAP) ||
                IsClipboardFormatAvailable(CF_DIB) ||
                IsClipboardFormatAvailable(CF_DIBV5);
@@ -151,6 +168,8 @@ public static partial class Clipboard
     /// <returns>True if the clipboard contains file paths, false otherwise.</returns>
     public static bool ContainsFileDropList()
     {
+        if (!PlatformFactory.IsWindows) return false;
+
         return IsClipboardFormatAvailable(CF_HDROP);
     }
 
@@ -160,6 +179,8 @@ public static partial class Clipboard
     /// <returns>A tuple of (width, height, stride, pixel data) or null if no image is available.</returns>
     public static (int Width, int Height, int Stride, byte[] Data)? GetImage()
     {
+        if (!PlatformFactory.IsWindows) return null;
+
         if (!OpenClipboard(nint.Zero))
             return null;
 
@@ -234,6 +255,7 @@ public static partial class Clipboard
     /// <returns>Array of file paths, or null if no file drop list is available.</returns>
     public static string[]? GetFileDropList()
     {
+        if (!PlatformFactory.IsWindows) return null;
         if (!OpenClipboard(nint.Zero))
             return null;
 
@@ -271,6 +293,8 @@ public static partial class Clipboard
     /// <returns>True if successful, false otherwise.</returns>
     public static bool SetFileDropList(string[] files)
     {
+        if (!PlatformFactory.IsWindows) return false;
+
         if (files == null || files.Length == 0)
             return false;
 
@@ -403,6 +427,35 @@ public static partial class Clipboard
         [MarshalAs(UnmanagedType.Bool)]
         public bool fWide;
     }
+
+    // ================================================================
+    // Cross-platform clipboard (Linux/Android via jalium.native.platform)
+    // ================================================================
+
+    private static string? GetTextCrossPlatform()
+    {
+        int result = NativeMethods.ClipboardGetText(out nint textPtr);
+        if (result != 0 || textPtr == nint.Zero)
+            return null;
+
+        try
+        {
+            return Marshal.PtrToStringUni(textPtr);
+        }
+        finally
+        {
+            NativeMethods.PlatformFree(textPtr);
+        }
+    }
+
+    private static bool SetTextCrossPlatform(string text)
+    {
+        return NativeMethods.ClipboardSetText(text) == 0;
+    }
+
+    // ================================================================
+    // Win32 P/Invoke
+    // ================================================================
 
     [LibraryImport("user32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

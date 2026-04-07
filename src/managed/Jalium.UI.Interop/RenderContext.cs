@@ -83,6 +83,12 @@ public sealed class RenderContext : IDisposable
 
         _handle = NativeMethods.ContextCreate(backend);
 
+        // If Auto failed, explicitly retry with Software as last-resort fallback.
+        if (_handle == nint.Zero && backend != RenderBackend.Software)
+        {
+            _handle = NativeMethods.ContextCreate(RenderBackend.Software);
+        }
+
         if (_handle == nint.Zero)
         {
             throw new InvalidOperationException($"Failed to create render context with backend {backend}. No rendering backends are available.");

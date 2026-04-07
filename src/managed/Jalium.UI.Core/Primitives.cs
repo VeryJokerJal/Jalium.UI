@@ -525,3 +525,69 @@ public readonly struct CornerRadius : IEquatable<CornerRadius>
     public static bool operator ==(CornerRadius left, CornerRadius right) => left.Equals(right);
     public static bool operator !=(CornerRadius left, CornerRadius right) => !left.Equals(right);
 }
+
+/// <summary>
+/// Represents an integer x- and y-coordinate pair for pixel-level positioning.
+/// </summary>
+public readonly struct PixelPoint : IEquatable<PixelPoint>
+{
+    public int X { get; }
+    public int Y { get; }
+
+    public PixelPoint(int x, int y)
+    {
+        X = x;
+        Y = y;
+    }
+
+    public static PixelPoint Zero => new(0, 0);
+
+    public bool Equals(PixelPoint other) => X == other.X && Y == other.Y;
+    public override bool Equals(object? obj) => obj is PixelPoint other && Equals(other);
+    public override int GetHashCode() => HashCode.Combine(X, Y);
+    public override string ToString() => $"({X}, {Y})";
+
+    public static bool operator ==(PixelPoint left, PixelPoint right) => left.Equals(right);
+    public static bool operator !=(PixelPoint left, PixelPoint right) => !left.Equals(right);
+}
+
+/// <summary>
+/// Represents an integer rectangle for pixel-level bounds.
+/// </summary>
+public readonly struct PixelRect : IEquatable<PixelRect>
+{
+    public int X { get; }
+    public int Y { get; }
+    public int Width { get; }
+    public int Height { get; }
+
+    public PixelRect(int x, int y, int width, int height)
+    {
+        X = x;
+        Y = y;
+        Width = width;
+        Height = height;
+    }
+
+    public static PixelRect Empty => new(0, 0, 0, 0);
+
+    public static PixelRect FromLTRB(int left, int top, int right, int bottom) =>
+        new(left, top, right - left, bottom - top);
+
+    public int Left => X;
+    public int Top => Y;
+    public int Right => X + Width;
+    public int Bottom => Y + Height;
+
+    public bool IsEmpty => Width == 0 && Height == 0;
+
+    public bool Equals(PixelRect other) =>
+        X == other.X && Y == other.Y && Width == other.Width && Height == other.Height;
+
+    public override bool Equals(object? obj) => obj is PixelRect other && Equals(other);
+    public override int GetHashCode() => HashCode.Combine(X, Y, Width, Height);
+    public override string ToString() => $"({X}, {Y}, {Width}, {Height})";
+
+    public static bool operator ==(PixelRect left, PixelRect right) => left.Equals(right);
+    public static bool operator !=(PixelRect left, PixelRect right) => !left.Equals(right);
+}

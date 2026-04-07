@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using Jalium.UI.Core.Platform;
 
 namespace Jalium.UI;
 
@@ -20,11 +21,16 @@ public sealed partial class Dispatcher : IDisposable
     private volatile bool _isShutdown;
     private bool _disposed;
 
-    // Message window for receiving dispatch notifications
+    // Platform-abstracted dispatcher wake mechanism
+    private IDispatcherWake? _dispatcherWake;
+
+    // Win32 message window (Windows only, kept for backward compat)
     private nint _messageWindow;
     private WndProcDelegate? _wndProcDelegate;
     private const string MessageWindowClassName = "JaliumDispatcherMessageWindow";
     private const uint WM_DISPATCHER_INVOKE = 0x0400 + 1; // WM_USER + 1
+
+    private static readonly bool s_isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
     private readonly struct DispatcherWorkItem
     {
@@ -70,10 +76,25 @@ public sealed partial class Dispatcher : IDisposable
     private Dispatcher()
     {
         _thread = Thread.CurrentThread;
-        _threadId = GetCurrentThreadId();
+        _threadId = s_isWindows ? GetCurrentThreadId() : 0;
 
-        // Create message window for dispatch notifications
-        CreateMessageWindow();
+        // Create platform-specific dispatch wake mechanism
+        if (s_isWindows)
+        {
+            CreateMessageWindow();
+        }
+        else
+        {
+            try
+            {
+                _dispatcherWake = new NativeDispatcherWake();
+                _dispatcherWake.SetCallback(ProcessQueue);
+            }
+            catch
+            {
+                // Fallback: no wake mechanism, rely on ManualResetEventSlim polling
+            }
+        }
     }
 
     /// <summary>
@@ -406,10 +427,18 @@ public sealed partial class Dispatcher : IDisposable
     {
         _workAvailable.Set();
 
-        // Post message to wake up the message loop
-        if (_messageWindow != nint.Zero)
+        if (s_isWindows)
         {
-            PostMessageW(_messageWindow, WM_DISPATCHER_INVOKE, nint.Zero, nint.Zero);
+            // Post message to wake up the Win32 message loop
+            if (_messageWindow != nint.Zero)
+            {
+                PostMessageW(_messageWindow, WM_DISPATCHER_INVOKE, nint.Zero, nint.Zero);
+            }
+        }
+        else
+        {
+            // Wake via platform-native mechanism (eventfd on Linux, ALooper on Android)
+            _dispatcherWake?.Wake();
         }
     }
 
@@ -428,7 +457,13 @@ public sealed partial class Dispatcher : IDisposable
         if (_disposed) return;
         _disposed = true;
 
-        DestroyMessageWindow();
+        if (s_isWindows)
+        {
+            DestroyMessageWindow();
+        }
+
+        _dispatcherWake?.Dispose();
+        _dispatcherWake = null;
         _workAvailable.Dispose();
     }
 

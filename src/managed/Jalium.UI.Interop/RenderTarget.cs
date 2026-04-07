@@ -1,4 +1,3 @@
-using System.Drawing;
 using Jalium.UI;
 
 namespace Jalium.UI.Interop;
@@ -600,7 +599,7 @@ public sealed class RenderTarget : IDisposable
     /// <summary>
     /// Updates the placement and visible clip of a composition visual created for WebView hosting.
     /// </summary>
-    public void SetWebViewCompositionVisualPlacement(nint visualTarget, Rectangle bounds, System.Drawing.Point contentOffset)
+    public void SetWebViewCompositionVisualPlacement(nint visualTarget, PixelRect bounds, PixelPoint contentOffset)
     {
         ThrowIfDisposed();
         if (visualTarget == nint.Zero)

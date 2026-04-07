@@ -1,7 +1,8 @@
 using System.Collections.Concurrent;
-using System.Drawing;
 using System.Runtime.InteropServices;
+using Jalium.UI;
 using Jalium.UI.Interop;
+using Color = Jalium.UI.Media.Color;
 
 namespace Microsoft.Web.WebView2.Core;
 
@@ -344,14 +345,14 @@ public class CoreWebView2Controller : IDisposable
 
     public virtual CoreWebView2 CoreWebView2 => _coreWebView2;
 
-    public virtual Rectangle Bounds
+    public virtual PixelRect Bounds
     {
         get
         {
             ThrowIfClosed();
             var hr = BrowserInterop.GetBounds(NativeHandle, out var x, out var y, out var width, out var height);
             WebView2NativeHelpers.ThrowIfFailed(hr, "Failed to get WebView2 bounds.");
-            return new Rectangle(x, y, width, height);
+            return new PixelRect(x, y, width, height);
         }
         set
         {
@@ -400,13 +401,13 @@ public class CoreWebView2Controller : IDisposable
                 return _defaultBackgroundColor;
             }
 
-            return Color.FromArgb(unchecked((int)argb));
+            return Color.FromArgb(argb);
         }
         set
         {
             ThrowIfClosed();
             _defaultBackgroundColor = value;
-            var hr = BrowserInterop.SetDefaultBackgroundColor(NativeHandle, unchecked((uint)value.ToArgb()));
+            var hr = BrowserInterop.SetDefaultBackgroundColor(NativeHandle, value.ToArgb());
             if (hr < 0)
             {
                 // Older runtimes may not support this API. Keep managed fallback value.
@@ -607,7 +608,7 @@ public sealed class CoreWebView2CompositionController : CoreWebView2Controller
         CoreWebView2MouseEventKind eventKind,
         CoreWebView2MouseEventVirtualKeys virtualKeys,
         uint mouseData,
-        Point point)
+        PixelPoint point)
     {
         ThrowIfClosed();
 

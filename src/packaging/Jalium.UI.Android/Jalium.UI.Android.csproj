@@ -1,0 +1,69 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0-android</TargetFramework>
+    <RootNamespace>Jalium.UI</RootNamespace>
+    <AssemblyName>Jalium.UI.Android</AssemblyName>
+    <Description>Jalium.UI Android entry package. References all Jalium.UI components built for Android, including native .so libraries.</Description>
+    <SupportedOSPlatformVersion>24</SupportedOSPlatformVersion>
+
+    <!-- NuGet Package Configuration -->
+    <IsPackable>true</IsPackable>
+    <PackageId>Jalium.UI.Android</PackageId>
+    <IncludeSymbols>false</IncludeSymbols>
+    <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
+
+    <!-- Path to Android native libs (override with JaliumAndroidNativeRoot for custom locations) -->
+    <JaliumAndroidNativeRoot Condition="'$(JaliumAndroidNativeRoot)' == ''">$(MSBuildProjectDirectory)\..\..\..\samples\Jalium.UI.AndroidDemo\libs</JaliumAndroidNativeRoot>
+  </PropertyGroup>
+
+  <!-- Reference all Jalium.UI runtime packages (force net10.0 build for cross-platform core libs) -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Jalium.UI.Core\Jalium.UI.Core.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Input\Jalium.UI.Input.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Controls\Jalium.UI.Controls.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" SetTargetFramework="TargetFramework=net10.0" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" SetTargetFramework="TargetFramework=net10.0" />
+  </ItemGroup>
+
+  <!-- Include build tools -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" ReferenceOutputAssembly="false" BuildReference="false" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj" PrivateAssets="none" />
+  </ItemGroup>
+
+  <!-- Android native .so libraries for arm64-v8a -->
+  <ItemGroup>
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.core.so" Abi="arm64-v8a"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.core.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.platform.so" Abi="arm64-v8a"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.platform.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.vulkan.so" Abi="arm64-v8a"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.vulkan.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.software.so" Abi="arm64-v8a"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.software.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.text.so" Abi="arm64-v8a"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libjalium.native.text.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\arm64-v8a\libc++_shared.so" Abi="arm64-v8a"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\arm64-v8a\libc++_shared.so')" />
+  </ItemGroup>
+
+  <!-- Android native .so libraries for x86_64 (emulator) -->
+  <ItemGroup>
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.core.so" Abi="x86_64"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.core.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.platform.so" Abi="x86_64"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.platform.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.vulkan.so" Abi="x86_64"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.vulkan.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.software.so" Abi="x86_64"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.software.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.text.so" Abi="x86_64"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libjalium.native.text.so')" />
+    <AndroidNativeLibrary Include="$(JaliumAndroidNativeRoot)\x86_64\libc++_shared.so" Abi="x86_64"
+                          Condition="Exists('$(JaliumAndroidNativeRoot)\x86_64\libc++_shared.so')" />
+  </ItemGroup>
+
+</Project>

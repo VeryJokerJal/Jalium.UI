@@ -1,4 +1,5 @@
 #include "jalium_internal.h"
+#include "jalium_string_util.h"
 
 // ============================================================================
 // C API Implementation
@@ -65,7 +66,12 @@ JALIUM_API JaliumTextFormat* jalium_text_format_create(
     auto backend = jalium::GetBackendFromContext(ctx);
     if (!backend) return nullptr;
 
+#if defined(_WIN32)
     auto format = backend->CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+#else
+    auto wFamily = jalium::ManagedToWString(fontFamily);
+    auto format = backend->CreateTextFormat(wFamily.c_str(), fontSize, fontWeight, fontStyle);
+#endif
     return reinterpret_cast<JaliumTextFormat*>(format);
 }
 
@@ -119,8 +125,14 @@ JALIUM_API JaliumResult jalium_text_format_hit_test_point(
     JaliumTextHitTestResult* result)
 {
     if (!format || !text || !result) return JALIUM_ERROR_INVALID_ARGUMENT;
+#if defined(_WIN32)
     return reinterpret_cast<jalium::TextFormat*>(format)->HitTestPoint(
         text, textLength, maxWidth, maxHeight, pointX, pointY, result);
+#else
+    auto wstr = jalium::ManagedToWString(text, textLength);
+    return reinterpret_cast<jalium::TextFormat*>(format)->HitTestPoint(
+        wstr.c_str(), static_cast<uint32_t>(wstr.size()), maxWidth, maxHeight, pointX, pointY, result);
+#endif
 }
 
 JALIUM_API JaliumResult jalium_text_format_hit_test_text_position(
@@ -131,8 +143,14 @@ JALIUM_API JaliumResult jalium_text_format_hit_test_text_position(
     JaliumTextHitTestResult* result)
 {
     if (!format || !text || !result) return JALIUM_ERROR_INVALID_ARGUMENT;
+#if defined(_WIN32)
     return reinterpret_cast<jalium::TextFormat*>(format)->HitTestTextPosition(
         text, textLength, maxWidth, maxHeight, textPosition, isTrailingHit, result);
+#else
+    auto wstr = jalium::ManagedToWString(text, textLength);
+    return reinterpret_cast<jalium::TextFormat*>(format)->HitTestTextPosition(
+        wstr.c_str(), static_cast<uint32_t>(wstr.size()), maxWidth, maxHeight, textPosition, isTrailingHit, result);
+#endif
 }
 
 JALIUM_API JaliumResult jalium_text_format_measure_text(
@@ -147,8 +165,14 @@ JALIUM_API JaliumResult jalium_text_format_measure_text(
         return JALIUM_ERROR_INVALID_ARGUMENT;
     }
 
+#if defined(_WIN32)
     return reinterpret_cast<jalium::TextFormat*>(format)->MeasureText(
         text, textLength, maxWidth, maxHeight, metrics);
+#else
+    auto wstr = jalium::ManagedToWString(text, textLength);
+    return reinterpret_cast<jalium::TextFormat*>(format)->MeasureText(
+        wstr.c_str(), static_cast<uint32_t>(wstr.size()), maxWidth, maxHeight, metrics);
+#endif
 }
 
 JALIUM_API JaliumResult jalium_text_format_get_font_metrics(

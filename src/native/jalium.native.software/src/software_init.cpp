@@ -7,12 +7,20 @@
 #include <Windows.h>
 #endif
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#define LOGI_INIT(...) __android_log_print(ANDROID_LOG_INFO, "JaliumSoftwareInit", __VA_ARGS__)
+#else
+#define LOGI_INIT(...)
+#endif
+
 static std::atomic<bool> s_registered{false};
 
 namespace jalium {
 
 static IRenderBackend* CreateSoftwareBackendWrapper()
 {
+    LOGI_INIT("CreateSoftwareBackendWrapper called");
     return CreateSoftwareBackend();
 }
 
@@ -26,10 +34,14 @@ void RegisterSoftwareBackend()
 {
     bool expected = false;
     if (s_registered.compare_exchange_strong(expected, true)) {
+        LOGI_INIT("RegisterSoftwareBackend: registering with core");
         jalium_register_backend_ex(
             JALIUM_BACKEND_SOFTWARE,
             reinterpret_cast<JaliumBackendFactory>(&CreateSoftwareBackendWrapper),
             &IsSoftwareBackendAvailable);
+        LOGI_INIT("RegisterSoftwareBackend: done");
+    } else {
+        LOGI_INIT("RegisterSoftwareBackend: already registered");
     }
 }
 

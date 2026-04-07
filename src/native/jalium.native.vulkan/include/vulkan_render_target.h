@@ -19,6 +19,8 @@ public:
         int32_t height,
         bool useComposition);
 
+    ~VulkanRenderTarget() override;
+    bool IsInitialized() const;
     JaliumResult Resize(int32_t width, int32_t height) override;
     JaliumResult BeginDraw() override;
     JaliumResult EndDraw() override;

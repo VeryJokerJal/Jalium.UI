@@ -51,9 +51,19 @@ public readonly struct Color : IEquatable<Color>
         (byte)(argb & 0xFF));
 
     /// <summary>
+    /// Creates a color from a packed ARGB int value.
+    /// </summary>
+    public static Color FromArgb(int argb) => FromArgb(unchecked((uint)argb));
+
+    /// <summary>
     /// Converts the color to a packed ARGB uint value.
     /// </summary>
     public uint ToArgb() => ((uint)A << 24) | ((uint)R << 16) | ((uint)G << 8) | B;
+
+    /// <summary>
+    /// Converts the color to a packed ARGB int value.
+    /// </summary>
+    public int ToArgbInt32() => unchecked((int)ToArgb());
 
     /// <summary>
     /// Creates an opaque color from RGB components.

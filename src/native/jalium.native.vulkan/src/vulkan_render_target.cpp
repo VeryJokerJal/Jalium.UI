@@ -13,11 +13,24 @@
 #include <cstdio>
 #include <cstdint>
 
+#ifdef __ANDROID__
+#include <android/log.h>
+#define VK_LOG(fmt, ...) __android_log_print(ANDROID_LOG_INFO, "JaliumVulkan", fmt, ##__VA_ARGS__)
+#elif defined(_WIN32)
+#define VK_LOG(fmt, ...) do { char _vk_buf[512]; snprintf(_vk_buf, sizeof(_vk_buf), fmt "\n", ##__VA_ARGS__); OutputDebugStringA(_vk_buf); } while(0)
+#else
+#define VK_LOG(fmt, ...) fprintf(stderr, fmt "\n", ##__VA_ARGS__)
+#endif
+
 #ifdef _WIN32
 #include <Windows.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <wrl/client.h>
+#else
+#include "text_engine.h"
+#include "text_layout.h"
+#include "glyph_atlas.h"
 #endif
 
 namespace jalium {
@@ -263,6 +276,21 @@ uint32_t ClampExtent(uint32_t value, uint32_t minValue, uint32_t maxValue)
     return std::max(minValue, std::min(value, maxValue));
 }
 
+/// Returns a B8G8R8A8 format matching the sRGB-ness of the swapchain format.
+/// CPU canvas writes BGRA bytes, so we always want B8G8R8A8 channel order.
+/// When the swapchain is SRGB, the upload image must also be SRGB so that
+/// the sRGB→linear sample conversion and linear→sRGB write conversion cancel out.
+VkFormat GetUploadImageFormat(VkFormat swapchainFormat)
+{
+    switch (swapchainFormat) {
+        case VK_FORMAT_R8G8B8A8_SRGB:
+        case VK_FORMAT_B8G8R8A8_SRGB:
+            return VK_FORMAT_B8G8R8A8_SRGB;
+        default:
+            return VK_FORMAT_B8G8R8A8_UNORM;
+    }
+}
+
 float SignedArea2D(const std::vector<float>& points)
 {
     if (points.size() < 6) {
@@ -390,7 +418,7 @@ bool TriangulateSimplePolygon(const std::vector<float>& inputPoints, std::vector
 #ifdef _WIN32
         OutputDebugStringA("[Vulkan] Triangulation guard limit reached\n");
 #else
-        fprintf(stderr, "[Vulkan] Triangulation guard limit reached\n");
+        VK_LOG("[Vulkan] Triangulation guard limit reached\n");
 #endif
     }
 
@@ -531,8 +559,11 @@ public:
     PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR getSurfaceCapabilities = nullptr;
     PFN_vkGetPhysicalDeviceSurfaceFormatsKHR getSurfaceFormats = nullptr;
     PFN_vkGetPhysicalDeviceSurfacePresentModesKHR getSurfacePresentModes = nullptr;
+#ifdef _WIN32
     PFN_vkCreateWin32SurfaceKHR createWin32Surface = nullptr;
-#ifdef __linux__
+#elif defined(__ANDROID__)
+    PFN_vkCreateAndroidSurfaceKHR createAndroidSurface = nullptr;
+#elif defined(__linux__)
     PFN_vkCreateXlibSurfaceKHR createXlibSurface = nullptr;
 #endif
     PFN_vkDestroySurfaceKHR destroySurface = nullptr;
@@ -667,6 +698,7 @@ public:
     uint32_t uploadWidth = 0;
     uint32_t uploadHeight = 0;
     bool submitted = false;
+    bool initialized = false;
 
     bool Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync);
     bool RecreateSwapchain(int32_t width, int32_t height, bool vsync);
@@ -704,7 +736,16 @@ VulkanRenderTarget::VulkanRenderTarget(
     transformStack_.push_back(CpuTransform {});
     opacityStack_.push_back(1.0f);
     ResizeCpuCanvas();
-    impl_->Initialize(surface, width, height, vsyncEnabled_);
+    if (!impl_->Initialize(surface, width, height, vsyncEnabled_)) {
+        VK_LOG("[Vulkan] VulkanRenderTarget: initialization failed, GPU presentation will not work\n");
+    }
+}
+
+VulkanRenderTarget::~VulkanRenderTarget() = default;
+
+bool VulkanRenderTarget::IsInitialized() const
+{
+    return impl_ && impl_->initialized;
 }
 
 JaliumResult VulkanRenderTarget::Resize(int32_t width, int32_t height)
@@ -731,6 +772,16 @@ JaliumResult VulkanRenderTarget::BeginDraw()
 
     isDrawing_ = true;
     ResetGpuReplay();
+
+    // Push a root DPI scale transform so all draw calls in DIPs are
+    // automatically mapped to physical pixels on high-density displays.
+    float scaleX = dpiX_ / 96.0f;
+    float scaleY = dpiY_ / 96.0f;
+    if (scaleX != 1.0f || scaleY != 1.0f) {
+        float m[6] = { scaleX, 0, 0, scaleY, 0, 0 };
+        PushTransform(m);
+    }
+
     return JALIUM_OK;
 }
 
@@ -740,9 +791,18 @@ JaliumResult VulkanRenderTarget::EndDraw()
         return JALIUM_ERROR_INVALID_STATE;
     }
 
+    // Pop the root DPI scale transform pushed in BeginDraw
+    float scaleX = dpiX_ / 96.0f;
+    float scaleY = dpiY_ / 96.0f;
+    if (scaleX != 1.0f || scaleY != 1.0f) {
+        PopTransform();
+    }
+
     bool ok = false;
     if (impl_) {
-        if (gpuReplaySupported_ && gpuReplayHasClear_) {
+        if (!impl_->initialized) {
+            VK_LOG("[Vulkan] EndDraw: impl not initialized, skipping draw");
+        } else if (gpuReplaySupported_ && gpuReplayHasClear_) {
             ok = impl_->DrawReplayFrame(gpuReplayCommands_, clearColor_);
         } else {
             ok = impl_->DrawFrame(pixelBuffer_.data(), static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
@@ -775,12 +835,12 @@ void VulkanRenderTarget::Clear(float r, float g, float b, float a)
 
 bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync)
 {
-#if !defined(_WIN32) && !defined(__linux__)
+#if !defined(_WIN32) && !defined(__linux__) && !defined(__ANDROID__)
     (void)surfaceDescriptor;
     (void)width;
     (void)height;
     (void)vsync;
-    fprintf(stderr, "[Vulkan] Initialize failed: unsupported platform\n");
+    VK_LOG("[Vulkan] Initialize failed: unsupported platform\n");
     return false;
 #else
 #ifdef _WIN32
@@ -788,9 +848,14 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         OutputDebugStringA("[Vulkan] Initialize failed: invalid Windows surface descriptor\n");
         return false;
     }
+#elif defined(__ANDROID__)
+    if (surfaceDescriptor.platform != JALIUM_PLATFORM_ANDROID || surfaceDescriptor.handle0 == 0) {
+        VK_LOG("[Vulkan] Initialize failed: invalid Android surface descriptor\n");
+        return false;
+    }
 #elif defined(__linux__)
     if (surfaceDescriptor.platform != JALIUM_PLATFORM_LINUX_X11 || surfaceDescriptor.handle0 == 0 || surfaceDescriptor.handle1 == 0) {
-        fprintf(stderr, "[Vulkan] Initialize failed: invalid Linux surface descriptor\n");
+        VK_LOG("[Vulkan] Initialize failed: invalid Linux surface descriptor\n");
         return false;
     }
 #endif
@@ -798,13 +863,13 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     getInstanceProcAddr = GetVulkanGetInstanceProcAddr();
     getDeviceProcAddr = GetVulkanGetDeviceProcAddr();
     if (!getInstanceProcAddr || !getDeviceProcAddr) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not load Vulkan proc addresses\n");
+        VK_LOG("[Vulkan] Initialize failed: could not load Vulkan proc addresses\n");
         return false;
     }
 
     createInstance = LoadInstanceProc<PFN_vkCreateInstance>(getInstanceProcAddr, VK_NULL_HANDLE, "vkCreateInstance");
     if (!createInstance) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not load vkCreateInstance\n");
+        VK_LOG("[Vulkan] Initialize failed: could not load vkCreateInstance\n");
         return false;
     }
 
@@ -812,6 +877,8 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         "VK_KHR_surface",
 #ifdef _WIN32
         "VK_KHR_win32_surface"
+#elif defined(__ANDROID__)
+        "VK_KHR_android_surface"
 #else
         "VK_KHR_xlib_surface"
 #endif
@@ -829,7 +896,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     instanceInfo.ppEnabledExtensionNames = extensions;
 
     if (createInstance(&instanceInfo, nullptr, &instance) != VK_SUCCESS || !instance) {
-        fprintf(stderr, "[Vulkan] Initialize failed: vkCreateInstance returned failure\n");
+        VK_LOG("[Vulkan] Initialize failed: vkCreateInstance returned failure\n");
         return false;
     }
 
@@ -841,8 +908,11 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     getSurfaceCapabilities = LoadInstanceProc<PFN_vkGetPhysicalDeviceSurfaceCapabilitiesKHR>(getInstanceProcAddr, instance, "vkGetPhysicalDeviceSurfaceCapabilitiesKHR");
     getSurfaceFormats = LoadInstanceProc<PFN_vkGetPhysicalDeviceSurfaceFormatsKHR>(getInstanceProcAddr, instance, "vkGetPhysicalDeviceSurfaceFormatsKHR");
     getSurfacePresentModes = LoadInstanceProc<PFN_vkGetPhysicalDeviceSurfacePresentModesKHR>(getInstanceProcAddr, instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
+#ifdef _WIN32
     createWin32Surface = LoadInstanceProc<PFN_vkCreateWin32SurfaceKHR>(getInstanceProcAddr, instance, "vkCreateWin32SurfaceKHR");
-#ifdef __linux__
+#elif defined(__ANDROID__)
+    createAndroidSurface = LoadInstanceProc<PFN_vkCreateAndroidSurfaceKHR>(getInstanceProcAddr, instance, "vkCreateAndroidSurfaceKHR");
+#elif defined(__linux__)
     createXlibSurface = LoadInstanceProc<PFN_vkCreateXlibSurfaceKHR>(getInstanceProcAddr, instance, "vkCreateXlibSurfaceKHR");
 #endif
     destroySurface = LoadInstanceProc<PFN_vkDestroySurfaceKHR>(getInstanceProcAddr, instance, "vkDestroySurfaceKHR");
@@ -851,7 +921,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         !getPhysicalDeviceMemoryProperties ||
         !getPhysicalDeviceSurfaceSupport || !getSurfaceCapabilities || !getSurfaceFormats ||
         !getSurfacePresentModes || !destroySurface || !createDevice) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not load required instance-level function pointers\n");
+        VK_LOG("[Vulkan] Initialize failed: could not load required instance-level function pointers\n");
         return false;
     }
 
@@ -864,26 +934,34 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         OutputDebugStringA("[Vulkan] Initialize failed: could not create Win32 surface\n");
         return false;
     }
+#elif defined(__ANDROID__)
+    VkAndroidSurfaceCreateInfoKHR surfaceInfo {};
+    surfaceInfo.sType = VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR;
+    surfaceInfo.window = reinterpret_cast<ANativeWindow*>(surfaceDescriptor.handle0);
+    if (!createAndroidSurface || createAndroidSurface(instance, &surfaceInfo, nullptr, &surface) != VK_SUCCESS || surface == VK_NULL_HANDLE) {
+        VK_LOG("[Vulkan] Initialize failed: could not create Android surface\n");
+        return false;
+    }
 #elif defined(__linux__)
     VkXlibSurfaceCreateInfoKHR surfaceInfo {};
     surfaceInfo.sType = VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR;
     surfaceInfo.dpy = reinterpret_cast<Display*>(surfaceDescriptor.handle0);
     surfaceInfo.window = static_cast<Window>(reinterpret_cast<uintptr_t>(surfaceDescriptor.handle1));
     if (!createXlibSurface || createXlibSurface(instance, &surfaceInfo, nullptr, &surface) != VK_SUCCESS || surface == VK_NULL_HANDLE) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not create Xlib surface\n");
+        VK_LOG("[Vulkan] Initialize failed: could not create Xlib surface\n");
         return false;
     }
 #endif
 
     uint32_t physicalDeviceCount = 0;
     if (enumeratePhysicalDevices(instance, &physicalDeviceCount, nullptr) != VK_SUCCESS || physicalDeviceCount == 0) {
-        fprintf(stderr, "[Vulkan] Initialize failed: no physical devices found\n");
+        VK_LOG("[Vulkan] Initialize failed: no physical devices found\n");
         return false;
     }
 
     std::vector<VkPhysicalDevice> physicalDevices(physicalDeviceCount);
     if (enumeratePhysicalDevices(instance, &physicalDeviceCount, physicalDevices.data()) != VK_SUCCESS) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not enumerate physical devices\n");
+        VK_LOG("[Vulkan] Initialize failed: could not enumerate physical devices\n");
         return false;
     }
 
@@ -916,7 +994,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     }
 
     if (physicalDevice == VK_NULL_HANDLE || queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
-        fprintf(stderr, "[Vulkan] Initialize failed: no suitable GPU with graphics+present queue found\n");
+        VK_LOG("[Vulkan] Initialize failed: no suitable GPU with graphics+present queue found\n");
         return false;
     }
 
@@ -935,7 +1013,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     deviceInfo.enabledExtensionCount = 1;
     deviceInfo.ppEnabledExtensionNames = deviceExtensions;
     if (createDevice(physicalDevice, &deviceInfo, nullptr, &device) != VK_SUCCESS || device == VK_NULL_HANDLE) {
-        fprintf(stderr, "[Vulkan] Initialize failed: vkCreateDevice returned failure\n");
+        VK_LOG("[Vulkan] Initialize failed: vkCreateDevice returned failure\n");
         return false;
     }
 
@@ -1019,13 +1097,13 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         !cmdEndRenderPass || !cmdBindPipeline || !cmdBindDescriptorSets || !cmdSetViewport ||
         !cmdSetScissor || !cmdPushConstants || !cmdDraw || !cmdBindVertexBuffers || !queueSubmit || !createSemaphore || !destroySemaphore ||
         !createFence || !destroyFence || !waitForFences || !resetFences || !deviceWaitIdle) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not load required device-level function pointers\n");
+        VK_LOG("[Vulkan] Initialize failed: could not load required device-level function pointers\n");
         return false;
     }
 
     getDeviceQueue(device, queueFamilyIndex, 0, &queue);
     if (queue == VK_NULL_HANDLE) {
-        fprintf(stderr, "[Vulkan] Initialize failed: vkGetDeviceQueue returned null queue\n");
+        VK_LOG("[Vulkan] Initialize failed: vkGetDeviceQueue returned null queue\n");
         return false;
     }
 
@@ -1034,7 +1112,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     commandPoolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     commandPoolInfo.queueFamilyIndex = queueFamilyIndex;
     if (createCommandPool(device, &commandPoolInfo, nullptr, &commandPool) != VK_SUCCESS || commandPool == VK_NULL_HANDLE) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not create command pool\n");
+        VK_LOG("[Vulkan] Initialize failed: could not create command pool\n");
         return false;
     }
 
@@ -1044,7 +1122,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     commandBufferInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     commandBufferInfo.commandBufferCount = 1;
     if (allocateCommandBuffers(device, &commandBufferInfo, &commandBuffer) != VK_SUCCESS || commandBuffer == VK_NULL_HANDLE) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not allocate command buffer\n");
+        VK_LOG("[Vulkan] Initialize failed: could not allocate command buffer\n");
         return false;
     }
 
@@ -1052,18 +1130,25 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
     if (createSemaphore(device, &semaphoreInfo, nullptr, &imageAvailable) != VK_SUCCESS ||
         createSemaphore(device, &semaphoreInfo, nullptr, &renderFinished) != VK_SUCCESS) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not create semaphores\n");
+        VK_LOG("[Vulkan] Initialize failed: could not create semaphores\n");
         return false;
     }
 
     VkFenceCreateInfo fenceInfo {};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
     if (createFence(device, &fenceInfo, nullptr, &inFlight) != VK_SUCCESS || inFlight == VK_NULL_HANDLE) {
-        fprintf(stderr, "[Vulkan] Initialize failed: could not create fence\n");
+        VK_LOG("[Vulkan] Initialize failed: could not create fence\n");
         return false;
     }
 
-    return RecreateSwapchain(width, height, vsync);
+    initialized = RecreateSwapchain(width, height, vsync);
+    if (initialized) {
+        VK_LOG("[Vulkan] Initialize succeeded: format=%d extent=%ux%u images=%zu\n",
+                static_cast<int>(format), extent.width, extent.height, images.size());
+    } else {
+        VK_LOG("[Vulkan] Initialize failed: RecreateSwapchain returned false\n");
+    }
+    return initialized;
 #endif
 }
 
@@ -1095,23 +1180,29 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
     }
 
     VkSurfaceFormatKHR selectedFormat = formats.front();
-    // Prefer SRGB format so the GPU auto-converts linear→sRGB on write,
-    // matching D3D12's DXGI_FORMAT_R8G8B8A8_UNORM_SRGB behavior.
-    for (const auto& candidate : formats) {
-        if (candidate.format == VK_FORMAT_B8G8R8A8_SRGB && candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
-            selectedFormat = candidate;
-            break;
-        }
-    }
-    // Fallback: if SRGB format is unavailable, accept UNORM + sRGB color space.
-    if (selectedFormat.format != VK_FORMAT_B8G8R8A8_SRGB) {
+    // Prefer UNORM format to match D3D12's DXGI_FORMAT_R8G8B8A8_UNORM behavior.
+    // CPU canvas and GPU replay pass sRGB color values directly, so using an SRGB
+    // swapchain would apply an unwanted linear→sRGB conversion (double encoding).
+    // Try B8G8R8A8 first (Windows/desktop common), then R8G8B8A8 (Android common).
+    const VkFormat preferredFormats[] = {
+        VK_FORMAT_B8G8R8A8_UNORM,
+        VK_FORMAT_R8G8B8A8_UNORM,
+        VK_FORMAT_B8G8R8A8_SRGB,
+        VK_FORMAT_R8G8B8A8_SRGB,
+    };
+    bool foundPreferred = false;
+    for (auto preferred : preferredFormats) {
+        if (foundPreferred) break;
         for (const auto& candidate : formats) {
-            if (candidate.format == VK_FORMAT_B8G8R8A8_UNORM && candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+            if (candidate.format == preferred && candidate.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
                 selectedFormat = candidate;
+                foundPreferred = true;
                 break;
             }
         }
     }
+    VK_LOG("[Vulkan] Selected swapchain format: %d (from %u available)\n",
+            static_cast<int>(selectedFormat.format), formatCount);
 
     uint32_t presentModeCount = 0;
     if (getSurfacePresentModes(physicalDevice, surface, &presentModeCount, nullptr) != VK_SUCCESS || presentModeCount == 0) {
@@ -1224,7 +1315,7 @@ bool VulkanRenderTarget::Impl::EnsureUploadImage(uint32_t width, uint32_t height
     VkImageCreateInfo imageInfo {};
     imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
+    imageInfo.format = GetUploadImageFormat(format);
     imageInfo.extent.width = width;
     imageInfo.extent.height = height;
     imageInfo.extent.depth = 1;
@@ -1306,7 +1397,7 @@ bool VulkanRenderTarget::Impl::EnsureTransitionImagesCapacity(uint32_t width, ui
         VkImageCreateInfo imageInfo {};
         imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
         imageInfo.imageType = VK_IMAGE_TYPE_2D;
-        imageInfo.format = VK_FORMAT_B8G8R8A8_UNORM;
+        imageInfo.format = GetUploadImageFormat(format);
         imageInfo.extent.width = width;
         imageInfo.extent.height = height;
         imageInfo.extent.depth = 1;
@@ -1363,6 +1454,7 @@ bool VulkanRenderTarget::Impl::EnsureTransitionImagesCapacity(uint32_t width, ui
 bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
 {
     if (swapchain == VK_NULL_HANDLE || images.empty()) {
+        VK_LOG("[Vulkan] EnsureGraphicsResources: swapchain=%p images=%zu", (void*)swapchain, images.size());
         return false;
     }
 
@@ -1390,6 +1482,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
         samplerInfo.maxLod = 1.0f;
         if (createSampler(device, &samplerInfo, nullptr, &frameSampler) != VK_SUCCESS || frameSampler == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] EnsureGraphicsResources: createSampler failed");
             return false;
         }
     }
@@ -1410,6 +1503,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         layoutInfo.bindingCount = 2;
         layoutInfo.pBindings = bindings;
         if (createDescriptorSetLayout(device, &layoutInfo, nullptr, &frameDescriptorSetLayout) != VK_SUCCESS || frameDescriptorSetLayout == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] EnsureGraphicsResources: createDescriptorSetLayout failed");
             return false;
         }
     }
@@ -1582,6 +1676,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         destroyShaderModule(device, fragmentShader, nullptr);
         destroyShaderModule(device, vertexShader, nullptr);
         if (pipelineResult != VK_SUCCESS || framePipeline == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] EnsureGraphicsResources: createGraphicsPipelines(frame) failed (%d)", static_cast<int>(pipelineResult));
             return false;
         }
     }
@@ -1693,10 +1788,11 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         pipelineInfo.layout = solidRectPipelineLayout;
         pipelineInfo.renderPass = frameRenderPass;
         pipelineInfo.subpass = 0;
-        const VkResult pipelineResult = createGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &solidRectPipeline);
+        VkResult pipelineResult = createGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &solidRectPipeline);
         destroyShaderModule(device, fragmentShader, nullptr);
         destroyShaderModule(device, vertexShader, nullptr);
         if (pipelineResult != VK_SUCCESS || solidRectPipeline == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] EnsureGraphicsResources: createGraphicsPipelines(solidRect) failed (%d)", static_cast<int>(pipelineResult));
             return false;
         }
     }
@@ -1798,6 +1894,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         destroyShaderModule(device, fragmentShader, nullptr);
         destroyShaderModule(device, vertexShader, nullptr);
         if (pipelineResult != VK_SUCCESS || clearRectPipeline == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] EnsureGraphicsResources: createGraphicsPipelines(clearRect) failed (%d)", static_cast<int>(pipelineResult));
             return false;
         }
     }
@@ -2698,6 +2795,7 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
             viewInfo.subresourceRange.levelCount = 1;
             viewInfo.subresourceRange.layerCount = 1;
             if (createImageView(device, &viewInfo, nullptr, &imageViews[index]) != VK_SUCCESS || imageViews[index] == VK_NULL_HANDLE) {
+                VK_LOG("[Vulkan] EnsureGraphicsResources: createImageView[%zu] failed", index);
                 return false;
             }
         }
@@ -2712,12 +2810,14 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
             framebufferInfo.height = extent.height;
             framebufferInfo.layers = 1;
             if (createFramebuffer(device, &framebufferInfo, nullptr, &framebuffers[index]) != VK_SUCCESS || framebuffers[index] == VK_NULL_HANDLE) {
+                VK_LOG("[Vulkan] EnsureGraphicsResources: createFramebuffer[%zu] failed", index);
                 return false;
             }
         }
     }
 
     if (!UpdateFrameDescriptorSet()) {
+        VK_LOG("[Vulkan] EnsureGraphicsResources: UpdateFrameDescriptorSet failed");
         return false;
     }
     return transitionImageViews[0] == VK_NULL_HANDLE ? true : UpdateTransitionDescriptorSet();
@@ -2742,7 +2842,10 @@ uint32_t VulkanRenderTarget::Impl::FindMemoryType(uint32_t typeFilter, VkMemoryP
 bool VulkanRenderTarget::Impl::UpdateFrameDescriptorSet()
 {
     if (frameDescriptorSet == VK_NULL_HANDLE || uploadImageView == VK_NULL_HANDLE || frameSampler == VK_NULL_HANDLE) {
-        return frameDescriptorSet != VK_NULL_HANDLE ? false : true;
+        // Return true if resources aren't ready yet (they'll be updated later).
+        // Only return false if the descriptor set exists but is in a broken state
+        // (has descriptor set + sampler but somehow lost the image view after it was set).
+        return uploadImageView == VK_NULL_HANDLE || frameDescriptorSet == VK_NULL_HANDLE;
     }
 
     VkDescriptorImageInfo sampledImageInfo {};
@@ -3088,20 +3191,34 @@ bool VulkanRenderTarget::Impl::EnsureStagingBuffer(uint32_t width, uint32_t heig
 bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, uint32_t height)
 {
     if (!device || !swapchain || !commandBuffer || !pixels || width == 0 || height == 0) {
+        VK_LOG("[Vulkan] DrawFrame: precondition failed (device=%p swapchain=%p cmdBuf=%p pixels=%p w=%u h=%u)\n",
+                (void*)device, (void*)swapchain, (void*)commandBuffer, (const void*)pixels, width, height);
         return false;
     }
 
-    if (!EnsureStagingBuffer(width, height) || !EnsureUploadImage(width, height) || !EnsureGraphicsResources()) {
+    if (!EnsureStagingBuffer(width, height)) {
+        VK_LOG("[Vulkan] DrawFrame: EnsureStagingBuffer failed\n");
+        return false;
+    }
+    if (!EnsureUploadImage(width, height)) {
+        VK_LOG("[Vulkan] DrawFrame: EnsureUploadImage failed\n");
+        return false;
+    }
+    if (!EnsureGraphicsResources()) {
+        VK_LOG("[Vulkan] DrawFrame: EnsureGraphicsResources failed\n");
         return false;
     }
 
     std::memcpy(mappedPixels, pixels, static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
 
     if (submitted) {
-        if (waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max()) != VK_SUCCESS) {
+        VkResult fenceResult = waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max());
+        if (fenceResult != VK_SUCCESS) {
+            VK_LOG("[Vulkan] DrawFrame: waitForFences failed (%d)\n", static_cast<int>(fenceResult));
             return false;
         }
         if (resetFences(device, 1, &inFlight) != VK_SUCCESS) {
+            VK_LOG("[Vulkan] DrawFrame: resetFences failed\n");
             return false;
         }
     }
@@ -3112,10 +3229,12 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
         return true;
     }
     if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+        VK_LOG("[Vulkan] DrawFrame: acquireNextImage failed (%d)\n", static_cast<int>(acquireResult));
         return false;
     }
 
     if (resetCommandBuffer(commandBuffer, 0) != VK_SUCCESS) {
+        VK_LOG("[Vulkan] DrawFrame: resetCommandBuffer failed\n");
         return false;
     }
 
@@ -3228,6 +3347,7 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
 
     if (endCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        VK_LOG("[Vulkan] DrawFrame: endCommandBuffer failed\n");
         return false;
     }
 
@@ -3242,7 +3362,9 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
     submitInfo.pSignalSemaphores = &renderFinished;
-    if (queueSubmit(queue, 1, &submitInfo, inFlight) != VK_SUCCESS) {
+    VkResult submitResult = queueSubmit(queue, 1, &submitInfo, inFlight);
+    if (submitResult != VK_SUCCESS) {
+        VK_LOG("[Vulkan] DrawFrame: queueSubmit failed (%d)\n", static_cast<int>(submitResult));
         return false;
     }
 
@@ -3255,6 +3377,7 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     presentInfo.pImageIndices = &imageIndex;
     const VkResult presentResult = queuePresent(queue, &presentInfo);
     if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR && presentResult != VK_ERROR_OUT_OF_DATE_KHR) {
+        VK_LOG("[Vulkan] DrawFrame: queuePresent failed (%d)\n", static_cast<int>(presentResult));
         return false;
     }
 
@@ -3265,7 +3388,17 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
 
 bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTarget::GpuReplayCommand>& commands, const float clearColor[4])
 {
-    if (!device || !swapchain || !commandBuffer || !EnsureGraphicsResources() || solidRectPipeline == VK_NULL_HANDLE) {
+    if (!device || !swapchain || !commandBuffer) {
+        VK_LOG("[Vulkan] DrawReplayFrame: basic precondition failed (device=%p swapchain=%p cmdBuf=%p)",
+               (void*)device, (void*)swapchain, (void*)commandBuffer);
+        return false;
+    }
+    if (!EnsureGraphicsResources()) {
+        VK_LOG("[Vulkan] DrawReplayFrame: EnsureGraphicsResources failed");
+        return false;
+    }
+    if (solidRectPipeline == VK_NULL_HANDLE) {
+        VK_LOG("[Vulkan] DrawReplayFrame: solidRectPipeline is null");
         return false;
     }
 
@@ -3514,9 +3647,11 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
 
     VkViewport viewport {};
     viewport.x = 0.0f;
-    viewport.y = 0.0f;
+    // Negative viewport height flips Y axis to match OpenGL/D3D conventions
+    // (Y=0 at top, increasing downward). Requires VK_KHR_maintenance1 or Vulkan 1.1+.
+    viewport.y = static_cast<float>(extent.height);
     viewport.width = static_cast<float>(extent.width);
-    viewport.height = static_cast<float>(extent.height);
+    viewport.height = -static_cast<float>(extent.height);
     viewport.minDepth = 0.0f;
     viewport.maxDepth = 1.0f;
 
@@ -5844,12 +5979,21 @@ void VulkanRenderTarget::FillRoundedRectangle(float x, float y, float w, float h
         return;
     }
 
+    // Apply the current transform to map DIP coordinates to physical pixels.
+    // FillSolidRect iterates over pixel indices in the pixelBuffer_, so coordinates
+    // must be in physical pixel space. The rounded clip stores the transform and
+    // maps pixel positions back to local space via IsInsideClip.
+    const auto transform = GetCurrentTransform();
+    float px0, py0, px1, py1;
+    ApplyTransform(transform, x, y, px0, py0);
+    ApplyTransform(transform, x + w, y + h, px1, py1);
+
     PushTemporaryClip(x, y, w, h, rx, ry);
     FillSolidRect(
-        static_cast<int>(std::floor(x)),
-        static_cast<int>(std::floor(y)),
-        static_cast<int>(std::ceil(x + w)),
-        static_cast<int>(std::ceil(y + h)),
+        static_cast<int>(std::floor(std::min(px0, px1))),
+        static_cast<int>(std::floor(std::min(py0, py1))),
+        static_cast<int>(std::ceil(std::max(px0, px1))),
+        static_cast<int>(std::ceil(std::max(py0, py1))),
         b, g, r, a);
     PopTemporaryClip();
 }
@@ -6732,10 +6876,145 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     VulkanBitmap textBitmap(static_cast<uint32_t>(bitmapWidth), static_cast<uint32_t>(bitmapHeight), std::move(textPixels));
     DrawBitmap(&textBitmap, x, y, static_cast<float>(bitmapWidth), static_cast<float>(bitmapHeight), 1.0f);
 #else
-    (void)x;
-    (void)y;
-    (void)w;
-    (void)h;
+    // FreeType + HarfBuzz glyph atlas text rendering (Android / Linux)
+    // Render glyphs into a temporary BGRA bitmap in local (DIP) space,
+    // then use DrawBitmap which applies the current transform once
+    // for both GPU replay and CPU pixel-buffer blitting.
+    FreeTypeTextFormat* ftFormat = dynamic_cast<FreeTypeTextFormat*>(format);
+    if (!ftFormat) {
+        auto* vulkanFormat = dynamic_cast<VulkanTextFormat*>(format);
+        if (vulkanFormat) {
+            ftFormat = vulkanFormat->GetFreeTypeFormat();
+        }
+    }
+    TextEngine* textEngine = backend_ ? backend_->GetTextEngine() : nullptr;
+    if (!ftFormat || !textEngine) {
+        return;
+    }
+
+    const float brushR = static_cast<float>(r) / 255.0f;
+    const float brushG = static_cast<float>(g) / 255.0f;
+    const float brushB = static_cast<float>(b) / 255.0f;
+    const float brushA = static_cast<float>(a) / 255.0f * GetCurrentOpacity();
+
+    // When DPI scaling is active, rasterize text at physical pixel resolution
+    // for crisp rendering. The resulting bitmap is drawn at DIP size and the
+    // DPI transform scales it up to match the physical resolution exactly.
+    float dpiScaleX = dpiX_ / 96.0f;
+    float dpiScaleY = dpiY_ / 96.0f;
+    float renderScale = (dpiScaleX != 1.0f || dpiScaleY != 1.0f) ? dpiScaleY : 1.0f;
+
+    // Generate glyph quads in local space (origin 0,0). DrawBitmap will
+    // position the resulting bitmap at (x, y) and apply the current transform.
+    std::vector<TextGlyphQuad> quads;
+    ftFormat->GenerateGlyphQuads(text, textLength, w, h, brushR, brushG, brushB, brushA, 0.0f, 0.0f, quads, renderScale);
+    if (quads.empty()) {
+        return;
+    }
+
+    GlyphAtlas* atlas = textEngine->GetGlyphAtlas();
+    const uint8_t* atlasData = atlas->GetPixelData();
+    const uint32_t atlasW = atlas->GetWidth();
+    const uint32_t atlasH = atlas->GetHeight();
+
+    // Compute tight bounding box of all glyph quads (scaled space when renderScale != 1)
+    float scaledW = w * renderScale;
+    float scaledH = h * renderScale;
+    float bboxMinX = scaledW;
+    float bboxMinY = scaledH;
+    float bboxMaxX = 0.0f;
+    float bboxMaxY = 0.0f;
+    for (const auto& quad : quads) {
+        bboxMinX = std::min(bboxMinX, quad.posX);
+        bboxMinY = std::min(bboxMinY, quad.posY);
+        bboxMaxX = std::max(bboxMaxX, quad.posX + quad.sizeX);
+        bboxMaxY = std::max(bboxMaxY, quad.posY + quad.sizeY);
+    }
+    bboxMinX = std::max(bboxMinX, 0.0f);
+    bboxMinY = std::max(bboxMinY, 0.0f);
+    bboxMaxX = std::min(bboxMaxX, scaledW);
+    bboxMaxY = std::min(bboxMaxY, scaledH);
+
+    const int32_t bitmapWidth = static_cast<int32_t>(std::ceil(bboxMaxX - bboxMinX));
+    const int32_t bitmapHeight = static_cast<int32_t>(std::ceil(bboxMaxY - bboxMinY));
+    if (bitmapWidth <= 0 || bitmapHeight <= 0) {
+        return;
+    }
+
+    const float bitmapOffsetX = std::floor(bboxMinX);
+    const float bitmapOffsetY = std::floor(bboxMinY);
+
+    // Render glyphs into a temporary BGRA bitmap (pre-multiplied alpha)
+    std::vector<uint8_t> textPixels(static_cast<size_t>(bitmapWidth) * bitmapHeight * 4, 0);
+
+    for (const auto& quad : quads) {
+        const int32_t dstX = static_cast<int32_t>(std::floor(quad.posX - bitmapOffsetX));
+        const int32_t dstY = static_cast<int32_t>(std::floor(quad.posY - bitmapOffsetY));
+        const int32_t qw = static_cast<int32_t>(std::ceil(quad.sizeX));
+        const int32_t qh = static_cast<int32_t>(std::ceil(quad.sizeY));
+        const int32_t srcX = static_cast<int32_t>(quad.uvMinX * atlasW);
+        const int32_t srcY = static_cast<int32_t>(quad.uvMinY * atlasH);
+
+        for (int32_t row = 0; row < qh; ++row) {
+            const int32_t dy = dstY + row;
+            const int32_t sy = srcY + row;
+            if (dy < 0 || dy >= bitmapHeight || sy < 0 || sy >= static_cast<int32_t>(atlasH)) {
+                continue;
+            }
+
+            for (int32_t col = 0; col < qw; ++col) {
+                const int32_t dx = dstX + col;
+                const int32_t sx = srcX + col;
+                if (dx < 0 || dx >= bitmapWidth || sx < 0 || sx >= static_cast<int32_t>(atlasW)) {
+                    continue;
+                }
+
+                const size_t atlasIdx = (static_cast<size_t>(sy) * atlasW + sx) * 4;
+                const uint8_t coverage = atlasData[atlasIdx + 3];
+                if (coverage == 0) {
+                    continue;
+                }
+
+                const uint8_t pixelA = static_cast<uint8_t>(brushA * 255.0f * coverage / 255.0f);
+                if (pixelA == 0) {
+                    continue;
+                }
+
+                // Pre-multiplied alpha BGRA
+                const size_t pixelIdx = (static_cast<size_t>(dy) * bitmapWidth + dx) * 4;
+                const uint8_t pmB = static_cast<uint8_t>(b * pixelA / 255);
+                const uint8_t pmG = static_cast<uint8_t>(g * pixelA / 255);
+                const uint8_t pmR = static_cast<uint8_t>(r * pixelA / 255);
+
+                // Alpha-blend over existing pixel (handles overlapping glyphs)
+                const uint8_t existA = textPixels[pixelIdx + 3];
+                if (existA == 0) {
+                    textPixels[pixelIdx + 0] = pmB;
+                    textPixels[pixelIdx + 1] = pmG;
+                    textPixels[pixelIdx + 2] = pmR;
+                    textPixels[pixelIdx + 3] = pixelA;
+                } else {
+                    const uint32_t outA = pixelA + existA * (255u - pixelA) / 255u;
+                    if (outA > 0) {
+                        textPixels[pixelIdx + 0] = static_cast<uint8_t>((pmB * 255u + textPixels[pixelIdx + 0] * (255u - pixelA)) / 255u);
+                        textPixels[pixelIdx + 1] = static_cast<uint8_t>((pmG * 255u + textPixels[pixelIdx + 1] * (255u - pixelA)) / 255u);
+                        textPixels[pixelIdx + 2] = static_cast<uint8_t>((pmR * 255u + textPixels[pixelIdx + 2] * (255u - pixelA)) / 255u);
+                        textPixels[pixelIdx + 3] = static_cast<uint8_t>(outA);
+                    }
+                }
+            }
+        }
+    }
+
+    // DrawBitmap handles GPU replay recording + CPU pixel-buffer blitting,
+    // and applies the current transform to position the bitmap correctly.
+    // When renderScale != 1, convert bitmap offset and display size back to DIP space.
+    // The bitmap pixels are at physical resolution; the DPI transform in the pipeline
+    // will scale the DIP-space rect back up to match the physical pixel dimensions.
+    const float invScale = 1.0f / renderScale;
+    VulkanBitmap textBitmap(static_cast<uint32_t>(bitmapWidth), static_cast<uint32_t>(bitmapHeight), std::move(textPixels));
+    DrawBitmap(&textBitmap, x + bitmapOffsetX * invScale, y + bitmapOffsetY * invScale,
+        static_cast<float>(bitmapWidth) * invScale, static_cast<float>(bitmapHeight) * invScale, 1.0f);
 #endif
 }
 void VulkanRenderTarget::DrawBackdropFilter(float x, float y, float w, float h, const char* backdropFilter, const char* material, const char* materialTint, float tintOpacity, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL)

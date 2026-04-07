@@ -3,7 +3,7 @@ using Jalium.UI.Input;
 
 namespace Jalium.UI.Controls;
 
-internal enum Win32PointerKind
+internal enum PointerInputKind
 {
     Unknown = 0,
     Touch = 2,
@@ -11,9 +11,9 @@ internal enum Win32PointerKind
     Mouse = 4
 }
 
-internal readonly record struct Win32PointerData(
+internal readonly record struct PointerInputData(
     uint PointerId,
-    Win32PointerKind Kind,
+    PointerInputKind Kind,
     PointerPoint Point,
     Point Position,
     ModifierKeys Modifiers,
@@ -73,7 +73,7 @@ internal static class Win32PointerInterop
         return (extra & MI_WP_SIGNATURE_MASK) == MI_WP_SIGNATURE;
     }
 
-    internal static bool TryGetPointerData(nint hwnd, nint wParam, double dpiScale, out Win32PointerData data)
+    internal static bool TryGetPointerData(nint hwnd, nint wParam, double dpiScale, out PointerInputData data)
     {
         data = default;
         uint pointerId = GetPointerId(wParam);
@@ -84,12 +84,12 @@ internal static class Win32PointerInterop
         if (!GetPointerInfo(pointerId, out POINTER_INFO info))
             return false;
 
-        Win32PointerKind kind = pointerType switch
+        PointerInputKind kind = pointerType switch
         {
-            PT_TOUCH => Win32PointerKind.Touch,
-            PT_PEN => Win32PointerKind.Pen,
-            PT_MOUSE => Win32PointerKind.Mouse,
-            _ => Win32PointerKind.Unknown
+            PT_TOUCH => PointerInputKind.Touch,
+            PT_PEN => PointerInputKind.Pen,
+            PT_MOUSE => PointerInputKind.Mouse,
+            _ => PointerInputKind.Unknown
         };
 
         POINT clientPoint = info.ptPixelLocation;
@@ -102,8 +102,8 @@ internal static class Win32PointerInterop
             position,
             kind switch
             {
-                Win32PointerKind.Touch => PointerDeviceType.Touch,
-                Win32PointerKind.Pen => PointerDeviceType.Pen,
+                PointerInputKind.Touch => PointerDeviceType.Touch,
+                PointerInputKind.Pen => PointerDeviceType.Pen,
                 _ => PointerDeviceType.Mouse
             },
             (info.pointerFlags & POINTER_FLAG_INCONTACT) != 0,
@@ -111,7 +111,7 @@ internal static class Win32PointerInterop
             (ulong)info.dwTime,
             info.frameId);
 
-        data = new Win32PointerData(
+        data = new PointerInputData(
             pointerId,
             kind,
             point,
@@ -125,7 +125,7 @@ internal static class Win32PointerInterop
     }
 
     private static StylusPointCollection BuildStylusPoints(
-        Win32PointerKind kind,
+        PointerInputKind kind,
         uint pointerId,
         POINTER_INFO info,
         nint hwnd,
@@ -134,13 +134,13 @@ internal static class Win32PointerInterop
         float fallbackPressure)
     {
         // Mouse inputs are represented as a single synthesized point.
-        if (kind == Win32PointerKind.Mouse)
+        if (kind == PointerInputKind.Mouse)
         {
             return new StylusPointCollection(new[] { new StylusPoint(fallbackPosition.X, fallbackPosition.Y, fallbackPressure) });
         }
 
         // Touch: use GetPointerTouchInfoHistory for high-fidelity multi-packet input.
-        if (kind == Win32PointerKind.Touch)
+        if (kind == PointerInputKind.Touch)
         {
             return BuildTouchStylusPoints(pointerId, info, hwnd, dpiScale, fallbackPosition, fallbackPressure);
         }
@@ -249,7 +249,7 @@ internal static class Win32PointerInterop
         return modifiers;
     }
 
-    private static PointerPointProperties BuildProperties(Win32PointerKind kind, POINTER_INFO info, uint pointerId, nint hwnd, double dpiScale)
+    private static PointerPointProperties BuildProperties(PointerInputKind kind, POINTER_INFO info, uint pointerId, nint hwnd, double dpiScale)
     {
         bool isPrimary = (info.pointerFlags & POINTER_FLAG_PRIMARY) != 0;
         bool left = (info.pointerFlags & POINTER_FLAG_FIRSTBUTTON) != 0;
@@ -267,7 +267,7 @@ internal static class Win32PointerInterop
         bool eraser = false;
         Rect contact = Rect.Empty;
 
-        if (kind == Win32PointerKind.Touch && GetPointerTouchInfo(pointerId, out POINTER_TOUCH_INFO touchInfo))
+        if (kind == PointerInputKind.Touch && GetPointerTouchInfo(pointerId, out POINTER_TOUCH_INFO touchInfo))
         {
             if ((touchInfo.touchMask & TOUCH_MASK_PRESSURE) != 0)
             {
@@ -287,7 +287,7 @@ internal static class Win32PointerInterop
                     Math.Max(0, (br.Y - tl.Y) / dpiScale));
             }
         }
-        else if (kind == Win32PointerKind.Pen && GetPointerPenInfo(pointerId, out POINTER_PEN_INFO penInfo))
+        else if (kind == PointerInputKind.Pen && GetPointerPenInfo(pointerId, out POINTER_PEN_INFO penInfo))
         {
             if ((penInfo.penMask & PEN_MASK_PRESSURE) != 0)
             {

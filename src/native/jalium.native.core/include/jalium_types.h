@@ -41,7 +41,7 @@ typedef enum JaliumBackend {
     JALIUM_BACKEND_D3D12 = 1,       ///< Direct3D 12
     JALIUM_BACKEND_VULKAN = 3,      ///< Vulkan
     JALIUM_BACKEND_METAL = 5,       ///< Metal (macOS/iOS)
-    JALIUM_BACKEND_SOFTWARE = 99    ///< Software rasterizer
+    JALIUM_BACKEND_SOFTWARE = 7     ///< Software rasterizer
 } JaliumBackend;
 
 /// GPU adapter preference for multi-GPU systems.

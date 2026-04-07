@@ -92,6 +92,14 @@ bool VulkanBackend::Initialize()
     if (FAILED(wicHr)) {
         return false;
     }
+#else
+    // Initialize cross-platform text engine (FreeType + HarfBuzz)
+    textEngine_ = std::make_unique<TextEngine>();
+    JaliumResult textResult = textEngine_->Initialize();
+    if (textResult != JALIUM_OK) {
+        // Text engine is optional — degrade gracefully
+        textEngine_.reset();
+    }
 #endif
 
     initialized_ = true;
@@ -125,7 +133,12 @@ RenderTarget* VulkanBackend::CreateRenderTargetForSurface(
         return nullptr;
     }
 
-    return new VulkanRenderTarget(this, *surface, width, height, false);
+    auto* rt = new VulkanRenderTarget(this, *surface, width, height, false);
+    if (!rt->IsInitialized()) {
+        delete rt;
+        return nullptr;
+    }
+    return rt;
 }
 
 RenderTarget* VulkanBackend::CreateRenderTargetForCompositionSurface(
@@ -137,7 +150,12 @@ RenderTarget* VulkanBackend::CreateRenderTargetForCompositionSurface(
         return nullptr;
     }
 
-    return new VulkanRenderTarget(this, *surface, width, height, true);
+    auto* rt = new VulkanRenderTarget(this, *surface, width, height, true);
+    if (!rt->IsInitialized()) {
+        delete rt;
+        return nullptr;
+    }
+    return rt;
 }
 
 Brush* VulkanBackend::CreateSolidBrush(float r, float g, float b, float a)
@@ -175,7 +193,17 @@ TextFormat* VulkanBackend::CreateTextFormat(
 
     return new VulkanTextFormat(dwriteFactory_.Get(), fontFamily, fontSize, fontWeight, fontStyle);
 #else
-    return new VulkanTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+    if (!Initialize()) {
+        return nullptr;
+    }
+
+    // Use cross-platform text engine if available
+    if (textEngine_) {
+        return textEngine_->CreateTextFormat(fontFamily, fontSize, fontWeight, fontStyle);
+    }
+
+    // Fallback: stub text format with approximate metrics
+    return new VulkanTextFormat(textEngine_.get(), fontFamily, fontSize, fontWeight, fontStyle);
 #endif
 }
 
