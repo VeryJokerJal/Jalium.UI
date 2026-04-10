@@ -184,6 +184,15 @@ public sealed class StreamGeometryContext : IDisposable
     }
 
     /// <summary>
+    /// Draws a stroked straight line to the specified point.
+    /// </summary>
+    /// <param name="point">The destination point.</param>
+    public void LineTo(Point point)
+    {
+        LineTo(point, true, false);
+    }
+
+    /// <summary>
     /// Draws one or more connected straight lines.
     /// </summary>
     /// <param name="points">The collection of points that specify the lines to draw.</param>

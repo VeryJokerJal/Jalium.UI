@@ -3828,6 +3828,24 @@ bool D3D12VelloRenderer::EnsureGPUBuffers(uint32_t numPaths, uint32_t numSegs, u
     if (!ensure(drawMonoidBuffer_, drawMonoidCapacity_, numDrawObjs, sizeof(VelloDrawMonoid))) return false;
     if (!ensure(intersectedBboxBuffer_, intersectedBboxCapacity_, numDrawObjs, 16)) return false;
 
+    // Clip pipeline buffers (GPU clip_reduce/clip_leaf)
+    uint32_t totalClips = 0;
+    for (auto& dt : drawTags_) {
+        if (dt.tag == kDrawTagBeginClip || dt.tag == kDrawTagEndClip) totalClips++;
+    }
+    if (totalClips > 0) {
+        if (!ensure(clipInpBuffer_, clipInpCapacity_, totalClips, sizeof(VelloClipInp))) return false;
+        uint32_t clipWgs = (totalClips + 255) / 256;
+        if (!ensure(clipBicBuffer_, clipBicCapacity_, std::max(clipWgs, 1u), sizeof(VelloClipBic))) return false;
+        if (!ensure(clipElBuffer_, clipElCapacity_, totalClips, sizeof(VelloClipEl))) return false;
+    }
+    // clipBboxBuffer_ always needed (binning reads it even if 0 clips, via dummy)
+    uint32_t clipBboxNeeded = std::max(totalClips, 1u);
+    if (clipBboxNeeded > (uint32_t)(clipBboxBuffer_ ? clipBboxBuffer_->GetDesc().Width / 16 : 0) || !clipBboxBuffer_) {
+        uint32_t cap = clipBboxNeeded * 2;
+        if (!CreateBuffer(device_, cap * 16, D3D12_HEAP_TYPE_DEFAULT, uavFlags, state, clipBboxBuffer_)) return false;
+    }
+
     uint32_t numBins = ((tilesX_ + 15) / 16) * ((tilesY_ + 15) / 16);
     if (!ensure(binHeaderBuffer_, binHeaderCapacity_, std::max(numBins * 256, 256u), sizeof(VelloBinHeader))) return false;
     if (!ensure(binDataBuffer_, binDataCapacity_, 1u << 18, 4)) return false;
@@ -3938,6 +3956,8 @@ bool D3D12VelloRenderer::CreateGPUPipeline()
 
     if (!makePSO(kBboxClear, kBboxClearSize, bboxClearPSO_)) return false;
     if (!makePSO(kFlatten, kFlattenSize, velloFlattenPSO_)) return false;
+    if (!makePSO(kVelloClipReduce, kVelloClipReduceSize, clipReducePSO_)) return false;
+    if (!makePSO(kVelloClipLeaf, kVelloClipLeafSize, clipLeafPSO_)) return false;
     if (!makePSO(kBinning, kBinningSize, binningPSO_)) return false;
     if (!makePSO(kTileAlloc, kTileAllocSize, tileAllocPSO_)) return false;
     if (!makePSO(kPathCountSetup, kPathCountSetupSize, pathCountSetupPSO_)) return false;
@@ -3948,7 +3968,7 @@ bool D3D12VelloRenderer::CreateGPUPipeline()
     if (!makePSO(kPathTiling, kPathTilingSize, pathTilingPSO_)) return false;
     if (!makePSO(kFine, kFineSize, velloFinePSO_)) return false;
 
-    // All 11 PSOs created from pre-compiled bytecode
+    // All 13 PSOs created from pre-compiled bytecode (11 original + 2 clip pipeline)
     gpuPipelineCreated_ = true;
     return true;
 }
@@ -4080,60 +4100,39 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
     std::vector<VelloDrawMonoid> drawMonoids;
     ComputeDrawMonoids(drawMonoids);
 
-    // ── CPU clip_bbox computation (replaces GPU clip_reduce/clip_leaf) ──
-    // Follows Vello reference (clip_leaf.rs): sequential stack-based algorithm.
-    // Computes intersected clip bboxes for each clip operation.
-    std::vector<float> clipBboxData; // 4 floats per clip op
+    // ── Build ClipInp data for GPU clip_reduce/clip_leaf pipeline ──
+    // Follows Vello reference: BeginClip → ix = draw_obj_index (positive),
+    //                          EndClip  → ix = -(draw_obj_index) - 1 (negative).
+    // path_ix points to the path that defines the clip shape.
+    std::vector<VelloClipInp> clipInpData;
     if (totalClipOps > 0) {
-        clipBboxData.resize(totalClipOps * 4);
-        struct ClipStackEl { uint32_t drawIx; uint32_t pathIdx; float bbox[4]; };
-        std::vector<ClipStackEl> clipStack;
-        uint32_t clipOpIdx = 0;
-
+        clipInpData.resize(totalClipOps);
+        uint32_t clipIdx = 0;
+        // Also fix up DrawMonoids: EndClip must share path_ix with its matching BeginClip
+        std::vector<uint32_t> clipBeginStack; // stack of draw object indices for BeginClip
         for (uint32_t i = 0; i < numDrawObjs; i++) {
             auto& dt = drawTags_[i];
             if (dt.tag == kDrawTagBeginClip) {
-                // Read path bbox from CPU-side PathDraw
-                uint32_t pathIdx = dt.pathIdx;
-                float pbbox[4] = { -1e9f, -1e9f, 1e9f, 1e9f };
-                if (pathIdx < (uint32_t)pathDraws_.size()) {
-                    pbbox[0] = pathDraws_[pathIdx].bboxMinX;
-                    pbbox[1] = pathDraws_[pathIdx].bboxMinY;
-                    pbbox[2] = pathDraws_[pathIdx].bboxMaxX;
-                    pbbox[3] = pathDraws_[pathIdx].bboxMaxY;
-                }
-                // Intersect with parent clip bbox
-                float bbox[4];
-                if (!clipStack.empty()) {
-                    bbox[0] = std::max(pbbox[0], clipStack.back().bbox[0]);
-                    bbox[1] = std::max(pbbox[1], clipStack.back().bbox[1]);
-                    bbox[2] = std::min(pbbox[2], clipStack.back().bbox[2]);
-                    bbox[3] = std::min(pbbox[3], clipStack.back().bbox[3]);
-                } else {
-                    memcpy(bbox, pbbox, sizeof(bbox));
-                }
-                memcpy(&clipBboxData[clipOpIdx * 4], bbox, 16);
-                clipStack.push_back({ i, pathIdx, { bbox[0], bbox[1], bbox[2], bbox[3] } });
-                clipOpIdx++;
+                VelloClipInp ci;
+                ci.ix = (int32_t)i;               // positive → BeginClip
+                ci.path_ix = (int32_t)drawMonoids[i].path_ix;
+                clipInpData[clipIdx++] = ci;
+                clipBeginStack.push_back(i);
             } else if (dt.tag == kDrawTagEndClip) {
-                if (!clipStack.empty()) {
-                    auto tos = clipStack.back();
-                    clipStack.pop_back();
-                    // EndClip bbox = parent's bbox (or big bbox if root)
-                    float bbox[4] = { -1e9f, -1e9f, 1e9f, 1e9f };
-                    if (!clipStack.empty()) {
-                        memcpy(bbox, clipStack.back().bbox, sizeof(bbox));
-                    }
-                    memcpy(&clipBboxData[clipOpIdx * 4], bbox, 16);
-                    // Fix up DrawMonoid: EndClip uses same path_ix as its BeginClip
-                    drawMonoids[i].path_ix = drawMonoids[tos.drawIx].path_ix;
-                    drawMonoids[i].scene_offset = drawMonoids[tos.drawIx].scene_offset;
-                    drawMonoids[i].info_offset = drawMonoids[tos.drawIx].info_offset;
+                VelloClipInp ci;
+                ci.ix = -(int32_t)i - 1;          // negative → EndClip
+                if (!clipBeginStack.empty()) {
+                    uint32_t beginIdx = clipBeginStack.back();
+                    clipBeginStack.pop_back();
+                    // EndClip uses same path_ix as its matching BeginClip
+                    ci.path_ix = (int32_t)drawMonoids[beginIdx].path_ix;
+                    drawMonoids[i].path_ix = drawMonoids[beginIdx].path_ix;
+                    drawMonoids[i].scene_offset = drawMonoids[beginIdx].scene_offset;
+                    drawMonoids[i].info_offset = drawMonoids[beginIdx].info_offset;
                 } else {
-                    float big[4] = { -1e9f, -1e9f, 1e9f, 1e9f };
-                    memcpy(&clipBboxData[clipOpIdx * 4], big, 16);
+                    ci.path_ix = 0;
                 }
-                clipOpIdx++;
+                clipInpData[clipIdx++] = ci;
             }
         }
     }
@@ -4154,25 +4153,20 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
         cmdList->CopyBufferRegion(drawMonoidBuffer_.Get(), 0, fu.drawMonoidUpload.Get(), 0, dmBytes);
     }
 
-    // Upload clip bboxes
-    if (totalClipOps > 0) {
-        uint32_t cbBytes = totalClipOps * 16; // 4 floats * 4 bytes
-        if (!clipBboxBuffer_ || totalClipOps > (uint32_t)(clipBboxBuffer_->GetDesc().Width / 16)) {
-            auto uavFlags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
-            CreateBuffer(device_, std::max(cbBytes, 256u), D3D12_HEAP_TYPE_DEFAULT,
-                         D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COMMON, clipBboxBuffer_);
-        }
-        if (!fu.clipBboxUpload || totalClipOps > fu.clipBboxUploadCapacity) {
-            fu.clipBboxUploadCapacity = totalClipOps * 2;
-            CreateBuffer(device_, std::max(fu.clipBboxUploadCapacity * 16u, 256u),
+    // Upload ClipInp data for GPU clip pipeline
+    if (totalClipOps > 0 && clipInpBuffer_) {
+        uint32_t ciBytes = totalClipOps * sizeof(VelloClipInp);
+        if (!fu.clipInpUpload || totalClipOps > fu.clipInpUploadCapacity) {
+            fu.clipInpUploadCapacity = totalClipOps * 2;
+            CreateBuffer(device_, std::max(fu.clipInpUploadCapacity * (uint32_t)sizeof(VelloClipInp), 256u),
                          D3D12_HEAP_TYPE_UPLOAD, D3D12_RESOURCE_FLAG_NONE,
-                         D3D12_RESOURCE_STATE_GENERIC_READ, fu.clipBboxUpload);
+                         D3D12_RESOURCE_STATE_GENERIC_READ, fu.clipInpUpload);
         }
         void* mapped = nullptr;
-        fu.clipBboxUpload->Map(0, nullptr, &mapped);
-        memcpy(mapped, clipBboxData.data(), cbBytes);
-        fu.clipBboxUpload->Unmap(0, nullptr);
-        cmdList->CopyBufferRegion(clipBboxBuffer_.Get(), 0, fu.clipBboxUpload.Get(), 0, cbBytes);
+        fu.clipInpUpload->Map(0, nullptr, &mapped);
+        memcpy(mapped, clipInpData.data(), ciBytes);
+        fu.clipInpUpload->Unmap(0, nullptr);
+        cmdList->CopyBufferRegion(clipInpBuffer_.Get(), 0, fu.clipInpUpload.Get(), 0, ciBytes);
     }
 
     // Gradient ramps
@@ -4209,7 +4203,7 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
 
     // ── Resource barriers: copy dest → appropriate states ──
     {
-        D3D12_RESOURCE_BARRIER b[9];
+        D3D12_RESOURCE_BARRIER b[10];
         int bc = 0;
         b[bc++] = MakeBarrier(segmentBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         b[bc++] = MakeBarrier(pathInfoBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -4218,8 +4212,8 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
         b[bc++] = MakeBarrier(drawMonoidBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         b[bc++] = MakeBarrier(bumpBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         b[bc++] = MakeBarrier(outputTexture_.Get(), D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-        if (totalClipOps > 0 && clipBboxBuffer_)
-            b[bc++] = MakeBarrier(clipBboxBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        if (totalClipOps > 0 && clipInpBuffer_)
+            b[bc++] = MakeBarrier(clipInpBuffer_.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
         cmdList->ResourceBarrier(bc, b);
     }
 
@@ -4375,13 +4369,57 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
     uavBarrier();
 
     // ================================================================
-    // Stage 3: binning — draw objects → bin_data[] + bin_header[]
+    // Stage 3a: clip_reduce — hierarchical BIC reduction of clip begin/end pairs
+    // SRV t0: ClipInp[]  t1: PathBbox (raw)
+    // UAV u0: Bic[]  u1: ClipEl[]
+    // Always dispatched when there are clips (performs within-workgroup matching)
+    // ================================================================
+    if (totalClipOps > 0 && clipInpBuffer_ && clipBicBuffer_ && clipElBuffer_) {
+        uint32_t clipReduceWgs = (totalClipOps + 255) / 256;
+        makeSrv(clipInpBuffer_.Get(), totalClipOps, sizeof(VelloClipInp), 0);
+        makeRawSrv(pathBboxBuffer_.Get(), numPaths * 6, 1);
+        makeUav(clipBicBuffer_.Get(), clipReduceWgs, sizeof(VelloClipBic), 8); // u0
+        makeUav(clipElBuffer_.Get(), totalClipOps, sizeof(VelloClipEl), 9);     // u1
+        bindPipeline(clipReducePSO_.Get());
+        cmdList->Dispatch(clipReduceWgs, 1, 1);
+        uavBarrier();
+    }
+
+    // ================================================================
+    // Stage 3b: clip_leaf — compute final clip bboxes
+    // SRV t0: ClipInp[]  t1: PathBbox (raw)  t2: Bic[]  t3: ClipEl[]
+    // UAV u0: DrawMonoid[]  u1: clip_bbox[] (float4)
+    // ================================================================
+    if (totalClipOps > 0 && clipInpBuffer_ && clipBboxBuffer_) {
+        uint32_t clipLeafWgs = (totalClipOps + 255) / 256;
+        makeSrv(clipInpBuffer_.Get(), totalClipOps, sizeof(VelloClipInp), 0);
+        makeRawSrv(pathBboxBuffer_.Get(), numPaths * 6, 1);
+        if (clipBicBuffer_) {
+            uint32_t bicCount = std::max((totalClipOps + 255) / 256, 1u);
+            makeSrv(clipBicBuffer_.Get(), bicCount, sizeof(VelloClipBic), 2);
+        } else {
+            makeSrv(drawMonoidBuffer_.Get(), 1, sizeof(VelloDrawMonoid), 2); // dummy
+        }
+        if (clipElBuffer_) {
+            makeSrv(clipElBuffer_.Get(), totalClipOps, sizeof(VelloClipEl), 3);
+        } else {
+            makeSrv(drawMonoidBuffer_.Get(), 1, sizeof(VelloDrawMonoid), 3); // dummy
+        }
+        makeUav(drawMonoidBuffer_.Get(), numDrawObjs, sizeof(VelloDrawMonoid), 8); // u0
+        makeUav(clipBboxBuffer_.Get(), totalClipOps, 16, 9);                        // u1
+        bindPipeline(clipLeafPSO_.Get());
+        cmdList->Dispatch(clipLeafWgs, 1, 1);
+        uavBarrier();
+    }
+
+    // ================================================================
+    // Stage 4: binning — draw objects → bin_data[] + bin_header[]
     // SRV t0: DrawMonoid[]  t1: PathBbox (raw)  t2: clip_bbox[]  t3: DrawTag[]
     // UAV u0: BumpAllocators  u1: intersected_bbox[]  u2: bin_data (raw)  u3: bin_header[]
     // ================================================================
     makeSrv(drawMonoidBuffer_.Get(), numDrawObjs, sizeof(VelloDrawMonoid), 0);
     makeRawSrv(pathBboxBuffer_.Get(), numPaths * 6, 1);
-    // clip_bbox: CPU-computed intersected clip bboxes (float4 per clip op)
+    // clip_bbox: GPU-computed clip bboxes from clip_reduce/clip_leaf pipeline
     if (totalClipOps > 0 && clipBboxBuffer_) {
         makeSrv(clipBboxBuffer_.Get(), totalClipOps, 16, 2);
     } else {
@@ -4539,8 +4577,8 @@ bool D3D12VelloRenderer::DispatchGPU(ID3D12GraphicsCommandList* cmdList, uint32_
         b[bc++] = MakeBarrier(outputTexture_.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COMMON);
         b[bc++] = MakeBarrier(segmentBuffer_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         b[bc++] = MakeBarrier(pathInfoBuffer_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
-        if (totalClipOps > 0 && clipBboxBuffer_)
-            b[bc++] = MakeBarrier(clipBboxBuffer_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
+        if (totalClipOps > 0 && clipInpBuffer_)
+            b[bc++] = MakeBarrier(clipInpBuffer_.Get(), D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COMMON);
         cmdList->ResourceBarrier(bc, b);
     }
 

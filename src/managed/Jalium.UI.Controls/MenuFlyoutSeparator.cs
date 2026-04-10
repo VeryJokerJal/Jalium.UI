@@ -1,4 +1,4 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -7,6 +7,10 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class MenuFlyoutSeparator : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Separator);
+
     /// <summary>
     /// Initializes a new instance of the MenuFlyoutSeparator class.
     /// </summary>

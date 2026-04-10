@@ -41,8 +41,8 @@
     <SolidColorBrush x:Key="DockIndicatorPreviewBackground" Color="#320078D4" />
     <SolidColorBrush x:Key="DockIndicatorPreviewBorder" Color="#8C0078D4" />
 
-    <!-- DockSplitBar (internal) -->
-    <Style TargetType="DockSplitBar">
+    <!-- Split (internal) -->
+    <Style TargetType="Split">
         <Setter Property="Background" Value="{DynamicResource DockSplitterBackground}" />
     </Style>
 

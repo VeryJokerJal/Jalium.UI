@@ -254,6 +254,29 @@ struct VelloDrawMonoid {
 };
 static_assert(sizeof(VelloDrawMonoid) == 16, "VelloDrawMonoid must be 16 bytes");
 
+// VelloClipInp: input for GPU clip pipeline (8 bytes, matches HLSL ClipInp)
+// For BeginClip: ix >= 0 (the draw object index)
+// For EndClip:   ix < 0 (-(draw_object_index) - 1)
+struct VelloClipInp {
+    int32_t ix;
+    int32_t path_ix;
+};
+static_assert(sizeof(VelloClipInp) == 8, "VelloClipInp must be 8 bytes");
+
+// VelloClipBic: Binary Inclusive Count for clip matching (8 bytes, matches HLSL Bic)
+struct VelloClipBic {
+    uint32_t a;
+    uint32_t b;
+};
+static_assert(sizeof(VelloClipBic) == 8, "VelloClipBic must be 8 bytes");
+
+// VelloClipEl: Clip element with parent link (20 bytes, matches HLSL ClipEl)
+struct VelloClipEl {
+    int32_t parent_ix;
+    float   bbox[4];
+};
+static_assert(sizeof(VelloClipEl) == 20, "VelloClipEl must be 20 bytes");
+
 // Bump allocator failure stage flags
 static constexpr uint32_t kStageBindng     = 0x1;
 static constexpr uint32_t kStageTileAlloc  = 0x2;
@@ -980,8 +1003,8 @@ private:
         ComPtr<ID3D12Resource> drawMonoidUpload;
         uint32_t drawMonoidUploadCapacity = 0;
         ComPtr<ID3D12Resource> bumpZeroUpload;
-        ComPtr<ID3D12Resource> clipBboxUpload;
-        uint32_t clipBboxUploadCapacity = 0;
+        ComPtr<ID3D12Resource> clipInpUpload;
+        uint32_t clipInpUploadCapacity = 0;
     };
     FrameUploadBuffers frameUploads_[kMaxFrames];
     ComPtr<ID3D12Resource> tileZeroUpload_;       // for zeroing the tile buffer
@@ -1018,6 +1041,8 @@ private:
     // Compute shader blobs
     ComPtr<ID3DBlob> bboxClearCS_;
     ComPtr<ID3DBlob> velloFlattenCS_;
+    ComPtr<ID3DBlob> clipReduceCS_;
+    ComPtr<ID3DBlob> clipLeafCS_;
     ComPtr<ID3DBlob> binningCS_;
     ComPtr<ID3DBlob> tileAllocCS_;
     ComPtr<ID3DBlob> pathCountSetupCS_;
@@ -1031,6 +1056,8 @@ private:
     // Pipeline State Objects
     ComPtr<ID3D12PipelineState> bboxClearPSO_;
     ComPtr<ID3D12PipelineState> velloFlattenPSO_;
+    ComPtr<ID3D12PipelineState> clipReducePSO_;
+    ComPtr<ID3D12PipelineState> clipLeafPSO_;
     ComPtr<ID3D12PipelineState> binningPSO_;
     ComPtr<ID3D12PipelineState> tileAllocPSO_;
     ComPtr<ID3D12PipelineState> pathCountSetupPSO_;
@@ -1051,7 +1078,10 @@ private:
     ComPtr<ID3D12Resource> lineSoupBuffer_;              // LineSoup[] (flatten output)
     ComPtr<ID3D12Resource> drawMonoidBuffer_;            // VelloDrawMonoid[] (CPU-computed prefix sum)
     ComPtr<ID3D12Resource> intersectedBboxBuffer_;       // float4[] per draw (clipped bboxes)
-    ComPtr<ID3D12Resource> clipBboxBuffer_;              // float4[] per clip op (CPU-computed clip bboxes)
+    ComPtr<ID3D12Resource> clipInpBuffer_;               // VelloClipInp[] per clip op (GPU clip pipeline input)
+    ComPtr<ID3D12Resource> clipBicBuffer_;               // VelloClipBic[] per workgroup (clip_reduce output)
+    ComPtr<ID3D12Resource> clipElBuffer_;                // VelloClipEl[] per clip op (clip_reduce output)
+    ComPtr<ID3D12Resource> clipBboxBuffer_;              // float4[] per clip op (clip_leaf output)
     ComPtr<ID3D12Resource> binDataBuffer_;               // uint32[] bin element indices
     ComPtr<ID3D12Resource> binHeaderBuffer_;             // VelloBinHeader[] per bin
     ComPtr<ID3D12Resource> velloPathBuffer_;             // VelloPath[] per draw
@@ -1069,6 +1099,9 @@ private:
     uint32_t lineSoupCapacity_ = 0;
     uint32_t drawMonoidCapacity_ = 0;
     uint32_t intersectedBboxCapacity_ = 0;
+    uint32_t clipInpCapacity_ = 0;
+    uint32_t clipBicCapacity_ = 0;
+    uint32_t clipElCapacity_ = 0;
     uint32_t binDataCapacity_ = 0;
     uint32_t binHeaderCapacity_ = 0;
     uint32_t velloPathCapacity_ = 0;

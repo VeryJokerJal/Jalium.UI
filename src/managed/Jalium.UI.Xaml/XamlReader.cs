@@ -2900,7 +2900,7 @@ public static class XamlTypeRegistry
         Register<Viewbox>(types);
         Register<GridSplitter>(types);
         Register<DockLayout>(types);
-        Register<DockSplitBar>(types);
+        Register<Split>(types);
         Register<DockSplitPanel>(types);
         Register<DockTabPanel>(types);
         Register<DockItem>(types);

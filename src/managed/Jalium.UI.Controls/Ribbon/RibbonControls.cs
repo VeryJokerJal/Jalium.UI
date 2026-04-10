@@ -1,4 +1,4 @@
-using Jalium.UI.Controls.Primitives;
+﻿using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Ribbon;
@@ -255,6 +255,10 @@ public sealed class RibbonCheckBox : CheckBox
 /// </summary>
 public class RibbonSeparator : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Separator);
+
     /// <summary>
     /// Gets or sets the label text.
     /// </summary>

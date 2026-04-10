@@ -1,4 +1,4 @@
-using Jalium.UI.Controls.Editor;
+﻿using Jalium.UI.Controls.Editor;
 using Jalium.UI.Controls.Editor.LanguageServer.Client;
 using Jalium.UI.Controls.Editor.LanguageServer.Protocol;
 using Jalium.UI.Input;
@@ -14,6 +14,10 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class EditControl : Control, IImeSupport, IEditorViewMetrics
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Edit);
+
     #region Static Brushes
 
     private static readonly SolidColorBrush s_defaultForegroundBrush = new(Color.FromRgb(212, 212, 212));

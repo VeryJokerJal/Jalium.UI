@@ -142,11 +142,11 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
             new PropertyMetadata(TimeSpan.Zero, OnPopulateDelayChanged));
 
     /// <summary>
-    /// Identifies the Watermark dependency property.
+    /// Identifies the PlaceholderText dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public static readonly DependencyProperty WatermarkProperty =
-        DependencyProperty.Register(nameof(Watermark), typeof(string), typeof(AutoCompleteBox),
+    public static readonly DependencyProperty PlaceholderTextProperty =
+        DependencyProperty.Register(nameof(PlaceholderText), typeof(string), typeof(AutoCompleteBox),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
     /// <summary>
@@ -353,13 +353,13 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
     }
 
     /// <summary>
-    /// Gets or sets the watermark text.
+    /// Gets or sets the placeholder text displayed when the text box is empty.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
-    public string? Watermark
+    public string? PlaceholderText
     {
-        get => (string?)GetValue(WatermarkProperty);
-        set => SetValue(WatermarkProperty, value);
+        get => (string?)GetValue(PlaceholderTextProperty);
+        set => SetValue(PlaceholderTextProperty, value);
     }
 
     /// <summary>
@@ -1122,10 +1122,10 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
             DrawSelection(dc, contentRect, lineHeight);
         }
 
-        // Draw text or watermark
-        if (string.IsNullOrEmpty(_text) && !string.IsNullOrEmpty(Watermark))
+        // Draw text or placeholder
+        if (string.IsNullOrEmpty(_text) && !string.IsNullOrEmpty(PlaceholderText))
         {
-            var watermarkText = new FormattedText(Watermark, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
+            var watermarkText = new FormattedText(PlaceholderText, FontFamily ?? FrameworkElement.DefaultFontFamilyName, FontSize > 0 ? FontSize : 14)
             {
                 Foreground = ResolvePlaceholderBrush(),
                 MaxTextWidth = contentRect.Width,

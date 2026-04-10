@@ -217,6 +217,33 @@ struct PathDraw
     float  gp0, gp1, gp2, gp3, gp4, gp5;
 };
 
+// ============================================================================
+// Clip pipeline structures (Vello reference clip_reduce/clip_leaf)
+// ============================================================================
+
+// ClipInp: input for clip pipeline — written by CPU, consumed by clip_reduce/clip_leaf
+// For BeginClip: ix >= 0 (the draw object index)
+// For EndClip:   ix < 0 (-(draw_object_index) - 1)
+struct ClipInp
+{
+    int ix;
+    int path_ix;
+};
+
+// Bic: Binary Inclusive Count — used for hierarchical clip begin/end matching
+struct Bic
+{
+    uint a;  // count of open clips
+    uint b;  // count of close clips
+};
+
+// ClipEl: Clip element — stores matched parent info from clip_reduce
+struct ClipEl
+{
+    int   parent_ix;
+    float4 bbox;
+};
+
 // Segment size in uint32s (for PTCL addressing)
 #define SEG_SIZE 5u
 

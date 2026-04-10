@@ -35,6 +35,7 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
     private CompiledUIBundle? _currentBundle;
     private bool _isDirty = true;
     private bool _displayListDirty = true;
+    private readonly Stack<Rect> _clipRectStack = new();
 
     // GPU 资源
     private nint _vertexBuffer;
@@ -498,6 +499,7 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
 
     private void RenderDisplayList(IReadOnlySet<uint> dirtyRenderNodes, int viewportWidth, int viewportHeight)
     {
+        _clipRectStack.Clear();
         var shouldFilterByNode = dirtyRenderNodes.Count > 0;
         var dirtyIndexMap = shouldFilterByNode ? PrecomputeDirtyIndexMap(dirtyRenderNodes) : null;
         var hasDrawnAnything = false;
@@ -523,6 +525,7 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
             switch (displayCommand.Type)
             {
                 case DisplayCommandType.PushClip:
+                    _clipRectStack.Push(displayCommand.Rect);
                     _backend.SetScissorRect(
                         (int)displayCommand.Rect.X,
                         (int)displayCommand.Rect.Y,
@@ -531,7 +534,19 @@ public sealed class UIRuntime : IDisposable, IUIRuntimeHost
                     break;
 
                 case DisplayCommandType.PopClip:
-                    _backend.SetScissorRect(0, 0, viewportWidth, viewportHeight);
+                    if (_clipRectStack.Count > 0)
+                        _clipRectStack.Pop();
+                    if (_clipRectStack.Count > 0)
+                    {
+                        var parentClip = _clipRectStack.Peek();
+                        _backend.SetScissorRect(
+                            (int)parentClip.X, (int)parentClip.Y,
+                            (int)parentClip.Width, (int)parentClip.Height);
+                    }
+                    else
+                    {
+                        _backend.SetScissorRect(0, 0, viewportWidth, viewportHeight);
+                    }
                     break;
 
                 case DisplayCommandType.PushTransform:

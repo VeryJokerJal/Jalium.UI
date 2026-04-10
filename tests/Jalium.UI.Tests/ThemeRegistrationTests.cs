@@ -31,7 +31,7 @@ public class ThemeRegistrationTests
         {
             var styledTypes = new[]
             {
-                typeof(DockSplitBar),
+                typeof(Split),
                 typeof(DocumentPageView),
                 typeof(ResizeGrip),
                 typeof(ScrollViewer),

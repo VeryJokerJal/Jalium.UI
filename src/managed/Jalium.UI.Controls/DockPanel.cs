@@ -83,75 +83,44 @@ public class DockPanel : Panel
 
     protected override Size MeasureOverride(Size availableSize)
     {
-        double usedWidth = 0;
-        double usedHeight = 0;
-        double maxWidth = 0;
-        double maxHeight = 0;
+        double parentWidth = 0;
+        double parentHeight = 0;
+        double accumulatedWidth = 0;
+        double accumulatedHeight = 0;
 
         var children = Children;
-        int lastIndex = children.Count - 1;
 
         for (int i = 0; i < children.Count; i++)
         {
-            if (children[i] is not UIElement child)
+            if (children[i] is not FrameworkElement child)
                 continue;
 
-            var dock = GetDock(child);
-            bool isLast = i == lastIndex && LastChildFill;
+            var childConstraint = new Size(
+                Math.Max(0, availableSize.Width - accumulatedWidth),
+                Math.Max(0, availableSize.Height - accumulatedHeight));
 
-            Size childConstraint;
-            if (isLast)
-            {
-                // Last child fills remaining space
-                childConstraint = new Size(
-                    Math.Max(0, availableSize.Width - usedWidth),
-                    Math.Max(0, availableSize.Height - usedHeight));
-            }
-            else
-            {
-                switch (dock)
-                {
-                    case Dock.Left:
-                    case Dock.Right:
-                        childConstraint = new Size(
-                            Math.Max(0, availableSize.Width - usedWidth),
-                            Math.Max(0, availableSize.Height - usedHeight));
-                        break;
-                    default: // Top, Bottom
-                        childConstraint = new Size(
-                            Math.Max(0, availableSize.Width - usedWidth),
-                            Math.Max(0, availableSize.Height - usedHeight));
-                        break;
-                }
-            }
+            child.Measure(childConstraint);
+            var childDesiredSize = child.DesiredSize;
 
-            if (child is FrameworkElement fe)
+            switch (GetDock(child))
             {
-                fe.Measure(childConstraint);
-                var desiredSize = fe.DesiredSize;
-
-                switch (dock)
-                {
-                    case Dock.Left:
-                    case Dock.Right:
-                        maxHeight = Math.Max(maxHeight, usedHeight + desiredSize.Height);
-                        usedWidth += desiredSize.Width;
-                        break;
-                    case Dock.Top:
-                    case Dock.Bottom:
-                        maxWidth = Math.Max(maxWidth, usedWidth + desiredSize.Width);
-                        usedHeight += desiredSize.Height;
-                        break;
-                }
+                case Dock.Left:
+                case Dock.Right:
+                    parentHeight = Math.Max(parentHeight, accumulatedHeight + childDesiredSize.Height);
+                    accumulatedWidth += childDesiredSize.Width;
+                    break;
+                case Dock.Top:
+                case Dock.Bottom:
+                    parentWidth = Math.Max(parentWidth, accumulatedWidth + childDesiredSize.Width);
+                    accumulatedHeight += childDesiredSize.Height;
+                    break;
             }
         }
 
-        maxWidth = Math.Max(maxWidth, usedWidth);
-        maxHeight = Math.Max(maxHeight, usedHeight);
+        parentWidth = Math.Max(parentWidth, accumulatedWidth);
+        parentHeight = Math.Max(parentHeight, accumulatedHeight);
 
-        return new Size(
-            double.IsInfinity(availableSize.Width) ? maxWidth : availableSize.Width,
-            double.IsInfinity(availableSize.Height) ? maxHeight : availableSize.Height);
+        return new Size(parentWidth, parentHeight);
     }
 
     protected override Size ArrangeOverride(Size finalSize)
@@ -162,80 +131,87 @@ public class DockPanel : Panel
         double bottomRemaining = finalSize.Height;
 
         var children = Children;
-        int lastIndex = children.Count - 1;
+        bool lastChildFill = LastChildFill;
+
+        // Find the true last FrameworkElement index for LastChildFill
+        int lastFeIndex = -1;
+        if (lastChildFill)
+        {
+            for (int i = children.Count - 1; i >= 0; i--)
+            {
+                if (children[i] is FrameworkElement)
+                {
+                    lastFeIndex = i;
+                    break;
+                }
+            }
+        }
 
         for (int i = 0; i < children.Count; i++)
         {
-            if (children[i] is not UIElement child)
+            if (children[i] is not FrameworkElement fe)
                 continue;
 
-            var dock = GetDock(child);
-            bool isLast = i == lastIndex && LastChildFill;
+            Rect childRect;
 
-            if (child is FrameworkElement fe)
+            if (i == lastFeIndex)
             {
-                Rect childRect;
-
-                if (isLast)
-                {
-                    // Last child fills remaining space
-                    childRect = new Rect(
-                        leftOffset,
-                        topOffset,
-                        Math.Max(0, rightRemaining),
-                        Math.Max(0, bottomRemaining));
-                }
-                else
-                {
-                    switch (dock)
-                    {
-                        case Dock.Left:
-                            childRect = new Rect(
-                                leftOffset,
-                                topOffset,
-                                fe.DesiredSize.Width,
-                                bottomRemaining);
-                            leftOffset += fe.DesiredSize.Width;
-                            rightRemaining -= fe.DesiredSize.Width;
-                            break;
-
-                        case Dock.Right:
-                            childRect = new Rect(
-                                leftOffset + rightRemaining - fe.DesiredSize.Width,
-                                topOffset,
-                                fe.DesiredSize.Width,
-                                bottomRemaining);
-                            rightRemaining -= fe.DesiredSize.Width;
-                            break;
-
-                        case Dock.Top:
-                            childRect = new Rect(
-                                leftOffset,
-                                topOffset,
-                                rightRemaining,
-                                fe.DesiredSize.Height);
-                            topOffset += fe.DesiredSize.Height;
-                            bottomRemaining -= fe.DesiredSize.Height;
-                            break;
-
-                        case Dock.Bottom:
-                            childRect = new Rect(
-                                leftOffset,
-                                topOffset + bottomRemaining - fe.DesiredSize.Height,
-                                rightRemaining,
-                                fe.DesiredSize.Height);
-                            bottomRemaining -= fe.DesiredSize.Height;
-                            break;
-
-                        default:
-                            childRect = new Rect(leftOffset, topOffset, fe.DesiredSize.Width, fe.DesiredSize.Height);
-                            break;
-                    }
-                }
-
-                fe.Arrange(childRect);
-                // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
+                // Last child fills remaining space
+                childRect = new Rect(
+                    leftOffset,
+                    topOffset,
+                    Math.Max(0, rightRemaining),
+                    Math.Max(0, bottomRemaining));
             }
+            else
+            {
+                switch (GetDock(fe))
+                {
+                    case Dock.Left:
+                        childRect = new Rect(
+                            leftOffset,
+                            topOffset,
+                            fe.DesiredSize.Width,
+                            bottomRemaining);
+                        leftOffset += fe.DesiredSize.Width;
+                        rightRemaining -= fe.DesiredSize.Width;
+                        break;
+
+                    case Dock.Right:
+                        childRect = new Rect(
+                            leftOffset + rightRemaining - fe.DesiredSize.Width,
+                            topOffset,
+                            fe.DesiredSize.Width,
+                            bottomRemaining);
+                        rightRemaining -= fe.DesiredSize.Width;
+                        break;
+
+                    case Dock.Top:
+                        childRect = new Rect(
+                            leftOffset,
+                            topOffset,
+                            rightRemaining,
+                            fe.DesiredSize.Height);
+                        topOffset += fe.DesiredSize.Height;
+                        bottomRemaining -= fe.DesiredSize.Height;
+                        break;
+
+                    case Dock.Bottom:
+                        childRect = new Rect(
+                            leftOffset,
+                            topOffset + bottomRemaining - fe.DesiredSize.Height,
+                            rightRemaining,
+                            fe.DesiredSize.Height);
+                        bottomRemaining -= fe.DesiredSize.Height;
+                        break;
+
+                    default:
+                        childRect = new Rect(leftOffset, topOffset, fe.DesiredSize.Width, fe.DesiredSize.Height);
+                        break;
+                }
+            }
+
+            fe.Arrange(childRect);
         }
 
         return finalSize;

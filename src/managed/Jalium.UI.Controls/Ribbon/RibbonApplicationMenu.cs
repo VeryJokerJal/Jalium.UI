@@ -1,4 +1,4 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Ribbon;
 
@@ -79,6 +79,10 @@ public class RibbonQuickAccessToolBar : ItemsControl
 /// </summary>
 public class RibbonContextualTabGroup : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Group);
+
     /// <summary>
     /// Identifies the Header dependency property.
     /// </summary>

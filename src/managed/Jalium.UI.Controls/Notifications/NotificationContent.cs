@@ -76,12 +76,12 @@ public sealed class NotificationAction
     /// <summary>
     /// Gets or sets a unique identifier for this action.
     /// </summary>
-    public required string Id { get; set; }
+    public string? Id { get; set; }
 
     /// <summary>
     /// Gets or sets the display text of the button.
     /// </summary>
-    public required string Label { get; set; }
+    public string? Label { get; set; }
 
     /// <summary>
     /// Gets or sets optional arguments delivered when this action is activated.

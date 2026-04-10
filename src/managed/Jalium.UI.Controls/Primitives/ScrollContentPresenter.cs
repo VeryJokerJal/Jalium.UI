@@ -219,48 +219,36 @@ public class ScrollContentPresenter : ContentPresenter, IScrollInfo
             ScrollInfo = scrollInfo;
         }
 
-        // Measure with the finite viewport first so viewport-constrained content can establish
-        // its intended layout. Only if non-IScrollInfo content already overflows do we remeasure
-        // unconstrained on that axis to determine the full scroll extent.
-        var finiteMeasureSize = new Size(
-            Math.Max(0, availableSize.Width),
-            Math.Max(0, availableSize.Height));
-
-        content.Measure(finiteMeasureSize);
-        var desiredSize = content.DesiredSize;
-
-        // Update extent and viewport (only if we're handling scroll ourselves)
         if (_scrollInfo == null)
         {
-            var needsHorizontalOverflowMeasure =
-                CanHorizontallyScroll &&
-                !double.IsInfinity(finiteMeasureSize.Width) &&
-                desiredSize.Width > finiteMeasureSize.Width + 0.5;
+            // For non-IScrollInfo content, measure with infinity on scrollable axes so
+            // that content (e.g. WrapPanel) can report its full extent. The finite axis
+            // remains constrained so wrapping/layout works correctly.
+            var measureSize = new Size(
+                CanHorizontallyScroll ? double.PositiveInfinity : Math.Max(0, availableSize.Width),
+                CanVerticallyScroll ? double.PositiveInfinity : Math.Max(0, availableSize.Height));
 
-            var needsVerticalOverflowMeasure =
-                CanVerticallyScroll &&
-                !double.IsInfinity(finiteMeasureSize.Height) &&
-                desiredSize.Height > finiteMeasureSize.Height + 0.5;
-
-            if (needsHorizontalOverflowMeasure || needsVerticalOverflowMeasure)
-            {
-                var overflowMeasureSize = new Size(
-                    needsHorizontalOverflowMeasure ? double.PositiveInfinity : finiteMeasureSize.Width,
-                    needsVerticalOverflowMeasure ? double.PositiveInfinity : finiteMeasureSize.Height);
-                content.Measure(overflowMeasureSize);
-                desiredSize = content.DesiredSize;
-            }
+            content.Measure(measureSize);
+            var desiredSize = content.DesiredSize;
 
             _extent = desiredSize;
             _viewport = availableSize;
             ScrollOwner?.InvalidateArrange();
-        }
 
-        // Return the smaller of desired and available
-        return new Size(
-            Math.Min(desiredSize.Width, availableSize.Width),
-            Math.Min(desiredSize.Height, availableSize.Height)
-        );
+            return new Size(
+                Math.Min(desiredSize.Width, availableSize.Width),
+                Math.Min(desiredSize.Height, availableSize.Height));
+        }
+        else
+        {
+            // IScrollInfo content manages its own scrolling; measure with available size.
+            content.Measure(availableSize);
+            var desiredSize = content.DesiredSize;
+
+            return new Size(
+                Math.Min(desiredSize.Width, availableSize.Width),
+                Math.Min(desiredSize.Height, availableSize.Height));
+        }
     }
 
     /// <inheritdoc />

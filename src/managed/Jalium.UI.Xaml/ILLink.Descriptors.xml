@@ -4,5 +4,12 @@
     <type fullname="Jalium.UI.Markup.ThemeLoader" preserve="all" />
     <type fullname="Jalium.UI.Markup.XamlTypeRegistry" preserve="all" />
     <type fullname="Jalium.UI.Markup.XamlReader" preserve="all" />
+    <type fullname="Jalium.UI.Markup.RazorExpressionParser" preserve="all" />
+    <type fullname="Jalium.UI.Markup.RazorLightweightExpressionEvaluator" preserve="all" />
+    <type fullname="Jalium.UI.Markup.RazorLightweightCodeBlockInterpreter" preserve="all" />
+  </assembly>
+  <!-- Preserve ExpandoObject for anonymous types in Razor templates -->
+  <assembly fullname="System.Linq.Expressions">
+    <type fullname="System.Dynamic.ExpandoObject" preserve="all" />
   </assembly>
 </linker>

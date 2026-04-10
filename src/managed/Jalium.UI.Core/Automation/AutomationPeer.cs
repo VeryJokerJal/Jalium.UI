@@ -21,7 +21,7 @@ public abstract class AutomationPeer
     /// <summary>
     /// Gets the UI element that is associated with this peer.
     /// </summary>
-    protected UIElement Owner => _owner;
+    protected internal UIElement Owner => _owner;
 
     /// <summary>
     /// Gets or sets the AutomationPeer that is the source of automation events for this peer.
@@ -219,9 +219,8 @@ public abstract class AutomationPeer
     /// <param name="eventId">The event to raise.</param>
     public void RaiseAutomationEvent(AutomationEvents eventId)
     {
-        // In a full implementation, this would notify the UI Automation system
-        // For now, we just track that it was raised
         OnAutomationEvent(eventId);
+        EventSink?.OnAutomationEventRaised(this, eventId);
     }
 
     /// <summary>
@@ -232,8 +231,8 @@ public abstract class AutomationPeer
     /// <param name="newValue">The new value.</param>
     public void RaisePropertyChangedEvent(AutomationProperty property, object? oldValue, object? newValue)
     {
-        // In a full implementation, this would notify the UI Automation system
         OnPropertyChanged(property, oldValue, newValue);
+        EventSink?.OnPropertyChangedRaised(this, property, oldValue, newValue);
     }
 
     /// <summary>
@@ -358,34 +357,61 @@ public abstract class AutomationPeer
 
     /// <summary>
     /// When overridden in a derived class, returns the parent peer.
+    /// Walks up the visual tree to find the nearest ancestor with a peer,
+    /// skipping intermediate elements (e.g., layout panels) that have no peer.
     /// </summary>
     protected virtual AutomationPeer? GetParentCore()
     {
-        var parent = Owner.VisualParent as UIElement;
-        return parent?.GetAutomationPeer();
+        var current = Owner.VisualParent;
+        while (current != null)
+        {
+            if (current is UIElement ue)
+            {
+                var peer = ue.GetAutomationPeer();
+                if (peer != null)
+                    return peer;
+            }
+            current = current.VisualParent;
+        }
+        return null;
     }
 
     /// <summary>
     /// When overridden in a derived class, returns the child peers.
+    /// Recursively walks the visual tree: if a direct child has a peer, adds it;
+    /// otherwise descends into that child's subtree to collect deeper peers.
+    /// This ensures layout containers (Grid, Border, etc.) without peers
+    /// are transparent and their descendant controls remain visible to UIA.
     /// </summary>
     protected virtual List<AutomationPeer> GetChildrenCore()
     {
         var children = new List<AutomationPeer>();
+        CollectChildPeers(Owner, children);
+        return children;
+    }
 
-        var childCount = Owner.VisualChildrenCount;
+    /// <summary>
+    /// Recursively collects automation peers from the visual subtree.
+    /// </summary>
+    private static void CollectChildPeers(UIElement parent, List<AutomationPeer> result)
+    {
+        var childCount = parent.VisualChildrenCount;
         for (int i = 0; i < childCount; i++)
         {
-            if (Owner.GetVisualChild(i) is UIElement child)
+            if (parent.GetVisualChild(i) is not UIElement child)
+                continue;
+
+            var peer = child.GetAutomationPeer();
+            if (peer != null)
             {
-                var peer = child.GetAutomationPeer();
-                if (peer != null)
-                {
-                    children.Add(peer);
-                }
+                result.Add(peer);
+            }
+            else
+            {
+                // No peer on this child — descend into its subtree
+                CollectChildPeers(child, result);
             }
         }
-
-        return children;
     }
 
     #endregion
@@ -393,12 +419,18 @@ public abstract class AutomationPeer
     #region Helper Methods
 
     /// <summary>
+    /// Gets or sets the event sink that forwards automation events to the platform
+    /// accessibility system (e.g., Windows UI Automation).
+    /// </summary>
+    internal static IAutomationEventSink? EventSink { get; set; }
+
+    /// <summary>
     /// Invalidates the peer, causing it to be rebuilt.
     /// </summary>
     public void InvalidatePeer()
     {
-        // In a full implementation, this would notify the UI Automation system
-        // to rebuild the automation tree
+        // Notify UIA of structure change
+        EventSink?.OnFocusChanged(this);
     }
 
     /// <summary>
@@ -521,7 +553,7 @@ public class FrameworkElementAutomationPeer : AutomationPeer
     /// <summary>
     /// Gets the framework element owner.
     /// </summary>
-    protected new FrameworkElement Owner => (FrameworkElement)base.Owner;
+    protected internal new FrameworkElement Owner => (FrameworkElement)base.Owner;
 
     /// <inheritdoc />
     protected override AutomationControlType GetAutomationControlTypeCore()
@@ -614,4 +646,26 @@ public sealed class GenericRootAutomationPeer : AutomationPeer
     protected override AutomationControlType GetAutomationControlTypeCore() => AutomationControlType.Window;
     protected override string GetClassNameCore() => "Pane";
     protected override string GetNameCore() => "Desktop";
+}
+
+/// <summary>
+/// Interface for forwarding automation events to the platform accessibility system.
+/// Implemented by the Windows UIA bridge in Jalium.UI.Controls.
+/// </summary>
+internal interface IAutomationEventSink
+{
+    /// <summary>
+    /// Called when an automation event is raised on a peer.
+    /// </summary>
+    void OnAutomationEventRaised(AutomationPeer peer, AutomationEvents eventId);
+
+    /// <summary>
+    /// Called when an automation property changes on a peer.
+    /// </summary>
+    void OnPropertyChangedRaised(AutomationPeer peer, AutomationProperty property, object? oldValue, object? newValue);
+
+    /// <summary>
+    /// Called when keyboard focus changes to a peer.
+    /// </summary>
+    void OnFocusChanged(AutomationPeer peer);
 }

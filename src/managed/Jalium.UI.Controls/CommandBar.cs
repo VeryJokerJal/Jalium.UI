@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Media;
@@ -10,6 +10,10 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class CommandBar : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.CommandBarAutomationPeer(this);
+
     private const double MoreButtonWidth = 40;
     private const double OverflowMinWidth = 200;
     private const double OverflowCornerRadius = 8;

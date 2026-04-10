@@ -181,6 +181,12 @@ public partial class Application
         // Optional ultra-low visible memory mode (off by default).
         _workingSetTrimController = WorkingSetTrimController.TryCreateFromEnvironment();
 
+        // Initialize Windows UI Automation accessibility bridge
+        if (OperatingSystem.IsWindows())
+        {
+            Jalium.UI.Automation.AutomationPeer.EventSink = new Jalium.UI.Controls.Automation.Uia.UiaAutomationEventSink();
+        }
+
         // Auto-call InitializeComponent() on derived classes to load their JALXAML resources.
         // This mirrors WPF behavior where Application subclass resources are loaded automatically.
         // The source generator emits InitializeComponent() as a private method, so use reflection.

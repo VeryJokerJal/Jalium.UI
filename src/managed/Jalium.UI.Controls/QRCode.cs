@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -19,6 +19,10 @@ public enum QRCodeErrorCorrectionLevel
 /// </summary>
 public class QRCode : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Image);
+
     private bool[,]? _modules;
     private string? _generationError;
 

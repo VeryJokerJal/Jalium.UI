@@ -1,6 +1,8 @@
 using System.Collections;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Jalium.UI.Markup;
 
@@ -27,8 +29,43 @@ internal static class RazorLightweightCodeBlockInterpreter
 
         var output = new StringBuilder();
         var scope = new InterpreterScope();
+        InjectBuiltins(scope, output);
         InterpretMixedCode(mergedCode.ToString(), output, scope);
         return output.ToString();
+    }
+
+    /// <summary>
+    /// Expands a code block with an external variable resolver and returns the scope
+    /// so that variables defined in the code block are accessible to subsequent segments.
+    /// </summary>
+    public static (string Output, Func<string, object?> Resolver) ExpandWithScope(
+        string code, Func<string, object?> externalResolver)
+    {
+        var output = new StringBuilder();
+        var scope = new InterpreterScope(externalResolver);
+        InjectBuiltins(scope, output);
+        InterpretMixedCode(code, output, scope);
+        return (output.ToString(), scope.Resolve);
+    }
+
+    /// <summary>
+    /// Registers <c>Write()</c> and <c>WriteLiteral()</c> helper functions in the scope
+    /// so code blocks can emit text output programmatically.
+    /// </summary>
+    private static void InjectBuiltins(InterpreterScope scope, StringBuilder output)
+    {
+        scope.Set("Write", new Func<object?[], object?>(args =>
+        {
+            foreach (var arg in args)
+                output.Append(arg?.ToString() ?? "");
+            return null;
+        }));
+        scope.Set("WriteLiteral", new Func<object?[], object?>(args =>
+        {
+            foreach (var arg in args)
+                output.Append(arg?.ToString() ?? "");
+            return null;
+        }));
     }
 
     /// <summary>
@@ -57,6 +94,20 @@ internal static class RazorLightweightCodeBlockInterpreter
                 EmitMarkup(code[pos..elementEnd], output, scope);
                 pos = elementEnd;
                 continue;
+            }
+
+            // @{ inline code } inside mixed code (e.g. inside loop bodies from merged blocks)
+            if (code[pos] == '@' && pos + 1 < code.Length && code[pos + 1] == '{')
+            {
+                var codeStart = pos + 2;
+                var end = FindMatchingChar(code, codeStart, '{', '}');
+                if (end >= 0)
+                {
+                    var inlineCode = code[codeStart..end];
+                    ExecuteCode(inlineCode, output, scope);
+                    pos = end + 1;
+                    continue;
+                }
             }
 
             // Try to match control flow keywords with block bodies
@@ -102,6 +153,33 @@ internal static class RazorLightweightCodeBlockInterpreter
                 InterpretTryCatchMixed(code, ref pos, output, scope, flow);
                 continue;
             }
+            if (TryMatchKeyword(code, pos, "using", out kwEnd))
+            {
+                pos = kwEnd;
+                InterpretUsingMixed(code, ref pos, output, scope, flow);
+                continue;
+            }
+            if (TryMatchKeyword(code, pos, "lock", out kwEnd))
+            {
+                pos = kwEnd;
+                var lockObj = ReadParenthesized(code, ref pos);
+                var lockVal = RazorLightweightExpressionEvaluator.Evaluate(lockObj.Trim(), scope.Resolve);
+                var body = ReadBraceBody(code, ref pos);
+                if (lockVal != null)
+                {
+                    lock (lockVal)
+                    {
+                        var bodyPos = 0;
+                        InterpretMixedCodeRange(body, ref bodyPos, output, scope, flow);
+                    }
+                }
+                else
+                {
+                    var bodyPos = 0;
+                    InterpretMixedCodeRange(body, ref bodyPos, output, scope, flow);
+                }
+                continue;
+            }
             if (TryMatchKeyword(code, pos, "section", out kwEnd))
             {
                 pos = kwEnd;
@@ -119,6 +197,85 @@ internal static class RazorLightweightCodeBlockInterpreter
                 pos = kwEnd; SkipSemicolon(code, ref pos);
                 flow.Kind = Signal.Continue;
                 continue;
+            }
+            // goto label; — skip to label
+            if (TryMatchKeyword(code, pos, "goto", out kwEnd))
+            {
+                pos = kwEnd; SkipWhitespace(code, ref pos);
+                var labelStart = pos;
+                while (pos < code.Length && code[pos] != ';') pos++;
+                var label = code[labelStart..pos].Trim();
+                if (pos < code.Length && code[pos] == ';') pos++;
+                // Search for label: in the current code block
+                var labelTarget = code.IndexOf(label + ":", pos, StringComparison.Ordinal);
+                if (labelTarget >= 0) pos = labelTarget + label.Length + 1;
+                continue;
+            }
+            // checked { ... } / unchecked { ... } — execute body as-is
+            if (TryMatchKeyword(code, pos, "checked", out kwEnd) || TryMatchKeyword(code, pos, "unchecked", out kwEnd))
+            {
+                pos = kwEnd; SkipWhitespace(code, ref pos);
+                if (pos < code.Length && code[pos] == '{')
+                {
+                    var body = ReadBraceBody(code, ref pos);
+                    var bodyPos = 0;
+                    InterpretMixedCodeRange(body, ref bodyPos, output, scope, flow);
+                }
+                continue;
+            }
+            // await foreach / await using / await expr
+            if (TryMatchKeyword(code, pos, "await", out kwEnd))
+            {
+                var afterAwait = kwEnd;
+                SkipWhitespace(code, ref afterAwait);
+                if (TryMatchKeyword(code, afterAwait, "foreach", out var foreachEnd))
+                {
+                    pos = foreachEnd;
+                    InterpretAwaitForeach(code, ref pos, output, scope, flow);
+                    continue;
+                }
+                if (TryMatchKeyword(code, afterAwait, "using", out var usingEnd))
+                {
+                    pos = usingEnd;
+                    InterpretAwaitUsingMixed(code, ref pos, output, scope, flow);
+                    continue;
+                }
+                // General await expression statement: await SomeTask();
+                pos = kwEnd;
+                SkipWhitespace(code, ref pos);
+                var awaitStmtStart = pos;
+                pos = ReadSimpleStatement(code, pos);
+                var awaitExpr = code[awaitStmtStart..pos].TrimEnd(';').Trim();
+                if (!string.IsNullOrEmpty(awaitExpr))
+                {
+                    var awaitResult = RazorLightweightExpressionEvaluator.Evaluate(awaitExpr, scope.Resolve);
+                    RazorExpressionParser.UnwrapAwaitable(awaitResult);
+                }
+                continue;
+            }
+            // async local function: async Type Name(...) { ... }
+            if (TryMatchKeyword(code, pos, "async", out kwEnd))
+            {
+                pos = kwEnd;
+                SkipWhitespace(code, ref pos);
+                // Read the function definition using the statement parser
+                InterpretAsyncLocalFunction(code, ref pos, output, scope);
+                continue;
+            }
+
+            // Label: identifier followed by : (e.g. "myLabel:")
+            if (char.IsLetter(code[pos]) || code[pos] == '_')
+            {
+                var labelCheck = pos;
+                while (labelCheck < code.Length && (char.IsLetterOrDigit(code[labelCheck]) || code[labelCheck] == '_'))
+                    labelCheck++;
+                while (labelCheck < code.Length && char.IsWhiteSpace(code[labelCheck])) labelCheck++;
+                if (labelCheck < code.Length && code[labelCheck] == ':' && labelCheck + 1 < code.Length && code[labelCheck + 1] != ':')
+                {
+                    // It's a label — skip it
+                    pos = labelCheck + 1;
+                    continue;
+                }
             }
 
             // Simple C# statement (no XML inside) — read until ;
@@ -231,16 +388,51 @@ internal static class RazorLightweightCodeBlockInterpreter
 
         var inIdx = header.IndexOf(" in ", StringComparison.Ordinal);
         if (inIdx < 0) return;
-        var varName = header[..inIdx].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
+        var varPart = header[..inIdx].Trim();
         var collExpr = header[(inIdx + 4)..].Trim();
         var collection = RazorLightweightExpressionEvaluator.Evaluate(collExpr, scope.Resolve);
+
+        // Check for deconstruction: foreach (var (a, b) in collection)
+        var isDeconstruct = varPart.Contains('(');
+        List<string>? deconstructNames = null;
+        string? varName = null;
+
+        if (isDeconstruct)
+        {
+            // Extract names from (a, b) or (a, b, c)
+            var parenStart = varPart.IndexOf('(');
+            var parenEnd = varPart.LastIndexOf(')');
+            if (parenStart >= 0 && parenEnd > parenStart)
+            {
+                deconstructNames = varPart[(parenStart + 1)..parenEnd]
+                    .Split(',', StringSplitOptions.RemoveEmptyEntries)
+                    .Select(n => n.Trim()).ToList();
+            }
+        }
+        else
+        {
+            varName = varPart.Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
+        }
 
         if (collection is IEnumerable enumerable)
         {
             var child = scope.CreateChild();
             foreach (var item in enumerable)
             {
-                child.Set(varName, item);
+                if (deconstructNames != null)
+                {
+                    // Deconstruct tuple fields into named variables
+                    var itemType = item?.GetType();
+                    for (var i = 0; i < deconstructNames.Count; i++)
+                    {
+                        var field = itemType?.GetField($"Item{i + 1}");
+                        child.Set(deconstructNames[i], field?.GetValue(item));
+                    }
+                }
+                else
+                {
+                    child.Set(varName!, item);
+                }
                 var bodyFlow = new FlowSignal();
                 var bodyPos = 0;
                 InterpretMixedCodeRange(body, ref bodyPos, output, child, bodyFlow);
@@ -435,6 +627,39 @@ internal static class RazorLightweightCodeBlockInterpreter
     {
         var tryBody = ReadBraceBody(code, ref pos);
 
+        // Collect all catch blocks and optional finally block
+        var catches = new List<(string? typeName, string? varName, string? whenExpr, string body)>();
+        string? finallyBody = null;
+
+        SkipWhitespace(code, ref pos);
+        while (TryMatchKeyword(code, pos, "catch", out var ce))
+        {
+            pos = ce; SkipWhitespace(code, ref pos);
+            string? catchType = null, catchVar = null, whenExpr = null;
+            if (pos < code.Length && code[pos] == '(')
+            {
+                var header = ReadParenthesized(code, ref pos);
+                var parts = header.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length >= 2) { catchType = parts[0]; catchVar = parts[^1]; }
+                else if (parts.Length == 1) { catchType = parts[0]; catchVar = "ex"; }
+            }
+            // when filter
+            SkipWhitespace(code, ref pos);
+            if (TryMatchKeyword(code, pos, "when", out var whenEnd))
+            {
+                pos = whenEnd;
+                whenExpr = ReadParenthesized(code, ref pos);
+            }
+            var catchBody = ReadBraceBody(code, ref pos);
+            catches.Add((catchType, catchVar, whenExpr, catchBody));
+            SkipWhitespace(code, ref pos);
+        }
+        if (TryMatchKeyword(code, pos, "finally", out var fe))
+        {
+            pos = fe;
+            finallyBody = ReadBraceBody(code, ref pos);
+        }
+
         try
         {
             var bp = 0;
@@ -442,34 +667,328 @@ internal static class RazorLightweightCodeBlockInterpreter
         }
         catch (Exception ex)
         {
-            SkipWhitespace(code, ref pos);
-            if (TryMatchKeyword(code, pos, "catch", out var catchEnd))
+            var handled = false;
+            foreach (var (typeName, varName, whenExpr, catchBody) in catches)
             {
-                pos = catchEnd;
-                var catchScope = scope.CreateChild();
-                SkipWhitespace(code, ref pos);
-                if (pos < code.Length && code[pos] == '(')
+                // Check type match
+                if (typeName != null)
                 {
-                    var catchHeader = ReadParenthesized(code, ref pos);
-                    var parts = catchHeader.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
-                    if (parts.Length >= 2) catchScope.Set(parts[^1], ex);
-                    else if (parts.Length == 1) catchScope.Set("ex", ex);
+                    var catchType = RazorExpressionParser.ResolveWellKnownType(typeName);
+                    if (catchType != null && !catchType.IsInstanceOfType(ex)) continue;
                 }
-                var catchBody = ReadBraceBody(code, ref pos);
+                // Check when filter
+                if (whenExpr != null)
+                {
+                    var whenScope = scope.CreateChild();
+                    if (varName != null) whenScope.Set(varName, ex);
+                    var whenResult = RazorLightweightExpressionEvaluator.Evaluate(whenExpr.Trim(), whenScope.Resolve);
+                    if (!RazorExpressionParser.IsTruthy(whenResult)) continue;
+                }
+                // Execute matching catch block
+                var catchScope = scope.CreateChild();
+                if (varName != null) catchScope.Set(varName, ex);
                 var cbp = 0;
                 InterpretMixedCodeRange(catchBody, ref cbp, output, catchScope, flow);
+                handled = true;
+                break;
+            }
+            if (!handled) throw;
+        }
+        finally
+        {
+            if (finallyBody != null)
+            {
+                var fp = 0;
+                var finallyFlow = new FlowSignal();
+                InterpretMixedCodeRange(finallyBody, ref fp, output, scope, finallyFlow);
+            }
+        }
+    }
+
+    private static void InterpretUsingMixed(string code, ref int pos, StringBuilder output, InterpreterScope scope, FlowSignal flow)
+    {
+        var header = ReadParenthesized(code, ref pos);
+        var body = ReadBraceBody(code, ref pos);
+
+        // Parse "var name = expr" from the using header
+        var child = scope.CreateChild();
+        IDisposable? disposable = null;
+        var eqIdx = header.IndexOf('=');
+        if (eqIdx >= 0)
+        {
+            var left = header[..eqIdx].Trim();
+            var varName = left.Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
+            var initExpr = header[(eqIdx + 1)..].Trim();
+            var initVal = RazorLightweightExpressionEvaluator.Evaluate(initExpr, child.Resolve);
+            child.Set(varName, initVal);
+            disposable = initVal as IDisposable;
+        }
+
+        try
+        {
+            var bodyPos = 0;
+            InterpretMixedCodeRange(body, ref bodyPos, output, child, flow);
+        }
+        finally
+        {
+            disposable?.Dispose();
+        }
+    }
+
+    private static void InterpretAwaitUsingMixed(string code, ref int pos, StringBuilder output, InterpreterScope scope, FlowSignal flow)
+    {
+        var header = ReadParenthesized(code, ref pos);
+        var body = ReadBraceBody(code, ref pos);
+
+        var child = scope.CreateChild();
+        object? resource = null;
+        var eqIdx = header.IndexOf('=');
+        if (eqIdx >= 0)
+        {
+            var left = header[..eqIdx].Trim();
+            var varName = left.Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
+            var initExpr = header[(eqIdx + 1)..].Trim();
+            var initVal = RazorLightweightExpressionEvaluator.Evaluate(initExpr, child.Resolve);
+            // Unwrap if the initializer is a Task
+            resource = RazorExpressionParser.UnwrapAwaitable(initVal) ?? initVal;
+            child.Set(varName, resource);
+        }
+
+        try
+        {
+            var bodyPos = 0;
+            InterpretMixedCodeRange(body, ref bodyPos, output, child, flow);
+        }
+        finally
+        {
+            // Dispose: IAsyncDisposable first, then IDisposable
+            if (resource is IAsyncDisposable asyncDisposable)
+                asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            else if (resource is IDisposable disposable)
+                disposable.Dispose();
+        }
+    }
+
+    private static void InterpretAwaitForeach(string code, ref int pos, StringBuilder output, InterpreterScope scope, FlowSignal flow)
+    {
+        var header = ReadParenthesized(code, ref pos);
+        var body = ReadBraceBody(code, ref pos);
+
+        var inIdx = header.IndexOf(" in ", StringComparison.Ordinal);
+        if (inIdx < 0) return;
+        var varName = header[..inIdx].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
+        var collExpr = header[(inIdx + 4)..].Trim();
+        var collection = RazorLightweightExpressionEvaluator.Evaluate(collExpr, scope.Resolve);
+
+        // Handle IAsyncEnumerable<T> by synchronously draining it
+        if (collection != null)
+        {
+            var asyncEnumType = collection.GetType().GetInterfaces()
+                .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition().FullName == "System.Collections.Generic.IAsyncEnumerable`1");
+
+            if (asyncEnumType != null)
+            {
+                // Call GetAsyncEnumerator() and iterate
+                var getEnumerator = asyncEnumType.GetMethod("GetAsyncEnumerator");
+                if (getEnumerator != null)
+                {
+                    var enumerator = getEnumerator.Invoke(collection, new object[] { default(System.Threading.CancellationToken) });
+                    if (enumerator != null)
+                    {
+                        var moveNextAsync = enumerator.GetType().GetMethod("MoveNextAsync");
+                        var currentProp = enumerator.GetType().GetProperty("Current");
+                        if (moveNextAsync != null && currentProp != null)
+                        {
+                            var child = scope.CreateChild();
+                            while (true)
+                            {
+                                var moveResult = moveNextAsync.Invoke(enumerator, null);
+                                bool hasNext;
+                                if (moveResult is System.Threading.Tasks.ValueTask<bool> vt)
+                                    hasNext = vt.AsTask().GetAwaiter().GetResult();
+                                else if (moveResult is System.Threading.Tasks.Task<bool> t)
+                                    hasNext = t.GetAwaiter().GetResult();
+                                else break;
+
+                                if (!hasNext) break;
+
+                                child.Set(varName, currentProp.GetValue(enumerator));
+                                var bodyFlow = new FlowSignal();
+                                var bodyPos = 0;
+                                InterpretMixedCodeRange(body, ref bodyPos, output, child, bodyFlow);
+                                if (bodyFlow.Kind == Signal.Break) break;
+                                if (bodyFlow.Kind == Signal.Return) { flow.Kind = Signal.Return; break; }
+                            }
+
+                            // Dispose if IAsyncDisposable
+                            if (enumerator is IAsyncDisposable asyncDisposable)
+                                asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                        }
+                    }
+                }
                 return;
             }
         }
 
-        // Skip remaining catch/finally blocks
-        SkipWhitespace(code, ref pos);
-        while (TryMatchKeyword(code, pos, "catch", out var ce) || TryMatchKeyword(code, pos, "finally", out ce))
+        // Fallback: treat as regular foreach for IEnumerable
+        if (collection is System.Collections.IEnumerable enumerable)
         {
-            pos = ce; SkipWhitespace(code, ref pos);
-            if (pos < code.Length && code[pos] == '(') ReadParenthesized(code, ref pos);
-            ReadBraceBody(code, ref pos);
+            var child = scope.CreateChild();
+            foreach (var item in enumerable)
+            {
+                child.Set(varName, item);
+                var bodyFlow = new FlowSignal();
+                var bodyPos = 0;
+                InterpretMixedCodeRange(body, ref bodyPos, output, child, bodyFlow);
+                if (bodyFlow.Kind == Signal.Break) break;
+                if (bodyFlow.Kind == Signal.Return) { flow.Kind = Signal.Return; break; }
+            }
+        }
+    }
+
+    private static void InterpretAsyncLocalFunction(string code, ref int pos, StringBuilder output, InterpreterScope scope)
+    {
+        // Parse: async ReturnType FunctionName(params) { body }
+        // Skip return type (may have dots and generic args like System.Collections.Generic.IAsyncEnumerable<string>)
+        var typeStart = pos;
+        // Read until we find an identifier followed by (
+        while (pos < code.Length)
+        {
             SkipWhitespace(code, ref pos);
+            if (pos >= code.Length) return;
+
+            // Skip generic type parameters <...>
+            if (code[pos] == '<')
+            {
+                var end = FindMatchingChar(code, pos + 1, '<', '>');
+                if (end >= 0) { pos = end + 1; continue; }
+            }
+
+            // Check if this identifier is followed by (
+            var idStart = pos;
+            while (pos < code.Length && (char.IsLetterOrDigit(code[pos]) || code[pos] == '_' || code[pos] == '.'))
+                pos++;
+            var idLen = pos - idStart;
+            if (idLen == 0) { pos++; continue; }
+
+            SkipWhitespace(code, ref pos);
+            if (pos < code.Length && code[pos] == '(')
+            {
+                // Found function name
+                var funcName = code[idStart..(idStart + idLen)];
+                // Read parameter list
+                var paramHeader = ReadParenthesized(code, ref pos);
+                var paramNames = new List<string>();
+                if (!string.IsNullOrWhiteSpace(paramHeader))
+                {
+                    foreach (var param in paramHeader.Split(','))
+                    {
+                        var parts = param.Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length > 0) paramNames.Add(parts[^1]);
+                    }
+                }
+
+                SkipWhitespace(code, ref pos);
+                if (pos < code.Length && code[pos] == '{')
+                {
+                    var funcBody = ReadBraceBody(code, ref pos);
+                    var capturedScope = scope;
+
+                    // Check if body contains yield return → IAsyncEnumerable
+                    if (funcBody.Contains("yield return", StringComparison.Ordinal))
+                    {
+                        scope.Set(funcName, new Func<object?[], object?>(args =>
+                        {
+                            return CreateAsyncEnumerable(funcBody, paramNames, args, capturedScope);
+                        }));
+                    }
+                    else
+                    {
+                        // Regular async function — interpret body synchronously
+                        scope.Set(funcName, new Func<object?[], object?>(args =>
+                        {
+                            var fnScope = capturedScope.CreateChild();
+                            for (var i = 0; i < Math.Min(paramNames.Count, args.Length); i++)
+                                fnScope.Set(paramNames[i], args[i]);
+                            var fnOutput = new StringBuilder();
+                            var fnFlow = new FlowSignal();
+                            InterpretMixedCode(funcBody, fnOutput, fnScope);
+                            if (fnFlow.Kind == Signal.Return) return fnFlow.ReturnValue;
+                            return fnOutput.Length > 0 ? fnOutput.ToString() : null;
+                        }));
+                    }
+                }
+                return;
+            }
+        }
+    }
+
+    private static object CreateAsyncEnumerable(string body, List<string> paramNames, object?[] args, InterpreterScope parentScope)
+    {
+        // Parse yield return statements from the body and collect values
+        var values = new List<object?>();
+        var scope = parentScope.CreateChild();
+        for (var i = 0; i < Math.Min(paramNames.Count, args.Length); i++)
+            scope.Set(paramNames[i], args[i]);
+
+        // Simple yield return extraction: scan for "yield return expr;"
+        var pos = 0;
+        while (pos < body.Length)
+        {
+            SkipWhitespace(body, ref pos);
+            if (pos >= body.Length) break;
+
+            if (TryMatchKeyword(body, pos, "yield", out var kwEnd))
+            {
+                pos = kwEnd;
+                SkipWhitespace(body, ref pos);
+                if (TryMatchKeyword(body, pos, "break", out kwEnd))
+                {
+                    // yield break — stop producing values
+                    pos = kwEnd;
+                    SkipSemicolon(body, ref pos);
+                    break;
+                }
+                if (TryMatchKeyword(body, pos, "return", out kwEnd))
+                {
+                    pos = kwEnd;
+                    SkipWhitespace(body, ref pos);
+                    var exprStart = pos;
+                    pos = ReadSimpleStatement(body, pos);
+                    var expr = body[exprStart..pos].TrimEnd(';').Trim();
+                    if (!string.IsNullOrEmpty(expr))
+                    {
+                        var value = RazorLightweightExpressionEvaluator.Evaluate(expr, scope.Resolve);
+                        values.Add(value);
+                    }
+                }
+                continue;
+            }
+
+            // Skip other statements
+            pos = ReadSimpleStatement(body, pos);
+        }
+
+        return new SyncAsyncEnumerable(values);
+    }
+
+    /// <summary>
+    /// Wraps a list of values as an IAsyncEnumerable for use with await foreach.
+    /// </summary>
+    private sealed class SyncAsyncEnumerable(List<object?> values) : IAsyncEnumerable<object?>, IEnumerable<object?>
+    {
+        public IAsyncEnumerator<object?> GetAsyncEnumerator(System.Threading.CancellationToken cancellationToken = default)
+            => new Enumerator(values);
+
+        public IEnumerator<object?> GetEnumerator() => values.GetEnumerator();
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => values.GetEnumerator();
+
+        private sealed class Enumerator(List<object?> items) : IAsyncEnumerator<object?>
+        {
+            private int _index = -1;
+            public object? Current => _index >= 0 && _index < items.Count ? items[_index] : default;
+            public ValueTask<bool> MoveNextAsync() => ValueTask.FromResult(++_index < items.Count);
+            public ValueTask DisposeAsync() => ValueTask.CompletedTask;
         }
     }
 
@@ -643,13 +1162,20 @@ internal static class RazorLightweightCodeBlockInterpreter
     {
         private readonly Dictionary<string, object?> _variables = new(StringComparer.Ordinal);
         private readonly InterpreterScope? _parent;
+        private readonly Func<string, object?>? _externalResolver;
 
         public InterpreterScope(InterpreterScope? parent = null) => _parent = parent;
+
+        public InterpreterScope(Func<string, object?> externalResolver)
+        {
+            _externalResolver = externalResolver;
+        }
 
         public object? Get(string name)
         {
             if (_variables.TryGetValue(name, out var value)) return value;
             if (_parent != null) return _parent.Get(name);
+            if (_externalResolver != null) return _externalResolver(name);
             return null;
         }
 
@@ -657,6 +1183,7 @@ internal static class RazorLightweightCodeBlockInterpreter
         {
             if (_variables.TryGetValue(name, out value)) return true;
             if (_parent != null) return _parent.TryGet(name, out value);
+            if (_externalResolver != null) { value = _externalResolver(name); return value != null; }
             value = null;
             return false;
         }
@@ -766,7 +1293,11 @@ internal static class RazorLightweightCodeBlockInterpreter
                     while (p < markup.Length && (char.IsLetterOrDigit(markup[p]) || markup[p] == '_' || markup[p] == '.'))
                         p++;
                     var identifier = markup[idStart..p];
-                    var value = scope.Resolve(identifier);
+                    // Use the expression evaluator for dotted paths (e.g. @kv.Item2)
+                    // so that member access is resolved correctly.
+                    var value = identifier.Contains('.')
+                        ? RazorLightweightExpressionEvaluator.Evaluate(identifier, scope.Resolve)
+                        : scope.Resolve(identifier);
                     output.Append(value?.ToString() ?? "");
                     i = p;
                     continue;
@@ -1067,6 +1598,20 @@ internal static class RazorLightweightCodeBlockInterpreter
                 if (throwVal is Exception ex) throw ex;
                 throw new XamlParseException($"Thrown value: {throwVal}");
 
+            case RazorTokenKind.Await:
+                // await expression statement: await Task.Run(...)
+                pos++;
+                var awaitParser = new RazorExpressionParser(tokens, pos);
+                var awaitVal = awaitParser.EvalExpression(scope.Resolve);
+                pos = awaitParser.Position;
+                RazorExpressionParser.UnwrapAwaitable(awaitVal);
+                if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Semicolon) pos++;
+                return pos;
+
+            case RazorTokenKind.Async:
+                // async local function via token path
+                return ExecuteVarDeclaration(tokens, pos, output, scope, flow);
+
             case RazorTokenKind.Semicolon:
                 return pos + 1;
 
@@ -1074,17 +1619,43 @@ internal static class RazorLightweightCodeBlockInterpreter
                 return ExecuteBlock(tokens, pos, output, scope, flow);
 
             case RazorTokenKind.Identifier:
+                // static local function: static Type Name(...)
+                if (tokens[pos].Value == "static" && pos + 1 < tokens.Count)
+                    return ExecuteVarDeclaration(tokens, pos, output, scope, flow);
                 // Check for assignment or expression statement
                 if (pos + 1 < tokens.Count)
                 {
                     var next = tokens[pos + 1].Kind;
                     if (next is RazorTokenKind.Assign or RazorTokenKind.PlusAssign or RazorTokenKind.MinusAssign
-                        or RazorTokenKind.StarAssign or RazorTokenKind.SlashAssign or RazorTokenKind.PercentAssign)
+                        or RazorTokenKind.StarAssign or RazorTokenKind.SlashAssign or RazorTokenKind.PercentAssign
+                        or RazorTokenKind.BitwiseAndAssign or RazorTokenKind.BitwiseOrAssign or RazorTokenKind.BitwiseXorAssign
+                        or RazorTokenKind.LeftShiftAssign or RazorTokenKind.RightShiftAssign
+                        or RazorTokenKind.QuestionQuestionAssign)
                         return ExecuteAssignment(tokens, pos, output, scope, flow);
                     if (next == RazorTokenKind.PlusPlus || next == RazorTokenKind.MinusMinus)
                         return ExecuteIncrementDecrement(tokens, pos, scope);
+                    // Dotted assignment: x.Y.Z = value
+                    if (next == RazorTokenKind.Dot)
+                    {
+                        var lookAhead = pos + 1;
+                        while (lookAhead < tokens.Count && tokens[lookAhead].Kind == RazorTokenKind.Dot)
+                        {
+                            lookAhead++; // skip .
+                            if (lookAhead < tokens.Count && tokens[lookAhead].Kind == RazorTokenKind.Identifier) lookAhead++; // skip member
+                        }
+                        if (lookAhead < tokens.Count && tokens[lookAhead].Kind is RazorTokenKind.Assign or RazorTokenKind.PlusAssign or RazorTokenKind.MinusAssign)
+                            return ExecuteDottedAssignment(tokens, pos, scope);
+                    }
                 }
-                // Check for dotted assignment: x.Y = ...
+                // Indexer assignment: x[key] = value
+                if (pos + 1 < tokens.Count && tokens[pos + 1].Kind == RazorTokenKind.OpenBracket)
+                {
+                    var saved = pos;
+                    if (TryExecuteIndexerAssignment(tokens, ref pos, scope))
+                        return pos;
+                    pos = saved;
+                }
+                // Dotted assignment or expression statement
                 return ExecuteExpressionStatement(tokens, pos, output, scope, flow);
 
             case RazorTokenKind.PlusPlus:
@@ -1114,6 +1685,38 @@ internal static class RazorLightweightCodeBlockInterpreter
         // Handle possible generic type or array type
         while (pos < tokens.Count && tokens[pos].Kind is RazorTokenKind.Less or RazorTokenKind.OpenBracket or RazorTokenKind.CloseBracket or RazorTokenKind.Greater or RazorTokenKind.Comma or RazorTokenKind.Question)
             pos++;
+
+        // Tuple deconstruction: var (a, b) = expr;
+        if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.OpenParen)
+        {
+            pos++; // skip (
+            var names = new List<string>();
+            while (pos < tokens.Count && tokens[pos].Kind != RazorTokenKind.CloseParen)
+            {
+                if (tokens[pos].Kind == RazorTokenKind.Identifier) names.Add(tokens[pos].Value);
+                pos++;
+            }
+            if (pos < tokens.Count) pos++; // skip )
+            if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Assign)
+            {
+                pos++;
+                var parser = new RazorExpressionParser(tokens, pos);
+                var tupleVal = parser.EvalExpression(scope.Resolve);
+                pos = parser.Position;
+                // Extract tuple items via reflection (ValueTuple fields: Item1, Item2, ...)
+                if (tupleVal != null)
+                {
+                    var tupleType = tupleVal.GetType();
+                    for (var i = 0; i < names.Count; i++)
+                    {
+                        var field = tupleType.GetField($"Item{i + 1}");
+                        scope.Set(names[i], field?.GetValue(tupleVal));
+                    }
+                }
+            }
+            if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Semicolon) pos++;
+            return pos;
+        }
 
         if (pos >= tokens.Count || tokens[pos].Kind != RazorTokenKind.Identifier)
         {
@@ -1174,7 +1777,9 @@ internal static class RazorLightweightCodeBlockInterpreter
 
             if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.OpenBrace)
             {
-                // Block-bodied function — skip for now, store null
+                // Block-bodied local function: capture the token range and
+                // interpret the body when called at runtime.
+                var bodyStartPos = pos;
                 var depth = 1; pos++;
                 while (pos < tokens.Count && depth > 0)
                 {
@@ -1182,7 +1787,22 @@ internal static class RazorLightweightCodeBlockInterpreter
                     else if (tokens[pos].Kind == RazorTokenKind.CloseBrace) depth--;
                     pos++;
                 }
-                scope.Set(name, null);
+                // Capture the body tokens (between { and })
+                var bodyTokens = tokens.GetRange(bodyStartPos + 1, pos - bodyStartPos - 2);
+                bodyTokens.Add(new RazorToken(RazorTokenKind.Eof, "", 0));
+                var capturedScope = scope;
+                scope.Set(name, new Func<object?[], object?>(args =>
+                {
+                    var fnScope = capturedScope.CreateChild();
+                    for (var i = 0; i < Math.Min(paramNames.Count, args.Length); i++)
+                        fnScope.Set(paramNames[i], args[i]);
+                    var fnOutput = new StringBuilder();
+                    var fnFlow = new FlowSignal();
+                    ExecuteStatements(bodyTokens, 0, fnOutput, fnScope, fnFlow);
+                    if (fnFlow.Kind == Signal.Return)
+                        return fnFlow.ReturnValue;
+                    return fnOutput.Length > 0 ? fnOutput.ToString() : null;
+                }));
                 return pos;
             }
 
@@ -1204,6 +1824,27 @@ internal static class RazorLightweightCodeBlockInterpreter
         else
         {
             scope.Set(name, null);
+        }
+
+        // Multiple variable declarations: int a = 1, b = 2, c;
+        while (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Comma)
+        {
+            pos++; // skip ,
+            if (pos >= tokens.Count || tokens[pos].Kind != RazorTokenKind.Identifier) break;
+            var extraName = tokens[pos].Value;
+            pos++;
+            if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Assign)
+            {
+                pos++;
+                var parser = new RazorExpressionParser(tokens, pos);
+                var extraVal = parser.EvalExpression(scope.Resolve);
+                pos = parser.Position;
+                scope.Set(extraName, extraVal);
+            }
+            else
+            {
+                scope.Set(extraName, null);
+            }
         }
 
         if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Semicolon) pos++;
@@ -1240,8 +1881,84 @@ internal static class RazorLightweightCodeBlockInterpreter
             case RazorTokenKind.SlashAssign:
                 scope.SetInScope(name, DivideValues(scope.Get(name), value));
                 break;
+            case RazorTokenKind.PercentAssign:
+                scope.SetInScope(name, RazorExpressionParser.ArithmeticOp(scope.Get(name), value, '%'));
+                break;
+            case RazorTokenKind.BitwiseAndAssign:
+                scope.SetInScope(name, RazorExpressionParser.BitwiseOp(scope.Get(name), value, '&'));
+                break;
+            case RazorTokenKind.BitwiseOrAssign:
+                scope.SetInScope(name, RazorExpressionParser.BitwiseOp(scope.Get(name), value, '|'));
+                break;
+            case RazorTokenKind.BitwiseXorAssign:
+                scope.SetInScope(name, RazorExpressionParser.BitwiseOp(scope.Get(name), value, '^'));
+                break;
+            case RazorTokenKind.LeftShiftAssign:
+                scope.SetInScope(name, RazorExpressionParser.BitwiseOp(scope.Get(name), value, '<'));
+                break;
+            case RazorTokenKind.RightShiftAssign:
+                scope.SetInScope(name, RazorExpressionParser.BitwiseOp(scope.Get(name), value, '>'));
+                break;
+            case RazorTokenKind.QuestionQuestionAssign:
+                var curVal = scope.Get(name);
+                if (curVal == null) scope.SetInScope(name, value);
+                break;
         }
 
+        if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Semicolon) pos++;
+        return pos;
+    }
+
+    private static int ExecuteDottedAssignment(List<RazorToken> tokens, int pos, InterpreterScope scope)
+    {
+        // Navigate dotted path: x.Y.Z = value
+        var rootName = tokens[pos].Value;
+        var target = scope.Get(rootName);
+        pos++; // skip root identifier
+
+        // Navigate to the parent object
+        while (pos + 2 < tokens.Count && tokens[pos].Kind == RazorTokenKind.Dot)
+        {
+            pos++; // skip .
+            var member = tokens[pos].Value;
+            pos++; // skip member name
+            if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Dot)
+            {
+                // More dots ahead — navigate deeper
+                target = RazorExpressionParser.GetMember(target, member);
+            }
+            else if (pos < tokens.Count && tokens[pos].Kind is RazorTokenKind.Assign or RazorTokenKind.PlusAssign or RazorTokenKind.MinusAssign)
+            {
+                // Final assignment
+                var op = tokens[pos].Kind;
+                pos++;
+                var parser = new RazorExpressionParser(tokens, pos);
+                var value = parser.EvalExpression(scope.Resolve);
+                pos = parser.Position;
+
+                if (target != null)
+                {
+                    var prop = target.GetType().GetProperty(member, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                    if (prop != null && prop.CanWrite)
+                    {
+                        if (op == RazorTokenKind.Assign)
+                            prop.SetValue(target, value);
+                        else if (op == RazorTokenKind.PlusAssign)
+                        {
+                            var cur = prop.GetValue(target);
+                            prop.SetValue(target, cur is string s ? s + value?.ToString() : RazorExpressionParser.ArithmeticOp(cur, value, '+'));
+                        }
+                    }
+                    else
+                    {
+                        var field = target.GetType().GetField(member, System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+                        if (field != null) field.SetValue(target, value);
+                    }
+                }
+                if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Semicolon) pos++;
+                return pos;
+            }
+        }
         if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Semicolon) pos++;
         return pos;
     }
@@ -1255,6 +1972,48 @@ internal static class RazorLightweightCodeBlockInterpreter
         scope.SetInScope(name, isInc ? Increment(scope.Get(name)) : Decrement(scope.Get(name)));
         if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Semicolon) pos++;
         return pos;
+    }
+
+    private static bool TryExecuteIndexerAssignment(List<RazorToken> tokens, ref int pos, InterpreterScope scope)
+    {
+        var targetName = tokens[pos].Value;
+        var target = scope.Get(targetName);
+        pos++; // skip identifier
+        pos++; // skip [
+        var parser = new RazorExpressionParser(tokens, pos);
+        var index = parser.EvalExpression(scope.Resolve);
+        pos = parser.Position;
+        if (pos >= tokens.Count || tokens[pos].Kind != RazorTokenKind.CloseBracket) return false;
+        pos++; // skip ]
+        if (pos >= tokens.Count || tokens[pos].Kind != RazorTokenKind.Assign) return false;
+        pos++; // skip =
+        var valueParser = new RazorExpressionParser(tokens, pos);
+        var value = valueParser.EvalExpression(scope.Resolve);
+        pos = valueParser.Position;
+        if (pos < tokens.Count && tokens[pos].Kind == RazorTokenKind.Semicolon) pos++;
+
+        // Set via indexer
+        if (target is System.Collections.IList list && index is int idx)
+            list[idx] = value;
+        else if (target is System.Collections.IDictionary dict)
+            dict[index!] = value;
+        else
+        {
+            // Try reflection-based indexer
+            var indexerProp = target?.GetType().GetProperties()
+                .FirstOrDefault(p => p.GetIndexParameters().Length == 1);
+            if (indexerProp != null)
+            {
+                try
+                {
+                    var convertedIndex = Convert.ChangeType(index, indexerProp.GetIndexParameters()[0].ParameterType, System.Globalization.CultureInfo.InvariantCulture);
+                    indexerProp.SetValue(target, value, new[] { convertedIndex });
+                }
+                catch { return false; }
+            }
+            else return false;
+        }
+        return true;
     }
 
     private static int ExecuteExpressionStatement(List<RazorToken> tokens, int pos, StringBuilder output, InterpreterScope scope, FlowSignal flow)

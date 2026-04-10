@@ -46,6 +46,7 @@ public class DockLayout : ContentControl
 
     public DockLayout()
     {
+        ClipToBounds = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         DockManager.Register(this);
         Loaded += (_, _) => DockManager.Register(this);

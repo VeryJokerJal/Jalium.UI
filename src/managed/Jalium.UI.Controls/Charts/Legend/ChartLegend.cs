@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using Jalium.UI.Interop;
 using Jalium.UI.Media;
 
@@ -9,6 +9,10 @@ namespace Jalium.UI.Controls.Charts;
 /// </summary>
 public class ChartLegend : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Pane);
+
     private static readonly SolidColorBrush s_defaultForeground = new(Color.FromRgb(220, 220, 220));
 
     #region Dependency Properties

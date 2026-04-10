@@ -18,7 +18,6 @@
     <PackageProjectUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</PackageProjectUrl>
     <RepositoryUrl>https://github.com/VeryJokerJal/Jalium-UI-Gallery</RepositoryUrl>
     <PackageTags>jalium;ui;xaml;jalxaml;wpf;windows;directx;gpu</PackageTags>
-    <Version>26.10.0-preview</Version>
   </PropertyGroup>
 
   <!-- Reference all Jalium.UI packages -->
@@ -34,8 +33,13 @@
 
   <!-- Include build tools as dependencies -->
   <ItemGroup>
-    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" ReferenceOutputAssembly="false" BuildReference="false" />
+    <ProjectReference Include="..\..\managed\Jalium.UI.Build\Jalium.UI.Build.csproj" ReferenceOutputAssembly="false" PrivateAssets="none" />
     <ProjectReference Include="..\..\managed\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj" PrivateAssets="none" />
+  </ItemGroup>
+
+  <!-- Ensure Jalium.UI.Build appears as a NuGet dependency (DevelopmentDependency suppresses it by default) -->
+  <ItemGroup>
+    <PackageReference Include="Jalium.UI.Build" Version="$(Version)" PrivateAssets="none" />
   </ItemGroup>
 
 </Project>

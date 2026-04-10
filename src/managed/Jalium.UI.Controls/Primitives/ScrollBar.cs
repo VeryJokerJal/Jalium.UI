@@ -1,4 +1,4 @@
-using Jalium.UI.Input;
+﻿using Jalium.UI.Input;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
@@ -10,6 +10,10 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class ScrollBar : RangeBase
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.ScrollBarAutomationPeer(this);
+
     #region Static Brushes
 
     private static readonly SolidColorBrush s_defaultTrackBrush = new(ThemeColors.ScrollBarTrack);

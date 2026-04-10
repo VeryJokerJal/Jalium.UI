@@ -1,4 +1,4 @@
-using System.Collections.ObjectModel;
+﻿using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
@@ -11,6 +11,10 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class MenuBar : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.MenuBarAutomationPeer(this);
+
     private readonly ObservableCollection<MenuBarItem> _items = new();
     private StackPanel? _panel;
 

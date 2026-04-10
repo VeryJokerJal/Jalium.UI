@@ -216,6 +216,17 @@ internal static class RazorTemplateParser
                 if (i + 1 < value.Length && value[i + 1] == '(')
                 {
                     var expression = ParseExpression(value, ref i);
+                    // Validate expression syntax at parse time — fail early on malformed expressions
+                    try
+                    {
+                        var tokens = new RazorTokenizer(expression).Tokenize();
+                        var parser = new RazorExpressionParser(tokens);
+                        parser.ParseAndEvaluate(_ => null);
+                    }
+                    catch (XamlParseException)
+                    {
+                        throw new XamlParseException($"Razor expression compile failed: invalid expression '@({expression})'");
+                    }
                     var plan = RazorExpressionAnalyzer.GetPlan(expression);
                     segments.Add(new RazorSegment(RazorSegmentKind.Expression, expression, plan));
                     continue;

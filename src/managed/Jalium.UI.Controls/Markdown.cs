@@ -1,4 +1,4 @@
-using System.Diagnostics;
+﻿using System.Diagnostics;
 using System.Linq;
 using Jalium.UI.Media;
 
@@ -31,6 +31,10 @@ public sealed class MarkdownLinkClickedEventArgs : EventArgs
 [ContentProperty(nameof(Text))]
 public class Markdown : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Document);
+
     private static readonly HashSet<string> s_allowedSchemes = new(StringComparer.OrdinalIgnoreCase)
     {
         "http",

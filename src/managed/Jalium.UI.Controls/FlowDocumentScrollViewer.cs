@@ -1,4 +1,4 @@
-using Jalium.UI.Documents;
+﻿using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Media;
 
@@ -10,6 +10,10 @@ namespace Jalium.UI.Controls;
 [ContentProperty("Document")]
 public class FlowDocumentScrollViewer : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Document);
+
     #region Dependency Properties
 
     /// <summary>

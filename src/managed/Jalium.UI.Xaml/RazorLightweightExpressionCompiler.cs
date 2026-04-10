@@ -40,7 +40,8 @@ internal static class RazorLightweightExpressionCompiler
         {
             Runner = globals =>
             {
-                object? Resolver(string name) => globals.Resolve(name);
+                // Start with the global resolver; code blocks may enrich it with local variables
+                Func<string, object?> currentResolver = name => globals.Resolve(name);
 
                 var parts = new System.Collections.Generic.List<object?>();
                 foreach (var segment in template.Segments)
@@ -51,20 +52,20 @@ internal static class RazorLightweightExpressionCompiler
                             parts.Add(segment.Text);
                             break;
                         case RazorSegmentKind.Path:
-                            parts.Add(Resolver(segment.Text));
+                            parts.Add(currentResolver(segment.Text));
                             break;
                         case RazorSegmentKind.Expression:
-                            parts.Add(RazorLightweightExpressionEvaluator.Evaluate(segment.Text, Resolver));
+                            parts.Add(RazorLightweightExpressionEvaluator.Evaluate(segment.Text, currentResolver));
                             break;
                         case RazorSegmentKind.Code:
-                            // Execute code block and capture any Write() output
-                            var codeSegments = new System.Collections.Generic.List<RazorCodeBlockPreprocessor.CodeSegment>
-                            {
-                                new(segment.Text, false)
-                            };
-                            var output = RazorLightweightCodeBlockInterpreter.Expand(codeSegments);
-                            if (!string.IsNullOrEmpty(output))
-                                parts.Add(output);
+                            // Execute code block with access to external variables,
+                            // and capture its scope so subsequent segments can use
+                            // variables defined in the code block.
+                            var (codeOutput, codeResolver) = RazorLightweightCodeBlockInterpreter.ExpandWithScope(
+                                segment.Text, currentResolver);
+                            if (!string.IsNullOrEmpty(codeOutput))
+                                parts.Add(codeOutput);
+                            currentResolver = codeResolver;
                             break;
                     }
                 }

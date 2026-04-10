@@ -8,6 +8,125 @@ namespace Jalium.UI;
 /// </summary>
 public abstract partial class UIElement : Visual, IInputElement
 {
+    #region Static Constructor — Class Handler Registration
+
+    static UIElement()
+    {
+        // Keyboard
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewKeyDownEvent, new KeyEventHandler((s, e) => ((UIElement)s).OnPreviewKeyDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), KeyDownEvent, new KeyEventHandler((s, e) => ((UIElement)s).OnKeyDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewKeyUpEvent, new KeyEventHandler((s, e) => ((UIElement)s).OnPreviewKeyUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), KeyUpEvent, new KeyEventHandler((s, e) => ((UIElement)s).OnKeyUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTextInputEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTextInput(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TextInputEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTextInput(e)));
+
+        // Mouse
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseDownEvent, new MouseButtonEventHandler(OnPreviewMouseDownThunk));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseDownEvent, new MouseButtonEventHandler(OnMouseDownThunk));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseUpEvent, new MouseButtonEventHandler(OnPreviewMouseUpThunk));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseUpEvent, new MouseButtonEventHandler(OnMouseUpThunk));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseMoveEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnPreviewMouseMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseMoveEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnMouseMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseEnterEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnMouseEnter(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseLeaveEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnMouseLeave(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseWheelEvent, new MouseWheelEventHandler((s, e) => ((UIElement)s).OnPreviewMouseWheel(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseWheelEvent, new MouseWheelEventHandler((s, e) => ((UIElement)s).OnMouseWheel(e)));
+
+        // Touch
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTouchDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTouchMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTouchUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchUp(e)));
+
+        // Stylus
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewStylusDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewStylusMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewStylusUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusInAirMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusInAirMove(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusEnterEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusEnter(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusLeaveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusLeave(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusInRangeEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusInRange(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusOutOfRangeEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusOutOfRange(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusButtonDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusButtonDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusButtonUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusButtonUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), StylusSystemGestureEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnStylusSystemGesture(e)));
+
+        // Drag and Drop
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.PreviewDragEnterEvent, new DragEventHandler((s, e) => ((UIElement)s).OnPreviewDragEnter(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.DragEnterEvent, new DragEventHandler((s, e) => ((UIElement)s).OnDragEnter(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.PreviewDragOverEvent, new DragEventHandler((s, e) => ((UIElement)s).OnPreviewDragOver(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.DragOverEvent, new DragEventHandler((s, e) => ((UIElement)s).OnDragOver(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.PreviewDragLeaveEvent, new DragEventHandler((s, e) => ((UIElement)s).OnPreviewDragLeave(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.DragLeaveEvent, new DragEventHandler((s, e) => ((UIElement)s).OnDragLeave(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.PreviewDropEvent, new DragEventHandler((s, e) => ((UIElement)s).OnPreviewDrop(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.DropEvent, new DragEventHandler((s, e) => ((UIElement)s).OnDrop(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.GiveFeedbackEvent, new GiveFeedbackEventHandler((s, e) => ((UIElement)s).OnGiveFeedback(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.QueryContinueDragEvent, new QueryContinueDragEventHandler((s, e) => ((UIElement)s).OnQueryContinueDrag(e)));
+    }
+
+    private static void OnPreviewMouseDownThunk(object sender, MouseButtonEventArgs e)
+    {
+        var element = (UIElement)sender;
+        element.OnPreviewMouseDown(e);
+
+        if (!e.Handled)
+        {
+            if (e.ChangedButton == MouseButton.Left)
+                element.OnPreviewMouseLeftButtonDown(e);
+            else if (e.ChangedButton == MouseButton.Right)
+                element.OnPreviewMouseRightButtonDown(e);
+        }
+    }
+
+    private static void OnMouseDownThunk(object sender, MouseButtonEventArgs e)
+    {
+        var element = (UIElement)sender;
+        element.OnMouseDown(e);
+
+        if (!e.Handled)
+        {
+            if (e.ChangedButton == MouseButton.Left)
+                element.OnMouseLeftButtonDown(e);
+            else if (e.ChangedButton == MouseButton.Right)
+                element.OnMouseRightButtonDown(e);
+        }
+    }
+
+    private static void OnPreviewMouseUpThunk(object sender, MouseButtonEventArgs e)
+    {
+        var element = (UIElement)sender;
+        element.OnPreviewMouseUp(e);
+
+        if (!e.Handled)
+        {
+            if (e.ChangedButton == MouseButton.Left)
+                element.OnPreviewMouseLeftButtonUp(e);
+            else if (e.ChangedButton == MouseButton.Right)
+                element.OnPreviewMouseRightButtonUp(e);
+        }
+    }
+
+    private static void OnMouseUpThunk(object sender, MouseButtonEventArgs e)
+    {
+        var element = (UIElement)sender;
+        element.OnMouseUp(e);
+
+        if (!e.Handled)
+        {
+            if (e.ChangedButton == MouseButton.Left)
+                element.OnMouseLeftButtonUp(e);
+            else if (e.ChangedButton == MouseButton.Right)
+                element.OnMouseRightButtonUp(e);
+        }
+    }
+
+    #endregion
+
     #region Event Handlers
 
     private Dictionary<RoutedEvent, List<RoutedEventHandlerInfo>>? _eventHandlers;
@@ -1180,9 +1299,16 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         if (d is UIElement element)
         {
-            element.OnIsEnabledChanged((bool)(e.OldValue ?? true), (bool)(e.NewValue ?? true));
+            var oldValue = (bool)(e.OldValue ?? true);
+            var newValue = (bool)(e.NewValue ?? true);
+            element.OnIsEnabledChanged(oldValue, newValue);
             // Propagate effective IsEnabled change to descendants
             element.PropagateIsEnabledToDescendants();
+
+            // Notify UIA of IsEnabled property change
+            var peer = element._automationPeer;
+            if (peer != null)
+                peer.RaisePropertyChangedEvent(Automation.AutomationProperty.IsEnabledProperty, oldValue, newValue);
         }
     }
 
@@ -1271,6 +1397,14 @@ public abstract partial class UIElement : Visual, IInputElement
 
             element.OnIsKeyboardFocusedChanged(isFocused);
             element.InvalidateVisual();
+
+            // Notify UIA of focus change
+            if (isFocused)
+            {
+                var peer = element.GetAutomationPeer();
+                if (peer != null)
+                    Automation.AutomationPeer.EventSink?.OnFocusChanged(peer);
+            }
         }
     }
 
@@ -1653,6 +1787,54 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     public static readonly RoutedEvent MouseWheelEvent =
         EventManager.RegisterRoutedEvent(nameof(MouseWheel), RoutingStrategy.Bubble, typeof(MouseWheelEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewMouseLeftButtonDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewMouseLeftButtonDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewMouseLeftButtonDown), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the MouseLeftButtonDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent MouseLeftButtonDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(MouseLeftButtonDown), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewMouseLeftButtonUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewMouseLeftButtonUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewMouseLeftButtonUp), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the MouseLeftButtonUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent MouseLeftButtonUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(MouseLeftButtonUp), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewMouseRightButtonDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewMouseRightButtonDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewMouseRightButtonDown), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the MouseRightButtonDown routed event.
+    /// </summary>
+    public static readonly RoutedEvent MouseRightButtonDownEvent =
+        EventManager.RegisterRoutedEvent(nameof(MouseRightButtonDown), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the PreviewMouseRightButtonUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewMouseRightButtonUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewMouseRightButtonUp), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the MouseRightButtonUp routed event.
+    /// </summary>
+    public static readonly RoutedEvent MouseRightButtonUpEvent =
+        EventManager.RegisterRoutedEvent(nameof(MouseRightButtonUp), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewTouchDown routed event.
@@ -2057,6 +2239,78 @@ public abstract partial class UIElement : Visual, IInputElement
     }
 
     /// <summary>
+    /// Occurs when the left mouse button is pressed (tunnel, direct).
+    /// </summary>
+    public event MouseButtonEventHandler PreviewMouseLeftButtonDown
+    {
+        add => AddHandler(PreviewMouseLeftButtonDownEvent, value);
+        remove => RemoveHandler(PreviewMouseLeftButtonDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the left mouse button is pressed (bubble, direct).
+    /// </summary>
+    public event MouseButtonEventHandler MouseLeftButtonDown
+    {
+        add => AddHandler(MouseLeftButtonDownEvent, value);
+        remove => RemoveHandler(MouseLeftButtonDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the left mouse button is released (tunnel, direct).
+    /// </summary>
+    public event MouseButtonEventHandler PreviewMouseLeftButtonUp
+    {
+        add => AddHandler(PreviewMouseLeftButtonUpEvent, value);
+        remove => RemoveHandler(PreviewMouseLeftButtonUpEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the left mouse button is released (bubble, direct).
+    /// </summary>
+    public event MouseButtonEventHandler MouseLeftButtonUp
+    {
+        add => AddHandler(MouseLeftButtonUpEvent, value);
+        remove => RemoveHandler(MouseLeftButtonUpEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the right mouse button is pressed (tunnel, direct).
+    /// </summary>
+    public event MouseButtonEventHandler PreviewMouseRightButtonDown
+    {
+        add => AddHandler(PreviewMouseRightButtonDownEvent, value);
+        remove => RemoveHandler(PreviewMouseRightButtonDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the right mouse button is pressed (bubble, direct).
+    /// </summary>
+    public event MouseButtonEventHandler MouseRightButtonDown
+    {
+        add => AddHandler(MouseRightButtonDownEvent, value);
+        remove => RemoveHandler(MouseRightButtonDownEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the right mouse button is released (tunnel, direct).
+    /// </summary>
+    public event MouseButtonEventHandler PreviewMouseRightButtonUp
+    {
+        add => AddHandler(PreviewMouseRightButtonUpEvent, value);
+        remove => RemoveHandler(PreviewMouseRightButtonUpEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the right mouse button is released (bubble, direct).
+    /// </summary>
+    public event MouseButtonEventHandler MouseRightButtonUp
+    {
+        add => AddHandler(MouseRightButtonUpEvent, value);
+        remove => RemoveHandler(MouseRightButtonUpEvent, value);
+    }
+
+    /// <summary>
     /// Occurs when touch begins (tunnel).
     /// </summary>
     public event RoutedEventHandler PreviewTouchDown
@@ -2441,6 +2695,326 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         add => AddHandler(ManipulationCompletedEvent, value);
         remove => RemoveHandler(ManipulationCompletedEvent, value);
+    }
+
+    #endregion
+
+    #region Protected Virtual Input Event Methods
+
+    // ── Keyboard ──
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewKeyDown attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewKeyDown(KeyEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled KeyDown attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnKeyDown(KeyEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewKeyUp attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewKeyUp(KeyEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled KeyUp attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnKeyUp(KeyEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewTextInput attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewTextInput(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled TextInput attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnTextInput(RoutedEventArgs e)
+    {
+    }
+
+    // ── Mouse ──
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewMouseDown attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewMouseDown(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseDown attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseDown(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewMouseUp attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewMouseUp(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseUp attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseUp(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewMouseMove attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewMouseMove(MouseEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseMove attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseMove(MouseEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseEnter attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseEnter(MouseEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseLeave attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseLeave(MouseEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewMouseWheel attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewMouseWheel(MouseWheelEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseWheel attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseWheel(MouseWheelEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewMouseLeftButtonDown routed event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewMouseLeftButtonDown(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseLeftButtonDown routed event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseLeftButtonDown(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewMouseLeftButtonUp routed event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewMouseLeftButtonUp(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseLeftButtonUp routed event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseLeftButtonUp(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewMouseRightButtonDown routed event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewMouseRightButtonDown(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseRightButtonDown routed event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseRightButtonDown(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewMouseRightButtonUp routed event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewMouseRightButtonUp(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled MouseRightButtonUp routed event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseRightButtonUp(MouseButtonEventArgs e)
+    {
+    }
+
+    // ── Touch ──
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewTouchDown attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewTouchDown(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled TouchDown attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnTouchDown(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewTouchMove attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewTouchMove(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled TouchMove attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnTouchMove(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewTouchUp attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewTouchUp(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled TouchUp attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnTouchUp(RoutedEventArgs e)
+    {
+    }
+
+    // ── Stylus ──
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewStylusDown attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewStylusDown(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusDown attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusDown(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewStylusMove attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewStylusMove(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusMove attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusMove(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled PreviewStylusUp attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewStylusUp(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusUp attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusUp(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusInAirMove attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusInAirMove(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusEnter attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusEnter(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusLeave attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusLeave(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusInRange attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusInRange(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusOutOfRange attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusOutOfRange(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusButtonDown attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusButtonDown(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusButtonUp attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusButtonUp(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when an unhandled StylusSystemGesture attached event reaches this element. Override to handle this event.
+    /// </summary>
+    protected virtual void OnStylusSystemGesture(RoutedEventArgs e)
+    {
     }
 
     #endregion
@@ -2980,6 +3554,27 @@ public abstract partial class UIElement : Visual, IInputElement
     protected void InvalidateAutomationPeer()
     {
         _automationPeer = null;
+    }
+
+    /// <summary>
+    /// Notifies UIA when the visual tree structure changes (children added/removed).
+    /// Finds the nearest ancestor with a peer and raises StructureChanged on it.
+    /// </summary>
+    protected override void OnVisualChildrenChanged(Visual? visualAdded, Visual? visualRemoved)
+    {
+        base.OnVisualChildrenChanged(visualAdded, visualRemoved);
+
+        // Find the nearest element (self or ancestor) with an existing automation peer
+        UIElement? current = this;
+        while (current != null)
+        {
+            if (current._automationPeer != null)
+            {
+                current._automationPeer.RaiseAutomationEvent(Automation.AutomationEvents.StructureChanged);
+                break;
+            }
+            current = current.VisualParent as UIElement;
+        }
     }
 
     #endregion

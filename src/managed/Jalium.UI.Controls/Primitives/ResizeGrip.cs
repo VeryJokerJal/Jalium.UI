@@ -1,4 +1,4 @@
-using Jalium.UI.Media;
+﻿using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls.Primitives;
 
@@ -7,6 +7,10 @@ namespace Jalium.UI.Controls.Primitives;
 /// </summary>
 public class ResizeGrip : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Thumb);
+
     #region Private Fields
 
     private const double DefaultSize = 12;

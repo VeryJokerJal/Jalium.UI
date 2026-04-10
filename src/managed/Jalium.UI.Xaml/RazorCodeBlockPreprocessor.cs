@@ -861,6 +861,14 @@ internal static class RazorCodeBlockPreprocessor
             return string.Empty;
 
         var segments = ParseCodeBlockSegments(code);
+
+        // If the code block has no XML markup segments (only pure C# code with Write()/WriteLiteral()),
+        // it may reference runtime variables (DataContext). Preserve it as @{...} for the runtime
+        // RazorBindingEngine to handle, instead of expanding at preprocess time.
+        var hasMarkup = segments.Any(s => s.IsMarkup);
+        if (!hasMarkup)
+            return "@{" + code + "}";
+
         return RazorLightweightCodeBlockInterpreter.Expand(segments);
     }
 

@@ -1,4 +1,4 @@
-using Jalium.UI.Input;
+﻿using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -8,6 +8,10 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class TitleBar : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.TitleBarAutomationPeer(this);
+
     #region Dependency Properties
 
     /// <summary>

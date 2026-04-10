@@ -578,6 +578,48 @@ public class RazorSyntaxTests
     }
 
     [Fact]
+    public void RazorCodeBlock_WithForeachAndLocalFunctions_ShouldGenerateChildren()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{
+                var now = DateTime.Now;
+                string Greeting() => now.Hour < 12 ? "Good Morning" : now.Hour < 18 ? "Good Afternoon" : "Good Evening";
+                var info = new[] {
+                    ("Time", now.ToString("HH:mm:ss")),
+                    ("Date", now.ToString("yyyy-MM-dd")),
+                    ("Greeting", Greeting())
+                };
+                foreach (var kv in info) {
+                  <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="@(kv.Item1 + ":")" />
+                    <TextBlock Text="@kv.Item2" />
+                  </StackPanel>
+                }
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Equal(3, panel.Children.Count);
+
+        // Each child is a horizontal StackPanel with two TextBlocks
+        var row0 = (StackPanel)panel.Children[0];
+        Assert.Equal("Time:", ((TextBlock)row0.Children[0]).Text);
+        Assert.NotEmpty(((TextBlock)row0.Children[1]).Text); // e.g. "16:30:00"
+
+        var row1 = (StackPanel)panel.Children[1];
+        Assert.Equal("Date:", ((TextBlock)row1.Children[0]).Text);
+        Assert.NotEmpty(((TextBlock)row1.Children[1]).Text); // e.g. "2026-04-08"
+
+        var row2 = (StackPanel)panel.Children[2];
+        Assert.Equal("Greeting:", ((TextBlock)row2.Children[0]).Text);
+        Assert.Contains(((TextBlock)row2.Children[2 - 2]).Text, new[] { "Greeting:" });
+        var greetingValue = ((TextBlock)row2.Children[1]).Text;
+        Assert.Contains(greetingValue, new[] { "Good Morning", "Good Afternoon", "Good Evening" });
+    }
+
+    [Fact]
     public void RazorUsing_ShouldExpandBlock()
     {
         const string xaml = """
@@ -591,6 +633,42 @@ public class RazorSyntaxTests
         var panel = (StackPanel)XamlReader.Parse(xaml);
         Assert.Single(panel.Children);
         Assert.Equal("StringWriter", ((TextBlock)panel.Children[0]).Text);
+    }
+
+    [Fact]
+    public void RazorUsing_InCodeBlock_ShouldExpandBlock()
+    {
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{
+                using(var writer = new System.IO.StringWriter()) {
+                  <TextBlock Text="@(writer.ToString().Length)" />
+                }
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Single(panel.Children);
+        Assert.Equal("0", ((TextBlock)panel.Children[0]).Text);
+    }
+
+    [Fact]
+    public void RazorGetTypeName_ShouldResolveChainedMethodCall()
+    {
+        // GetType() returns a Type instance; .Name should access instance property, not static
+        const string xaml = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{
+                var x = "hello";
+                <TextBlock Text="@(x.GetType().Name)" />
+              }
+            </StackPanel>
+            """;
+
+        var panel = (StackPanel)XamlReader.Parse(xaml);
+        Assert.Single(panel.Children);
+        Assert.Equal("String", ((TextBlock)panel.Children[0]).Text);
     }
 
     [Fact]
@@ -783,3 +861,4 @@ public class RazorSyntaxTests
         public TextBlock? StatusText { get; set; }
     }
 }
+

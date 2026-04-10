@@ -276,8 +276,8 @@ public abstract class Visual : DependencyObject
             effectDc.BeginEffectCapture(captureX, captureY, captureW, captureH);
         }
 
-        OnRender(drawingContext);
-
+        // Push clip BEFORE OnRender so the element's own drawing is also clipped
+        // (matches WPF semantics: ClipToBounds clips the element itself + children).
         object? clipGeometry = null;
         if (this is UIElement thisElement)
         {
@@ -290,6 +290,8 @@ public abstract class Visual : DependencyObject
             clipContext.PushClip(clipGeometry);
             pushedClip = true;
         }
+
+        OnRender(drawingContext);
 
         var childCount = VisualChildrenCount;
         for (int i = 0; i < childCount && i < VisualChildrenCount; i++)
@@ -343,12 +345,12 @@ public abstract class Visual : DependencyObject
             }
         }
 
+        OnPostRender(drawingContext);
+
         if (pushedClip && drawingContext is IClipDrawingContext clipContext2)
         {
             clipContext2.Pop();
         }
-
-        OnPostRender(drawingContext);
 
         if (activeEffect != null && effectDc != null)
         {

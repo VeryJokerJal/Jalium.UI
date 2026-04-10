@@ -1,4 +1,4 @@
-using Jalium.UI.Documents;
+﻿using Jalium.UI.Documents;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -9,6 +9,10 @@ namespace Jalium.UI.Controls;
 [ContentProperty("Document")]
 public class FlowDocumentPageViewer : Control
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.Document);
+
     #region Dependency Properties
 
     /// <summary>

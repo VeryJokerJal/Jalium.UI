@@ -94,7 +94,7 @@ public class DockThemeTests
             host.Measure(new Size(420, 220));
             host.Arrange(new Rect(0, 0, 420, 220));
 
-            var dockSplitBar = new DockSplitBar();
+            var split = new Split();
 
             AssertBrushMatches(windowBackground, InvokePrivateBrushResolver(dockLayout, "ResolveBackgroundBrush"));
             AssertBrushMatches(dockContentBackground, InvokePrivateBrushResolver(dockTabPanel, "ResolvePanelBackgroundBrush"));
@@ -111,10 +111,10 @@ public class DockThemeTests
             AssertBrushMatches(accentBrush, InvokePrivateBrushResolver(dockItem, "ResolveIndicatorBrush"));
             AssertBrushMatches(highlightBackground, InvokePrivateBrushResolver(dockItem, "ResolveDragDimBrush"));
 
-            AssertBrushMatches(dockSplitterBackground, InvokePrivateBrushResolver(dockSplitBar, "ResolveBackgroundBrush"));
-            AssertBrushMatches(dockSplitterHover, InvokePrivateBrushResolver(dockSplitBar, "ResolveHoverBrush"));
-            AssertBrushMatches(accentBrush, InvokePrivateBrushResolver(dockSplitBar, "ResolveDraggingBrush"));
-            AssertBrushMatches(dockTabStripBorder, InvokePrivateBrushResolver(dockSplitBar, "ResolveEdgeBrush"));
+            AssertBrushMatches(dockSplitterBackground, InvokePrivateBrushResolver(split, "ResolveBackgroundBrush"));
+            AssertBrushMatches(dockSplitterHover, InvokePrivateBrushResolver(split, "ResolveHoverBrush"));
+            AssertBrushMatches(accentBrush, InvokePrivateBrushResolver(split, "ResolveDraggingBrush"));
+            AssertBrushMatches(dockTabStripBorder, InvokePrivateBrushResolver(split, "ResolveEdgeBrush"));
         }
         finally
         {

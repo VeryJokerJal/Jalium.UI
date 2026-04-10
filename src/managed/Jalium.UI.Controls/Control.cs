@@ -1,5 +1,6 @@
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Documents;
+using Jalium.UI.Input;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -12,10 +13,122 @@ public class Control : FrameworkElement
     private static readonly Dictionary<string, SolidColorBrush> s_brushStringCache =
         new(StringComparer.OrdinalIgnoreCase);
 
+    #region Static Constructor — MouseDoubleClick Class Handlers
+
+    /// <summary>
+    /// Identifies the PreviewMouseDoubleClick routed event.
+    /// </summary>
+    public static readonly RoutedEvent PreviewMouseDoubleClickEvent =
+        EventManager.RegisterRoutedEvent(nameof(PreviewMouseDoubleClick), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(Control));
+
+    /// <summary>
+    /// Identifies the MouseDoubleClick routed event.
+    /// </summary>
+    public static readonly RoutedEvent MouseDoubleClickEvent =
+        EventManager.RegisterRoutedEvent(nameof(MouseDoubleClick), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(Control));
+
+    static Control()
+    {
+        // Register class handler for MouseDown to detect double-clicks
+        EventManager.RegisterClassHandler(typeof(Control), MouseLeftButtonDownEvent,
+            new MouseButtonEventHandler(OnMouseDoubleClickThunk));
+
+        // Register class handler for PreviewMouseDown to detect preview double-clicks
+        EventManager.RegisterClassHandler(typeof(Control), PreviewMouseLeftButtonDownEvent,
+            new MouseButtonEventHandler(OnPreviewMouseDoubleClickThunk));
+    }
+
+    private static void OnMouseDoubleClickThunk(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount == 2)
+        {
+            var control = (Control)sender;
+            var args = new MouseButtonEventArgs(
+                MouseDoubleClickEvent,
+                e.Position,
+                e.ChangedButton,
+                e.ButtonState,
+                e.ClickCount,
+                e.LeftButton,
+                e.MiddleButton,
+                e.RightButton,
+                e.XButton1,
+                e.XButton2,
+                e.KeyboardModifiers,
+                e.Timestamp);
+            control.OnMouseDoubleClick(args);
+            if (args.Handled)
+                e.Handled = true;
+        }
+    }
+
+    private static void OnPreviewMouseDoubleClickThunk(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount == 2)
+        {
+            var control = (Control)sender;
+            var args = new MouseButtonEventArgs(
+                PreviewMouseDoubleClickEvent,
+                e.Position,
+                e.ChangedButton,
+                e.ButtonState,
+                e.ClickCount,
+                e.LeftButton,
+                e.MiddleButton,
+                e.RightButton,
+                e.XButton1,
+                e.XButton2,
+                e.KeyboardModifiers,
+                e.Timestamp);
+            control.OnPreviewMouseDoubleClick(args);
+            if (args.Handled)
+                e.Handled = true;
+        }
+    }
+
+    /// <summary>
+    /// Occurs when the left mouse button is double-clicked (tunnel).
+    /// </summary>
+    public event MouseButtonEventHandler PreviewMouseDoubleClick
+    {
+        add => AddHandler(PreviewMouseDoubleClickEvent, value);
+        remove => RemoveHandler(PreviewMouseDoubleClickEvent, value);
+    }
+
+    /// <summary>
+    /// Occurs when the left mouse button is double-clicked.
+    /// </summary>
+    public event MouseButtonEventHandler MouseDoubleClick
+    {
+        add => AddHandler(MouseDoubleClickEvent, value);
+        remove => RemoveHandler(MouseDoubleClickEvent, value);
+    }
+
+    /// <summary>
+    /// Invoked when the mouse is double-clicked. Override to handle this event.
+    /// </summary>
+    protected virtual void OnMouseDoubleClick(MouseButtonEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when the mouse is double-clicked (tunnel). Override to handle this event.
+    /// </summary>
+    protected virtual void OnPreviewMouseDoubleClick(MouseButtonEventArgs e)
+    {
+    }
+
+    #endregion
+
     /// <inheritdoc />
+    /// <remarks>
+    /// Returns null by default — only controls that explicitly override this method
+    /// appear in the UIA tree. This matches WPF behavior and prevents layout containers
+    /// from polluting the accessibility tree with unnamed Custom elements.
+    /// </remarks>
     protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
     {
-        return new Jalium.UI.Automation.FrameworkElementAutomationPeer(this);
+        return null;
     }
 
     #region Dependency Properties

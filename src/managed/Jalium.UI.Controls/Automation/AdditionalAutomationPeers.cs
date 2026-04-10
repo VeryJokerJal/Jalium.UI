@@ -1033,3 +1033,175 @@ public sealed class GroupItemAutomationPeer : FrameworkElementAutomationPeer
 }
 
 #endregion
+
+#region Generic Automation Peer
+
+/// <summary>
+/// Generic automation peer for controls that need a specific control type
+/// but no special pattern support. Avoids creating one-off peer classes.
+/// </summary>
+internal sealed class GenericAutomationPeer : FrameworkElementAutomationPeer
+{
+    private readonly AutomationControlType _controlType;
+
+    public GenericAutomationPeer(FrameworkElement owner, AutomationControlType controlType)
+        : base(owner) => _controlType = controlType;
+
+    protected override AutomationControlType GetAutomationControlTypeCore() => _controlType;
+
+    protected override string GetClassNameCore() => Owner.GetType().Name;
+
+    protected override string GetNameCore()
+    {
+        if (Owner is ContentControl cc && cc.Content is string text)
+            return text;
+        return base.GetNameCore();
+    }
+}
+
+#endregion
+
+#region ScrollBar
+
+/// <summary>
+/// Exposes ScrollBar types to UI Automation.
+/// </summary>
+public sealed class ScrollBarAutomationPeer : FrameworkElementAutomationPeer, IRangeValueProvider
+{
+    public ScrollBarAutomationPeer(ScrollBar owner) : base(owner) { }
+
+    private ScrollBar ScrollBarOwner => (ScrollBar)Owner;
+
+    protected override AutomationControlType GetAutomationControlTypeCore()
+        => AutomationControlType.ScrollBar;
+
+    protected override string GetClassNameCore() => nameof(ScrollBar);
+
+    protected override object? GetPatternCore(PatternInterface patternInterface)
+        => patternInterface == PatternInterface.RangeValue ? this : base.GetPatternCore(patternInterface);
+
+    public void SetValue(double value) => ScrollBarOwner.Value = value;
+    public double Value => ScrollBarOwner.Value;
+    public bool IsReadOnly => false;
+    public double Maximum => ScrollBarOwner.Maximum;
+    public double Minimum => ScrollBarOwner.Minimum;
+    public double LargeChange => ScrollBarOwner.LargeChange;
+    public double SmallChange => ScrollBarOwner.SmallChange;
+}
+
+#endregion
+
+#region MenuBar / MenuBarItem / MenuFlyoutItem
+
+/// <summary>
+/// Exposes MenuBar types to UI Automation.
+/// </summary>
+public sealed class MenuBarAutomationPeer : FrameworkElementAutomationPeer
+{
+    public MenuBarAutomationPeer(MenuBar owner) : base(owner) { }
+
+    protected override AutomationControlType GetAutomationControlTypeCore()
+        => AutomationControlType.MenuBar;
+
+    protected override string GetClassNameCore() => nameof(MenuBar);
+}
+
+/// <summary>
+/// Exposes MenuBarItem types to UI Automation.
+/// </summary>
+public sealed class MenuBarItemAutomationPeer : FrameworkElementAutomationPeer, IExpandCollapseProvider, IInvokeProvider
+{
+    public MenuBarItemAutomationPeer(MenuBarItem owner) : base(owner) { }
+
+    private MenuBarItem MenuBarItemOwner => (MenuBarItem)Owner;
+
+    protected override AutomationControlType GetAutomationControlTypeCore()
+        => AutomationControlType.MenuItem;
+
+    protected override string GetClassNameCore() => nameof(MenuBarItem);
+
+    protected override string GetNameCore()
+        => MenuBarItemOwner.Title ?? base.GetNameCore();
+
+    protected override object? GetPatternCore(PatternInterface patternInterface) => patternInterface switch
+    {
+        PatternInterface.ExpandCollapse => this,
+        PatternInterface.Invoke => this,
+        _ => base.GetPatternCore(patternInterface),
+    };
+
+    public void Expand() { /* MenuBarItem opens via click */ }
+    public void Collapse() { /* MenuBarItem closes via click */ }
+    public ExpandCollapseState ExpandCollapseState
+        => MenuBarItemOwner.IsMenuOpen ? ExpandCollapseState.Expanded : ExpandCollapseState.Collapsed;
+    public void Invoke() { /* trigger click */ }
+}
+
+/// <summary>
+/// Exposes MenuFlyoutItem types to UI Automation.
+/// </summary>
+public sealed class MenuFlyoutItemAutomationPeer : FrameworkElementAutomationPeer, IInvokeProvider
+{
+    public MenuFlyoutItemAutomationPeer(MenuFlyoutItem owner) : base(owner) { }
+
+    private MenuFlyoutItem MenuFlyoutItemOwner => (MenuFlyoutItem)Owner;
+
+    protected override AutomationControlType GetAutomationControlTypeCore()
+        => AutomationControlType.MenuItem;
+
+    protected override string GetClassNameCore() => nameof(MenuFlyoutItem);
+
+    protected override string GetNameCore()
+    {
+        var text = MenuFlyoutItemOwner.Text;
+        if (!string.IsNullOrEmpty(text)) return text;
+        return base.GetNameCore();
+    }
+
+    protected override object? GetPatternCore(PatternInterface patternInterface)
+        => patternInterface == PatternInterface.Invoke ? this : base.GetPatternCore(patternInterface);
+
+    public void Invoke() => MenuFlyoutItemOwner.Command?.Execute(MenuFlyoutItemOwner.CommandParameter);
+}
+
+#endregion
+
+#region TitleBar
+
+/// <summary>
+/// Exposes TitleBar types to UI Automation.
+/// </summary>
+public sealed class TitleBarAutomationPeer : FrameworkElementAutomationPeer
+{
+    public TitleBarAutomationPeer(TitleBar owner) : base(owner) { }
+
+    protected override AutomationControlType GetAutomationControlTypeCore()
+        => AutomationControlType.TitleBar;
+
+    protected override string GetClassNameCore() => nameof(TitleBar);
+
+    protected override string GetNameCore()
+    {
+        var title = ((TitleBar)Owner).Title;
+        return !string.IsNullOrEmpty(title) ? title : base.GetNameCore();
+    }
+}
+
+#endregion
+
+#region CommandBar
+
+/// <summary>
+/// Exposes CommandBar types to UI Automation.
+/// </summary>
+public sealed class CommandBarAutomationPeer : FrameworkElementAutomationPeer
+{
+    public CommandBarAutomationPeer(CommandBar owner) : base(owner) { }
+
+    protected override AutomationControlType GetAutomationControlTypeCore()
+        => AutomationControlType.ToolBar;
+
+    protected override string GetClassNameCore() => nameof(CommandBar);
+}
+
+#endregion

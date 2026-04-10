@@ -1,4 +1,4 @@
-using System.Collections;
+﻿using System.Collections;
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.ComponentModel;
@@ -17,6 +17,10 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class TreeDataGrid : Control, IColumnHeaderHost
 {
+    /// <inheritdoc />
+    protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
+        => new Jalium.UI.Controls.Automation.GenericAutomationPeer(this, Jalium.UI.Automation.AutomationControlType.DataGrid);
+
     bool IColumnHeaderHost.IsColumnDragging => _isColumnDragging;
     void IColumnHeaderHost.ResizeColumn(DataGridColumn column, double newWidth) => ResizeColumn(column, newWidth);
     void IColumnHeaderHost.StartColumnDrag(DataGridColumnHeader sourceHeader, DataGridColumn column) => StartColumnDrag(sourceHeader, column);

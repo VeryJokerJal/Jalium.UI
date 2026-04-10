@@ -14,6 +14,7 @@ public class DockSplitPanel : Panel
 
     public DockSplitPanel()
     {
+        ClipToBounds = true;
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
     }
 
@@ -84,7 +85,7 @@ public class DockSplitPanel : Panel
 
     #region Internal Splitter Management
 
-    private readonly List<DockSplitBar> _splitters = new();
+    private readonly List<Split> _splitters = new();
 
     /// <summary>
     /// Tracks resolved actual sizes for each child (in the main axis direction).
@@ -159,7 +160,7 @@ public class DockSplitPanel : Panel
         while (_splitters.Count < requiredSplitters)
         {
             var index = _splitters.Count;
-            var bar = new DockSplitBar
+            var bar = new Split
             {
                 Owner = this,
                 PaneIndex1 = index,
@@ -478,7 +479,7 @@ public class DockSplitPanel : Panel
 
     #endregion
 
-    #region Resize Support (called by DockSplitBar)
+    #region Resize Support (called by Split)
 
     /// <summary>
     /// Gets the current actual sizes of two panes.

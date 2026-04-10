@@ -7,6 +7,7 @@ using Jalium.UI.Interop;
 using Jalium.UI.Media;
 using Jalium.UI.Threading;
 using Jalium.UI.Controls.DevTools;
+using System.Diagnostics;
 
 namespace Jalium.UI.Controls;
 
@@ -4375,6 +4376,23 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     return nint.Zero;
                 }
 
+                case WM_GETOBJECT:
+                {
+                    if ((int)lParam == -25 /* UiaRootObjectId */)
+                    {
+                        var peer = window.GetAutomationPeer();
+                        if (peer != null)
+                        {
+                            var provider = Automation.Uia.UiaAccessibilityBridge.GetOrCreateProvider(peer, hWnd);
+                            var result = Automation.Uia.UiaNativeMethods.UiaReturnRawElementProvider(
+                                hWnd, wParam, lParam, provider);
+                            if (result > 0)
+                                return result;
+                        }
+                    }
+                    break;
+                }
+
                 case WM_CLOSE:
                     // Route through Close() so Closing event can cancel
                     window.Close();
@@ -4903,6 +4921,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
                 case WM_SETFOCUS:
                     window.OnSetFocus();
+                    // Notify UIA that this window received focus so Narrator can announce it.
+                    // Must be deferred — UIA COM calls cannot be made during
+                    // input-synchronous messages (WM_SETFOCUS) or RPC_E_CANTCALLOUT occurs.
+                    if (OperatingSystem.IsWindows())
+                    {
+                        window.Dispatcher.BeginInvoke(() =>
+                        {
+                            var focusPeer = window.GetAutomationPeer();
+                            if (focusPeer != null)
+                                Automation.Uia.UiaAccessibilityBridge.RaiseFocusChanged(focusPeer);
+                        });
+                    }
                     break;
 
                 case WM_KILLFOCUS:
@@ -6470,6 +6500,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void OnWindowKeyboardFocusChanged(object? sender, KeyboardFocusChangedEventArgs e)
     {
         UpdateInputMethodAssociation();
+
+        // Notify UIA of focus change — deferred to avoid RPC_E_CANTCALLOUT
+        if (OperatingSystem.IsWindows() && e.NewFocus is UIElement focused)
+        {
+            Dispatcher.BeginInvoke(() =>
+            {
+                var peer = focused.GetAutomationPeer();
+                if (peer != null)
+                    Automation.Uia.UiaAccessibilityBridge.RaiseFocusChanged(peer);
+            });
+        }
     }
 
     private bool CanHandleImeMessages()
@@ -7853,6 +7894,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private const int SW_MAXIMIZE = 3;
     private const int SW_RESTORE = 9;
     private const uint WM_CLOSE = 0x0010;
+    private const uint WM_GETOBJECT = 0x003D;
     private const uint WM_GETMINMAXINFO = 0x0024;
     private const uint WM_QUERYENDSESSION = 0x0011;
     private const uint WM_ENDSESSION = 0x0016;
