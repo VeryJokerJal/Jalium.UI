@@ -152,9 +152,10 @@ dotnet build .\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj `
 
 - Visual Studio C++ 工具链
 - Windows SDK
-- Vulkan SDK
+- Vulkan SDK（Vulkan 后端必需）
+- Android NDK（Android 构建必需）
 
-### 6.2 推荐命令
+### 6.2 Windows 构建
 
 请在 **VS Developer Command Prompt** 或等效的 MSVC 环境中执行：
 
@@ -162,36 +163,45 @@ dotnet build .\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj `
 msbuild .\src\native\Jalium.Native.sln /m /p:Configuration=Debug /p:Platform=x64 /v:minimal
 ```
 
-### 6.3 说明
+### 6.3 Android 构建
 
-- `browser`、`core`、`metal`、`d3d12` 后端可以作为手动构建目标。
+```bash
+# 先构建依赖（FreeType + HarfBuzz）
+bash src/native/build-android-deps.sh
+
+# 构建原生库（输出到 src/native/out/android/<abi>/）
+bash src/native/build-android.sh        # 构建所有 ABI
+bash src/native/build-android.sh arm64-v8a  # 仅 arm64
+bash src/native/build-android.sh x86_64     # 仅 x86_64
+```
+
+构建输出位于 `src/native/out/android/` 下，按 ABI 分目录存放。
+
+### 6.4 说明
+
+- `browser`、`core`、`platform`、`software`、`d3d12` 后端可以作为手动构建目标。
 - `vulkan` 后端依赖 Vulkan SDK；未安装时会报 `vulkan/vulkan.h` 缺失。
+- `text` 后端在 Android/Linux 上使用 FreeType + HarfBuzz，需先运行 `build-android-deps.sh`。
 - 在普通 PowerShell 里直接跑 CMake/NMake，不保证具备完整的 `rc` / `mt` / MSVC 环境。
 
 ## 7. 当前支持矩阵
 
-- `dotnet restore .\Jalium.UI.slnx -p:GenerateAssemblyInfo=true`
-  可以
-- `Jalium.UI.Input`
-  可以
-- `Jalium.UI.Media`
-  可以
-- `Jalium.UI.Interop`
-  可以
-- `Jalium.UI.Controls`
-  可以
-- `Jalium.UI.Xaml`
-  可以
-- `src\native\Jalium.Native.sln`
-  部分可以
-  `vulkan` 需要额外安装 Vulkan SDK
-- `src\managed\Jalium.UI.Build\Jalium.UI.Build.csproj`
-  不建议用 `dotnet build`
-  需要 `MSBuild.exe`
-- `src\packaging\Jalium.UI.csproj`
-  当前不作为手动配置目标
-- `tests\Jalium.UI.Tests\Jalium.UI.Tests.csproj`
-  当前不作为手动配置目标
+| 目标 | 状态 | 备注 |
+| --- | --- | --- |
+| `dotnet restore .\Jalium.UI.slnx` | 可以 | 加 `-p:GenerateAssemblyInfo=true` |
+| `Jalium.UI.Input` | 可以 | |
+| `Jalium.UI.Media` | 可以 | |
+| `Jalium.UI.Interop` | 可以 | |
+| `Jalium.UI.Controls` | 可以 | |
+| `Jalium.UI.Xaml` | 可以 | |
+| `Jalium.UI.Gpu` | 可以 | |
+| `src\native\Jalium.Native.sln` | 部分 | `vulkan` 需 Vulkan SDK，`text` Android 需先构建依赖 |
+| `src\native\build-android.sh` | 可以 | 需 Android NDK，输出到 `out/android/` |
+| `Jalium.UI.Build` | 需 MSBuild | 不建议用 `dotnet build` |
+| `src\packaging\Jalium.UI\` | 可以 | 主 metapackage |
+| `src\packaging\Jalium.UI.Desktop\` | 可以 | Windows 桌面包 |
+| `src\packaging\Jalium.UI.Android\` | 可以 | Android 包 |
+| `tests\Jalium.UI.Tests\` | 可以 | xUnit 测试套件 |
 
 ## 8. 给用户的最小操作建议
 
@@ -203,7 +213,8 @@ msbuild .\src\native\Jalium.Native.sln /m /p:Configuration=Debug /p:Platform=x64
 4. 在仓库根目录创建 `packages\build`
 5. 执行 `dotnet restore .\Jalium.UI.slnx -p:GenerateAssemblyInfo=true`
 6. 按顺序执行 `Input`、`Media`、`Interop`、`Controls`、`Xaml`
-7. 如需 native，再用 `MSBuild` 执行 `src\native\Jalium.Native.sln`
+7. 如需 native，用 `MSBuild` 执行 `src\native\Jalium.Native.sln`
+8. 如需 Android native，执行 `build-android-deps.sh` 后再 `build-android.sh`
 
 不要承诺：
 
