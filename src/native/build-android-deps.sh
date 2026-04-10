@@ -13,7 +13,7 @@ TARGET_ABI="${1:-all}"
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 SDK_ROOT="$(cd "$SCRIPT_DIR/../../../Jalium.SDK" && pwd)"
-DEPS_BUILD="$SCRIPT_DIR/build-android-deps"
+DEPS_BUILD="$SCRIPT_DIR/out/android/deps"
 
 echo "NDK: $NDK_DIR"
 echo "SDK_ROOT: $SDK_ROOT"

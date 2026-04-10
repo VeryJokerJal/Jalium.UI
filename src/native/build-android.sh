@@ -26,7 +26,7 @@ MAKE_PROGRAM="$NDK_DIR/prebuilt/windows-x86_64/bin/make.exe"
 
 build_abi() {
     local ABI="$1"
-    local BUILD_DIR="$SCRIPT_DIR/build-android-${ABI//-/_}"
+    local BUILD_DIR="$SCRIPT_DIR/out/android/$ABI"
     local OUTPUT_DIR="$SCRIPT_DIR/../../samples/Jalium.UI.AndroidDemo/libs/$ABI"
 
     mkdir -p "$BUILD_DIR" "$OUTPUT_DIR"
