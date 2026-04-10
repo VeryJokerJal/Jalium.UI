@@ -1,9 +1,0 @@
-<Project>
-  <!-- Force Android platform for this project and all its ProjectReference dependencies -->
-  <PropertyGroup>
-    <JaliumPlatform>android</JaliumPlatform>
-  </PropertyGroup>
-
-  <!-- Import the root Directory.Build.props (which uses JaliumPlatform to set TFM) -->
-  <Import Project="$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)..\'))" />
-</Project>
