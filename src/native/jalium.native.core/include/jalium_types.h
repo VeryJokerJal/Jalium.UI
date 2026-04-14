@@ -44,6 +44,15 @@ typedef enum JaliumBackend {
     JALIUM_BACKEND_SOFTWARE = 7     ///< Software rasterizer
 } JaliumBackend;
 
+/// Rendering engine types.
+/// The rendering engine determines how 2D vector graphics are rasterized
+/// on the GPU.  This is orthogonal to the GPU backend (D3D12/Vulkan/Metal).
+typedef enum JaliumRenderingEngine {
+    JALIUM_ENGINE_AUTO    = 0,   ///< Automatic: defaults to Impeller on all platforms
+    JALIUM_ENGINE_VELLO   = 1,   ///< Vello: GPU compute pipeline (prefix-sum tiling)
+    JALIUM_ENGINE_IMPELLER = 2   ///< Impeller: tessellation-based pipeline (Flutter)
+} JaliumRenderingEngine;
+
 /// GPU adapter preference for multi-GPU systems.
 typedef enum JaliumGpuPreference {
     JALIUM_GPU_PREFERENCE_AUTO = 0,             ///< Let the OS/driver decide (default)

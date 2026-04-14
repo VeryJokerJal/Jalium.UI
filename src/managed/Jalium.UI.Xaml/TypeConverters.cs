@@ -1,6 +1,7 @@
 using System.Globalization;
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Controls.Shapes;
 using Jalium.UI.Media;
 using AnimationDuration = Jalium.UI.Media.Animation.Duration;
 
@@ -448,6 +449,19 @@ public sealed class IconElementConverter : TypeConverter
 }
 
 /// <summary>
+/// Converts strings to PointCollection values.
+/// Format: "x1,y1 x2,y2 x3,y3" (space-separated coordinate pairs).
+/// </summary>
+public sealed class PointCollectionConverter : TypeConverter
+{
+    public override object? ConvertFrom(object? value)
+    {
+        if (value is not string str) return null;
+        return PointCollection.Parse(str);
+    }
+}
+
+/// <summary>
 /// Registry of type converters.
 /// </summary>
 public static class TypeConverterRegistry
@@ -470,6 +484,7 @@ public static class TypeConverterRegistry
         [typeof(Uri)] = new UriValueConverter(),
         [typeof(Type)] = new TypeTypeConverter(),
         [typeof(IconElement)] = new IconElementConverter(),
+        [typeof(PointCollection)] = new PointCollectionConverter(),
     };
 
     /// <summary>

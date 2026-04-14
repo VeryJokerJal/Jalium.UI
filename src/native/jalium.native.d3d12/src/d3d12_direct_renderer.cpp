@@ -786,8 +786,8 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     while (!transformStack_.empty()) transformStack_.pop();
     transformStack_.push(Transform2D::Identity());
 
-    // Begin Vello frame
-    if (velloRenderer_) {
+    // Begin Vello frame (skipped when Impeller is active)
+    if (velloEnabled_ && velloRenderer_) {
         velloRenderer_->BeginFrame(width, height);
     }
 
@@ -1171,6 +1171,28 @@ void D3D12DirectRenderer::AddTriangles(const TriangleVertex* vertices, uint32_t 
     batch.type = DrawBatchType::Triangle;
     batch.instanceOffset = startVertex;         // repurposed: vertex offset
     batch.instanceCount = vertexCount;           // repurposed: vertex count
+    batch.sortOrder = drawOrder_++;
+    batch.hasScissor = !scissorStack_.empty();
+    if (batch.hasScissor) batch.scissor = scissorStack_.top();
+    batches_.push_back(batch);
+}
+
+void D3D12DirectRenderer::AddTrianglesPreTransformed(const TriangleVertex* vertices, uint32_t vertexCount)
+{
+    if (!inFrame_ || !vertices || vertexCount < 3) return;
+
+    if (triangleVertices_.size() + vertexCount > kMaxInstancesPerFrame * 16) {
+        FlushGraphicsForCompute();
+    }
+
+    // Vertices are already in pixel-space with opacity applied — add directly
+    uint32_t startVertex = (uint32_t)triangleVertices_.size();
+    triangleVertices_.insert(triangleVertices_.end(), vertices, vertices + vertexCount);
+
+    DrawBatch batch;
+    batch.type = DrawBatchType::Triangle;
+    batch.instanceOffset = startVertex;
+    batch.instanceCount = vertexCount;
     batch.sortOrder = drawOrder_++;
     batch.hasScissor = !scissorStack_.empty();
     if (batch.hasScissor) batch.scissor = scissorStack_.top();

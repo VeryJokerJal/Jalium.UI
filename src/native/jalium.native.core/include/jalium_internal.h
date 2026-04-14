@@ -2,6 +2,7 @@
 
 #include "jalium_api.h"
 #include "jalium_backend.h"
+#include "jalium_rendering_engine.h"
 #include <atomic>
 #include <memory>
 #include <string>
@@ -83,6 +84,8 @@ inline BackendRegistry& GetBackendRegistry() {
     return BackendRegistry::Instance();
 }
 
+// ResolveRenderingEngine is defined in jalium_rendering_engine.h
+
 /// Internal context implementation.
 class Context {
 public:
@@ -90,6 +93,7 @@ public:
         : backend_(backend)
         , backendImpl_(std::move(backendImpl))
         , lastError_(JALIUM_OK)
+        , defaultEngine_(JALIUM_ENGINE_AUTO)
     {}
 
     JaliumBackend GetBackend() const { return backend_; }
@@ -105,11 +109,20 @@ public:
         return errorMessage_.empty() ? nullptr : errorMessage_.c_str();
     }
 
+    JaliumRenderingEngine GetDefaultEngine() const { return defaultEngine_; }
+    void SetDefaultEngine(JaliumRenderingEngine engine) { defaultEngine_ = engine; }
+
+    /// Returns the resolved engine (Auto → concrete) for this context's backend.
+    JaliumRenderingEngine GetResolvedDefaultEngine() const {
+        return ResolveRenderingEngine(defaultEngine_, backend_);
+    }
+
 private:
     JaliumBackend backend_;
     std::unique_ptr<IRenderBackend> backendImpl_;
     JaliumResult lastError_;
     std::wstring errorMessage_;
+    JaliumRenderingEngine defaultEngine_;
 };
 
 // Helper to get backend from context

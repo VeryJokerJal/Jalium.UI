@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Platform;
@@ -110,14 +111,59 @@ public partial class Application
     internal event EventHandler? MainWindowChanged;
 
     /// <summary>
-    /// Occurs when the application is starting.
+    /// Occurs when the application is starting, before the startup window is shown.
     /// </summary>
-    public event EventHandler? Startup;
+    public event EventHandler<StartupEventArgs>? Startup;
 
     /// <summary>
-    /// Occurs when the application is exiting.
+    /// Occurs after the message loop exits and before the application cleans up.
+    /// Handlers may observe / override <see cref="ExitEventArgs.ApplicationExitCode"/>.
     /// </summary>
-    public event EventHandler? Exit;
+    public event EventHandler<ExitEventArgs>? Exit;
+
+    /// <summary>
+    /// Occurs when the Windows session is ending (logoff or shutdown). The handler
+    /// may cancel the end-session request by setting <see cref="SessionEndingCancelEventArgs.Cancel"/>.
+    /// </summary>
+    public event EventHandler<SessionEndingCancelEventArgs>? SessionEnding;
+
+    /// <summary>
+    /// Raises the <see cref="Startup"/> event. Override to perform application-level
+    /// initialization (service registration, logging, etc.) before the startup window
+    /// is shown.
+    /// </summary>
+    protected virtual void OnStartup(StartupEventArgs e)
+    {
+        Startup?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="Exit"/> event. Override to perform application-level
+    /// cleanup after the message loop terminates. The exit code can be changed via
+    /// <see cref="ExitEventArgs.ApplicationExitCode"/>.
+    /// </summary>
+    protected virtual void OnExit(ExitEventArgs e)
+    {
+        Exit?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Raises the <see cref="SessionEnding"/> event.
+    /// </summary>
+    protected virtual void OnSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        SessionEnding?.Invoke(this, e);
+    }
+
+    /// <summary>
+    /// Internal entry point called by <see cref="Window"/> when it receives
+    /// WM_QUERYENDSESSION, so application-level handlers get a chance to cancel.
+    /// </summary>
+    internal bool RaiseSessionEnding(SessionEndingCancelEventArgs e)
+    {
+        OnSessionEnding(e);
+        return !e.Cancel;
+    }
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Application"/> class.
@@ -273,11 +319,21 @@ public partial class Application
     }
 
     /// <summary>
-    /// Starts the application message loop.
+    /// Starts the application message loop using the command-line arguments
+    /// supplied by the operating system.
     /// </summary>
-    public int Run()
+    public int Run() => Run(Environment.GetCommandLineArgs().Skip(1).ToArray());
+
+    /// <summary>
+    /// Starts the application message loop with an explicit set of startup arguments.
+    /// Use this overload from tests or custom hosts that do not want to expose
+    /// <see cref="Environment.GetCommandLineArgs"/>.
+    /// </summary>
+    public int Run(string[] args)
     {
-        Startup?.Invoke(this, EventArgs.Empty);
+        ArgumentNullException.ThrowIfNull(args);
+
+        OnStartup(new StartupEventArgs(args));
 
         var startupWindow = ResolveStartupWindow();
         if (startupWindow != null && startupWindow.Handle == nint.Zero)
@@ -317,8 +373,11 @@ public partial class Application
         }
         finally
         {
-            // Fire Exit event before cleanup so handlers can still access application state
-            Exit?.Invoke(this, EventArgs.Empty);
+            // Fire Exit event before cleanup so handlers can still access application
+            // state. Handlers may override the final exit code via ExitEventArgs.
+            var exitArgs = new ExitEventArgs(exitCode);
+            OnExit(exitArgs);
+            exitCode = exitArgs.ApplicationExitCode;
             Cleanup();
         }
 
@@ -397,6 +456,15 @@ public partial class Application
     {
         MainWindow = mainWindow;
         return Run();
+    }
+
+    /// <summary>
+    /// Starts the application with the specified main window and startup arguments.
+    /// </summary>
+    public int Run(Window mainWindow, string[] args)
+    {
+        MainWindow = mainWindow;
+        return Run(args);
     }
 
     /// <summary>
@@ -574,4 +642,51 @@ public partial class Application
     private const int E_ACCESSDENIED = unchecked((int)0x80070005);
 
     #endregion
+}
+
+/// <summary>
+/// Event data for <see cref="Application.Startup"/>, providing the command-line
+/// arguments passed to the application.
+/// </summary>
+public class StartupEventArgs : EventArgs
+{
+    /// <summary>
+    /// Gets the command-line arguments that were passed to the application.
+    /// Never <see langword="null"/> — an empty array is used when no arguments
+    /// were supplied.
+    /// </summary>
+    public string[] Args { get; }
+
+    public StartupEventArgs() : this(Array.Empty<string>())
+    {
+    }
+
+    public StartupEventArgs(string[] args)
+    {
+        Args = args ?? Array.Empty<string>();
+    }
+}
+
+/// <summary>
+/// Event data for <see cref="Application.Exit"/>. Handlers may override the
+/// process exit code returned by <see cref="Application.Run()"/> by setting
+/// <see cref="ApplicationExitCode"/>.
+/// </summary>
+public class ExitEventArgs : EventArgs
+{
+    /// <summary>
+    /// Gets or sets the exit code that will be returned from
+    /// <see cref="Application.Run()"/>. Defaults to the value supplied by the
+    /// framework when the message loop exited.
+    /// </summary>
+    public int ApplicationExitCode { get; set; }
+
+    public ExitEventArgs() : this(0)
+    {
+    }
+
+    public ExitEventArgs(int applicationExitCode)
+    {
+        ApplicationExitCode = applicationExitCode;
+    }
 }

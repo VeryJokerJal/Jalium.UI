@@ -58,6 +58,23 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     public bool SupportsPartialPresentation { get; }
 
+    /// <summary>
+    /// Gets the active rendering engine for this render target.
+    /// </summary>
+    public RenderingEngine RenderingEngine =>
+        _handle != nint.Zero ? NativeMethods.RenderTargetGetEngine(_handle) : RenderingEngine.Auto;
+
+    /// <summary>
+    /// Sets the rendering engine (hot-switch). Takes effect at the next BeginDraw().
+    /// </summary>
+    public void SetRenderingEngine(RenderingEngine engine)
+    {
+        if (_handle != nint.Zero)
+        {
+            NativeMethods.RenderTargetSetEngine(_handle, engine);
+        }
+    }
+
     internal RenderTarget(RenderContext context, NativeSurfaceDescriptor surface, int width, int height, bool useComposition = false)
         : this(
             context.Backend,

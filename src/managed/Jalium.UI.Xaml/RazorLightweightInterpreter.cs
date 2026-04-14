@@ -1016,15 +1016,36 @@ internal sealed class RazorExpressionParser
                 {
                     if (Current.Kind == RazorTokenKind.OpenParen)
                     {
-                        // Try instance method first (e.g. Type.GetMethod()), then static
-                        var instanceResult = EvalMethodCall(value, member, resolver);
-                        value = instanceResult ?? EvalStaticMethodCall(staticType, member, resolver);
+                        // Dispatch to STATIC method when the well-known type defines one
+                        // matching the member name; otherwise fall through to the instance
+                        // method on the Type object itself (e.g. typeof(Foo).GetMethod("Bar")).
+                        // We cannot speculatively call EvalMethodCall first because it
+                        // consumes the parenthesized arguments unconditionally — a failed
+                        // attempt would leave the parser past the closing ')' and break the
+                        // static fallback.
+                        var hasStaticMember = staticType
+                            .GetMember(member, BindingFlags.Public | BindingFlags.Static)
+                            .Length > 0;
+                        if (hasStaticMember)
+                        {
+                            value = EvalStaticMethodCall(staticType, member, resolver);
+                        }
+                        else
+                        {
+                            value = EvalMethodCall(value, member, resolver);
+                        }
                     }
                     else
                     {
-                        // Try instance member first (e.g. GetType().Name), then static
-                        var instanceResult = GetMember(value, member);
-                        value = instanceResult ?? GetStaticMember(staticType, member);
+                        // Try static member first (typeof(int).MaxValue is the common case),
+                        // then fall back to an instance member on the Type object itself
+                        // (typeof(Foo).Name, etc.).
+                        var hasStaticMember = staticType
+                            .GetMember(member, BindingFlags.Public | BindingFlags.Static)
+                            .Length > 0;
+                        value = hasStaticMember
+                            ? GetStaticMember(staticType, member)
+                            : GetMember(value, member);
                     }
                 }
                 else if (Current.Kind == RazorTokenKind.OpenParen || Current.Kind == RazorTokenKind.Less)

@@ -4,6 +4,7 @@ set(HEADERS
     include/d3d12_backend.h
     include/d3d12_direct_renderer.h
     include/d3d12_glyph_atlas.h
+    include/d3d12_impeller_engine.h
     include/d3d12_pipeline.h
     include/d3d12_render_target.h
     include/d3d12_resources.h
@@ -11,6 +12,7 @@ set(HEADERS
     include/d3d12_shader_source.h
     include/d3d12_triangulate.h
     include/d3d12_vello.h
+    include/d3d12_vello_engine.h
     include/d3dx12.h
     include/liquid_glass_effects.h
     include/transition_shader_effect.h
@@ -22,10 +24,12 @@ set(SOURCES
     src/d3d12_brush.cpp
     src/d3d12_direct_renderer.cpp
     src/d3d12_glyph_atlas.cpp
+    src/d3d12_impeller_engine.cpp
     src/d3d12_init.cpp
     src/d3d12_render_target.cpp
     src/d3d12_text.cpp
     src/d3d12_vello.cpp
+    src/d3d12_vello_engine.cpp
     src/liquid_glass_effects.cpp
     src/transition_shader_effect.cpp
 )

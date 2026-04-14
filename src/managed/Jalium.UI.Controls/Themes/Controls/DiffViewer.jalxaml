@@ -7,13 +7,18 @@
     <!-- ============================================== -->
     <!-- A side-by-side / unified diff viewer control.
          Uses direct rendering (OnRender) for diff line drawing. -->
+    <!-- DiffViewer paints its entire visual via OnRender (background + panels +
+         text + minimap). The template therefore must NOT paint a background of
+         its own — otherwise the template's Border would be drawn on top of the
+         control's OnRender output and hide everything. The Border here only
+         contributes the chrome (border stroke + corner radius) as an overlay. -->
     <Style TargetType="DiffViewer">
         <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
         <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
         <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="Padding" Value="4" />
+        <Setter Property="Padding" Value="0" />
         <Setter Property="FontFamily" Value="Cascadia Code, Cascadia Mono, Consolas, monospace" />
         <Setter Property="FontSize" Value="13" />
         <Setter Property="MinWidth" Value="200" />
@@ -21,12 +26,11 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="DiffViewer">
                 <Border Name="RootBorder"
-                        Background="{TemplateBinding Background}"
+                        Background="Transparent"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="{TemplateBinding CornerRadius}"
-                        Padding="{TemplateBinding Padding}"
-                        ClipToBounds="True" />
+                        IsHitTestVisible="False" />
             </ControlTemplate>
         </Setter>
 

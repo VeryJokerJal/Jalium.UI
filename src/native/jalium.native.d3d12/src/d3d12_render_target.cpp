@@ -20,6 +20,9 @@ D3D12RenderTarget::D3D12RenderTarget(D3D12Backend* backend, void* hwnd, int32_t 
 {
     width_ = width;
     height_ = height;
+    // Default engine: Auto → Vello on D3D12 (highest performance)
+    activeEngine_ = ResolveRenderingEngine(JALIUM_ENGINE_AUTO, JALIUM_BACKEND_D3D12);
+    pendingEngine_ = activeEngine_;
 }
 
 D3D12RenderTarget::~D3D12RenderTarget() {
@@ -47,6 +50,9 @@ bool D3D12RenderTarget::Initialize() {
     float dpiScale = dpiX_ / 96.0f;
     directRenderer_->SetDpiScale(dpiScale > 0 ? dpiScale : 1.0f);
 
+    // Only one path engine runs — disable the other
+    directRenderer_->SetVelloEnabled(!IsImpellerActive());
+
     // Create fence for Resize/Shutdown synchronization
     auto device = backend_->GetDevice();
     if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence_))))
@@ -56,6 +62,45 @@ bool D3D12RenderTarget::Initialize() {
 
     frameIndex_ = swapChain_->GetCurrentBackBufferIndex();
     return true;
+}
+
+// ============================================================================
+// Rendering Engine Hot-Switch
+// ============================================================================
+
+JaliumResult D3D12RenderTarget::SetRenderingEngine(JaliumRenderingEngine engine) {
+    // Resolve Auto to concrete engine for D3D12
+    JaliumRenderingEngine resolved = ResolveRenderingEngine(engine, JALIUM_BACKEND_D3D12);
+    pendingEngine_ = resolved;
+    // If not currently drawing, apply immediately (e.g. during creation)
+    if (!isDrawing_) {
+        activeEngine_ = resolved;
+    }
+    // Only one path engine runs at a time
+    if (directRenderer_) {
+        directRenderer_->SetVelloEnabled(resolved == JALIUM_ENGINE_VELLO);
+    }
+    return JALIUM_OK;
+}
+
+bool D3D12RenderTarget::EnsureImpellerEngine() {
+    if (impellerEngine_) return true;
+    if (!backend_ || !backend_->GetDevice()) return false;
+
+    DXGI_FORMAT fmt = directRenderer_ ? directRenderer_->GetSwapChainFormat() : DXGI_FORMAT_R8G8B8A8_UNORM;
+    impellerEngine_ = std::make_unique<ImpellerD3D12Engine>(backend_->GetDevice(), fmt);
+    return impellerEngine_->Initialize();
+}
+
+void D3D12RenderTarget::SyncScissorToImpeller() {
+    if (!impellerEngine_) return;
+    if (directRenderer_ && directRenderer_->HasScissor()) {
+        auto s = directRenderer_->GetCurrentScissor();
+        impellerEngine_->SetScissorRect(
+            (float)s.left, (float)s.top, (float)s.right, (float)s.bottom);
+    } else {
+        impellerEngine_->ClearScissorRect();
+    }
 }
 
 // ============================================================================
@@ -268,8 +313,37 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
         return JALIUM_ERROR_INVALID_STATE;
     }
 
+    // Apply pending engine switch at frame boundary
+    if (pendingEngine_ != activeEngine_) {
+        activeEngine_ = pendingEngine_;
+    }
+
+    // Log active engine on first frame (or after switch)
+    {
+        static JaliumRenderingEngine lastLogged = (JaliumRenderingEngine)-1;
+        if (activeEngine_ != lastLogged) {
+            const char* name = (activeEngine_ == JALIUM_ENGINE_VELLO) ? "Vello"
+                             : (activeEngine_ == JALIUM_ENGINE_IMPELLER) ? "Impeller"
+                             : "Auto";
+            char buf[128];
+            sprintf_s(buf, "[RenderEngine] Active engine: %s (%d)\n", name, (int)activeEngine_);
+            OutputDebugStringA(buf);
+            lastLogged = activeEngine_;
+        }
+    }
+
     isDrawing_ = true;
     preGlassSnapshotCaptured_ = false;
+
+    // Initialize only the active path engine for this frame
+    if (IsImpellerActive()) {
+        if (EnsureImpellerEngine()) {
+            impellerEngine_->BeginFrame(static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
+        }
+    }
+    // Vello BeginFrame is handled inside DirectRenderer::BeginFrame
+    // (skipped when velloEnabled_==false)
+
     return JALIUM_OK;
 }
 
@@ -277,8 +351,10 @@ JaliumResult D3D12RenderTarget::EndDraw() {
     if (!isDrawing_) return JALIUM_ERROR_INVALID_STATE;
     if (!directRenderer_) { isDrawing_ = false; return JALIUM_ERROR_INVALID_STATE; }
 
-    // Flush any pending Vello paths before ending the frame
-    if (directRenderer_->HasVelloPaths()) {
+    // Flush the active path engine — only one runs at a time
+    if (IsImpellerActive()) {
+        FlushImpellerBatches();
+    } else if (directRenderer_->HasVelloPaths()) {
         directRenderer_->FlushVelloPaths();
     }
 
@@ -394,12 +470,73 @@ void D3D12RenderTarget::Clear(float r, float g, float b, float a) {
 }
 
 void D3D12RenderTarget::FlushVelloIfNeeded() {
+    // Skip entirely when Impeller is active — no Vello code should execute.
+    if (IsImpellerActive()) return;
     // Mid-frame Vello flush is disabled: Dispatch may reallocate GPU buffers
     // (lineSegBuffer_, ptclBuffer_, etc.) which frees resources still referenced
     // by the current command list, causing OBJECT_DELETED_WHILE_STILL_IN_USE.
     // Vello paths are flushed once at EndDraw instead.
-    // TODO: Implement deferred buffer management to support mid-frame flush
-    // for correct Z-ordering of Vello paths with non-path draws.
+}
+
+void D3D12RenderTarget::FlushImpellerBatches() {
+    if (!impellerEngine_ || !impellerEngine_->HasPendingWork() || !directRenderer_) return;
+
+    {
+        static int flushLog = 0;
+        if (flushLog++ < 5) {
+            auto& batches = impellerEngine_->GetBatches();
+            uint32_t solidCount = 0, emptyCount = 0;
+            for (auto& b : batches) {
+                if (b.vertices.empty() || b.indices.empty()) emptyCount++;
+                else solidCount++;
+            }
+            char buf[256];
+            sprintf_s(buf, "[Impeller] FlushImpellerBatches: %zu batches (solid=%u empty=%u)\n",
+                batches.size(), solidCount, emptyCount);
+            OutputDebugStringA(buf);
+        }
+    }
+
+    // Convert Impeller batches to DirectRenderer triangles.
+    // Impeller vertices are in pixel-space; DirectRenderer shader expects DIP-space.
+    float invDpi = 1.0f / directRenderer_->GetDpiScale();
+
+    for (auto& batch : impellerEngine_->GetBatches()) {
+        if (batch.indices.empty() || batch.vertices.empty()) continue;
+
+        // Apply per-batch scissor: temporarily push to DirectRenderer's scissor stack
+        // so AddTrianglesPreTransformed captures the correct clip region.
+        bool pushedScissor = false;
+        if (batch.hasScissor) {
+            // Push raw pixel-space scissor rect directly
+            // (DirectRenderer stores pixel-space rects in its scissor stack)
+            D3D12_RECT sr;
+            sr.left = (LONG)batch.scissorL;
+            sr.top = (LONG)batch.scissorT;
+            sr.right = (LONG)batch.scissorR;
+            sr.bottom = (LONG)batch.scissorB;
+            directRenderer_->PushScissorRaw(sr);
+            pushedScissor = true;
+        }
+
+        // Expand indexed vertices to flat triangle list, converting pixel→DIP
+        std::vector<TriangleVertex> expanded;
+        expanded.reserve(batch.indices.size());
+        for (auto idx : batch.indices) {
+            if (idx < batch.vertices.size()) {
+                auto& v = batch.vertices[idx];
+                expanded.push_back({ v.x * invDpi, v.y * invDpi, v.r, v.g, v.b, v.a });
+            }
+        }
+        if (!expanded.empty()) {
+            directRenderer_->AddTrianglesPreTransformed(expanded.data(), (uint32_t)expanded.size());
+        }
+
+        if (pushedScissor) {
+            directRenderer_->PopScissor();
+        }
+    }
+    impellerEngine_->ClearBatches();
 }
 
 void D3D12RenderTarget::FillRectangle(float x, float y, float w, float h, Brush* brush) {
@@ -510,6 +647,30 @@ void D3D12RenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w,
 
 void D3D12RenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
+
+    // Impeller engine: CPU tessellated ellipse
+    if (IsImpellerActive() && EnsureImpellerEngine()) {
+        float r, g, b, a;
+        if (ExtractBrushColor(brush, r, g, b, a)) {
+            auto t = directRenderer_->GetCurrentTransform();
+            float dpiScale = directRenderer_->GetDpiScale();
+            float opacity = directRenderer_->GetOpacity();
+
+            EngineBrushData bd;
+            bd.type = 0;
+            bd.r = r; bd.g = g; bd.b = b; bd.a = a * opacity;
+
+            EngineTransform et;
+            et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
+            et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
+            et.dx = t.dx * dpiScale; et.dy = t.dy * dpiScale;
+
+            if (impellerEngine_->EncodeFillEllipse(cx, cy, rx, ry, bd, et))
+                return;
+        }
+    }
+
+    // Default: SDF rect rendering (fast path, works for both Vello and fallback)
     FlushVelloIfNeeded();
 
     SdfRectInstance inst = {};
@@ -626,8 +787,31 @@ static bool IsConvexPolygon(const float* points, uint32_t count) {
 void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) {
     if (!isDrawing_ || !brush || !directRenderer_ || pointCount < 3) return;
 
+    // Impeller engine path
+    if (IsImpellerActive() && EnsureImpellerEngine()) {
+        float r, g, b, a;
+        if (ExtractBrushColor(brush, r, g, b, a)) {
+            auto t = directRenderer_->GetCurrentTransform();
+            float dpiScale = directRenderer_->GetDpiScale();
+            float opacity = directRenderer_->GetOpacity();
+
+            EngineBrushData bd;
+            bd.type = 0;
+            bd.r = r; bd.g = g; bd.b = b; bd.a = a * opacity;
+
+            EngineTransform et;
+            et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
+            et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
+            et.dx = t.dx * dpiScale; et.dy = t.dy * dpiScale;
+
+            FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+            if (impellerEngine_->EncodeFillPolygon(points, pointCount, bd, fr, et))
+                return;
+        }
+    }
+
     // Route non-solid brushes (gradients) through Vello for GPU rendering
-    if (brush->GetType() != JALIUM_BRUSH_SOLID) {
+    if (!IsImpellerActive() && brush->GetType() != JALIUM_BRUSH_SOLID) {
         auto* vello = directRenderer_->GetVelloRenderer();
         if (vello) {
             directRenderer_->ApplyScissorToVello();
@@ -660,24 +844,11 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
     float opacity = directRenderer_->GetOpacity();
     float pr = r * a * opacity, pg = g * a * opacity, pb = b * a * opacity, pa = a * opacity;
 
-    // For convex polygons, fan triangulation is simple and always correct.
-    // For concave polygons, use ear-clipping for proper triangulation.
-    if (IsConvexPolygon(points, pointCount)) {
-        std::vector<TriangleVertex> verts;
-        verts.reserve((pointCount - 2) * 3);
-        for (uint32_t i = 1; i + 1 < pointCount; i++) {
-            verts.push_back({ points[0], points[1], pr, pg, pb, pa });
-            verts.push_back({ points[i * 2], points[i * 2 + 1], pr, pg, pb, pa });
-            verts.push_back({ points[(i + 1) * 2], points[(i + 1) * 2 + 1], pr, pg, pb, pa });
-        }
-        if (!verts.empty())
-            directRenderer_->AddTriangles(verts.data(), (uint32_t)verts.size());
-        return;
-    }
-
-    // Concave polygon: ear-clipping triangulation
+    // Always use full robust triangulation — no convex fan shortcut.
+    // Fan triangulation can produce pixel gaps on small shapes (scrollbar arrows,
+    // window button icons) when IsConvexPolygon has false positives.
     std::vector<uint32_t> indices;
-    if (!TriangulatePolygon(points, pointCount, indices) || indices.size() < 3) {
+    if (!TriangulatePolygonRobust(points, pointCount, indices) || indices.size() < 3) {
         // Fallback to fan triangulation for degenerate cases
         std::vector<TriangleVertex> verts;
         verts.reserve((pointCount - 2) * 3);
@@ -701,8 +872,45 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
 }
 
 void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed,
-    int32_t /*lineJoin*/, float /*miterLimit*/) {
+    int32_t lineJoin, float miterLimit) {
     if (!isDrawing_ || !brush || !directRenderer_ || pointCount < 2) return;
+
+    // Impeller engine path: convert polygon to LineTo commands and stroke via Impeller
+    if (IsImpellerActive() && EnsureImpellerEngine()) {
+        float r, g, b, a;
+        if (ExtractBrushColor(brush, r, g, b, a)) {
+            auto t = directRenderer_->GetCurrentTransform();
+            float dpiScale = directRenderer_->GetDpiScale();
+            float opacity = directRenderer_->GetOpacity();
+
+            EngineBrushData bd;
+            bd.type = 0;
+            bd.r = r; bd.g = g; bd.b = b; bd.a = a * opacity;
+
+            EngineTransform et;
+            et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
+            et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
+            et.dx = t.dx * dpiScale; et.dy = t.dy * dpiScale;
+
+            // Build LineTo command buffer from polygon points (skip first = start point)
+            std::vector<float> cmds;
+            cmds.reserve(pointCount * 3 + 1);
+            for (uint32_t i = 1; i < pointCount; i++) {
+                cmds.push_back(0); // LineTo tag
+                cmds.push_back(points[i * 2]);
+                cmds.push_back(points[i * 2 + 1]);
+            }
+            if (closed) {
+                cmds.push_back(5); // ClosePath tag
+            }
+
+            if (impellerEngine_->EncodeStrokePath(
+                    points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
+                    bd, strokeWidth, closed, lineJoin, miterLimit, 0, nullptr, 0, 0.0f, et))
+                return;
+        }
+    }
+
     FlushVelloIfNeeded();
     float r, g, b, a;
     if (!ExtractBrushColor(brush, r, g, b, a)) return;
@@ -794,23 +1002,65 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
 void D3D12RenderTarget::FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
 
-    // Route through Vello GPU path renderer when available
-    auto* vello = directRenderer_->GetVelloRenderer();
-    if (vello) {
-        // Pass current scissor to Vello for per-path bbox clamping
-        directRenderer_->ApplyScissorToVello();
-        float opacity = directRenderer_->GetOpacity();
-        auto t = directRenderer_->GetCurrentTransform();
-        float dpiScale = directRenderer_->GetDpiScale();
-        // Scale DIP coordinates to physical pixels for Vello's pixel-space rendering
-        float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
-        float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
-        float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
-        if (vello->EncodeFillPathBrush(startX, startY, commands, commandLength,
-                brush, (uint32_t)fillRule, opacity,
-                vm11, vm12, vm21, vm22, vdx, vdy))
-            return;
-        // Vello encoding failed (unsupported brush, degenerate path, etc.) — fall through to CPU
+    // Route based on active rendering engine
+    if (IsImpellerActive()) {
+        // Impeller engine: CPU tessellation + D3D12 rasterization
+        if (EnsureImpellerEngine()) {
+            float r, g, b, a;
+            if (ExtractBrushColor(brush, r, g, b, a)) {
+                auto t = directRenderer_->GetCurrentTransform();
+                float dpiScale = directRenderer_->GetDpiScale();
+                float opacity = directRenderer_->GetOpacity();
+
+                EngineBrushData bd;
+                bd.type = 0; // solid
+                bd.r = r; bd.g = g; bd.b = b; bd.a = a * opacity;
+
+                EngineTransform et;
+                et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
+                et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
+                et.dx = t.dx * dpiScale; et.dy = t.dy * dpiScale;
+
+                FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+                if (impellerEngine_->EncodeFillPath(startX, startY, commands, commandLength, bd, fr, et)) {
+                    return;
+                } else {
+                    static int failCount = 0;
+                    if (failCount++ < 5) {
+                        char buf[256];
+                        sprintf_s(buf, "[Impeller] EncodeFillPath FAILED start=(%.1f,%.1f) cmdLen=%u color=(%.2f,%.2f,%.2f,%.2f)\n",
+                            startX, startY, commandLength, r, g, b, a);
+                        OutputDebugStringA(buf);
+                    }
+                }
+            } else {
+                static int failCount = 0;
+                if (failCount++ < 3) OutputDebugStringA("[Impeller] FillPath: ExtractBrushColor failed\n");
+            }
+        } else {
+            static bool logged = false;
+            if (!logged) { OutputDebugStringA("[Impeller] FillPath: EnsureImpellerEngine failed\n"); logged = true; }
+        }
+        // Impeller encoding failed — fall through to CPU fallback
+    } else {
+        // Vello engine (default): GPU compute path renderer
+        auto* vello = directRenderer_->GetVelloRenderer();
+        if (vello) {
+            // Pass current scissor to Vello for per-path bbox clamping
+            directRenderer_->ApplyScissorToVello();
+            float opacity = directRenderer_->GetOpacity();
+            auto t = directRenderer_->GetCurrentTransform();
+            float dpiScale = directRenderer_->GetDpiScale();
+            // Scale DIP coordinates to physical pixels for Vello's pixel-space rendering
+            float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
+            float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
+            float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
+            if (vello->EncodeFillPathBrush(startX, startY, commands, commandLength,
+                    brush, (uint32_t)fillRule, opacity,
+                    vm11, vm12, vm21, vm22, vdx, vdy))
+                return;
+            // Vello encoding failed (unsupported brush, degenerate path, etc.) — fall through to CPU
+        }
     }
 
     // CPU triangulation fallback
@@ -820,54 +1070,14 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
     float opacity = directRenderer_->GetOpacity();
     float pr = r * a * opacity, pg = g * a * opacity, pb = b * a * opacity, pa = a * opacity;
 
-    // Flatten path commands into contours (one per sub-path)
-    std::vector<Contour> contours;
-    contours.push_back(Contour{});
-    contours.back().points.push_back(startX);
-    contours.back().points.push_back(startY);
+    // Use FlattenPathToContours for proper command parsing:
+    // - Handles ClosePath (closes contour back to sub-path start)
+    // - Handles ArcTo (tag 4) with adaptive arc flattening
+    // - Uses adaptive Bézier subdivision (De Casteljau) instead of fixed N=12
+    // - Correctly splits compound paths at MoveTo boundaries
+    std::vector<Contour> contours = FlattenPathToContours(startX, startY, commands, commandLength, 0.5f);
 
-    uint32_t i = 0;
-    while (i < commandLength) {
-        int cmd = (int)commands[i++];
-        auto& cur = contours.back().points;
-        if (cmd == 0 && i + 1 < commandLength) { // LineTo
-            cur.push_back(commands[i++]);
-            cur.push_back(commands[i++]);
-        } else if (cmd == 1 && i + 5 < commandLength) { // BezierTo
-            float cx1 = commands[i++], cy1 = commands[i++];
-            float cx2 = commands[i++], cy2 = commands[i++];
-            float ex  = commands[i++], ey  = commands[i++];
-            float sx = cur[cur.size() - 2], sy = cur[cur.size() - 1];
-            const int N = 12;
-            for (int s = 1; s <= N; s++) {
-                float t = (float)s / N;
-                float u = 1 - t;
-                cur.push_back(u*u*u*sx + 3*u*u*t*cx1 + 3*u*t*t*cx2 + t*t*t*ex);
-                cur.push_back(u*u*u*sy + 3*u*u*t*cy1 + 3*u*t*t*cy2 + t*t*t*ey);
-            }
-        } else if (cmd == 2 && i + 1 < commandLength) { // MoveTo — new contour
-            contours.push_back(Contour{});
-            contours.back().points.push_back(commands[i++]);
-            contours.back().points.push_back(commands[i++]);
-        } else if (cmd == 3 && i + 3 < commandLength) { // QuadTo
-            float cx = commands[i++], cy = commands[i++];
-            float ex = commands[i++], ey = commands[i++];
-            float sx = cur[cur.size() - 2], sy = cur[cur.size() - 1];
-            const int N = 8;
-            for (int s = 1; s <= N; s++) {
-                float t = (float)s / N;
-                float u = 1 - t;
-                cur.push_back(u*u*sx + 2*u*t*cx + t*t*ex);
-                cur.push_back(u*u*sy + 2*u*t*cy + t*t*ey);
-            }
-        } else if (cmd == 5) { // ClosePath — no-op for fill
-            // no-op
-        } else {
-            break;
-        }
-    }
-
-    // Remove empty contours
+    // Remove degenerate contours
     contours.erase(
         std::remove_if(contours.begin(), contours.end(),
             [](const Contour& c) { return c.VertexCount() < 3; }),
@@ -895,67 +1105,55 @@ void D3D12RenderTarget::StrokePath(float startX, float startY, const float* comm
     const float* dashPattern, uint32_t dashCount, float dashOffset) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
 
-    // Route through Vello GPU path renderer when available
-    auto* vello = directRenderer_->GetVelloRenderer();
-    if (vello) {
-        directRenderer_->ApplyScissorToVello();
-        float opacity = directRenderer_->GetOpacity();
-        auto t = directRenderer_->GetCurrentTransform();
-        float dpiScale = directRenderer_->GetDpiScale();
-        // Scale DIP coordinates to physical pixels for Vello's pixel-space rendering
-        float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
-        float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
-        float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
-        if (vello->EncodeStrokePathBrush(startX, startY, commands, commandLength,
-                brush, strokeWidth, closed, lineJoin, miterLimit, opacity,
-                lineCap, dashPattern, dashCount, dashOffset,
-                vm11, vm12, vm21, vm22, vdx, vdy))
-            return;
-        // Vello encoding failed — fall through to CPU
-    }
+    // Route based on active rendering engine
+    if (IsImpellerActive()) {
+        // Impeller engine: CPU stroke expansion + D3D12 rasterization
+        if (EnsureImpellerEngine()) {
+            float r, g, b, a;
+            if (ExtractBrushColor(brush, r, g, b, a)) {
+                auto t = directRenderer_->GetCurrentTransform();
+                float dpiScale = directRenderer_->GetDpiScale();
+                float opacity = directRenderer_->GetOpacity();
 
-    // CPU polyline fallback: flatten to polyline, then stroke as polygon outline
-    std::vector<float> pts;
-    pts.push_back(startX);
-    pts.push_back(startY);
-    uint32_t i = 0;
-    while (i < commandLength) {
-        int cmd = (int)commands[i++];
-        if (cmd == 0 && i + 1 < commandLength) { // LineTo [x, y]
-            pts.push_back(commands[i++]);
-            pts.push_back(commands[i++]);
-        } else if (cmd == 1 && i + 5 < commandLength) { // BezierTo [cx1, cy1, cx2, cy2, ex, ey]
-            float cx1 = commands[i++], cy1 = commands[i++];
-            float cx2 = commands[i++], cy2 = commands[i++];
-            float ex  = commands[i++], ey  = commands[i++];
-            float sx = pts[pts.size() - 2], sy = pts[pts.size() - 1];
-            const int N = 12;
-            for (int s = 1; s <= N; s++) {
-                float t = (float)s / N;
-                float u = 1 - t;
-                pts.push_back(u*u*u*sx + 3*u*u*t*cx1 + 3*u*t*t*cx2 + t*t*t*ex);
-                pts.push_back(u*u*u*sy + 3*u*u*t*cy1 + 3*u*t*t*cy2 + t*t*t*ey);
+                EngineBrushData bd;
+                bd.type = 0;
+                bd.r = r; bd.g = g; bd.b = b; bd.a = a * opacity;
+
+                EngineTransform et;
+                et.m11 = t.m11 * dpiScale; et.m12 = t.m12 * dpiScale;
+                et.m21 = t.m21 * dpiScale; et.m22 = t.m22 * dpiScale;
+                et.dx = t.dx * dpiScale; et.dy = t.dy * dpiScale;
+
+                if (impellerEngine_->EncodeStrokePath(startX, startY, commands, commandLength,
+                        bd, strokeWidth, closed, lineJoin, miterLimit, lineCap,
+                        dashPattern, dashCount, dashOffset, et))
+                    return;
             }
-        } else if (cmd == 2 && i + 1 < commandLength) { // MoveTo [x, y]
-            pts.push_back(commands[i++]);
-            pts.push_back(commands[i++]);
-        } else if (cmd == 3 && i + 3 < commandLength) { // QuadTo [cx, cy, ex, ey]
-            float cx = commands[i++], cy = commands[i++];
-            float ex = commands[i++], ey = commands[i++];
-            float sx = pts[pts.size() - 2], sy = pts[pts.size() - 1];
-            const int N = 8;
-            for (int s = 1; s <= N; s++) {
-                float t = (float)s / N;
-                float u = 1 - t;
-                pts.push_back(u*u*sx + 2*u*t*cx + t*t*ex);
-                pts.push_back(u*u*sy + 2*u*t*cy + t*t*ey);
-            }
-        } else if (cmd == 5) { // ClosePath
-            closed = true;
-        } else {
-            break;
+        }
+        // Impeller encoding failed — fall through to CPU
+    } else {
+        // Vello engine (default)
+        auto* vello = directRenderer_->GetVelloRenderer();
+        if (vello) {
+            directRenderer_->ApplyScissorToVello();
+            float opacity = directRenderer_->GetOpacity();
+            auto t = directRenderer_->GetCurrentTransform();
+            float dpiScale = directRenderer_->GetDpiScale();
+            float vm11 = t.m11 * dpiScale, vm12 = t.m12 * dpiScale;
+            float vm21 = t.m21 * dpiScale, vm22 = t.m22 * dpiScale;
+            float vdx  = t.dx  * dpiScale, vdy  = t.dy  * dpiScale;
+            if (vello->EncodeStrokePathBrush(startX, startY, commands, commandLength,
+                    brush, strokeWidth, closed, lineJoin, miterLimit, opacity,
+                    lineCap, dashPattern, dashCount, dashOffset,
+                    vm11, vm12, vm21, vm22, vdx, vdy))
+                return;
+            // Vello encoding failed — fall through to CPU
         }
     }
+
+    // CPU polyline fallback: use FlattenPathCommands for proper command parsing
+    // (handles ClosePath, ArcTo, adaptive Bézier subdivision)
+    std::vector<float> pts = FlattenPathCommands(startX, startY, commands, commandLength, 0.5f);
     DrawPolygon(pts.data(), (uint32_t)(pts.size() / 2), brush, strokeWidth, closed, lineJoin, miterLimit);
 }
 
@@ -1049,15 +1247,18 @@ void D3D12RenderTarget::PushClip(float x, float y, float w, float h) {
         OutputDebugStringA("[PushClipRect OFFSCREEN] called\n");
     }
     if (directRenderer_) directRenderer_->PushScissor(x, y, w, h);
+    SyncScissorToImpeller();
 }
 
 void D3D12RenderTarget::PushClipAliased(float x, float y, float w, float h) {
     if (directRenderer_) directRenderer_->PushScissor(x, y, w, h);
+    SyncScissorToImpeller();
 }
 
 void D3D12RenderTarget::PushRoundedRectClip(float x, float y, float w, float h, float /*rx*/, float /*ry*/) {
     // Approximate with axis-aligned scissor (no stencil support yet)
     if (directRenderer_) directRenderer_->PushScissor(x, y, w, h);
+    SyncScissorToImpeller();
 }
 
 void D3D12RenderTarget::PopClip() {
@@ -1065,6 +1266,7 @@ void D3D12RenderTarget::PopClip() {
         OutputDebugStringA("[PopClipRect OFFSCREEN] called\n");
     }
     if (directRenderer_) directRenderer_->PopScissor();
+    SyncScissorToImpeller();
 }
 
 void D3D12RenderTarget::PunchTransparentRect(float x, float y, float w, float h) {

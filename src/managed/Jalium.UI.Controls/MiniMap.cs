@@ -111,6 +111,61 @@ public class MiniMap : FrameworkElement
         DependencyProperty.Register(nameof(ViewportBrush), typeof(Brush), typeof(MiniMap),
             new PropertyMetadata(null, OnVisualPropertyChanged));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty BackgroundProperty =
+        DependencyProperty.Register(nameof(Background), typeof(Brush), typeof(MiniMap),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty ForegroundProperty =
+        DependencyProperty.Register(nameof(Foreground), typeof(Brush), typeof(MiniMap),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty BorderBrushProperty =
+        DependencyProperty.Register(nameof(BorderBrush), typeof(Brush), typeof(MiniMap),
+            new PropertyMetadata(null, OnVisualPropertyChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty BorderThicknessProperty =
+        DependencyProperty.Register(nameof(BorderThickness), typeof(Thickness), typeof(MiniMap),
+            new PropertyMetadata(new Thickness(1), OnVisualPropertyChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty CornerRadiusProperty =
+        DependencyProperty.Register(nameof(CornerRadius), typeof(CornerRadius), typeof(MiniMap),
+            new PropertyMetadata(new CornerRadius(3), OnVisualPropertyChanged));
+
+    public Brush? Background
+    {
+        get => (Brush?)GetValue(BackgroundProperty);
+        set => SetValue(BackgroundProperty, value);
+    }
+
+    public Brush? Foreground
+    {
+        get => (Brush?)GetValue(ForegroundProperty);
+        set => SetValue(ForegroundProperty, value);
+    }
+
+    public Brush? BorderBrush
+    {
+        get => (Brush?)GetValue(BorderBrushProperty);
+        set => SetValue(BorderBrushProperty, value);
+    }
+
+    public Thickness BorderThickness
+    {
+        get => (Thickness)GetValue(BorderThicknessProperty);
+        set => SetValue(BorderThicknessProperty, value);
+    }
+
+    public CornerRadius CornerRadius
+    {
+        get => (CornerRadius)GetValue(CornerRadiusProperty);
+        set => SetValue(CornerRadiusProperty, value);
+    }
+
     /// <summary>
     /// Identifies the ViewportBorderBrush dependency property.
     /// </summary>
@@ -359,7 +414,11 @@ public class MiniMap : FrameworkElement
         if (bounds.Width <= 0 || bounds.Height <= 0) return;
 
         // Draw background
-        dc.DrawRoundedRectangle(s_defaultBackground, new Pen(s_borderBrush, 1), bounds, 3, 3);
+        var bg = Background ?? s_defaultBackground;
+        var border = BorderBrush ?? s_borderBrush;
+        var borderThickness = BorderThickness.Left > 0 ? BorderThickness.Left : 1;
+        var radius = CornerRadius.TopLeft > 0 ? CornerRadius.TopLeft : 3;
+        dc.DrawRoundedRectangle(bg, new Pen(border, borderThickness), bounds, radius, radius);
 
         var contentArea = new Rect(2, 2, bounds.Width - 4, bounds.Height - 4);
         dc.PushClip(new RectangleGeometry(contentArea));

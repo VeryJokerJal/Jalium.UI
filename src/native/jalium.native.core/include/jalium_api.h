@@ -70,6 +70,37 @@ JALIUM_API JaliumResult jalium_context_get_adapter_info(
     JaliumAdapterInfo* info);
 
 // ============================================================================
+// Rendering Engine Selection (Hot-Switchable)
+// ============================================================================
+
+/// Gets the active rendering engine for a render target.
+/// @param rt The render target.
+/// @return The active rendering engine.
+JALIUM_API JaliumRenderingEngine jalium_render_target_get_engine(JaliumRenderTarget* rt);
+
+/// Sets the rendering engine for a render target (hot-switch).
+/// The switch takes effect at the next BeginDraw().
+/// @param rt The render target.
+/// @param engine The rendering engine to use.
+/// @return JALIUM_OK on success.
+JALIUM_API JaliumResult jalium_render_target_set_engine(
+    JaliumRenderTarget* rt,
+    JaliumRenderingEngine engine);
+
+/// Sets the default rendering engine for new render targets created on this context.
+/// @param ctx The context.
+/// @param engine The default rendering engine.
+/// @return JALIUM_OK on success.
+JALIUM_API JaliumResult jalium_context_set_default_engine(
+    JaliumContext* ctx,
+    JaliumRenderingEngine engine);
+
+/// Gets the default rendering engine for a context.
+/// @param ctx The context.
+/// @return The default rendering engine.
+JALIUM_API JaliumRenderingEngine jalium_context_get_default_engine(JaliumContext* ctx);
+
+// ============================================================================
 // Render Target Management
 // ============================================================================
 

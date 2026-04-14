@@ -1,8 +1,10 @@
 #pragma once
 
 #include "jalium_backend.h"
+#include "jalium_internal.h"
 #include "d3d12_backend.h"
 #include "d3d12_direct_renderer.h"
+#include "d3d12_impeller_engine.h"
 #include <dcomp.h>
 #include <stack>
 #include <unordered_map>
@@ -23,6 +25,9 @@ public:
 
     /// Initializes the render target (swap chain, DirectRenderer, DComp if needed).
     bool Initialize();
+
+    /// Override: set rendering engine with hot-switch support.
+    JaliumResult SetRenderingEngine(JaliumRenderingEngine engine) override;
 
     // RenderTarget implementation
     JaliumResult Resize(int32_t width, int32_t height) override;
@@ -156,6 +161,10 @@ private:
     // Call this before any non-path draw (FillRect, DrawText, DrawBitmap, etc.).
     void FlushVelloIfNeeded();
 
+    // Flush Impeller tessellated batches into DirectRenderer's triangle pipeline.
+    // Called after each Impeller path encode to maintain correct Z-order.
+    void FlushImpellerBatches();
+
     // Brush → SdfRectInstance helpers
     bool FillBrushToInstance(Brush* brush, SdfRectInstance& inst);
     bool ExtractBrushColor(Brush* brush, float& r, float& g, float& b, float& a);
@@ -174,6 +183,20 @@ private:
 
     // Pure D3D12 direct renderer (owns command lists, RTVs, PSOs, etc.)
     std::unique_ptr<D3D12DirectRenderer> directRenderer_;
+
+    // Impeller engine (lazy-initialized on first use when engine == IMPELLER)
+    std::unique_ptr<ImpellerD3D12Engine> impellerEngine_;
+
+    /// Returns true if the active engine is Impeller.
+    bool IsImpellerActive() const {
+        return activeEngine_ == JALIUM_ENGINE_IMPELLER;
+    }
+
+    /// Ensure the Impeller engine is initialized.
+    bool EnsureImpellerEngine();
+
+    /// Sync DirectRenderer scissor state to Impeller engine.
+    void SyncScissorToImpeller();
 
     bool isDrawing_ = false;
     bool lastEffectCaptureOk_ = false;  // tracks whether BeginEffectCapture succeeded

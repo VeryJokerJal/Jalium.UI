@@ -40,11 +40,8 @@ public static class XamlReader
     {
         ArgumentNullException.ThrowIfNull(xaml);
 
-        // Expand @{ } code blocks (uses AOT-safe lightweight interpreter)
-        xaml = RazorCodeBlockPreprocessor.Process(xaml);
-
-        using var reader = new StringReader(xaml);
-        return Load(reader);
+        using var xmlReader = JalxamlParser.CreateReader(xaml);
+        return LoadInternal(xmlReader, null, null, null);
     }
 
     /// <summary>
@@ -56,8 +53,8 @@ public static class XamlReader
     {
         ArgumentNullException.ThrowIfNull(stream);
 
-        using var reader = new StreamReader(stream);
-        return Load(reader);
+        using var xmlReader = JalxamlParser.CreateReader(stream);
+        return LoadInternal(xmlReader, null, null, null);
     }
 
     /// <summary>
@@ -74,17 +71,9 @@ public static class XamlReader
         ArgumentNullException.ThrowIfNull(sourceAssembly);
 
         using var textReader = new StreamReader(stream);
-        var settings = new XmlReaderSettings
-        {
-            IgnoreComments = true,
-            IgnoreWhitespace = true,
-            IgnoreProcessingInstructions = true
-        };
-
-        // Create base URI from resource name (use file-like path for relative resolution)
         var baseUri = new Uri($"resource:///{sourceAssembly.GetName().Name}/{resourceName}", UriKind.Absolute);
 
-        using var xmlReader = XmlReader.Create(textReader, settings);
+        using var xmlReader = JalxamlParser.CreateReader(textReader);
         return LoadInternal(xmlReader, null, baseUri, sourceAssembly);
     }
 
@@ -97,14 +86,7 @@ public static class XamlReader
     {
         ArgumentNullException.ThrowIfNull(reader);
 
-        var settings = new XmlReaderSettings
-        {
-            IgnoreComments = true,
-            IgnoreWhitespace = true,
-            IgnoreProcessingInstructions = true
-        };
-
-        using var xmlReader = XmlReader.Create(reader, settings);
+        using var xmlReader = JalxamlParser.CreateReader(reader);
         return LoadInternal(xmlReader, null, null, null);
     }
 
@@ -150,21 +132,9 @@ public static class XamlReader
         using (stream)
         {
             var content = new StreamReader(stream).ReadToEnd();
-
-            // Pre-process Razor code blocks (uses AOT-safe lightweight interpreter)
-            content = RazorCodeBlockPreprocessor.Process(content);
-
-            var settings = new XmlReaderSettings
-            {
-                IgnoreComments = true,
-                IgnoreWhitespace = true,
-                IgnoreProcessingInstructions = true
-            };
-
             var baseUri = new Uri($"resource:///{assembly.GetName().Name}/{resourceName}", UriKind.Absolute);
 
-            using var stringReader = new StringReader(content);
-            using var xmlReader = XmlReader.Create(stringReader, settings);
+            using var xmlReader = JalxamlParser.CreateReader(content);
             LoadInternal(xmlReader, component, baseUri, assembly, namedElementsOut: namedElements);
         }
 
@@ -409,62 +379,55 @@ public static class XamlReader
         // Push to parent stack for context tracking
         context.PushParent(instance);
 
-        try
+        // Special handling for ControlTemplate - capture inner XML for deferred parsing
+        if (instance is ControlTemplate controlTemplate && !reader.IsEmptyElement)
         {
-
-            // Special handling for ControlTemplate - capture inner XML for deferred parsing
-            if (instance is ControlTemplate controlTemplate && !reader.IsEmptyElement)
-            {
-                ParseControlTemplateContent(reader, controlTemplate, context);
-            }
-            // Special handling for DataTemplate - capture inner XML for deferred parsing
-            else if (instance is DataTemplate dataTemplate && !reader.IsEmptyElement)
-            {
-                ParseDataTemplateContent(reader, dataTemplate, context);
-            }
-            // Special handling for ItemsPanelTemplate - capture inner XML for deferred parsing
-            else if (instance is ItemsPanelTemplate itemsPanelTemplate && !reader.IsEmptyElement)
-            {
-                ParseItemsPanelTemplateContent(reader, itemsPanelTemplate, context);
-            }
-            // Parse child content normally
-            else if (!reader.IsEmptyElement)
-            {
-                instance = ParseContent(reader, instance, context);
-            }
-
-            if (instance is Grid grid)
-            {
-                context.ResolvePendingGridReferences(grid);
-            }
-
-            // Post-process Setter to convert Value based on Property type
-            if (instance is Setter setter)
-            {
-                PostProcessSetter(setter, context, lineNumber, linePosition);
-            }
-            // Post-process PropertyTrigger to convert Value based on Property type
-            else if (instance is PropertyTrigger propertyTrigger)
-            {
-                PostProcessPropertyTrigger(propertyTrigger, context, lineNumber, linePosition);
-            }
-            // Post-process DataTrigger to convert Value based on the binding's result type
-            else if (instance is DataTrigger dataTrigger)
-            {
-                PostProcessDataTrigger(dataTrigger, context);
-            }
-            // Post-process MultiTrigger to convert Condition values based on Property type
-            else if (instance is MultiTrigger multiTrigger)
-            {
-                PostProcessMultiTrigger(multiTrigger, context, lineNumber, linePosition);
-            }
-
-            return instance;
+            ParseControlTemplateContent(reader, controlTemplate, context);
         }
-        finally
+        // Special handling for DataTemplate - capture inner XML for deferred parsing
+        else if (instance is DataTemplate dataTemplate && !reader.IsEmptyElement)
         {
-            context.PopParent();
+            ParseDataTemplateContent(reader, dataTemplate, context);
         }
+        // Special handling for ItemsPanelTemplate - capture inner XML for deferred parsing
+        else if (instance is ItemsPanelTemplate itemsPanelTemplate && !reader.IsEmptyElement)
+        {
+            ParseItemsPanelTemplateContent(reader, itemsPanelTemplate, context);
+        }
+        // Parse child content normally
+        else if (!reader.IsEmptyElement)
+        {
+            instance = ParseContent(reader, instance, context);
+        }
+
+        if (instance is Grid grid)
+        {
+            context.ResolvePendingGridReferences(grid);
+        }
+
+        // Post-process Setter to convert Value based on Property type
+        if (instance is Setter setter)
+        {
+            PostProcessSetter(setter, context, lineNumber, linePosition);
+        }
+        // Post-process PropertyTrigger to convert Value based on Property type
+        else if (instance is PropertyTrigger propertyTrigger)
+        {
+            PostProcessPropertyTrigger(propertyTrigger, context, lineNumber, linePosition);
+        }
+        // Post-process DataTrigger to convert Value based on the binding's result type
+        else if (instance is DataTrigger dataTrigger)
+        {
+            PostProcessDataTrigger(dataTrigger, context);
+        }
+        // Post-process MultiTrigger to convert Condition values based on Property type
+        else if (instance is MultiTrigger multiTrigger)
+        {
+            PostProcessMultiTrigger(multiTrigger, context, lineNumber, linePosition);
+        }
+        context.PopParent();
+
+        return instance;
     }
 
     private static object ParseAttributes(XmlReader reader, object instance, XamlParserContext context)
@@ -1216,12 +1179,16 @@ public static class XamlReader
             {
                 // First non-property child is the visual tree root
                 // Capture it as XML for deferred parsing
+                var wasEmpty = reader.IsEmptyElement;
                 visualTreeXaml.Append(reader.ReadOuterXml());
                 hasVisualTree = true;
 
-                // ReadOuterXml advances the reader past this element to the next node
-                // We need to process the current node without calling Read() again
-                skipRead = true;
+                // For non-empty elements, ReadOuterXml advances the reader past the end tag
+                // to the next node, so we must process that node without calling Read() again.
+                // For self-closing (empty) elements, System.Xml leaves the reader positioned on
+                // the same element, so the next loop iteration must call Read() to advance —
+                // otherwise we'd reprocess the same element as a second visual tree root.
+                skipRead = !wasEmpty;
             }
             else
             {
@@ -1400,15 +1367,7 @@ public static class XamlReader
         if (string.IsNullOrEmpty(xaml))
             return null;
 
-        using var stringReader = new StringReader(xaml);
-        var settings = new XmlReaderSettings
-        {
-            IgnoreComments = true,
-            IgnoreWhitespace = true,
-            IgnoreProcessingInstructions = true
-        };
-
-        using var xmlReader = XmlReader.Create(stringReader, settings);
+        using var xmlReader = JalxamlParser.CreateReader(xaml);
         var context = new XamlParserContext
         {
             SourceAssembly = sourceAssembly
@@ -1683,16 +1642,8 @@ public static class XamlReader
         }
 
         using (stream)
-        using (var textReader = new StreamReader(stream))
         {
-            var settings = new XmlReaderSettings
-            {
-                IgnoreComments = true,
-                IgnoreWhitespace = true,
-                IgnoreProcessingInstructions = true
-            };
-
-            using var xmlReader = XmlReader.Create(textReader, settings);
+            using var xmlReader = JalxamlParser.CreateReader(stream);
             var loadedDict = (ResourceDictionary)LoadInternal(xmlReader, null, sourceUri, assembly, parentDict);
             loadedDict.Source = sourceUri;
             loadedDict.BaseUri = sourceUri;
@@ -2905,6 +2856,14 @@ public static class XamlTypeRegistry
         Register<DockTabPanel>(types);
         Register<DockItem>(types);
         Register<TransitioningContentControl>(types);
+        Register<JsonTreeViewer>(types);
+        Register<PropertyGrid>(types);
+        Register<MapView>(types);
+        Register<MiniMap>(types);
+        Register<GeographicHeatmap>(types);
+        Register<Terminal>(types);
+        Register<DiffViewer>(types);
+        Register<HexEditor>(types);
 
         // Icons
         Register<IconElement>(types);
@@ -2974,6 +2933,8 @@ public static class XamlTypeRegistry
         Register<Rectangle>(types);
         Register<Jalium.UI.Controls.Shapes.Path>(types);
         Register<Line>(types);
+        Register<Polygon>(types);
+        Register<Polyline>(types);
     }
 
     private static void RegisterDataTypes(Dictionary<string, Type> types)

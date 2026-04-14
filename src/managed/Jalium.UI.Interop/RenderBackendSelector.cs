@@ -6,6 +6,7 @@ internal static class RenderBackendSelector
 {
     internal const string BackendOverrideEnvironmentVariable = "JALIUM_RENDER_BACKEND";
     internal const string GpuPreferenceEnvironmentVariable = "JALIUM_GPU_PREFERENCE";
+    internal const string EngineOverrideEnvironmentVariable = "JALIUM_RENDERING_ENGINE";
 
     internal static RenderBackend GetPreferredBackend()
         => ResolvePreferredBackend();
@@ -116,5 +117,50 @@ internal static class RenderBackendSelector
         }
 
         return [RenderBackend.D3D12, RenderBackend.Software];
+    }
+
+    // ========================================================================
+    // Rendering Engine Selection
+    // ========================================================================
+
+    internal static RenderingEngine GetPreferredRenderingEngine()
+        => ResolvePreferredRenderingEngine();
+
+    internal static RenderingEngine ResolvePreferredRenderingEngine(string? engineOverride = null)
+    {
+        engineOverride ??= Environment.GetEnvironmentVariable(EngineOverrideEnvironmentVariable)?.Trim();
+
+        if (TryParseRenderingEngine(engineOverride, out var engine) && engine != RenderingEngine.Auto)
+        {
+            return engine;
+        }
+
+        // Default: Auto (resolved at native level per-backend)
+        return RenderingEngine.Auto;
+    }
+
+    internal static bool TryParseRenderingEngine(string? value, out RenderingEngine engine)
+    {
+        switch (value?.Trim().ToLowerInvariant())
+        {
+            case null:
+            case "":
+                engine = RenderingEngine.Auto;
+                return false;
+            case "auto":
+            case "default":
+                engine = RenderingEngine.Auto;
+                return true;
+            case "vello":
+                engine = RenderingEngine.Vello;
+                return true;
+            case "impeller":
+            case "flutter":
+                engine = RenderingEngine.Impeller;
+                return true;
+            default:
+                engine = RenderingEngine.Auto;
+                return false;
+        }
     }
 }

@@ -68,9 +68,6 @@ public class Terminal : Control, IImeSupport
     private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
     private static readonly SolidColorBrush s_compositionUnderlineBrush = new(Color.FromRgb(200, 200, 100));
     private static readonly Pen s_compositionUnderlinePen = new(s_compositionUnderlineBrush, 1);
-    private static readonly SolidColorBrush s_scrollBarTrackBrush = new(Color.FromArgb(72, 68, 68, 68));
-    private static readonly SolidColorBrush s_scrollBarThumbBrush = new(Color.FromArgb(220, 180, 180, 180));
-    private static readonly SolidColorBrush s_scrollBarActiveThumbBrush = new(Color.FromArgb(235, 212, 212, 212));
 
     // Theme-aware brush accessors
     private Brush TerminalForeground => TryFindResource("TerminalForeground") as Brush ?? Foreground ?? s_defaultForegroundBrush;
@@ -106,9 +103,15 @@ public class Terminal : Control, IImeSupport
     private double _cellHeight;
 
     /// <summary>
-    /// The vertical scroll offset (in scrollback lines).
+    /// The internal view hosted inside the template's ScrollViewer.
+    /// Owns rendering and IScrollInfo.
     /// </summary>
-    private int _scrollOffset;
+    private TerminalView? _view;
+
+    /// <summary>
+    /// The ScrollViewer found in the template.
+    /// </summary>
+    private ScrollViewer? _scrollViewer;
 
     /// <summary>
     /// Selection start position (row in total buffer, col).
@@ -159,17 +162,6 @@ public class Terminal : Control, IImeSupport
     /// Tick interval during fade phases (ms).
     /// </summary>
     private const int CaretAnimationTickMs = 33;
-
-    // Scrollbar
-    private const double ScrollBarThickness = 10;
-    private const double MinScrollBarThumbSize = 20;
-    private const double ScrollBarCornerRadius = 5;
-    private const double ScrollBarInnerPadding = 2;
-    private Rect _scrollBarTrackRect = Rect.Empty;
-    private Rect _scrollBarThumbRect = Rect.Empty;
-    private bool _isScrollBarDragging;
-    private double _scrollBarDragStartY;
-    private int _scrollBarDragStartOffset;
 
     // IME support
     private bool _isImeComposing;
@@ -580,8 +572,8 @@ public class Terminal : Control, IImeSupport
     public void Write(string text)
     {
         _parser.Feed(text);
-        _scrollOffset = 0;
-        InvalidateVisual();
+        _view?.ScrollToBottom();
+        InvalidateView();
     }
 
     /// <summary>
@@ -608,9 +600,9 @@ public class Terminal : Control, IImeSupport
         _buffer.ResetAttributes();
         _buffer.ClearScreen();
         _buffer.SetCursorPosition(0, 0);
-        _scrollOffset = 0;
+        _view?.ScrollToBottom();
         ClearSelection();
-        InvalidateVisual();
+        InvalidateView();
     }
 
     /// <summary>
@@ -687,7 +679,7 @@ public class Terminal : Control, IImeSupport
         _selectionStart = (0, 0);
         _selectionEnd = (_buffer.ScrollbackCount + _buffer.Rows - 1, _buffer.Columns);
         _hasSelection = true;
-        InvalidateVisual();
+        InvalidateView();
     }
 
     #endregion
@@ -700,7 +692,8 @@ public class Terminal : Control, IImeSupport
         {
             t._buffer.Resize(t.TerminalColumns, t.TerminalRows);
             t._process?.NotifyResize(t.TerminalColumns, t.TerminalRows);
-            t.InvalidateVisual();
+            t._view?.InvalidateMeasure();
+            t.InvalidateView();
         }
     }
 
@@ -708,7 +701,7 @@ public class Terminal : Control, IImeSupport
     {
         if (d is Terminal t && t.AutoSize)
         {
-            t.UpdateAutoSize(t.RenderSize);
+            t._view?.InvalidateMeasure();
         }
     }
 
@@ -725,44 +718,25 @@ public class Terminal : Control, IImeSupport
         if (d is Terminal t)
         {
             t._caretPen = null;
-            t.InvalidateVisual();
+            t.InvalidateView();
         }
     }
+
+    /// <summary>
+    /// Invalidates the render-surface view (used instead of Terminal.InvalidateVisual
+    /// since rendering is delegated to the inner TerminalView).
+    /// </summary>
+    private void InvalidateView() => _view?.InvalidateVisual();
+
+    /// <summary>
+    /// First visible total-buffer row (0 = top of scrollback,
+    /// _buffer.ScrollbackCount = top of live screen = "at bottom").
+    /// </summary>
+    private int TopLine => _view?.TopLine ?? _buffer.ScrollbackCount;
 
     #endregion
 
-    #region Layout
-
-    /// <inheritdoc />
-    protected override Size MeasureOverride(Size availableSize)
-    {
-        EnsureCellMetrics();
-
-        if (AutoSize)
-        {
-            // Fill available space
-            return availableSize;
-        }
-
-        // Fixed size based on columns/rows
-        var padding = Padding;
-        var border = BorderThickness;
-        double width = _cellWidth * TerminalColumns + padding.Left + padding.Right + border.Left + border.Right;
-        double height = _cellHeight * TerminalRows + padding.Top + padding.Bottom + border.Top + border.Bottom;
-        return new Size(
-            Math.Min(width, availableSize.Width),
-            Math.Min(height, availableSize.Height));
-    }
-
-    /// <inheritdoc />
-    protected override Size ArrangeOverride(Size finalSize)
-    {
-        if (AutoSize)
-        {
-            UpdateAutoSize(finalSize);
-        }
-        return finalSize;
-    }
+    #region Layout / Autosize
 
     private int _lastAutoSizeCols;
     private int _lastAutoSizeRows;
@@ -771,14 +745,16 @@ public class Terminal : Control, IImeSupport
     private double _lastAutoSizeWidth;
     private double _lastAutoSizeHeight;
 
-    private void UpdateAutoSize(Size finalSize)
+    /// <summary>
+    /// Called by TerminalView.MeasureOverride — takes the view's available size
+    /// (which is inside border+padding) and adjusts TerminalColumns/Rows to fit.
+    /// </summary>
+    internal void UpdateAutoSize(Size viewAvailable)
     {
         EnsureCellMetrics();
 
-        var padding = Padding;
-        var border = BorderThickness;
-        double availableWidth = finalSize.Width - padding.Left - padding.Right - border.Left - border.Right;
-        double availableHeight = finalSize.Height - padding.Top - padding.Bottom - border.Top - border.Bottom;
+        double availableWidth = viewAvailable.Width;
+        double availableHeight = viewAvailable.Height;
 
         if (availableWidth <= 0 || availableHeight <= 0 || _cellWidth <= 0 || _cellHeight <= 0)
             return;
@@ -786,7 +762,6 @@ public class Terminal : Control, IImeSupport
         int newCols = Math.Max(1, (int)(availableWidth / _cellWidth));
         int newRows = Math.Max(1, (int)(availableHeight / _cellHeight));
 
-        // Skip if nothing changed (dimensions, cell size, and available space all the same)
         if (newCols == _lastAutoSizeCols && newRows == _lastAutoSizeRows
             && _cellWidth == _lastAutoSizeCellWidth && _cellHeight == _lastAutoSizeCellHeight
             && availableWidth == _lastAutoSizeWidth && availableHeight == _lastAutoSizeHeight)
@@ -809,73 +784,39 @@ public class Terminal : Control, IImeSupport
 
     #region Rendering
 
-    /// <inheritdoc />
-    protected override void OnRender(object drawingContext)
+    /// <summary>
+    /// Entry point for the inner TerminalView. Draws cells, selection, IME and caret
+    /// into the view-local coordinate system (origin at the view's top-left).
+    /// Chrome (background/border/corners) is provided by the outer Border in the template.
+    /// </summary>
+    internal void RenderView(DrawingContext dc, Size viewSize)
     {
-        base.OnRender(drawingContext);
-
-        if (drawingContext is not DrawingContext dc)
-            return;
-
         EnsureCellMetrics();
 
-        // Re-check auto-size on every render in case font metrics changed
-        if (AutoSize)
-            UpdateAutoSize(RenderSize);
+        var clipRect = new Rect(0, 0,
+            Math.Max(0, Math.Round(viewSize.Width)),
+            Math.Max(0, Math.Round(viewSize.Height)));
 
-        var bounds = new Rect(0, 0, RenderSize.Width, RenderSize.Height);
-        var border = BorderThickness;
-        var padding = Padding;
-        var cornerRadius = CornerRadius;
+        dc.PushClip(new RectangleGeometry(clipRect));
 
-        // Draw background and border
-        var strokeThickness = border.Left;
-        var borderRect = ControlRenderGeometry.GetStrokeAlignedRect(bounds, strokeThickness);
-        var borderRadius = ControlRenderGeometry.GetStrokeAlignedCornerRadius(cornerRadius, strokeThickness);
+        double fracY = FractionalY;
+        dc.PushTransform(new TranslateTransform(0, -fracY));
 
-        var bg = TerminalBackground;
-        dc.DrawRoundedRectangle(bg, null, borderRect, borderRadius);
+        var contentRect = new Rect(0, 0, clipRect.Width, clipRect.Height + fracY);
 
-        if (BorderBrush != null && strokeThickness > 0)
-        {
-            var borderPen = new Pen(BorderBrush, strokeThickness);
-            dc.DrawRoundedRectangle(null, borderPen, borderRect, borderRadius);
-        }
-
-        // Content area
-        var contentRect = new Rect(
-            Math.Round(border.Left + padding.Left),
-            Math.Round(border.Top + padding.Top),
-            Math.Max(0, Math.Round(bounds.Width - border.Left - border.Right - padding.Left - padding.Right)),
-            Math.Max(0, Math.Round(bounds.Height - border.Top - border.Bottom - padding.Top - padding.Bottom)));
-
-        dc.PushClip(new RectangleGeometry(contentRect));
-
-        // Render terminal content
         RenderCells(dc, contentRect);
 
-        // Render selection overlay
         if (_hasSelection)
             RenderSelection(dc, contentRect);
 
-        // Render IME composition
         if (_isImeComposing && !string.IsNullOrEmpty(_imeCompositionString))
             RenderImeComposition(dc, contentRect);
 
-        // Render cursor
-        if (IsFocused && _parser.CursorVisible && _scrollOffset == 0)
+        if (IsFocused && _parser.CursorVisible && TopLine >= _buffer.ScrollbackCount)
             RenderCursor(dc, contentRect);
 
-        dc.Pop(); // Pop clip
-
-        // Draw scrollbar (outside clip region so it's always visible)
-        RenderScrollBar(dc, contentRect);
-
-        // Draw focus indicator
-        if (IsKeyboardFocused)
-        {
-            ControlFocusVisual.Draw(dc, this, bounds, cornerRadius);
-        }
+        dc.Pop(); // transform
+        dc.Pop(); // clip
     }
 
     private void RenderCells(DrawingContext dc, Rect contentRect)
@@ -883,31 +824,35 @@ public class Terminal : Control, IImeSupport
         int cols = _buffer.Columns;
         int rows = _buffer.Rows;
         int scrollbackCount = _buffer.ScrollbackCount;
+        int topLine = TopLine;
         double x0 = contentRect.X;
         double y0 = contentRect.Y;
+        int totalLines = scrollbackCount + rows;
+        int rowsToDraw = _cellHeight > 0
+            ? (int)Math.Ceiling(contentRect.Height / _cellHeight) + 1
+            : rows;
 
         var defaultFg = TerminalForeground;
-        string fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        string fontFamily = ResolveFontFamily();
         double fontSize = FontSize;
 
-        for (int row = 0; row < rows; row++)
+        for (int row = 0; row < rowsToDraw; row++)
         {
-            int bufferRow = row;
+            int totalRow = topLine + row;
+            int bufferRow;
             TerminalChar[]? scrollbackLine = null;
 
-            if (_scrollOffset > 0)
+            if (totalRow < 0) continue;
+            if (totalRow >= totalLines) break;
+
+            if (totalRow < scrollbackCount)
             {
-                int scrollbackRow = scrollbackCount - _scrollOffset + row;
-                if (scrollbackRow < 0) continue;
-                if (scrollbackRow < scrollbackCount)
-                {
-                    scrollbackLine = _buffer.GetScrollbackLine(scrollbackRow);
-                    bufferRow = -1;
-                }
-                else
-                {
-                    bufferRow = scrollbackRow - scrollbackCount;
-                }
+                scrollbackLine = _buffer.GetScrollbackLine(totalRow);
+                bufferRow = -1;
+            }
+            else
+            {
+                bufferRow = totalRow - scrollbackCount;
             }
 
             double y = y0 + row * _cellHeight;
@@ -916,16 +861,18 @@ public class Terminal : Control, IImeSupport
             string rowText;
             if (scrollbackLine != null)
             {
-                int sbIndex = scrollbackCount - _scrollOffset + row;
-                rowText = _buffer.GetScrollbackLineText(sbIndex);
+                rowText = _buffer.GetScrollbackLineText(totalRow);
             }
             else
             {
                 rowText = _buffer.GetRowTextRaw(bufferRow);
             }
 
-            // Render runs: background + text, positioned via GetColumnX for consistency
-            // with selection, cursor, and mouse hit testing.
+            // Draw same-style runs as a single FormattedText positioned at
+            // the grid — this lets DirectWrite shape the run naturally while
+            // the run's origin is locked to col * cellWidth. For a monospace
+            // font the run's own advance width equals (runLen * cellWidth),
+            // so glyphs fill their cells with no drift against hit-test.
             int runStart = 0;
             while (runStart < cols)
             {
@@ -935,15 +882,15 @@ public class Terminal : Control, IImeSupport
                     runEnd++;
 
                 var (fgColor, bgColor) = ResolveCellColors(startCell);
-                double rx = x0 + GetColumnX(rowText, runStart, fontFamily, fontSize);
-                double rxEnd = x0 + GetColumnX(rowText, runEnd, fontFamily, fontSize);
+                double rx = x0 + runStart * _cellWidth;
+                double rxEnd = x0 + runEnd * _cellWidth;
                 double rw = rxEnd - rx;
 
                 // Background
                 if (bgColor != null)
                     dc.DrawRectangle(GetCachedBrush(bgColor.Value), null, new Rect(rx, y, rw, _cellHeight));
 
-                // Text — build run string and draw as one piece
+                // Text — draw the whole run at its grid origin
                 var sb = new StringBuilder(runEnd - runStart);
                 for (int c = runStart; c < runEnd; c++)
                     sb.Append(GetCellAt(scrollbackLine, bufferRow, c).Character);
@@ -964,7 +911,7 @@ public class Terminal : Control, IImeSupport
                     dc.DrawText(ft, new Point(rx, y));
                 }
 
-                // Underline / strikethrough
+                // Underline / strikethrough span the whole run
                 if (startCell.Attributes.HasFlag(CharAttributes.Underline) || startCell.Attributes.HasFlag(CharAttributes.Strikethrough))
                 {
                     var lineBrush = fgColor != null ? GetCachedBrush(fgColor.Value) : defaultFg;
@@ -988,14 +935,20 @@ public class Terminal : Control, IImeSupport
         var (endRow, endCol) = NormalizeSelectionEnd();
 
         int scrollbackCount = _buffer.ScrollbackCount;
+        int topLine = TopLine;
         double x0 = contentRect.X;
         double y0 = contentRect.Y;
-        string fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        int rowsToDraw = _cellHeight > 0
+            ? (int)Math.Ceiling(contentRect.Height / _cellHeight) + 1
+            : _buffer.Rows;
+        int totalLines = scrollbackCount + _buffer.Rows;
+        string fontFamily = ResolveFontFamily();
         double fontSize = FontSize > 0 ? FontSize : 14;
 
-        for (int screenRow = 0; screenRow < _buffer.Rows; screenRow++)
+        for (int screenRow = 0; screenRow < rowsToDraw; screenRow++)
         {
-            int totalRow = scrollbackCount - _scrollOffset + screenRow;
+            int totalRow = topLine + screenRow;
+            if (totalRow >= totalLines) break;
             if (totalRow < startRow || totalRow > endRow) continue;
 
             int colStart = (totalRow == startRow) ? startCol : 0;
@@ -1011,11 +964,14 @@ public class Terminal : Control, IImeSupport
                 rowText = sr >= 0 && sr < _buffer.Rows ? _buffer.GetRowTextRaw(sr) : string.Empty;
             }
 
-            double sx = x0 + GetColumnX(rowText, colStart, fontFamily, fontSize);
+            // Grid-based positions — RenderCells now also draws each glyph
+            // at col * cellWidth, so sx/ex from the same formula stay in
+            // lockstep with the visible text.
+            double sx = x0 + colStart * _cellWidth;
             double sy = y0 + screenRow * _cellHeight;
             double ex = (colEnd >= _buffer.Columns)
                 ? contentRect.Right
-                : x0 + GetColumnX(rowText, colEnd, fontFamily, fontSize);
+                : x0 + colEnd * _cellWidth;
 
             dc.DrawRectangle(selBrush, null, new Rect(sx, sy, Math.Max(0, ex - sx), _cellHeight));
         }
@@ -1043,11 +999,12 @@ public class Terminal : Control, IImeSupport
         }
         _caretPen = null; // Force pen recreation with new brush
 
-        string fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        string fontFamily = ResolveFontFamily();
         double fontSize = FontSize > 0 ? FontSize : 14;
         string cursorRowText = _buffer.GetRowTextRaw(_buffer.CursorRow);
-        double x = contentRect.X + GetColumnX(cursorRowText, _buffer.CursorCol, fontFamily, fontSize);
-        double y = contentRect.Y + _buffer.CursorRow * _cellHeight;
+        int cursorTotalRow = _buffer.ScrollbackCount + _buffer.CursorRow;
+        double x = contentRect.X + _buffer.CursorCol * _cellWidth;
+        double y = contentRect.Y + (cursorTotalRow - TopLine) * _cellHeight;
 
         switch (CursorStyle)
         {
@@ -1075,11 +1032,12 @@ public class Terminal : Control, IImeSupport
 
     private void RenderImeComposition(DrawingContext dc, Rect contentRect)
     {
-        string fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        string fontFamily = ResolveFontFamily();
         double fontSize = FontSize > 0 ? FontSize : 14;
         string rowText = _buffer.GetRowTextRaw(_buffer.CursorRow);
-        double x = contentRect.X + GetColumnX(rowText, _buffer.CursorCol, fontFamily, fontSize);
-        double y = contentRect.Y + _buffer.CursorRow * _cellHeight;
+        int cursorTotalRow = _buffer.ScrollbackCount + _buffer.CursorRow;
+        double x = contentRect.X + _buffer.CursorCol * _cellWidth;
+        double y = contentRect.Y + (cursorTotalRow - TopLine) * _cellHeight;
         var ft = new FormattedText(_imeCompositionString, fontFamily, FontSize)
         {
             Foreground = s_defaultForegroundBrush,
@@ -1092,53 +1050,41 @@ public class Terminal : Control, IImeSupport
             new Point(x + compWidth, y + _cellHeight - 1));
     }
 
-    private void RenderScrollBar(DrawingContext dc, Rect contentRect)
-    {
-        int maxScroll = _buffer.ScrollbackCount;
-        if (maxScroll <= 0)
-        {
-            _scrollBarTrackRect = Rect.Empty;
-            _scrollBarThumbRect = Rect.Empty;
-            return;
-        }
-
-        // Track occupies the right edge of the content area
-        double trackX = contentRect.Right - ScrollBarThickness;
-        double trackY = contentRect.Y;
-        double trackHeight = contentRect.Height;
-        _scrollBarTrackRect = new Rect(trackX, trackY, ScrollBarThickness, trackHeight);
-
-        // Draw track
-        double trackRadius = Math.Min(ScrollBarCornerRadius, ScrollBarThickness * 0.5);
-        var trackInset = new Rect(
-            _scrollBarTrackRect.X + ScrollBarInnerPadding,
-            _scrollBarTrackRect.Y + ScrollBarInnerPadding,
-            Math.Max(0, _scrollBarTrackRect.Width - ScrollBarInnerPadding * 2),
-            Math.Max(0, _scrollBarTrackRect.Height - ScrollBarInnerPadding * 2));
-        dc.DrawRoundedRectangle(s_scrollBarTrackBrush, null, trackInset, trackRadius, trackRadius);
-
-        // Compute thumb size and position
-        int totalLines = maxScroll + _buffer.Rows;
-        double viewportRatio = (double)_buffer.Rows / totalLines;
-        double thumbHeight = Math.Max(MinScrollBarThumbSize, trackInset.Height * viewportRatio);
-
-        double scrollRatio = maxScroll > 0 ? (double)(maxScroll - _scrollOffset) / maxScroll : 0;
-        double thumbY = trackInset.Y + scrollRatio * (trackInset.Height - thumbHeight);
-
-        _scrollBarThumbRect = new Rect(trackInset.X, thumbY, trackInset.Width, thumbHeight);
-
-        // Draw thumb
-        var thumbBrush = _isScrollBarDragging ? s_scrollBarActiveThumbBrush : s_scrollBarThumbBrush;
-        dc.DrawRoundedRectangle(thumbBrush, null, _scrollBarThumbRect, trackRadius, trackRadius);
-    }
-
     #endregion
 
     #region Cell Metrics
 
+    internal double CellWidth => _cellWidth;
+    internal double CellHeight => _cellHeight;
+    internal int BufferRows => _buffer.Rows;
+    internal int BufferColumns => _buffer.Columns;
+    internal int BufferScrollbackCount => _buffer.ScrollbackCount;
+    internal void EnsureCellMetricsPublic() => EnsureCellMetrics();
+
+    private double FractionalY => _view?.FractionalY ?? 0;
+
+    /// <summary>
+    /// Resolves the effective font family, falling back to a monospace
+    /// font (Cascadia Code → Consolas → Courier New) rather than Segoe UI
+    /// when the theme resource fails to resolve. A proportional fallback
+    /// breaks the grid-based hit-test / rendering contract because M is
+    /// much wider than the average glyph.
+    /// </summary>
+    private string ResolveFontFamily()
+    {
+        var ff = FontFamily;
+        if (!string.IsNullOrEmpty(ff) && !string.Equals(ff, "Segoe UI", StringComparison.OrdinalIgnoreCase))
+            return ff;
+        // Consolas ships with every supported version of Windows and is
+        // guaranteed monospace — safest fallback when the theme resource
+        // fails to resolve (which would otherwise drop us onto Segoe UI,
+        // a proportional font that breaks the monospace grid contract).
+        return "Consolas";
+    }
+
     private void EnsureCellMetrics()
     {
-        string fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
+        string fontFamily = ResolveFontFamily();
         double fontSize = FontSize > 0 ? FontSize : 14;
 
         // Use DirectWrite font metrics for line height, snapped to pixel grid
@@ -1147,13 +1093,13 @@ public class Terminal : Control, IImeSupport
             ? Math.Ceiling(fontMetrics.LineHeight)
             : Math.Ceiling(fontSize * 1.35);
 
-        // Measure actual rendered advance width by measuring a prefix string.
-        // This gives the true per-character advance that DrawText uses for layout.
-        var ft = new FormattedText("MMMMMMMMMM", fontFamily, fontSize);
+        const string probe = "MMMMMMMMMM";
+        var ft = new FormattedText(probe, fontFamily, fontSize);
         TextMeasurement.MeasureText(ft);
         _cellWidth = ft.IsMeasured && ft.Width > 0
-            ? ft.Width / 10.0
+            ? ft.Width / probe.Length
             : fontSize * 0.6;
+
     }
 
     #endregion
@@ -1296,6 +1242,27 @@ public class Terminal : Control, IImeSupport
         return fullWidth + (column - textLen) * _cellWidth;
     }
 
+    private double GetSelectionColumnX(string rowText, int column, string fontFamily, double fontSize)
+    {
+        string visibleText = TrimTerminalTrailingSpaces(rowText);
+        int visibleLength = visibleText.Length;
+
+        if (column <= visibleLength)
+            return GetColumnX(visibleText, column, fontFamily, fontSize);
+
+        double visibleEndX = GetColumnX(visibleText, visibleLength, fontFamily, fontSize);
+        return visibleEndX + (column - visibleLength) * _cellWidth;
+    }
+
+    private static string TrimTerminalTrailingSpaces(string rowText)
+    {
+        int end = rowText.Length;
+        while (end > 0 && rowText[end - 1] == ' ')
+            end--;
+
+        return end == rowText.Length ? rowText : rowText[..end];
+    }
+
     private TerminalChar GetCellAt(TerminalChar[]? scrollbackLine, int bufferRow, int col)
     {
         if (scrollbackLine != null)
@@ -1382,7 +1349,7 @@ public class Terminal : Control, IImeSupport
         if (sequence != null)
         {
             ClearSelection();
-            _scrollOffset = 0;
+            _view?.ScrollToBottom();
             _process?.WriteInput(sequence);
             e.Handled = true;
         }
@@ -1441,12 +1408,19 @@ public class Terminal : Control, IImeSupport
 
     private void OnTextInputHandler(object sender, TextCompositionEventArgs e)
     {
-        if (IsReadOnly || string.IsNullOrEmpty(e.Text)) return;
+        if (e.Handled || IsReadOnly || string.IsNullOrEmpty(e.Text)) return;
+
+        // Filter control characters — KeyDown already translated them
+        // (Enter/Tab/Backspace/Escape/etc.) into the appropriate VT sequence.
+        // Without this filter the shell receives every Enter twice.
+        var text = e.Text;
+        if (text.Length == 1 && char.IsControl(text[0]))
+            return;
 
         ClearSelection();
-        _scrollOffset = 0;
+        _view?.ScrollToBottom();
         ResetCaretBlink();
-        _process?.WriteInput(e.Text);
+        _process?.WriteInput(text);
         e.Handled = true;
     }
 
@@ -1459,98 +1433,50 @@ public class Terminal : Control, IImeSupport
         if (e.ChangedButton != MouseButton.Left) return;
         Focus();
 
-        var pos = e.GetPosition(this);
+        if (_view == null) return;
+        var pos = e.GetPosition(_view);
 
-        // Check if clicking on scrollbar thumb
-        if (_scrollBarThumbRect != Rect.Empty && _scrollBarThumbRect.Contains(pos))
-        {
-            _isScrollBarDragging = true;
-            _scrollBarDragStartY = pos.Y;
-            _scrollBarDragStartOffset = _scrollOffset;
-            CaptureMouse();
-            e.Handled = true;
-            return;
-        }
-
-        // Check if clicking on scrollbar track (jump to position)
-        if (_scrollBarTrackRect != Rect.Empty && _scrollBarTrackRect.Contains(pos))
-        {
-            int maxScroll = _buffer.ScrollbackCount;
-            double trackInsetY = _scrollBarTrackRect.Y + ScrollBarInnerPadding;
-            double trackInsetHeight = _scrollBarTrackRect.Height - ScrollBarInnerPadding * 2;
-            double ratio = Math.Clamp((pos.Y - trackInsetY) / trackInsetHeight, 0, 1);
-            _scrollOffset = Math.Clamp(maxScroll - (int)(ratio * maxScroll), 0, maxScroll);
-            InvalidateVisual();
-            e.Handled = true;
-            return;
-        }
-
-        var (row, col) = ScreenPosToCell(pos);
+        var (totalRow, charCol, side) = ScreenPosToCell(pos);
 
         if (e.ClickCount == 2)
         {
-            // Double-click: select word
-            SelectWord(row, col);
+            // Word selection uses the character index, not the half-step.
+            SelectWordAt(totalRow, charCol);
         }
         else if (e.ClickCount == 3)
         {
-            // Triple-click: select line
-            SelectLine(row);
+            SelectLineAt(totalRow);
         }
         else
         {
-            // Single click: start selection
-            int totalRow = _buffer.ScrollbackCount - _scrollOffset + row;
-            _selectionStart = (totalRow, col);
+            int effectiveCol = charCol + (side == CellSide.Right ? 1 : 0);
+            _selectionStart = (totalRow, effectiveCol);
             _selectionEnd = _selectionStart;
             _hasSelection = false;
             _isDragging = true;
             CaptureMouse();
         }
 
-        InvalidateVisual();
+        InvalidateView();
         e.Handled = true;
     }
 
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
-        var pos = e.GetPosition(this);
+        if (!_isDragging || _view == null) return;
 
-        // Handle scrollbar dragging
-        if (_isScrollBarDragging)
-        {
-            int maxScroll = _buffer.ScrollbackCount;
-            double trackInsetHeight = _scrollBarTrackRect.Height - ScrollBarInnerPadding * 2;
-            double thumbHeight = _scrollBarThumbRect.Height;
-            double trackTravel = Math.Max(1, trackInsetHeight - thumbHeight);
-            double deltaY = pos.Y - _scrollBarDragStartY;
-            double deltaRatio = deltaY / trackTravel;
-            int deltaLines = (int)(deltaRatio * maxScroll);
-            _scrollOffset = Math.Clamp(_scrollBarDragStartOffset - deltaLines, 0, maxScroll);
-            InvalidateVisual();
-            return;
-        }
+        var pos = e.GetPosition(_view);
+        var (totalRow, charCol, side) = ScreenPosToCell(pos);
+        int effectiveCol = charCol + (side == CellSide.Right ? 1 : 0);
 
-        if (!_isDragging) return;
-
-        var (row, col) = ScreenPosToCell(pos);
-        int totalRow = _buffer.ScrollbackCount - _scrollOffset + row;
-
-        _selectionEnd = (totalRow, col);
+        _selectionEnd = (totalRow, effectiveCol);
         _hasSelection = _selectionStart != _selectionEnd;
-        InvalidateVisual();
+        InvalidateView();
     }
 
     private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton != MouseButton.Left) return;
-
-        if (_isScrollBarDragging)
-        {
-            _isScrollBarDragging = false;
-            ReleaseMouseCapture();
-            return;
-        }
 
         if (_isDragging)
         {
@@ -1561,70 +1487,65 @@ public class Terminal : Control, IImeSupport
 
     private void OnMouseWheelHandler(object sender, MouseWheelEventArgs e)
     {
-        int delta = e.Delta > 0 ? -3 : 3; // Scroll 3 lines at a time
-        int maxScroll = _buffer.ScrollbackCount;
-        _scrollOffset = Math.Clamp(_scrollOffset + delta, 0, maxScroll);
-        InvalidateVisual();
+        if (_view == null) return;
+
+        // 3 lines per wheel notch
+        double delta = (e.Delta > 0 ? -3.0 : 3.0) * _cellHeight;
+        _view.SetVerticalOffset(_view.VerticalOffset + delta);
         e.Handled = true;
     }
 
-    private (int row, int col) ScreenPosToCell(Point pos)
+    /// <summary>
+    /// Which half of a cell a hit test landed in — used for Alacritty-style
+    /// selection anchors where the boundary character is only included once
+    /// the cursor crosses its midpoint.
+    /// </summary>
+    private enum CellSide { Left, Right }
+
+    /// <summary>
+    /// Converts a position in the TerminalView's local coordinate system to
+    /// (totalRow, charCol, side) — see <see cref="CellSide"/>. `charCol` is
+    /// the character index (0..Columns-1), `side` indicates which half of
+    /// that cell was hit. Callers either use `charCol` directly (word
+    /// selection) or combine with `side` to get an exclusive boundary
+    /// (`charCol + (side == Right ? 1 : 0)`) for drag selection.
+    /// </summary>
+    private (int totalRow, int charCol, CellSide side) ScreenPosToCell(Point pos)
     {
-        var padding = Padding;
-        var border = BorderThickness;
-        double x = pos.X - border.Left - padding.Left;
-        double y = pos.Y - border.Top - padding.Top;
+        double x = pos.X;
+        double y = pos.Y + FractionalY;
 
-        int row = _cellHeight > 0 ? (int)(y / _cellHeight) : 0;
-        row = Math.Clamp(row, 0, _buffer.Rows - 1);
-
-        // Get the row text for precise hit testing
         int scrollbackCount = _buffer.ScrollbackCount;
-        int totalRow = scrollbackCount - _scrollOffset + row;
-        string rowText;
-        if (totalRow < scrollbackCount)
-            rowText = _buffer.GetScrollbackLineText(totalRow);
-        else if (totalRow - scrollbackCount < _buffer.Rows)
-            rowText = _buffer.GetRowTextRaw(totalRow - scrollbackCount);
-        else
-            rowText = string.Empty;
+        int totalLines = scrollbackCount + _buffer.Rows;
 
-        int col;
-        string fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
-        double fontSize = FontSize > 0 ? FontSize : 14;
+        int rowOffset = _cellHeight > 0 ? (int)Math.Floor(y / _cellHeight) : 0;
+        int totalRow = TopLine + rowOffset;
+        if (totalRow < 0) totalRow = 0;
+        if (totalRow > totalLines - 1) totalRow = Math.Max(0, totalLines - 1);
 
-        if (rowText.Length > 0)
+        // Pure grid — matches RenderCells which draws each glyph at col*cellWidth.
+        int charCol;
+        CellSide side;
+        if (_cellWidth > 0)
         {
-            // Use DirectWrite hit testing within the text range
-            double textEndX = GetColumnX(rowText, rowText.Length, fontFamily, fontSize);
-            if (x <= textEndX)
-            {
-                // Within text — use HitTestPoint for accuracy
-                if (TextMeasurement.HitTestPoint(rowText, fontFamily, fontSize, (float)x, out var hitResult))
-                {
-                    col = (int)hitResult.TextPosition;
-                    if (hitResult.IsTrailingHit != 0)
-                        col++;
-                }
-                else
-                {
-                    col = _cellWidth > 0 ? (int)(x / _cellWidth) : 0;
-                }
-            }
-            else
-            {
-                // Beyond text — use _cellWidth grid from text end
-                col = rowText.Length + (_cellWidth > 0 ? (int)((x - textEndX) / _cellWidth) : 0);
-            }
+            double fx = x / _cellWidth;
+            charCol = (int)Math.Floor(fx);
+            side = (fx - charCol) < 0.5 ? CellSide.Left : CellSide.Right;
         }
         else
         {
-            // Empty row — pure grid
-            col = _cellWidth > 0 ? (int)(x / _cellWidth) : 0;
+            charCol = 0;
+            side = CellSide.Left;
         }
 
-        col = Math.Clamp(col, 0, _buffer.Columns);
-        return (row, col);
+        if (charCol < 0) { charCol = 0; side = CellSide.Left; }
+        if (charCol >= _buffer.Columns)
+        {
+            charCol = _buffer.Columns - 1;
+            side = CellSide.Right;
+        }
+
+        return (totalRow, charCol, side);
     }
 
     #endregion
@@ -1636,7 +1557,7 @@ public class Terminal : Control, IImeSupport
         if (_hasSelection)
         {
             _hasSelection = false;
-            InvalidateVisual();
+            InvalidateView();
         }
     }
 
@@ -1656,9 +1577,8 @@ public class Terminal : Control, IImeSupport
         return _selectionStart;
     }
 
-    private void SelectWord(int screenRow, int col)
+    private void SelectWordAt(int totalRow, int charCol)
     {
-        int totalRow = _buffer.ScrollbackCount - _scrollOffset + screenRow;
         string lineText;
 
         if (totalRow < _buffer.ScrollbackCount)
@@ -1666,23 +1586,34 @@ public class Terminal : Control, IImeSupport
         else
             lineText = _buffer.GetRowTextRaw(totalRow - _buffer.ScrollbackCount);
 
-        // Find word boundaries
-        int start = col;
-        int end = col;
+        // If click lands outside the line or on a non-word character, just
+        // make a caret-style empty selection at that column.
+        if (charCol < 0 || charCol >= lineText.Length || !IsWordChar(lineText, charCol))
+        {
+            _selectionStart = (totalRow, charCol);
+            _selectionEnd = (totalRow, charCol);
+            _hasSelection = false;
+            return;
+        }
+
+        // Expand left and right to the full word. `end` is the inclusive
+        // index of the last word character; the selection uses an exclusive
+        // end boundary, so we store `end + 1`.
+        int start = charCol;
+        int end = charCol;
 
         while (start > 0 && IsWordChar(lineText, start - 1))
             start--;
-        while (end < lineText.Length - 1 && IsWordChar(lineText, end + 1))
+        while (end + 1 < lineText.Length && IsWordChar(lineText, end + 1))
             end++;
 
         _selectionStart = (totalRow, start);
-        _selectionEnd = (totalRow, end);
+        _selectionEnd = (totalRow, end + 1);
         _hasSelection = true;
     }
 
-    private void SelectLine(int screenRow)
+    private void SelectLineAt(int totalRow)
     {
-        int totalRow = _buffer.ScrollbackCount - _scrollOffset + screenRow;
         _selectionStart = (totalRow, 0);
         _selectionEnd = (totalRow, _buffer.Columns);
         _hasSelection = true;
@@ -1706,11 +1637,12 @@ public class Terminal : Control, IImeSupport
         {
             _parser.Feed(data);
 
-            // Auto-scroll to bottom when new output arrives
-            if (_scrollOffset > 0 && !_isDragging)
-                _scrollOffset = 0;
+            // Scrollback may have grown — refresh extent and optionally stick to bottom.
+            _view?.InvalidateMeasure();
+            if (_view != null && !_view.IsAtBottom && !_isDragging)
+                _view.ScrollToBottom();
 
-            InvalidateVisual();
+            InvalidateView();
 
             // Raise event
             var args = new TerminalOutputEventArgs(OutputReceivedEvent, this, data);
@@ -1742,7 +1674,7 @@ public class Terminal : Control, IImeSupport
         Dispatcher.InvokeAsync(() =>
         {
             // Visual bell - briefly flash background
-            InvalidateVisual();
+            InvalidateView();
         });
     }
 
@@ -1781,7 +1713,7 @@ public class Terminal : Control, IImeSupport
 
         // Only invalidate when opacity changes (hold phases skip redraw)
         if (Math.Abs(_caretOpacity - prevOpacity) > 0.005)
-            InvalidateVisual();
+            InvalidateView();
     }
 
     private double UpdateCaretAnimation()
@@ -1824,7 +1756,7 @@ public class Terminal : Control, IImeSupport
     private void OnGotFocusHandler(object sender, RoutedEventArgs e)
     {
         ResetCaretBlink();
-        InvalidateVisual();
+        InvalidateView();
     }
 
     private void OnLostFocusHandler(object sender, RoutedEventArgs e)
@@ -1832,7 +1764,7 @@ public class Terminal : Control, IImeSupport
         StopCaretAnimation();
         _caretVisible = false;
         _caretOpacity = 0.0;
-        InvalidateVisual();
+        InvalidateView();
     }
 
     #endregion
@@ -1842,14 +1774,15 @@ public class Terminal : Control, IImeSupport
     /// <inheritdoc />
     public Point GetImeCaretPosition()
     {
-        var padding = Padding;
+        double localX = _buffer.CursorCol * _cellWidth;
+        double localY = _buffer.CursorRow * _cellHeight;
+
+        // View is nested inside Border(Padding) → ScrollViewer → TerminalView.
         var border = BorderThickness;
-        string fontFamily = FontFamily ?? FrameworkElement.DefaultFontFamilyName;
-        double fontSize = FontSize > 0 ? FontSize : 14;
-        string rowText = _buffer.GetRowTextRaw(_buffer.CursorRow);
-        double x = border.Left + padding.Left + GetColumnX(rowText, _buffer.CursorCol, fontFamily, fontSize);
-        double y = border.Top + padding.Top + _buffer.CursorRow * _cellHeight;
-        return new Point(x, y);
+        var padding = Padding;
+        return new Point(
+            border.Left + padding.Left + localX,
+            border.Top + padding.Top + localY);
     }
 
     /// <inheritdoc />
@@ -1865,7 +1798,7 @@ public class Terminal : Control, IImeSupport
     {
         _imeCompositionString = compositionString;
         _imeCompositionCursor = cursorPosition;
-        InvalidateVisual();
+        InvalidateView();
     }
 
     /// <inheritdoc />
@@ -1879,7 +1812,7 @@ public class Terminal : Control, IImeSupport
             _process?.WriteInput(resultString);
         }
 
-        InvalidateVisual();
+        InvalidateView();
     }
 
     #endregion
@@ -1916,6 +1849,250 @@ public class Terminal : Control, IImeSupport
     }
 
     #endregion
+
+    #region Template
+
+    /// <inheritdoc />
+    protected override void OnApplyTemplate()
+    {
+        base.OnApplyTemplate();
+
+        _scrollViewer = GetTemplateChild("PART_ScrollViewer") as ScrollViewer;
+        if (_scrollViewer != null)
+        {
+            if (_view == null)
+                _view = new TerminalView(this);
+            _scrollViewer.Content = _view;
+        }
+    }
+
+    #endregion
+}
+
+/// <summary>
+/// Inner render surface for the Terminal control. Owns the character grid
+/// rendering and reports scroll extent/offset via IScrollInfo so an outer
+/// ScrollViewer can provide a real scrollbar.
+/// </summary>
+public sealed class TerminalView : FrameworkElement, IScrollInfo
+{
+    private readonly Terminal _owner;
+    private double _verticalOffset;
+    private Size _viewport;
+
+    internal TerminalView(Terminal owner)
+    {
+        _owner = owner;
+    }
+
+    /// <summary>
+    /// First visible total-buffer row (0 = top of scrollback,
+    /// owner._buffer.ScrollbackCount = top of live screen / "at bottom").
+    /// </summary>
+    internal int TopLine
+    {
+        get
+        {
+            double cellHeight = _owner.CellHeight;
+            if (cellHeight <= 0) return _owner.BufferScrollbackCount;
+            int topLine = (int)Math.Floor(_verticalOffset / cellHeight);
+            int totalLines = _owner.BufferScrollbackCount + _owner.BufferRows;
+            if (topLine < 0) topLine = 0;
+            if (topLine > totalLines - 1) topLine = Math.Max(0, totalLines - 1);
+            return topLine;
+        }
+    }
+
+    /// <summary>
+    /// Sub-pixel Y offset within the top row, in pixels [0, cellHeight).
+    /// Used for smooth pixel-precise scrolling.
+    /// </summary>
+    internal double FractionalY
+    {
+        get
+        {
+            double cellHeight = _owner.CellHeight;
+            if (cellHeight <= 0) return 0;
+            double frac = _verticalOffset - TopLine * cellHeight;
+            if (frac < 0) frac = 0;
+            if (frac >= cellHeight) frac = cellHeight - 0.001;
+            return frac;
+        }
+    }
+
+    internal bool IsAtBottom
+    {
+        get
+        {
+            double maxOffset = Math.Max(0, ExtentHeight - ViewportHeight);
+            return _verticalOffset >= maxOffset - 0.5;
+        }
+    }
+
+    internal void ScrollToBottom()
+    {
+        double newOffset = Math.Max(0, ExtentHeight - ViewportHeight);
+        if (Math.Abs(newOffset - _verticalOffset) > 0.01)
+        {
+            _verticalOffset = newOffset;
+            ScrollOwner?.InvalidateArrange();
+            InvalidateVisual();
+        }
+    }
+
+    #region IScrollInfo
+
+    /// <inheritdoc />
+    public bool CanHorizontallyScroll { get; set; }
+
+    /// <inheritdoc />
+    public bool CanVerticallyScroll { get; set; } = true;
+
+    /// <inheritdoc />
+    public double ExtentWidth => _viewport.Width;
+
+    /// <inheritdoc />
+    public double ExtentHeight
+    {
+        get
+        {
+            double cellHeight = _owner.CellHeight;
+            if (cellHeight <= 0) return _viewport.Height;
+            int totalLines = _owner.BufferScrollbackCount + _owner.BufferRows;
+            return totalLines * cellHeight;
+        }
+    }
+
+    /// <inheritdoc />
+    public double ViewportWidth => _viewport.Width;
+
+    /// <summary>
+    /// Report viewport as an integer multiple of cellHeight so that the
+    /// at-bottom offset (ExtentHeight - ViewportHeight) always lands on a
+    /// row boundary — keeps row-based rendering and hit-testing in sync
+    /// with the scrollbar's "at bottom" position.
+    /// </summary>
+    public double ViewportHeight
+    {
+        get
+        {
+            double cellHeight = _owner.CellHeight;
+            if (cellHeight <= 0) return _viewport.Height;
+            return _owner.BufferRows * cellHeight;
+        }
+    }
+
+    /// <inheritdoc />
+    public double HorizontalOffset => 0;
+
+    /// <inheritdoc />
+    public double VerticalOffset => _verticalOffset;
+
+    /// <inheritdoc />
+    public ScrollViewer? ScrollOwner { get; set; }
+
+    /// <inheritdoc />
+    public void LineUp() => SetVerticalOffset(_verticalOffset - _owner.CellHeight);
+
+    /// <inheritdoc />
+    public void LineDown() => SetVerticalOffset(_verticalOffset + _owner.CellHeight);
+
+    /// <inheritdoc />
+    public void LineLeft() { }
+
+    /// <inheritdoc />
+    public void LineRight() { }
+
+    /// <inheritdoc />
+    public void PageUp() => SetVerticalOffset(_verticalOffset - ViewportHeight);
+
+    /// <inheritdoc />
+    public void PageDown() => SetVerticalOffset(_verticalOffset + ViewportHeight);
+
+    /// <inheritdoc />
+    public void PageLeft() { }
+
+    /// <inheritdoc />
+    public void PageRight() { }
+
+    /// <inheritdoc />
+    public void MouseWheelUp() => SetVerticalOffset(_verticalOffset - 3 * _owner.CellHeight);
+
+    /// <inheritdoc />
+    public void MouseWheelDown() => SetVerticalOffset(_verticalOffset + 3 * _owner.CellHeight);
+
+    /// <inheritdoc />
+    public void MouseWheelLeft() { }
+
+    /// <inheritdoc />
+    public void MouseWheelRight() { }
+
+    /// <inheritdoc />
+    public void SetHorizontalOffset(double offset) { }
+
+    /// <inheritdoc />
+    public void SetVerticalOffset(double offset)
+    {
+        double maxOffset = Math.Max(0, ExtentHeight - ViewportHeight);
+        double clamped = Math.Clamp(offset, 0, maxOffset);
+        if (Math.Abs(clamped - _verticalOffset) < 0.01) return;
+        _verticalOffset = clamped;
+        ScrollOwner?.InvalidateArrange();
+        InvalidateVisual();
+    }
+
+    /// <inheritdoc />
+    public Rect MakeVisible(Visual visual, Rect rectangle) => rectangle;
+
+    #endregion
+
+    /// <inheritdoc />
+    protected override Size MeasureOverride(Size availableSize)
+    {
+        _owner.EnsureCellMetricsPublic();
+
+        double width = double.IsInfinity(availableSize.Width) ? 0 : availableSize.Width;
+        double height = double.IsInfinity(availableSize.Height) ? 0 : availableSize.Height;
+
+        if (_owner.AutoSize)
+        {
+            _owner.UpdateAutoSize(new Size(width, height));
+        }
+
+        // Report only the viewport size as desired — scrolling is handled via IScrollInfo.
+        double desiredWidth = _owner.AutoSize
+            ? width
+            : Math.Min(width, _owner.BufferColumns * _owner.CellWidth);
+        double desiredHeight = _owner.AutoSize
+            ? height
+            : Math.Min(height, _owner.BufferRows * _owner.CellHeight);
+
+        return new Size(desiredWidth, desiredHeight);
+    }
+
+    /// <inheritdoc />
+    protected override Size ArrangeOverride(Size finalSize)
+    {
+        var oldViewport = _viewport;
+        _viewport = finalSize;
+
+        // Clamp vertical offset to new extent.
+        double maxOffset = Math.Max(0, ExtentHeight - ViewportHeight);
+        if (_verticalOffset > maxOffset) _verticalOffset = maxOffset;
+
+        if (oldViewport != _viewport)
+            ScrollOwner?.InvalidateArrange();
+
+        return finalSize;
+    }
+
+    /// <inheritdoc />
+    protected override void OnRender(object drawingContext)
+    {
+        base.OnRender(drawingContext);
+        if (drawingContext is not DrawingContext dc) return;
+        _owner.RenderView(dc, _viewport);
+    }
 }
 
 #region Event Args & Delegates

@@ -365,6 +365,8 @@ public class DiffViewer : Control
 
     // Minimap
     private const double MinimapWidth = 60;
+    private bool _isDraggingMinimap;
+    private double _minimapDragGrabOffset;
 
     // Layout cache
     private double _effectiveGutterWidth;
@@ -382,6 +384,7 @@ public class DiffViewer : Control
     public DiffViewer()
     {
         Focusable = true;
+        ClipToBounds = true;
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
         AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
@@ -910,12 +913,29 @@ public class DiffViewer : Control
 
             var position = e.GetPosition(this);
 
-            // Check if clicking on minimap for quick navigation
-            if (ShowMinimap && position.X >= RenderSize.Width - MinimapWidth)
+            // Check if clicking on minimap — start drag-to-scroll
+            if (ShowMinimap && position.X >= RenderSize.Width - MinimapWidth && _totalContentHeight > 0)
             {
-                double ratio = position.Y / RenderSize.Height;
-                _scrollOffsetY = ratio * Math.Max(0, _totalContentHeight - RenderSize.Height);
-                ClampScrollOffset();
+                _isDraggingMinimap = true;
+
+                double minimapHeight = RenderSize.Height;
+                double viewportH = (RenderSize.Height / Math.Max(1, _totalContentHeight)) * minimapHeight;
+                viewportH = Math.Max(10, Math.Min(minimapHeight, viewportH));
+                double viewportTop = (_scrollOffsetY / _totalContentHeight) * minimapHeight;
+
+                // If the click is inside the current viewport thumb, grab it (preserve
+                // the relative offset so dragging feels anchored). Otherwise page-jump
+                // so the thumb centers on the click point and drag from there.
+                if (position.Y >= viewportTop && position.Y <= viewportTop + viewportH)
+                {
+                    _minimapDragGrabOffset = position.Y - viewportTop;
+                }
+                else
+                {
+                    _minimapDragGrabOffset = viewportH / 2.0;
+                    UpdateScrollFromMinimap(position.Y);
+                }
+
                 InvalidateVisual();
                 e.Handled = true;
                 return;
@@ -937,13 +957,38 @@ public class DiffViewer : Control
         if (e.ChangedButton == MouseButton.Left)
         {
             _isSelecting = false;
+            _isDraggingMinimap = false;
             ReleaseMouseCapture();
             e.Handled = true;
         }
     }
 
+    private void UpdateScrollFromMinimap(double pointerY)
+    {
+        if (_totalContentHeight <= 0) return;
+
+        double minimapHeight = RenderSize.Height;
+        double viewportH = (RenderSize.Height / Math.Max(1, _totalContentHeight)) * minimapHeight;
+        viewportH = Math.Max(10, Math.Min(minimapHeight, viewportH));
+
+        double thumbTop = pointerY - _minimapDragGrabOffset;
+        double travel = Math.Max(1, minimapHeight - viewportH);
+        double ratio = Math.Clamp(thumbTop / travel, 0.0, 1.0);
+
+        _scrollOffsetY = ratio * Math.Max(0, _totalContentHeight - RenderSize.Height);
+        ClampScrollOffset();
+        InvalidateVisual();
+    }
+
     private void OnMouseMoveHandler(object sender, MouseEventArgs e)
     {
+        if (_isDraggingMinimap)
+        {
+            UpdateScrollFromMinimap(e.GetPosition(this).Y);
+            e.Handled = true;
+            return;
+        }
+
         if (_isSelecting)
         {
             var position = e.GetPosition(this);

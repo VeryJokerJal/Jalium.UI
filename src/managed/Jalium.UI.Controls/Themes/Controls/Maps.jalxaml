@@ -107,16 +107,6 @@
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="Width" Value="150" />
         <Setter Property="Height" Value="100" />
-        <Setter Property="Template">
-            <ControlTemplate TargetType="MiniMap">
-                <Border Name="RootBorder"
-                        Background="{TemplateBinding Background}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="{TemplateBinding CornerRadius}"
-                        ClipToBounds="True" />
-            </ControlTemplate>
-        </Setter>
 
         <Style.Triggers>
             <PropertyTrigger Property="IsEnabled" Value="False">

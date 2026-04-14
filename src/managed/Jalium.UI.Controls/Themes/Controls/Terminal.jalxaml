@@ -6,7 +6,9 @@
     <!-- Terminal Style -->
     <!-- ============================================== -->
     <!-- A terminal emulator control with VT100/ANSI support.
-         Uses direct rendering (no PART_ContentHost) for character grid drawing. -->
+         Chrome (background/border/corner) is provided by a Border, and the
+         character grid is hosted inside a ScrollViewer whose content is
+         programmatically set to a TerminalView in OnApplyTemplate. -->
     <Style TargetType="Terminal">
         <Setter Property="Background" Value="{DynamicResource TerminalBackground}" />
         <Setter Property="Foreground" Value="{DynamicResource TerminalForeground}" />
@@ -26,7 +28,15 @@
                         Background="{TemplateBinding Background}"
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="{TemplateBinding CornerRadius}" />
+                        CornerRadius="{TemplateBinding CornerRadius}"
+                        Padding="{TemplateBinding Padding}">
+                    <ScrollViewer Name="PART_ScrollViewer"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  VerticalScrollBarVisibility="Auto"
+                                  Background="Transparent"
+                                  BorderThickness="0"
+                                  Padding="0" />
+                </Border>
             </ControlTemplate>
         </Setter>
 

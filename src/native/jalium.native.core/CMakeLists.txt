@@ -4,6 +4,9 @@ set(HEADERS
     include/jalium_api.h
     include/jalium_types.h
     include/jalium_backend.h
+    include/jalium_internal.h
+    include/jalium_rendering_engine.h
+    include/jalium_triangulate.h
 )
 
 set(SOURCES

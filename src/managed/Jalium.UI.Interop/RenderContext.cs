@@ -67,6 +67,21 @@ public sealed class RenderContext : IDisposable
     public GpuPreference GpuPreference { get; }
 
     /// <summary>
+    /// Gets or sets the default rendering engine for new render targets.
+    /// </summary>
+    public RenderingEngine DefaultRenderingEngine
+    {
+        get => _handle != nint.Zero ? NativeMethods.ContextGetDefaultEngine(_handle) : RenderingEngine.Auto;
+        set
+        {
+            if (_handle != nint.Zero)
+            {
+                NativeMethods.ContextSetDefaultEngine(_handle, value);
+            }
+        }
+    }
+
+    /// <summary>
     /// Raised when the rendering device is lost and a new context has been created.
     /// Subscribers should release cached GPU resources and recreate them.
     /// </summary>
@@ -77,7 +92,11 @@ public sealed class RenderContext : IDisposable
     /// </summary>
     /// <param name="backend">The rendering backend to use.</param>
     /// <param name="gpuPreference">GPU adapter preference for multi-GPU systems.</param>
-    public RenderContext(RenderBackend backend = RenderBackend.Auto, GpuPreference gpuPreference = GpuPreference.Auto)
+    /// <param name="renderingEngine">The rendering engine to use (Auto selects the best for the platform).</param>
+    public RenderContext(
+        RenderBackend backend = RenderBackend.Auto,
+        GpuPreference gpuPreference = GpuPreference.Auto,
+        RenderingEngine renderingEngine = RenderingEngine.Auto)
     {
         backend = NormalizeRequestedBackend(backend);
 
@@ -98,6 +117,26 @@ public sealed class RenderContext : IDisposable
         GpuPreference = gpuPreference;
         Generation = Interlocked.Increment(ref _generationCounter);
         _current ??= this;
+
+        // Apply rendering engine: explicit parameter takes priority, then env var, then Auto
+        var engine = NormalizeRenderingEngine(renderingEngine);
+        NativeMethods.ContextSetDefaultEngine(_handle, engine);
+    }
+
+    /// <summary>
+    /// Resolves the rendering engine: if Auto, checks env var override, otherwise keeps Auto
+    /// (native layer resolves Auto → concrete engine based on backend).
+    /// </summary>
+    private static RenderingEngine NormalizeRenderingEngine(RenderingEngine requested)
+    {
+        // If explicitly set (not Auto), use it directly
+        if (requested != RenderingEngine.Auto)
+        {
+            return requested;
+        }
+
+        // Check environment variable override
+        return RenderBackendSelector.GetPreferredRenderingEngine();
     }
 
     /// <summary>

@@ -104,9 +104,27 @@ public class Image : Control
     {
         if (d is Image image)
         {
+            // Unsubscribe from old source's async load event
+            if (e.OldValue is BitmapImage oldBitmap)
+                oldBitmap.OnImageLoaded -= image.OnSourceAsyncLoaded;
+            else if (e.OldValue is SvgImage oldSvg)
+                oldSvg.OnSvgLoaded -= image.OnSourceAsyncLoaded;
+
+            // Subscribe to new source's async load event for HTTP sources
+            if (e.NewValue is BitmapImage newBitmap)
+                newBitmap.OnImageLoaded += image.OnSourceAsyncLoaded;
+            else if (e.NewValue is SvgImage newSvg)
+                newSvg.OnSvgLoaded += image.OnSourceAsyncLoaded;
+
             image._imageHost?.InvalidateMeasure();
             image._imageHost?.InvalidateVisual();
         }
+    }
+
+    private void OnSourceAsyncLoaded(object? sender, EventArgs e)
+    {
+        _imageHost?.InvalidateMeasure();
+        _imageHost?.InvalidateVisual();
     }
 
     private static void OnLayoutPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)

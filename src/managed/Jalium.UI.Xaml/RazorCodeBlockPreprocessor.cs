@@ -247,7 +247,7 @@ internal static class RazorCodeBlockPreprocessor
     /// Extracts the section name from RenderSection arguments.
     /// Handles: <c>"Name"</c>, <c>"Name", required: false</c>, <c>"Name", false</c>
     /// </summary>
-    private static string? ExtractSectionNameFromArgs(string args)
+    internal static string? ExtractSectionNameFromArgs(string args)
     {
         var trimmed = args.Trim();
         if (trimmed.Length < 2) return null;
@@ -412,7 +412,7 @@ internal static class RazorCodeBlockPreprocessor
     /// comments, char literals, and nested braces. Also correctly skips braces inside XML
     /// attribute values (which appear as <c>"..."</c> pairs in the raw string).
     /// </summary>
-    private static int FindMatchingBrace(string input, int start)
+    internal static int FindMatchingBrace(string input, int start)
     {
         var pos = start;
         var depth = 1;
@@ -563,7 +563,7 @@ internal static class RazorCodeBlockPreprocessor
     /// Starting from the position after an opening <c>(</c>, finds the matching <c>)</c>.
     /// Returns the position after <c>)</c>, or -1 if unbalanced.
     /// </summary>
-    private static int FindMatchingParen(string input, int start)
+    internal static int FindMatchingParen(string input, int start)
     {
         var p = start;
         var depth = 1;
@@ -618,7 +618,7 @@ internal static class RazorCodeBlockPreprocessor
     /// Supported keywords: for, foreach, while, switch, using, lock.
     /// Also supports <c>@await foreach</c> and <c>@await using</c>.
     /// </summary>
-    private static bool TryMatchBlockDirective(string input, int atPos, out int blockEnd, out string code)
+    internal static bool TryMatchBlockDirective(string input, int atPos, out int blockEnd, out string code)
     {
         blockEnd = 0;
         code = "";
@@ -696,7 +696,7 @@ internal static class RazorCodeBlockPreprocessor
     /// <summary>
     /// Tries to match <c>@do { ... } while(expr);</c> at the given position.
     /// </summary>
-    private static bool TryMatchDoWhileDirective(string input, int atPos, out int blockEnd, out string code)
+    internal static bool TryMatchDoWhileDirective(string input, int atPos, out int blockEnd, out string code)
     {
         blockEnd = 0;
         code = "";
@@ -746,7 +746,7 @@ internal static class RazorCodeBlockPreprocessor
     /// <summary>
     /// Tries to match <c>@try { ... } catch(...) { ... } finally { ... }</c> at the given position.
     /// </summary>
-    private static bool TryMatchTryCatchDirective(string input, int atPos, out int blockEnd, out string code)
+    internal static bool TryMatchTryCatchDirective(string input, int atPos, out int blockEnd, out string code)
     {
         blockEnd = 0;
         code = "";
@@ -855,7 +855,7 @@ internal static class RazorCodeBlockPreprocessor
     /// <summary>
     /// Compiles and executes a Razor code block, returning the generated XAML string.
     /// </summary>
-    private static string ExpandCodeBlock(string code)
+    internal static string ExpandCodeBlock(string code)
     {
         if (string.IsNullOrWhiteSpace(code))
             return string.Empty;

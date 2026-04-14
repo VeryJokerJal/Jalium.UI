@@ -256,6 +256,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private bool _contentRendered;
     private bool _isSyncingPosition;
     private Rect _restoreBounds;
+    // Pre-fullscreen snapshot: bounds (screen px), WS style, and WindowState to restore.
+    private bool _isFullScreen;
+    private RECT _fullScreenSavedRect;
+    private uint _fullScreenSavedStyle;
+    private uint _fullScreenSavedExStyle;
+    private WindowState _fullScreenPreviousState;
     private readonly List<Window> _ownedWindows = [];
     private const double DefaultTitleBarHeightDip = 32.0;
     private const int GpuBusyRetryDelayMs = 1;
@@ -347,7 +353,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty WindowStyleProperty =
         DependencyProperty.Register(nameof(WindowStyle), typeof(WindowStyle), typeof(Window),
-            new PropertyMetadata(WindowStyle.SingleBorderWindow));
+            new PropertyMetadata(WindowStyle.SingleBorderWindow, OnWindowStyleChanged));
 
     /// <summary>
     /// Identifies the LeftWindowCommands dependency property.
@@ -2093,6 +2099,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             WindowState.Maximized => SW_MAXIMIZE,
             WindowState.Minimized => SW_MINIMIZE,
+            WindowState.FullScreen => ShowActivated ? SW_SHOW : SW_SHOWNOACTIVATE,
             _ => ShowActivated ? SW_SHOW : SW_SHOWNOACTIVATE
         };
 
@@ -2106,12 +2113,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_platformWindow != null)
         {
             _platformWindow.Show();
-            if (desiredState == WindowState.Maximized)
+            if (desiredState == WindowState.Maximized || desiredState == WindowState.FullScreen)
                 _platformWindow.SetState(WindowState.Maximized);
         }
         else
         {
             _ = ShowWindow(Handle, showCmd);
+            // Fullscreen needs a second step on Win32: strip the frame + resize
+            // to cover the monitor. Done AFTER ShowWindow so the HWND has valid
+            // window rect / monitor assignment.
+            if (desiredState == WindowState.FullScreen)
+            {
+                EnterFullScreen();
+            }
         }
 
         // SWP_FRAMECHANGED for custom title bar was already applied in EnsureHandle
@@ -2540,9 +2554,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Register window class if needed
         RegisterWindowClass();
 
-        // Determine window style based on TitleBarStyle.
-        // Keep standard caption style bits; custom visual caption is removed via NCCALCSIZE.
-        uint dwStyle = GetWindowStyleForTitleBarStyle(TitleBarStyle);
+        // Determine window style based on WindowStyle/ResizeMode/TitleBarStyle.
+        // For custom title bar we keep standard caption style bits and remove the
+        // visible caption via NCCALCSIZE; for WindowStyle=None we use WS_POPUP so
+        // the window has no native frame or caption at all.
+        uint dwStyle = WindowStyle == WindowStyle.None
+            ? ComputeWin32WindowStyle(WindowStyle.None, ResizeMode)
+            : WS_OVERLAPPEDWINDOW;
 
         uint dwExStyle = TitleBarStyle == WindowTitleBarStyle.Custom
             ? WS_EX_APPWINDOW
@@ -2556,7 +2574,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         if (AllowsTransparency)
         {
-            dwExStyle |= WS_EX_LAYERED;
+            // Use WS_EX_NOREDIRECTIONBITMAP so the HWND has no redirection
+            // surface and the render backend can present through DirectComposition
+            // for real per-pixel transparency. WS_EX_LAYERED would only support
+            // uniform GDI alpha and does not composite D3D12 swap chains, which
+            // made layered fullscreen windows appear click-through.
+            dwExStyle |= WS_EX_NOREDIRECTIONBITMAP;
         }
 
         // Query system DPI for initial window sizing (before HWND exists)
@@ -2605,13 +2628,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         uint windowDpi = GetDpiForWindow(Handle);
         bool needsDpiAdjust = windowDpi != 0 && windowDpi != systemDpi;
         bool isCustomTitleBar = TitleBarStyle == WindowTitleBarStyle.Custom;
+        bool isBorderless = WindowStyle == WindowStyle.None;
+        // SWP_FRAMECHANGED is required for BOTH custom title bar and WindowStyle=None
+        // so WM_NCCALCSIZE runs through our handler *after* _windows[Handle] has been
+        // populated — the NCCALCSIZE fired during CreateWindowEx happens before that,
+        // so the frame would otherwise stay at its DWM default (visible top strip).
+        bool needsFrameChanged = isCustomTitleBar || isBorderless;
 
         if (isCustomTitleBar)
         {
             EnableRoundedCorners();
         }
 
-        if (needsDpiAdjust || isCustomTitleBar)
+        if (needsDpiAdjust || needsFrameChanged)
         {
             if (needsDpiAdjust)
             {
@@ -2622,7 +2651,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             uint flags = SWP_NOZORDER | SWP_NOOWNERZORDER | SWP_NOACTIVATE;
-            if (isCustomTitleBar)
+            if (needsFrameChanged)
                 flags |= SWP_FRAMECHANGED;
             if (!needsDpiAdjust)
                 flags |= SWP_NOMOVE | SWP_NOSIZE;
@@ -3502,21 +3531,56 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return; // Win32 window styles not applicable on cross-platform
         }
 
+        // While in fullscreen we don't want to re-apply the user's chosen frame
+        // styles; they are re-applied on ExitFullScreen from the saved snapshot.
+        if (_isFullScreen)
+        {
+            return;
+        }
+
         long style = GetWindowLong(Handle, GWL_STYLE);
         long exStyle = GetWindowLong(Handle, GWL_EXSTYLE);
 
-        if (TitleBarStyle == WindowTitleBarStyle.Custom)
+        // Always clear the bits we manage so transitions between WindowStyle
+        // values drop the previously-applied frame cleanly.
+        const uint FrameMask = WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU;
+        style &= ~(long)FrameMask;
+
+        if (WindowStyle == WindowStyle.None)
+        {
+            // Borderless popup. Do NOT set WS_CAPTION — the OS must not draw
+            // a caption bar. Edge resize relies on WS_THICKFRAME when allowed.
+            if (ResizeMode == ResizeMode.CanResize || ResizeMode == ResizeMode.CanResizeWithGrip)
+            {
+                style |= WS_THICKFRAME;
+            }
+        }
+        else if (TitleBarStyle == WindowTitleBarStyle.Custom)
         {
             // Keep WS_CAPTION so the OS preserves native caption semantics
             // (Snap, system menu, NC button behavior). We remove the visual
             // caption in WM_NCCALCSIZE instead.
-            style |= WS_CAPTION;
+            style |= WS_CAPTION | WS_SYSMENU;
+            if (ResizeMode != ResizeMode.NoResize)
+            {
+                style |= WS_THICKFRAME;
+                style |= WS_MINIMIZEBOX;
+                if (ResizeMode != ResizeMode.CanMinimize)
+                    style |= WS_MAXIMIZEBOX;
+            }
             exStyle |= WS_EX_APPWINDOW;
             EnableRoundedCorners();
         }
         else
         {
-            style |= WS_CAPTION;
+            style |= WS_CAPTION | WS_SYSMENU;
+            if (ResizeMode != ResizeMode.NoResize)
+            {
+                style |= WS_THICKFRAME;
+                style |= WS_MINIMIZEBOX;
+                if (ResizeMode != ResizeMode.CanMinimize)
+                    style |= WS_MAXIMIZEBOX;
+            }
         }
 
         _ = SetWindowLong(Handle, GWL_STYLE, style);
@@ -3527,16 +3591,122 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOOWNERZORDER);
     }
 
-    private static uint GetWindowStyleForTitleBarStyle(WindowTitleBarStyle titleBarStyle)
+    /// <summary>
+    /// Enters fullscreen mode: saves current bounds/style, removes the frame,
+    /// and resizes the window to cover the containing monitor (including taskbar).
+    /// </summary>
+    private void EnterFullScreen()
     {
-        if (titleBarStyle == WindowTitleBarStyle.Custom)
+        if (_isFullScreen || Handle == nint.Zero || _platformWindow != null)
         {
-            // Keep the standard overlapped styles (including WS_CAPTION).
-            // Custom rendering still removes the visible caption via NCCALCSIZE.
-            return WS_OVERLAPPEDWINDOW;
+            return;
         }
 
-        return WS_OVERLAPPEDWINDOW;
+        // Snapshot current style + bounds so we can restore on exit.
+        _fullScreenSavedStyle = (uint)GetWindowLong(Handle, GWL_STYLE);
+        _fullScreenSavedExStyle = (uint)GetWindowLong(Handle, GWL_EXSTYLE);
+        if (!GetWindowRect(Handle, out _fullScreenSavedRect))
+        {
+            return;
+        }
+
+        var monitor = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
+        var mi = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(monitor, ref mi))
+        {
+            return;
+        }
+
+        _isFullScreen = true;
+
+        // Strip frame bits — leave WS_VISIBLE / WS_CLIPSIBLINGS / WS_CLIPCHILDREN untouched.
+        const uint FrameMask = WS_CAPTION | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU | WS_OVERLAPPEDWINDOW;
+        long newStyle = (long)_fullScreenSavedStyle & ~(long)FrameMask;
+        newStyle |= (long)WS_POPUP;
+        _ = SetWindowLong(Handle, GWL_STYLE, newStyle);
+
+        var rc = mi.rcMonitor;
+        _ = SetWindowPos(
+            Handle,
+            HWND_TOP,
+            rc.left,
+            rc.top,
+            rc.right - rc.left,
+            rc.bottom - rc.top,
+            SWP_FRAMECHANGED | SWP_NOOWNERZORDER);
+    }
+
+    /// <summary>
+    /// Exits fullscreen mode, restoring the style and bounds captured by
+    /// <see cref="EnterFullScreen"/>.
+    /// </summary>
+    private void ExitFullScreen()
+    {
+        if (!_isFullScreen || Handle == nint.Zero || _platformWindow != null)
+        {
+            return;
+        }
+
+        _isFullScreen = false;
+
+        _ = SetWindowLong(Handle, GWL_STYLE, _fullScreenSavedStyle);
+        _ = SetWindowLong(Handle, GWL_EXSTYLE, _fullScreenSavedExStyle);
+
+        var rc = _fullScreenSavedRect;
+        _ = SetWindowPos(
+            Handle,
+            nint.Zero,
+            rc.left,
+            rc.top,
+            rc.right - rc.left,
+            rc.bottom - rc.top,
+            SWP_FRAMECHANGED | SWP_NOZORDER | SWP_NOOWNERZORDER);
+    }
+
+    private static uint GetWindowStyleForTitleBarStyle(WindowTitleBarStyle titleBarStyle)
+    {
+        // Legacy helper retained for compatibility. Defers to the richer computation
+        // that considers WindowStyle/ResizeMode below.
+        return ComputeWin32WindowStyle(WindowStyle.SingleBorderWindow, ResizeMode.CanResize);
+    }
+
+    /// <summary>
+    /// Computes the Win32 WS_* style bits corresponding to the given
+    /// <paramref name="windowStyle"/> and <paramref name="resizeMode"/>.
+    /// For <see cref="WindowStyle.None"/> the result is a borderless popup
+    /// (no caption, no system menu, no min/max buttons). When resizing is
+    /// permitted, <c>WS_THICKFRAME</c> is included so the window can be
+    /// resized via its edges.
+    /// </summary>
+    private static uint ComputeWin32WindowStyle(WindowStyle windowStyle, ResizeMode resizeMode)
+    {
+        if (windowStyle == WindowStyle.None)
+        {
+            uint style = WS_POPUP;
+            if (resizeMode == ResizeMode.CanResize || resizeMode == ResizeMode.CanResizeWithGrip)
+            {
+                // WS_THICKFRAME lets the OS handle edge resize + Aero Snap.
+                style |= WS_THICKFRAME;
+            }
+            return style;
+        }
+
+        // Borders + caption + sys menu + optional min/max buttons.
+        uint baseStyle = WS_POPUP | WS_CAPTION | WS_SYSMENU;
+        switch (resizeMode)
+        {
+            case ResizeMode.NoResize:
+                break;
+            case ResizeMode.CanMinimize:
+                baseStyle |= WS_MINIMIZEBOX;
+                break;
+            case ResizeMode.CanResize:
+            case ResizeMode.CanResizeWithGrip:
+            default:
+                baseStyle |= WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX;
+                break;
+        }
+        return baseStyle;
     }
 
     private bool ShouldUseCompositionRenderTarget()
@@ -3813,8 +3983,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         if (d is Window window && e.NewValue is WindowState newState)
         {
+            var oldState = e.OldValue is WindowState os ? os : WindowState.Normal;
+
             // Capture restore bounds when leaving Normal state
-            if (e.OldValue is WindowState.Normal && newState != WindowState.Normal
+            if (oldState == WindowState.Normal && newState != WindowState.Normal
                 && window.Handle != nint.Zero)
             {
                 window.CaptureRestoreBounds();
@@ -3828,21 +4000,64 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 if (window._platformWindow != null)
                 {
-                    window._platformWindow.SetState(newState);
+                    // Cross-platform backend: fullscreen not yet supported — fall
+                    // back to maximized so the request still produces a reasonable
+                    // visual result.
+                    var mapped = newState == WindowState.FullScreen
+                        ? WindowState.Maximized
+                        : newState;
+                    window._platformWindow.SetState(mapped);
                 }
                 else
                 {
-                    var cmd = newState switch
+                    // Leaving fullscreen: restore pre-fullscreen frame + bounds first.
+                    if (oldState == WindowState.FullScreen && newState != WindowState.FullScreen)
                     {
-                        WindowState.Maximized => SW_MAXIMIZE,
-                        WindowState.Minimized => SW_MINIMIZE,
-                        _ => SW_RESTORE
-                    };
-                    _ = ShowWindow(window.Handle, cmd);
+                        window.ExitFullScreen();
+                    }
+
+                    if (newState == WindowState.FullScreen)
+                    {
+                        window._fullScreenPreviousState = oldState == WindowState.FullScreen
+                            ? WindowState.Normal
+                            : oldState;
+                        // Ensure the window is visible and in a restored state before
+                        // capturing bounds/style for fullscreen.
+                        if (oldState == WindowState.Minimized)
+                        {
+                            _ = ShowWindow(window.Handle, SW_RESTORE);
+                        }
+                        else if (oldState == WindowState.Maximized)
+                        {
+                            _ = ShowWindow(window.Handle, SW_RESTORE);
+                        }
+                        window.EnterFullScreen();
+                        _ = ShowWindow(window.Handle, SW_SHOW);
+                    }
+                    else
+                    {
+                        var cmd = newState switch
+                        {
+                            WindowState.Maximized => SW_MAXIMIZE,
+                            WindowState.Minimized => SW_MINIMIZE,
+                            _ => SW_RESTORE
+                        };
+                        _ = ShowWindow(window.Handle, cmd);
+                    }
                 }
             }
 
             window.OnStateChanged(EventArgs.Empty);
+        }
+    }
+
+    private static void OnWindowStyleChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Window window && window.Handle != nint.Zero)
+        {
+            window.UpdateWindowStyle();
+            window.ApplyTitleBarPresentation();
+            window.InvalidateMeasure();
         }
     }
 
@@ -4407,6 +4622,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     return nint.Zero;
 
                 case WM_NCCALCSIZE:
+                    // WindowStyle=None: swallow the entire non-client area so there's
+                    // no DWM-drawn frame strip (otherwise WS_THICKFRAME leaves a thin
+                    // white bar at the top on Win11). Edge resize is still available
+                    // via WM_NCHITTEST below.
+                    if (window.WindowStyle == WindowStyle.None)
+                    {
+                        if (wParam == nint.Zero)
+                        {
+                            return nint.Zero;
+                        }
+                        // Returning 0 with the rect unchanged tells Windows the entire
+                        // window rect is client area.
+                        return nint.Zero;
+                    }
                     // For custom title bar:
                     // 1) call DefWindowProc first to keep native NC contract intact
                     // 2) in normal state, use full original rect as client area
@@ -4459,6 +4688,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     break;
 
                 case WM_NCHITTEST:
+                    // WindowStyle=None (with a native title bar style): provide edge
+                    // resize hit-testing ourselves since DefWindowProc won't — the
+                    // frame area has been swallowed by WM_NCCALCSIZE.
+                    if (window.WindowStyle == WindowStyle.None
+                        && window.TitleBarStyle != WindowTitleBarStyle.Custom)
+                    {
+                        var hit = window.HandleNcHitTest(lParam);
+                        return hit == HTNOWHERE ? HTCLIENT : hit;
+                    }
                     if (window.TitleBarStyle == WindowTitleBarStyle.Custom)
                     {
                         var customHitResult = window.HandleNcHitTest(lParam);
@@ -4611,7 +4849,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                                 }
                                 break;
                             case SIZE_RESTORED:
-                                if (window.WindowState != WindowState.Normal)
+                                // While in fullscreen we intentionally resize to the
+                                // monitor bounds, which produces a SIZE_RESTORED
+                                // message. Do NOT drop the FullScreen state in that case.
+                                if (!window._isFullScreen && window.WindowState != WindowState.Normal)
                                 {
                                     window.WindowState = WindowState.Normal;
                                 }
@@ -4951,7 +5192,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         ? ReasonSessionEnding.Shutdown
                         : ReasonSessionEnding.Logoff;
                     var args = new SessionEndingCancelEventArgs(reason);
+                    // Window-level handler first, then application-level so either
+                    // can cancel the end-session request.
                     window.OnSessionEnding(args);
+                    Application.Current?.RaiseSessionEnding(args);
                     // Return 0 to prevent, non-zero to allow
                     return args.Cancel ? nint.Zero : 1;
                 }
@@ -7886,6 +8130,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private const uint SWP_NOACTIVATE = 0x0010;
     private static readonly nint HWND_TOPMOST = new(-1);
     private static readonly nint HWND_NOTOPMOST = new(-2);
+    private static readonly nint HWND_TOP = nint.Zero;
     private const int CW_USEDEFAULT = unchecked((int)0x80000000);
     private const int SW_SHOW = 5;
     private const int SW_SHOWNOACTIVATE = 8;
@@ -8535,7 +8780,11 @@ public enum WindowState
 {
     Normal,
     Minimized,
-    Maximized
+    Maximized,
+    /// <summary>
+    /// The window occupies the entire screen with no borders or title bar.
+    /// </summary>
+    FullScreen
 }
 
 /// <summary>

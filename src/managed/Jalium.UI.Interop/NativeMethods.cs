@@ -15,6 +15,20 @@ public enum RenderBackend
 }
 
 /// <summary>
+/// Rendering engine types. The engine determines how 2D vector graphics
+/// are rasterized, orthogonal to the GPU backend (D3D12/Vulkan/Metal).
+/// </summary>
+public enum RenderingEngine
+{
+    /// <summary>Automatic: defaults to Impeller on all platforms.</summary>
+    Auto = 0,
+    /// <summary>Vello: GPU compute pipeline with prefix-sum tiling.</summary>
+    Vello = 1,
+    /// <summary>Impeller: tessellation-based pipeline (Flutter-derived).</summary>
+    Impeller = 2
+}
+
+/// <summary>
 /// Text metrics structure returned by native text measurement.
 /// </summary>
 [StructLayout(LayoutKind.Sequential)]
@@ -172,6 +186,35 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_context_check_device_status")]
     internal static partial int ContextCheckDeviceStatus(nint context);
+
+    /// <summary>
+    /// Sets the default rendering engine for new render targets on this context.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_context_set_default_engine")]
+    internal static partial int ContextSetDefaultEngine(nint context, RenderingEngine engine);
+
+    /// <summary>
+    /// Gets the default rendering engine for a context.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_context_get_default_engine")]
+    internal static partial RenderingEngine ContextGetDefaultEngine(nint context);
+
+    #endregion
+
+    #region Rendering Engine (Hot-Switch)
+
+    /// <summary>
+    /// Gets the active rendering engine for a render target.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_get_engine")]
+    internal static partial RenderingEngine RenderTargetGetEngine(nint renderTarget);
+
+    /// <summary>
+    /// Sets the rendering engine for a render target (hot-switch).
+    /// Takes effect at the next BeginDraw().
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_engine")]
+    internal static partial int RenderTargetSetEngine(nint renderTarget, RenderingEngine engine);
 
     #endregion
 

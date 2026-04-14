@@ -16,17 +16,21 @@ set(JALIUM_STB_ROOT "${JALIUM_SDK_ROOT}/stb")
 
 set(HEADERS
     include/vulkan_backend.h
+    include/vulkan_impeller_engine.h
     include/vulkan_render_target.h
     include/vulkan_resources.h
     include/vulkan_runtime.h
+    include/vulkan_vello_engine.h
 )
 
 set(SOURCES
     src/vulkan_backend.cpp
+    src/vulkan_impeller_engine.cpp
     src/vulkan_init.cpp
     src/vulkan_render_target.cpp
     src/vulkan_resources.cpp
     src/vulkan_runtime.cpp
+    src/vulkan_vello_engine.cpp
 )
 
 add_library(${PROJECT_NAME} SHARED ${HEADERS} ${SOURCES})

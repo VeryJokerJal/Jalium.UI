@@ -185,6 +185,11 @@ public:
     // --- Triangle path fill (flat-shaded triangulated polygon) ---
     void AddTriangles(const TriangleVertex* vertices, uint32_t vertexCount);
 
+    /// Add pre-transformed triangles without applying the current transform or opacity.
+    /// Used by Impeller engine which produces vertices already in pixel-space with
+    /// opacity baked into vertex colors.
+    void AddTrianglesPreTransformed(const TriangleVertex* vertices, uint32_t vertexCount);
+
     // --- Punch transparent rect (copy blend, writes 0,0,0,0 directly) ---
     void PunchTransparentRect(float x, float y, float w, float h);
 
@@ -270,7 +275,10 @@ public:
 
     // --- State stacks ---
     void PushScissor(float x, float y, float w, float h);
+    void PushScissorRaw(const D3D12_RECT& rect) { scissorStack_.push(rect); }
     void PopScissor();
+    bool HasScissor() const { return !scissorStack_.empty(); }
+    D3D12_RECT GetCurrentScissor() const { return scissorStack_.empty() ? D3D12_RECT{0,0,0,0} : scissorStack_.top(); }
     void SetOpacity(float opacity) { currentOpacity_ = opacity; }
     float GetOpacity() const { return currentOpacity_; }
     void SetShapeType(float type, float n) { currentShapeType_ = type; currentShapeN_ = n; }
@@ -285,6 +293,9 @@ public:
     // --- DPI ---
     void SetDpiScale(float dpiScale);
     float GetDpiScale() const { return dpiScale_; }
+
+    // --- Format ---
+    DXGI_FORMAT GetSwapChainFormat() const { return swapChainFormat_; }
 
     // --- Queries ---
     bool IsInitialized() const { return initialized_; }
@@ -306,10 +317,11 @@ public:
     void FlushGraphicsForCompute();
 
     // --- Vello GPU path renderer ---
-    D3D12VelloRenderer* GetVelloRenderer() const { return velloRenderer_.get(); }
+    D3D12VelloRenderer* GetVelloRenderer() const { return velloEnabled_ ? velloRenderer_.get() : nullptr; }
     bool HasVelloPaths() const;
     void FlushVelloPaths();
     void ApplyScissorToVello();
+    void SetVelloEnabled(bool enabled) { velloEnabled_ = enabled; }
 
 private:
     bool CreatePSOs();
@@ -451,6 +463,7 @@ private:
 
     // Vello GPU path renderer
     std::unique_ptr<D3D12VelloRenderer> velloRenderer_;
+    bool velloEnabled_ = true;
 
     // Swap chain format (queried at init, used for PSO creation)
     DXGI_FORMAT swapChainFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;

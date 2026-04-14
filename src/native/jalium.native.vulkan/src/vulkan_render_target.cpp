@@ -1,4 +1,5 @@
 #include "vulkan_render_target.h"
+#include "jalium_internal.h"
 
 #include "vulkan_backend.h"
 #include "vulkan_embedded_shaders.h"
@@ -733,6 +734,9 @@ VulkanRenderTarget::VulkanRenderTarget(
 {
     width_ = width;
     height_ = height;
+    // Default engine: Auto → Impeller on Vulkan
+    activeEngine_ = ResolveRenderingEngine(JALIUM_ENGINE_AUTO, JALIUM_BACKEND_VULKAN);
+    pendingEngine_ = activeEngine_;
     transformStack_.push_back(CpuTransform {});
     opacityStack_.push_back(1.0f);
     ResizeCpuCanvas();
@@ -768,6 +772,11 @@ JaliumResult VulkanRenderTarget::BeginDraw()
 {
     if (isDrawing_) {
         return JALIUM_ERROR_INVALID_STATE;
+    }
+
+    // Apply pending engine switch at frame boundary
+    if (pendingEngine_ != activeEngine_) {
+        activeEngine_ = pendingEngine_;
     }
 
     isDrawing_ = true;
@@ -6091,6 +6100,29 @@ void VulkanRenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush*
 void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule)
 {
     TouchFrame();
+
+    // Route through Impeller engine when active
+    if (IsImpellerActive() && impellerEngine_ && points && pointCount >= 3) {
+        uint8_t br = 0, bg = 0, bb = 0, ba = 0;
+        if (TryGetSolidBrushColor(brush, bb, bg, br, ba)) {
+            auto t = GetCurrentTransform();
+            float opacity = GetCurrentOpacity();
+
+            EngineBrushData bd;
+            bd.type = 0;
+            bd.r = br / 255.0f; bd.g = bg / 255.0f; bd.b = bb / 255.0f; bd.a = (ba / 255.0f) * opacity;
+
+            EngineTransform et;
+            et.m11 = t.m11; et.m12 = t.m12;
+            et.m21 = t.m21; et.m22 = t.m22;
+            et.dx = t.dx; et.dy = t.dy;
+
+            FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+            if (impellerEngine_->EncodeFillPolygon(points, pointCount, bd, fr, et))
+                return;
+        }
+    }
+
     if (points && pointCount >= 3) {
         std::vector<float> localPoints;
         localPoints.reserve(pointCount * 2);
@@ -6171,6 +6203,29 @@ void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, B
 void VulkanRenderTarget::FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule)
 {
     TouchFrame();
+
+    // Route through Impeller engine when active
+    if (IsImpellerActive() && impellerEngine_) {
+        uint8_t br = 0, bg = 0, bb = 0, ba = 0;
+        if (TryGetSolidBrushColor(brush, bb, bg, br, ba)) {
+            auto t = GetCurrentTransform();
+            float opacity = GetCurrentOpacity();
+
+            EngineBrushData bd;
+            bd.type = 0;
+            bd.r = br / 255.0f; bd.g = bg / 255.0f; bd.b = bb / 255.0f; bd.a = (ba / 255.0f) * opacity;
+
+            EngineTransform et;
+            et.m11 = t.m11; et.m12 = t.m12;
+            et.m21 = t.m21; et.m22 = t.m22;
+            et.dx = t.dx; et.dy = t.dy;
+
+            FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+            if (impellerEngine_->EncodeFillPath(startX, startY, commands, commandLength, bd, fr, et))
+                return;
+        }
+    }
+
     std::vector<float> localPoints;
     localPoints.reserve(commandLength * 2);
 
@@ -6261,7 +6316,17 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
             currentX = endX;
             currentY = endY;
         } else if (tag == 5) {
-            // ClosePath — no-op for fill
+            // ClosePath: add line back to the sub-path start if not already there
+            float firstX = localPoints[0], firstY = localPoints[1];
+            if (std::abs(currentX - firstX) > 1e-4f || std::abs(currentY - firstY) > 1e-4f) {
+                currentX = firstX;
+                currentY = firstY;
+                localPoints.push_back(currentX);
+                localPoints.push_back(currentY);
+                ApplyTransform(transform, currentX, currentY, worldX, worldY);
+                points.push_back(worldX);
+                points.push_back(worldY);
+            }
         } else {
             break;
         }
@@ -6277,6 +6342,30 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
 void VulkanRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount, float dashOffset)
 {
     TouchFrame();
+
+    // Route through Impeller engine when active
+    if (IsImpellerActive() && impellerEngine_) {
+        uint8_t br = 0, bg = 0, bb = 0, ba = 0;
+        if (TryGetSolidBrushColor(brush, bb, bg, br, ba)) {
+            auto t = GetCurrentTransform();
+            float opacity = GetCurrentOpacity();
+
+            EngineBrushData bd;
+            bd.type = 0;
+            bd.r = br / 255.0f; bd.g = bg / 255.0f; bd.b = bb / 255.0f; bd.a = (ba / 255.0f) * opacity;
+
+            EngineTransform et;
+            et.m11 = t.m11; et.m12 = t.m12;
+            et.m21 = t.m21; et.m22 = t.m22;
+            et.dx = t.dx; et.dy = t.dy;
+
+            if (impellerEngine_->EncodeStrokePath(startX, startY, commands, commandLength,
+                    bd, strokeWidth, closed, lineJoin, miterLimit, lineCap,
+                    dashPattern, dashCount, dashOffset, et))
+                return;
+        }
+    }
+
     std::vector<float> localPoints;
     localPoints.reserve(commandLength * 2);
 

@@ -2,6 +2,9 @@
 
 #include "jalium_backend.h"
 #include "jalium_types.h"
+#include "jalium_rendering_engine.h"
+#include "vulkan_impeller_engine.h"
+#include "vulkan_vello_engine.h"
 
 #include <memory>
 #include <vector>
@@ -71,7 +74,24 @@ public:
         const float* constants, uint32_t constantFloatCount) override;
     void DrawLiquidGlass(float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost, int shapeType, float shapeExponent, int neighborCount, float fusionRadius, const float* neighborData) override;
 
+    /// Override: set rendering engine with hot-switch support.
+    JaliumResult SetRenderingEngine(JaliumRenderingEngine engine) override {
+        JaliumRenderingEngine resolved = ResolveRenderingEngine(engine, JALIUM_BACKEND_VULKAN);
+        pendingEngine_ = resolved;
+        if (!isDrawing_) {
+            activeEngine_ = resolved;
+        }
+        return JALIUM_OK;
+    }
+
+    /// Returns true if the active engine is Impeller.
+    bool IsImpellerActive() const { return activeEngine_ == JALIUM_ENGINE_IMPELLER; }
+
 private:
+    // Rendering engines (lazy-initialized)
+    std::unique_ptr<ImpellerVulkanEngine> impellerEngine_;
+    std::unique_ptr<VelloVulkanEngine> velloEngine_;
+
     struct CpuTransform {
         float m11 = 1.0f;
         float m12 = 0.0f;

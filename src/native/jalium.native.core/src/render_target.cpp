@@ -55,6 +55,12 @@ JaliumRenderTarget* CreateRenderTargetCore(
         return nullptr;
     }
 
+    // Apply the context's default rendering engine to the newly created render target.
+    // This ensures that engine set via jalium_context_set_default_engine() or
+    // RenderContext.DefaultRenderingEngine propagates to all new render targets.
+    auto defaultEngine = context->GetDefaultEngine();
+    rt->SetRenderingEngine(defaultEngine);
+
     context->SetLastError(JALIUM_OK);
     return reinterpret_cast<JaliumRenderTarget*>(rt);
 }

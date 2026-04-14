@@ -79,73 +79,52 @@
             <ControlTemplate TargetType="TitleBarButton">
                 <Border Name="PART_RootBorder"
                         Background="{TemplateBinding Background}">
-                    <Grid Width="10" Height="10" HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <!-- Minimize Glyph (horizontal line at center) -->
-                        <Path Name="MinimizeGlyph"
-                              Data="M 0,5 L 10,5"
-                              Stroke="{TemplateBinding Foreground}"
-                              StrokeThickness="1"
-                              Stretch="None"
-                              Visibility="Collapsed" />
+                    <!--
+                      Single 16×16 filled Path, Data swapped per Kind.
+                      All four icon paths use the Fluent/Segoe MDL2
+                      convention: the "outline" is baked into the
+                      filled shape itself as a thin 1-unit-wide filled
+                      rectangle, which avoids the Stroke-centerline
+                      half-pixel problem entirely — the geometry is
+                      just filled pixels at integer coordinates.
 
-                        <!-- Maximize Glyph (square) -->
-                        <Path Name="MaximizeGlyph"
-                              Data="M 0,0 L 10,0 L 10,10 L 0,10 Z"
-                              Stroke="{TemplateBinding Foreground}"
-                              StrokeThickness="1"
-                              Stretch="None"
-                              Visibility="Collapsed" />
-
-                        <!-- Restore Glyph (two overlapping squares) -->
-                        <Grid Name="RestoreGlyph" Width="10" Height="10" Visibility="Collapsed">
-                            <!-- Back square (top-right, L-shape outline) -->
-                            <Path Data="M 2,0 L 10,0 L 10,8 L 8,8 L 8,2 L 2,2 Z"
-                                  Stroke="{TemplateBinding Foreground}"
-                                  StrokeThickness="1"
-                                  Stretch="None" />
-                            <!-- Front square (bottom-left) -->
-                            <Path Data="M 0,2 L 8,2 L 8,10 L 0,10 Z"
-                                  Stroke="{TemplateBinding Foreground}"
-                                  StrokeThickness="1"
-                                  Stretch="None"
-                                  Fill="{TemplateBinding Background}" />
-                        </Grid>
-
-                        <!-- Close Glyph (X shape) -->
-                        <Path Name="CloseGlyph"
-                              Data="M 0,0 L 10,10 M 10,0 L 0,10"
-                              Stroke="{TemplateBinding Foreground}"
-                              StrokeThickness="1"
-                              Stretch="None"
-                              Visibility="Visible" />
+                      Pixel-alignment chain (must be integer at parent
+                      level so the integer coordinates inside the path
+                      stay integer in device space):
+                        TitleBarButton 46×32
+                          ↓ centered Grid 16×16
+                            (46−16)/2 = 15 ✓
+                            (32−16)/2 =  8 ✓
+                        Grid local (0,0) → button (15, 8)
+                          ↓ path e.g. minimize rect (3,8)-(14,9)
+                        Absolute filled rect (18,16)-(29,17)
+                          → row 16 fully covered, crisp 1px bar.
+                    -->
+                    <Grid Width="16" Height="16" HorizontalAlignment="Center" VerticalAlignment="Center">
+                        <Path Name="path"
+                              Width="16" Height="16"
+                              Fill="{TemplateBinding Foreground}"
+                              Stretch="None" />
                     </Grid>
                 </Border>
 
                 <ControlTemplate.Triggers>
-                    <!-- Show correct glyph based on Kind -->
+                    <!-- Swap the single Path's Data based on button Kind.
+                         All data strings are 16×16 filled Fluent-style
+                         glyphs: the stroke is baked into the fill as a
+                         thin 1-unit-wide rectangle, so no Stroke centerline
+                         half-pixel offsets are needed. -->
                     <PropertyTrigger Property="Kind" Value="Minimize">
-                        <Setter TargetName="MinimizeGlyph" Property="Visibility" Value="Visible" />
-                        <Setter TargetName="MaximizeGlyph" Property="Visibility" Value="Collapsed" />
-                        <Setter TargetName="RestoreGlyph" Property="Visibility" Value="Collapsed" />
-                        <Setter TargetName="CloseGlyph" Property="Visibility" Value="Collapsed" />
+                        <Setter TargetName="path" Property="Data" Value="M14 8v1H3V8h11z" />
                     </PropertyTrigger>
                     <PropertyTrigger Property="Kind" Value="Maximize">
-                        <Setter TargetName="MinimizeGlyph" Property="Visibility" Value="Collapsed" />
-                        <Setter TargetName="MaximizeGlyph" Property="Visibility" Value="Visible" />
-                        <Setter TargetName="RestoreGlyph" Property="Visibility" Value="Collapsed" />
-                        <Setter TargetName="CloseGlyph" Property="Visibility" Value="Collapsed" />
+                        <Setter TargetName="path" Property="Data" Value="M3 3v10h10V3H3zm9 9H4V4h8v8z" />
                     </PropertyTrigger>
                     <PropertyTrigger Property="Kind" Value="Restore">
-                        <Setter TargetName="MinimizeGlyph" Property="Visibility" Value="Collapsed" />
-                        <Setter TargetName="MaximizeGlyph" Property="Visibility" Value="Collapsed" />
-                        <Setter TargetName="RestoreGlyph" Property="Visibility" Value="Visible" />
-                        <Setter TargetName="CloseGlyph" Property="Visibility" Value="Collapsed" />
+                        <Setter TargetName="path" Property="Data" Value="M3 5v9h9V5H3zm8 8H4V6h7v7z M5 5h1V4h7v7h-1v1h2V3H5v2z" />
                     </PropertyTrigger>
                     <PropertyTrigger Property="Kind" Value="Close">
-                        <Setter TargetName="MinimizeGlyph" Property="Visibility" Value="Collapsed" />
-                        <Setter TargetName="MaximizeGlyph" Property="Visibility" Value="Collapsed" />
-                        <Setter TargetName="RestoreGlyph" Property="Visibility" Value="Collapsed" />
-                        <Setter TargetName="CloseGlyph" Property="Visibility" Value="Visible" />
+                        <Setter TargetName="path" Property="Data" Value="M7.116 8l-4.558 4.558.884.884L8 8.884l4.558 4.558.884-.884L8.884 8l4.558-4.558-.884-.884L8 7.116 3.442 2.558l-.884.884L7.116 8z" />
                     </PropertyTrigger>
 
                     <!-- Hover state for non-close buttons -->

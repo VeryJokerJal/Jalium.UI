@@ -106,4 +106,31 @@ JALIUM_API JaliumResult jalium_context_get_adapter_info(JaliumContext* ctx, Jali
     return JALIUM_ERROR_NOT_SUPPORTED;
 }
 
+JALIUM_API JaliumRenderingEngine jalium_render_target_get_engine(JaliumRenderTarget* rt) {
+    if (!rt) return JALIUM_ENGINE_AUTO;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->GetRenderingEngine();
+}
+
+JALIUM_API JaliumResult jalium_render_target_set_engine(
+    JaliumRenderTarget* rt,
+    JaliumRenderingEngine engine)
+{
+    if (!rt) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->SetRenderingEngine(engine);
+}
+
+JALIUM_API JaliumResult jalium_context_set_default_engine(
+    JaliumContext* ctx,
+    JaliumRenderingEngine engine)
+{
+    if (!ctx) return JALIUM_ERROR_INVALID_ARGUMENT;
+    reinterpret_cast<jalium::Context*>(ctx)->SetDefaultEngine(engine);
+    return JALIUM_OK;
+}
+
+JALIUM_API JaliumRenderingEngine jalium_context_get_default_engine(JaliumContext* ctx) {
+    if (!ctx) return JALIUM_ENGINE_AUTO;
+    return reinterpret_cast<jalium::Context*>(ctx)->GetDefaultEngine();
+}
+
 } // extern "C"

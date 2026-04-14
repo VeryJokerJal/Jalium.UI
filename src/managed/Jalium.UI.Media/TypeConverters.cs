@@ -18,10 +18,15 @@ public sealed class ImageSourceConverter : TypeConverter
     {
         if (value is string path)
         {
+            if (SvgImage.IsSvgFile(path))
+                return new SvgImage(new Uri(path, UriKind.RelativeOrAbsolute));
             return new BitmapImage(new Uri(path, UriKind.RelativeOrAbsolute));
         }
         if (value is Uri uri)
         {
+            var uriStr = uri.IsAbsoluteUri ? uri.AbsolutePath : uri.OriginalString;
+            if (SvgImage.IsSvgFile(uriStr))
+                return new SvgImage(uri);
             return new BitmapImage(uri);
         }
         return base.ConvertFrom(context, culture, value);
@@ -258,6 +263,8 @@ public sealed class ImageSourceValueSerializer : ValueSerializer
     /// <inheritdoc />
     public override bool CanConvertToString(object value, IValueSerializerContext? context)
     {
+        if (value is SvgImage svgImage)
+            return svgImage.UriSource != null;
         if (value is BitmapImage bitmapImage)
             return bitmapImage.UriSource != null;
 
@@ -270,6 +277,8 @@ public sealed class ImageSourceValueSerializer : ValueSerializer
     /// <inheritdoc />
     public override string ConvertToString(object value, IValueSerializerContext? context)
     {
+        if (value is SvgImage svgImage && svgImage.UriSource != null)
+            return svgImage.UriSource.OriginalString;
         if (value is BitmapImage bitmapImage && bitmapImage.UriSource != null)
             return bitmapImage.UriSource.OriginalString;
 
@@ -279,6 +288,8 @@ public sealed class ImageSourceValueSerializer : ValueSerializer
     /// <inheritdoc />
     public override object ConvertFromString(string value, IValueSerializerContext? context)
     {
+        if (SvgImage.IsSvgFile(value))
+            return new SvgImage(new Uri(value, UriKind.RelativeOrAbsolute));
         return new BitmapImage(new Uri(value, UriKind.RelativeOrAbsolute));
     }
 }

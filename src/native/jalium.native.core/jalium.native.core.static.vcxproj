@@ -80,6 +80,8 @@
     <ClInclude Include="include\jalium_types.h" />
     <ClInclude Include="include\jalium_backend.h" />
     <ClInclude Include="include\jalium_internal.h" />
+    <ClInclude Include="include\jalium_rendering_engine.h" />
+    <ClInclude Include="include\jalium_triangulate.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\context.cpp" />

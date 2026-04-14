@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Diagnostics;
 using System.Linq;
 using Jalium.UI;
 using Jalium.UI.Media;
@@ -50,6 +51,34 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     private float[]? _ellipseBatchBuffer;
     private int _ellipseBatchCount;
     private bool _isEllipseBatching;
+
+    // ─── SVG / Vector Drawing Performance Diagnostics ───
+    private Stopwatch? _svgDiagStopwatch;
+    private int _svgDrawGeometryCount;
+    private int _svgDrawPathNativeCount;
+    private int _svgDrawPathPolygonCount;
+    private int _svgDrawCompoundCount;
+    private int _svgPushTransformCount;
+    private int _svgPopCount;
+    private long _svgGetBrushTicks;
+    private long _svgPathBuildTicks;
+    private long _svgNativeCallTicks;
+    private long _svgBoundsCalcTicks;
+    private bool _svgDiagActive;
+    private static int s_svgFrameNumber;
+
+    // ─── SVG Rasterization Cache ───
+    // Caches the rasterized BitmapImage for vector drawings to avoid
+    // re-tessellating hundreds of paths every frame.
+    // Uses BitmapImage (not NativeBitmap directly) so that the existing
+    // GetNativeBitmap / _bitmapCache pipeline handles D3D12 resource lifecycle.
+    private sealed class VectorDrawingCacheEntry
+    {
+        public BitmapImage? RasterizedBitmap;
+        public int PixelWidth;
+        public int PixelHeight;
+    }
+    private readonly Dictionary<ImageSource, VectorDrawingCacheEntry> _vectorDrawingCache = new();
 
     /// <summary>
     /// Gets the underlying render target.
@@ -468,6 +497,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed || geometry == null) return;
 
+        if (_svgDiagActive)
+            _svgDrawGeometryCount++;
+
         // Apply Geometry.Transform if set
         var geometryTransform = geometry.Transform;
         bool pushedTransform = false;
@@ -594,7 +626,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             pen.EndLineCap != PenLineCap.Flat);
 
         // Compute geometry bounds once for gradient brush coordinate mapping.
+        long boundsTickStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
         var geoBounds = pathGeom.Bounds;
+        if (_svgDiagActive)
+            _svgBoundsCalcTicks += Stopwatch.GetTimestamp() - boundsTickStart;
 
         // For fill: use compound path rendering when there are multiple figures
         // (enables proper hole/fill rule handling in the native triangulator)
@@ -674,6 +709,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// </summary>
     private void DrawCompoundPathFill(Brush brush, List<PathFigure> figures, FillRule fillRule, Rect geoBounds)
     {
+        if (_svgDiagActive)
+            _svgDrawCompoundCount++;
+
         _pathCommandBuffer ??= new List<float>(256);
         _pathCommandBuffer.Clear();
         var cmds = _pathCommandBuffer;
@@ -1149,7 +1187,12 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     private void DrawPathFigureNative(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds)
     {
+        if (_svgDiagActive)
+            _svgDrawPathNativeCount++;
+
         // Build command buffer: tag 0 = LineTo [0,x,y], tag 1 = BezierTo [1,cp1x,cp1y,cp2x,cp2y,ex,ey]
+        long pathBuildStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
+
         _pathCommandBuffer ??= new List<float>(128);
         _pathCommandBuffer.Clear();
         var cmds = _pathCommandBuffer;
@@ -1166,19 +1209,33 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         float bw = (float)geoBounds.Width, bh = (float)geoBounds.Height;
         var cmdArray = cmds.ToArray();
 
+        if (_svgDiagActive)
+            _svgPathBuildTicks += Stopwatch.GetTimestamp() - pathBuildStart;
+
         if (brush != null && figure.IsFilled)
         {
+            long brushStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
             var nativeBrush = GetNativeBrush(brush, bx, by, bw, bh);
+            if (_svgDiagActive)
+                _svgGetBrushTicks += Stopwatch.GetTimestamp() - brushStart;
+
             if (nativeBrush != null)
             {
                 int rule = fillRule == FillRule.Nonzero ? 1 : 0;
+                long nativeStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
                 _renderTarget.FillPath(startX, startY, cmdArray, nativeBrush, rule);
+                if (_svgDiagActive)
+                    _svgNativeCallTicks += Stopwatch.GetTimestamp() - nativeStart;
             }
         }
 
         if (pen?.Brush != null)
         {
+            long brushStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
             var strokeBrush = GetNativeBrush(pen.Brush, bx, by, bw, bh);
+            if (_svgDiagActive)
+                _svgGetBrushTicks += Stopwatch.GetTimestamp() - brushStart;
+
             if (strokeBrush != null)
             {
                 int nativeLineCap = pen.StartLineCap switch
@@ -1197,7 +1254,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                         dashArray[di] = (float)(dashes[di] * pen.Thickness);
                     dashOff = (float)(pen.DashStyle.Offset * pen.Thickness);
                 }
+                long nativeStart = _svgDiagActive ? Stopwatch.GetTimestamp() : 0;
                 _renderTarget.StrokePath(startX, startY, cmdArray, strokeBrush, (float)pen.Thickness, figure.IsClosed, (int)pen.LineJoin, (float)pen.MiterLimit, nativeLineCap, dashArray, dashOff);
+                if (_svgDiagActive)
+                    _svgNativeCallTicks += Stopwatch.GetTimestamp() - nativeStart;
             }
         }
     }
@@ -1210,6 +1270,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     private void DrawPathFigurePolygon(Brush? brush, Pen? pen, PathFigure figure, FillRule fillRule, Rect geoBounds)
     {
+        if (_svgDiagActive)
+            _svgDrawPathPolygonCount++;
+
         _polygonPointBuffer ??= new List<Point>(64);
         _polygonPointBuffer.Clear();
         var points = _polygonPointBuffer;
@@ -1512,6 +1575,118 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed || imageSource == null) return;
 
+        // Handle vector image sources by rendering the Drawing tree directly
+        Drawing? vectorDrawing = imageSource switch
+        {
+            SvgImage svg => svg.Drawing,
+            DrawingImage di => di.Drawing,
+            _ => null
+        };
+        if (vectorDrawing != null)
+        {
+            var drawing = vectorDrawing;
+            var bounds = drawing.Bounds;
+            if (bounds.IsEmpty || bounds.Width <= 0 || bounds.Height <= 0) return;
+
+            // Target pixel size for cache key (round to int to avoid sub-pixel churn)
+            var targetW = (int)Math.Ceiling(rectangle.Width);
+            var targetH = (int)Math.Ceiling(rectangle.Height);
+            if (targetW <= 0 || targetH <= 0) return;
+
+            // ── Check cache: reuse rasterized BitmapImage if size matches ──
+            if (_vectorDrawingCache.TryGetValue(imageSource, out var cached) &&
+                cached.RasterizedBitmap != null &&
+                cached.PixelWidth == targetW && cached.PixelHeight == targetH)
+            {
+                // Cache hit — draw via the standard bitmap pipeline (< 0.1ms)
+                var cachedNative = GetNativeBitmap(cached.RasterizedBitmap);
+                if (cachedNative != null)
+                {
+                    var cx = (float)Math.Round(rectangle.X + Offset.X);
+                    var cy = (float)Math.Round(rectangle.Y + Offset.Y);
+                    _renderTarget.DrawBitmap(cachedNative, cx, cy, (float)rectangle.Width, (float)rectangle.Height, 1.0f);
+
+                    var frameNum2 = System.Threading.Interlocked.Increment(ref s_svgFrameNumber);
+                    if (frameNum2 <= 5 || frameNum2 % 300 == 0)
+                        System.Diagnostics.Debug.WriteLine($"[SVG Perf] Frame #{frameNum2} | CACHE HIT | {targetW}x{targetH}");
+                    return;
+                }
+            }
+
+            // ── Cache miss: rasterize SVG to BGRA pixel buffer ──
+            _svgDiagStopwatch ??= new Stopwatch();
+            _svgDiagStopwatch.Restart();
+            _svgDiagActive = true;
+            _svgDrawGeometryCount = 0;
+            _svgDrawPathNativeCount = 0;
+            _svgDrawPathPolygonCount = 0;
+            _svgDrawCompoundCount = 0;
+            _svgPushTransformCount = 0;
+            _svgPopCount = 0;
+            _svgGetBrushTicks = 0;
+            _svgPathBuildTicks = 0;
+            _svgNativeCallTicks = 0;
+            _svgBoundsCalcTicks = 0;
+
+            // Rasterize via CPU software renderer into a BGRA pixel buffer
+            var pixels = SoftwareVectorRasterizer.Rasterize(drawing, targetW, targetH);
+            BitmapImage? rasterized = null;
+            if (pixels != null)
+            {
+                rasterized = BitmapImage.FromPixels(pixels, targetW, targetH, targetW * 4);
+            }
+
+            if (rasterized != null)
+            {
+                // Cache the BitmapImage — D3D12 resource lifecycle is managed by
+                // the existing GetNativeBitmap / _bitmapCache pipeline.
+                _vectorDrawingCache[imageSource] = new VectorDrawingCacheEntry
+                {
+                    RasterizedBitmap = rasterized,
+                    PixelWidth = targetW,
+                    PixelHeight = targetH
+                };
+
+                // Draw via standard bitmap pipeline
+                var nativeBmp = GetNativeBitmap(rasterized);
+                if (nativeBmp != null)
+                {
+                    var cx = (float)Math.Round(rectangle.X + Offset.X);
+                    var cy = (float)Math.Round(rectangle.Y + Offset.Y);
+                    _renderTarget.DrawBitmap(nativeBmp, cx, cy, (float)rectangle.Width, (float)rectangle.Height, 1.0f);
+                }
+            }
+            else
+            {
+                // Fallback: direct rendering (slow path)
+                var scaleX = rectangle.Width / bounds.Width;
+                var scaleY = rectangle.Height / bounds.Height;
+
+                var transform = new TransformGroup();
+                transform.Add(new TranslateTransform { X = -bounds.X, Y = -bounds.Y });
+                transform.Add(new ScaleTransform { ScaleX = scaleX, ScaleY = scaleY });
+                transform.Add(new TranslateTransform { X = rectangle.X, Y = rectangle.Y });
+
+                PushTransform(transform);
+                drawing.RenderTo(this);
+                Pop();
+            }
+
+            _svgDiagStopwatch.Stop();
+            _svgDiagActive = false;
+            var totalMs = _svgDiagStopwatch.Elapsed.TotalMilliseconds;
+
+            var frameNum = System.Threading.Interlocked.Increment(ref s_svgFrameNumber);
+            if (frameNum <= 10 || frameNum % 60 == 0)
+            {
+                System.Diagnostics.Debug.WriteLine(
+                    $"[SVG Perf] Frame #{frameNum} | RASTERIZE | Total: {totalMs:F2}ms | " +
+                    $"Size: {targetW}x{targetH} | " +
+                    $"Cached: {(rasterized != null ? "yes" : "fallback")}");
+            }
+            return;
+        }
+
         var bitmap = GetNativeBitmap(imageSource);
         if (bitmap == null) return;
 
@@ -1734,6 +1909,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
+        if (_svgDiagActive)
+            _svgPushTransformCount++;
+
         if (transform is TranslateTransform translate)
         {
             // Translation: handled via managed Offset (existing fast path)
@@ -1933,6 +2111,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     public override void Pop()
     {
         if (_closed || _stateStack.Count == 0) return;
+
+        if (_svgDiagActive)
+            _svgPopCount++;
 
         var state = _stateStack.Pop();
         switch (state.Type)

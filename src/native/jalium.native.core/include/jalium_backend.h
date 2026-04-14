@@ -544,10 +544,30 @@ public:
         float fusionRadius = 30.0f,
         const float* neighborData = nullptr) {}
 
+    // ========================================================================
+    // Rendering Engine Selection (Hot-Switch)
+    // ========================================================================
+
+    /// Gets the active rendering engine for this render target.
+    virtual JaliumRenderingEngine GetRenderingEngine() const { return activeEngine_; }
+
+    /// Sets the rendering engine (hot-switch).  Takes effect at the next BeginDraw().
+    /// Returns JALIUM_OK on success, JALIUM_ERROR_NOT_SUPPORTED if the engine is
+    /// not available for this backend.
+    virtual JaliumResult SetRenderingEngine(JaliumRenderingEngine engine) {
+        pendingEngine_ = engine;
+        // Subclasses override to resolve Auto and apply immediately when not drawing.
+        // Base implementation always applies immediately (no isDrawing_ tracking here).
+        activeEngine_ = engine;
+        return JALIUM_OK;
+    }
+
 protected:
     int32_t width_ = 0;
     int32_t height_ = 0;
     bool vsyncEnabled_ = true;
+    JaliumRenderingEngine activeEngine_ = JALIUM_ENGINE_AUTO;
+    JaliumRenderingEngine pendingEngine_ = JALIUM_ENGINE_AUTO;
 };
 
 /// Abstract base class for brushes.

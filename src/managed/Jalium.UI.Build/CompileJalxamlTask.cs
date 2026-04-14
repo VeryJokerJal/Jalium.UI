@@ -145,8 +145,15 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
         // 输入文件
         args.Append($"\"{sourcePath}\"");
 
-        // 执行编译器
+        // 执行编译器（如目标文件被短暂锁定则重试）
         var exitCode = RunCompiler(args.ToString(), out var output, out var error);
+        for (var attempt = 0;
+             attempt < 10 && exitCode != 0 && IsTransientFileLockError(error, output, outputPath);
+             attempt++)
+        {
+            System.Threading.Thread.Sleep(150);
+            exitCode = RunCompiler(args.ToString(), out output, out error);
+        }
 
         if (exitCode != 0)
         {
@@ -173,9 +180,11 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
         {
             if (File.Exists(outputPath))
             {
-                var binaryData = File.ReadAllBytes(outputPath);
+                // 子进程 jalxamlc.exe 退出后，Windows 可能仍短暂持有文件句柄
+                // （杀毒软件/Search 索引/NTFS 缓存），这里做短时间重试避免 IOException
+                var binaryData = ReadAllBytesWithRetry(outputPath);
                 var base64Content = Convert.ToBase64String(binaryData);
-                File.WriteAllText(base64Path, base64Content);
+                WriteAllTextWithRetry(base64Path, base64Content);
                 Log.LogMessage(MessageImportance.Low, "已生成 Base64: {0}", base64Path);
             }
         }
@@ -231,6 +240,71 @@ public sealed class CompileJalxamlTask : Microsoft.Build.Utilities.Task
         process.WaitForExit();
 
         return process.ExitCode;
+    }
+
+    private static bool IsTransientFileLockError(string? error, string? output, string targetPath)
+    {
+        var combined = (error ?? string.Empty) + "\n" + (output ?? string.Empty);
+        if (combined.Length == 0) return false;
+        // 英文 + 常见本地化：文件被另一进程占用
+        if (combined.IndexOf("being used by another process", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        if (combined.IndexOf("另一个进程正在使用", StringComparison.Ordinal) >= 0) return true;
+        if (combined.IndexOf("being used by another", StringComparison.OrdinalIgnoreCase) >= 0) return true;
+        // 兜底：错误文本包含了目标 .uic 路径且提到 access/锁定/sharing violation
+        var fileName = Path.GetFileName(targetPath);
+        if (combined.IndexOf(fileName, StringComparison.OrdinalIgnoreCase) >= 0 &&
+            (combined.IndexOf("sharing violation", StringComparison.OrdinalIgnoreCase) >= 0 ||
+             combined.IndexOf("cannot access", StringComparison.OrdinalIgnoreCase) >= 0))
+        {
+            return true;
+        }
+        return false;
+    }
+
+    private static byte[] ReadAllBytesWithRetry(string path, int maxAttempts = 10, int delayMs = 100)
+    {
+        IOException? last = null;
+        for (var i = 0; i < maxAttempts; i++)
+        {
+            try
+            {
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                var buffer = new byte[fs.Length];
+                var read = 0;
+                while (read < buffer.Length)
+                {
+                    var n = fs.Read(buffer, read, buffer.Length - read);
+                    if (n == 0) break;
+                    read += n;
+                }
+                return buffer;
+            }
+            catch (IOException ex)
+            {
+                last = ex;
+                System.Threading.Thread.Sleep(delayMs);
+            }
+        }
+        throw last ?? new IOException($"无法读取文件: {path}");
+    }
+
+    private static void WriteAllTextWithRetry(string path, string content, int maxAttempts = 10, int delayMs = 100)
+    {
+        IOException? last = null;
+        for (var i = 0; i < maxAttempts; i++)
+        {
+            try
+            {
+                File.WriteAllText(path, content);
+                return;
+            }
+            catch (IOException ex)
+            {
+                last = ex;
+                System.Threading.Thread.Sleep(delayMs);
+            }
+        }
+        throw last ?? new IOException($"无法写入文件: {path}");
     }
 }
 
