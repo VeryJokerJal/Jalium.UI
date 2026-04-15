@@ -1,5 +1,17 @@
 #include "jalium_internal.h"
 
+#include <cstdlib>
+#include <cstring>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <Windows.h>
+#else
+#include <dlfcn.h>
+#endif
+
 #ifdef __ANDROID__
 #include <android/log.h>
 #define LOGI_CTX(...) __android_log_print(ANDROID_LOG_INFO, "JaliumContext", __VA_ARGS__)
@@ -8,6 +20,63 @@
 #define LOGI_CTX(...)
 #define LOGE_CTX(...)
 #endif
+
+namespace {
+
+// Reads JALIUM_RENDER_BACKEND and returns a JaliumBackend override, or
+// JALIUM_BACKEND_AUTO if no valid override is present. Accepts the same values
+// the managed selector understands: "vulkan"/"vk", "d3d12"/"dx12", "metal",
+// "software"/"cpu". Anything else (including empty/unset) returns Auto.
+JaliumBackend ReadBackendEnvOverride()
+{
+#if defined(_WIN32)
+    char* raw = nullptr;
+    size_t len = 0;
+    if (_dupenv_s(&raw, &len, "JALIUM_RENDER_BACKEND") != 0 || raw == nullptr) {
+        return JALIUM_BACKEND_AUTO;
+    }
+    // Lowercase in-place for case-insensitive matching.
+    for (char* p = raw; *p; ++p) {
+        if (*p >= 'A' && *p <= 'Z') {
+            *p = static_cast<char>(*p + ('a' - 'A'));
+        }
+    }
+    JaliumBackend selected = JALIUM_BACKEND_AUTO;
+    if (strcmp(raw, "vulkan") == 0 || strcmp(raw, "vk") == 0) {
+        selected = JALIUM_BACKEND_VULKAN;
+    } else if (strcmp(raw, "d3d12") == 0 || strcmp(raw, "dx12") == 0 || strcmp(raw, "direct3d12") == 0) {
+        selected = JALIUM_BACKEND_D3D12;
+    } else if (strcmp(raw, "metal") == 0) {
+        selected = JALIUM_BACKEND_METAL;
+    } else if (strcmp(raw, "software") == 0 || strcmp(raw, "cpu") == 0) {
+        selected = JALIUM_BACKEND_SOFTWARE;
+    }
+    free(raw);
+    return selected;
+#else
+    const char* raw = std::getenv("JALIUM_RENDER_BACKEND");
+    if (!raw || *raw == '\0') {
+        return JALIUM_BACKEND_AUTO;
+    }
+    // Case-insensitive compare helper.
+    auto iequals = [](const char* a, const char* b) {
+        while (*a && *b) {
+            char ca = (*a >= 'A' && *a <= 'Z') ? (*a + ('a' - 'A')) : *a;
+            char cb = (*b >= 'A' && *b <= 'Z') ? (*b + ('a' - 'A')) : *b;
+            if (ca != cb) return false;
+            ++a; ++b;
+        }
+        return *a == 0 && *b == 0;
+    };
+    if (iequals(raw, "vulkan") || iequals(raw, "vk")) return JALIUM_BACKEND_VULKAN;
+    if (iequals(raw, "d3d12") || iequals(raw, "dx12") || iequals(raw, "direct3d12")) return JALIUM_BACKEND_D3D12;
+    if (iequals(raw, "metal")) return JALIUM_BACKEND_METAL;
+    if (iequals(raw, "software") || iequals(raw, "cpu")) return JALIUM_BACKEND_SOFTWARE;
+    return JALIUM_BACKEND_AUTO;
+#endif
+}
+
+} // namespace
 
 // ============================================================================
 // C API
@@ -19,6 +88,52 @@ JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
     auto& registry = jalium::GetBackendRegistry();
 
     LOGI_CTX("jalium_context_create: requested backend=%d", (int)backend);
+
+    // Honor JALIUM_RENDER_BACKEND unconditionally, because the managed
+    // RenderBackendSelector on Windows resolves Auto → D3D12 *before* reaching
+    // the native layer (via IsBackendAvailable which only returns true for
+    // whatever the NativeMethods static ctor eagerly init'd — D3D12 on Windows).
+    // By the time we get here "backend" is already D3D12 even if the user asked
+    // for Auto with the env var hoping to pick Vulkan. Override it here.
+    {
+        JaliumBackend envOverride = ReadBackendEnvOverride();
+        if (envOverride != JALIUM_BACKEND_AUTO) {
+            // The per-platform NativeMethods static ctor only eagerly initializes
+            // one GPU backend (D3D12 on Windows, Metal on macOS, Vulkan on
+            // Linux/Android). Secondary backends stay unloaded until something
+            // calls into their DLL. If the user asked for a backend that hasn't
+            // been loaded yet, dlopen it so its DllMain/constructor registers
+            // its factory. Only then can registry.IsAvailable return the truth.
+            if (!registry.IsAvailable(envOverride)) {
+#ifdef _WIN32
+                const char* libName = nullptr;
+                switch (envOverride) {
+                    case JALIUM_BACKEND_VULKAN:   libName = "jalium.native.vulkan.dll"; break;
+                    case JALIUM_BACKEND_D3D12:    libName = "jalium.native.d3d12.dll"; break;
+                    case JALIUM_BACKEND_METAL:    libName = "jalium.native.metal.dll"; break;
+                    case JALIUM_BACKEND_SOFTWARE: libName = "jalium.native.software.dll"; break;
+                    default: break;
+                }
+                if (libName) {
+                    (void)LoadLibraryA(libName);
+                }
+#else
+                const char* libName = nullptr;
+                switch (envOverride) {
+                    case JALIUM_BACKEND_VULKAN:   libName = "libjalium.native.vulkan.so"; break;
+                    case JALIUM_BACKEND_SOFTWARE: libName = "libjalium.native.software.so"; break;
+                    default: break;
+                }
+                if (libName) {
+                    (void)dlopen(libName, RTLD_NOW | RTLD_GLOBAL);
+                }
+#endif
+            }
+            if (registry.IsAvailable(envOverride)) {
+                backend = envOverride;
+            }
+        }
+    }
 
     JaliumBackend actualBackend = backend;
     if (backend == JALIUM_BACKEND_AUTO) {

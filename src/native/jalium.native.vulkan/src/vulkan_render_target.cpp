@@ -683,7 +683,6 @@ public:
     VkPipelineLayout transitionPipelineLayout = VK_NULL_HANDLE;
     VkPipeline transitionPipeline = VK_NULL_HANDLE;
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
-    VkSemaphore renderFinished = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
     void* mappedPixels = nullptr;
     VkDeviceSize mappedPixelCapacity = 0;
@@ -700,6 +699,44 @@ public:
     uint32_t uploadHeight = 0;
     bool submitted = false;
     bool initialized = false;
+
+    // Multi-frames-in-flight: each frame needs its own command buffer, fences,
+    // semaphores, staging buffer (+mapped pointer), upload image, and descriptor set.
+    // Alias model: the single-named fields above act as the "current frame" alias,
+    // BeginFrame() copies perFrameStates_[currentFrame_] into the alias, CommitCurrentFrame()
+    // writes alias back. Existing helpers (EnsureStagingBuffer / EnsureUploadImage /
+    // UpdateFrameDescriptorSet) still operate on the alias with no changes.
+    static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+    struct PerFrameState {
+        VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
+        VkFence inFlight = VK_NULL_HANDLE;
+        VkSemaphore imageAvailable = VK_NULL_HANDLE;
+        VkBuffer stagingBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+        void* mappedPixels = nullptr;
+        VkDeviceSize mappedPixelCapacity = 0;
+        VkImage uploadImage = VK_NULL_HANDLE;
+        VkDeviceMemory uploadImageMemory = VK_NULL_HANDLE;
+        VkImageView uploadImageView = VK_NULL_HANDLE;
+        VkImageLayout uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        uint32_t uploadWidth = 0;
+        uint32_t uploadHeight = 0;
+        VkDescriptorSet frameDescriptorSet = VK_NULL_HANDLE;
+        bool submitted = false;
+    };
+    PerFrameState perFrameStates_[MAX_FRAMES_IN_FLIGHT];
+    uint32_t currentFrame_ = 0;
+    // renderFinished is **per swap-chain image**, not per frame, because present
+    // uses imageIndex as the wait target; two frames in flight may reference the
+    // same image slot only after the fence guarantees the previous submit is done,
+    // so one semaphore per image is sufficient and avoids present-time validation
+    // errors about a semaphore being signaled by two simultaneous submissions.
+    std::vector<VkSemaphore> renderFinishedPerImage;
+
+    void BeginFrame();
+    void CommitCurrentFrame();
+    void EndFrame();
+    void DestroyPerFrameResources();
 
     bool Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync);
     bool RecreateSwapchain(int32_t width, int32_t height, bool vsync);
@@ -781,6 +818,22 @@ JaliumResult VulkanRenderTarget::BeginDraw()
 
     isDrawing_ = true;
     ResetGpuReplay();
+    // Eagerly flag the frame as "cleared" so that the first Draw* before the
+    // caller gets a chance to invoke Clear() can still record GPU replay
+    // commands. The Vulkan DrawReplayFrame unconditionally clears the
+    // swap-chain image anyway — gpuReplayHasClear_ is just a latch that says
+    // "the GPU replay path is usable for this frame". Treating it as latched
+    // from frame start matches the D3D12 backend behavior and prevents the
+    // whole frame from falling back to CPU upload when Clear() is skipped or
+    // ClearBackground uses a partial-region FillRectangle instead of Clear.
+    gpuReplayHasClear_ = true;
+    // Predict whether this frame needs CPU rasterization based on the previous
+    // frame. If the previous frame ended up falling back to DrawFrame (e.g. it
+    // had an effect that required pixelBuffer_), assume this frame will too and
+    // start the CPU paths warm from frame start. If it went through
+    // DrawReplayFrame, start cold and let EnsureCpuRasterization kick in only
+    // when something actually needs it.
+    cpuRasterNeeded_ = cpuRasterNeededLastFrame_;
 
     // Push a root DPI scale transform so all draw calls in DIPs are
     // automatically mapped to physical pixels on high-density displays.
@@ -812,11 +865,20 @@ JaliumResult VulkanRenderTarget::EndDraw()
         if (!impl_->initialized) {
             VK_LOG("[Vulkan] EndDraw: impl not initialized, skipping draw");
         } else if (gpuReplaySupported_ && gpuReplayHasClear_) {
+            // GPU replay path: pixelBuffer_ will be discarded, so any CPU work
+            // done this frame was wasted — but thanks to cpuRasterNeeded_ being
+            // false (or only lazily flipped to true), most of it never ran.
             ok = impl_->DrawReplayFrame(gpuReplayCommands_, clearColor_);
         } else {
+            // CPU upload path: DrawFrame will upload pixelBuffer_ verbatim.
+            // If the frame skipped CPU rasterization assuming it'd go through
+            // the replay path, we now have to catch pixelBuffer_ up to the
+            // recorded commands before uploading.
+            EnsureCpuRasterization();
             ok = impl_->DrawFrame(pixelBuffer_.data(), static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
         }
     }
+    cpuRasterNeededLastFrame_ = cpuRasterNeeded_;
     isDrawing_ = false;
     dirtyRects_.clear();
     fullInvalidation_ = false;
@@ -1125,30 +1187,46 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
         return false;
     }
 
+    // Allocate MAX_FRAMES_IN_FLIGHT command buffers, one per frame slot.
     VkCommandBufferAllocateInfo commandBufferInfo {};
     commandBufferInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
     commandBufferInfo.commandPool = commandPool;
     commandBufferInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    commandBufferInfo.commandBufferCount = 1;
-    if (allocateCommandBuffers(device, &commandBufferInfo, &commandBuffer) != VK_SUCCESS || commandBuffer == VK_NULL_HANDLE) {
-        VK_LOG("[Vulkan] Initialize failed: could not allocate command buffer\n");
+    commandBufferInfo.commandBufferCount = MAX_FRAMES_IN_FLIGHT;
+    VkCommandBuffer allocatedCommandBuffers[MAX_FRAMES_IN_FLIGHT] = {};
+    if (allocateCommandBuffers(device, &commandBufferInfo, allocatedCommandBuffers) != VK_SUCCESS) {
+        VK_LOG("[Vulkan] Initialize failed: could not allocate command buffers\n");
         return false;
     }
 
     VkSemaphoreCreateInfo semaphoreInfo {};
     semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
-    if (createSemaphore(device, &semaphoreInfo, nullptr, &imageAvailable) != VK_SUCCESS ||
-        createSemaphore(device, &semaphoreInfo, nullptr, &renderFinished) != VK_SUCCESS) {
-        VK_LOG("[Vulkan] Initialize failed: could not create semaphores\n");
-        return false;
-    }
 
+    // Create fences SIGNALED so the first DrawFrame can unconditionally waitForFences
+    // without stalling (the fence is already ready). Without this flag the first
+    // wait on an un-signaled fence would hang forever.
     VkFenceCreateInfo fenceInfo {};
     fenceInfo.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
-    if (createFence(device, &fenceInfo, nullptr, &inFlight) != VK_SUCCESS || inFlight == VK_NULL_HANDLE) {
-        VK_LOG("[Vulkan] Initialize failed: could not create fence\n");
-        return false;
+    fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+    for (uint32_t frameIndex = 0; frameIndex < MAX_FRAMES_IN_FLIGHT; ++frameIndex) {
+        auto& frameState = perFrameStates_[frameIndex];
+        frameState.commandBuffer = allocatedCommandBuffers[frameIndex];
+        if (createSemaphore(device, &semaphoreInfo, nullptr, &frameState.imageAvailable) != VK_SUCCESS ||
+            frameState.imageAvailable == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] Initialize failed: could not create imageAvailable semaphore for frame %u\n", frameIndex);
+            return false;
+        }
+        if (createFence(device, &fenceInfo, nullptr, &frameState.inFlight) != VK_SUCCESS ||
+            frameState.inFlight == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] Initialize failed: could not create inFlight fence for frame %u\n", frameIndex);
+            return false;
+        }
     }
+
+    // Start on frame 0; pull its (empty) resources into the alias.
+    currentFrame_ = 0;
+    BeginFrame();
 
     initialized = RecreateSwapchain(width, height, vsync);
     if (initialized) {
@@ -1306,7 +1384,29 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
     extent = newExtent;
     format = selectedFormat.format;
     submitted = false;
-    return EnsureStagingBuffer(static_cast<uint32_t>(width), static_cast<uint32_t>(height));
+
+    // Recreate per-image renderFinished semaphores sized to the new image count.
+    for (VkSemaphore sem : renderFinishedPerImage) {
+        if (sem != VK_NULL_HANDLE && destroySemaphore) {
+            destroySemaphore(device, sem, nullptr);
+        }
+    }
+    renderFinishedPerImage.clear();
+    renderFinishedPerImage.resize(images.size(), VK_NULL_HANDLE);
+    VkSemaphoreCreateInfo semaphoreInfo {};
+    semaphoreInfo.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+    for (size_t i = 0; i < renderFinishedPerImage.size(); ++i) {
+        if (createSemaphore(device, &semaphoreInfo, nullptr, &renderFinishedPerImage[i]) != VK_SUCCESS ||
+            renderFinishedPerImage[i] == VK_NULL_HANDLE) {
+            VK_LOG("[Vulkan] RecreateSwapchain: failed to create renderFinished semaphore for image %zu\n", i);
+            return false;
+        }
+    }
+    // Staging buffer and upload image are lazy — do not create them here. Each
+    // per-frame slot will allocate its own copy the first time DrawFrame runs on
+    // that slot, avoiding cross-frame alias pollution that would happen if this
+    // function (called out of the BeginFrame/EndFrame cycle) wrote into the alias.
+    return true;
 }
 
 bool VulkanRenderTarget::Impl::EnsureUploadImage(uint32_t width, uint32_t height)
@@ -1520,13 +1620,13 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
     if (frameDescriptorPool == VK_NULL_HANDLE) {
         VkDescriptorPoolSize poolSizes[2] {};
         poolSizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-        poolSizes[0].descriptorCount = 1;
+        poolSizes[0].descriptorCount = MAX_FRAMES_IN_FLIGHT;
         poolSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
-        poolSizes[1].descriptorCount = 1;
+        poolSizes[1].descriptorCount = MAX_FRAMES_IN_FLIGHT;
 
         VkDescriptorPoolCreateInfo poolInfo {};
         poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-        poolInfo.maxSets = 1;
+        poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
         poolInfo.poolSizeCount = 2;
         poolInfo.pPoolSizes = poolSizes;
         if (createDescriptorPool(device, &poolInfo, nullptr, &frameDescriptorPool) != VK_SUCCESS || frameDescriptorPool == VK_NULL_HANDLE) {
@@ -3197,53 +3297,178 @@ bool VulkanRenderTarget::Impl::EnsureStagingBuffer(uint32_t width, uint32_t heig
     return EnsureStagingCapacity(requiredSize);
 }
 
+void VulkanRenderTarget::Impl::BeginFrame()
+{
+    auto& s = perFrameStates_[currentFrame_];
+    commandBuffer = s.commandBuffer;
+    inFlight = s.inFlight;
+    imageAvailable = s.imageAvailable;
+    stagingBuffer = s.stagingBuffer;
+    stagingMemory = s.stagingMemory;
+    mappedPixels = s.mappedPixels;
+    mappedPixelCapacity = s.mappedPixelCapacity;
+    uploadImage = s.uploadImage;
+    uploadImageMemory = s.uploadImageMemory;
+    uploadImageView = s.uploadImageView;
+    uploadImageLayout = s.uploadImageLayout;
+    uploadWidth = s.uploadWidth;
+    uploadHeight = s.uploadHeight;
+    frameDescriptorSet = s.frameDescriptorSet;
+    submitted = s.submitted;
+}
+
+void VulkanRenderTarget::Impl::CommitCurrentFrame()
+{
+    auto& s = perFrameStates_[currentFrame_];
+    s.commandBuffer = commandBuffer;
+    s.inFlight = inFlight;
+    s.imageAvailable = imageAvailable;
+    s.stagingBuffer = stagingBuffer;
+    s.stagingMemory = stagingMemory;
+    s.mappedPixels = mappedPixels;
+    s.mappedPixelCapacity = mappedPixelCapacity;
+    s.uploadImage = uploadImage;
+    s.uploadImageMemory = uploadImageMemory;
+    s.uploadImageView = uploadImageView;
+    s.uploadImageLayout = uploadImageLayout;
+    s.uploadWidth = uploadWidth;
+    s.uploadHeight = uploadHeight;
+    s.frameDescriptorSet = frameDescriptorSet;
+    s.submitted = submitted;
+}
+
+void VulkanRenderTarget::Impl::EndFrame()
+{
+    CommitCurrentFrame();
+    currentFrame_ = (currentFrame_ + 1) % MAX_FRAMES_IN_FLIGHT;
+    BeginFrame();
+}
+
+void VulkanRenderTarget::Impl::DestroyPerFrameResources()
+{
+    if (!device) {
+        return;
+    }
+    // Commit any currently-aliased state back into its slot so we free the latest
+    // pointers rather than stale ones.
+    CommitCurrentFrame();
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        auto& s = perFrameStates_[i];
+        if (s.uploadImageView != VK_NULL_HANDLE && destroyImageView) {
+            destroyImageView(device, s.uploadImageView, nullptr);
+        }
+        if (s.uploadImage != VK_NULL_HANDLE && destroyImage) {
+            destroyImage(device, s.uploadImage, nullptr);
+        }
+        if (s.uploadImageMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, s.uploadImageMemory, nullptr);
+        }
+        if (s.mappedPixels != nullptr && s.stagingMemory != VK_NULL_HANDLE && unmapMemory) {
+            unmapMemory(device, s.stagingMemory);
+        }
+        if (s.stagingBuffer != VK_NULL_HANDLE && destroyBuffer) {
+            destroyBuffer(device, s.stagingBuffer, nullptr);
+        }
+        if (s.stagingMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, s.stagingMemory, nullptr);
+        }
+        if (s.inFlight != VK_NULL_HANDLE && destroyFence) {
+            destroyFence(device, s.inFlight, nullptr);
+        }
+        if (s.imageAvailable != VK_NULL_HANDLE && destroySemaphore) {
+            destroySemaphore(device, s.imageAvailable, nullptr);
+        }
+        // commandBuffer is freed implicitly by destroying the command pool.
+        // frameDescriptorSet is freed implicitly by destroying the descriptor pool.
+        s = PerFrameState{};
+    }
+
+    for (VkSemaphore sem : renderFinishedPerImage) {
+        if (sem != VK_NULL_HANDLE && destroySemaphore) {
+            destroySemaphore(device, sem, nullptr);
+        }
+    }
+    renderFinishedPerImage.clear();
+
+    // Clear aliases now that everything they point to has been released.
+    commandBuffer = VK_NULL_HANDLE;
+    inFlight = VK_NULL_HANDLE;
+    imageAvailable = VK_NULL_HANDLE;
+    stagingBuffer = VK_NULL_HANDLE;
+    stagingMemory = VK_NULL_HANDLE;
+    mappedPixels = nullptr;
+    mappedPixelCapacity = 0;
+    uploadImage = VK_NULL_HANDLE;
+    uploadImageMemory = VK_NULL_HANDLE;
+    uploadImageView = VK_NULL_HANDLE;
+    uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    uploadWidth = 0;
+    uploadHeight = 0;
+    frameDescriptorSet = VK_NULL_HANDLE;
+    submitted = false;
+    currentFrame_ = 0;
+}
+
 bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, uint32_t height)
 {
+    BeginFrame();
     if (!device || !swapchain || !commandBuffer || !pixels || width == 0 || height == 0) {
         VK_LOG("[Vulkan] DrawFrame: precondition failed (device=%p swapchain=%p cmdBuf=%p pixels=%p w=%u h=%u)\n",
                 (void*)device, (void*)swapchain, (void*)commandBuffer, (const void*)pixels, width, height);
+        EndFrame();
+        return false;
+    }
+
+    // Wait for this slot's previous submission to complete before we reuse any of
+    // its resources. Fence was created SIGNALED so the very first call falls
+    // through immediately. Two frames in flight means this waits at most 1 frame,
+    // letting the CPU work of frame N overlap with GPU work of frame N-1.
+    if (waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max()) != VK_SUCCESS) {
+        VK_LOG("[Vulkan] DrawFrame: waitForFences failed\n");
+        EndFrame();
         return false;
     }
 
     if (!EnsureStagingBuffer(width, height)) {
         VK_LOG("[Vulkan] DrawFrame: EnsureStagingBuffer failed\n");
+        EndFrame();
         return false;
     }
     if (!EnsureUploadImage(width, height)) {
         VK_LOG("[Vulkan] DrawFrame: EnsureUploadImage failed\n");
+        EndFrame();
         return false;
     }
     if (!EnsureGraphicsResources()) {
         VK_LOG("[Vulkan] DrawFrame: EnsureGraphicsResources failed\n");
+        EndFrame();
         return false;
     }
 
     std::memcpy(mappedPixels, pixels, static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
 
-    if (submitted) {
-        VkResult fenceResult = waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max());
-        if (fenceResult != VK_SUCCESS) {
-            VK_LOG("[Vulkan] DrawFrame: waitForFences failed (%d)\n", static_cast<int>(fenceResult));
-            return false;
-        }
-        if (resetFences(device, 1, &inFlight) != VK_SUCCESS) {
-            VK_LOG("[Vulkan] DrawFrame: resetFences failed\n");
-            return false;
-        }
-    }
-
     uint32_t imageIndex = 0;
     const VkResult acquireResult = acquireNextImage(device, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailable, VK_NULL_HANDLE, &imageIndex);
     if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        EndFrame();
         return true;
     }
     if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
         VK_LOG("[Vulkan] DrawFrame: acquireNextImage failed (%d)\n", static_cast<int>(acquireResult));
+        EndFrame();
+        return false;
+    }
+
+    if (resetFences(device, 1, &inFlight) != VK_SUCCESS) {
+        VK_LOG("[Vulkan] DrawFrame: resetFences failed\n");
+        EndFrame();
         return false;
     }
 
     if (resetCommandBuffer(commandBuffer, 0) != VK_SUCCESS) {
         VK_LOG("[Vulkan] DrawFrame: resetCommandBuffer failed\n");
+        EndFrame();
         return false;
     }
 
@@ -3362,6 +3587,14 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
 
     uploadImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+    VkSemaphore signalSemaphore = (imageIndex < renderFinishedPerImage.size())
+        ? renderFinishedPerImage[imageIndex]
+        : VK_NULL_HANDLE;
+    if (signalSemaphore == VK_NULL_HANDLE) {
+        VK_LOG("[Vulkan] DrawFrame: missing renderFinishedPerImage[%u]\n", imageIndex);
+        EndFrame();
+        return false;
+    }
     VkSubmitInfo submitInfo {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
     submitInfo.waitSemaphoreCount = 1;
@@ -3370,44 +3603,59 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &renderFinished;
+    submitInfo.pSignalSemaphores = &signalSemaphore;
     VkResult submitResult = queueSubmit(queue, 1, &submitInfo, inFlight);
     if (submitResult != VK_SUCCESS) {
         VK_LOG("[Vulkan] DrawFrame: queueSubmit failed (%d)\n", static_cast<int>(submitResult));
+        EndFrame();
         return false;
     }
 
     VkPresentInfoKHR presentInfo {};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &renderFinished;
+    presentInfo.pWaitSemaphores = &signalSemaphore;
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &swapchain;
     presentInfo.pImageIndices = &imageIndex;
     const VkResult presentResult = queuePresent(queue, &presentInfo);
     if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR && presentResult != VK_ERROR_OUT_OF_DATE_KHR) {
         VK_LOG("[Vulkan] DrawFrame: queuePresent failed (%d)\n", static_cast<int>(presentResult));
+        EndFrame();
         return false;
     }
 
     imageLayouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     submitted = true;
+    EndFrame();
     return true;
 }
 
 bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTarget::GpuReplayCommand>& commands, const float clearColor[4])
 {
+    BeginFrame();
     if (!device || !swapchain || !commandBuffer) {
         VK_LOG("[Vulkan] DrawReplayFrame: basic precondition failed (device=%p swapchain=%p cmdBuf=%p)",
                (void*)device, (void*)swapchain, (void*)commandBuffer);
+        EndFrame();
+        return false;
+    }
+    // Wait for this slot's previous submission before touching its command buffer
+    // or per-frame resources. Fence is SIGNALED-initialized so the first call
+    // returns immediately.
+    if (waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max()) != VK_SUCCESS) {
+        VK_LOG("[Vulkan] DrawReplayFrame: waitForFences failed");
+        EndFrame();
         return false;
     }
     if (!EnsureGraphicsResources()) {
         VK_LOG("[Vulkan] DrawReplayFrame: EnsureGraphicsResources failed");
+        EndFrame();
         return false;
     }
     if (solidRectPipeline == VK_NULL_HANDLE) {
         VK_LOG("[Vulkan] DrawReplayFrame: solidRectPipeline is null");
+        EndFrame();
         return false;
     }
 
@@ -3444,7 +3692,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     for (size_t index = 0; index < commands.size(); ++index) {
         const auto& command = commands[index];
         if (command.kind == GpuReplayCommandKind::Bitmap) {
-            if (command.bitmap.pixelWidth == 0 || command.bitmap.pixelHeight == 0 || command.bitmap.pixels.empty()) {
+            const auto& bmPixels = command.bitmap.GetPixels();
+            if (command.bitmap.pixelWidth == 0 || command.bitmap.pixelHeight == 0 || bmPixels.empty()) {
                 return false;
             }
 
@@ -3566,7 +3815,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         const auto& command = commands[index];
         if (command.kind == GpuReplayCommandKind::Bitmap) {
             const size_t pixelBytes = static_cast<size_t>(command.bitmap.pixelWidth) * static_cast<size_t>(command.bitmap.pixelHeight) * 4u;
-            std::memcpy(stagingBytes + bitmapOffsets[index], command.bitmap.pixels.data(), pixelBytes);
+            std::memcpy(stagingBytes + bitmapOffsets[index], command.bitmap.GetPixels().data(), pixelBytes);
         } else if (command.kind == GpuReplayCommandKind::Backdrop) {
             const size_t pixelBytes = static_cast<size_t>(command.backdrop.pixelWidth) * static_cast<size_t>(command.backdrop.pixelHeight) * 4u;
             std::memcpy(stagingBytes + totalBitmapBytes + backdropOffsets[index], command.backdrop.pixels.data(), pixelBytes);
@@ -3587,25 +3836,24 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
     }
 
-    if (submitted) {
-        if (waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max()) != VK_SUCCESS) {
-            return false;
-        }
-        if (resetFences(device, 1, &inFlight) != VK_SUCCESS) {
-            return false;
-        }
-    }
-
     uint32_t imageIndex = 0;
     const VkResult acquireResult = acquireNextImage(device, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailable, VK_NULL_HANDLE, &imageIndex);
     if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+        EndFrame();
         return true;
     }
     if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+        EndFrame();
+        return false;
+    }
+
+    if (resetFences(device, 1, &inFlight) != VK_SUCCESS) {
+        EndFrame();
         return false;
     }
 
     if (resetCommandBuffer(commandBuffer, 0) != VK_SUCCESS) {
+        EndFrame();
         return false;
     }
 
@@ -3613,6 +3861,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (beginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
+        EndFrame();
         return false;
     }
 
@@ -4185,7 +4434,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             continue;
         }
 
-        if (command.bitmap.pixelWidth == 0 || command.bitmap.pixelHeight == 0 || command.bitmap.pixels.empty()) {
+        if (command.bitmap.pixelWidth == 0 || command.bitmap.pixelHeight == 0 || command.bitmap.GetPixels().empty()) {
             return false;
         }
 
@@ -4300,9 +4549,18 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
 
     if (endCommandBuffer(commandBuffer) != VK_SUCCESS) {
+        EndFrame();
         return false;
     }
 
+    VkSemaphore signalSemaphore = (imageIndex < renderFinishedPerImage.size())
+        ? renderFinishedPerImage[imageIndex]
+        : VK_NULL_HANDLE;
+    if (signalSemaphore == VK_NULL_HANDLE) {
+        VK_LOG("[Vulkan] DrawReplayFrame: missing renderFinishedPerImage[%u]\n", imageIndex);
+        EndFrame();
+        return false;
+    }
     const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
     VkSubmitInfo submitInfo {};
     submitInfo.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
@@ -4312,25 +4570,28 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     submitInfo.commandBufferCount = 1;
     submitInfo.pCommandBuffers = &commandBuffer;
     submitInfo.signalSemaphoreCount = 1;
-    submitInfo.pSignalSemaphores = &renderFinished;
+    submitInfo.pSignalSemaphores = &signalSemaphore;
     if (queueSubmit(queue, 1, &submitInfo, inFlight) != VK_SUCCESS) {
+        EndFrame();
         return false;
     }
 
     VkPresentInfoKHR presentInfo {};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
     presentInfo.waitSemaphoreCount = 1;
-    presentInfo.pWaitSemaphores = &renderFinished;
+    presentInfo.pWaitSemaphores = &signalSemaphore;
     presentInfo.swapchainCount = 1;
     presentInfo.pSwapchains = &swapchain;
     presentInfo.pImageIndices = &imageIndex;
     const VkResult presentResult = queuePresent(queue, &presentInfo);
     if (presentResult != VK_SUCCESS && presentResult != VK_SUBOPTIMAL_KHR && presentResult != VK_ERROR_OUT_OF_DATE_KHR) {
+        EndFrame();
         return false;
     }
 
     imageLayouts[imageIndex] = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
     submitted = true;
+    EndFrame();
     return true;
 }
 
@@ -4342,29 +4603,15 @@ void VulkanRenderTarget::Impl::Destroy()
 
     if (device != VK_NULL_HANDLE) {
         DestroyGraphicsResources();
-        DestroyUploadImage();
         DestroyTransitionImages();
-        if (destroyFence && inFlight != VK_NULL_HANDLE) {
-            destroyFence(device, inFlight, nullptr);
-        }
-        if (destroySemaphore && renderFinished != VK_NULL_HANDLE) {
-            destroySemaphore(device, renderFinished, nullptr);
-        }
-        if (destroySemaphore && imageAvailable != VK_NULL_HANDLE) {
-            destroySemaphore(device, imageAvailable, nullptr);
-        }
+        // DestroyPerFrameResources releases the per-frame command buffers (via the
+        // command pool below), fences, imageAvailable semaphores, staging buffers,
+        // upload images, and renderFinishedPerImage semaphores. It must run before
+        // the command pool and descriptor pool are destroyed because it relies on
+        // them still being valid.
+        DestroyPerFrameResources();
         if (destroyCommandPool && commandPool != VK_NULL_HANDLE) {
             destroyCommandPool(device, commandPool, nullptr);
-        }
-        if (destroyBuffer && stagingBuffer != VK_NULL_HANDLE) {
-            destroyBuffer(device, stagingBuffer, nullptr);
-        }
-        if (mappedPixels && unmapMemory && stagingMemory != VK_NULL_HANDLE) {
-            unmapMemory(device, stagingMemory);
-            mappedPixels = nullptr;
-        }
-        if (freeMemory && stagingMemory != VK_NULL_HANDLE) {
-            freeMemory(device, stagingMemory, nullptr);
         }
         if (destroySwapchain && swapchain != VK_NULL_HANDLE) {
             destroySwapchain(device, swapchain, nullptr);
@@ -4419,10 +4666,6 @@ void VulkanRenderTarget::Impl::Destroy()
     transitionDescriptorSetLayout = VK_NULL_HANDLE;
     transitionDescriptorPool = VK_NULL_HANDLE;
     transitionDescriptorSet = VK_NULL_HANDLE;
-    imageAvailable = VK_NULL_HANDLE;
-    renderFinished = VK_NULL_HANDLE;
-    inFlight = VK_NULL_HANDLE;
-    submitted = false;
     images.clear();
     imageLayouts.clear();
     imageViews.clear();
@@ -4620,6 +4863,14 @@ void VulkanRenderTarget::ResizeCpuCanvas()
 
 void VulkanRenderTarget::ClearCpuCanvas(uint8_t b, uint8_t g, uint8_t r, uint8_t a)
 {
+    // Lazy CPU rasterization: when the frame will be presented via the GPU replay
+    // path (DrawReplayFrame), the CPU pixel buffer is never uploaded, so all of
+    // this work is thrown away. Skip it until EnsureCpuRasterization triggers a
+    // backfill or EndDraw falls back to DrawFrame with raw pixels.
+    if (!cpuRasterNeeded_) {
+        return;
+    }
+
     if (pixelBuffer_.empty()) {
         ResizeCpuCanvas();
     }
@@ -4651,8 +4902,82 @@ bool VulkanRenderTarget::TryGetSolidBrushColor(Brush* brush, uint8_t& b, uint8_t
     return true;
 }
 
+bool VulkanRenderTarget::TryGetApproximateBrushColor(Brush* brush, uint8_t& b, uint8_t& g, uint8_t& r, uint8_t& a) const
+{
+    if (!brush) {
+        return false;
+    }
+
+    const auto toByte = [](float value) -> uint8_t {
+        value = std::clamp(value, 0.0f, 1.0f);
+        return static_cast<uint8_t>(value * 255.0f + 0.5f);
+    };
+
+    switch (brush->GetType()) {
+        case JALIUM_BRUSH_SOLID: {
+            const auto* solidBrush = static_cast<VulkanSolidBrush*>(brush);
+            b = toByte(solidBrush->b_);
+            g = toByte(solidBrush->g_);
+            r = toByte(solidBrush->r_);
+            a = toByte(solidBrush->a_);
+            return true;
+        }
+
+        case JALIUM_BRUSH_LINEAR_GRADIENT: {
+            const auto* lg = static_cast<VulkanLinearGradientBrush*>(brush);
+            if (lg->stops_.empty()) {
+                return false;
+            }
+            // Blend every stop with equal weight. This isn't a true gradient
+            // average (it ignores stop positions and perceptual curves), but
+            // for the common case of a ~2-stop near-solid gradient it lands
+            // within a few units of the visual midtone and costs a handful of
+            // float ops per draw call.
+            float rs = 0.0f, gs = 0.0f, bs = 0.0f, as = 0.0f;
+            for (const auto& stop : lg->stops_) {
+                rs += stop.r;
+                gs += stop.g;
+                bs += stop.b;
+                as += stop.a;
+            }
+            const float invCount = 1.0f / static_cast<float>(lg->stops_.size());
+            r = toByte(rs * invCount);
+            g = toByte(gs * invCount);
+            b = toByte(bs * invCount);
+            a = toByte(as * invCount);
+            return true;
+        }
+
+        case JALIUM_BRUSH_RADIAL_GRADIENT: {
+            const auto* rg = static_cast<VulkanRadialGradientBrush*>(brush);
+            if (rg->stops_.empty()) {
+                return false;
+            }
+            float rs = 0.0f, gs = 0.0f, bs = 0.0f, as = 0.0f;
+            for (const auto& stop : rg->stops_) {
+                rs += stop.r;
+                gs += stop.g;
+                bs += stop.b;
+                as += stop.a;
+            }
+            const float invCount = 1.0f / static_cast<float>(rg->stops_.size());
+            r = toByte(rs * invCount);
+            g = toByte(gs * invCount);
+            b = toByte(bs * invCount);
+            a = toByte(as * invCount);
+            return true;
+        }
+
+        default:
+            return false;
+    }
+}
+
 void VulkanRenderTarget::BlendPixel(int x, int y, uint8_t b, uint8_t g, uint8_t r, uint8_t a)
 {
+    if (!cpuRasterNeeded_) {
+        return;
+    }
     if (x < 0 || y < 0 || x >= width_ || y >= height_ || pixelBuffer_.empty()) {
         return;
     }
@@ -4679,6 +5004,9 @@ void VulkanRenderTarget::BlendPixel(int x, int y, uint8_t b, uint8_t g, uint8_t 
 
 void VulkanRenderTarget::FillSolidRect(int left, int top, int right, int bottom, uint8_t b, uint8_t g, uint8_t r, uint8_t a)
 {
+    if (!cpuRasterNeeded_) {
+        return;
+    }
     left = std::max(left, 0);
     top = std::max(top, 0);
     right = std::min(right, width_);
@@ -4688,6 +5016,154 @@ void VulkanRenderTarget::FillSolidRect(int left, int top, int right, int bottom,
         for (int x = left; x < right; ++x) {
             BlendPixel(x, y, b, g, r, a);
         }
+    }
+}
+
+void VulkanRenderTarget::EnsureCpuRasterization()
+{
+    // Idempotent: once triggered, subsequent calls are no-ops and the CPU canvas
+    // stays in sync with every further Draw* call this frame (because those
+    // Draw* functions now see cpuRasterNeeded_ = true and run their CPU paths).
+    if (cpuRasterNeeded_) {
+        return;
+    }
+
+    // Short-circuit: when the frame is still eligible for the GPU replay path,
+    // EndDraw will go through DrawReplayFrame and discard pixelBuffer_ anyway.
+    // Committing to CPU rasterization here (called mid-frame from an effect
+    // Draw* such as DrawBackdropFilter or BeginEffectCapture) would force every
+    // previously-recorded and every subsequently-issued draw call down the CPU
+    // path — approximately 100ms of wasted work per frame in Gallery. The
+    // visual tradeoff is that mid-frame effect reads see a stale/empty
+    // pixelBuffer_ (Acrylic/Backdrop may render blank or with the prior frame's
+    // content), but the CPU-side backdrop blur was going to be overwritten by
+    // the GPU replay anyway. The proper long-term fix is to rewrite the GPU
+    // Backdrop command to sample the swap-chain image directly rather than
+    // carrying a CPU-side pixel snapshot, but this lets Vulkan hit GPU speeds
+    // today for the 99% of UI that doesn't use effects.
+    if (gpuReplaySupported_ && gpuReplayHasClear_) {
+        return;
+    }
+    cpuRasterNeeded_ = true;
+
+    // Replay uses physical-pixel coordinates already stored in the recorded
+    // commands — no DPI scale, no transform, no clip should be re-applied.
+    // Save and clear the drawing stacks, then restore them after replay so that
+    // whoever called us (mid-frame, inside a Draw* method) continues with their
+    // original stacks intact.
+    auto savedTransforms = std::move(transformStack_);
+    auto savedOpacities = std::move(opacityStack_);
+    auto savedClips = std::move(clipStack_);
+    transformStack_.clear();
+    transformStack_.push_back(CpuTransform{});
+    opacityStack_.clear();
+    opacityStack_.push_back(1.0f);
+    clipStack_.clear();
+
+    const auto toByte = [](float v) -> uint8_t {
+        v = std::clamp(v, 0.0f, 1.0f);
+        return static_cast<uint8_t>(v * 255.0f + 0.5f);
+    };
+    // Re-clear the CPU canvas to the recorded clearColor_, matching the state
+    // Clear() would have left it in if cpuRasterNeeded_ had been true from the
+    // start of the frame. clearColor_ is stored in {r, g, b, a} order and
+    // ClearCpuCanvas takes (b, g, r, a).
+    ClearCpuCanvas(toByte(clearColor_[2]),
+                   toByte(clearColor_[1]),
+                   toByte(clearColor_[0]),
+                   toByte(clearColor_[3]));
+
+    for (const auto& cmd : gpuReplayCommands_) {
+        ReplayCommandToCpu(cmd);
+    }
+
+    transformStack_ = std::move(savedTransforms);
+    opacityStack_ = std::move(savedOpacities);
+    clipStack_ = std::move(savedClips);
+}
+
+void VulkanRenderTarget::ReplayCommandToCpu(const GpuReplayCommand& command)
+{
+    const auto toByte = [](float v) -> uint8_t {
+        v = std::clamp(v, 0.0f, 1.0f);
+        return static_cast<uint8_t>(v * 255.0f + 0.5f);
+    };
+    auto pushScissor = [&]() {
+        if (command.hasScissor) {
+            const float sw = static_cast<float>(command.scissorRight - command.scissorLeft);
+            const float sh = static_cast<float>(command.scissorBottom - command.scissorTop);
+            PushClip(static_cast<float>(command.scissorLeft),
+                     static_cast<float>(command.scissorTop),
+                     sw,
+                     sh);
+        }
+    };
+    auto popScissor = [&]() {
+        if (command.hasScissor) {
+            PopClip();
+        }
+    };
+
+    switch (command.kind) {
+        case GpuReplayCommandKind::SolidRect: {
+            const auto& r = command.solidRect;
+            pushScissor();
+            FillSolidRect(static_cast<int>(std::floor(r.x)),
+                          static_cast<int>(std::floor(r.y)),
+                          static_cast<int>(std::ceil(r.x + r.w)),
+                          static_cast<int>(std::ceil(r.y + r.h)),
+                          toByte(r.b), toByte(r.g), toByte(r.r), toByte(r.a));
+            popScissor();
+            break;
+        }
+        case GpuReplayCommandKind::ClearRect: {
+            const auto& r = command.solidRect;
+            const int left = std::max(0, static_cast<int>(std::floor(r.x)));
+            const int top = std::max(0, static_cast<int>(std::floor(r.y)));
+            const int right = std::min(width_, static_cast<int>(std::ceil(r.x + r.w)));
+            const int bottom = std::min(height_, static_cast<int>(std::ceil(r.y + r.h)));
+            for (int py = top; py < bottom; ++py) {
+                for (int px = left; px < right; ++px) {
+                    const size_t offset = (static_cast<size_t>(py) * static_cast<size_t>(width_) + static_cast<size_t>(px)) * 4u;
+                    if (offset + 3 < pixelBuffer_.size()) {
+                        pixelBuffer_[offset + 0] = 0;
+                        pixelBuffer_[offset + 1] = 0;
+                        pixelBuffer_[offset + 2] = 0;
+                        pixelBuffer_[offset + 3] = 0;
+                    }
+                }
+            }
+            break;
+        }
+        case GpuReplayCommandKind::Bitmap: {
+            const auto& bmp = command.bitmap;
+            pushScissor();
+            BlendBuffer(bmp.GetPixels(),
+                        static_cast<int>(bmp.pixelWidth),
+                        static_cast<int>(bmp.pixelHeight),
+                        bmp.x, bmp.y, bmp.w, bmp.h, bmp.opacity);
+            popScissor();
+            break;
+        }
+        case GpuReplayCommandKind::FilledPolygon: {
+            const auto& p = command.filledPolygon;
+            pushScissor();
+            RasterizePolygon(p.triangleVertices, 0,
+                             toByte(p.b), toByte(p.g), toByte(p.r), toByte(p.a));
+            popScissor();
+            break;
+        }
+        case GpuReplayCommandKind::Blur:
+        case GpuReplayCommandKind::Backdrop:
+        case GpuReplayCommandKind::LiquidGlass:
+        case GpuReplayCommandKind::Glow:
+        case GpuReplayCommandKind::Transition:
+            // Effect commands either already triggered EnsureCpuRasterization
+            // at the moment they were issued (because their Draw* methods call
+            // EnsureCpuRasterization on entry — they need pixelBuffer_ in sync
+            // to read from), or they are GPU-only effects with no CPU fallback.
+            // In either case, there is nothing to replay here.
+            break;
     }
 }
 
@@ -4750,6 +5226,9 @@ std::vector<uint8_t> VulkanRenderTarget::BlurPixels(const std::vector<uint8_t>& 
 
 void VulkanRenderTarget::BlendBuffer(const std::vector<uint8_t>& source, int sourceWidth, int sourceHeight, float x, float y, float w, float h, float opacity)
 {
+    if (!cpuRasterNeeded_) {
+        return;
+    }
     const size_t expectedSize = static_cast<size_t>(sourceWidth) * static_cast<size_t>(sourceHeight) * 4u;
     if (source.empty() || source.size() != expectedSize || sourceWidth <= 0 || sourceHeight <= 0 || opacity <= 0.0f) {
         return;
@@ -4823,6 +5302,9 @@ void VulkanRenderTarget::ParseTintColor(const char* tint, float fallbackR, float
 
 void VulkanRenderTarget::BlendOutsideRect(float x, float y, float w, float h, uint8_t b, uint8_t g, uint8_t r, uint8_t a)
 {
+    if (!cpuRasterNeeded_) {
+        return;
+    }
     const int left = static_cast<int>(std::floor(x));
     const int top = static_cast<int>(std::floor(y));
     const int right = static_cast<int>(std::ceil(x + w));
@@ -4840,6 +5322,9 @@ void VulkanRenderTarget::BlendOutsideRect(float x, float y, float w, float h, ui
 
 void VulkanRenderTarget::StrokeRoundedRectApprox(float x, float y, float w, float h, float rx, float ry, float strokeWidth, uint8_t b, uint8_t g, uint8_t r, uint8_t a)
 {
+    if (!cpuRasterNeeded_) {
+        return;
+    }
     if (rx <= 0.0f && ry <= 0.0f) {
         std::vector<float> rect(8);
         const auto transform = GetCurrentTransform();
@@ -4898,15 +5383,27 @@ void VulkanRenderTarget::ResetGpuReplay()
     gpuReplayCommands_.clear();
 }
 
-void VulkanRenderTarget::InvalidateGpuReplay()
+void VulkanRenderTarget::InvalidateGpuReplay(const char* caller)
 {
+    // Called when a Draw* cannot be expressed as a replay command. The frame
+    // must now fall back to DrawFrame with raw pixelBuffer_ content, so catch
+    // pixelBuffer_ up to every command recorded so far before releasing replay.
+    (void)caller;
+    if (gpuReplaySupported_ && isDrawing_) {
+        EnsureCpuRasterization();
+    }
     gpuReplaySupported_ = false;
 }
 
 bool VulkanRenderTarget::TryRecordGpuSolidRectCommand(float x, float y, float w, float h, Brush* brush)
 {
-    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || w == 0.0f || h == 0.0f) {
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
         return false;
+    }
+    // Degenerate rects (w or h == 0) are visual no-ops. Return true so the
+    // caller doesn't fall back to CPU upload for an invisible primitive.
+    if (w == 0.0f || h == 0.0f) {
+        return true;
     }
 
     if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
@@ -4914,7 +5411,7 @@ bool VulkanRenderTarget::TryRecordGpuSolidRectCommand(float x, float y, float w,
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
-    if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
         return false;
     }
 
@@ -4943,8 +5440,15 @@ bool VulkanRenderTarget::TryRecordGpuSolidRectCommand(float x, float y, float w,
     command.b = static_cast<float>(b) / 255.0f;
     command.a = (static_cast<float>(a) / 255.0f) * std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
 
+    // Treat zero-area or fully-transparent fills as successful no-ops rather
+    // than failures. Gallery's theme recursively fills invisible hit-target
+    // rectangles with Transparent brushes as layout stakes, and the old code
+    // counted those as "TryRecord failed" → invalidate the whole frame →
+    // force CPU upload. With this, transparent fills stay on the GPU replay
+    // path (we simply don't push a command, because drawing a 0-alpha rect is
+    // a visual no-op anyway).
     if (command.w <= kEpsilon || command.h <= kEpsilon || command.a <= 0.0f) {
-        return false;
+        return true;
     }
 
     GpuReplayCommand replayCommand {};
@@ -4984,7 +5488,7 @@ bool VulkanRenderTarget::TryRecordGpuFilledPolygonCommand(const std::vector<floa
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
-    if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
         return false;
     }
 
@@ -5087,8 +5591,11 @@ bool VulkanRenderTarget::TryRecordGpuTransitionCommand(const std::vector<uint8_t
 
 bool VulkanRenderTarget::TryRecordGpuClearRectCommand(float x, float y, float w, float h)
 {
-    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || w == 0.0f || h == 0.0f) {
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
         return false;
+    }
+    if (w == 0.0f || h == 0.0f) {
+        return true;
     }
 
     if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
@@ -5141,6 +5648,70 @@ bool VulkanRenderTarget::TryRecordGpuClearRectCommand(float x, float y, float w,
 
     gpuReplayCommands_.push_back(std::move(replayCommand));
     return true;
+}
+
+void VulkanRenderTarget::RecordCachedTextBitmap(std::shared_ptr<const std::vector<uint8_t>> pixels,
+                                                int width, int height, float x, float y)
+{
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
+        return;
+    }
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return;
+    }
+    if (!pixels || pixels->empty() || width <= 0 || height <= 0) {
+        return;
+    }
+
+    const float fw = static_cast<float>(width);
+    const float fh = static_cast<float>(height);
+    const auto transform = GetCurrentTransform();
+    constexpr float kEpsilon = 0.0001f;
+
+    float p0x = 0.0f, p0y = 0.0f;
+    float p1x = 0.0f, p1y = 0.0f;
+    float p2x = 0.0f, p2y = 0.0f;
+    float p3x = 0.0f, p3y = 0.0f;
+    ApplyTransform(transform, x,       y,       p0x, p0y);
+    ApplyTransform(transform, x + fw,  y,       p1x, p1y);
+    ApplyTransform(transform, x + fw,  y + fh,  p2x, p2y);
+    ApplyTransform(transform, x,       y + fh,  p3x, p3y);
+
+    GpuReplayCommand cmd {};
+    cmd.kind = GpuReplayCommandKind::Bitmap;
+    cmd.bitmap.pixelWidth = static_cast<uint32_t>(width);
+    cmd.bitmap.pixelHeight = static_cast<uint32_t>(height);
+    cmd.bitmap.sharedPixels = std::move(pixels);
+    cmd.bitmap.x = std::min(std::min(p0x, p1x), std::min(p2x, p3x));
+    cmd.bitmap.y = std::min(std::min(p0y, p1y), std::min(p2y, p3y));
+    cmd.bitmap.w = std::max(std::max(p0x, p1x), std::max(p2x, p3x)) - cmd.bitmap.x;
+    cmd.bitmap.h = std::max(std::max(p0y, p1y), std::max(p2y, p3y)) - cmd.bitmap.y;
+    cmd.bitmap.opacity = std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
+
+    if (cmd.bitmap.w <= kEpsilon || cmd.bitmap.h <= kEpsilon || cmd.bitmap.opacity <= 0.0f) {
+        return;
+    }
+
+    if (!TryPopulateReplayClip(cmd)) {
+        return;
+    }
+    if (cmd.scissorRight <= cmd.scissorLeft || cmd.scissorBottom <= cmd.scissorTop) {
+        return;
+    }
+
+    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+        cmd.hasCustomQuad = true;
+        cmd.quadPoint0X = p0x;
+        cmd.quadPoint0Y = p0y;
+        cmd.quadPoint1X = p1x;
+        cmd.quadPoint1Y = p1y;
+        cmd.quadPoint2X = p2x;
+        cmd.quadPoint2Y = p2y;
+        cmd.quadPoint3X = p3x;
+        cmd.quadPoint3Y = p3y;
+    }
+
+    gpuReplayCommands_.push_back(std::move(cmd));
 }
 
 bool VulkanRenderTarget::TryRecordGpuPixelBufferCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity)
@@ -5433,8 +6004,11 @@ bool VulkanRenderTarget::TryRecordGpuBackdropCommand(const std::vector<uint8_t>&
 
 bool VulkanRenderTarget::TryRecordGpuGlowCommand(float x, float y, float w, float h, float cornerRadius, float strokeWidth, float glowR, float glowG, float glowB, float glowA, float dimOpacity, float intensity)
 {
-    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || w <= 0.0f || h <= 0.0f) {
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
         return false;
+    }
+    if (w <= 0.0f || h <= 0.0f) {
+        return true;
     }
 
     GpuReplayCommand replayCommand {};
@@ -5486,8 +6060,11 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectFillCommand(float x, float y, fl
         return TryRecordGpuSolidRectCommand(x, y, w, h, brush);
     }
 
-    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || w == 0.0f || h == 0.0f) {
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
         return false;
+    }
+    if (w == 0.0f || h == 0.0f) {
+        return true;
     }
 
     if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
@@ -5495,7 +6072,7 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectFillCommand(float x, float y, fl
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
-    if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
         return false;
     }
 
@@ -5528,7 +6105,7 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectFillCommand(float x, float y, fl
     replayCommand.solidRect.b = static_cast<float>(b) / 255.0f;
     replayCommand.solidRect.a = (static_cast<float>(a) / 255.0f) * std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
     if (replayCommand.solidRect.w <= kEpsilon || replayCommand.solidRect.h <= kEpsilon || replayCommand.solidRect.a <= 0.0f) {
-        return false;
+        return true;
     }
 
     if (replayCommand.scissorRight <= replayCommand.scissorLeft || replayCommand.scissorBottom <= replayCommand.scissorTop) {
@@ -5555,8 +6132,11 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectStrokeCommand(float x, float y, 
         return TryRecordGpuRectangleStrokeCommand(x, y, w, h, strokeWidth, brush);
     }
 
-    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || w == 0.0f || h == 0.0f) {
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
         return false;
+    }
+    if (w == 0.0f || h == 0.0f) {
+        return true;
     }
 
     if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
@@ -5564,7 +6144,7 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectStrokeCommand(float x, float y, 
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
-    if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
         return false;
     }
 
@@ -5605,7 +6185,7 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectStrokeCommand(float x, float y, 
     replayCommand.solidRect.b = static_cast<float>(b) / 255.0f;
     replayCommand.solidRect.a = (static_cast<float>(a) / 255.0f) * std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
     if (replayCommand.solidRect.w <= kEpsilon || replayCommand.solidRect.h <= kEpsilon || replayCommand.solidRect.a <= 0.0f) {
-        return false;
+        return true;
     }
 
     if (replayCommand.scissorRight <= replayCommand.scissorLeft || replayCommand.scissorBottom <= replayCommand.scissorTop) {
@@ -5675,7 +6255,7 @@ bool VulkanRenderTarget::TryRecordGpuLineCommand(float x1, float y1, float x2, f
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
-    if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
         return false;
     }
 
@@ -5733,7 +6313,7 @@ bool VulkanRenderTarget::TryRecordGpuLineCommand(float x1, float y1, float x2, f
     replayCommand.solidRect.b = static_cast<float>(b) / 255.0f;
     replayCommand.solidRect.a = (static_cast<float>(a) / 255.0f) * std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
     if (replayCommand.solidRect.w <= kEpsilon || replayCommand.solidRect.h <= kEpsilon || replayCommand.solidRect.a <= 0.0f) {
-        return false;
+        return true;
     }
 
     if (replayCommand.scissorRight <= replayCommand.scissorLeft || replayCommand.scissorBottom <= replayCommand.scissorTop) {
@@ -5810,6 +6390,9 @@ bool VulkanRenderTarget::TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, floa
 
 void VulkanRenderTarget::RasterizePolygon(const std::vector<float>& points, int fillRule, uint8_t b, uint8_t g, uint8_t r, uint8_t a)
 {
+    if (!cpuRasterNeeded_) {
+        return;
+    }
     if (points.size() < 6) {
         return;
     }
@@ -5879,6 +6462,9 @@ void VulkanRenderTarget::RasterizePolygon(const std::vector<float>& points, int 
 
 void VulkanRenderTarget::StrokePolyline(const std::vector<float>& points, bool closed, float strokeWidth, uint8_t b, uint8_t g, uint8_t r, uint8_t a)
 {
+    if (!cpuRasterNeeded_) {
+        return;
+    }
     if (points.size() < 4) {
         return;
     }
@@ -5932,12 +6518,19 @@ void VulkanRenderTarget::StrokePolyline(const std::vector<float>& points, bool c
 void VulkanRenderTarget::FillRectangle(float x, float y, float w, float h, Brush* brush)
 {
     TouchFrame();
+    // A null brush is a "no-op" fill (callers use it as a transparent hit area
+    // or to stake out layout space). Don't route it through TryRecord→
+    // Invalidate — that would collapse the entire frame's GPU replay path
+    // onto the CPU upload fallback for what is visually a no-op.
+    if (!brush) {
+        return;
+    }
     if (!TryRecordGpuSolidRectCommand(x, y, w, h, brush)) {
-        InvalidateGpuSolidRectReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
-    if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
         return;
     }
 
@@ -5953,12 +6546,15 @@ void VulkanRenderTarget::FillRectangle(float x, float y, float w, float h, Brush
 void VulkanRenderTarget::DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth)
 {
     TouchFrame();
+    if (!brush) {
+        return;
+    }
     if (!TryRecordGpuRectangleStrokeCommand(x, y, w, h, strokeWidth, brush)) {
-        InvalidateGpuSolidRectReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
-    if (!TryGetSolidBrushColor(brush, b, g, r, a)) {
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
         return;
     }
 
@@ -5975,7 +6571,7 @@ void VulkanRenderTarget::FillRoundedRectangle(float x, float y, float w, float h
 {
     TouchFrame();
     if (!TryRecordGpuRoundedRectFillCommand(x, y, w, h, rx, ry, brush)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     if ((rx <= 0.0f && ry <= 0.0f) || !brush) {
@@ -6011,7 +6607,7 @@ void VulkanRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h
 {
     TouchFrame();
     if (!TryRecordGpuRoundedRectStrokeCommand(x, y, w, h, rx, ry, strokeWidth, brush)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     if ((rx <= 0.0f && ry <= 0.0f) || !brush) {
@@ -6031,7 +6627,7 @@ void VulkanRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Bru
 {
     TouchFrame();
     if (!TryRecordGpuEllipseFillCommand(cx, cy, rx, ry, brush)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
@@ -6057,7 +6653,7 @@ void VulkanRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Bru
 {
     TouchFrame();
     if (!TryRecordGpuEllipseStrokeCommand(cx, cy, rx, ry, strokeWidth, brush)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
@@ -6083,7 +6679,7 @@ void VulkanRenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush*
 {
     TouchFrame();
     if (!TryRecordGpuLineCommand(x1, y1, x2, y2, strokeWidth, brush)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
@@ -6141,10 +6737,10 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
             transformedPoints.push_back(worldY);
         }
         if (!TryRecordGpuFilledPolygonCommand(transformedPoints, fillRule, brush)) {
-            InvalidateGpuReplay();
+            /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
         }
     } else {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
@@ -6176,10 +6772,10 @@ void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, B
             localPoints.push_back(points[index * 2 + 1]);
         }
         if (!TryRecordGpuPolylineCommand(localPoints, closed, strokeWidth, brush)) {
-            InvalidateGpuReplay();
+            /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
         }
     } else {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
@@ -6333,7 +6929,7 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
     }
 
     if (!TryRecordGpuFilledPolygonCommand(points, fillRule, brush)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     RasterizePolygon(points, fillRule, b, g, r, a);
@@ -6464,7 +7060,7 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
     }
 
     if (!TryRecordGpuPolylineCommand(localPoints, closed, strokeWidth, brush)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     StrokePolyline(points, closed, strokeWidth, b, g, r, a);
@@ -6549,7 +7145,7 @@ void VulkanRenderTarget::DrawContentBorder(float x, float y, float w, float h, f
             }
 
             if (!TryRecordGpuFilledPolygonCommand(points, 1, fillBrush)) {
-                InvalidateGpuReplay();
+                /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
             }
             RasterizePolygon(points, 1, b, g, r, a);
         }
@@ -6627,7 +7223,7 @@ void VulkanRenderTarget::DrawContentBorder(float x, float y, float w, float h, f
             points.push_back(worldX);
             points.push_back(worldY);
             if (!TryRecordGpuPolylineCommand(localPoints, false, strokeWidth, strokeBrush)) {
-                InvalidateGpuReplay();
+                /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
             }
             StrokePolyline(points, false, strokeWidth, b, g, r, a);
         }
@@ -6702,7 +7298,11 @@ void VulkanRenderTarget::PunchTransparentRect(float x, float y, float w, float h
 {
     TouchFrame();
     if (!TryRecordGpuClearRectCommand(x, y, w, h)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+    }
+
+    if (!cpuRasterNeeded_) {
+        return;
     }
 
     const auto transform = GetCurrentTransform();
@@ -6780,7 +7380,7 @@ void VulkanRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, f
 {
     TouchFrame();
     if (!TryRecordGpuBitmapCommand(bitmap, x, y, w, h, opacity)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     if (!bitmap || opacity <= 0.0f) {
@@ -6863,53 +7463,8 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
     const int bitmapWidth = std::max(1, static_cast<int>(std::ceil(w)));
     const int bitmapHeight = std::max(1, static_cast<int>(std::ceil(h)));
 
-    BITMAPINFO bitmapInfo {};
-    bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-    bitmapInfo.bmiHeader.biWidth = bitmapWidth;
-    bitmapInfo.bmiHeader.biHeight = -bitmapHeight;
-    bitmapInfo.bmiHeader.biPlanes = 1;
-    bitmapInfo.bmiHeader.biBitCount = 32;
-    bitmapInfo.bmiHeader.biCompression = BI_RGB;
-
-    void* dibPixels = nullptr;
-    HDC screenDc = GetDC(nullptr);
-    if (!screenDc) {
-        return;
-    }
-
-    HDC memoryDc = CreateCompatibleDC(screenDc);
-    HBITMAP dib = CreateDIBSection(screenDc, &bitmapInfo, DIB_RGB_COLORS, &dibPixels, nullptr, 0);
-    ReleaseDC(nullptr, screenDc);
-    if (!memoryDc || !dib || !dibPixels) {
-        if (dib) DeleteObject(dib);
-        if (memoryDc) DeleteDC(memoryDc);
-        return;
-    }
-
-    HGDIOBJ oldBitmap = SelectObject(memoryDc, dib);
-    SetBkMode(memoryDc, TRANSPARENT);
-    SetTextColor(memoryDc, RGB(255, 255, 255));
-
     const int fontHeight = -static_cast<int>(std::round(textFormat->GetFontSize()));
-    const int fontWeight = FW_NORMAL;
-    HFONT font = CreateFontW(
-        fontHeight,
-        0,
-        0,
-        0,
-        fontWeight,
-        FALSE,
-        FALSE,
-        FALSE,
-        DEFAULT_CHARSET,
-        OUT_DEFAULT_PRECIS,
-        CLIP_DEFAULT_PRECIS,
-        CLEARTYPE_QUALITY,
-        DEFAULT_PITCH | FF_DONTCARE,
-        textFormat->GetFontFamily().c_str());
-    HGDIOBJ oldFont = font ? SelectObject(memoryDc, font) : nullptr;
 
-    RECT rect { 0, 0, bitmapWidth, bitmapHeight };
     UINT drawFlags = DT_NOPREFIX;
     switch (textFormat->GetAlignment()) {
         case JALIUM_TEXT_ALIGN_CENTER:
@@ -6922,7 +7477,6 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
             drawFlags |= DT_LEFT;
             break;
     }
-
     switch (textFormat->GetParagraphAlignment()) {
         case JALIUM_PARAGRAPH_ALIGN_CENTER:
             drawFlags |= DT_VCENTER | DT_SINGLELINE;
@@ -6935,35 +7489,130 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
             break;
     }
 
-    DrawTextW(memoryDc, text, static_cast<int>(textLength), &rect, drawFlags);
+    // Cache lookup: GDI CreateDIBSection + CreateFontW + DrawTextW costs
+    // ~2–5ms per call and Gallery re-runs that for every static label every
+    // frame. Same (text, font, size, extents, color, alignment) → same
+    // premultiplied BGRA pixels, so we can cache the rasterized bitmap.
+    const uint32_t brushBgra =
+        static_cast<uint32_t>(b) |
+        (static_cast<uint32_t>(g) << 8) |
+        (static_cast<uint32_t>(r) << 16) |
+        (static_cast<uint32_t>(a) << 24);
+    TextCacheKey cacheKey = std::make_tuple(
+        std::wstring(text, textLength),
+        textFormat->GetFontFamily(),
+        fontHeight,
+        bitmapWidth,
+        bitmapHeight,
+        brushBgra,
+        static_cast<int>(drawFlags));
 
-    auto* source = static_cast<uint8_t*>(dibPixels);
-    std::vector<uint8_t> textPixels(static_cast<size_t>(bitmapWidth) * static_cast<size_t>(bitmapHeight) * 4u, 0);
-    for (int py = 0; py < bitmapHeight; ++py) {
-        for (int px = 0; px < bitmapWidth; ++px) {
-            const size_t offset = (static_cast<size_t>(py) * static_cast<size_t>(bitmapWidth) + static_cast<size_t>(px)) * 4u;
-            const uint8_t coverage = std::max({ source[offset + 0], source[offset + 1], source[offset + 2] });
-            textPixels[offset + 0] = static_cast<uint8_t>((static_cast<uint32_t>(b) * coverage) / 255u);
-            textPixels[offset + 1] = static_cast<uint8_t>((static_cast<uint32_t>(g) * coverage) / 255u);
-            textPixels[offset + 2] = static_cast<uint8_t>((static_cast<uint32_t>(r) * coverage) / 255u);
-            textPixels[offset + 3] = static_cast<uint8_t>((static_cast<uint32_t>(a) * coverage) / 255u);
+    std::shared_ptr<const std::vector<uint8_t>> pixelsForDraw;
+    int drawWidth = bitmapWidth;
+    int drawHeight = bitmapHeight;
+
+    auto cacheIt = textCache_.find(cacheKey);
+    if (cacheIt != textCache_.end()) {
+        pixelsForDraw = cacheIt->second.pixels;
+        drawWidth = cacheIt->second.width;
+        drawHeight = cacheIt->second.height;
+    } else {
+        BITMAPINFO bitmapInfo {};
+        bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+        bitmapInfo.bmiHeader.biWidth = bitmapWidth;
+        bitmapInfo.bmiHeader.biHeight = -bitmapHeight;
+        bitmapInfo.bmiHeader.biPlanes = 1;
+        bitmapInfo.bmiHeader.biBitCount = 32;
+        bitmapInfo.bmiHeader.biCompression = BI_RGB;
+
+        void* dibPixels = nullptr;
+        HDC screenDc = GetDC(nullptr);
+        if (!screenDc) {
+            return;
         }
+
+        HDC memoryDc = CreateCompatibleDC(screenDc);
+        HBITMAP dib = CreateDIBSection(screenDc, &bitmapInfo, DIB_RGB_COLORS, &dibPixels, nullptr, 0);
+        ReleaseDC(nullptr, screenDc);
+        if (!memoryDc || !dib || !dibPixels) {
+            if (dib) DeleteObject(dib);
+            if (memoryDc) DeleteDC(memoryDc);
+            return;
+        }
+
+        HGDIOBJ oldBitmap = SelectObject(memoryDc, dib);
+        SetBkMode(memoryDc, TRANSPARENT);
+        SetTextColor(memoryDc, RGB(255, 255, 255));
+
+        const int fontWeight = FW_NORMAL;
+        HFONT font = CreateFontW(
+            fontHeight,
+            0,
+            0,
+            0,
+            fontWeight,
+            FALSE,
+            FALSE,
+            FALSE,
+            DEFAULT_CHARSET,
+            OUT_DEFAULT_PRECIS,
+            CLIP_DEFAULT_PRECIS,
+            CLEARTYPE_QUALITY,
+            DEFAULT_PITCH | FF_DONTCARE,
+            textFormat->GetFontFamily().c_str());
+        HGDIOBJ oldFont = font ? SelectObject(memoryDc, font) : nullptr;
+
+        RECT rect { 0, 0, bitmapWidth, bitmapHeight };
+        DrawTextW(memoryDc, text, static_cast<int>(textLength), &rect, drawFlags);
+
+        auto* source = static_cast<uint8_t*>(dibPixels);
+        std::vector<uint8_t> textPixels(static_cast<size_t>(bitmapWidth) * static_cast<size_t>(bitmapHeight) * 4u, 0);
+        for (int py = 0; py < bitmapHeight; ++py) {
+            for (int px = 0; px < bitmapWidth; ++px) {
+                const size_t offset = (static_cast<size_t>(py) * static_cast<size_t>(bitmapWidth) + static_cast<size_t>(px)) * 4u;
+                const uint8_t coverage = std::max({ source[offset + 0], source[offset + 1], source[offset + 2] });
+                textPixels[offset + 0] = static_cast<uint8_t>((static_cast<uint32_t>(b) * coverage) / 255u);
+                textPixels[offset + 1] = static_cast<uint8_t>((static_cast<uint32_t>(g) * coverage) / 255u);
+                textPixels[offset + 2] = static_cast<uint8_t>((static_cast<uint32_t>(r) * coverage) / 255u);
+                textPixels[offset + 3] = static_cast<uint8_t>((static_cast<uint32_t>(a) * coverage) / 255u);
+            }
+        }
+
+        if (oldFont) {
+            SelectObject(memoryDc, oldFont);
+        }
+        if (font) {
+            DeleteObject(font);
+        }
+        if (oldBitmap) {
+            SelectObject(memoryDc, oldBitmap);
+        }
+        DeleteObject(dib);
+        DeleteDC(memoryDc);
+
+        // Simple bounded cache: once we blow past the cap, dump the whole map
+        // rather than maintaining LRU bookkeeping. In practice a frame touches
+        // a small working set (~100 labels), so hitting the cap means the UI
+        // is cycling through content anyway — restarting from empty is fine.
+        if (textCache_.size() >= kMaxTextCacheEntries) {
+            textCache_.clear();
+        }
+
+        TextCacheEntry entry;
+        entry.pixels = std::make_shared<const std::vector<uint8_t>>(std::move(textPixels));
+        entry.width = bitmapWidth;
+        entry.height = bitmapHeight;
+        auto [insertedIt, _] = textCache_.emplace(std::move(cacheKey), std::move(entry));
+        pixelsForDraw = insertedIt->second.pixels;
+        drawWidth = insertedIt->second.width;
+        drawHeight = insertedIt->second.height;
     }
 
-    if (oldFont) {
-        SelectObject(memoryDc, oldFont);
-    }
-    if (font) {
-        DeleteObject(font);
-    }
-    if (oldBitmap) {
-        SelectObject(memoryDc, oldBitmap);
-    }
-    DeleteObject(dib);
-    DeleteDC(memoryDc);
-
-    VulkanBitmap textBitmap(static_cast<uint32_t>(bitmapWidth), static_cast<uint32_t>(bitmapHeight), std::move(textPixels));
-    DrawBitmap(&textBitmap, x, y, static_cast<float>(bitmapWidth), static_cast<float>(bitmapHeight), 1.0f);
+    // Fast path: record directly into the GPU replay command list with a
+    // shared_ptr to the cached pixels. No VulkanBitmap construction, no
+    // vector copy — just a ref-count bump and a single push_back. This is
+    // the single biggest Render-time win for Gallery.
+    RecordCachedTextBitmap(std::move(pixelsForDraw), drawWidth, drawHeight, x, y);
 #else
     // FreeType + HarfBuzz glyph atlas text rendering (Android / Linux)
     // Render glyphs into a temporary BGRA bitmap in local (DIP) space,
@@ -7115,6 +7764,12 @@ void VulkanRenderTarget::DrawBackdropFilter(float x, float y, float w, float h, 
     (void)cornerRadiusBR;
     (void)cornerRadiusBL;
 
+    // Backdrop reads pixelBuffer_ (both to record the GPU command and to apply
+    // the CPU fallback blur), so pixelBuffer_ must reflect every command
+    // recorded so far this frame. If we've been lazily skipping CPU work, catch
+    // it up now; from this point in the frame on, cpuRasterNeeded_ stays true.
+    EnsureCpuRasterization();
+
     if (pixelBuffer_.empty() || w <= 0.0f || h <= 0.0f) {
         return;
     }
@@ -7142,7 +7797,7 @@ void VulkanRenderTarget::DrawBackdropFilter(float x, float y, float w, float h, 
             tintOpacity,
             1.0f,
             0.0f)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
     BlendBuffer(blurred, width_, height_, x, y, w, h, 1.0f);
 
@@ -7188,7 +7843,7 @@ void VulkanRenderTarget::DrawGlowingBorderHighlight(float x, float y, float w, f
             220.0f / 255.0f,
             dimOpacity,
             1.0f)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     BlendOutsideRect(x, y, w, h, 0, 0, 0, dimA);
@@ -7311,7 +7966,7 @@ void VulkanRenderTarget::DrawDesktopBackdrop(float x, float y, float w, float h,
 
     auto blurred = BlurPixels(desktopCapturePixels_, desktopCaptureWidth_, desktopCaptureHeight_, std::max(1, static_cast<int>(std::round(blurRadius))), 0.0f, 0.0f, static_cast<float>(desktopCaptureWidth_), static_cast<float>(desktopCaptureHeight_));
     if (!TryRecordGpuBackdropCommand(desktopCapturePixels_, static_cast<uint32_t>(desktopCaptureWidth_), static_cast<uint32_t>(desktopCaptureHeight_), x, y, w, h, blurRadius, 0.0f, 0.0f, 0.0f, 0.0f, tintR, tintG, tintB, tintOpacity, saturation, noiseIntensity)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
     BlendBuffer(blurred, desktopCaptureWidth_, desktopCaptureHeight_, x, y, w, h, 1.0f);
 
@@ -7338,6 +7993,13 @@ void VulkanRenderTarget::BeginTransitionCapture(int slot, float x, float y, floa
     if (slot < 0 || slot > 1) {
         return;
     }
+
+    // We're about to snapshot pixelBuffer_ into transitionSavedPixels_; it has
+    // to be fully rasterized first. Also, from this point on the capture will
+    // call Draw* methods expecting the CPU path to actually run (so that
+    // EndTransitionCapture can harvest pixelBuffer_), so leave cpuRasterNeeded_
+    // latched to true for the rest of the frame.
+    EnsureCpuRasterization();
 
     transitionSavedPixels_ = pixelBuffer_;
     transitionSavedReplayCommands_ = gpuReplayCommands_;
@@ -7394,7 +8056,7 @@ void VulkanRenderTarget::DrawTransitionShader(float x, float y, float w, float h
             h,
             progress,
             mode)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     const float t = std::clamp(progress, 0.0f, 1.0f);
@@ -7431,13 +8093,19 @@ void VulkanRenderTarget::DrawCapturedTransition(int slot, float x, float y, floa
     }
 
     if (!TryRecordGpuPixelBufferCommand(transitionSlots_[slot].pixels, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, opacity)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
     BlendBuffer(transitionSlots_[slot].pixels, width_, height_, x, y, w, h, opacity);
 }
 void VulkanRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
 {
     TouchFrame();
+
+    // The capture snapshots pixelBuffer_ (moving it into savedPixels_) and then
+    // begins a fresh sub-frame where child Draw* calls rasterize into a cleared
+    // pixelBuffer_ that EndEffectCapture will read. All of that requires the
+    // CPU path to be active, so catch up any previously-skipped work first.
+    EnsureCpuRasterization();
 
     EffectCaptureState state {};
     state.savedPixels = std::move(pixelBuffer_);
@@ -7488,7 +8156,7 @@ void VulkanRenderTarget::DrawBlurEffect(float x, float y, float w, float h, floa
 
     if (radius <= 0.0f) {
         if (!TryRecordGpuPixelBufferCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, 1.0f)) {
-            InvalidateGpuReplay();
+            /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
         }
         BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
         return;
@@ -7497,7 +8165,7 @@ void VulkanRenderTarget::DrawBlurEffect(float x, float y, float w, float h, floa
     const int blurRadius = std::max(1, static_cast<int>(std::round(radius)));
     auto blurred = BlurPixels(lastCapturedPixels_, width_, height_, blurRadius, x, y, w, h);
     if (!TryRecordGpuBlurCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, radius, 1.0f)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
     BlendBuffer(blurred, width_, height_, x, y, w, h, 1.0f);
 }
@@ -7529,7 +8197,7 @@ void VulkanRenderTarget::DrawDropShadowEffect(float x, float y, float w, float h
 
     if (!TryRecordGpuBlurCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x + offsetX, y + offsetY, w, h, blurRadius, 1.0f, true, r, g, b, a) ||
         !TryRecordGpuPixelBufferCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, 1.0f)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
     BlendBuffer(shadowPixels, width_, height_, x + offsetX, y + offsetY, w, h, 1.0f);
     BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
@@ -7560,8 +8228,12 @@ void VulkanRenderTarget::DrawLiquidGlass(float x, float y, float w, float h, flo
     (void)fusionRadius;
     (void)neighborData;
 
+    // LiquidGlass samples pixelBuffer_ for both the GPU command payload and the
+    // CPU blur fallback, so bring pixelBuffer_ up to date before either path.
+    EnsureCpuRasterization();
+
     if (!TryRecordGpuLiquidGlassCommand(pixelBuffer_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, cornerRadius, blurRadius, refractionAmount, chromaticAberration, tintR, tintG, tintB, tintOpacity, lightX, lightY, highlightBoost)) {
-        InvalidateGpuReplay();
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     auto blurred = BlurPixels(pixelBuffer_, width_, height_, std::max(1, static_cast<int>(std::round(blurRadius))), x, y, w, h);

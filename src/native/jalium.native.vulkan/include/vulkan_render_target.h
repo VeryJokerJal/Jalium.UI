@@ -6,7 +6,10 @@
 #include "vulkan_impeller_engine.h"
 #include "vulkan_vello_engine.h"
 
+#include <map>
 #include <memory>
+#include <string>
+#include <tuple>
 #include <vector>
 
 namespace jalium {
@@ -128,7 +131,16 @@ private:
     struct GpuBitmapCommand {
         uint32_t pixelWidth = 0;
         uint32_t pixelHeight = 0;
+        // Either an owning pixel buffer (for one-shot bitmaps like the desktop
+        // capture snapshot) OR a shared pointer into the text cache (hot path
+        // for glyph rasterization — RenderText). Sharing skips a ~16 KB copy
+        // per text primitive, which on Gallery's label-heavy pages was eating
+        // ~70 ms of Render time per frame.
         std::vector<uint8_t> pixels;
+        std::shared_ptr<const std::vector<uint8_t>> sharedPixels;
+        const std::vector<uint8_t>& GetPixels() const {
+            return sharedPixels ? *sharedPixels : pixels;
+        }
         float x = 0.0f;
         float y = 0.0f;
         float w = 0.0f;
@@ -314,6 +326,16 @@ private:
     void FillSolidRect(int left, int top, int right, int bottom, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     void BlendPixel(int x, int y, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     bool TryGetSolidBrushColor(Brush* brush, uint8_t& b, uint8_t& g, uint8_t& r, uint8_t& a) const;
+    // Like TryGetSolidBrushColor but also accepts linear/radial gradient
+    // brushes, collapsing them to their average stop color. The approximation
+    // exists so the GPU replay pipeline doesn't have to bail out when a
+    // gradient appears, which used to invalidate the entire frame's replay
+    // path and force every other draw through the CPU upload fallback. Visual
+    // fidelity is lost for gradients, but frame times drop by an order of
+    // magnitude in UIs that sprinkle gradient accents on otherwise-solid
+    // backgrounds (such as Gallery). A proper gradient shader would record a
+    // dedicated gradient-rect command instead.
+    bool TryGetApproximateBrushColor(Brush* brush, uint8_t& b, uint8_t& g, uint8_t& r, uint8_t& a) const;
     std::vector<uint8_t> BlurPixels(const std::vector<uint8_t>& source, int sourceWidth, int sourceHeight, int radius, float x, float y, float w, float h) const;
     void BlendBuffer(const std::vector<uint8_t>& source, int sourceWidth, int sourceHeight, float x, float y, float w, float h, float opacity);
     void PushTemporaryClip(float x, float y, float w, float h, float rx = 0.0f, float ry = 0.0f);
@@ -322,9 +344,11 @@ private:
     void BlendOutsideRect(float x, float y, float w, float h, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     void StrokeRoundedRectApprox(float x, float y, float w, float h, float rx, float ry, float strokeWidth, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     void ResetGpuReplay();
-    void InvalidateGpuReplay();
+    void InvalidateGpuReplay(const char* caller = nullptr);
     void ResetGpuSolidRectReplay() { ResetGpuReplay(); }
-    void InvalidateGpuSolidRectReplay() { InvalidateGpuReplay(); }
+    void InvalidateGpuSolidRectReplay(const char* caller = nullptr) { InvalidateGpuReplay(caller); }
+    void EnsureCpuRasterization();
+    void ReplayCommandToCpu(const GpuReplayCommand& command);
     bool TryPopulateReplayClip(GpuReplayCommand& command) const;
     bool TryRecordGpuClearRectCommand(float x, float y, float w, float h);
     bool TryRecordGpuPixelBufferCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity);
@@ -378,6 +402,47 @@ private:
     bool gpuReplaySupported_ = false;
     bool gpuReplayHasClear_ = false;
     std::vector<GpuReplayCommand> gpuReplayCommands_;
+    mutable bool cpuRasterNeeded_ = false;
+    bool cpuRasterNeededLastFrame_ = false;
+
+    // Rasterized-text cache. Windows RenderText used to call CreateDIBSection +
+    // CreateFontW + DrawTextW on every frame, which dominated the Vulkan
+    // backend's frame time (~150ms/frame in Gallery) because every static label
+    // re-ran GDI. This cache keys on (text, font family, size, bitmap extents,
+    // premultiplied BGRA color, draw flags) and stores the BGRA pixel payload
+    // ready for DrawBitmap, so the GDI dance only runs the first time a given
+    // string is drawn at a given size/color.
+    //
+    // Key members (ordered the same as operator< for std::tuple):
+    //   [0] text as wstring
+    //   [1] font family as wstring
+    //   [2] fontHeight (rounded px, signed — matches GDI LOGFONT.lfHeight)
+    //   [3] bitmapWidth
+    //   [4] bitmapHeight
+    //   [5] brush BGRA packed (b | g<<8 | r<<16 | a<<24)
+    //   [6] drawFlags (alignment bits)
+    using TextCacheKey = std::tuple<std::wstring, std::wstring, int, int, int, uint32_t, int>;
+    struct TextCacheEntry {
+        // Stored as shared_ptr so the bitmap command can alias it instead of
+        // deep-copying 16 KB per text primitive. The cache owns a strong ref;
+        // each recorded GpuReplayCommand holds a second strong ref until the
+        // command list is cleared at the next frame boundary.
+        std::shared_ptr<const std::vector<uint8_t>> pixels;
+        int width = 0;
+        int height = 0;
+    };
+    std::map<TextCacheKey, TextCacheEntry> textCache_;
+    static constexpr size_t kMaxTextCacheEntries = 512;
+
+    // Fast-path used by RenderText to emit a cached text bitmap straight into
+    // the GPU replay command list, skipping both the VulkanBitmap wrapper
+    // construction (which deep-copies the pixel vector) and the
+    // TryRecordGpuPixelBufferCommand deep-copy. Owns a shared reference to
+    // the text cache entry's pixel buffer so subsequent DrawReplayFrame reads
+    // see the same bytes.
+    void RecordCachedTextBitmap(std::shared_ptr<const std::vector<uint8_t>> pixels,
+                                int width, int height, float x, float y);
+
     std::unique_ptr<Impl> impl_;
 };
 
