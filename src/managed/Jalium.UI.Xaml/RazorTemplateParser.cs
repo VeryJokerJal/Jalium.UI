@@ -182,7 +182,7 @@ internal static class RazorTemplateParser
 {
     private static readonly HashSet<char> PathChars = new(
     [
-        '.', '_', '[', ']', '$'
+        '.', '_', '[', ']', '$', '#'
     ]);
 
     public static RazorTemplate Parse(string value)
@@ -294,7 +294,7 @@ internal static class RazorTemplateParser
     }
 
     private static bool IsPathStart(char c) =>
-        c == '_' || c == '$' || char.IsLetter(c);
+        c == '_' || c == '$' || c == '#' || char.IsLetter(c);
 
     private static bool IsPathPart(char c) =>
         char.IsLetterOrDigit(c) || PathChars.Contains(c);

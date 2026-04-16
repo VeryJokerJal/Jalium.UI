@@ -126,6 +126,10 @@ internal sealed class RazorTokenizer
         if (char.IsDigit(c) || (c == '.' && _pos + 1 < _source.Length && char.IsDigit(_source[_pos + 1])))
             return ReadNumber(start);
 
+        // $.path or #.path — Razor prefix identifiers (self-reference / data model)
+        if ((c == '$' || c == '#') && _pos + 1 < _source.Length && _source[_pos + 1] == '.')
+            return ReadPrefixedIdentifier(start);
+
         // @identifier (verbatim identifier: @class, @event)
         if (c == '@' && _pos < _source.Length && (char.IsLetter(_source[_pos]) || _source[_pos] == '_'))
             return ReadVerbatimIdentifier(start);
@@ -135,6 +139,14 @@ internal sealed class RazorTokenizer
 
         // Operators & delimiters
         return ReadOperator(start);
+    }
+
+    private RazorToken ReadPrefixedIdentifier(int start)
+    {
+        _pos += 2; // skip $ or # and the dot
+        while (_pos < _source.Length && (char.IsLetterOrDigit(_source[_pos]) || _source[_pos] is '_' or '.' or '[' or ']'))
+            _pos++;
+        return new RazorToken(RazorTokenKind.Identifier, _source[start.._pos], start);
     }
 
     private RazorToken ReadStringLiteral(int start)

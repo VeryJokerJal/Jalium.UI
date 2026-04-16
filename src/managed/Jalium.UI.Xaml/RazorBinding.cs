@@ -14,6 +14,34 @@ internal static class RazorValueResolver
         object? codeBehind,
         string path)
     {
+        // $.path — self-reference: resolve against the target element itself
+        if (path.Length >= 2 && path[0] == '$' && path[1] == '.')
+        {
+            var selfPath = path[2..];
+            if (TryResolvePath(targetObject, selfPath, out _, out var selfValue))
+                return selfValue;
+            return null;
+        }
+
+        if (path.Length == 1 && path[0] == '$')
+            return targetObject;
+
+        // #.path — data model reference: resolve against DataContext only, no codeBehind fallback
+        if (path.Length >= 2 && path[0] == '#' && path[1] == '.')
+        {
+            var dataPath = path[2..];
+            if (TryResolveDataContext(targetObject, dataPath, out var foundInData, out var dataValue) && foundInData)
+                return dataValue;
+            return null;
+        }
+
+        if (path.Length == 1 && path[0] == '#')
+        {
+            if (targetObject is FrameworkElement fe)
+                return fe.DataContext;
+            return null;
+        }
+
         // 1. Try DataContext on the target element or its visual ancestors
         if (TryResolveDataContext(targetObject, path, out var foundInDataContext, out var valueFromDataContext) && foundInDataContext)
         {
@@ -661,6 +689,25 @@ internal static class RazorBindingEngine
 
     private static BindingBase CreatePreferredPathBinding(string path, object? codeBehind)
     {
+        // $.path — self-reference: bind to the element's own property via RelativeSource.Self
+        if (path.Length >= 2 && path[0] == '$' && path[1] == '.')
+        {
+            return new Binding(path[2..])
+            {
+                RelativeSource = RelativeSource.Self,
+                FallbackValue = DependencyProperty.UnsetValue
+            };
+        }
+
+        // #.path — data model: bind to DataContext only, no codeBehind fallback
+        if (path.Length >= 2 && path[0] == '#' && path[1] == '.')
+        {
+            return new Binding(path[2..])
+            {
+                FallbackValue = DependencyProperty.UnsetValue
+            };
+        }
+
         var dataContextBinding = new Binding(path)
         {
             FallbackValue = DependencyProperty.UnsetValue
