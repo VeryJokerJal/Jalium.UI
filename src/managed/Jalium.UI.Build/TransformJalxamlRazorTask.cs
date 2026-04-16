@@ -837,6 +837,11 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
     /// </summary>
     private static string? TryGenerateEvaluatorBody(string expression, string[] dependencies)
     {
+        // Expressions containing $.path or #.path prefixes cannot be emitted as raw C# code.
+        // The runtime lightweight interpreter handles them via the resolver callback.
+        if (expression.Contains("$.") || expression.Contains("#."))
+            return null;
+
         // Extract root identifiers from dependencies.
         var roots = dependencies
             .Select(static d =>
