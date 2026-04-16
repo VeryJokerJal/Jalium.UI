@@ -5714,6 +5714,312 @@ void VulkanRenderTarget::RecordCachedTextBitmap(std::shared_ptr<const std::vecto
     gpuReplayCommands_.push_back(std::move(cmd));
 }
 
+void VulkanRenderTarget::RasterizePolygonToGpuBitmap(
+    const std::vector<float>& worldPoints,
+    int fillRule,
+    uint8_t b, uint8_t g, uint8_t r, uint8_t a)
+{
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
+        return;
+    }
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return;
+    }
+    if (worldPoints.size() < 6) {
+        return;
+    }
+
+    const float opacity = std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
+    if (opacity <= 0.0f || a == 0) {
+        return;
+    }
+
+    // Premultiply brush alpha by the current opacity stack.
+    const uint8_t effA = static_cast<uint8_t>(static_cast<float>(a) * opacity + 0.5f);
+    if (effA == 0) {
+        return;
+    }
+
+    // World-space axis-aligned bounding box of the polygon points.
+    float minX = worldPoints[0];
+    float minY = worldPoints[1];
+    float maxX = worldPoints[0];
+    float maxY = worldPoints[1];
+    for (size_t i = 2; i + 1 < worldPoints.size(); i += 2) {
+        minX = std::min(minX, worldPoints[i]);
+        minY = std::min(minY, worldPoints[i + 1]);
+        maxX = std::max(maxX, worldPoints[i]);
+        maxY = std::max(maxY, worldPoints[i + 1]);
+    }
+
+    // Intersect with any active scissor (from clipStack_) so the local buffer
+    // is no bigger than what could possibly be visible.
+    GpuReplayCommand probe {};
+    probe.kind = GpuReplayCommandKind::Bitmap;
+    if (!TryPopulateReplayClip(probe)) {
+        return;
+    }
+    const float clipLeft = static_cast<float>(probe.scissorLeft);
+    const float clipTop = static_cast<float>(probe.scissorTop);
+    const float clipRight = static_cast<float>(probe.scissorRight);
+    const float clipBottom = static_cast<float>(probe.scissorBottom);
+    minX = std::max(minX, clipLeft);
+    minY = std::max(minY, clipTop);
+    maxX = std::min(maxX, clipRight);
+    maxY = std::min(maxY, clipBottom);
+    if (maxX - minX <= 0.5f || maxY - minY <= 0.5f) {
+        return;
+    }
+
+    const int bboxLeft = static_cast<int>(std::floor(minX));
+    const int bboxTop = static_cast<int>(std::floor(minY));
+    const int bboxRight = static_cast<int>(std::ceil(maxX));
+    const int bboxBottom = static_cast<int>(std::ceil(maxY));
+    const int bw = bboxRight - bboxLeft;
+    const int bh = bboxBottom - bboxTop;
+    if (bw <= 0 || bh <= 0 || bw > 4096 || bh > 4096) {
+        // Reject absurdly large paths — those are almost certainly a
+        // mis-decoded stroke or a path that should have been clipped away.
+        return;
+    }
+
+    auto pixels = std::make_shared<std::vector<uint8_t>>(
+        static_cast<size_t>(bw) * static_cast<size_t>(bh) * 4u, 0);
+    auto& buffer = *pixels;
+    const size_t stride = static_cast<size_t>(bw) * 4u;
+    const size_t vertexCount = worldPoints.size() / 2;
+
+    // Straight (unpremultiplied) BGRA. DrawReplayFrame's bitmap pipeline
+    // blends with VK_BLEND_FACTOR_SRC_ALPHA / VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+    // and CPU replay's BlendBuffer → BlendPixel does the same straight-alpha
+    // SrcOver, so we must store the color channels unmodified and let the
+    // blend pipeline multiply by srcA once. Premultiplying here would square
+    // alpha and make fallback shapes noticeably dimmer than normal fills.
+    const uint8_t srcA = effA;
+
+    for (int y = bboxTop; y < bboxBottom; ++y) {
+        const float py = static_cast<float>(y) + 0.5f;
+        const int localY = y - bboxTop;
+        uint8_t* row = buffer.data() + static_cast<size_t>(localY) * stride;
+        for (int x = bboxLeft; x < bboxRight; ++x) {
+            const float px = static_cast<float>(x) + 0.5f;
+
+            bool inside = false;
+            if (fillRule == 1) {
+                int winding = 0;
+                for (size_t i = 0; i < vertexCount; ++i) {
+                    const size_t j = (i + 1) % vertexCount;
+                    const float x0 = worldPoints[i * 2];
+                    const float y0 = worldPoints[i * 2 + 1];
+                    const float x1 = worldPoints[j * 2];
+                    const float y1 = worldPoints[j * 2 + 1];
+                    if (y0 <= py) {
+                        if (y1 > py && ((x1 - x0) * (py - y0) - (px - x0) * (y1 - y0)) > 0.0f) {
+                            ++winding;
+                        }
+                    } else if (y1 <= py && ((x1 - x0) * (py - y0) - (px - x0) * (y1 - y0)) < 0.0f) {
+                        --winding;
+                    }
+                }
+                inside = winding != 0;
+            } else {
+                bool crossing = false;
+                for (size_t i = 0, j = vertexCount - 1; i < vertexCount; j = i++) {
+                    const float xi = worldPoints[i * 2];
+                    const float yi = worldPoints[i * 2 + 1];
+                    const float xj = worldPoints[j * 2];
+                    const float yj = worldPoints[j * 2 + 1];
+                    const bool intersect = ((yi > py) != (yj > py))
+                        && (px < (xj - xi) * (py - yi) / ((yj - yi) == 0.0f ? 1.0f : (yj - yi)) + xi);
+                    if (intersect) {
+                        crossing = !crossing;
+                    }
+                }
+                inside = crossing;
+            }
+
+            if (!inside) {
+                continue;
+            }
+
+            const int localX = x - bboxLeft;
+            uint8_t* dst = row + static_cast<size_t>(localX) * 4u;
+            // Straight BGRA — alpha is applied once by the blend pipeline.
+            dst[0] = b;
+            dst[1] = g;
+            dst[2] = r;
+            dst[3] = srcA;
+        }
+    }
+
+    // Now emit a Bitmap replay command that points at buffer.
+    GpuReplayCommand cmd {};
+    cmd.kind = GpuReplayCommandKind::Bitmap;
+    cmd.bitmap.pixelWidth = static_cast<uint32_t>(bw);
+    cmd.bitmap.pixelHeight = static_cast<uint32_t>(bh);
+    cmd.bitmap.sharedPixels = std::shared_ptr<const std::vector<uint8_t>>(pixels);
+    cmd.bitmap.x = static_cast<float>(bboxLeft);
+    cmd.bitmap.y = static_cast<float>(bboxTop);
+    cmd.bitmap.w = static_cast<float>(bw);
+    cmd.bitmap.h = static_cast<float>(bh);
+    // The opacity stack is already baked into srcA, so the per-bitmap
+    // opacity must be 1.0 to avoid multiplying alpha twice at blend time.
+    cmd.bitmap.opacity = 1.0f;
+
+    // Populate clip/scissor on the actual command (not the probe).
+    if (!TryPopulateReplayClip(cmd)) {
+        return;
+    }
+    if (cmd.scissorRight <= cmd.scissorLeft || cmd.scissorBottom <= cmd.scissorTop) {
+        return;
+    }
+
+    gpuReplayCommands_.push_back(std::move(cmd));
+}
+
+void VulkanRenderTarget::RasterizePolylineToGpuBitmap(
+    const std::vector<float>& worldPoints,
+    bool closed,
+    float strokeWidth,
+    uint8_t b, uint8_t g, uint8_t r, uint8_t a)
+{
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
+        return;
+    }
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return;
+    }
+    if (worldPoints.size() < 4 || strokeWidth <= 0.0f) {
+        return;
+    }
+
+    const float opacity = std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
+    if (opacity <= 0.0f || a == 0) {
+        return;
+    }
+    const uint8_t effA = static_cast<uint8_t>(static_cast<float>(a) * opacity + 0.5f);
+    if (effA == 0) {
+        return;
+    }
+
+    const int thickness = std::max(1, static_cast<int>(std::round(strokeWidth)));
+    const int halfThick = thickness / 2;
+    const float halfStrokeF = static_cast<float>(halfThick + 1);
+
+    // Bounding box padded by half-stroke so stamp boxes fit.
+    float minX = worldPoints[0];
+    float minY = worldPoints[1];
+    float maxX = worldPoints[0];
+    float maxY = worldPoints[1];
+    for (size_t i = 2; i + 1 < worldPoints.size(); i += 2) {
+        minX = std::min(minX, worldPoints[i]);
+        minY = std::min(minY, worldPoints[i + 1]);
+        maxX = std::max(maxX, worldPoints[i]);
+        maxY = std::max(maxY, worldPoints[i + 1]);
+    }
+    minX -= halfStrokeF;
+    minY -= halfStrokeF;
+    maxX += halfStrokeF;
+    maxY += halfStrokeF;
+
+    // Intersect with active scissor.
+    GpuReplayCommand probe {};
+    probe.kind = GpuReplayCommandKind::Bitmap;
+    if (!TryPopulateReplayClip(probe)) {
+        return;
+    }
+    minX = std::max(minX, static_cast<float>(probe.scissorLeft));
+    minY = std::max(minY, static_cast<float>(probe.scissorTop));
+    maxX = std::min(maxX, static_cast<float>(probe.scissorRight));
+    maxY = std::min(maxY, static_cast<float>(probe.scissorBottom));
+    if (maxX - minX <= 0.5f || maxY - minY <= 0.5f) {
+        return;
+    }
+
+    const int bboxLeft = static_cast<int>(std::floor(minX));
+    const int bboxTop = static_cast<int>(std::floor(minY));
+    const int bboxRight = static_cast<int>(std::ceil(maxX));
+    const int bboxBottom = static_cast<int>(std::ceil(maxY));
+    const int bw = bboxRight - bboxLeft;
+    const int bh = bboxBottom - bboxTop;
+    if (bw <= 0 || bh <= 0 || bw > 4096 || bh > 4096) {
+        return;
+    }
+
+    auto pixels = std::make_shared<std::vector<uint8_t>>(
+        static_cast<size_t>(bw) * static_cast<size_t>(bh) * 4u, 0);
+    auto& buffer = *pixels;
+    const size_t stride = static_cast<size_t>(bw) * 4u;
+    // Straight (unpremultiplied) BGRA — the GPU bitmap pipeline and CPU
+    // BlendBuffer both apply SrcOver with src * srcA, so we must NOT
+    // premultiply here. See RasterizePolygonToGpuBitmap for details.
+    const uint8_t srcA = effA;
+
+    auto stamp = [&](int cx, int cy) {
+        const int x0 = std::max(bboxLeft,      cx - halfThick);
+        const int y0 = std::max(bboxTop,       cy - halfThick);
+        const int x1 = std::min(bboxRight,     cx - halfThick + thickness);
+        const int y1 = std::min(bboxBottom,    cy - halfThick + thickness);
+        for (int py = y0; py < y1; ++py) {
+            uint8_t* row = buffer.data() + static_cast<size_t>(py - bboxTop) * stride;
+            for (int px = x0; px < x1; ++px) {
+                uint8_t* dst = row + static_cast<size_t>(px - bboxLeft) * 4u;
+                dst[0] = b;
+                dst[1] = g;
+                dst[2] = r;
+                dst[3] = srcA;
+            }
+        }
+    };
+
+    auto drawSegment = [&](float sx, float sy, float ex, float ey) {
+        int x0 = static_cast<int>(std::round(sx));
+        int y0 = static_cast<int>(std::round(sy));
+        const int x1 = static_cast<int>(std::round(ex));
+        const int y1 = static_cast<int>(std::round(ey));
+        const int dx = std::abs(x1 - x0);
+        const int sxStep = x0 < x1 ? 1 : -1;
+        const int dy = -std::abs(y1 - y0);
+        const int syStep = y0 < y1 ? 1 : -1;
+        int err = dx + dy;
+        while (true) {
+            stamp(x0, y0);
+            if (x0 == x1 && y0 == y1) break;
+            const int e2 = err * 2;
+            if (e2 >= dy) { err += dy; x0 += sxStep; }
+            if (e2 <= dx) { err += dx; y0 += syStep; }
+        }
+    };
+
+    for (size_t i = 0; i + 3 < worldPoints.size(); i += 2) {
+        drawSegment(worldPoints[i], worldPoints[i + 1], worldPoints[i + 2], worldPoints[i + 3]);
+    }
+    if (closed && worldPoints.size() >= 4) {
+        drawSegment(worldPoints[worldPoints.size() - 2], worldPoints[worldPoints.size() - 1],
+                    worldPoints[0], worldPoints[1]);
+    }
+
+    GpuReplayCommand cmd {};
+    cmd.kind = GpuReplayCommandKind::Bitmap;
+    cmd.bitmap.pixelWidth = static_cast<uint32_t>(bw);
+    cmd.bitmap.pixelHeight = static_cast<uint32_t>(bh);
+    cmd.bitmap.sharedPixels = std::shared_ptr<const std::vector<uint8_t>>(pixels);
+    cmd.bitmap.x = static_cast<float>(bboxLeft);
+    cmd.bitmap.y = static_cast<float>(bboxTop);
+    cmd.bitmap.w = static_cast<float>(bw);
+    cmd.bitmap.h = static_cast<float>(bh);
+    cmd.bitmap.opacity = 1.0f;
+
+    if (!TryPopulateReplayClip(cmd)) {
+        return;
+    }
+    if (cmd.scissorRight <= cmd.scissorLeft || cmd.scissorBottom <= cmd.scissorTop) {
+        return;
+    }
+
+    gpuReplayCommands_.push_back(std::move(cmd));
+}
+
 bool VulkanRenderTarget::TryRecordGpuPixelBufferCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity)
 {
     if (!gpuReplaySupported_ || !gpuReplayHasClear_ || pixels.empty() || pixelWidth == 0 || pixelHeight == 0 || opacity <= 0.0f || w == 0.0f || h == 0.0f) {
@@ -6737,10 +7043,16 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
             transformedPoints.push_back(worldY);
         }
         if (!TryRecordGpuFilledPolygonCommand(transformedPoints, fillRule, brush)) {
-            /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+            // Ear-clipping triangulation bailed out (self-intersecting path,
+            // multi-contour path, or non-axis-aligned transform). CPU-
+            // rasterize into a local bitmap and record it as a GPU bitmap
+            // command so the frame stays on the replay path. Typical
+            // PathIcon shapes are <= 64x64 px, so this is ~1 ms at most.
+            uint8_t bc = 0, gc = 0, rc = 0, ac = 0;
+            if (TryGetApproximateBrushColor(brush, bc, gc, rc, ac)) {
+                RasterizePolygonToGpuBitmap(transformedPoints, fillRule, bc, gc, rc, ac);
+            }
         }
-    } else {
-        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
@@ -6772,10 +7084,23 @@ void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, B
             localPoints.push_back(points[index * 2 + 1]);
         }
         if (!TryRecordGpuPolylineCommand(localPoints, closed, strokeWidth, brush)) {
-            /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+            // Same fallback as FillPolygon — CPU-rasterize the stroked
+            // polyline into a local bitmap. Points need to be in world space
+            // for the rasterizer, so re-transform them here.
+            uint8_t bc = 0, gc = 0, rc = 0, ac = 0;
+            if (TryGetApproximateBrushColor(brush, bc, gc, rc, ac)) {
+                const auto transform = GetCurrentTransform();
+                std::vector<float> worldPts;
+                worldPts.reserve(localPoints.size());
+                for (size_t i = 0; i + 1 < localPoints.size(); i += 2) {
+                    float wx = 0.0f, wy = 0.0f;
+                    ApplyTransform(transform, localPoints[i], localPoints[i + 1], wx, wy);
+                    worldPts.push_back(wx);
+                    worldPts.push_back(wy);
+                }
+                RasterizePolylineToGpuBitmap(worldPts, closed, strokeWidth, bc, gc, rc, ac);
+            }
         }
-    } else {
-        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
@@ -6929,7 +7254,11 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
     }
 
     if (!TryRecordGpuFilledPolygonCommand(points, fillRule, brush)) {
-        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+        // Path can't be triangulated (typical for SVG icons with multiple
+        // subpaths or self-intersecting glyph outlines). Rasterize the path
+        // into a local bitmap and record it as a GPU bitmap command, which
+        // keeps the frame on the replay path and still shows the icon.
+        RasterizePolygonToGpuBitmap(points, fillRule, b, g, r, a);
     }
 
     RasterizePolygon(points, fillRule, b, g, r, a);
@@ -7060,7 +7389,11 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
     }
 
     if (!TryRecordGpuPolylineCommand(localPoints, closed, strokeWidth, brush)) {
-        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+        // Stroke couldn't be expressed as a polyline command (e.g. dashed
+        // stroke, non-miter join, or just long enough to exceed
+        // TryRecordGpuLineCommand's per-segment budget). Rasterize into a
+        // local bitmap so the outline still shows up.
+        RasterizePolylineToGpuBitmap(points, closed, strokeWidth, b, g, r, a);
     }
 
     StrokePolyline(points, closed, strokeWidth, b, g, r, a);

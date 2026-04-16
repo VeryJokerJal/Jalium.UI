@@ -443,6 +443,25 @@ private:
     void RecordCachedTextBitmap(std::shared_ptr<const std::vector<uint8_t>> pixels,
                                 int width, int height, float x, float y);
 
+    // Fallback used when a FillPath / FillPolygon / StrokePath / DrawPolygon
+    // cannot be expressed as a GPU replay FilledPolygon command (for example:
+    // self-intersecting paths, multiple subpaths, ear-clipping triangulation
+    // failure, or non-axis-aligned transforms). The polygon/polyline gets
+    // rasterized into a *local* BGRA buffer sized to its axis-aligned bbox,
+    // then recorded as a GPU Bitmap command. Keeps the whole frame on the GPU
+    // replay path (no InvalidateGpuReplay / CPU upload fallback) at the cost
+    // of the rasterize step — for the typical PathIcon/IconElement this is a
+    // few hundred pixels, well under 1 ms per primitive. The points are in
+    // physical-pixel / world space; the helper does not re-apply the current
+    // transform, because the caller already did when it built the point list.
+    void RasterizePolygonToGpuBitmap(const std::vector<float>& worldPoints,
+                                     int fillRule,
+                                     uint8_t b, uint8_t g, uint8_t r, uint8_t a);
+    void RasterizePolylineToGpuBitmap(const std::vector<float>& worldPoints,
+                                      bool closed,
+                                      float strokeWidth,
+                                      uint8_t b, uint8_t g, uint8_t r, uint8_t a);
+
     std::unique_ptr<Impl> impl_;
 };
 
