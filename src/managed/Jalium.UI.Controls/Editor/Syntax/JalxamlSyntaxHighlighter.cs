@@ -1944,10 +1944,10 @@ public sealed class JalxamlSyntaxHighlighter : ISyntaxHighlighter
     }
 
     private static bool IsRazorIdentifierStart(char c) =>
-        c == '_' || c == '$' || char.IsLetter(c);
+        c == '_' || c == '$' || c == '#' || char.IsLetter(c);
 
     private static bool IsRazorIdentifierPart(char c) =>
-        char.IsLetterOrDigit(c) || c is '.' or '_' or '[' or ']' or '$';
+        char.IsLetterOrDigit(c) || c is '.' or '_' or '[' or ']' or '$' or '#';
 
     private static bool IsNameStartChar(char c) =>
         char.IsLetter(c) || c == '_';

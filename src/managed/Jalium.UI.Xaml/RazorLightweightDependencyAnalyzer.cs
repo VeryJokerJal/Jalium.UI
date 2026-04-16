@@ -11,7 +11,7 @@ namespace Jalium.UI.Markup;
 internal static class RazorLightweightDependencyAnalyzer
 {
     private static readonly Regex IdentifierRegex = new(
-        @"(?<![.""\w])(?<id>[_a-zA-Z]\w*(?:\.[_a-zA-Z]\w*)*)",
+        @"(?<![.""\w])(?<id>(?:[$#]\.)?[_a-zA-Z]\w*(?:\.[_a-zA-Z]\w*)*)",
         RegexOptions.Compiled);
 
     private static readonly HashSet<string> ReservedIdentifiers = new(StringComparer.Ordinal)

@@ -1101,10 +1101,10 @@ public sealed class TransformJalxamlRazorTask : Microsoft.Build.Utilities.Task
     }
 
     private static bool IsPathStart(char c) =>
-        c == '_' || c == '$' || char.IsLetter(c);
+        c == '_' || c == '$' || c == '#' || char.IsLetter(c);
 
     private static bool IsPathPart(char c) =>
-        char.IsLetterOrDigit(c) || c == '.' || c == '_' || c == '[' || c == ']' || c == '$';
+        char.IsLetterOrDigit(c) || c == '.' || c == '_' || c == '[' || c == ']' || c == '$' || c == '#';
 
     /// <summary>
     /// Parses balanced delimited C# content (parens or braces), matching the runtime parser.

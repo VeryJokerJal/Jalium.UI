@@ -26,16 +26,50 @@ internal static partial class RazorCSharpDependencyAnalyzer
         "var", "virtual", "void", "volatile", "when", "while", "with"
     };
 
+    private const string SelfPlaceholder = "__razor_self__";
+    private const string DataPlaceholder = "__razor_data__";
+
     public static RazorCSharpDependencyAnalysis AnalyzeExpression(string expression)
     {
-        var syntax = SyntaxFactory.ParseExpression(expression);
-        return AnalyzeCore(syntax);
+        var preprocessed = PreprocessPrefixes(expression);
+        var syntax = SyntaxFactory.ParseExpression(preprocessed);
+        return RestorePrefixes(AnalyzeCore(syntax));
     }
 
     public static RazorCSharpDependencyAnalysis AnalyzeCodeBlock(string code)
     {
-        var tree = CSharpSyntaxTree.ParseText(code, ScriptParseOptions);
-        return AnalyzeCore(tree.GetRoot());
+        var preprocessed = PreprocessPrefixes(code);
+        var tree = CSharpSyntaxTree.ParseText(preprocessed, ScriptParseOptions);
+        return RestorePrefixes(AnalyzeCore(tree.GetRoot()));
+    }
+
+    private static string PreprocessPrefixes(string input)
+    {
+        // Replace $.path and #.path with placeholder identifiers so Roslyn can parse them
+        var result = input;
+        result = result.Replace("$.", SelfPlaceholder + ".", StringComparison.Ordinal);
+        result = result.Replace("#.", DataPlaceholder + ".", StringComparison.Ordinal);
+        return result;
+    }
+
+    private static RazorCSharpDependencyAnalysis RestorePrefixes(RazorCSharpDependencyAnalysis analysis)
+    {
+        var dependencies = analysis.Dependencies
+            .Select(static d => d
+                .Replace(SelfPlaceholder + ".", "$.", StringComparison.Ordinal)
+                .Replace(DataPlaceholder + ".", "#.", StringComparison.Ordinal))
+            .ToArray();
+
+        var rootIdentifiers = analysis.RootIdentifiers
+            .Select(static r => r switch
+            {
+                SelfPlaceholder => "$",
+                DataPlaceholder => "#",
+                _ => r
+            })
+            .ToArray();
+
+        return new RazorCSharpDependencyAnalysis(dependencies, rootIdentifiers, analysis.DeclaredIdentifiers);
     }
 
     private static RazorCSharpDependencyAnalysis AnalyzeCore(SyntaxNode root)
