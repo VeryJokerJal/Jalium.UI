@@ -1,3 +1,5 @@
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Gpu;
 
 /// <summary>
@@ -202,15 +204,6 @@ public sealed class BackdropFilterNode : SceneNode
     /// 滤镜参数索引（用于序列化）
     /// </summary>
     public uint ParamsIndex { get; init; }
-}
-
-/// <summary>
-/// 填充规则
-/// </summary>
-public enum FillRule
-{
-    EvenOdd,
-    NonZero
 }
 
 /// <summary>

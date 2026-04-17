@@ -310,18 +310,3 @@ public sealed class DateTimeFormatConverter : IValueConverter
     }
 }
 
-/// <summary>
-/// Represents a value that indicates the binding should not update the target.
-/// </summary>
-public static partial class Binding
-{
-    /// <summary>
-    /// Gets a value that indicates the binding should not update the target.
-    /// </summary>
-    public static readonly object DoNothing = new DoNothingValue();
-
-    private sealed class DoNothingValue
-    {
-        public override string ToString() => "{DoNothing}";
-    }
-}

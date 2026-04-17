@@ -1,6 +1,7 @@
 using System.Reflection;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Data;
 
 namespace Jalium.UI.Tests;
 
@@ -88,8 +89,8 @@ public class HexEditorTests
     public void HexEditor_DisplayFormat_CanBeSet()
     {
         var editor = new HexEditor();
-        editor.DisplayFormat = HexDisplayFormat.Word;
-        Assert.Equal(HexDisplayFormat.Word, editor.DisplayFormat);
+        editor.DisplayFormat = HexDisplayFormat.Word16;
+        Assert.Equal(HexDisplayFormat.Word16, editor.DisplayFormat);
     }
 
     [Fact]

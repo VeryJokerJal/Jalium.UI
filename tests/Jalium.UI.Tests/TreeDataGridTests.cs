@@ -1,4 +1,5 @@
 using Jalium.UI.Controls;
+using Jalium.UI.Data;
 
 namespace Jalium.UI.Tests;
 
@@ -217,13 +218,13 @@ public class TreeDataGridTests
         grid.Columns.Add(new DataGridTextColumn
         {
             Header = "Name",
-            Binding = new Jalium.UI.Controls.Binding { Path = "Name" },
+            Binding = new Jalium.UI.Data.Binding("Name"),
             Width = 200
         });
         grid.Columns.Add(new DataGridTextColumn
         {
             Header = "Size",
-            Binding = new Jalium.UI.Controls.Binding { Path = "Size" },
+            Binding = new Jalium.UI.Data.Binding("Size"),
             Width = 100
         });
 

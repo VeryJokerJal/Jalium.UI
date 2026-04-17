@@ -3,37 +3,6 @@ using Jalium.UI.Media;
 namespace Jalium.UI.Controls;
 
 /// <summary>
-/// Specifies how content is scaled to fit the allocated space.
-/// </summary>
-public enum Stretch
-{
-    /// <summary>
-    /// The content preserves its original size.
-    /// </summary>
-    None,
-
-    /// <summary>
-    /// The content is resized to fill the destination dimensions.
-    /// The aspect ratio is not preserved.
-    /// </summary>
-    Fill,
-
-    /// <summary>
-    /// The content is resized to fit in the destination dimensions
-    /// while it preserves its native aspect ratio.
-    /// </summary>
-    Uniform,
-
-    /// <summary>
-    /// The content is resized to fill the destination dimensions
-    /// while it preserves its native aspect ratio.
-    /// If the aspect ratio of the destination rectangle differs from the source,
-    /// the source content is clipped to fit in the destination dimensions.
-    /// </summary>
-    UniformToFill
-}
-
-/// <summary>
 /// Specifies the direction that content is scaled.
 /// </summary>
 public enum StretchDirection

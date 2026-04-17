@@ -1,4 +1,5 @@
 ﻿using System.Text;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Gpu;
 
@@ -2364,7 +2365,7 @@ public sealed class JalxamlParser
 
             // 路径属性
             PathData = GetAttributeValue(element, "Data"),
-            FillRule = GetAttributeValue(element, "FillRule") == "NonZero" ? FillRule.NonZero : FillRule.EvenOdd,
+            FillRule = string.Equals(GetAttributeValue(element, "FillRule"), "Nonzero", StringComparison.OrdinalIgnoreCase) ? FillRule.Nonzero : FillRule.EvenOdd,
 
             // Backdrop Filter 属性
             BackdropFilter = GetAttributeValue(element, "BackdropFilter"),

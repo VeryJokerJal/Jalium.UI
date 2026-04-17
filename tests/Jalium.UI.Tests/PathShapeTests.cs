@@ -2,7 +2,7 @@ using Jalium.UI;
 using Jalium.UI.Controls.Shapes;
 using Jalium.UI.Media;
 using ShapePath = Jalium.UI.Controls.Shapes.Path;
-using ShapeStretch = Jalium.UI.Controls.Shapes.Stretch;
+using ShapeStretch = Jalium.UI.Media.Stretch;
 
 namespace Jalium.UI.Tests;
 

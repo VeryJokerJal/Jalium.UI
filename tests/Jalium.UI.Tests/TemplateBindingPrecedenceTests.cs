@@ -1,5 +1,6 @@
 using Jalium.UI;
 using Jalium.UI.Controls;
+using Jalium.UI.Data;
 
 namespace Jalium.UI.Tests;
 

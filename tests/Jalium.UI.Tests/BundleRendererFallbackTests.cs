@@ -83,7 +83,7 @@ public class BundleRendererFallbackTests
                     MaterialIndex = 0,
                     PathCacheIndex = 0,
                     Bounds = new Jalium.UI.Gpu.Rect(2, 3, 50, 20),
-                    FillRule = Jalium.UI.Gpu.FillRule.NonZero
+                    FillRule = Jalium.UI.Media.FillRule.Nonzero
                 }
             },
             materials: new[] { new Material(0xFF336699, 0xFF112233, 0xFFFFFFFF) },

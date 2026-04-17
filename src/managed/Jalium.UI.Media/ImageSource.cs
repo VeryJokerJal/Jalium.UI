@@ -341,25 +341,4 @@ public sealed class BitmapImage : ImageSource, IDisposable
     }
 }
 
-// Note: Stretch enum is defined in Brush.cs
-
-/// <summary>
-/// Describes the horizontal position of content in a container.
-/// </summary>
-public enum StretchDirection
-{
-    /// <summary>
-    /// The content scales upward only when it is smaller than the parent.
-    /// </summary>
-    UpOnly,
-
-    /// <summary>
-    /// The content scales downward only when it is larger than the parent.
-    /// </summary>
-    DownOnly,
-
-    /// <summary>
-    /// The content stretches to fit the parent according to the Stretch property.
-    /// </summary>
-    Both
-}
+// Note: Stretch enum is defined in Brush.cs, StretchDirection is defined in Jalium.UI.Controls.Viewbox.cs

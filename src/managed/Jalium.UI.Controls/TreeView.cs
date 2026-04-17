@@ -1414,7 +1414,7 @@ public class TreeViewItem : HeaderedItemsControl
 
         // Defer child creation: only resolve whether children exist (for the expander arrow),
         // but don't create TreeViewItem containers until the node is expanded.
-        if (hdt.ItemsSource is Jalium.UI.Binding binding && !string.IsNullOrEmpty(binding.Path?.Path))
+        if (hdt.ItemsSource is Jalium.UI.Data.Binding binding && !string.IsNullOrEmpty(binding.Path?.Path))
         {
             var childItems = ResolvePropertyPath(dataItem, binding.Path.Path);
             if (childItems is IEnumerable enumerable)

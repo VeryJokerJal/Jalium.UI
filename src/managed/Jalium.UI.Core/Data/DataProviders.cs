@@ -5,6 +5,7 @@ using System.ComponentModel;
 using System.Reflection;
 using System.Xml;
 using System.Xml.Linq;
+using Jalium.UI.Controls;
 
 namespace Jalium.UI.Data;
 
@@ -799,18 +800,3 @@ public sealed class BindingGroup : DependencyObject
     }
 }
 
-/// <summary>
-/// Base class for binding expressions.
-/// </summary>
-public abstract class BindingExpressionBase
-{
-    /// <summary>
-    /// Updates the source with the current target value.
-    /// </summary>
-    public abstract void UpdateSource();
-
-    /// <summary>
-    /// Updates the target with the current source value.
-    /// </summary>
-    public abstract void UpdateTarget();
-}

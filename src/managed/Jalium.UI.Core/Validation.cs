@@ -1,8 +1,9 @@
 using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using Jalium.UI.Data;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Controls;
 
 /// <summary>
 /// Provides attached properties and methods for data validation.

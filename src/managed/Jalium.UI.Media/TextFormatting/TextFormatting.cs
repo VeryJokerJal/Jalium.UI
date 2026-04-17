@@ -250,27 +250,6 @@ public abstract class TextParagraphProperties
 }
 
 /// <summary>
-/// Specifies text alignment within a paragraph.
-/// </summary>
-public enum TextAlignment
-{
-    Left,
-    Center,
-    Right,
-    Justify
-}
-
-/// <summary>
-/// Specifies text wrapping behavior.
-/// </summary>
-public enum TextWrapping
-{
-    NoWrap,
-    Wrap,
-    WrapWithOverflow
-}
-
-/// <summary>
 /// Abstract class used for providing text content to TextFormatter.
 /// </summary>
 public abstract class TextSource

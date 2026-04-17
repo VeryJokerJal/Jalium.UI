@@ -4,9 +4,11 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Reflection;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
+using ListSortDirection = Jalium.UI.Data.ListSortDirection;
 
 namespace Jalium.UI.Controls;
 
@@ -1085,7 +1087,7 @@ public class DataGrid : Control, IColumnHeaderHost
 
         if (column is DataGridBoundColumn boundColumn && boundColumn.Binding?.Path != null)
         {
-            var path = boundColumn.Binding.Path;
+            var path = boundColumn.Binding.Path.Path;
             _items.Sort((a, b) =>
             {
                 var valueA = GetPropertyValue(a, path);
@@ -1199,7 +1201,7 @@ public class DataGrid : Control, IColumnHeaderHost
             return new DataGridCheckBoxColumn
             {
                 Header = property.Name,
-                Binding = new Binding { Path = property.Name },
+                Binding = new Binding(property.Name),
                 Width = 120
             };
         }
@@ -1207,7 +1209,7 @@ public class DataGrid : Control, IColumnHeaderHost
         return new DataGridTextColumn
         {
             Header = property.Name,
-            Binding = new Binding { Path = property.Name },
+            Binding = new Binding(property.Name),
             Width = 120
         };
     }
@@ -3094,7 +3096,7 @@ public abstract class DataGridBoundColumn : DataGridColumn
         if (Binding?.Path == null) return null;
 
         var current = item;
-        foreach (var part in Binding.Path.Split('.'))
+        foreach (var part in Binding.Path.PathSegments)
         {
             if (current == null) return null;
             var prop = DataGrid.GetCachedProperty(current.GetType(), part);
@@ -3112,7 +3114,7 @@ public abstract class DataGridBoundColumn : DataGridColumn
     {
         if (Binding?.Path == null) return;
 
-        var parts = Binding.Path.Split('.');
+        var parts = Binding.Path.PathSegments;
         var target = dataItem;
 
         // Navigate to the parent object for nested paths
@@ -3487,7 +3489,7 @@ public sealed class DataGridHyperlinkColumn : DataGridBoundColumn
         if (ContentBinding?.Path == null) return null;
 
         var current = item;
-        foreach (var part in ContentBinding.Path.Split('.'))
+        foreach (var part in ContentBinding.Path.PathSegments)
         {
             if (current == null) return null;
             var prop = DataGrid.GetCachedProperty(current.GetType(), part);
@@ -3495,22 +3497,6 @@ public sealed class DataGridHyperlinkColumn : DataGridBoundColumn
         }
         return current;
     }
-}
-
-public class Binding
-{
-    public string? Path { get; set; }
-    public string? StringFormat { get; set; }
-    public BindingMode Mode { get; set; } = BindingMode.Default;
-}
-
-public enum BindingMode
-{
-    Default,
-    OneWay,
-    TwoWay,
-    OneTime,
-    OneWayToSource
 }
 
 #endregion

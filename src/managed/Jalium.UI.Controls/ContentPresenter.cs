@@ -1,4 +1,5 @@
 using System.Diagnostics.CodeAnalysis;
+using Jalium.UI.Data;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;

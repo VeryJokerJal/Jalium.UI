@@ -1,3 +1,5 @@
+using Jalium.UI.Data;
+
 namespace Jalium.UI;
 
 /// <summary>

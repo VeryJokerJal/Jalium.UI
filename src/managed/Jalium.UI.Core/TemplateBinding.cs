@@ -1,4 +1,4 @@
-namespace Jalium.UI;
+namespace Jalium.UI.Data;
 
 /// <summary>
 /// A binding that binds to a property on the templated parent.
