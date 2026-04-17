@@ -1,15 +1,6 @@
-namespace Jalium.UI.Interop;
+using Jalium.UI.Media;
 
-/// <summary>
-/// Text alignment options.
-/// </summary>
-public enum TextAlignment
-{
-    Leading = 0,
-    Trailing = 1,
-    Center = 2,
-    Justified = 3
-}
+namespace Jalium.UI.Interop;
 
 /// <summary>
 /// Paragraph alignment options.
@@ -103,7 +94,7 @@ public sealed class NativeTextFormat : IDisposable
     /// <summary>
     /// Sets the text alignment.
     /// </summary>
-    /// <param name="alignment">The text alignment.</param>
+    /// <param name="alignment">The text alignment. Mapped directly to DWRITE_TEXT_ALIGNMENT (Left=Leading, Right=Trailing, Center, Justify=Justified).</param>
     public void SetTextAlignment(TextAlignment alignment)
     {
         ThrowIfDisposed();

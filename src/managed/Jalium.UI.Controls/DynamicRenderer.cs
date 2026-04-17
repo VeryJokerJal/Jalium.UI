@@ -2,8 +2,8 @@
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Media;
-using InkStylusPoint = Jalium.UI.Controls.Ink.StylusPoint;
-using InkStylusPointCollection = Jalium.UI.Controls.Ink.StylusPointCollection;
+using InkStylusPoint = Jalium.UI.Input.StylusPoint;
+using InkStylusPointCollection = Jalium.UI.Input.StylusPointCollection;
 
 namespace Jalium.UI.Controls;
 

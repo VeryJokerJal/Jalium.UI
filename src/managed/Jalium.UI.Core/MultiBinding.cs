@@ -2,7 +2,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Globalization;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Data;
 
 /// <summary>
 /// Describes a collection of Binding objects attached to a single binding target property.

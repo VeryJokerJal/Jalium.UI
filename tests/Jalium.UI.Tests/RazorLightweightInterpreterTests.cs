@@ -1,3 +1,4 @@
+using Jalium.UI.Data;
 using Jalium.UI.Markup;
 
 namespace Jalium.UI.Tests;

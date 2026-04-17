@@ -3,6 +3,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Primitives;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Data;
 using Jalium.UI.Media;
 
 using PrimitiveDataGridColumnHeader = Jalium.UI.Controls.Primitives.DataGridColumnHeader;
@@ -177,13 +178,13 @@ public class DataGridThemeTests
             dataGrid.Columns.Add(new DataGridTextColumn
             {
                 Header = "Name",
-                Binding = new Jalium.UI.Controls.Binding { Path = "Name" },
+                Binding = new Jalium.UI.Data.Binding("Name"),
                 Width = 120
             });
             dataGrid.Columns.Add(new DataGridTextColumn
             {
                 Header = "Age",
-                Binding = new Jalium.UI.Controls.Binding { Path = "Age" },
+                Binding = new Jalium.UI.Data.Binding("Age"),
                 Width = 80
             });
             dataGrid.ItemsSource = new[]

@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Globalization;
 using System.Reflection;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Interop;
 using Jalium.UI.Controls.Themes;

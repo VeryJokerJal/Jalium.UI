@@ -1,4 +1,5 @@
 using Jalium.UI;
+using Jalium.UI.Data;
 using System.ComponentModel;
 
 namespace Jalium.UI.Tests;

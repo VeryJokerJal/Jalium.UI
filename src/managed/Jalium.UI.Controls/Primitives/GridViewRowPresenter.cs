@@ -145,7 +145,7 @@ public class GridViewRowPresenter : FrameworkElement
     private static object? ResolveColumnValue(object item, Controls.GridViewColumn column)
     {
         // Try DisplayMemberBinding
-        if (column.DisplayMemberBinding is Jalium.UI.Binding binding && !string.IsNullOrEmpty(binding.Path?.Path))
+        if (column.DisplayMemberBinding is Jalium.UI.Data.Binding binding && !string.IsNullOrEmpty(binding.Path?.Path))
         {
             return ResolvePropertyPath(item, binding.Path.Path);
         }

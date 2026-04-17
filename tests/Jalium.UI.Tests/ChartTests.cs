@@ -3,6 +3,7 @@ using System.Reflection;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Charts;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Data;
 
 namespace Jalium.UI.Tests;
 
@@ -448,11 +449,11 @@ public class ChartTests
     public void LineChart_Series_CanAdd()
     {
         var chart = new LineChart();
-        var series = new LineSeries { Name = "Test" };
+        var series = new LineSeries { Title = "Test" };
         chart.Series.Add(series);
 
         Assert.Single(chart.Series);
-        Assert.Equal("Test", chart.Series[0].Name);
+        Assert.Equal("Test", chart.Series[0].Title);
     }
 
     #endregion

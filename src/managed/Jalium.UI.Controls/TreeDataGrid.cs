@@ -4,10 +4,12 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Reflection;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Data;
 using Jalium.UI.Input;
 using Jalium.UI.Controls.Themes;
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
+using ListSortDirection = Jalium.UI.Data.ListSortDirection;
 
 namespace Jalium.UI.Controls;
 
@@ -1278,7 +1280,7 @@ public class TreeDataGrid : Control, IColumnHeaderHost
 
         if (column is DataGridBoundColumn boundColumn && boundColumn.Binding?.Path != null)
         {
-            var path = boundColumn.Binding.Path;
+            var path = boundColumn.Binding.Path.Path;
             SortNodesRecursive(_rootNodes, path, newDirection);
         }
 

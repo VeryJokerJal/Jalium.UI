@@ -10,4 +10,9 @@
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
+    <ProjectReference Include="..\Jalium.UI.Media\Jalium.UI.Media.csproj" />
+  </ItemGroup>
+
 </Project>

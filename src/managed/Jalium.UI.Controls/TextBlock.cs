@@ -1280,23 +1280,3 @@ public class TextBlock : FrameworkElement
     }
 }
 
-/// <summary>
-/// Specifies text wrapping behavior.
-/// </summary>
-public enum TextWrapping
-{
-    NoWrap,
-    Wrap,
-    WrapWithOverflow
-}
-
-/// <summary>
-/// Specifies text alignment.
-/// </summary>
-public enum TextAlignment
-{
-    Left,
-    Center,
-    Right,
-    Justify
-}

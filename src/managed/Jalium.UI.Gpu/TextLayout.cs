@@ -1,4 +1,5 @@
 using System.Numerics;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Gpu;
 
@@ -313,27 +314,6 @@ public sealed class TextLayoutOptions
     public bool EnableKerning { get; set; } = true;
     public float LineSpacing { get; set; } = 1.0f;
     public TextWrapping TextWrapping { get; set; } = TextWrapping.NoWrap;
-}
-
-/// <summary>
-/// 文本对齐方式
-/// </summary>
-public enum TextAlignment
-{
-    Left,
-    Center,
-    Right,
-    Justify
-}
-
-/// <summary>
-/// 文本换行方式
-/// </summary>
-public enum TextWrapping
-{
-    NoWrap,
-    Wrap,
-    WrapWholeWords
 }
 
 /// <summary>

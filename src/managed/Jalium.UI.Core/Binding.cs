@@ -3,8 +3,9 @@ using System.ComponentModel;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 using System.Reflection;
+using Jalium.UI.Controls;
 
-namespace Jalium.UI;
+namespace Jalium.UI.Data;
 
 /// <summary>
 /// Specifies the direction of data flow in a binding.

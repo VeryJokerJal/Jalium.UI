@@ -2,6 +2,8 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Globalization;
 using Jalium.UI;
+using Jalium.UI.Controls;
+using Jalium.UI.Data;
 
 namespace Jalium.UI.Tests;
 

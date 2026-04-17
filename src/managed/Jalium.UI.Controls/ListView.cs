@@ -1,6 +1,7 @@
 using System.Collections.ObjectModel;
 using System.Collections.Specialized;
 using System.Reflection;
+using Jalium.UI.Data;
 using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
@@ -228,7 +229,7 @@ public class ListViewItem : ListBoxItem
     private static object? GetPropertyValue(object item, GridViewColumn column)
     {
         // Try DisplayMemberBinding path
-        if (column.DisplayMemberBinding is Jalium.UI.Binding binding && !string.IsNullOrEmpty(binding.Path?.Path))
+        if (column.DisplayMemberBinding is Jalium.UI.Data.Binding binding && !string.IsNullOrEmpty(binding.Path?.Path))
         {
             return ResolvePropertyPath(item, binding.Path.Path);
         }
