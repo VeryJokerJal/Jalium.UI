@@ -106,6 +106,7 @@ internal static partial class NativeMethods
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
             TryInitializeBackend(D3D12Init);
+            TryInitializeBackend(VulkanInit);
         }
         else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {

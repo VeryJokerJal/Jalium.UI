@@ -1,5 +1,6 @@
 #include "jalium_internal.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 
@@ -168,6 +169,55 @@ JALIUM_API JaliumContext* jalium_context_create(JaliumBackend backend) {
     }
 
     LOGI_CTX("jalium_context_create: using backend=%d", (int)actualBackend);
+
+    // On-demand load: if the target backend hasn't been loaded yet (its DLL
+    // hasn't been loaded → DllMain hasn't registered the factory), load it
+    // now. This covers both the env-var override path and the case where the
+    // managed layer passes an explicit backend (e.g. RenderBackend.Vulkan)
+    // without the env var.
+    //
+    // We attempt the load at most once per backend for the lifetime of the
+    // process. Without this guard, every jalium_context_create call where
+    // IsAvailable() stays false (e.g. the DLL loads but its runtime probe
+    // disqualifies the backend so no factory gets registered) would call
+    // LoadLibrary/dlopen again and leak another module refcount.
+    if (actualBackend != JALIUM_BACKEND_AUTO && !registry.IsAvailable(actualBackend)) {
+        // Mirror BackendRegistry::MAX_BACKENDS — JaliumBackend values index this array.
+        static constexpr int kMaxOnDemandBackends = 16;
+        static std::atomic_flag s_onDemandAttempted[kMaxOnDemandBackends] = {};
+
+        const int backendIdx = static_cast<int>(actualBackend);
+        const bool firstAttempt = backendIdx >= 0 && backendIdx < kMaxOnDemandBackends
+            && !s_onDemandAttempted[backendIdx].test_and_set(std::memory_order_acq_rel);
+
+        if (firstAttempt) {
+#ifdef _WIN32
+            const char* libName = nullptr;
+            switch (actualBackend) {
+                case JALIUM_BACKEND_VULKAN:   libName = "jalium.native.vulkan.dll"; break;
+                case JALIUM_BACKEND_D3D12:    libName = "jalium.native.d3d12.dll"; break;
+                case JALIUM_BACKEND_METAL:    libName = "jalium.native.metal.dll"; break;
+                case JALIUM_BACKEND_SOFTWARE: libName = "jalium.native.software.dll"; break;
+                default: break;
+            }
+            if (libName) {
+                LOGI_CTX("jalium_context_create: on-demand loading %s", libName);
+                (void)LoadLibraryA(libName);
+            }
+#else
+            const char* libName = nullptr;
+            switch (actualBackend) {
+                case JALIUM_BACKEND_VULKAN:   libName = "libjalium.native.vulkan.so"; break;
+                case JALIUM_BACKEND_SOFTWARE: libName = "libjalium.native.software.so"; break;
+                default: break;
+            }
+            if (libName) {
+                LOGI_CTX("jalium_context_create: on-demand loading %s", libName);
+                (void)dlopen(libName, RTLD_NOW | RTLD_GLOBAL);
+            }
+#endif
+        }
+    }
 
     auto factory = registry.GetFactory(actualBackend);
     if (!factory) {

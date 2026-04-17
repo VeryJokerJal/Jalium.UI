@@ -20,10 +20,11 @@
     <ProjectReference Include="..\Jalium.UI.Media\Jalium.UI.Media.csproj" />
   </ItemGroup>
 
-  <!-- Native library references — Windows only ships D3D12 + Software + Browser (no Vulkan/Metal) -->
+  <!-- Native library references — Windows ships D3D12 + Vulkan + Software + Browser -->
   <ItemGroup Condition="'$(Configuration)' == 'Debug'">
     <Content Include="..\..\native\bin\native\Debug\jalium.native.core.dll" Link="jalium.native.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
     <Content Include="..\..\native\bin\native\Debug\jalium.native.d3d12.dll" Link="jalium.native.d3d12.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
+    <Content Include="..\..\native\bin\native\Debug\jalium.native.vulkan.dll" Link="jalium.native.vulkan.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.vulkan.dll')" />
     <Content Include="..\..\native\bin\native\Debug\jalium.native.software.dll" Link="jalium.native.software.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.software.dll')" />
     <Content Include="..\..\native\bin\native\Debug\jalium.native.browser.dll" Link="jalium.native.browser.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
     <Content Include="..\..\native\jalium.native.browser\redist\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
@@ -32,6 +33,7 @@
   <ItemGroup Condition="'$(Configuration)' == 'Release'">
     <Content Include="..\..\native\bin\native\Release\jalium.native.core.dll" Link="jalium.native.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
     <Content Include="..\..\native\bin\native\Release\jalium.native.d3d12.dll" Link="jalium.native.d3d12.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
+    <Content Include="..\..\native\bin\native\Release\jalium.native.vulkan.dll" Link="jalium.native.vulkan.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.vulkan.dll')" />
     <Content Include="..\..\native\bin\native\Release\jalium.native.software.dll" Link="jalium.native.software.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.software.dll')" />
     <Content Include="..\..\native\bin\native\Release\jalium.native.browser.dll" Link="jalium.native.browser.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
     <Content Include="..\..\native\jalium.native.browser\redist\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
