@@ -100,6 +100,40 @@ public class VirtualizationPipelineTests
             Assert.Equal($"Person {expectedIndex + 1}", lbi.Content);
     }
 
+    [Fact]
+    public void ListBox_ItemsSourceSetAfterFirstMeasure_ShouldRealize()
+    {
+        // Regression: when ItemsSource is initially null during the first Measure
+        // pass and is set afterwards (simulating the state a Binding produces
+        // when DataContext is assigned after InitializeComponent), the panel
+        // must realize items on the next Measure rather than wait for a scroll.
+        var listBox = new TestListBox
+        {
+            Width = 320,
+            Height = 240,
+        };
+
+        // First Measure/Arrange with ItemsSource = null.
+        listBox.Measure(new Size(320, 240));
+        listBox.Arrange(new Rect(0, 0, 320, 240));
+
+        var host = Assert.IsType<VirtualizingStackPanel>(listBox.Host);
+        Assert.Empty(host.Children);
+
+        // Simulate the binding resolving by assigning ItemsSource after first layout.
+        var items = Enumerable.Range(1, 500).Select(i => $"Item {i}").ToList();
+        listBox.ItemsSource = items;
+
+        // Re-layout — without the fix in ItemsControl.RefreshItems, the panel's
+        // virtualization state (realization window / height index) remained at the
+        // empty first-measure snapshot and realized nothing on this second pass.
+        listBox.Measure(new Size(320, 240));
+        listBox.Arrange(new Rect(0, 0, 320, 240));
+
+        Assert.True(host.Children.Count > 0, "Panel should realize items after ItemsSource becomes non-null");
+        Assert.NotNull(listBox.ItemContainerGenerator.ContainerFromIndex(0));
+    }
+
     private sealed class TestListBox : ListBox
     {
         public Panel? Host => ItemsHost;

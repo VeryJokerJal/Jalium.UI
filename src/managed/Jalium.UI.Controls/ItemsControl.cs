@@ -289,6 +289,24 @@ public class ItemsControl : Control
             var generator = EnsureItemContainerGenerator();
             generator.RemoveAll();
             AttachGeneratorToPanel(panel, generator);
+
+            // Force the virtualizing panel to reset its cached item-count / height
+            // index / realization window. Without this, when ItemsSource is supplied
+            // by a Binding that resolves AFTER the first Measure pass (e.g. a Page
+            // whose DataContext is assigned in code-behind after InitializeComponent),
+            // the panel is left with state from the initial zero-item measure and
+            // refuses to realize anything until the user scrolls.
+            if (panel is VirtualizingPanel virtualizingPanel)
+            {
+                virtualizingPanel.NotifyItemsChanged(
+                    generator,
+                    new ItemsChangedEventArgs(
+                        NotifyCollectionChangedAction.Reset,
+                        new GeneratorPosition(-1, 0),
+                        0,
+                        0));
+            }
+
             panel.InvalidateMeasure();
             InvalidateMeasure();
             return;
