@@ -1755,8 +1755,14 @@ public static class XamlReader
 
                 if (instance is PropertyTrigger || instance is Condition)
                 {
-                    throw CreateUnresolvedDependencyPropertyException(
-                        instance, propertyName, stringValue, context, reader);
+                    // The enclosing Style's TargetType may not yet be known at the moment this
+                    // child element is being parsed (for example when the Style is declared inside
+                    // a ResourceDictionary whose parent chain hasn't been fully established). In
+                    // that case the trigger/condition would be rejected here even though the XAML
+                    // is well-formed. Leave Property unset — the trigger/condition Attach path
+                    // performs an early-return when Property is null, so the trigger simply does
+                    // not fire rather than aborting the whole dictionary parse.
+                    return instance;
                 }
 
                 throw CreateUnresolvedDependencyPropertyException(
