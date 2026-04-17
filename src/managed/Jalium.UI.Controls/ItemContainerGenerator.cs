@@ -283,6 +283,10 @@ public sealed class ItemContainerGenerator : IRecyclingItemContainerGenerator
         else if (_preferredContainerType != null && _recyclePool.TryPop(_preferredContainerType, out var recycled) && recycled != null)
         {
             container = recycled;
+            // Recycled container still holds the previous item's Content/DataContext.
+            // Flag as newly realized so the caller (VirtualizingStackPanel) invokes
+            // PrepareItemContainer and rebinds it to the new item.
+            isNewlyRealized = true;
         }
         else
         {
