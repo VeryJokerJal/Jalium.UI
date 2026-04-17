@@ -12,7 +12,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jalium.UI.Android" Version="26.10.0-preview" />
+    <PackageReference Include="Jalium.UI.Android" Version="26.10.0" />
   </ItemGroup>
 
 </Project>

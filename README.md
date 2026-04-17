@@ -8,7 +8,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 ## Project Status
 
-- Active development — v26.10.0-preview (APIs can still evolve between minor versions)
+- Active development — v26.10.0 (APIs can still evolve between minor versions)
 - Primary target: Windows 10/11 x64
 - Cross-platform: Android (arm64-v8a, x86_64), Linux (Vulkan), macOS (Metal)
 - Runtime target: .NET 10 (`net10.0-windows`, `net10.0-android`, `net10.0`)

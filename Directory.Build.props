@@ -14,7 +14,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
 
     <!-- Versioning -->
-    <Version>26.10.0-preview.4</Version>
+    <Version>26.10.0</Version>
     <AssemblyVersion>26.10.0.0</AssemblyVersion>
     <FileVersion>26.10.0.0</FileVersion>
 
