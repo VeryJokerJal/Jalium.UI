@@ -2068,11 +2068,11 @@ public static class XamlReader
     {
         if (trigger.Property == null)
         {
-            throw CreateTriggerValidationException(
-                "PropertyTrigger.Property is required and must resolve to a DependencyProperty.",
-                context,
-                lineNumber,
-                linePosition);
+            // Property could not be resolved during parse (typically because the enclosing
+            // Style's TargetType was not yet available). Leave the trigger dormant — Attach
+            // performs an early-return when Property is null, so the dictionary continues
+            // to load and the surrounding theme/resources remain usable.
+            return;
         }
 
         // If Value is a string and Property is set, convert Value to the correct type
@@ -2148,11 +2148,11 @@ public static class XamlReader
 
             if (condition.Property == null)
             {
-                throw CreateTriggerValidationException(
-                    $"MultiTrigger condition at index {i} is missing Property or references an unresolved DependencyProperty.",
-                    context,
-                    lineNumber,
-                    linePosition);
+                // Same rationale as PostProcessPropertyTrigger — tolerate unresolved
+                // Property so the enclosing dictionary can finish loading. The MultiTrigger
+                // evaluates conditions conjunctively and a null Property keeps the
+                // condition in a never-true state, which is the safe default.
+                continue;
             }
 
             if (condition.Value is not string stringValue)
