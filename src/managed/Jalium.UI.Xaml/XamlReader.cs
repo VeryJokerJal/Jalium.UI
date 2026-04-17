@@ -1055,10 +1055,7 @@ public static class XamlReader
                 else
                 {
                     // Set property value
-                    if (!TryApplyDynamicResourceReference(instance, property, childValue, context))
-                    {
-                        property.SetValue(instance, childValue);
-                    }
+                    SetPropertyValueWithResourceFallback(instance, property, childValue, context);
                 }
 
                 context.ClearCurrentResourceKey();
@@ -1792,10 +1789,7 @@ public static class XamlReader
 
         if (value != null)
         {
-            if (TryApplyDynamicResourceReference(instance, property, value, context))
-                return instance;
-
-            property.SetValue(instance, value);
+            SetPropertyValueWithResourceFallback(instance, property, value, context);
         }
 
         return instance;
@@ -2251,10 +2245,7 @@ public static class XamlReader
                     if (property.CanWrite)
                     {
                         child = ResolveMarkupExtensionValueIfNeeded(child, parent, property, context)!;
-                        if (!TryApplyDynamicResourceReference(parent, property, child, context))
-                        {
-                            property.SetValue(parent, child);
-                        }
+                        SetPropertyValueWithResourceFallback(parent, property, child, context);
                         return;
                     }
                 }
@@ -2322,6 +2313,46 @@ public static class XamlReader
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Sets a property, honouring DynamicResource bindings when the target supports them.
+    /// Falls back to an immediate ambient lookup (equivalent to a StaticResource) when the
+    /// target is not a DependencyObject or the property has no matching DependencyProperty,
+    /// so the raw <see cref="IDynamicResourceReference"/> never reaches a typed property
+    /// setter (which would throw <see cref="ArgumentException"/>).
+    /// </summary>
+    private static void SetPropertyValueWithResourceFallback(
+        object targetObject,
+        PropertyInfo property,
+        object? value,
+        XamlParserContext? context)
+    {
+        if (TryApplyDynamicResourceReference(targetObject, property, value, context))
+            return;
+
+        if (value is IDynamicResourceReference dynRef)
+        {
+            if (context != null && context.TryGetResource(dynRef.ResourceKey, out var resolved) && resolved != null)
+            {
+                value = resolved;
+                // Apply the same string→target conversion the non-extension path would have done.
+                if (value is string s &&
+                    property.PropertyType != typeof(string) &&
+                    property.PropertyType != typeof(object))
+                {
+                    value = TypeConverterRegistry.ConvertValue(s, property.PropertyType);
+                }
+            }
+            else
+            {
+                // Resource not found and no DP available: skip the assignment rather than
+                // forcing SetValue to throw with an unhelpful type-mismatch message.
+                return;
+            }
+        }
+
+        property.SetValue(targetObject, value);
     }
 
 }
