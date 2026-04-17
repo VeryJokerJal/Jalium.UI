@@ -2344,15 +2344,27 @@ public static class XamlReader
                     value = TypeConverterRegistry.ConvertValue(s, property.PropertyType);
                 }
             }
-            else
+            else if (!property.PropertyType.IsInstanceOfType(dynRef))
             {
-                // Resource not found and no DP available: skip the assignment rather than
-                // forcing SetValue to throw with an unhelpful type-mismatch message.
+                // Resource is unresolvable right now (forward reference during dictionary parse)
+                // and the typed property setter would reject the raw reference object. Silently
+                // skip — the same observable effect the parser had before this helper existed
+                // (the exception thrown by SetValue was caught by the outer ResourceDictionary
+                // loader), but without tripping the "break when thrown" debugger pause.
                 return;
             }
         }
 
-        property.SetValue(targetObject, value);
+        try
+        {
+            property.SetValue(targetObject, value);
+        }
+        catch (ArgumentException)
+        {
+            // Last-resort fallback: the value doesn't match the property type
+            // (typically a DynamicResourceReference whose key isn't available yet).
+            // Swallow so one misbehaving binding doesn't abort the whole dictionary load.
+        }
     }
 
 }
