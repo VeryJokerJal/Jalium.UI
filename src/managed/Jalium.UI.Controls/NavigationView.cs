@@ -537,6 +537,24 @@ public class NavigationView : ContentControl
 
         UpdatePaneScrollInsets();
         InvalidateMeasure();
+
+        // 用户常见写法:在 Window.ctor → InitializeComponent → AddNavigationItems 里往
+        // MenuItems 里 Add,一个 Add 触发一次 RefreshMenuItems。走到这里时 NavigationView
+        // 可能已经 measure 过一次(template apply 时 size 被 cache),单靠自身 InvalidateMeasure
+        // 在部分 layout 路径上不会让 Pane 内的 ScrollViewer / StackPanel 重新 arrange —
+        // 结果 items 在 tree 里但视觉不出来。沿 visual tree 强制下推 invalidate,保证
+        // MenuItemsPanel / ScrollViewer / PaneContainer 都会重测。
+        InvalidateMeasureUpFrom(_menuItemsPanel);
+    }
+
+    private static void InvalidateMeasureUpFrom(UIElement? element)
+    {
+        while (element != null)
+        {
+            element.InvalidateMeasure();
+            element.InvalidateArrange();
+            element = element.VisualParent as UIElement;
+        }
     }
 
     private void AddItemWithChildren(UIElement element, Panel container, int indentLevel)
