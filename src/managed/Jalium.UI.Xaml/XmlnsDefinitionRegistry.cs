@@ -1,9 +1,7 @@
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
-using System.IO;
 using System.Reflection;
-using System.Reflection.PortableExecutable;
 
 namespace Jalium.UI.Markup;
 
@@ -56,240 +54,12 @@ public static class XmlnsDefinitionRegistry
             return;
         }
 
-        JalxamlDiagnostics.Log("XmlnsDefinitionRegistry.EnsureInitialized: first-time scan starting");
         AppDomain.CurrentDomain.AssemblyLoad += static (_, args) => ScanAssembly(args.LoadedAssembly);
-
-        // .NET 有两层 "看不见" 的机制会让声明了 [XmlnsDefinition] 的用户程序集
-        // 对 registry 不可见:
-        //   1) C# 编译器的 reference pruning:如果 consumer 代码没 touch 该程序集
-        //      的任何类型,编译器会把 AssemblyRef 从最终 metadata 里剔除,
-        //      GetReferencedAssemblies() 也看不到它,只靠传递引用 BFS 找不到。
-        //   2) .NET runtime 的 lazy-load:即便 metadata 里有 AssemblyRef,运行时
-        //      也只有在首次用到该程序集的类型时才会 Load。
-        // 这两层结合意味着"仅靠 <ProjectReference> + [assembly: XmlnsDefinition]"
-        // 的声明式用法无法让 user 控件被 XAML 识别。
-        //
-        // 根治策略:扫 entry exe 所在目录和所有已加载程序集所在目录的 *.dll,
-        // 逐个通过默认 load context 做 Assembly.Load,让 AssemblyLoad 事件把它们
-        // 带进 ScanAssembly。这正是 WPF 的做法。
-        ForceLoadProbingDirectories();
-        ForceLoadTransitiveReferences();
 
         foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
         {
             ScanAssembly(assembly);
         }
-
-        JalxamlDiagnostics.Log(
-            "XmlnsDefinitionRegistry.EnsureInitialized: done. {0} xmlns mapping(s), {1} compat redirect(s), {2} assembly(ies) scanned",
-            _mappings.Count,
-            _compatibilityRedirects.Count,
-            _scannedAssemblies.Count);
-    }
-
-    [UnconditionalSuppressMessage("AOT", "IL2026:RequiresUnreferencedCode",
-        Justification = "Probing-directory load is best-effort; failures are swallowed.")]
-    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
-        Justification = "No dynamic code generation — only name-based Assembly.Load calls.")]
-    private static void ForceLoadProbingDirectories()
-    {
-        // 候选目录:entry exe 目录 + 每个已加载程序集所在目录。
-        var directories = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        var entryAsm = Assembly.GetEntryAssembly();
-        TryAddDirectory(entryAsm, directories);
-
-        foreach (var loaded in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            TryAddDirectory(loaded, directories);
-        }
-
-        var alreadyLoaded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var loaded in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            var name = loaded.GetName().Name;
-            if (name is not null)
-            {
-                alreadyLoaded.Add(name);
-            }
-        }
-
-        foreach (var directory in directories)
-        {
-            IEnumerable<string> dlls;
-            try
-            {
-                dlls = Directory.EnumerateFiles(directory, "*.dll", SearchOption.TopDirectoryOnly);
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var dllPath in dlls)
-            {
-                // 预筛:bin 目录里大量存在 native DLL(jalium.native.*.dll、msvcp140d.dll、
-                // vulkan-1.dll 等),如果直接调 AssemblyName.GetAssemblyName 每个都会抛
-                // BadImageFormatException。即便 catch 住,debugger 的 first-chance 仍会刷屏
-                // 干扰用户。先用 PEReader.HasMetadata 廉价判断是否为托管程序集。
-                if (!HasManagedMetadata(dllPath))
-                {
-                    continue;
-                }
-
-                AssemblyName name;
-                try
-                {
-                    name = AssemblyName.GetAssemblyName(dllPath);
-                }
-                catch
-                {
-                    // managed 头存在但 manifest 读不出 — 损坏或权限问题,跳过。
-                    continue;
-                }
-
-                if (name.Name is null || !alreadyLoaded.Add(name.Name))
-                {
-                    continue;
-                }
-
-                if (IsFrameworkAssembly(name.Name))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    // 走默认 load context 的按名 Load,避免 LoadFrom 导致的 identity 冲突。
-                    Assembly.Load(name);
-                    JalxamlDiagnostics.Log("  force-loaded '{0}' from {1}", name.Name!, dllPath);
-                }
-                catch (Exception ex)
-                {
-                    // 依赖解析失败、TFM 不兼容等 — 跳过,不阻塞 XAML 解析。
-                    JalxamlDiagnostics.Log("  force-load failed for '{0}': {1}", name.Name!, ex.GetType().Name);
-                }
-            }
-        }
-    }
-
-    private static bool HasManagedMetadata(string path)
-    {
-        try
-        {
-            using var stream = File.OpenRead(path);
-            using var peReader = new PEReader(stream);
-            return peReader.HasMetadata;
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
-    private static void TryAddDirectory(Assembly? assembly, HashSet<string> sink)
-    {
-        if (assembly is null || assembly.IsDynamic)
-        {
-            return;
-        }
-
-        string? location;
-        try
-        {
-            location = assembly.Location;
-        }
-        catch
-        {
-            return;
-        }
-
-        if (string.IsNullOrEmpty(location))
-        {
-            return;
-        }
-
-        var directory = Path.GetDirectoryName(location);
-        if (!string.IsNullOrEmpty(directory) && Directory.Exists(directory))
-        {
-            sink.Add(directory!);
-        }
-    }
-
-    [UnconditionalSuppressMessage("AOT", "IL2026:RequiresUnreferencedCode",
-        Justification = "Transitive load is best-effort; missing references are swallowed.")]
-    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
-        Justification = "No dynamic code generation — only reference-based Assembly.Load calls.")]
-    private static void ForceLoadTransitiveReferences()
-    {
-        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var queue = new Queue<Assembly>();
-
-        foreach (var loaded in AppDomain.CurrentDomain.GetAssemblies())
-        {
-            if (loaded.IsDynamic)
-            {
-                continue;
-            }
-
-            var name = loaded.GetName().Name;
-            if (name is not null && visited.Add(name))
-            {
-                queue.Enqueue(loaded);
-            }
-        }
-
-        while (queue.Count > 0)
-        {
-            var current = queue.Dequeue();
-
-            AssemblyName[] references;
-            try
-            {
-                references = current.GetReferencedAssemblies();
-            }
-            catch
-            {
-                continue;
-            }
-
-            foreach (var reference in references)
-            {
-                if (reference.Name is null || !visited.Add(reference.Name))
-                {
-                    continue;
-                }
-
-                if (IsFrameworkAssembly(reference.Name))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var loaded = Assembly.Load(reference);
-                    queue.Enqueue(loaded);
-                }
-                catch
-                {
-                    // 找不到、签名不匹配、安全策略阻止等情况跳过,不阻塞 XAML 解析。
-                }
-            }
-        }
-    }
-
-    private static bool IsFrameworkAssembly(string simpleName)
-    {
-        // BCL / runtime / 编译器内部程序集不可能声明 XmlnsDefinition,跳过显著降低启动开销。
-        return simpleName.StartsWith("System.", StringComparison.Ordinal)
-            || simpleName.StartsWith("Microsoft.", StringComparison.Ordinal)
-            || simpleName.StartsWith("runtime.", StringComparison.Ordinal)
-            || simpleName.Equals("mscorlib", StringComparison.Ordinal)
-            || simpleName.Equals("System", StringComparison.Ordinal)
-            || simpleName.Equals("netstandard", StringComparison.Ordinal)
-            || simpleName.Equals("WindowsBase", StringComparison.Ordinal)
-            || simpleName.Equals("PresentationCore", StringComparison.Ordinal)
-            || simpleName.Equals("PresentationFramework", StringComparison.Ordinal);
     }
 
     /// <summary>
@@ -345,13 +115,6 @@ public static class XmlnsDefinitionRegistry
         foreach (var compat in compats)
         {
             _compatibilityRedirects.TryAdd(compat.OldNamespace, compat.NewNamespace);
-        }
-
-        if (defs.Length > 0 || prefixes.Length > 0 || compats.Length > 0)
-        {
-            JalxamlDiagnostics.Log(
-                "  scanned '{0}': {1} def(s), {2} prefix(es), {3} compat(s)",
-                new object?[] { assembly.GetName().Name, defs.Length, prefixes.Length, compats.Length });
         }
     }
 

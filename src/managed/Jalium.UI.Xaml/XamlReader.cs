@@ -122,24 +122,12 @@ public static class XamlReader
         ArgumentNullException.ThrowIfNull(resourceName);
 
         assembly ??= component.GetType().Assembly;
-        JalxamlDiagnostics.Log(
-            "XamlReader.LoadComponent: component={0} resource='{1}' assembly='{2}'",
-            new object?[] { component.GetType().FullName, resourceName, assembly.GetName().Name });
 
         var stream = GetResourceStream(resourceName, assembly);
         if (stream == null)
         {
-            // 把实际 manifest 里存在的资源名一并打印,便于定位 "资源没被 embed"、
-            // "RootNamespace 不匹配"、"Build Action 错误" 这类常见问题(与 JalxamlLoader 一致)。
-            var availableResources = assembly.GetManifestResourceNames();
-            JalxamlDiagnostics.Log(
-                "  resource NOT FOUND. Available: [{0}]",
-                string.Join(", ", availableResources));
-            throw new XamlParseException(
-                $"Cannot find embedded resource '{resourceName}' in assembly '{assembly.GetName().Name}'. " +
-                $"Available resources: [{string.Join(", ", availableResources)}]");
+            throw new XamlParseException($"Cannot find embedded resource '{resourceName}' in assembly '{assembly.GetName().Name}'.");
         }
-        JalxamlDiagnostics.Log("  resource resolved, parsing...");
 
         using (stream)
         {
@@ -1711,8 +1699,6 @@ public static class XamlReader
         var uriString = sourceUri.ToString();
         string resourcePath;
 
-        JalxamlDiagnostics.Log("LoadResourceDictionaryFromUri: uri='{0}'", uriString);
-
         if (TryParsePackComponentUri(uriString, out var packAssembly, out var packPath))
         {
             resourcePath = packPath;
@@ -1721,9 +1707,6 @@ public static class XamlReader
             {
                 assembly = loadedAssembly;
             }
-            JalxamlDiagnostics.Log(
-                "  parsed as pack uri: asm='{0}' path='{1}' resolved={2}",
-                new object?[] { packAssembly, packPath, loadedAssembly != null });
         }
         else if (TryParseResourceUri(uriString, out var resourceAssembly, out var parsedPath))
         {
@@ -1733,19 +1716,14 @@ public static class XamlReader
             {
                 assembly = loadedAssembly;
             }
-            JalxamlDiagnostics.Log(
-                "  parsed as resource:/// uri: asm='{0}' path='{1}' resolved={2}",
-                new object?[] { resourceAssembly, parsedPath, loadedAssembly != null });
         }
         else if (sourceUri.IsAbsoluteUri)
         {
             resourcePath = sourceUri.LocalPath.TrimStart('/');
-            JalxamlDiagnostics.Log("  parsed as absolute uri: path='{0}'", resourcePath);
         }
         else
         {
             resourcePath = uriString.TrimStart('/');
-            JalxamlDiagnostics.Log("  parsed as relative path: '{0}'", resourcePath);
         }
 
         // If assembly is still null, try to get it from the ResourceDictionary or find by convention
@@ -1776,7 +1754,6 @@ public static class XamlReader
         Stream? stream = null;
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        string? matched = null;
         foreach (var pathCandidate in pathCandidates)
         {
             foreach (var manifestCandidate in BuildManifestLookupCandidates(pathCandidate, assembly.GetName().Name ?? string.Empty))
@@ -1788,7 +1765,6 @@ public static class XamlReader
                 stream = GetResourceStream(manifestCandidate, assembly);
                 if (stream != null)
                 {
-                    matched = manifestCandidate;
                     break;
                 }
             }
@@ -1799,15 +1775,10 @@ public static class XamlReader
 
         if (stream == null)
         {
-            JalxamlDiagnostics.Log(
-                "  ResourceDictionary NOT FOUND in '{0}'. Tried=[{1}]",
-                new object?[] { assembly.GetName().Name, string.Join(", ", attemptedCandidates) });
             throw new XamlParseException(
                 $"Cannot find embedded ResourceDictionary for '{sourceUri}' in assembly '{assembly.GetName().Name}'. " +
                 $"Candidates=[{string.Join(", ", attemptedCandidates)}].");
         }
-
-        JalxamlDiagnostics.Log("  ResourceDictionary matched '{0}'", matched);
 
         using (stream)
         {
@@ -3333,15 +3304,8 @@ public static class XamlTypeRegistry
         ArgumentNullException.ThrowIfNull(component);
         ArgumentNullException.ThrowIfNull(bundle);
 
-        JalxamlDiagnostics.Log(
-            "XamlTypeRegistry.ApplyBundle: component={0} nodes={1} drawCommands={2}",
-            new object?[] { component.GetType().FullName, bundle.Nodes.Length, bundle.DrawCommands.Length });
-
         if (component is not FrameworkElement frameworkElement)
-        {
-            JalxamlDiagnostics.Log("  component is not FrameworkElement, bundle NOT applied");
             return;
-        }
 
         // Fast path: render directly from compiled DrawCommands.
         frameworkElement.SetCompiledBundle(bundle);
@@ -3384,22 +3348,12 @@ public static class XamlTypeRegistry
         // Disable bundle callback in this mode to avoid duplicate rendering.
         if (bundle.DrawCommands.Length == 0)
         {
-            JalxamlDiagnostics.Log("  DrawCommands empty, building fallback visual tree");
             var fallbackRoot = BuildFallbackVisualRoot(bundle, nodeElements);
             if (fallbackRoot != null)
             {
                 frameworkElement.SetBundleRenderCallback(null);
                 AttachFallbackVisual(component, fallbackRoot);
-                JalxamlDiagnostics.Log("  fallback visual attached: {0}", fallbackRoot.GetType().FullName);
             }
-            else
-            {
-                JalxamlDiagnostics.Log("  fallback root is null — Content will be empty");
-            }
-        }
-        else
-        {
-            JalxamlDiagnostics.Log("  using draw-command render path (no logical children attached to Content)");
         }
     }
 
@@ -3506,27 +3460,22 @@ public static class XamlTypeRegistry
             case Panel panel:
                 panel.Children.Clear();
                 panel.Children.Add(root);
-                JalxamlDiagnostics.Log("    AttachFallbackVisual → Panel.Children.Add({0})", root.GetType().FullName);
                 break;
 
             case Border border:
                 border.Child = root;
-                JalxamlDiagnostics.Log("    AttachFallbackVisual → Border.Child = {0}", root.GetType().FullName);
                 break;
 
             case Window window:
                 window.Content = root;
-                JalxamlDiagnostics.Log("    AttachFallbackVisual → Window.Content = {0}", root.GetType().FullName);
                 break;
 
             case ContentControl contentControl:
                 contentControl.Content = root;
-                JalxamlDiagnostics.Log("    AttachFallbackVisual → ContentControl.Content = {0}", root.GetType().FullName);
                 break;
 
             default:
                 TryAttachFallbackChild(component, root);
-                JalxamlDiagnostics.Log("    AttachFallbackVisual → reflection fallback on {0}", component.GetType().FullName);
                 break;
         }
     }

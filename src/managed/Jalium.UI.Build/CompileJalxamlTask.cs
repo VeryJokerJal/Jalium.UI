@@ -378,7 +378,7 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
                     discoveredClassNames.Add(className);
                 }
 
-                var outputFile = GenerateCodeBehind(sourcePath, sourceFile);
+                var outputFile = GenerateCodeBehind(sourcePath);
                 if (outputFile != null)
                 {
                     var outputFullPath = Path.GetFullPath(outputFile);
@@ -524,7 +524,7 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
         return fullTypeName[(lastDotIndex + 1)..];
     }
 
-    private string? GenerateCodeBehind(string sourcePath, ITaskItem sourceItem)
+    private string? GenerateCodeBehind(string sourcePath)
     {
         var fileName = Path.GetFileNameWithoutExtension(sourcePath);
         var outputPath = Path.Combine(OutputDirectory!, fileName + ".g.cs");
@@ -540,14 +540,8 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
         // 解析命名元素
         var namedElements = ParseNamedElements(content);
 
-        // 计算资源名 — 必须和 Jalium.UI.Build.targets 里 EmbedJalxamlSources/EmbedCompiledJalxaml
-        // 目标生成的 manifest name 完全对齐:
-        //   .jalxaml → {RootNamespace}.{RelativeDir+Filename replace \/ with .}.jalxaml
-        //   .uic     → {RootNamespace}.{Filename}.uic  (扁平,中间目录产物)
-        // 不能用 "{x:Class}.jalxaml" 这种写法 — 当 x:Class 类名和物理文件名不一致时
-        // (例如 x:Class="...App" 写在 Application.jalxaml 里)就会与 embed 的 resource 名不符,
-        // 运行时抛 "Cannot find embedded resource"。
-        var resourceName = ComputeManifestResourceName(sourceItem, sourcePath, "jalxaml", flatFilenameOnly: false);
+        // 计算资源名
+        var resourceName = $"{className}.jalxaml";
 
         // 拆分命名空间和类名
         var lastDot = className!.LastIndexOf('.');
@@ -582,7 +576,7 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
         if (namedElements.Count > 0)
             sb.AppendLine();
 
-        var uicResourceName = ComputeManifestResourceName(sourceItem, sourcePath, "uic", flatFilenameOnly: true);
+        var uicResourceName = $"{className}.uic";
 
         sb.AppendLine("    private void InitializeComponent()");
         sb.AppendLine("    {");
@@ -632,80 +626,6 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
 
         WriteFileIfChanged(outputPath, sb.ToString());
         return outputPath;
-    }
-
-    /// <summary>
-    /// 计算嵌入资源 manifest name,与 Jalium.UI.Build.targets 中
-    /// EmbedJalxamlSources/EmbedCompiledJalxaml 的 LogicalName 规则对齐。
-    /// </summary>
-    /// <param name="sourceItem">
-    /// jalxaml 源文件的 MSBuild Item。携带 RazorRelativeLogicalPath / SourceFile metadata
-    /// (由 TransformJalxamlRazorTask 设置),也会被用于读 RelativeDir / Filename。
-    /// </param>
-    /// <param name="sourcePath">源文件绝对路径(可能是 Razor 中间目录副本)。</param>
-    /// <param name="extension">资源扩展名,不带点:"jalxaml" 或 "uic"。</param>
-    /// <param name="flatFilenameOnly">
-    /// true 表示 .uic 规则 — 仅 {RootNamespace}.{Filename}.{ext},忽略相对目录。
-    /// false 表示 .jalxaml 规则 — {RootNamespace}.{RelativeDir+Filename as dots}.{ext}。
-    /// </param>
-    private string ComputeManifestResourceName(ITaskItem sourceItem, string sourcePath, string extension, bool flatFilenameOnly)
-    {
-        var rootNs = RootNamespace ?? string.Empty;
-
-        if (flatFilenameOnly)
-        {
-            var filename = Path.GetFileNameWithoutExtension(sourcePath);
-            return string.IsNullOrEmpty(rootNs) ? $"{filename}.{extension}" : $"{rootNs}.{filename}.{extension}";
-        }
-
-        // 优先:Razor transform 保存的原始相对路径(已经是点分隔格式)。
-        var razorRelative = sourceItem.GetMetadata("RazorRelativeLogicalPath");
-        if (!string.IsNullOrEmpty(razorRelative))
-        {
-            return string.IsNullOrEmpty(rootNs)
-                ? $"{razorRelative}.{extension}"
-                : $"{rootNs}.{razorRelative}.{extension}";
-        }
-
-        // 次之:基于 SourceFile metadata 或 sourcePath 相对 ProjectDirectory 计算。
-        var originalPath = sourceItem.GetMetadata("SourceFile");
-        if (string.IsNullOrEmpty(originalPath))
-        {
-            originalPath = sourcePath;
-        }
-
-        if (!string.IsNullOrEmpty(ProjectDirectory))
-        {
-            try
-            {
-                var fullInput = Path.GetFullPath(originalPath);
-                var fullProject = Path.GetFullPath(ProjectDirectory!);
-                if (!fullProject.EndsWith(Path.DirectorySeparatorChar.ToString(), StringComparison.Ordinal))
-                {
-                    fullProject += Path.DirectorySeparatorChar;
-                }
-
-                if (fullInput.StartsWith(fullProject, StringComparison.OrdinalIgnoreCase))
-                {
-                    var relative = fullInput.Substring(fullProject.Length);
-                    var withoutExt = Path.ChangeExtension(relative, null);
-                    var dotted = withoutExt!.Replace('\\', '.').Replace('/', '.').TrimStart('.');
-                    return string.IsNullOrEmpty(rootNs)
-                        ? $"{dotted}.{extension}"
-                        : $"{rootNs}.{dotted}.{extension}";
-                }
-            }
-            catch
-            {
-                // 相对路径计算失败,走最后的 fallback。
-            }
-        }
-
-        // Fallback:只有文件名(最差情况下比把 x:Class 当资源名更接近 MSBuild 默认)。
-        var fallbackFilename = Path.GetFileNameWithoutExtension(originalPath);
-        return string.IsNullOrEmpty(rootNs)
-            ? $"{fallbackFilename}.{extension}"
-            : $"{rootNs}.{fallbackFilename}.{extension}";
     }
 
     private static List<(string Name, string TypeName)> ParseNamedElements(string content)
