@@ -5,6 +5,7 @@ using System.Xml;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Jalium.UI.Markup;
 
@@ -16,6 +17,31 @@ public static class ThemeLoader
     private const string LegacyXamlNamespace = "http://schemas.microsoft.com/winfx/2006/xaml";
     private const string JaliumMarkupNamespace = "https://schemas.jalium.dev/jalxaml/markup";
     private const string ComponentSeparator = ";component/";
+
+    [UnconditionalSuppressMessage("Trimming", "IL2072",
+        Justification = "Startup types reachable via StartupUri are preserved by the source generator and XamlTypeRegistry.")]
+    private static object CreateStartupInstance(Type startupType)
+    {
+        // 优先走 ActivatorUtilities(当 Application 由 AppBuilder 创建、IServiceProvider 已挂上时可用),
+        // 使得 StartupUri 指向的 window 可以声明 DI ctor:e.g. public MainWindow(IMessageService msg)。
+        // 找不到 service provider、或该 ctor 无 DI 参数时自动 fallback 回 Activator.CreateInstance,
+        // 保证传统 parameterless-ctor 场景不回归。
+        var services = Application.Current?.Services;
+        if (services != null)
+        {
+            try
+            {
+                return ActivatorUtilities.CreateInstance(services, startupType);
+            }
+            catch
+            {
+                // ActivatorUtilities 找不到合适 ctor 或 ctor 抛异常时,继续 fallback。
+            }
+        }
+
+        return Activator.CreateInstance(startupType)
+            ?? throw new InvalidOperationException($"Failed to create startup type '{startupType.FullName}'.");
+    }
 
     /// <summary>
     /// Module initializer that registers the XAML loader callback with ThemeManager.
@@ -261,8 +287,7 @@ public static class ThemeLoader
                 object instance;
                 try
                 {
-                    instance = Activator.CreateInstance(startupType)
-                        ?? throw new InvalidOperationException($"Failed to create startup type '{startupType.FullName}'.");
+                    instance = CreateStartupInstance(startupType);
                 }
                 catch (Exception ex)
                 {
