@@ -3,6 +3,7 @@ using System.Collections.Immutable;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Reflection;
+using System.Reflection.PortableExecutable;
 
 namespace Jalium.UI.Markup;
 
@@ -55,6 +56,7 @@ public static class XmlnsDefinitionRegistry
             return;
         }
 
+        JalxamlDiagnostics.Log("XmlnsDefinitionRegistry.EnsureInitialized: first-time scan starting");
         AppDomain.CurrentDomain.AssemblyLoad += static (_, args) => ScanAssembly(args.LoadedAssembly);
 
         // .NET 有两层 "看不见" 的机制会让声明了 [XmlnsDefinition] 的用户程序集
@@ -77,6 +79,12 @@ public static class XmlnsDefinitionRegistry
         {
             ScanAssembly(assembly);
         }
+
+        JalxamlDiagnostics.Log(
+            "XmlnsDefinitionRegistry.EnsureInitialized: done. {0} xmlns mapping(s), {1} compat redirect(s), {2} assembly(ies) scanned",
+            _mappings.Count,
+            _compatibilityRedirects.Count,
+            _scannedAssemblies.Count);
     }
 
     [UnconditionalSuppressMessage("AOT", "IL2026:RequiresUnreferencedCode",
@@ -120,6 +128,15 @@ public static class XmlnsDefinitionRegistry
 
             foreach (var dllPath in dlls)
             {
+                // 预筛:bin 目录里大量存在 native DLL(jalium.native.*.dll、msvcp140d.dll、
+                // vulkan-1.dll 等),如果直接调 AssemblyName.GetAssemblyName 每个都会抛
+                // BadImageFormatException。即便 catch 住,debugger 的 first-chance 仍会刷屏
+                // 干扰用户。先用 PEReader.HasMetadata 廉价判断是否为托管程序集。
+                if (!HasManagedMetadata(dllPath))
+                {
+                    continue;
+                }
+
                 AssemblyName name;
                 try
                 {
@@ -127,7 +144,7 @@ public static class XmlnsDefinitionRegistry
                 }
                 catch
                 {
-                    // 非托管 DLL / 损坏 / 权限问题 — 跳过。
+                    // managed 头存在但 manifest 读不出 — 损坏或权限问题,跳过。
                     continue;
                 }
 
@@ -145,12 +162,28 @@ public static class XmlnsDefinitionRegistry
                 {
                     // 走默认 load context 的按名 Load,避免 LoadFrom 导致的 identity 冲突。
                     Assembly.Load(name);
+                    JalxamlDiagnostics.Log("  force-loaded '{0}' from {1}", name.Name!, dllPath);
                 }
-                catch
+                catch (Exception ex)
                 {
                     // 依赖解析失败、TFM 不兼容等 — 跳过,不阻塞 XAML 解析。
+                    JalxamlDiagnostics.Log("  force-load failed for '{0}': {1}", name.Name!, ex.GetType().Name);
                 }
             }
+        }
+    }
+
+    private static bool HasManagedMetadata(string path)
+    {
+        try
+        {
+            using var stream = File.OpenRead(path);
+            using var peReader = new PEReader(stream);
+            return peReader.HasMetadata;
+        }
+        catch
+        {
+            return false;
         }
     }
 
@@ -312,6 +345,13 @@ public static class XmlnsDefinitionRegistry
         foreach (var compat in compats)
         {
             _compatibilityRedirects.TryAdd(compat.OldNamespace, compat.NewNamespace);
+        }
+
+        if (defs.Length > 0 || prefixes.Length > 0 || compats.Length > 0)
+        {
+            JalxamlDiagnostics.Log(
+                "  scanned '{0}': {1} def(s), {2} prefix(es), {3} compat(s)",
+                new object?[] { assembly.GetName().Name, defs.Length, prefixes.Length, compats.Length });
         }
     }
 

@@ -38,6 +38,9 @@ public static class JalxamlLoader
     public static void LoadFromCompiledResource(object component, string resourceName, Dictionary<string, object>? namedElements)
     {
         var assembly = component.GetType().Assembly;
+        JalxamlDiagnostics.Log(
+            "JalxamlLoader.LoadFromCompiledResource: component={0} uic='{1}' assembly='{2}'",
+            new object?[] { component.GetType().FullName, resourceName, assembly.GetName().Name });
 
         // If the source .jalxaml contains Razor directives (@if, @(expr), @Path),
         // fall back to the runtime XamlReader which supports them.
@@ -46,6 +49,7 @@ public static class JalxamlLoader
         if (TryFindJalxamlSourceResource(assembly, jalxamlResourceName) is { } sourceResourceName
             && HasRazorDirectives(assembly, sourceResourceName))
         {
+            JalxamlDiagnostics.Log("  Razor directives detected, falling back to text XAML path: '{0}'", sourceResourceName);
             if (namedElements != null)
                 XamlReader.LoadComponent(component, sourceResourceName, namedElements, assembly);
             else
@@ -66,6 +70,9 @@ public static class JalxamlLoader
         if (stream == null)
         {
             var availableResources = assembly.GetManifestResourceNames();
+            JalxamlDiagnostics.Log(
+                "  .uic resource NOT FOUND. Available: [{0}]",
+                string.Join(", ", availableResources));
             throw new JalxamlLoadException(
                 $"Cannot find embedded .uic resource '{resourceName}' in assembly '{assembly.GetName().Name}'. " +
                 $"Available resources: [{string.Join(", ", availableResources)}]");
@@ -77,7 +84,9 @@ public static class JalxamlLoader
             stream.ReadExactly(buffer, 0, buffer.Length);
 
             var bundle = BundleSerializer.Load(buffer);
+            JalxamlDiagnostics.Log("  .uic bundle loaded ({0} bytes), applying to component", buffer.Length);
             XamlTypeRegistry.ApplyBundle(component, bundle, namedElements);
+            JalxamlDiagnostics.Log("  .uic bundle applied OK");
         }
     }
 
