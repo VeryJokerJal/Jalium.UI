@@ -102,8 +102,46 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
             relativePath = Path.GetFileName(file.Path);
         }
 
+        // Razor 前处理会把每个 jalxaml 复制到 obj/<cfg>/<tfm>/Jalxaml/Razor/<originalRelativeDir>/<filename>.jalxaml
+        // 并将其作为 AdditionalFile 暴露给 SG,因此 file.Path 指向中间副本。直接用相对路径计算
+        // 会得到 "obj.Debug.net10.0.Jalxaml.Razor.<originalRelativeDir>.<filename>.jalxaml",与
+        // Jalium.UI.Build.targets 里 EmbedJalxamlSources 目标基于 %(RelativeDir)%(Filename) 生成
+        // 的 manifest 名不符,运行时就会找不到资源。这里识别并剥离中间目录前缀,回退到原始
+        // 相对路径 ( <originalRelativeDir>/<filename>.jalxaml )。
+        relativePath = StripRazorIntermediatePrefix(relativePath);
+
         var dotted = relativePath.Replace('/', '.').Replace('\\', '.');
         return $"{rootNamespace}.{dotted}";
+    }
+
+    private static string StripRazorIntermediatePrefix(string relativePath)
+    {
+        // 匹配 "obj/<anything>/Jalxaml/Razor/" 或反斜杠变体,大小写不敏感。截取其后的部分。
+        ReadOnlySpan<char> span = relativePath.AsSpan();
+        var normalized = new System.Text.StringBuilder(relativePath.Length);
+        foreach (var c in span)
+        {
+            normalized.Append(c == '\\' ? '/' : c);
+        }
+        var normalizedString = normalized.ToString();
+
+        const string marker = "/Jalxaml/Razor/";
+        var idx = normalizedString.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0)
+        {
+            return relativePath;
+        }
+
+        // 只有在 marker 前面出现 "obj/" 段时才认作 Razor 中间输出,避免误伤 user 故意放在
+        // 真实 Jalxaml/Razor 目录下的文件。
+        var beforeMarker = normalizedString.Substring(0, idx);
+        if (beforeMarker.IndexOf("/obj/", StringComparison.OrdinalIgnoreCase) < 0
+            && !beforeMarker.StartsWith("obj/", StringComparison.OrdinalIgnoreCase))
+        {
+            return relativePath;
+        }
+
+        return normalizedString.Substring(idx + marker.Length);
     }
 
     private void GenerateForJalxaml(SourceProductionContext context, AdditionalText file, string assemblyName, string resourceName)
