@@ -34,6 +34,9 @@
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Xaml\Jalium.UI.Xaml.csproj" />
+    <!-- 仅引用,不在测试代码里 touch 任何类型 — 用于验证 XmlnsDefinitionRegistry
+         的 force-load 路径在 .NET lazy-load 行为下仍能扫到 [XmlnsDefinition]。 -->
+    <ProjectReference Include="..\Jalium.UI.Tests.XmlnsFixture\Jalium.UI.Tests.XmlnsFixture.csproj" />
   </ItemGroup>
 
   <ItemGroup>

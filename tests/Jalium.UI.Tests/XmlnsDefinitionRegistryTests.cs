@@ -57,4 +57,20 @@ public class XmlnsDefinitionRegistryTests
     {
         Assert.Equal("ui", XmlnsDefinitionRegistry.GetPreferredPrefix(JalxamlNamespaces.Presentation));
     }
+
+    [Fact]
+    public void LazyLoadedUserAssembly_IsForceLoadedAndScanned()
+    {
+        // Jalium.UI.Tests.XmlnsFixture 被 <ProjectReference> 引入但测试代码没 touch 任何类型 —
+        // 在 .NET lazy-load 行为下,如果 EnsureInitialized 不主动递归 Assembly.Load
+        // 传递引用,它就不会出现在 AppDomain 里,attribute 也扫不到。这个测试锁住
+        // 新实现的 force-load 路径不会回归。
+        const string fixtureNs = "urn:test:jalium:xmlns-lazy-fixture";
+
+        var mappings = XmlnsDefinitionRegistry.GetMappings(fixtureNs);
+
+        Assert.NotEmpty(mappings);
+        Assert.Contains(mappings, m => m.ClrNamespace == "Jalium.UI.Tests.XmlnsFixture");
+        Assert.Equal("lazy", XmlnsDefinitionRegistry.GetPreferredPrefix(fixtureNs));
+    }
 }
