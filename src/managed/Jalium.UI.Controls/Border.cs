@@ -55,6 +55,20 @@ public class Border : FrameworkElement
     private const double LgPerpendicularCompress = 0.3;
     private const double LgDragAsymmetry = 0.7;
 
+    // Magnitude of the volume-preserving stretch applied to the inner
+    // content during drag, expressed as a fraction of the drag distance
+    // over the panel's axis length. Content uses an isovolumetric
+    // anisotropic deformation: the axis aligned with the drag stretches by
+    // +g·(drag/axis), and the perpendicular axis squashes by -g·(drag/axis)
+    // — so the panel reads as a piece of taffy being pulled (longer in one
+    // direction, narrower across) rather than as a uniform magnification.
+    // 0.0 = content stays rigid; 1.0 = content matches the full anisotropy
+    // of the shape SDF, which reads as a hard zoom. ~0.35 gives a clearly
+    // perceptible "pull" — on a 200×200 panel dragged 100px on X, content
+    // X stretches ~17% and Y squashes ~17%, so the body reads as "wider
+    // and flatter" not as "bigger".
+    private const double LgContentDeformationGain = 0.35;
+
     private Pen? GetOrCreateBorderPen(Brush borderBrush, double borderWidth)
     {
         if (borderBrush == null || borderWidth <= 0)
@@ -438,6 +452,21 @@ public class Border : FrameworkElement
 
     #region Rendering
 
+    /// <summary>
+    /// Liquid glass opts out of the retained-mode render cache. The effect
+    /// is inherently per-frame: it samples a fresh background snapshot for
+    /// refraction, tracks the mouse-follow light position, discovers
+    /// sibling glass panels for SDF fusion, and — when
+    /// <see cref="LiquidGlassInteractive"/> is set — drives a spring
+    /// animation whose <c>PushTransform</c> in <c>OnRender</c> must pair
+    /// with the matching <c>Pop</c> in <c>OnPostRender</c> in the same
+    /// render pass. Caching would either replay stale geometry on later
+    /// frames or desync the push / pop bookkeeping across record-vs-replay
+    /// boundaries. Plain borders (no <c>LiquidGlass</c>) still benefit from
+    /// the cache; only LG-bearing borders render immediate-mode.
+    /// </summary>
+    protected override bool ParticipatesInRenderCache => !LiquidGlass;
+
     private static StreamGeometry CreateSuperEllipseGeometry(Rect rect, double n)
     {
         var geo = new StreamGeometry();
@@ -492,10 +521,26 @@ public class Border : FrameworkElement
         var borderWidth = Math.Max(border.Left, Math.Max(border.Top, Math.Max(border.Right, border.Bottom)));
         var halfBorder = borderWidth / 2;
 
-        // Compute elastic deformation parameters for spring press interaction
+        // Compute elastic deformation parameters for spring press interaction.
+        //
+        // Two scales are tracked independently:
+        //  - lgSx / lgSy — SHAPE deformation for the SDF glass rect.
+        //    Drag stretch at full magnitude + press scale + perpendicular
+        //    compression, giving the glass its "liquid being pulled"
+        //    silhouette.
+        //  - lgContentSx / lgContentSy — CONTENT transform for background,
+        //    border, and children. Same functional form as the shape, but
+        //    the drag stretch / compression contributions are attenuated
+        //    by LgContentDeformationGain. At gain=1 content tracks the
+        //    shape exactly (reads as "content magnified"); at gain=0
+        //    content ignores the drag entirely (reads as "glass is liquid
+        //    but content is rigid, no pull-through"). The intermediate
+        //    value gives the intended taffy-like feel: content visibly
+        //    follows the pull of the glass but does not balloon in size.
         _lgHighlightBoost = 0f;
         _lgPushedTransform = false;
         double lgSx = 1.0, lgSy = 1.0, lgShiftX = 0, lgShiftY = 0;
+        double lgContentSx = 1.0, lgContentSy = 1.0;
         bool lgHasSpring = false;
         if (LiquidGlass && LiquidGlassInteractive)
         {
@@ -514,16 +559,46 @@ public class Border : FrameworkElement
 
                 double stretchW = Math.Abs(tx);
                 double stretchH = Math.Abs(ty);
+                double rectWidth = Math.Max(rect.Width, 1.0);
+                double rectHeight = Math.Max(rect.Height, 1.0);
 
-                double compressW = 1.0 - (stretchH / Math.Max(rect.Height, 1.0)) * LgPerpendicularCompress;
-                double compressH = 1.0 - (stretchW / Math.Max(rect.Width, 1.0)) * LgPerpendicularCompress;
+                double compressW = 1.0 - (stretchH / rectHeight) * LgPerpendicularCompress;
+                double compressH = 1.0 - (stretchW / rectWidth) * LgPerpendicularCompress;
 
-                lgSx = (rect.Width + stretchW) / Math.Max(rect.Width, 1.0) * scaleX * compressW;
-                lgSy = (rect.Height + stretchH) / Math.Max(rect.Height, 1.0) * scaleY * compressH;
+                // Shape (SDF glass) gets the full drag stretch + press scale
+                // + perpendicular compression.
+                lgSx = (rectWidth + stretchW) / rectWidth * scaleX * compressW;
+                lgSy = (rectHeight + stretchH) / rectHeight * scaleY * compressH;
 
                 // Safety clamp: prevent runaway scaling from spring divergence
                 lgSx = Math.Clamp(lgSx, 0.1, 3.2);
                 lgSy = Math.Clamp(lgSy, 0.1, 3.2);
+
+                // Content uses an isovolumetric (volume-preserving) anisotropic
+                // deformation. The axis aligned with the drag stretches by
+                // +gain·(drag / axis), and the perpendicular axis squashes
+                // by the same amount — so the panel's content reads as a
+                // piece of taffy being pulled, not as a zoomed image.
+                //
+                // The shape silhouette uses an additive stretch
+                // (rect + stretch) which is intentionally non-conserving:
+                // the SDF glass visibly bulges. Content cannot use that
+                // formula because it shows up on text & icons as a uniform
+                // magnification (X grows ~+50% while Y only shrinks ~-15%,
+                // so both axes end up >1 once press scale lands on top).
+                // The asymmetric ±gain·dragRatio formula here keeps the
+                // X/Y ratio shifted away from 1 (visible elasticity) while
+                // leaving X·Y close to 1 (no perceived zoom).
+                double dragRatioX = stretchW / rectWidth;
+                double dragRatioY = stretchH / rectHeight;
+                double horizFactor = 1.0 + (dragRatioX - dragRatioY) * LgContentDeformationGain;
+                double vertFactor = 1.0 + (dragRatioY - dragRatioX) * LgContentDeformationGain;
+
+                // Press-spring scale (0.97 when pressed → 1.0 when released)
+                // multiplies on top so press feedback still reads clearly
+                // independent of drag direction.
+                lgContentSx = Math.Clamp(horizFactor * scaleX, 0.1, 1.8);
+                lgContentSy = Math.Clamp(vertFactor * scaleY, 0.1, 1.8);
 
                 lgShiftX = tx * LgDragAsymmetry;
                 lgShiftY = ty * LgDragAsymmetry;
@@ -538,7 +613,17 @@ public class Border : FrameworkElement
         // The glass effect is drawn WITHOUT a D2D1 transform so the snapshot capture
         // and refracted background content stay stable. Instead, we pass a deformed rect
         // to the shader so the SDF glass shape visually deforms.
-        if (LiquidGlass && dc is Interop.RenderTargetDrawingContext rtdc)
+        //
+        // We route through the base DrawingContext.DrawLiquidGlass virtual so
+        // this call survives the retained-mode render cache round-trip: under
+        // Visual's cache path, OnRender is invoked against a DrawingRecorder
+        // — not the live RenderTargetDrawingContext — and a direct type check
+        // would silently drop the glass draw on cached frames. The virtual is
+        // a no-op on contexts that don't know how to render glass, a
+        // command-record on the recorder, and the real GPU call on the live
+        // target; Replayer fans the recorded command back to the live target
+        // on every replay.
+        if (LiquidGlass)
         {
             // Lazy wiring: OnRender guarantees we're in the visual tree
             if (!_lgEventsWired)
@@ -572,24 +657,32 @@ public class Border : FrameworkElement
                 tintOpacity = color.ScA;
             }
 
+            // Pull the current drawing offset through the ambient-state
+            // interface so we agree with whatever context we're running
+            // against (live RenderTargetDrawingContext, recorder proxying to
+            // the live target, or a test context). Defaulting to (0, 0)
+            // keeps the call coherent on contexts that don't expose an
+            // offset at all.
+            var offset = (dc as IOffsetDrawingContext)?.Offset ?? default;
+
             // Compute screen-space light position from local mouse coordinates
             float lightX = -1f, lightY = -1f;
             if (_lgMouseOver)
             {
-                lightX = (float)(_lgLightLocal.X + rtdc.Offset.X);
-                lightY = (float)(_lgLightLocal.Y + rtdc.Offset.Y);
+                lightX = (float)(_lgLightLocal.X + offset.X);
+                lightY = (float)(_lgLightLocal.Y + offset.Y);
             }
 
             // Cache screen-space rect for neighbor fusion queries
             _lgScreenRect = new Rect(
-                Math.Round(glassRect.X + rtdc.Offset.X), Math.Round(glassRect.Y + rtdc.Offset.Y),
+                Math.Round(glassRect.X + offset.X), Math.Round(glassRect.Y + offset.Y),
                 glassRect.Width, glassRect.Height);
             _lgAvgCornerRadius = avgRadius;
 
             // Discover sibling liquid glass panels for fusion
             float fusionRadius = (float)LiquidGlassFusionRadius;
             int neighborCount = 0;
-            Span<float> neighborData = stackalloc float[20]; // max 4 neighbors 鑴?5 floats
+            float[]? neighborData = null;
             if (fusionRadius > 0 && VisualParent is Panel parentPanel)
             {
                 foreach (var child in parentPanel.Children)
@@ -597,6 +690,7 @@ public class Border : FrameworkElement
                     if (child is Border sibling && sibling != this &&
                         sibling.LiquidGlass && sibling._lgScreenRect.Width > 0)
                     {
+                        neighborData ??= new float[20]; // max 4 neighbors × 5 floats
                         int i = neighborCount * 5;
                         neighborData[i + 0] = (float)sibling._lgScreenRect.X;
                         neighborData[i + 1] = (float)sibling._lgScreenRect.Y;
@@ -630,29 +724,51 @@ public class Border : FrameworkElement
                 }
             }
 
-            rtdc.DrawLiquidGlass(
-                glassRect,
-                avgRadius,
-                (float)LiquidGlassBlurRadius,
-                (float)LiquidGlassRefractionAmount,
-                (float)LiquidGlassChromaticAberration,
-                tintR, tintG, tintB, tintOpacity,
-                lightX, lightY, _lgHighlightBoost,
-                (int)Shape, (float)SuperEllipseN,
-                neighborCount, fusionRadius,
-                neighborData[..(neighborCount * 5)]);
+            // Allocate a fresh parameters instance per frame: under the
+            // retained-mode cache the recorder clones it defensively, but on
+            // the direct path we want the live target to see exactly these
+            // values without cross-frame mutation risk.
+            dc.DrawLiquidGlass(new LiquidGlassParameters
+            {
+                Rectangle = glassRect,
+                CornerRadius = avgRadius,
+                BlurRadius = (float)LiquidGlassBlurRadius,
+                RefractionAmount = (float)LiquidGlassRefractionAmount,
+                ChromaticAberration = (float)LiquidGlassChromaticAberration,
+                TintR = tintR,
+                TintG = tintG,
+                TintB = tintB,
+                TintOpacity = tintOpacity,
+                LightX = lightX,
+                LightY = lightY,
+                HighlightBoost = _lgHighlightBoost,
+                ShapeType = (int)Shape,
+                ShapeExponent = (float)SuperEllipseN,
+                NeighborCount = neighborCount,
+                FusionRadius = fusionRadius,
+                NeighborData = neighborData,
+            });
         }
 
         // Now push ScaleTransform for background, border, and children.
         // This is AFTER DrawLiquidGlass so the D2D1 snapshot/effect output is not affected.
+        //
+        // Use lgContentSx / lgContentSy rather than the shape scales
+        // lgSx / lgSy: content inherits the same deformation shape but at
+        // a fraction of the magnitude (LgContentDeformationGain). That
+        // fraction is the key to the taffy-pull feel — zero would make
+        // content feel rigid inside a liquid panel, full magnitude would
+        // read as the content itself being zoomed. The lgShiftX /
+        // lgShiftY translation is applied on top so content travels with
+        // the drag.
         if (lgHasSpring)
         {
             double cx = rect.Width / 2.0;
             double cy = rect.Height / 2.0;
             dc.PushTransform(new MatrixTransform(new Matrix(
-                lgSx, 0, 0, lgSy,
-                cx * (1.0 - lgSx) + lgShiftX,
-                cy * (1.0 - lgSy) + lgShiftY)));
+                lgContentSx, 0, 0, lgContentSy,
+                cx * (1.0 - lgContentSx) + lgShiftX,
+                cy * (1.0 - lgContentSy) + lgShiftY)));
             _lgPushedTransform = true;
         }
 

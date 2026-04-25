@@ -16,7 +16,7 @@ public class Label : ContentControl
         return new Jalium.UI.Controls.Automation.LabelAutomationPeer(this);
     }
 
-    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0, 120, 212));
+    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
 
     private bool _pendingTemplateTextFocus;
     private bool _isSelectingDirectText;

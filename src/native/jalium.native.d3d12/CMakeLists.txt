@@ -2,9 +2,11 @@ project(jalium.native.d3d12)
 
 set(HEADERS
     include/d3d12_backend.h
+    include/d3d12_brush_shader.h
     include/d3d12_direct_renderer.h
     include/d3d12_glyph_atlas.h
     include/d3d12_impeller_engine.h
+    include/d3d12_ink_layer.h
     include/d3d12_pipeline.h
     include/d3d12_render_target.h
     include/d3d12_resources.h
@@ -22,9 +24,11 @@ set(SOURCES
     src/d3d12_backend.cpp
     src/d3d12_bitmap.cpp
     src/d3d12_brush.cpp
+    src/d3d12_brush_shader.cpp
     src/d3d12_direct_renderer.cpp
     src/d3d12_glyph_atlas.cpp
     src/d3d12_impeller_engine.cpp
+    src/d3d12_ink_layer.cpp
     src/d3d12_init.cpp
     src/d3d12_render_target.cpp
     src/d3d12_text.cpp

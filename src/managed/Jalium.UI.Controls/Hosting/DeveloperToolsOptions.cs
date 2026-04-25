@@ -1,20 +1,27 @@
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
 
 namespace Jalium.UI.Hosting;
 
 /// <summary>
 /// Opt-in switches for Jalium.UI's built-in developer surfaces.
 /// Default: both features are <see langword="false"/> so they never show up in
-/// shipped applications. Opt in from <see cref="AppBuilder"/>:
+/// shipped applications. Opt in from the built <see cref="JaliumApp"/> (ASP.NET
+/// Core-style — <c>Use*</c> lives on the app, not the builder):
 /// <code>
 /// var builder = AppBuilder.CreateBuilder(args);
-/// builder.UseDevTools();    // F12 + Ctrl+Shift+C picker
-/// builder.UseDebugHud();    // F3 overlay
+/// using var app = builder.Build();
+/// app.UseDevTools();    // F12 + Ctrl+Shift+C picker
+/// app.UseDebugHud();    // F3 overlay
 /// </code>
 /// Without these calls the key handlers silently ignore F3/F12 — no DevToolsWindow
 /// is ever constructed, no HUD overlay is ever toggled on.
 /// </summary>
+/// <remarks>
+/// Registered as a singleton on the DI container by <see cref="AppBuilder"/>, so
+/// every <c>Use*</c> extension and every framework consumer sees the same
+/// mutable instance. Framework code should never construct it directly — resolve
+/// via DI or read through <see cref="DeveloperToolsResolver"/>.
+/// </remarks>
 public sealed class DeveloperToolsOptions
 {
     /// <summary>
@@ -36,7 +43,7 @@ public sealed class DeveloperToolsOptions
 /// that need to check the developer-tools switches without forcing a reference
 /// through <see cref="Application.Services"/> at every call site. Returns
 /// safe defaults when the application was not built via <see cref="AppBuilder"/>
-/// or when the options weren't registered.
+/// or when no <c>app.UseDevTools()</c>/<c>app.UseDebugHud()</c> call has been made.
 /// </summary>
 internal static class DeveloperToolsResolver
 {
@@ -49,13 +56,12 @@ internal static class DeveloperToolsResolver
 
             try
             {
-                return services.GetService<IOptions<DeveloperToolsOptions>>()?.Value
-                       ?? DefaultsInstance;
+                return services.GetService<DeveloperToolsOptions>() ?? DefaultsInstance;
             }
             catch
             {
-                // ObjectDisposedException during shutdown, missing options
-                // registration, etc. — treat as "not enabled".
+                // ObjectDisposedException during shutdown, missing registration,
+                // etc. — treat as "not enabled".
                 return DefaultsInstance;
             }
         }

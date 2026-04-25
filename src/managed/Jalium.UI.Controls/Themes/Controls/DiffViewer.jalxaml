@@ -13,9 +13,9 @@
          control's OnRender output and hide everything. The Border here only
          contributes the chrome (border stroke + corner radius) as an overlay. -->
     <Style TargetType="DiffViewer">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="Padding" Value="0" />
@@ -36,13 +36,13 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
                 <Setter Property="Opacity" Value="0.65" />
             </PropertyTrigger>
         </Style.Triggers>

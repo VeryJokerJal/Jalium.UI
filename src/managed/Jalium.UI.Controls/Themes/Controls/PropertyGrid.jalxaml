@@ -8,12 +8,12 @@
     <!-- 分段按钮组样式: 激活时紫色底, 悬停时淡色底, 默认透明 -->
     <Style x:Key="PropertyGridToolbarButtonStyle" TargetType="Button">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorSecondaryBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding" Value="10,4,10,4" />
         <Setter Property="CornerRadius" Value="6" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="MinWidth" Value="0" />
         <Setter Property="MinHeight" Value="24" />
@@ -34,24 +34,24 @@
         </Setter>
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+                <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter Property="Background" Value="{DynamicResource SubtleFillColorTertiaryBrush}" />
+                <Setter Property="Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
 
     <!-- 激活状态样式: 用紫色强调色背景 + 白字 -->
     <Style x:Key="PropertyGridToolbarButtonActiveStyle" TargetType="Button">
-        <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
         <Setter Property="Foreground" Value="#FFFFFFFF" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding" Value="10,4,10,4" />
         <Setter Property="CornerRadius" Value="6" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="MinWidth" Value="0" />
         <Setter Property="MinHeight" Value="24" />
@@ -72,10 +72,10 @@
         </Setter>
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource AccentBrushHover}" />
+                <Setter Property="Background" Value="{ThemeResource AccentBrushHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter Property="Background" Value="{DynamicResource AccentBrushPressed}" />
+                <Setter Property="Background" Value="{ThemeResource AccentBrushPressed}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -85,23 +85,23 @@
     <!-- ============================================== -->
     <!-- 精致的搜索框: 大圆角、透明背景、聚焦时紫色边框 -->
     <Style x:Key="PropertyGridSearchBoxStyle" TargetType="TextBox">
-        <Setter Property="Background" Value="{DynamicResource ControlFillColorDefaultBrush}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlStrokeColorDefaultBrush}" />
+        <Setter Property="Background" Value="{ThemeResource ControlFillColorDefaultBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="28,6,10,6" />
         <Setter Property="CornerRadius" Value="14" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="MinHeight" Value="28" />
-        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlStrokeColorSecondaryBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorSecondaryBrush}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
-                <Setter Property="Background" Value="{DynamicResource ControlFillColorInputActiveBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource AccentBrush}" />
+                <Setter Property="Background" Value="{ThemeResource ControlFillColorInputActiveBrush}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -112,7 +112,7 @@
     <!-- 分类头: 紫色左边竖条 + 雪佛龙 + 加粗文字 + 悬停背景 -->
     <Style x:Key="PropertyGridCategoryExpanderStyle" TargetType="Expander">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding" Value="0" />
@@ -140,7 +140,7 @@
                                     <Path Name="PART_Chevron"
                                           Grid.Column="0"
                                           Data="M333.414 23.989 l557.904 393.923 c58.785 42.21 58.785 147.737 0 189.948 l-557.904 395.106 c-58.785 42.21-155.948 11.943-155.948-72.478 v-835.205 c0-84.421 97.162-113.505 155.948-71.293 Z"
-                                          Fill="{DynamicResource TextFillColorSecondaryBrush}"
+                                          Fill="{ThemeResource TextFillColorSecondaryBrush}"
                                           Width="7"
                                           Height="9"
                                           Stretch="Uniform"
@@ -151,7 +151,7 @@
                                     <Border Grid.Column="1"
                                             Width="3"
                                             Height="12"
-                                            Background="{DynamicResource AccentBrush}"
+                                            Background="{ThemeResource AccentBrush}"
                                             CornerRadius="2"
                                             VerticalAlignment="Center"
                                             Margin="0,0,8,0" />
@@ -178,10 +178,10 @@
         </Setter>
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
+                <Setter TargetName="PART_HeaderBorder" Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -192,26 +192,26 @@
     <!-- 内嵌式 TextBox: 默认无背景无边框, 悬停/聚焦时显示 -->
     <Style x:Key="PropertyGridEditorTextBoxStyle" TargetType="TextBox">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="6,3,6,3" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="FontSize" Value="12" />
         <Setter Property="MinHeight" Value="22" />
-        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource SubtleFillColorSecondaryBrush}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlStrokeColorDefaultBrush}" />
+                <Setter Property="Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlStrokeColorDefaultBrush}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsFocused" Value="True">
-                <Setter Property="Background" Value="{DynamicResource ControlFillColorInputActiveBrush}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                <Setter Property="Background" Value="{ThemeResource ControlFillColorInputActiveBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource AccentBrush}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsReadOnly" Value="True">
-                <Setter Property="Foreground" Value="{DynamicResource TextFillColorTertiaryBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextFillColorTertiaryBrush}" />
                 <Setter Property="Background" Value="Transparent" />
                 <Setter Property="BorderBrush" Value="Transparent" />
             </PropertyTrigger>
@@ -230,13 +230,13 @@
     <!-- PropertyGrid Style                              -->
     <!-- ============================================== -->
     <Style TargetType="PropertyGrid">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="6" />
         <Setter Property="Padding" Value="0" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="MinWidth" Value="200" />
         <Setter Property="MinHeight" Value="200" />
         <Setter Property="Template">
@@ -259,10 +259,10 @@
                         <Border Name="PART_ToolBar"
                                 Grid.Row="0"
                                 Background="Transparent"
-                                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
                                 BorderThickness="0,0,0,1"
                                 Padding="6,6,6,6">
-                            <Border Background="{DynamicResource ControlFillColorDefaultBrush}"
+                            <Border Background="{ThemeResource ControlFillColorDefaultBrush}"
                                     CornerRadius="8"
                                     Padding="2"
                                     HorizontalAlignment="Left">
@@ -282,7 +282,7 @@
                         <Border Name="PART_SearchBox"
                                 Grid.Row="1"
                                 Background="Transparent"
-                                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
                                 BorderThickness="0,0,0,1"
                                 Padding="8,6,8,6">
                             <Grid>
@@ -291,7 +291,7 @@
                                          Style="{StaticResource PropertyGridSearchBoxStyle}" />
                                 <!-- 搜索图标 (放大镜) -->
                                 <Path Data="M10 2a8 8 0 015.29 13.97l4.37 4.37-1.42 1.42-4.37-4.37A8 8 0 1110 2zm0 2a6 6 0 100 12 6 6 0 000-12z"
-                                      Fill="{DynamicResource TextFillColorTertiaryBrush}"
+                                      Fill="{ThemeResource TextFillColorTertiaryBrush}"
                                       Width="12"
                                       Height="12"
                                       Stretch="Uniform"
@@ -315,8 +315,8 @@
                         <!-- Description Area: 初始高度 0, 由动画控制显隐 -->
                         <Border Name="PART_DescriptionArea"
                                 Grid.Row="3"
-                                Background="{DynamicResource ControlFillColorTertiaryBrush}"
-                                BorderBrush="{DynamicResource ControlStrokeColorDefaultBrush}"
+                                Background="{ThemeResource ControlFillColorTertiaryBrush}"
+                                BorderBrush="{ThemeResource ControlStrokeColorDefaultBrush}"
                                 BorderThickness="0,1,0,0"
                                 Padding="12,8,12,10"
                                 Height="0"
@@ -326,10 +326,10 @@
                                 <TextBlock Name="PART_PropertyNameText"
                                            FontWeight="SemiBold"
                                            FontSize="12"
-                                           Foreground="{DynamicResource TextFillColorPrimaryBrush}"
+                                           Foreground="{ThemeResource TextFillColorPrimaryBrush}"
                                            Margin="0,0,0,3" />
                                 <TextBlock Name="PART_PropertyDescriptionText"
-                                           Foreground="{DynamicResource TextFillColorSecondaryBrush}"
+                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                            FontSize="11"
                                            TextWrapping="Wrap" />
                             </StackPanel>
@@ -341,7 +341,7 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
                 <Setter Property="Opacity" Value="0.65" />
             </PropertyTrigger>
         </Style.Triggers>

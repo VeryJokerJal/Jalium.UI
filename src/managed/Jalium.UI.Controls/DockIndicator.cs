@@ -22,11 +22,11 @@ internal static class DockIndicator
     private static readonly Color ChromeBorder = Color.FromArgb(180, 70, 70, 70);
     private static readonly Color ButtonBg = Color.FromArgb(255, 50, 50, 50);
     private static readonly Color ButtonBorder = Color.FromArgb(160, 80, 80, 80);
-    private static readonly Color ButtonHoverBg = Color.FromArgb(255, 0, 120, 212); // Accent
+    private static readonly Color ButtonHoverBg = Color.FromArgb(255, 0x1E, 0x79, 0x3F); // Accent
     private static readonly Color IconNormal = Color.FromArgb(220, 200, 200, 200);
     private static readonly Color IconHover = Color.FromRgb(255, 255, 255);
-    private static readonly Color PreviewBg = Color.FromArgb(50, 0, 120, 212);
-    private static readonly Color PreviewBorder = Color.FromArgb(140, 0, 120, 212);
+    private static readonly Color PreviewBg = Color.FromArgb(50, 0x1E, 0x79, 0x3F);
+    private static readonly Color PreviewBorder = Color.FromArgb(140, 0x1E, 0x79, 0x3F);
     private static readonly SolidColorBrush s_fallbackChromeBackgroundBrush = new(ChromeBg);
     private static readonly SolidColorBrush s_fallbackChromeBorderBrush = new(ChromeBorder);
     private static readonly SolidColorBrush s_fallbackButtonBackgroundBrush = new(ButtonBg);

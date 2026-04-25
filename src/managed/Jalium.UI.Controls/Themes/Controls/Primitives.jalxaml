@@ -3,6 +3,38 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <!-- ============================================== -->
+    <!-- Default Focus Visual Style                     -->
+    <!-- Applied by FocusVisualManager to the adorner   -->
+    <!-- layer whenever an element gains keyboard focus.-->
+    <!-- Targets Control because FocusVisualHost is a   -->
+    <!-- Control subclass; CornerRadius is mirrored from-->
+    <!-- the adorned element by the manager.            -->
+    <!-- The visual matches WinUI's 2-layer focus ring: -->
+    <!-- outer stroke + inset inner stroke so the       -->
+    <!-- indicator stays visible on both light and dark -->
+    <!-- backgrounds.                                   -->
+    <!-- ============================================== -->
+    <Style x:Key="DefaultFocusVisualStyle" TargetType="Control">
+        <Setter Property="IsHitTestVisible" Value="False" />
+        <Setter Property="Focusable" Value="False" />
+        <Setter Property="Template">
+            <ControlTemplate TargetType="Control">
+                <Grid>
+                    <Border BorderBrush="{ThemeResource FocusStrokeColorOuterBrush}"
+                            BorderThickness="2"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            IsHitTestVisible="False" />
+                    <Border BorderBrush="{ThemeResource FocusStrokeColorInnerBrush}"
+                            BorderThickness="1"
+                            CornerRadius="{TemplateBinding CornerRadius}"
+                            Margin="2"
+                            IsHitTestVisible="False" />
+                </Grid>
+            </ControlTemplate>
+        </Setter>
+    </Style>
+
+    <!-- ============================================== -->
     <!-- ToolBarPanel Style -->
     <!-- ============================================== -->
     <Style TargetType="ToolBarPanel">
@@ -13,7 +45,7 @@
     <!-- ToolBarOverflowPanel Style -->
     <!-- ============================================== -->
     <Style TargetType="ToolBarOverflowPanel">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="WrapWidth" Value="200" />
     </Style>
 
@@ -36,9 +68,9 @@
     <!-- ============================================== -->
     <Style TargetType="StatusBarItem">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
         <Setter Property="Padding" Value="8,2,8,2" />
-        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
+        <Setter Property="FontSize" Value="{ThemeResource CaptionFontSize}" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
     </Style>
 
@@ -46,8 +78,8 @@
     <!-- DocumentPageView Style -->
     <!-- ============================================== -->
     <Style TargetType="DocumentPageView">
-        <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
     </Style>
 
@@ -56,7 +88,7 @@
     <!-- ============================================== -->
     <Style TargetType="ResizeGrip">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
         <Setter Property="Width" Value="12" />
         <Setter Property="Height" Value="12" />
     </Style>
@@ -65,8 +97,8 @@
     <!-- Separator Style -->
     <!-- ============================================== -->
     <Style TargetType="Separator">
-        <Setter Property="Background" Value="{DynamicResource ControlBorder}" />
-        <Setter Property="StrokeBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="StrokeBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="StrokeThickness" Value="1" />
         <Setter Property="Margin" Value="0,4,0,4" />
         <Setter Property="Template">
@@ -90,46 +122,33 @@
     <!-- Label Style -->
     <!-- ============================================== -->
     <Style TargetType="Label">
-        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="Template">
             <ControlTemplate TargetType="Label">
-                <Grid>
-                    <Border Name="LabelBorder"
-                            Background="{TemplateBinding Background}"
-                            BorderBrush="{TemplateBinding BorderBrush}"
-                            BorderThickness="{TemplateBinding BorderThickness}"
-                            Padding="{TemplateBinding Padding}">
-                        <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                                          VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
-                    </Border>
-                    <Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            Visibility="Collapsed" />
-                </Grid>
+                <Border Name="LabelBorder"
+                        Background="{TemplateBinding Background}"
+                        BorderBrush="{TemplateBinding BorderBrush}"
+                        BorderThickness="{TemplateBinding BorderThickness}"
+                        Padding="{TemplateBinding Padding}">
+                    <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                      VerticalAlignment="{TemplateBinding VerticalContentAlignment}" />
+                </Border>
             </ControlTemplate>
         </Setter>
-
-        <Style.Triggers>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-            </PropertyTrigger>
-        </Style.Triggers>
     </Style>
 
     <!-- ============================================== -->
     <!-- ToolTip Style -->
     <!-- ============================================== -->
     <Style TargetType="ToolTip">
-        <Setter Property="Background" Value="{DynamicResource TooltipBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource TooltipBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
+        <Setter Property="FontSize" Value="{ThemeResource CaptionFontSize}" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ToolTip">
                 <Border Background="{TemplateBinding Background}"

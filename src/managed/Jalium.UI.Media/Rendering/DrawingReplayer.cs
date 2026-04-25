@@ -183,6 +183,11 @@ internal static class DrawingReplayer
                 case DrawCommandKind.PopEffect:
                     target.PopEffect();
                     break;
+
+                case DrawCommandKind.DrawLiquidGlass:
+                    target.DrawLiquidGlass((LiquidGlassParameters)c.A!);
+                    break;
+
             }
         }
     }

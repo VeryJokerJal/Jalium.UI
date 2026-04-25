@@ -30,16 +30,20 @@ public sealed class AdornerLayer : FrameworkElement
         Visual? current = visual;
         while (current != null)
         {
-            // Check if current element has an AdornerDecorator parent
-            if (current.VisualParent is AdornerDecorator decorator)
+            // Any ancestor that exposes an adorner layer wins — Window, custom host, or AdornerDecorator.
+            if (current is IAdornerLayerHost host && host.AdornerLayer != null)
             {
-                return decorator.AdornerLayer;
+                return host.AdornerLayer;
             }
 
-            // Check if current element is a Window with an adorner layer
             if (current is AdornerDecorator decoratorSelf)
             {
                 return decoratorSelf.AdornerLayer;
+            }
+
+            if (current.VisualParent is AdornerDecorator decoratorParent)
+            {
+                return decoratorParent.AdornerLayer;
             }
 
             current = current.VisualParent;

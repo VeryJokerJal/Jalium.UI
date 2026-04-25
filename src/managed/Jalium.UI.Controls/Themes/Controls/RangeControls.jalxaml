@@ -6,10 +6,10 @@
     <!-- ProgressBar Style -->
     <!-- ============================================== -->
     <Style TargetType="ProgressBar">
-        <Setter Property="Background" Value="{DynamicResource SliderTrack}" />
-        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
-        <Setter Property="ProgressBrush" Value="{DynamicResource AccentBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SliderTrack}" />
+        <Setter Property="Foreground" Value="{ThemeResource AccentBrush}" />
+        <Setter Property="ProgressBrush" Value="{ThemeResource AccentBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="MinHeight" Value="4" />
@@ -35,7 +35,7 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="ProgressBrush" Value="{DynamicResource AccentBrushDisabled}" />
+                <Setter Property="ProgressBrush" Value="{ThemeResource AccentBrushDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -44,9 +44,9 @@
     <!-- Slider Style -->
     <!-- ============================================== -->
     <Style TargetType="Slider">
-        <Setter Property="Background" Value="{DynamicResource SliderTrack}" />
-        <Setter Property="Foreground" Value="{DynamicResource AccentBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SliderTrack}" />
+        <Setter Property="Foreground" Value="{ThemeResource AccentBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="MinHeight" Value="24" />
         <Setter Property="Height" Value="24" />
         <Setter Property="Template">
@@ -75,7 +75,7 @@
                             Height="16"
                             CornerRadius="8"
                             Background="{TemplateBinding Foreground}"
-                            BorderBrush="{DynamicResource WindowBackground}"
+                            BorderBrush="{ThemeResource WindowBackground}"
                             BorderThickness="2"
                             HorizontalAlignment="Left"
                             VerticalAlignment="Center" />
@@ -84,12 +84,8 @@
         </Setter>
 
         <Style.Triggers>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="PART_Thumb" Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
-                <Setter TargetName="PART_Thumb" Property="BorderThickness" Value="3" />
-            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{DynamicResource AccentBrushDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource AccentBrushDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -98,15 +94,15 @@
     <!-- TickBar Style -->
     <!-- ============================================== -->
     <Style TargetType="TickBar">
-        <Setter Property="Fill" Value="{DynamicResource TextSecondary}" />
+        <Setter Property="Fill" Value="{ThemeResource TextSecondary}" />
     </Style>
 
     <!-- ============================================== -->
     <!-- Thumb Style -->
     <!-- ============================================== -->
     <Style TargetType="Thumb">
-        <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource ControlBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="2" />
         <Setter Property="Width" Value="12" />
@@ -122,37 +118,27 @@
                         <!-- Grip Lines -->
                         <Grid HorizontalAlignment="Center" VerticalAlignment="Center">
                             <StackPanel Orientation="Vertical" VerticalAlignment="Center">
-                                <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" Margin="0,0,0,2" />
-                                <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" Margin="0,0,0,2" />
-                                <Border Height="1" Width="6" Background="{DynamicResource TextTertiary}" />
+                                <Border Height="1" Width="6" Background="{ThemeResource TextTertiary}" Margin="0,0,0,2" />
+                                <Border Height="1" Width="6" Background="{ThemeResource TextTertiary}" Margin="0,0,0,2" />
+                                <Border Height="1" Width="6" Background="{ThemeResource TextTertiary}" />
                             </StackPanel>
                         </Grid>
                     </Border>
-                    <Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Visibility="Collapsed" />
                 </Grid>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsDragging" Value="True">
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

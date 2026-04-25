@@ -127,6 +127,7 @@ public:
         const float* dashPattern, uint32_t dashCount, float dashOffset,
         const EngineTransform& transform) override;
 
+
     bool EncodeFillPolygon(
         const float* points, uint32_t pointCount,
         const EngineBrushData& brush,

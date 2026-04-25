@@ -6,12 +6,12 @@
     <!-- Button Style -->
     <!-- ============================================== -->
     <Style TargetType="Button">
-        <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource ControlBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,6,12,6" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="MinWidth" Value="60" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -23,29 +23,21 @@
                         BorderBrush="{TemplateBinding BorderBrush}"
                         BorderThickness="{TemplateBinding BorderThickness}"
                         CornerRadius="{TemplateBinding CornerRadius}">
-                    <Grid>
-                        <Border Name="FocusBorder"
-                                IsHitTestVisible="False"
-                                BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                                BorderThickness="2"
-                                CornerRadius="{TemplateBinding CornerRadius}"
-                                Visibility="Collapsed" />
-                        <ContentPresenter
-                            Margin="{TemplateBinding Padding}"
-                            HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
-                            VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
-                            <ContentPresenter.Resources>
-                                <Style TargetType="TextBlock">
-                                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                    <Setter Property="TextWrapping" Value="NoWrap" />
-                                </Style>
-                                <Style TargetType="AccessText">
-                                    <Setter Property="TextTrimming" Value="CharacterEllipsis" />
-                                    <Setter Property="TextWrapping" Value="NoWrap" />
-                                </Style>
-                            </ContentPresenter.Resources>
-                        </ContentPresenter>
-                    </Grid>
+                    <ContentPresenter
+                        Margin="{TemplateBinding Padding}"
+                        HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
+                        VerticalAlignment="{TemplateBinding VerticalContentAlignment}">
+                        <ContentPresenter.Resources>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                <Setter Property="TextWrapping" Value="NoWrap" />
+                            </Style>
+                            <Style TargetType="AccessText">
+                                <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+                                <Setter Property="TextWrapping" Value="NoWrap" />
+                            </Style>
+                        </ContentPresenter.Resources>
+                    </ContentPresenter>
                 </Border>
             </ControlTemplate>
         </Setter>
@@ -56,24 +48,20 @@
                     <Condition Property="IsMouseOver" Value="True" />
                     <Condition Property="IsEnabled" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </MultiTrigger>
             <MultiTrigger>
                 <MultiTrigger.Conditions>
                     <Condition Property="IsPressed" Value="True" />
                     <Condition Property="IsEnabled" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ButtonBackgroundPressed}" />
+                <Setter Property="Background" Value="{ThemeResource ButtonBackgroundPressed}" />
             </MultiTrigger>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -82,12 +70,12 @@
     <!-- SplitButton Style -->
     <!-- ============================================== -->
     <Style TargetType="SplitButton">
-        <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource ControlBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12,6,12,6" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="MinWidth" Value="96" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -95,12 +83,6 @@
         <Setter Property="Template">
             <ControlTemplate TargetType="SplitButton">
                 <Grid>
-                    <Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Visibility="Collapsed" />
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
                         <ColumnDefinition Width="32" />
@@ -144,14 +126,10 @@
         </Setter>
 
         <Style.Triggers>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -160,12 +138,12 @@
     <!-- RepeatButton Style -->
     <!-- ============================================== -->
     <Style TargetType="RepeatButton">
-        <Setter Property="Background" Value="{DynamicResource ControlBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource ControlBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
@@ -182,12 +160,6 @@
                             IsHitTestVisible="False"
                             CornerRadius="{TemplateBinding CornerRadius}"
                             Opacity="0" />
-                    <Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Visibility="Collapsed" />
                     <ContentPresenter
                         Margin="{TemplateBinding Padding}"
                         HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}"
@@ -213,27 +185,23 @@
                     <Condition Property="IsMouseOver" Value="True" />
                     <Condition Property="IsEnabled" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource ControlBackgroundHover}" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{ThemeResource ControlBackgroundHover}" />
                 <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </MultiTrigger>
             <MultiTrigger>
                 <MultiTrigger.Conditions>
                     <Condition Property="IsPressed" Value="True" />
                     <Condition Property="IsEnabled" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource ButtonBackgroundPressed}" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{ThemeResource ButtonBackgroundPressed}" />
                 <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
             </MultiTrigger>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
                 <Setter TargetName="StateOverlay" Property="Opacity" Value="0" />
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -243,11 +211,11 @@
     <!-- ============================================== -->
     <Style TargetType="HyperlinkButton">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource HyperlinkForeground}" />
+        <Setter Property="Foreground" Value="{ThemeResource HyperlinkForeground}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="Padding" Value="0" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="HorizontalContentAlignment" Value="Left" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
         <Setter Property="Template">
@@ -271,11 +239,6 @@
                                     Background="{TemplateBinding Foreground}" />
                         </Grid>
                     </Border>
-                    <Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            Visibility="Collapsed" />
                 </Grid>
             </ControlTemplate>
         </Setter>
@@ -286,21 +249,17 @@
                     <Condition Property="IsMouseOver" Value="True" />
                     <Condition Property="IsEnabled" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Foreground" Value="{DynamicResource HyperlinkForegroundHover}" />
+                <Setter Property="Foreground" Value="{ThemeResource HyperlinkForegroundHover}" />
             </MultiTrigger>
             <MultiTrigger>
                 <MultiTrigger.Conditions>
                     <Condition Property="IsPressed" Value="True" />
                     <Condition Property="IsEnabled" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Foreground" Value="{DynamicResource HyperlinkForegroundPressed}" />
+                <Setter Property="Foreground" Value="{ThemeResource HyperlinkForegroundPressed}" />
             </MultiTrigger>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsUnderlined" Value="False">
                 <Setter TargetName="UnderlineBorder" Property="Visibility" Value="Collapsed" />

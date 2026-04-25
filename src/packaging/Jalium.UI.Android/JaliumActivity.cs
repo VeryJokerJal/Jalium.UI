@@ -22,9 +22,10 @@ public abstract class JaliumActivity : Activity, ISurfaceHolderCallback
 
     /// <summary>
     /// Builds the <see cref="JaliumApp"/> that drives this activity. Typically this
-    /// invokes <see cref="AppBuilder.CreateBuilder()"/>, registers services, sets
-    /// <see cref="AppBuilder.MainWindow"/>, and returns <see cref="AppBuilder.Build"/>.
-    /// Called on the dedicated Jalium UI thread, not the Android main thread.
+    /// invokes <see cref="AppBuilder.CreateBuilder()"/>, registers services, calls
+    /// <see cref="AppBuilder.Build"/>, then runs post-Build <c>app.UseApplication&lt;T&gt;()</c>
+    /// / <c>app.UseDevTools()</c> / etc. Called on the dedicated Jalium UI thread,
+    /// not the Android main thread.
     /// </summary>
     protected abstract JaliumApp CreateHostedApp();
 

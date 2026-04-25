@@ -43,6 +43,20 @@ public:
         int32_t fontWeight, int32_t fontStyle) override;
     Bitmap* CreateBitmapFromMemory(const uint8_t* data, uint32_t dataSize) override;
 
+    // Ink-layer / brush-shader pipeline — implementations live in
+    // d3d12_ink_layer.cpp so the backend TU doesn't pull the whole
+    // brush-shader header chain unnecessarily.
+    void*   CreateInkLayerBitmap(uint32_t width, uint32_t height) override;
+    void    DestroyInkLayerBitmap(void* bitmap) override;
+    int32_t ResizeInkLayerBitmap(void* bitmap, uint32_t width, uint32_t height) override;
+    void    ClearInkLayerBitmap(void* bitmap, float r, float g, float b, float a) override;
+    void*   CreateBrushShader(const char* shaderKey, const char* brushMainHlsl, int32_t blendMode) override;
+    void    DestroyBrushShader(void* shader) override;
+    int32_t DispatchBrush(void* bitmap, void* shader,
+                          const void* strokePoints, uint32_t pointCount,
+                          const void* constants,
+                          const void* extraParams, uint32_t extraParamsSize) override;
+
     // Accessors for internal components
     ID3D12Device* GetDevice() const { return device_.Get(); }
     ID3D12CommandQueue* GetCommandQueue() const { return commandQueue_.Get(); }

@@ -439,10 +439,7 @@ public class DatePicker : Control
             dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
         }
 
-        if (IsKeyboardFocused)
-        {
-            ControlFocusVisual.Draw(dc, this, inputRect, cornerRadius);
-        }
+        // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
         // Draw date text or placeholder
         string displayText;

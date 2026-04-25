@@ -5,6 +5,7 @@ using System.Xml;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Jalium.UI.Markup;
 
@@ -225,8 +226,7 @@ public static class ThemeLoader
                 object instance;
                 try
                 {
-                    instance = Activator.CreateInstance(startupType)
-                        ?? throw new InvalidOperationException($"Failed to create startup type '{startupType.FullName}'.");
+                    instance = CreateStartupInstance(startupType);
                 }
                 catch (Exception ex)
                 {
@@ -234,13 +234,58 @@ public static class ThemeLoader
                         $"StartupUri '{startupUriText}' failed to instantiate startup type '{startupType.FullName}'.", ex);
                 }
 
-                XamlReader.LoadComponent(instance, resolvedResourceName, assembly);
+                // 按 WPF 约定,x:Class 的 codebehind ctor 已调用 SG 生成的 InitializeComponent() 完成
+                // XAML 加载。再调一次 LoadComponent 会 double-load:Content/子控件会被重新创建并替换掉
+                // 旧实例,用户在 ctor 里对旧 named element 做的事件订阅、DataContext、binding 全部失效。
+                // 只有没有 InitializeComponent 方法的 x:Class 类型(没有走 SG 的纯 partial 裸类)需要
+                // ThemeLoader 代为加载 XAML。
+                if (!HasInitializeComponent(startupType))
+                {
+                    XamlReader.LoadComponent(instance, resolvedResourceName, assembly);
+                }
+
                 return instance;
             }
 
             using var parseStream = new MemoryStream(payload);
             return XamlReader.Load(parseStream, resolvedResourceName, assembly);
         }
+    }
+
+    [UnconditionalSuppressMessage("Trimming", "IL2072",
+        Justification = "Startup types reachable via StartupUri are preserved by the source generator and XamlTypeRegistry.")]
+    private static object CreateStartupInstance(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors | DynamicallyAccessedMemberTypes.NonPublicConstructors)]
+        Type startupType)
+    {
+        // WPF 原版 StartupUri 只用 Activator.CreateInstance,因为 WPF 没有 DI 集成。
+        // Jalium.UI 通过 AppBuilder 挂载 Microsoft.Extensions.DependencyInjection,允许
+        // StartupUri 目标类型声明 DI 构造函数(如 public MainWindow(IMessageService svc))。
+        // Activator.CreateInstance 要求 public parameterless ctor,遇到 DI ctor 直接抛
+        // MissingMethodException — 这正是 "Jalium.UI.Gallery.*.MainWindow" 黑屏/崩溃的根因。
+        // ActivatorUtilities.CreateInstance 既能从 IServiceProvider 解析 DI 参数,也能处理
+        // 无参 ctor,是 Activator.CreateInstance 的严格超集。有 Services 时统一走它,没有
+        // (纯 Jalium.UI.Controls 直连、无 AppBuilder)则 fallback 保持兼容。
+        var services = Application.Current?.Services;
+        if (services != null)
+        {
+            return ActivatorUtilities.CreateInstance(services, startupType);
+        }
+
+        return Activator.CreateInstance(startupType)
+            ?? throw new InvalidOperationException($"Failed to create startup type '{startupType.FullName}'.");
+    }
+
+    private static bool HasInitializeComponent(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicMethods | DynamicallyAccessedMemberTypes.NonPublicMethods)]
+        Type type)
+    {
+        return type.GetMethod(
+            "InitializeComponent",
+            BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic,
+            binder: null,
+            types: Type.EmptyTypes,
+            modifiers: null) != null;
     }
 
     private static IEnumerable<string> BuildPathCandidates(string path)
@@ -399,6 +444,15 @@ public static class ThemeLoader
         Justification = "Startup types are registered in XamlTypeRegistry or preserved by the application")]
     private static Type? ResolveStartupType(string className, Assembly preferredAssembly, Assembly appAssembly)
     {
+        // AOT root: after trimming, Assembly.GetType(string) returns null for any x:Class type
+        // that has no static reference in IL. The JALXAML source generator emits a
+        // [ModuleInitializer] for every jalxaml file that calls XamlTypeRegistry.RegisterStartupType
+        // with typeof(T) — that typeof reference keeps the trimmer honest AND gives us a
+        // string-keyed lookup that survives AOT. Consult the registry before reflection.
+        var registered = XamlTypeRegistry.GetStartupType(className);
+        if (registered != null)
+            return registered;
+
         var startupType = preferredAssembly.GetType(className, throwOnError: false);
         if (startupType != null)
             return startupType;

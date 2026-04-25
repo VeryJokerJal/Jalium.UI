@@ -427,6 +427,7 @@ public sealed class RenderTarget : IDisposable
             dashPattern, dashPattern?.Length ?? 0, dashOffset);
     }
 
+
     /// <summary>
     /// Draws a content area border: fills rect with bottom-only rounded corners,
     /// strokes U-shape (left + bottom + right, no top) with native D2D arcs.

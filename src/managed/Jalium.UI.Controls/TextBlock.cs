@@ -18,7 +18,7 @@ public class TextBlock : FrameworkElement
     }
 
     private const int MaxTextWidthCacheEntries = 256;
-    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0, 120, 212));
+    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
 
     private readonly Dictionary<string, double> _textWidthCache = new(StringComparer.Ordinal);
 

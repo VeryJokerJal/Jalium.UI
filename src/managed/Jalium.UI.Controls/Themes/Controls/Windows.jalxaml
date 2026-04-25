@@ -6,24 +6,24 @@
     <!-- Window Style -->
     <!-- ============================================== -->
     <Style TargetType="Window">
-        <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
     </Style>
 
     <!-- ============================================== -->
     <!-- Page Style -->
     <!-- ============================================== -->
     <Style TargetType="Page">
-        <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
     </Style>
 
     <!-- ============================================== -->
     <!-- Frame Style -->
     <!-- ============================================== -->
     <Style TargetType="Frame">
-        <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
     </Style>
 
 </ResourceDictionary>

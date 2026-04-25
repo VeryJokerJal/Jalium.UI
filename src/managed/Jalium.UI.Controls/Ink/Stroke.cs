@@ -228,7 +228,13 @@ public sealed class Stroke : INotifyPropertyChanged
             BuildRenderCache();
         }
 
-        // Fast path: single DrawGeometry call for path-based brushes
+        // Fast path: single DrawGeometry call for path-based brushes.
+        // Committed strokes no longer take this path at all — they're
+        // painted on stroke commit by a pixel-shader brush that writes
+        // directly into the InkCanvas's GPU ink layer. This path is only
+        // reached during in-progress (active) stroke preview and for
+        // non-RTDC contexts (tests / recorders) where the shader pipeline
+        // isn't available.
         if (_cachedGeometry != null)
         {
             if (_cachedPen != null)

@@ -568,6 +568,17 @@ public sealed class GenerateJalxamlCodeBehindTask : Microsoft.Build.Utilities.Ta
         sb.AppendLine($"partial class {simpleClassName}");
         sb.AppendLine("{");
 
+        // AOT 保根:StartupUri 等按 x:Class 字符串查类型的路径,在 AOT trim 之后会被 Assembly.GetType
+        // 判空。ModuleInitializer 在模块 cctor 里一次性把 typeof(T) 写入 XamlTypeRegistry —
+        // typeof 引用让 linker 留住类型,注册表让 ThemeLoader 不依赖 Assembly.GetType。
+        // 方法名按类名后缀区分,避免同一 module 内重名冲突。
+        sb.AppendLine("    [global::System.Runtime.CompilerServices.ModuleInitializer]");
+        sb.AppendLine($"    internal static void __JalxamlRegisterStartupType_{simpleClassName}()");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        global::Jalium.UI.Markup.XamlTypeRegistry.RegisterStartupType(\"{className}\", typeof({simpleClassName}));");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+
         foreach (var element in namedElements)
         {
             sb.AppendLine($"    private {element.TypeName}? {element.Name};");

@@ -13,8 +13,10 @@ namespace Jalium.UI.Hosting;
 /// <para>
 /// The meter is dormant by default — no handlers are attached and no per-frame
 /// work is done. Call <see cref="Start"/> (typically via
-/// <c>builder.UseJaliumMetrics()</c> or <c>builder.Services.AddJaliumMetrics()</c>)
-/// to begin collection. The meter attaches to the existing
+/// <c>app.UseJaliumMetrics()</c> on the built <see cref="JaliumApp"/>, or
+/// <c>builder.Services.AddJaliumMetrics()</c> when you want the service
+/// registration without auto-starting) to begin collection. The meter attaches
+/// to the existing
 /// <see cref="CompositionTarget.Rendering"/> event — it does <em>not</em> force
 /// the frame timer on, so an idle application with no visible window still
 /// produces no samples.
