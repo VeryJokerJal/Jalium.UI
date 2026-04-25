@@ -37,6 +37,8 @@ public static class ThemeManager
     private const string ThemeRefreshVersionKey = "__ThemeManager.Version";
     private const string XamlAssemblyName = "Jalium.UI.Xaml";
     private const string ThemeLoaderTypeName = "Jalium.UI.Markup.ThemeLoader";
+    private const string DesktopAssemblyName = "Jalium.UI.Desktop";
+    private const string DesktopBootstrapTypeName = "Jalium.UI.Desktop.DesktopBootstrap";
 
     private static bool _initialized;
     private static int _themeVersion;
@@ -47,14 +49,15 @@ public static class ThemeManager
     private static bool _suppressRefresh;
 
     /// <summary>
-    /// Default brand primary accent (purple).
+    /// Default brand primary accent (forest emerald, midpoint of the
+    /// #207245 -> #1C8043 gradient used for AccentBrush).
     /// </summary>
-    public static readonly Color DefaultPrimaryAccentColor = Color.FromRgb(0x7C, 0x4D, 0xFF);
+    public static readonly Color DefaultPrimaryAccentColor = Color.FromRgb(0x1E, 0x79, 0x3F);
 
     /// <summary>
-    /// Default brand secondary accent (orange).
+    /// Default brand secondary accent (deep teal-green).
     /// </summary>
-    public static readonly Color DefaultSecondaryAccentColor = Color.FromRgb(0xFF, 0x8A, 0x00);
+    public static readonly Color DefaultSecondaryAccentColor = Color.FromRgb(0x14, 0x5A, 0x33);
 
     /// <summary>
     /// The resource name of the Generic theme file.
@@ -66,6 +69,21 @@ public static class ThemeManager
     /// Set by the Jalium.UI.Xaml assembly via ModuleInitializer to avoid circular dependency.
     /// </summary>
     public static Func<Stream, string, Assembly, ResourceDictionary?>? XamlLoader { get; set; }
+
+    /// <summary>
+    /// Optional platform-specific resolver for the system accent color.
+    /// Set by a platform integration package (e.g. <c>Jalium.UI.Desktop</c>'s
+    /// <c>ModuleInitializer</c> on Windows reads
+    /// <c>HKCU\SOFTWARE\Microsoft\Windows\DWM\AccentColor</c>).
+    /// When non-null and returning a value, its result seeds
+    /// <see cref="CurrentAccentColor"/> during <see cref="Initialize"/>
+    /// instead of <see cref="DefaultPrimaryAccentColor"/>, so every
+    /// <c>{ThemeResource SystemAccentColor}</c> binding (and every brush
+    /// derived from it) picks up the OS accent automatically.
+    /// On platforms that don't ship a resolver the framework default brand
+    /// emerald is preserved.
+    /// </summary>
+    public static Func<Color?>? SystemAccentResolver { get; set; }
 
     /// <summary>
     /// Gets the currently active theme variant.
@@ -134,6 +152,17 @@ public static class ThemeManager
             return;
         }
 
+        // Give a platform integration package (e.g. Jalium.UI.Desktop on
+        // Windows) a chance to register a SystemAccentResolver before we
+        // build the accent dictionary.
+        EnsurePlatformIntegrationLoaded();
+
+        var platformAccent = TryGetPlatformAccent();
+        if (platformAccent.HasValue)
+        {
+            CurrentAccentColor = platformAccent.Value;
+        }
+
         _genericThemeDictionary = LoadGenericTheme();
         if (_genericThemeDictionary != null)
         {
@@ -148,6 +177,25 @@ public static class ThemeManager
 
         _initialized = true;
         ForceThemeRefresh();
+    }
+
+    /// <summary>
+    /// Invokes <see cref="SystemAccentResolver"/> defensively so a buggy
+    /// platform package can never abort the framework's theme initialization.
+    /// </summary>
+    private static Color? TryGetPlatformAccent()
+    {
+        if (SystemAccentResolver == null)
+            return null;
+
+        try
+        {
+            return SystemAccentResolver.Invoke();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>
@@ -364,6 +412,25 @@ public static class ThemeManager
         var dark1 = Blend(accent, Color.Black, 0.12);
         var dark2 = Blend(accent, Color.Black, 0.24);
         var dark3 = Blend(accent, Color.Black, 0.36);
+
+        // Every AccentBrush flavor ships as a top-to-bottom gradient so the
+        // default palette yields the #207245 -> #1C8043 look (and custom
+        // accents automatically get a subtle two-stop gradient in the same
+        // style). The start stop is the accent darkened ~5% and the end stop
+        // is the accent lightened ~5% so the midpoint matches `accent`.
+        static LinearGradientBrush Gradient(Color color)
+        {
+            var start = Blend(color, Color.Black, 0.06);
+            var end = Blend(color, Color.White, 0.06);
+            var brush = new LinearGradientBrush
+            {
+                StartPoint = new Point(0, 0),
+                EndPoint = new Point(1, 0),
+            };
+            brush.GradientStops.Add(new GradientStop(start, 0));
+            brush.GradientStops.Add(new GradientStop(end, 1));
+            return brush;
+        }
         var disabledBlendTarget = CurrentTheme == ThemeVariant.Dark
             ? Color.FromRgb(0x66, 0x66, 0x66)
             : Color.FromRgb(0xB8, 0xB8, 0xB8);
@@ -397,10 +464,10 @@ public static class ThemeManager
             ["AccentFillColorDisabled"] = disabled,
             ["AccentFillColorSelectedTextBackground"] = accent,
             ["SystemFillColorAttention"] = systemFillAttention,
-            ["AccentBrush"] = new SolidColorBrush(accent),
-            ["AccentBrushHover"] = new SolidColorBrush(hover),
-            ["AccentBrushPressed"] = new SolidColorBrush(pressed),
-            ["AccentBrushDisabled"] = new SolidColorBrush(disabled),
+            ["AccentBrush"] = Gradient(accent),
+            ["AccentBrushHover"] = Gradient(hover),
+            ["AccentBrushPressed"] = Gradient(pressed),
+            ["AccentBrushDisabled"] = Gradient(disabled),
             ["AccentTextFillColorPrimaryBrush"] = new SolidColorBrush(accentTextPrimary),
             ["AccentTextFillColorSecondaryBrush"] = new SolidColorBrush(accentTextSecondary),
             ["AccentTextFillColorTertiaryBrush"] = new SolidColorBrush(accentTextTertiary),
@@ -441,6 +508,65 @@ public static class ThemeManager
     private static string NormalizeFontFamily(string? value, string fallback)
     {
         return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
+    }
+
+    /// <summary>
+    /// Best-effort load + bootstrap of an optional platform integration
+    /// package (e.g. <c>Jalium.UI.Desktop</c> on Windows). Mirrors the
+    /// existing <see cref="EnsureXamlLoaderRegistered"/> pattern: the
+    /// package exposes a <c>public static Initialize()</c> method on a
+    /// well-known type, and we reflectively invoke it after loading the
+    /// assembly. This avoids depending on <c>[ModuleInitializer]</c>
+    /// being eagerly fired by the runtime — explicit invocation is
+    /// deterministic across all hosts (Debug/Release, AOT, hot-reload).
+    /// Failure is silent — the framework simply keeps its defaults.
+    /// </summary>
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Platform package is loaded by name; missing package is the expected fallback path.")]
+    [UnconditionalSuppressMessage("Trimming", "IL2072:Target parameter argument",
+        Justification = "DesktopBootstrap is preserved by DynamicDependency.")]
+    [UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Assembly.Load by name is supported by the runtime; missing package falls through gracefully.")]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.PublicMethods,
+        DesktopBootstrapTypeName, DesktopAssemblyName)]
+    private static void EnsurePlatformIntegrationLoaded()
+    {
+        if (SystemAccentResolver != null)
+            return;
+
+        Assembly? desktopAssembly = AppDomain.CurrentDomain
+            .GetAssemblies()
+            .FirstOrDefault(a => string.Equals(a.GetName().Name, DesktopAssemblyName, StringComparison.Ordinal));
+
+        if (desktopAssembly == null)
+        {
+            try
+            {
+                desktopAssembly = Assembly.Load(new AssemblyName(DesktopAssemblyName));
+            }
+            catch
+            {
+                // Platform package isn't in the deployment — fine, we keep defaults.
+                return;
+            }
+        }
+
+        try
+        {
+            var bootstrapType = desktopAssembly.GetType(DesktopBootstrapTypeName, throwOnError: false);
+            var initializeMethod = bootstrapType?.GetMethod(
+                "Initialize",
+                BindingFlags.Public | BindingFlags.Static,
+                binder: null,
+                types: Type.EmptyTypes,
+                modifiers: null);
+            initializeMethod?.Invoke(null, null);
+        }
+        catch
+        {
+            // Bootstrap is best-effort. If it throws we fall back to defaults
+            // rather than aborting application startup.
+        }
     }
 
     [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",

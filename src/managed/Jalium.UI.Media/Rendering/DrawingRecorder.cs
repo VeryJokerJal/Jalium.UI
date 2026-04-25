@@ -265,6 +265,7 @@ internal sealed class DrawingRecorder : DrawingContext, IOffsetDrawingContext, I
         _bounds.AccumulateRect(geometry.Bounds, StrokeSlop(canonicalPen));
     }
 
+
     public override void DrawImage(ImageSource imageSource, Rect rectangle)
     {
         _commands.Add(DrawCommand.Image(imageSource, rectangle, BitmapScalingMode.Unspecified));
@@ -281,6 +282,40 @@ internal sealed class DrawingRecorder : DrawingContext, IOffsetDrawingContext, I
     {
         _commands.Add(DrawCommand.BackdropEffect(effect, rectangle, cornerRadius));
         _bounds.AccumulateRect(rectangle);
+    }
+
+    public override void DrawLiquidGlass(LiquidGlassParameters parameters)
+    {
+        // The caller owns the LiquidGlassParameters instance they pass in,
+        // and is free to mutate or reuse it across frames. Record a private
+        // copy so a subsequent OnRender that rebuilds / mutates the caller's
+        // object can't corrupt a replay that still references this command.
+        // Neighbor data is likewise cloned — on the capture path Border.cs
+        // fills a stackalloc'd span whose lifetime ends with OnRender.
+        var captured = new LiquidGlassParameters
+        {
+            Rectangle = parameters.Rectangle,
+            CornerRadius = parameters.CornerRadius,
+            BlurRadius = parameters.BlurRadius,
+            RefractionAmount = parameters.RefractionAmount,
+            ChromaticAberration = parameters.ChromaticAberration,
+            TintR = parameters.TintR,
+            TintG = parameters.TintG,
+            TintB = parameters.TintB,
+            TintOpacity = parameters.TintOpacity,
+            LightX = parameters.LightX,
+            LightY = parameters.LightY,
+            HighlightBoost = parameters.HighlightBoost,
+            ShapeType = parameters.ShapeType,
+            ShapeExponent = parameters.ShapeExponent,
+            NeighborCount = parameters.NeighborCount,
+            FusionRadius = parameters.FusionRadius,
+            NeighborData = parameters.NeighborData is { } src
+                ? (float[])src.Clone()
+                : null,
+        };
+        _commands.Add(DrawCommand.LiquidGlass(captured));
+        _bounds.AccumulateRect(captured.Rectangle);
     }
 
     // ── State stack ─────────────────────────────────────────────────────

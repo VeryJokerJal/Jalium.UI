@@ -9,7 +9,7 @@
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="Foreground" Value="{DynamicResource ScrollBarArrow}" />
+        <Setter Property="Foreground" Value="{ThemeResource ScrollBarArrow}" />
         <Setter Property="Padding" Value="0" />
         <Setter Property="CornerRadius" Value="0" />
         <Setter Property="MinWidth" Value="0" />
@@ -76,7 +76,7 @@
     <!-- ScrollBar Thumb Style -->
     <!-- ============================================== -->
     <Style x:Key="ScrollBarThumbStyle" TargetType="Thumb">
-        <Setter Property="Background" Value="{DynamicResource ScrollBarThumb}" />
+        <Setter Property="Background" Value="{ThemeResource ScrollBarThumb}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
         <Setter Property="CornerRadius" Value="4" />
@@ -93,10 +93,10 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource ScrollBarThumbHover}" />
+                <Setter Property="Background" Value="{ThemeResource ScrollBarThumbHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsDragging" Value="True">
-                <Setter Property="Background" Value="{DynamicResource ScrollBarThumbActive}" />
+                <Setter Property="Background" Value="{ThemeResource ScrollBarThumbActive}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
                 <Setter Property="Opacity" Value="0.45" />
@@ -108,10 +108,10 @@
     <!-- ScrollBar Style (explicit key for visual-child fallback) -->
     <!-- ============================================== -->
     <Style x:Key="ScrollBarStyle" TargetType="ScrollBar">
-        <Setter Property="Background" Value="{DynamicResource ScrollBarTrack}" />
+        <Setter Property="Background" Value="{ThemeResource ScrollBarTrack}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="ThumbStyle" Value="{DynamicResource ScrollBarThumbStyle}" />
+        <Setter Property="ThumbStyle" Value="{ThemeResource ScrollBarThumbStyle}" />
         <Setter Property="CornerRadius" Value="5" />
         <Setter Property="Padding" Value="2" />
         <Setter Property="MinWidth" Value="12" />
@@ -128,10 +128,10 @@
     <!-- ScrollBar Style (implicit) -->
     <!-- ============================================== -->
     <Style TargetType="ScrollBar">
-        <Setter Property="Background" Value="{DynamicResource ScrollBarTrack}" />
+        <Setter Property="Background" Value="{ThemeResource ScrollBarTrack}" />
         <Setter Property="BorderBrush" Value="Transparent" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="ThumbStyle" Value="{DynamicResource ScrollBarThumbStyle}" />
+        <Setter Property="ThumbStyle" Value="{ThemeResource ScrollBarThumbStyle}" />
         <Setter Property="CornerRadius" Value="5" />
         <Setter Property="Padding" Value="2" />
         <Setter Property="MinWidth" Value="12" />

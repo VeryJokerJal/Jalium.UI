@@ -1561,7 +1561,23 @@ public partial class ScrollViewer : Control
         {
             if (current == _content)
             {
-                // We've reached the content - return the accumulated offset
+                // When _content implements IScrollInfo (e.g. StackPanel doing its own
+                // physical scrolling), its ArrangeOverride already bakes the negative
+                // scroll offset into each child's _visualBounds. The accumulated y here
+                // therefore represents the child's CURRENT viewport-applied position,
+                // not its logical position in the content's full extent. MakeVisible
+                // expects logical content coordinates so it can compare against the
+                // viewport rect and compute the correct delta — add the scroll offset
+                // back to undo the bake-in. Without this, BringIntoView under-scrolls
+                // by exactly _scrollInfo.VerticalOffset on every call, leaving the
+                // focused element below the viewport while the focus-visual adorner
+                // (which uses raw _visualBounds) ends up drawn down in the footer
+                // region of the window.
+                if (_scrollInfo != null)
+                {
+                    x += _scrollInfo.HorizontalOffset;
+                    y += _scrollInfo.VerticalOffset;
+                }
                 return new Point(x, y);
             }
 

@@ -108,10 +108,7 @@ public class MenuBarItem : Control
             dc.DrawRoundedRectangle(hoverBrush, null, new Rect(RenderSize), 4, 4);
         }
 
-        if (IsKeyboardFocused)
-        {
-            ControlFocusVisual.Draw(dc, this, new Rect(RenderSize), new CornerRadius(4));
-        }
+        // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
         // Title text
         if (!string.IsNullOrEmpty(Title))

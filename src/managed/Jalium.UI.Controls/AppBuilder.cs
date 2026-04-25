@@ -57,32 +57,43 @@ public sealed class AppBuilderSettings
 /// Fluent builder for a Jalium.UI application. Implements
 /// <see cref="IHostApplicationBuilder"/> so the standard Microsoft.Extensions
 /// configuration, dependency-injection, logging, and metrics patterns work
-/// unchanged. The <see cref="Application"/>'s own properties
-/// (<see cref="Application.MainWindow"/>, <see cref="Application.StartupUri"/>,
-/// <see cref="Application.ShutdownMode"/>, <see cref="Application.Resources"/>)
-/// are configured via <see cref="ConfigureApplication"/> or by subclassing
-/// <see cref="Application"/> and registering the subclass with
-/// <see cref="UseApplication{TApp}"/>.
+/// unchanged.
 /// </summary>
 /// <remarks>
+/// <para>
+/// API shape follows ASP.NET Core: <c>builder.Services.Add*</c> /
+/// <c>builder.Configure*</c> happen <em>before</em> <see cref="Build"/>;
+/// every <c>Use*</c> — including <c>UseApplication</c> — lives on the built
+/// <see cref="JaliumApp"/> and runs <em>after</em> <see cref="Build"/>.
+/// </para>
+/// <para>
 /// Usage:
 /// <code>
 /// var builder = AppBuilder.CreateBuilder(args);
 /// builder.Services.AddSingleton&lt;IMyService, MyService&gt;();
-/// builder.ConfigureApplication(app => app.MainWindow = new MainWindow());
+/// builder.ConfigureApplication(a => a.MainWindow = new MainWindow());
 /// using var app = builder.Build();
+/// app.UseApplication&lt;App&gt;();     // pick Application subtype
+/// app.UseDevTools();              // activate feature opt-ins
+/// app.UseJaliumMetrics();
 /// return app.Run();
 /// </code>
-/// Only one <see cref="Application"/> exists per process; calling <see cref="Build"/>
-/// twice throws. The resulting <see cref="JaliumApp"/> owns both the
-/// <see cref="IHost"/> (lifetime, DI scope root) and the <see cref="Jalium.UI.Application"/>
-/// (UI message loop).
+/// </para>
+/// <para>
+/// Only one <see cref="Application"/> exists per process. <see cref="Build"/>
+/// does not construct it — that's deferred until
+/// <see cref="JaliumApp.UseApplication{TApp}"/> (or friends), or the first
+/// access that requires it (e.g. <see cref="JaliumApp.Run()"/>), at which point
+/// a default <see cref="Application"/> is created if no <c>UseApplication</c>
+/// has run. The returned <see cref="JaliumApp"/> owns both the
+/// <see cref="IHost"/> (lifetime, DI scope root) and, once bound, the
+/// <see cref="Jalium.UI.Application"/> (UI message loop).
+/// </para>
 /// </remarks>
 public sealed class AppBuilder : IHostApplicationBuilder
 {
     private readonly HostApplicationBuilder _hostBuilder;
     private readonly List<Action<Application>> _configureApplication = new();
-    private Func<Application>? _applicationFactory;
     private bool _isBuilt;
 
     private AppBuilder(AppBuilderSettings? settings)
@@ -105,6 +116,7 @@ public sealed class AppBuilder : IHostApplicationBuilder
         // individual registrations.
         _hostBuilder.Services.TryAddSingleton<ViewRegistry>();
         _hostBuilder.Services.TryAddSingleton<IViewFactory, ViewFactory>();
+        _hostBuilder.Services.TryAddSingleton<DeveloperToolsOptions>();
         _hostBuilder.Services.AddOptions<JaliumRuntimeOptions>()
             .Bind(_hostBuilder.Configuration.GetSection(JaliumRuntimeOptions.SectionName));
     }
@@ -163,14 +175,16 @@ public sealed class AppBuilder : IHostApplicationBuilder
         where TContainerBuilder : notnull
         => _hostBuilder.ConfigureContainer(factory, configure);
 
-    // ── Application construction / configuration ────────────────────────────
+    // ── Application configuration ───────────────────────────────────────────
 
     /// <summary>
     /// Queues a configuration callback that runs against the live
-    /// <see cref="Application"/> after it is constructed but before the host is
-    /// started. Use this to set <see cref="Application.MainWindow"/>,
-    /// <see cref="Application.StartupUri"/>, <see cref="Application.ShutdownMode"/>,
-    /// entries in <see cref="Application.Resources"/>, or to subscribe to the
+    /// <see cref="Application"/> after it is constructed (by
+    /// <see cref="JaliumApp.UseApplication{TApp}"/> or the default-Application
+    /// fallback) but before the host is started. Use this to set
+    /// <see cref="Application.MainWindow"/>, <see cref="Application.StartupUri"/>,
+    /// <see cref="Application.ShutdownMode"/>, entries in
+    /// <see cref="Application.Resources"/>, or to subscribe to the
     /// <see cref="Application.Startup"/>/<see cref="Application.Exit"/> events.
     /// </summary>
     public AppBuilder ConfigureApplication(Action<Application> configure)
@@ -180,64 +194,19 @@ public sealed class AppBuilder : IHostApplicationBuilder
         return this;
     }
 
-    /// <summary>
-    /// Registers a custom <see cref="Application"/> subclass to be constructed at
-    /// <see cref="Build"/> time via its parameterless constructor. Use this when
-    /// you want to keep <c>OnStartup</c>/<c>OnExit</c>/<c>OnSessionEnding</c>
-    /// overrides on your own <see cref="Application"/> subclass (the WPF-style
-    /// entry point).
-    /// </summary>
-    /// <typeparam name="TApp">
-    /// The <see cref="Application"/> subclass. Must expose a public parameterless
-    /// constructor so the framework can instantiate it on the UI thread.
-    /// </typeparam>
-    /// <remarks>
-    /// Calling this multiple times keeps only the last registration. Mutually
-    /// exclusive with the other <c>UseApplication</c> overloads.
-    /// </remarks>
-    public AppBuilder UseApplication<TApp>() where TApp : Application, new()
-    {
-        _applicationFactory = static () => new TApp();
-        return this;
-    }
-
-    /// <summary>
-    /// Registers a factory that constructs the <see cref="Application"/> instance
-    /// at <see cref="Build"/> time. The factory runs on the same thread that
-    /// calls <see cref="Build"/>, which must be the UI thread.
-    /// </summary>
-    public AppBuilder UseApplication(Func<Application> factory)
-    {
-        ArgumentNullException.ThrowIfNull(factory);
-        _applicationFactory = factory;
-        return this;
-    }
-
-    /// <summary>
-    /// Uses a pre-constructed <see cref="Application"/> instance. The instance
-    /// must not have been started (no prior <see cref="Application.Run()"/> call).
-    /// Useful when you need access to the <see cref="Application"/> before
-    /// <see cref="Build"/> — for example to attach handlers early.
-    /// </summary>
-    public AppBuilder UseApplication(Application application)
-    {
-        ArgumentNullException.ThrowIfNull(application);
-        _applicationFactory = () => application;
-        return this;
-    }
-
     // ── Build ────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Builds the <see cref="IHost"/>, constructs the single <see cref="Application"/>
-    /// instance, applies the builder's Jalium.UI-specific settings, and wires the
-    /// host <see cref="IServiceProvider"/>, <see cref="IConfiguration"/>, and
-    /// <see cref="IHostEnvironment"/> into the <see cref="Application"/>.
+    /// Builds the <see cref="IHost"/> and returns a <see cref="JaliumApp"/>
+    /// that is not yet bound to an <see cref="Application"/>. Call
+    /// <see cref="JaliumApp.UseApplication{TApp}"/> (or friends) to bind a
+    /// subclass; otherwise a default <see cref="Application"/> is created on
+    /// first need.
     /// </summary>
     /// <returns>
-    /// A <see cref="JaliumApp"/> that owns both the host and the application.
-    /// Dispose it (or call <see cref="JaliumApp.Run()"/>, which disposes on exit)
-    /// to tear everything down cleanly.
+    /// A <see cref="JaliumApp"/> that owns the host. Dispose it (or call
+    /// <see cref="JaliumApp.Run()"/>, which disposes on exit) to tear everything
+    /// down cleanly.
     /// </returns>
     [UnconditionalSuppressMessage(
         "Trimming",
@@ -254,39 +223,9 @@ public sealed class AppBuilder : IHostApplicationBuilder
             throw new InvalidOperationException("AppBuilder.Build can only be called once per builder instance.");
         }
 
-        // Only one Application may exist per process. If a factory is registered we trust it
-        // (UseApplication(Application instance) passes a pre-constructed instance, so Current
-        // is already set); otherwise we create the default Application and its constructor
-        // enforces the singleton invariant.
-        if (_applicationFactory == null && Application.Current != null)
-        {
-            throw new InvalidOperationException(
-                "An Application instance already exists. AppBuilder creates the process-wide Application; " +
-                "call UseApplication(...) to bind an existing instance, or do not construct Application directly.");
-        }
-
         _isBuilt = true;
 
         var host = _hostBuilder.Build();
-        var application = _applicationFactory?.Invoke() ?? new Application();
-
-        if (!ReferenceEquals(application, Application.Current))
-        {
-            throw new InvalidOperationException(
-                "UseApplication factory returned an instance different from Application.Current. " +
-                "The Application singleton must be the one produced by the factory.");
-        }
-
-        application.AttachHost(
-            host.Services,
-            host.Services.GetRequiredService<IConfiguration>(),
-            host.Services.GetRequiredService<IHostEnvironment>());
-
-        foreach (var configure in _configureApplication)
-        {
-            configure(application);
-        }
-
-        return new JaliumApp(host, application, Args);
+        return new JaliumApp(host, _configureApplication.ToArray(), Args);
     }
 }

@@ -6,8 +6,8 @@
     <!-- AppBarButton Style -->
     <!-- ============================================== -->
     <Style TargetType="AppBarButton">
-        <Setter Property="Background" Value="{DynamicResource AppBarButtonBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource AppBarButtonForeground}" />
+        <Setter Property="Background" Value="{ThemeResource AppBarButtonBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource AppBarButtonForeground}" />
         <Setter Property="Padding" Value="4" />
         <Setter Property="MinWidth" Value="40" />
         <Setter Property="MinHeight" Value="48" />
@@ -33,28 +33,18 @@
                                        Margin="0,2,0,2" />
                         </StackPanel>
                     </Border>
-                    <Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Visibility="Collapsed" />
                 </Grid>
             </ControlTemplate>
         </Setter>
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource AppBarButtonBackgroundHover}" />
+                <Setter Property="Background" Value="{ThemeResource AppBarButtonBackgroundHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter Property="Background" Value="{DynamicResource AppBarButtonBackgroundPressed}" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
+                <Setter Property="Background" Value="{ThemeResource AppBarButtonBackgroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Foreground" Value="{DynamicResource AppBarButtonForegroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource AppBarButtonForegroundDisabled}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsCompact" Value="True">
                 <Setter TargetName="LabelText" Property="Visibility" Value="Collapsed" />
@@ -67,7 +57,7 @@
     <!-- AppBarSeparator Style -->
     <!-- ============================================== -->
     <Style TargetType="AppBarSeparator">
-        <Setter Property="Foreground" Value="{DynamicResource AppBarSeparatorForeground}" />
+        <Setter Property="Foreground" Value="{ThemeResource AppBarSeparatorForeground}" />
         <Setter Property="Width" Value="1" />
         <Setter Property="Margin" Value="6,8,6,8" />
     </Style>
@@ -76,8 +66,8 @@
     <!-- AppBarToggleButton Style -->
     <!-- ============================================== -->
     <Style TargetType="AppBarToggleButton">
-        <Setter Property="Background" Value="{DynamicResource AppBarButtonBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource AppBarButtonForeground}" />
+        <Setter Property="Background" Value="{ThemeResource AppBarButtonBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource AppBarButtonForeground}" />
         <Setter Property="Padding" Value="4" />
         <Setter Property="MinWidth" Value="40" />
         <Setter Property="MinHeight" Value="48" />
@@ -107,37 +97,27 @@
                             <Border Name="CheckedIndicator"
                                     Height="3"
                                     CornerRadius="1.5"
-                                    Background="{DynamicResource AccentBrush}"
+                                    Background="{ThemeResource AccentBrush}"
                                     VerticalAlignment="Bottom"
                                     Margin="4,0,4,0"
                                     Visibility="Collapsed" />
                         </Grid>
                     </Border>
-                    <Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Visibility="Collapsed" />
                 </Grid>
             </ControlTemplate>
         </Setter>
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource AppBarButtonBackgroundHover}" />
+                <Setter Property="Background" Value="{ThemeResource AppBarButtonBackgroundHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter Property="Background" Value="{DynamicResource AppBarButtonBackgroundPressed}" />
+                <Setter Property="Background" Value="{ThemeResource AppBarButtonBackgroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsChecked" Value="True">
                 <Setter TargetName="CheckedIndicator" Property="Visibility" Value="Visible" />
             </PropertyTrigger>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Foreground" Value="{DynamicResource AppBarButtonForegroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource AppBarButtonForegroundDisabled}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsCompact" Value="True">
                 <Setter TargetName="LabelText" Property="Visibility" Value="Collapsed" />
@@ -150,14 +130,14 @@
     <!-- CommandBar Style -->
     <!-- ============================================== -->
     <Style TargetType="CommandBar">
-        <Setter Property="Background" Value="{DynamicResource CommandBarBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource CommandBarBorderBrush}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Background" Value="{ThemeResource CommandBarBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource CommandBarBorderBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="MinHeight" Value="48" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -166,17 +146,17 @@
     <!-- StatusBar Style -->
     <!-- ============================================== -->
     <Style TargetType="StatusBar">
-        <Setter Property="Background" Value="{DynamicResource CommandBarBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource CommandBarBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="0,1,0,0" />
         <Setter Property="Padding" Value="8,0,8,0" />
         <Setter Property="Height" Value="24" />
-        <Setter Property="SeparatorBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="SeparatorBrush" Value="{ThemeResource ControlBorder}" />
     </Style>
 
     <Style TargetType="StatusBarItem">
-        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
         <Setter Property="Padding" Value="8,2,8,2" />
     </Style>
 
@@ -184,8 +164,8 @@
     <!-- MenuBar Style -->
     <!-- ============================================== -->
     <Style TargetType="MenuBar">
-        <Setter Property="Background" Value="{DynamicResource MenuBarBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Background" Value="{ThemeResource MenuBarBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="MinHeight" Value="32" />
     </Style>
 
@@ -193,9 +173,9 @@
     <!-- Menu Style -->
     <!-- ============================================== -->
     <Style TargetType="Menu">
-        <Setter Property="Background" Value="{DynamicResource MenuBarBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource CommandBarBorderBrush}" />
+        <Setter Property="Background" Value="{ThemeResource MenuBarBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource CommandBarBorderBrush}" />
         <Setter Property="Height" Value="28" />
     </Style>
 
@@ -203,7 +183,7 @@
     <!-- MenuBarItem Style -->
     <!-- ============================================== -->
     <Style TargetType="MenuBarItem">
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="Padding" Value="12,4,12,4" />
     </Style>
 
@@ -211,7 +191,7 @@
     <!-- MenuItem Style -->
     <!-- ============================================== -->
     <Style TargetType="MenuItem">
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="Background" Value="Transparent" />
         <Setter Property="Height" Value="28" />
         <Setter Property="Padding" Value="8,0,8,0" />
@@ -221,28 +201,28 @@
                     <Condition Property="Role" Value="TopLevelItem" />
                     <Condition Property="IsSelected" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource MenuBarItemBackgroundHover}" />
+                <Setter Property="Background" Value="{ThemeResource MenuBarItemBackgroundHover}" />
             </MultiTrigger>
             <MultiTrigger>
                 <MultiTrigger.Conditions>
                     <Condition Property="Role" Value="TopLevelHeader" />
                     <Condition Property="IsSelected" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource MenuBarItemBackgroundHover}" />
+                <Setter Property="Background" Value="{ThemeResource MenuBarItemBackgroundHover}" />
             </MultiTrigger>
             <MultiTrigger>
                 <MultiTrigger.Conditions>
                     <Condition Property="Role" Value="SubmenuItem" />
                     <Condition Property="IsSelected" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource MenuFlyoutItemBackgroundHover}" />
+                <Setter Property="Background" Value="{ThemeResource MenuFlyoutItemBackgroundHover}" />
             </MultiTrigger>
             <MultiTrigger>
                 <MultiTrigger.Conditions>
                     <Condition Property="Role" Value="SubmenuHeader" />
                     <Condition Property="IsSelected" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource MenuFlyoutItemBackgroundHover}" />
+                <Setter Property="Background" Value="{ThemeResource MenuFlyoutItemBackgroundHover}" />
             </MultiTrigger>
         </Style.Triggers>
     </Style>
@@ -251,9 +231,9 @@
     <!-- ContextMenu Style -->
     <!-- ============================================== -->
     <Style TargetType="ContextMenu">
-        <Setter Property="Background" Value="{DynamicResource MenuFlyoutPresenterBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource MenuFlyoutPresenterBorderBrush}" />
+        <Setter Property="Background" Value="{ThemeResource MenuFlyoutPresenterBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource MenuFlyoutPresenterBorderBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="2" />
         <Setter Property="CornerRadius" Value="8" />
@@ -263,7 +243,7 @@
     <!-- MenuFlyoutItem Style -->
     <!-- ============================================== -->
     <Style TargetType="MenuFlyoutItem">
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="MinHeight" Value="32" />
     </Style>
 
@@ -271,7 +251,7 @@
     <!-- MenuFlyoutSeparator Style -->
     <!-- ============================================== -->
     <Style TargetType="MenuFlyoutSeparator">
-        <Setter Property="Foreground" Value="{DynamicResource MenuFlyoutPresenterBorderBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource MenuFlyoutPresenterBorderBrush}" />
         <Setter Property="Margin" Value="0,4,0,4" />
     </Style>
 
@@ -279,7 +259,7 @@
     <!-- ToggleMenuFlyoutItem Style -->
     <!-- ============================================== -->
     <Style TargetType="ToggleMenuFlyoutItem">
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="MinHeight" Value="32" />
     </Style>
 
@@ -287,15 +267,15 @@
     <!-- SwipeControl Style -->
     <!-- ============================================== -->
     <Style TargetType="SwipeControl">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
     </Style>
 
     <!-- ============================================== -->
     <!-- ToolBar Style -->
     <!-- ============================================== -->
     <Style TargetType="ToolBar">
-        <Setter Property="Background" Value="{DynamicResource CommandBarBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="Background" Value="{ThemeResource CommandBarBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
         <Setter Property="Padding" Value="4" />
     </Style>
 
@@ -303,7 +283,7 @@
     <!-- ToolBarTray Style -->
     <!-- ============================================== -->
     <Style TargetType="ToolBarTray">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
     </Style>
 
 </ResourceDictionary>

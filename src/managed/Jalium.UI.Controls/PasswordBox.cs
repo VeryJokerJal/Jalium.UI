@@ -133,7 +133,7 @@ public class PasswordBox : Control, IImeSupport
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
     public static readonly DependencyProperty SelectionBrushProperty =
         DependencyProperty.Register(nameof(SelectionBrush), typeof(Brush), typeof(PasswordBox),
-            new PropertyMetadata(new SolidColorBrush(Color.FromArgb(180, 0, 120, 212)), OnVisualPropertyChanged));
+            new PropertyMetadata(new SolidColorBrush(Color.FromArgb(180, 0x1E, 0x79, 0x3F)), OnVisualPropertyChanged));
 
     /// <summary>
     /// Identifies the CaretBrush dependency property.
@@ -713,11 +713,7 @@ public class PasswordBox : Control, IImeSupport
 
         dc.Pop(); // Pop clip
 
-        // Draw focus indicator
-        if (IsKeyboardFocused)
-        {
-            ControlFocusVisual.Draw(dc, this, bounds, CornerRadius);
-        }
+        // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
         // Draw reveal button if mode allows
         if (RevealMode == PasswordRevealMode.Peek && !string.IsNullOrEmpty(_password))

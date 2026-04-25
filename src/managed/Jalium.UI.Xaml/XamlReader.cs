@@ -1047,7 +1047,33 @@ public static class XamlReader
 
                 if (property.PropertyType == typeof(ResourceDictionary) && childValue is ResourceDictionary dictionaryValue)
                 {
-                    property.SetValue(instance, dictionaryValue);
+                    // WPF 语义:<Foo.Resources><ResourceDictionary>…</ResourceDictionary></Foo.Resources>
+                    // 是把子 dict 的 MergedDictionaries 和 items 合并到 existing Resources,不是整块替换。
+                    //
+                    // 最关键的实际场景:Application ctor 里 ThemeManager.Initialize 把 Generic theme /
+                    // accent / typography 三个 dict 挂到 app.Resources.MergedDictionaries;如果 user
+                    // App.jalxaml 紧接着声明 <Application.Resources><ResourceDictionary>…</ResourceDictionary>
+                    // </Application.Resources>,整块替换会把 Generic theme 丢掉,所有控件 Template=null,
+                    // 窗口整片黑。Window.Resources / UserControl.Resources 同理。
+                    //
+                    // 只有 existing 为 null (property 从未 get 过、没有懒初始化) 或者 user 显式用了
+                    // 同一 dict 实例时才直接 SetValue。
+                    var existing = property.GetValue(instance) as ResourceDictionary;
+                    if (existing == null || ReferenceEquals(existing, dictionaryValue))
+                    {
+                        property.SetValue(instance, dictionaryValue);
+                    }
+                    else
+                    {
+                        foreach (var merged in dictionaryValue.MergedDictionaries)
+                        {
+                            existing.MergedDictionaries.Add(merged);
+                        }
+                        foreach (KeyValuePair<object, object?> entry in dictionaryValue)
+                        {
+                            existing[entry.Key] = entry.Value;
+                        }
+                    }
                 }
                 else if (isCollection && propertyValue != null)
                 {
@@ -2962,6 +2988,7 @@ public static class XamlTypeRegistry
         Register<BindingExtension>(types);
         Register<StaticResourceExtension>(types);
         Register<DynamicResourceExtension>(types);
+        Register<ThemeResourceExtension>(types);
         Register<TemplateBindingExtension>(types);
         Register<NullExtension>(types);
         Register<TypeExtension>(types);
@@ -3284,6 +3311,60 @@ public static class XamlTypeRegistry
     internal static void RegisterType(string name, Type type)
     {
         _types[name] = type;
+    }
+
+    // Full-name index for x:Class types (e.g. "Jalium.UI.Gallery.Modules.Main.Views.MainWindow").
+    // Keyed by the CLR full name because x:Class is always fully qualified; the simple-name
+    // _types dictionary would collide on duplicate leaf names across namespaces.
+    //
+    // Populated by source-generator-emitted ModuleInitializer stubs so that every jalxaml
+    // x:Class is both (a) referenced via typeof(T) in IL — preventing the trimmer from
+    // removing the type — and (b) discoverable by full name at runtime. StartupUri and any
+    // other string→Type lookup path consults this registry first, which is the only
+    // AOT-reliable way to recover a user type from a string after trimming.
+    private static readonly Dictionary<string, Type> _classFullNameTypes = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Registers a user x:Class type by its CLR full name so StartupUri / string-based lookups
+    /// can find it after AOT trimming. Emitted automatically by the JALXAML source generator
+    /// (one <c>[ModuleInitializer]</c> per jalxaml file) — manual calls are rarely needed.
+    /// </summary>
+    /// <param name="fullName">The type's CLR full name (e.g. namespace + "." + class name).</param>
+    /// <param name="type">
+    /// The type itself. Must be supplied as <c>typeof(TYourClass)</c> so the call site
+    /// becomes a static reference that the trimmer preserves.
+    /// </param>
+    public static void RegisterStartupType(
+        string fullName,
+        [DynamicallyAccessedMembers(
+            DynamicallyAccessedMemberTypes.PublicConstructors |
+            DynamicallyAccessedMemberTypes.NonPublicConstructors |
+            DynamicallyAccessedMemberTypes.PublicProperties |
+            DynamicallyAccessedMemberTypes.PublicFields |
+            DynamicallyAccessedMemberTypes.PublicMethods |
+            DynamicallyAccessedMemberTypes.NonPublicFields)]
+        Type type)
+    {
+        ArgumentNullException.ThrowIfNull(fullName);
+        ArgumentNullException.ThrowIfNull(type);
+        _classFullNameTypes[fullName] = type;
+    }
+
+    /// <summary>
+    /// Looks up a type previously registered via <see cref="RegisterStartupType"/> by CLR full name.
+    /// Returns <c>null</c> if no type with that full name was registered.
+    /// </summary>
+    [return: DynamicallyAccessedMembers(
+        DynamicallyAccessedMemberTypes.PublicConstructors |
+        DynamicallyAccessedMemberTypes.NonPublicConstructors |
+        DynamicallyAccessedMemberTypes.PublicProperties |
+        DynamicallyAccessedMemberTypes.PublicFields |
+        DynamicallyAccessedMemberTypes.PublicMethods |
+        DynamicallyAccessedMemberTypes.NonPublicFields)]
+    public static Type? GetStartupType(string fullName)
+    {
+        ArgumentNullException.ThrowIfNull(fullName);
+        return _classFullNameTypes.TryGetValue(fullName, out var type) ? type : null;
     }
 
     /// <summary>

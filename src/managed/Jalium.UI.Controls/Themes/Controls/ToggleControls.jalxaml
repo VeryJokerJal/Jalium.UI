@@ -6,8 +6,8 @@
     <!-- CheckBox Style (Modern with ControlTemplate) -->
     <!-- ============================================== -->
     <Style TargetType="CheckBox">
-        <Setter Property="Background" Value="{DynamicResource ToggleUncheckedBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ToggleUncheckedBorder}" />
+        <Setter Property="Background" Value="{ThemeResource ToggleUncheckedBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorder}" />
         <Setter Property="BorderThickness" Value="1.5" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="MinHeight" Value="20" />
@@ -18,12 +18,6 @@
                     <StackPanel Orientation="Horizontal">
                         <!-- CheckBox Box -->
                         <Grid Width="18" Height="18" VerticalAlignment="Center">
-                            <Border Name="FocusBorder"
-                                    IsHitTestVisible="False"
-                                    BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                                    BorderThickness="2"
-                                    CornerRadius="{TemplateBinding CornerRadius}"
-                                    Visibility="Collapsed" />
                             <Border Name="CheckBoxBorder"
                                     Background="{TemplateBinding Background}"
                                     BorderBrush="{TemplateBinding BorderBrush}"
@@ -33,7 +27,7 @@
                                     <!-- Check Mark Path -->
                                     <Path Name="CheckMark"
                                           Data="M 0,5 L 3,8 L 8,2"
-                                          Stroke="{DynamicResource TextOnAccent}"
+                                          Stroke="{ThemeResource TextOnAccent}"
                                           StrokeThickness="2"
                                           Width="8"
                                           Height="8"
@@ -44,7 +38,7 @@
                                     <Border Name="IndeterminateMark"
                                             Width="8"
                                             Height="2"
-                                            Background="{DynamicResource TextOnAccent}"
+                                            Background="{ThemeResource TextOnAccent}"
                                             HorizontalAlignment="Center"
                                             VerticalAlignment="Center"
                                             CornerRadius="1"
@@ -68,8 +62,8 @@
                     <Condition Property="IsChecked" Value="False" />
                     <Condition Property="IsMouseOver" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ToggleUncheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleUncheckedBorderHover}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleUncheckedBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorderHover}" />
             </MultiTrigger>
 
             <!-- Indeterminate (not hovered) -->
@@ -78,8 +72,8 @@
                     <Condition Property="IsChecked" Value="{x:Null}" />
                     <Condition Property="IsMouseOver" Value="False" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ToggleCheckedBackground}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleCheckedBorder}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
             </MultiTrigger>
 
             <!-- Indeterminate + Hover -->
@@ -88,8 +82,8 @@
                     <Condition Property="IsChecked" Value="{x:Null}" />
                     <Condition Property="IsMouseOver" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ToggleCheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleCheckedBorderHover}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
             </MultiTrigger>
 
             <!-- Checked (not hovered) -->
@@ -98,8 +92,8 @@
                     <Condition Property="IsChecked" Value="True" />
                     <Condition Property="IsMouseOver" Value="False" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ToggleCheckedBackground}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleCheckedBorder}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
                 <Setter TargetName="CheckMark" Property="Opacity" Value="1" />
             </MultiTrigger>
 
@@ -109,20 +103,16 @@
                     <Condition Property="IsChecked" Value="True" />
                     <Condition Property="IsMouseOver" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ToggleCheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleCheckedBorderHover}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
                 <Setter TargetName="CheckMark" Property="Opacity" Value="1" />
             </MultiTrigger>
 
             <!-- Disabled state (highest priority) -->
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Background" Value="{DynamicResource ToggleDisabledBackground}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleDisabledBorder}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleDisabledBackground}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleDisabledBorder}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -131,8 +121,8 @@
     <!-- RadioButton Style (Modern with ControlTemplate) -->
     <!-- ============================================== -->
     <Style TargetType="RadioButton">
-        <Setter Property="Background" Value="{DynamicResource ToggleUncheckedBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ToggleUncheckedBorder}" />
+        <Setter Property="Background" Value="{ThemeResource ToggleUncheckedBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorder}" />
         <Setter Property="BorderThickness" Value="1.5" />
         <Setter Property="MinHeight" Value="20" />
         <Setter Property="VerticalContentAlignment" Value="Center" />
@@ -144,13 +134,6 @@
                         <Grid Width="18"
                               Height="18"
                               VerticalAlignment="Center">
-                            <Border Name="FocusBorder"
-                                    IsHitTestVisible="False"
-                                    BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                                    BorderThickness="2"
-                                    CornerRadius="9"
-                                    Visibility="Collapsed" />
-
                             <!-- Use a Border with full corner radius for circle effect -->
                             <Border Name="OuterCircle"
                                     Background="{TemplateBinding Background}"
@@ -162,7 +145,7 @@
                                 <Ellipse Name="RadioDot"
                                          Width="8"
                                          Height="8"
-                                         Fill="{DynamicResource TextOnAccent}"
+                                         Fill="{ThemeResource TextOnAccent}"
                                          HorizontalAlignment="Center"
                                          VerticalAlignment="Center"
                                          Opacity="0" />
@@ -184,8 +167,8 @@
                     <Condition Property="IsChecked" Value="False" />
                     <Condition Property="IsMouseOver" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ToggleUncheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleUncheckedBorderHover}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleUncheckedBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorderHover}" />
             </MultiTrigger>
 
             <!-- Checked (not hovered) -->
@@ -194,8 +177,8 @@
                     <Condition Property="IsChecked" Value="True" />
                     <Condition Property="IsMouseOver" Value="False" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ToggleCheckedBackground}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleCheckedBorder}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackground}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorder}" />
                 <Setter TargetName="RadioDot" Property="Opacity" Value="1" />
             </MultiTrigger>
 
@@ -205,20 +188,16 @@
                     <Condition Property="IsChecked" Value="True" />
                     <Condition Property="IsMouseOver" Value="True" />
                 </MultiTrigger.Conditions>
-                <Setter Property="Background" Value="{DynamicResource ToggleCheckedBackgroundHover}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleCheckedBorderHover}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleCheckedBackgroundHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleCheckedBorderHover}" />
                 <Setter TargetName="RadioDot" Property="Opacity" Value="1" />
             </MultiTrigger>
 
             <!-- Disabled state (highest priority) -->
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-            </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Background" Value="{DynamicResource ToggleDisabledBackground}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ToggleDisabledBorder}" />
+                <Setter Property="Background" Value="{ThemeResource ToggleDisabledBackground}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ToggleDisabledBorder}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -227,10 +206,10 @@
     <!-- ToggleSwitch Style -->
     <!-- ============================================== -->
     <Style TargetType="ToggleSwitch">
-        <Setter Property="Background" Value="{DynamicResource ToggleUncheckedBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ToggleUncheckedBorder}" />
-        <Setter Property="OnBackground" Value="{DynamicResource ToggleCheckedBackground}" />
-        <Setter Property="OffBackground" Value="{DynamicResource ToggleUncheckedBackground}" />
+        <Setter Property="Background" Value="{ThemeResource ToggleUncheckedBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ToggleUncheckedBorder}" />
+        <Setter Property="OnBackground" Value="{ThemeResource ToggleCheckedBackground}" />
+        <Setter Property="OffBackground" Value="{ThemeResource ToggleUncheckedBackground}" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ToggleSwitch">
@@ -249,12 +228,6 @@
                     <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
                         <Grid Width="44"
                               Height="20">
-                            <Border Name="FocusBorder"
-                                    IsHitTestVisible="False"
-                                    BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                                    BorderThickness="2"
-                                    CornerRadius="10"
-                                    Visibility="Collapsed" />
                             <!-- Switch Track -->
                             <Border Name="PART_SwitchTrack"
                                     Width="44"
@@ -269,7 +242,7 @@
                                         Width="14"
                                         Height="14"
                                         CornerRadius="7"
-                                        Background="{DynamicResource SliderThumb}"
+                                        Background="{ThemeResource SliderThumb}"
                                         HorizontalAlignment="Left"
                                         VerticalAlignment="Top"
                                         Margin="3,2,0,0" />
@@ -289,15 +262,6 @@
                 </StackPanel>
             </ControlTemplate>
         </Setter>
-
-        <Style.Triggers>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-            </PropertyTrigger>
-        </Style.Triggers>
 
         <!-- All other visual states (IsOn, hover, disabled colors) managed by code-behind spring animation -->
     </Style>

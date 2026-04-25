@@ -8,13 +8,13 @@
     <!-- A tree-based JSON data viewer with search, expand/collapse,
          and path display functionality. -->
     <Style TargetType="JsonTreeViewer">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="Padding" Value="0" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="MinWidth" Value="200" />
         <Setter Property="MinHeight" Value="150" />
         <Setter Property="Template">
@@ -36,8 +36,8 @@
                         <!-- Toolbar -->
                         <Border Name="PART_ToolBar"
                                 Grid.Row="0"
-                                Background="{DynamicResource ControlBackground}"
-                                BorderBrush="{DynamicResource ControlBorder}"
+                                Background="{ThemeResource ControlBackground}"
+                                BorderBrush="{ThemeResource ControlBorder}"
                                 BorderThickness="0,0,0,1"
                                 Padding="4,2,4,2">
                             <StackPanel Orientation="Horizontal">
@@ -64,8 +64,8 @@
                         <!-- Search Box -->
                         <Border Name="PART_SearchBox"
                                 Grid.Row="1"
-                                Background="{DynamicResource ControlBackground}"
-                                BorderBrush="{DynamicResource ControlBorder}"
+                                Background="{ThemeResource ControlBackground}"
+                                BorderBrush="{ThemeResource ControlBorder}"
                                 BorderThickness="0,0,0,1"
                                 Padding="4">
                             <TextBox Name="PART_SearchTextBox"
@@ -83,12 +83,12 @@
                         <!-- Status Bar -->
                         <Border Name="PART_StatusBar"
                                 Grid.Row="3"
-                                Background="{DynamicResource ControlBackground}"
-                                BorderBrush="{DynamicResource ControlBorder}"
+                                Background="{ThemeResource ControlBackground}"
+                                BorderBrush="{ThemeResource ControlBorder}"
                                 BorderThickness="0,1,0,0"
                                 Padding="8,4,8,4">
                             <TextBlock Name="PART_StatusText"
-                                       Foreground="{DynamicResource TextSecondary}"
+                                       Foreground="{ThemeResource TextSecondary}"
                                        FontSize="11" />
                         </Border>
                     </Grid>
@@ -98,7 +98,7 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
                 <Setter Property="Opacity" Value="0.65" />
             </PropertyTrigger>
         </Style.Triggers>

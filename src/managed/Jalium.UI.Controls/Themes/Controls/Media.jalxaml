@@ -28,20 +28,20 @@
     <!-- Markdown Style                                  -->
     <!-- ============================================== -->
     <Style TargetType="Markdown">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="LinkForeground" Value="{DynamicResource HyperlinkForeground}" />
-        <Setter Property="CodeBackground" Value="{DynamicResource ControlBackground}" />
-        <Setter Property="CodeLineNumberForeground" Value="{DynamicResource TextSecondary}" />
-        <Setter Property="CodeGutterBackground" Value="{DynamicResource HighlightBackground}" />
-        <Setter Property="QuoteBackground" Value="{DynamicResource HighlightBackground}" />
-        <Setter Property="QuoteBorderBrush" Value="{DynamicResource HyperlinkForeground}" />
-        <Setter Property="HeadingSeparatorBrush" Value="{DynamicResource TextSecondary}" />
-        <Setter Property="TableBorderBrush" Value="{DynamicResource ControlBorder}" />
-        <Setter Property="TableHeaderBackground" Value="{DynamicResource ControlBackground}" />
+        <Setter Property="LinkForeground" Value="{ThemeResource HyperlinkForeground}" />
+        <Setter Property="CodeBackground" Value="{ThemeResource ControlBackground}" />
+        <Setter Property="CodeLineNumberForeground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="CodeGutterBackground" Value="{ThemeResource HighlightBackground}" />
+        <Setter Property="QuoteBackground" Value="{ThemeResource HighlightBackground}" />
+        <Setter Property="QuoteBorderBrush" Value="{ThemeResource HyperlinkForeground}" />
+        <Setter Property="HeadingSeparatorBrush" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="TableBorderBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="TableHeaderBackground" Value="{ThemeResource ControlBackground}" />
         <Setter Property="Padding" Value="12" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="CornerRadius" Value="12" />
         <Setter Property="MinHeight" Value="120" />
         <Setter Property="Template">
@@ -67,9 +67,9 @@
     <!-- QRCode Style                                    -->
     <!-- ============================================== -->
     <Style TargetType="QRCode">
-        <Setter Property="Background" Value="{DynamicResource QRCodeBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource QRCodeForeground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource QRCodeBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource QRCodeForeground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="12" />
         <Setter Property="CornerRadius" Value="12" />

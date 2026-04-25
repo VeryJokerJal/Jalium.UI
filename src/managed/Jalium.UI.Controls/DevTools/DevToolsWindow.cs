@@ -413,7 +413,15 @@ public partial class DevToolsWindow : Window
 
             if (uiChild.Visibility != Visibility.Visible) continue;
 
-            // Skip OverlayLayer 鈥?it covers the entire window and would always be hit
+            // Honor the hit-test contract — elements with IsHitTestVisible=false (and
+            // their entire subtree) must be invisible to picking. This is what makes
+            // AdornerLayer, FocusVisualAdorner and similar overlays opt out of picker
+            // hits even though they cover the full window region.
+            if (!uiChild.IsHitTestVisible) continue;
+
+            // OverlayLayer is hit-test-visible (it dispatches input to popups), but the
+            // picker should still skip past it so the user lands on the underlying app
+            // content rather than the overlay host itself.
             if (uiChild is OverlayLayer) continue;
 
             var bounds = uiChild.VisualBounds;

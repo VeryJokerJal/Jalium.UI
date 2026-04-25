@@ -33,8 +33,8 @@ public class PropertyGrid : Control
 
     // Default row brushes (used only when theme resources can't be resolved).
     private static readonly Brush s_defaultRowHoverBrush = new SolidColorBrush(Color.FromArgb(18, 255, 255, 255));
-    private static readonly Brush s_defaultRowSelectedBrush = new SolidColorBrush(Color.FromArgb(56, 124, 77, 255));
-    private static readonly Brush s_defaultSelectionAccentBrush = new SolidColorBrush(Color.FromRgb(124, 77, 255));
+    private static readonly Brush s_defaultRowSelectedBrush = new SolidColorBrush(Color.FromArgb(56, 0x1E, 0x79, 0x3F));
+    private static readonly Brush s_defaultSelectionAccentBrush = new SolidColorBrush(Color.FromRgb(0x1E, 0x79, 0x3F));
 
     // Description area animation (height + opacity, non-linear cubic ease-out).
     private const double DescriptionExpandMs = 260.0;

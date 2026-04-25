@@ -169,6 +169,18 @@ public sealed class DrawingAttributes : INotifyPropertyChanged
     }
 
     /// <summary>
+    /// Optional pixel-shader brush override. When non-null, <see cref="BrushType"/>
+    /// is ignored and this shader is dispatched on stroke commit to paint
+    /// pixels directly into the InkCanvas's offscreen bitmap.
+    /// <para/>
+    /// Leave null to use the built-in shader registered for <see cref="BrushType"/>
+    /// (see <c>BrushShaderRegistry.GetBuiltIn</c>). Application code that
+    /// wants a fully custom HLSL brush subclasses <see cref="BrushShader"/>
+    /// and assigns an instance here.
+    /// </summary>
+    public BrushShader? BrushShader { get; set; }
+
+    /// <summary>
     /// Creates a copy of this <see cref="DrawingAttributes"/>.
     /// </summary>
     /// <returns>A new <see cref="DrawingAttributes"/> with the same values.</returns>
@@ -183,7 +195,8 @@ public sealed class DrawingAttributes : INotifyPropertyChanged
             IsHighlighter = IsHighlighter,
             FitToCurve = FitToCurve,
             IgnorePressure = IgnorePressure,
-            BrushType = BrushType
+            BrushType = BrushType,
+            BrushShader = BrushShader,  // shared reference — BrushShader is immutable
         };
     }
 

@@ -105,6 +105,63 @@ public:
         return nullptr;
     }
 
+    // ────────────────────────────────────────────────────────────────────
+    //  Ink-layer / brush-shader pipeline
+    //
+    //  Backend-agnostic interface for the InkCanvas's GPU-resident
+    //  committed-ink layer and the pixel-shader brush pipeline that
+    //  paints into it. D3D12 implements these today; other backends
+    //  inherit the default no-ops (managed side detects the nullptr /
+    //  negative return and falls back to the legacy CPU raster path).
+    //
+    //  All pointers are opaque handles (void*) at this layer — the core
+    //  translation unit doesn't know the concrete D3D12 types.
+
+    virtual void* CreateInkLayerBitmap(uint32_t width, uint32_t height)
+    {
+        (void)width; (void)height;
+        return nullptr;
+    }
+
+    virtual void DestroyInkLayerBitmap(void* bitmap) { (void)bitmap; }
+
+    virtual int32_t ResizeInkLayerBitmap(void* bitmap, uint32_t width, uint32_t height)
+    {
+        (void)bitmap; (void)width; (void)height;
+        return -1;
+    }
+
+    virtual void ClearInkLayerBitmap(void* bitmap, float r, float g, float b, float a)
+    {
+        (void)bitmap; (void)r; (void)g; (void)b; (void)a;
+    }
+
+    /// Compile an HLSL brush pixel shader + create its PSO.
+    /// blendMode: 0=SourceOver, 1=Additive, 2=Erase.
+    virtual void* CreateBrushShader(const char* shaderKey, const char* brushMainHlsl, int32_t blendMode)
+    {
+        (void)shaderKey; (void)brushMainHlsl; (void)blendMode;
+        return nullptr;
+    }
+
+    virtual void DestroyBrushShader(void* shader) { (void)shader; }
+
+    /// Dispatch a brush shader over an ink-layer bitmap. strokePoints
+    /// is `pointCount × 16 bytes` of StrokePoint{x,y,pressure,pad}.
+    /// constants is the 80-byte managed BrushConstantsNative struct
+    /// (the backend appends ViewportSize + pad to reach the 96-byte
+    /// cbuffer the shader expects). extraParams / extraParamsSize is
+    /// an optional user-defined cbuffer (b1) that custom brush shaders
+    /// can read — pass nullptr / 0 when the shader only uses b0.
+    virtual int32_t DispatchBrush(void* bitmap, void* shader,
+                                   const void* strokePoints, uint32_t pointCount,
+                                   const void* constants,
+                                   const void* extraParams, uint32_t extraParamsSize)
+    {
+        (void)bitmap; (void)shader; (void)strokePoints; (void)pointCount;
+        (void)constants; (void)extraParams; (void)extraParamsSize;
+        return -1;
+    }
 };
 
 /// Abstract base class for render targets.
@@ -229,6 +286,7 @@ public:
     virtual void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0,
         const float* dashPattern = nullptr, uint32_t dashCount = 0, float dashOffset = 0.0f) = 0;
 
+
     /// Draws a content area border: fills a rect with bottom-only rounded corners,
     /// then strokes a U-shape (left + bottom + right, no top) with the same radii.
     /// @param x,y,w,h The content area rectangle.
@@ -240,6 +298,17 @@ public:
     virtual void DrawContentBorder(float x, float y, float w, float h,
         float blRadius, float brRadius,
         Brush* fillBrush, Brush* strokeBrush, float strokeWidth) = 0;
+
+    /// Composites an InkCanvas ink-layer bitmap onto this render target.
+    /// The bitmap argument is the opaque handle returned by
+    /// jalium_ink_layer_bitmap_create (cast to void* for API neutrality —
+    /// the backend casts it back to its own D3D12InkLayerBitmap type).
+    /// Default: no-op (backends without ink-layer support can ignore).
+    virtual void BlitInkLayer(void* inkLayerBitmap,
+                              float dstX, float dstY, float opacity)
+    {
+        (void)inkLayerBitmap; (void)dstX; (void)dstY; (void)opacity;
+    }
 
     /// Draws text.
     virtual void RenderText(

@@ -463,6 +463,101 @@ internal static partial class NativeMethods
     internal static partial void StrokePath(nint renderTarget, float startX, float startY, float[] commands, int commandLength, nint brush, float strokeWidth, int closed, int lineJoin, float miterLimit, int lineCap,
         float[]? dashPattern, int dashCount, float dashOffset);
 
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  Ink layer bitmap + brush-shader pipeline
+    // ═══════════════════════════════════════════════════════════════════════
+    //
+    //  The InkCanvas stores committed strokes in a persistent RGBA8 GPU
+    //  bitmap. Brush shaders (user- or built-in-authored HLSL pixel
+    //  shaders) run once per committed stroke and write pixels directly
+    //  into that bitmap; per-frame cost collapses to a single blit into
+    //  the main render target.
+    //
+    //  All five functions below are implemented on the active backend's
+    //  context (D3D12 today; Vulkan can no-op or return failure while it
+    //  catches up).
+
+    /// <summary>
+    /// Allocates a persistent RGBA8 offscreen render target bitmap owned
+    /// by <paramref name="contextHandle"/>. Returns 0 on failure.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_ink_layer_bitmap_create")]
+    internal static partial nint InkLayerBitmapCreate(nint contextHandle, int width, int height);
+
+    /// <summary>
+    /// Releases the bitmap and its GPU texture.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_ink_layer_bitmap_destroy")]
+    internal static partial void InkLayerBitmapDestroy(nint bitmap);
+
+    /// <summary>
+    /// Reallocates the backing texture. Contents reset to transparent.
+    /// Returns 0 on success.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_ink_layer_bitmap_resize")]
+    internal static partial int InkLayerBitmapResize(nint bitmap, int width, int height);
+
+    /// <summary>
+    /// Clears the bitmap to a premultiplied RGBA color.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_ink_layer_bitmap_clear")]
+    internal static partial void InkLayerBitmapClear(nint bitmap, float r, float g, float b, float a);
+
+    /// <summary>
+    /// Compiles an HLSL pixel shader for the brush pipeline. The framework
+    /// concatenates the shared preamble with <paramref name="brushMainHlsl"/>
+    /// before feeding to D3DCompile. <paramref name="blendMode"/> selects
+    /// the PSO blend state (0=SourceOver, 1=Additive, 2=Erase).
+    /// Returns 0 on failure (compilation error / out of memory).
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_brush_shader_create", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial nint BrushShaderCreate(
+        nint contextHandle,
+        string shaderKey,
+        string brushMainHlsl,
+        int blendMode);
+
+    /// <summary>
+    /// Releases a brush shader and its cached PSO.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_brush_shader_destroy")]
+    internal static partial void BrushShaderDestroy(nint shader);
+
+    /// <summary>
+    /// Runs <paramref name="shader"/> over the bbox region of
+    /// <paramref name="bitmap"/>, reading stroke polyline points from
+    /// <paramref name="strokePoints"/> (array of <see cref="BrushStrokePoint"/>,
+    /// total byte length = <paramref name="pointCount"/> × 16). The
+    /// <paramref name="constants"/> pointer must reference a filled
+    /// <see cref="BrushConstantsNative"/> (80 bytes).
+    /// <paramref name="extraParams"/> is an optional user-defined cbuffer
+    /// (bound as <c>b1</c>) that custom brush shaders can read. Pass
+    /// <c>null</c> / 0 when the shader uses only the standard b0 cbuffer.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_ink_layer_bitmap_dispatch_brush")]
+    internal static unsafe partial int InkLayerBitmapDispatchBrush(
+        nint bitmap,
+        nint shader,
+        BrushStrokePoint* strokePoints,
+        int pointCount,
+        BrushConstantsNative* constants,
+        void* extraParams,
+        int extraParamsSize);
+
+    /// <summary>
+    /// Composites <paramref name="bitmap"/> onto the current render
+    /// target at <paramref name="dstX"/>, <paramref name="dstY"/>. Uses
+    /// premultiplied source-over. Must be called between
+    /// BeginDraw/EndDraw on the destination render target.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_blit_ink_layer")]
+    internal static partial void RenderTargetBlitInkLayer(
+        nint renderTarget,
+        nint bitmap,
+        float dstX, float dstY,
+        float opacity);
+
     /// <summary>
     /// Draws a content area border: fills with bottom-only rounded corners, strokes U-shape (no top).
     /// </summary>

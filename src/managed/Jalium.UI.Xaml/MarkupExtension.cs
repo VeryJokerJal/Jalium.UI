@@ -426,6 +426,64 @@ public sealed class DynamicResourceReference : IDynamicResourceReference
 }
 
 /// <summary>
+/// XAML markup extension for theme-aware resources.
+/// Semantically equivalent to DynamicResource but specifically indicates a resource
+/// defined in <see cref="ResourceDictionary.ThemeDictionaries"/> that should
+/// automatically update when the current theme changes.
+/// </summary>
+public sealed class ThemeResourceExtension : MarkupExtension
+{
+    /// <summary>
+    /// Gets or sets the resource key.
+    /// </summary>
+    public object? ResourceKey { get; set; }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ThemeResourceExtension"/> class.
+    /// </summary>
+    public ThemeResourceExtension()
+    {
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ThemeResourceExtension"/> class with the specified key.
+    /// </summary>
+    /// <param name="resourceKey">The resource key.</param>
+    public ThemeResourceExtension(object resourceKey)
+    {
+        ResourceKey = resourceKey;
+    }
+
+    /// <inheritdoc />
+    public override object? ProvideValue(IServiceProvider serviceProvider)
+    {
+        if (ResourceKey == null)
+            return null;
+
+        var provideValueTarget = serviceProvider?.GetService(typeof(IProvideValueTarget)) as IProvideValueTarget;
+        var targetObject = provideValueTarget?.TargetObject as DependencyObject;
+        var targetProperty = provideValueTarget?.TargetProperty as DependencyProperty;
+
+        if (targetObject is FrameworkElement targetElement && targetProperty != null)
+        {
+            // Register runtime tracking so the property is refreshed on theme changes.
+            // ThemeManager.ApplyTheme triggers DynamicResourceBindingOperations.RefreshAll,
+            // which repropagates the resource through the subscription list.
+            DynamicResourceBindingOperations.SetDynamicResource(targetElement, targetProperty, ResourceKey);
+            return ResourceLookup.FindResource(targetElement, ResourceKey);
+        }
+
+        if (provideValueTarget?.TargetObject is FrameworkElement element)
+        {
+            return ResourceLookup.FindResource(element, ResourceKey) ?? new DynamicResourceReference(ResourceKey);
+        }
+
+        // For deferred cases (e.g., Setter.Value), preserve the reference so style runtime can resolve it.
+        return new DynamicResourceReference(ResourceKey);
+    }
+}
+
+/// <summary>
 /// XAML markup extension for x:Null.
 /// </summary>
 public sealed class NullExtension : MarkupExtension
@@ -901,6 +959,7 @@ internal static class MarkupExtensionParser
             "binding" => CreateBindingExtension(parameters, ambientProvider),
             "staticresource" => CreateStaticResourceExtension(parameters),
             "dynamicresource" => CreateDynamicResourceExtension(parameters),
+            "themeresource" => CreateThemeResourceExtension(parameters),
             "templatebinding" => CreateTemplateBindingExtension(parameters),
             "null" => new NullExtension(),
             "type" => CreateTypeExtension(parameters),
@@ -1137,6 +1196,12 @@ internal static class MarkupExtensionParser
     {
         var key = ParseResourceKey(parameters);
         return new DynamicResourceExtension(key);
+    }
+
+    private static ThemeResourceExtension CreateThemeResourceExtension(string parameters)
+    {
+        var key = ParseResourceKey(parameters);
+        return new ThemeResourceExtension(key);
     }
 
     private static object ParseResourceKey(string parameters)

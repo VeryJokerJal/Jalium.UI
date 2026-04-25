@@ -100,6 +100,18 @@ public sealed class JalxamlSourceGenerator : IIncrementalGenerator
         sb.AppendLine($"partial class {className}");
         sb.AppendLine("{");
 
+        // AOT 保根:StartupUri 等按 x:Class 字符串查类型的路径,在 AOT trim 之后会被 Assembly.GetType
+        // 判空。ModuleInitializer 在模块 cctor 里一次性把 typeof(T) 写入 XamlTypeRegistry —
+        // typeof 引用让 linker 留住类型,注册表让 ThemeLoader 不依赖 Assembly.GetType。
+        // 方法名按类名后缀区分,避免同一 module 内重名冲突。
+        var moduleInitMethodName = $"__JalxamlRegisterStartupType_{className}";
+        sb.AppendLine("    [global::System.Runtime.CompilerServices.ModuleInitializer]");
+        sb.AppendLine($"    internal static void {moduleInitMethodName}()");
+        sb.AppendLine("    {");
+        sb.AppendLine($"        global::Jalium.UI.Markup.XamlTypeRegistry.RegisterStartupType(\"{result.ClassName}\", typeof({className}));");
+        sb.AppendLine("    }");
+        sb.AppendLine();
+
         // Generate fields for named elements
         foreach (var element in result.NamedElements)
         {

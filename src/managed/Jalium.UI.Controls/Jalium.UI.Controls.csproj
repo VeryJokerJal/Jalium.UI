@@ -8,6 +8,8 @@
 		<PackageId>Jalium.UI.Controls</PackageId>
 		<IsTrimmable>true</IsTrimmable>
 		<IsAotCompatible>true</IsAotCompatible>
+		<!-- Replace reflection-based ConfigurationBinder.Bind with a source-generated, trim/AOT-safe binder. -->
+		<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
 	</PropertyGroup>
 
 	<ItemGroup>

@@ -49,75 +49,10 @@ public static class JaliumHostingExtensions
         return builder;
     }
 
-    /// <summary>
-    /// Opts in to the Jalium.UI DevTools inspector. Without this call F12 /
-    /// Ctrl+Shift+C are inert and no <c>DevToolsWindow</c> is ever constructed —
-    /// shipping builds should simply not call it. The opt-in is stored in
-    /// <see cref="DeveloperToolsOptions"/> on the DI container.
-    /// </summary>
-    public static AppBuilder UseDevTools(this AppBuilder builder)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        builder.Services.AddOptions<DeveloperToolsOptions>();
-        builder.Services.Configure<DeveloperToolsOptions>(o => o.EnableDevTools = true);
-        return builder;
-    }
-
-    /// <summary>
-    /// Opts in to the Jalium.UI on-screen debug HUD (frame times, dirty rects,
-    /// backend info). Without this call F3 does nothing. See
-    /// <see cref="DeveloperToolsOptions"/>.
-    /// </summary>
-    public static AppBuilder UseDebugHud(this AppBuilder builder)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        builder.Services.AddOptions<DeveloperToolsOptions>();
-        builder.Services.Configure<DeveloperToolsOptions>(o => o.EnableDebugHud = true);
-        return builder;
-    }
-
-    /// <summary>
-    /// Convenience: opts in to both DevTools and the Debug HUD in one call —
-    /// equivalent to <c>builder.UseDevTools().UseDebugHud()</c>.
-    /// </summary>
-    public static AppBuilder UseDeveloperTools(this AppBuilder builder)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-        builder.Services.AddOptions<DeveloperToolsOptions>();
-        builder.Services.Configure<DeveloperToolsOptions>(o =>
-        {
-            o.EnableDevTools = true;
-            o.EnableDebugHud = true;
-        });
-        return builder;
-    }
-
-    /// <summary>
-    /// Enables Jalium.UI frame-time / FPS metric collection (see
-    /// <see cref="JaliumMeter"/>). Metrics begin recording as soon as
-    /// <see cref="CompositionTarget.Rendering"/> fires, which happens once the
-    /// first <see cref="Window"/> is shown.
-    /// </summary>
-    public static AppBuilder UseJaliumMetrics(this AppBuilder builder)
-    {
-        ArgumentNullException.ThrowIfNull(builder);
-
-        // Defer Start() until the Application instance is attached so we don't
-        // accidentally queue work before the Dispatcher is established. The
-        // Jalium.UI Meter is registered on creation — any attached
-        // IMetricsListener (dotnet-counters, OpenTelemetry MeterProvider, etc.)
-        // that opts into the "Jalium.UI" meter name will see the samples.
-        builder.ConfigureApplication(app =>
-        {
-            var options = app.Services?.GetService<IOptions<JaliumRuntimeOptions>>()?.Value;
-            var window = options?.Metrics.FpsWindowFrames > 0 ? options.Metrics.FpsWindowFrames : 60;
-            JaliumMeter.Start(window);
-
-            app.Exit += (_, _) => JaliumMeter.Stop();
-        });
-
-        return builder;
-    }
+    // Feature-activation Use* extensions (UseDevTools / UseDebugHud /
+    // UseDeveloperTools / UseJaliumMetrics) live on JaliumApp — see
+    // JaliumAppExtensions. ASP.NET Core convention: Add*/Configure* before
+    // Build, Use* after Build.
 
     // ── Services: MVVM / view resolution ────────────────────────────────────
 

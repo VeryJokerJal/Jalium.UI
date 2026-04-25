@@ -1237,6 +1237,25 @@ void D3D12RenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, fl
                                 tex, texDesc.Format, 1.0f, 1.0f, scalingMode);
 }
 
+void D3D12RenderTarget::BlitInkLayer(D3D12InkLayerBitmap* inkBitmap,
+                                      float dstX, float dstY, float opacity)
+{
+    if (!isDrawing_ || !directRenderer_ || !inkBitmap) return;
+    if (!inkBitmap->Texture()) return;
+    FlushVelloIfNeeded();
+
+    // DispatchBrush / Clear leave the ink texture in PIXEL_SHADER_RESOURCE,
+    // which is exactly the state AddBitmap expects. No barrier needed here.
+    directRenderer_->AddBitmap(
+        dstX, dstY,
+        (float)inkBitmap->Width(),
+        (float)inkBitmap->Height(),
+        opacity * directRenderer_->GetOpacity(),
+        inkBitmap->Texture(),
+        inkBitmap->Format(),
+        1.0f, 1.0f, 0 /* unspecified scaling */);
+}
+
 // ============================================================================
 // State — Transform, Clip, Opacity
 // ============================================================================

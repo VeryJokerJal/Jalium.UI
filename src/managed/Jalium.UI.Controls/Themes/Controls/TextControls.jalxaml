@@ -8,14 +8,14 @@
     <!-- Template provides the chrome (background, border). PART_ContentHost is a Border
          where the control inserts its TextBoxContentHost for text rendering. -->
     <Style TargetType="TextBox">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="CornerRadius" Value="8" />
-        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
-        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextWrapping" Value="NoWrap" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         <Setter Property="HorizontalContentAlignment" Value="Left" />
@@ -36,14 +36,14 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -52,7 +52,7 @@
     <!-- TextBlock Style -->
     <!-- ============================================== -->
     <Style TargetType="TextBlock">
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
     </Style>
 
     <!-- ============================================== -->
@@ -60,28 +60,28 @@
     <!-- ============================================== -->
     <!-- PasswordBox uses direct rendering (doesn't extend TextBoxBase for security reasons) -->
     <Style TargetType="PasswordBox">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="PasswordChar" Value="*" />
-        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
-        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -90,15 +90,15 @@
     <!-- NumberBox Style -->
     <!-- ============================================== -->
     <Style TargetType="NumberBox">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
-        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
-        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         <Setter Property="Template">
             <ControlTemplate TargetType="NumberBox">
@@ -124,13 +124,13 @@
                             </Grid.RowDefinitions>
                             <RepeatButton Name="PART_UpSpinButton"
                                           Grid.Row="0"
-                                          Background="{DynamicResource ControlBackground}"
+                                          Background="{ThemeResource ControlBackground}"
                                           BorderThickness="0"
                                           Padding="0"
                                           VerticalAlignment="Stretch"
                                           HorizontalAlignment="Stretch">
                                 <Path Data="M 0,5 L 5,0 L 10,5"
-                                      Stroke="{DynamicResource TextSecondary}"
+                                      Stroke="{ThemeResource TextSecondary}"
                                       StrokeThickness="1.5"
                                       Stretch="None"
                                       HorizontalAlignment="Center"
@@ -138,13 +138,13 @@
                             </RepeatButton>
                             <RepeatButton Name="PART_DownSpinButton"
                                           Grid.Row="1"
-                                          Background="{DynamicResource ControlBackground}"
+                                          Background="{ThemeResource ControlBackground}"
                                           BorderThickness="0"
                                           Padding="0"
                                           VerticalAlignment="Stretch"
                                           HorizontalAlignment="Stretch">
                                 <Path Data="M 0,0 L 5,5 L 10,0"
-                                      Stroke="{DynamicResource TextSecondary}"
+                                      Stroke="{ThemeResource TextSecondary}"
                                       StrokeThickness="1.5"
                                       Stretch="None"
                                       HorizontalAlignment="Center"
@@ -158,14 +158,14 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -174,16 +174,16 @@
     <!-- AutoCompleteBox Style -->
     <!-- ============================================== -->
     <Style TargetType="AutoCompleteBox">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="MaxDropDownHeight" Value="200" />
-        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
-        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
         <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         <Setter Property="Template">
             <ControlTemplate TargetType="AutoCompleteBox">
@@ -203,8 +203,8 @@
                            Placement="Bottom"
                            PlacementTarget="{Binding RelativeSource={RelativeSource AncestorType=AutoCompleteBox}}">
                         <Border Name="PART_DropDownBorder"
-                                Background="{DynamicResource SurfaceBackground}"
-                                BorderBrush="{DynamicResource ControlBorder}"
+                                Background="{ThemeResource SurfaceBackground}"
+                                BorderBrush="{ThemeResource ControlBorder}"
                                 BorderThickness="1"
                                 CornerRadius="{TemplateBinding CornerRadius}"
                                 Margin="0,4,0,0">
@@ -222,14 +222,14 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -238,16 +238,16 @@
     <!-- RichTextBox Style -->
     <!-- ============================================== -->
     <Style TargetType="RichTextBox">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="4" />
-        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
-        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -256,22 +256,23 @@
     <!-- EditControl Style -->
     <!-- ============================================== -->
     <Style TargetType="EditControl">
-        <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource EditorSyntaxPlainText}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource EditorSyntaxPlainText}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
-        <Setter Property="FontFamily" Value="{DynamicResource MonoFontFamily}" />
-        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
-        <Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}" />
-        <Setter Property="LineNumberForeground" Value="{DynamicResource TextSecondary}" />
-        <Setter Property="CurrentLineBackground" Value="{DynamicResource HighlightBackground}" />
-        <Setter Property="GutterBackground" Value="{DynamicResource ControlBackground}" />
-
-        <Style.Triggers>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
-            </PropertyTrigger>
-        </Style.Triggers>
+        <Setter Property="FontFamily" Value="{ThemeResource MonoFontFamily}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="LineNumberForeground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="CurrentLineBackground" Value="{ThemeResource HighlightBackground}" />
+        <Setter Property="GutterBackground" Value="{ThemeResource ControlBackground}" />
+        <!-- Code editors don't show focus visuals at all: the caret already
+             communicates focus. The framework focus ring is suppressed at the type
+             level (EditControl.SuppressFocusVisualByDefault); the BorderBrush is
+             also kept neutral on focus so it doesn't morph into a different colour
+             that would only appear on top/bottom (the gutter and minimap mask the
+             left/right edges, making a partial accent-coloured border look broken).
+             No IsKeyboardFocused trigger here on purpose. -->
     </Style>
 
 </ResourceDictionary>

@@ -2,30 +2,24 @@
 
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <RootNamespace>Jalium.UI</RootNamespace>
+    <RootNamespace>Jalium.UI.Desktop</RootNamespace>
     <AssemblyName>Jalium.UI.Desktop</AssemblyName>
-    <Description>Jalium.UI Windows Desktop entry package. References all Jalium.UI components built for Windows.</Description>
+    <Description>Jalium.UI Windows Desktop integration package. References all Jalium.UI components built for Windows and adds Windows-only platform glue (system accent color sync, etc.).</Description>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
 
     <!-- NuGet Package Configuration -->
     <IsPackable>true</IsPackable>
     <PackageId>Jalium.UI.Desktop</PackageId>
 
-    <!-- Metapackage - no code, just references -->
-    <IncludeBuildOutput>false</IncludeBuildOutput>
+    <!--
+      Previously a pure metapackage. It now ships a small Windows-only
+      assembly (Platforms/Windows/*.cs) whose ModuleInitializer wires
+      ThemeManager.SystemAccentResolver into the OS accent registry.
+      So we go back to producing a real build output + reference assembly.
+    -->
     <IncludeSymbols>false</IncludeSymbols>
     <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
-
-    <!--
-      元包没有任何 .cs 源文件,不存在公共 API 表面,不应生成 reference assembly。
-      否则当上游 ProjectReference 引用本项目时,会去 obj\...\ref\Jalium.UI.Desktop.dll 取
-      metadata,而 VS 增量构建对"空源码+IncludeBuildOutput=false"的元包经常出现
-      refint/ref 不同步(ref 目录被清空但 CopyRefAssembly 未重新填充),导致 CS0006。
-      显式关掉 ref assembly 产生,让下游直接引用 bin 下真正编译出的 dll。
-    -->
-    <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
-
-    <!-- 元包没有源码,关掉 XML 文档生成,避免空 xml 文件与无关 warning。 -->
-    <GenerateDocumentationFile>false</GenerateDocumentationFile>
   </PropertyGroup>
 
   <!-- Reference all Jalium.UI runtime packages -->

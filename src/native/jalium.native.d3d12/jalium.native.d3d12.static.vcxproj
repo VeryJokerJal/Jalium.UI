@@ -82,14 +82,18 @@
     <ClInclude Include="include\d3d12_glyph_atlas.h" />
     <ClInclude Include="include\d3d12_pipeline.h" />
     <ClInclude Include="include\d3d12_render_target.h" />
+    <ClInclude Include="include\d3d12_brush_shader.h" />
     <ClInclude Include="include\d3d12_resources.h" />
     <ClInclude Include="include\d3d12_impeller_engine.h" />
+    <ClInclude Include="include\d3d12_ink_layer.h" />
     <ClInclude Include="include\d3d12_triangulate.h" />
     <ClInclude Include="include\d3d12_vello.h" />
     <ClInclude Include="include\d3d12_vello_engine.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\d3d12_backend.cpp" />
+    <ClCompile Include="src\d3d12_brush_shader.cpp" />
+    <ClCompile Include="src\d3d12_ink_layer.cpp" />
     <ClCompile Include="src\d3d12_render_target.cpp" />
     <ClCompile Include="src\d3d12_brush.cpp" />
     <ClCompile Include="src\d3d12_bitmap.cpp" />
