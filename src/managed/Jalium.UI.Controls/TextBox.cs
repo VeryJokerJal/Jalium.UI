@@ -1308,11 +1308,7 @@ public class TextBox : TextBoxBase, IImeSupport
         // Render text content
         RenderTextContentCore(dc, contentRect, lineHeight);
 
-        // Draw focus indicator
-        if (IsKeyboardFocused)
-        {
-            ControlFocusVisual.Draw(dc, this, bounds, cornerRadius);
-        }
+        // Focus indicator is painted by FocusVisualManager into the adorner layer.
     }
 
     /// <inheritdoc />

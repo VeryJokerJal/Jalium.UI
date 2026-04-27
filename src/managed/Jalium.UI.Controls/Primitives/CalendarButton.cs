@@ -97,7 +97,7 @@ public sealed class CalendarButton : Button
         Brush? bgBrush = null;
         if (HasSelectedDays)
         {
-            bgBrush = new SolidColorBrush(Color.FromArgb(64, 0, 120, 212));
+            bgBrush = new SolidColorBrush(Color.FromArgb(64, 0x1E, 0x79, 0x3F));
         }
         else if (IsPressed)
         {

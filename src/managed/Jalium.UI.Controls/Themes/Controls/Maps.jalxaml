@@ -8,9 +8,9 @@
     <!-- An interactive map viewer with pan/zoom, layers,
          zoom controls, scale bar, and attribution display. -->
     <Style TargetType="MapView">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="Padding" Value="0" />
@@ -60,14 +60,14 @@
                                 HorizontalAlignment="Left"
                                 VerticalAlignment="Bottom"
                                 Margin="8,0,0,8"
-                                Background="{DynamicResource ControlBackground}"
-                                BorderBrush="{DynamicResource ControlBorder}"
+                                Background="{ThemeResource ControlBackground}"
+                                BorderBrush="{ThemeResource ControlBorder}"
                                 BorderThickness="1"
                                 CornerRadius="2"
                                 Padding="6,2,6,2">
                             <TextBlock Name="PART_ScaleText"
                                        FontSize="10"
-                                       Foreground="{DynamicResource TextSecondary}" />
+                                       Foreground="{ThemeResource TextSecondary}" />
                         </Border>
 
                         <!-- Attribution (bottom-right) -->
@@ -75,13 +75,13 @@
                                 HorizontalAlignment="Right"
                                 VerticalAlignment="Bottom"
                                 Margin="0,0,8,8"
-                                Background="{DynamicResource ControlBackground}"
+                                Background="{ThemeResource ControlBackground}"
                                 CornerRadius="2"
                                 Padding="4,2,4,2"
                                 Opacity="0.8">
                             <TextBlock Name="PART_AttributionText"
                                        FontSize="9"
-                                       Foreground="{DynamicResource TextSecondary}" />
+                                       Foreground="{ThemeResource TextSecondary}" />
                         </Border>
                     </Grid>
                 </Border>
@@ -100,9 +100,9 @@
     <!-- ============================================== -->
     <!-- A small overview map typically overlaid on a MapView. -->
     <Style TargetType="MiniMap">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextFillColorPrimaryBrush}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="4" />
         <Setter Property="Width" Value="150" />

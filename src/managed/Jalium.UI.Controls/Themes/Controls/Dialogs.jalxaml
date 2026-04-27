@@ -3,13 +3,13 @@
     xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml">
 
     <Style x:Key="ContentDialogAccentButtonStyle" TargetType="Button">
-        <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource AccentBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="14,6,14,6" />
         <Setter Property="CornerRadius" Value="4" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
         <Setter Property="MinWidth" Value="96" />
         <Setter Property="MinHeight" Value="32" />
         <Setter Property="HorizontalContentAlignment" Value="Center" />
@@ -36,33 +36,33 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource AccentBrushHover}" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{ThemeResource AccentBrushHover}" />
                 <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter TargetName="StateOverlay" Property="Background" Value="{DynamicResource AccentBrushPressed}" />
+                <Setter TargetName="StateOverlay" Property="Background" Value="{ThemeResource AccentBrushPressed}" />
                 <Setter TargetName="StateOverlay" Property="Opacity" Value="1" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
                 <Setter TargetName="StateOverlay" Property="Opacity" Value="0" />
-                <Setter Property="Background" Value="{DynamicResource AccentBrushDisabled}" />
-                <Setter Property="BorderBrush" Value="{DynamicResource AccentBrushDisabled}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource AccentBrushDisabled}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource AccentBrushDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
 
     <Style TargetType="ContentDialog">
-        <Setter Property="Background" Value="{DynamicResource LayerFillColorAltBrush}" />
-        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource SurfaceStrokeColorDefaultBrush}" />
+        <Setter Property="Background" Value="{ThemeResource LayerFillColorAltBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource SurfaceStrokeColorDefaultBrush}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="CornerRadius" Value="8" />
         <Setter Property="Template">
             <ControlTemplate TargetType="ContentDialog">
                 <Grid Name="PART_Root">
                     <Border Name="PART_Overlay"
-                            Background="{DynamicResource SmokeFillColorDefaultBrush}" />
+                            Background="{ThemeResource SmokeFillColorDefaultBrush}" />
 
                     <Border Name="PART_DialogCard"
                             HorizontalAlignment="Center"
@@ -91,10 +91,10 @@
                                                   ContentTemplate="{TemplateBinding TitleTemplate}">
                                     <ContentPresenter.Resources>
                                         <Style TargetType="TextBlock">
-                                            <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+                                            <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
                                             <Setter Property="FontSize" Value="20" />
                                             <Setter Property="FontWeight" Value="SemiBold" />
-                                            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                                            <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
                                             <Setter Property="TextWrapping" Value="Wrap" />
                                         </Style>
                                     </ContentPresenter.Resources>

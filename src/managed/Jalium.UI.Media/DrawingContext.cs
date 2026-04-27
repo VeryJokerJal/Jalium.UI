@@ -350,6 +350,7 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     /// <param name="geometry">The geometry to draw.</param>
     public abstract void DrawGeometry(Brush? brush, Pen? pen, Geometry geometry);
 
+
     /// <summary>
     /// Draws an image.
     /// </summary>
@@ -457,6 +458,34 @@ public abstract class DrawingContext : IDisposable, IClipDrawingContext
     public virtual void PopEffect()
     {
         // Default no-op. See PushEffect.
+    }
+
+    /// <summary>
+    /// Draws a liquid glass effect — SDF-based refraction with blur, tint,
+    /// edge highlight, chromatic aberration, and optional fusion between
+    /// sibling glass panels.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Default implementation is a no-op so drawing contexts that do not
+    /// support the effect (test probes, PDF export, recorders with no
+    /// override) simply skip it. The live render path in
+    /// <c>RenderTargetDrawingContext</c> and the retained-mode recorder /
+    /// replayer both override this to produce / record the draw.
+    /// </para>
+    /// <para>
+    /// Parameters are carried in a <see cref="LiquidGlassParameters"/>
+    /// reference object rather than an exploded argument list so the call
+    /// survives the recorder round-trip without boxing each scalar into a
+    /// fixed-size command payload.
+    /// </para>
+    /// </remarks>
+    /// <param name="parameters">Effect parameters. The rectangle is in local
+    /// drawing coordinates; implementations that render to an offset target
+    /// must add <c>IOffsetDrawingContext.Offset</c> themselves.</param>
+    public virtual void DrawLiquidGlass(LiquidGlassParameters parameters)
+    {
+        // Default no-op. See remarks.
     }
 
     /// <summary>

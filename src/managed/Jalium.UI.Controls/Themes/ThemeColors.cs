@@ -75,7 +75,7 @@ public static class ThemeColors
     /// <summary>
     /// Control border color when focused.
     /// </summary>
-    public static Color ControlBorderFocused => Color.FromRgb(0, 120, 212);
+    public static Color ControlBorderFocused => Color.FromRgb(32, 114, 69);
 
     /// <summary>
     /// Control border color when mouse is over.
@@ -92,24 +92,24 @@ public static class ThemeColors
     #region Accent Colors
 
     /// <summary>
-    /// Primary accent color.
+    /// Primary accent color (start stop of the 207245 -> 1C8043 gradient).
     /// </summary>
-    public static Color Accent => Color.FromRgb(0, 120, 212);
+    public static Color Accent => Color.FromRgb(0x20, 0x72, 0x45);
 
     /// <summary>
     /// Accent color when mouse is over.
     /// </summary>
-    public static Color AccentHover => Color.FromRgb(26, 145, 235);
+    public static Color AccentHover => Color.FromRgb(0x27, 0x8A, 0x52);
 
     /// <summary>
     /// Accent color when pressed.
     /// </summary>
-    public static Color AccentPressed => Color.FromRgb(0, 90, 158);
+    public static Color AccentPressed => Color.FromRgb(0x18, 0x5A, 0x37);
 
     /// <summary>
     /// Accent color when disabled.
     /// </summary>
-    public static Color AccentDisabled => Color.FromRgb(0, 60, 106);
+    public static Color AccentDisabled => Color.FromRgb(0x2A, 0x4A, 0x3A);
 
     #endregion
 
@@ -118,7 +118,7 @@ public static class ThemeColors
     /// <summary>
     /// Selection background color.
     /// </summary>
-    public static Color SelectionBackground => Color.FromArgb(128, 0, 120, 212);
+    public static Color SelectionBackground => Color.FromArgb(128, 0x1E, 0x79, 0x3F);
 
     /// <summary>
     /// Selection text color.
@@ -133,7 +133,7 @@ public static class ThemeColors
     /// <summary>
     /// Selected item background.
     /// </summary>
-    public static Color SelectedItemBackground => Color.FromRgb(0, 120, 212);
+    public static Color SelectedItemBackground => Color.FromRgb(0x20, 0x72, 0x45);
 
     #endregion
 
@@ -162,7 +162,7 @@ public static class ThemeColors
     /// <summary>
     /// ProgressBar fill color.
     /// </summary>
-    public static Color ProgressBarFill => Color.FromRgb(0, 120, 212);
+    public static Color ProgressBarFill => Color.FromRgb(0x20, 0x72, 0x45);
 
     /// <summary>
     /// Slider track background.
@@ -172,7 +172,7 @@ public static class ThemeColors
     /// <summary>
     /// Slider thumb background.
     /// </summary>
-    public static Color SliderThumb => Color.FromRgb(0, 120, 212);
+    public static Color SliderThumb => Color.FromRgb(0x20, 0x72, 0x45);
 
     /// <summary>
     /// CheckBox/RadioButton check mark color.
@@ -211,27 +211,27 @@ public static class ThemeColors
     /// <summary>
     /// CheckBox/RadioButton checked background (accent).
     /// </summary>
-    public static Color ToggleCheckedBackground => Color.FromRgb(0, 120, 212);
+    public static Color ToggleCheckedBackground => Color.FromRgb(0x20, 0x72, 0x45);
 
     /// <summary>
     /// CheckBox/RadioButton checked background when hovered.
     /// </summary>
-    public static Color ToggleCheckedBackgroundHover => Color.FromRgb(26, 145, 235);
+    public static Color ToggleCheckedBackgroundHover => Color.FromRgb(0x27, 0x8A, 0x52);
 
     /// <summary>
     /// CheckBox/RadioButton checked background when pressed.
     /// </summary>
-    public static Color ToggleCheckedBackgroundPressed => Color.FromRgb(0, 95, 170);
+    public static Color ToggleCheckedBackgroundPressed => Color.FromRgb(0x18, 0x5A, 0x37);
 
     /// <summary>
     /// CheckBox/RadioButton checked border (matches background).
     /// </summary>
-    public static Color ToggleCheckedBorder => Color.FromRgb(0, 120, 212);
+    public static Color ToggleCheckedBorder => Color.FromRgb(0x20, 0x72, 0x45);
 
     /// <summary>
     /// CheckBox/RadioButton checked border when hovered.
     /// </summary>
-    public static Color ToggleCheckedBorderHover => Color.FromRgb(26, 145, 235);
+    public static Color ToggleCheckedBorderHover => Color.FromRgb(0x27, 0x8A, 0x52);
 
     /// <summary>
     /// CheckBox/RadioButton disabled background.
@@ -285,7 +285,7 @@ public static class ThemeColors
     /// <summary>
     /// Tab item selection indicator color.
     /// </summary>
-    public static Color TabItemIndicator => Color.FromRgb(0, 120, 212);
+    public static Color TabItemIndicator => Color.FromRgb(0x20, 0x72, 0x45);
 
     /// <summary>
     /// Tab content background color.

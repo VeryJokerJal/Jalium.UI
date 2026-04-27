@@ -6,18 +6,18 @@
     <!-- TabControl Style -->
     <!-- ============================================== -->
     <Style TargetType="TabControl">
-        <Setter Property="Background" Value="{DynamicResource TabContentBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource TabStripBorder}" />
+        <Setter Property="Background" Value="{ThemeResource TabContentBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource TabStripBorder}" />
         <Setter Property="BorderThickness" Value="0" />
-        <Setter Property="TabStripBackground" Value="{DynamicResource TabStripBackground}" />
-        <Setter Property="TabStripBorderBrush" Value="{DynamicResource TabStripBorder}" />
+        <Setter Property="TabStripBackground" Value="{ThemeResource TabStripBackground}" />
+        <Setter Property="TabStripBorderBrush" Value="{ThemeResource TabStripBorder}" />
         <Setter Property="TabStripHeight" Value="36" />
-        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
+        <Setter Property="FontSize" Value="{ThemeResource CaptionFontSize}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="TabStripBorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="TabStripBorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -27,21 +27,21 @@
     <!-- ============================================== -->
     <Style TargetType="TabItem">
         <Setter Property="Background" Value="Transparent" />
-        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
         <Setter Property="Padding" Value="16,10,16,10" />
-        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
-        <Setter Property="FontFamily" Value="{DynamicResource BodyFontFamily}" />
-        <Setter Property="IndicatorBrush" Value="{DynamicResource TabItemIndicator}" />
+        <Setter Property="FontSize" Value="{ThemeResource CaptionFontSize}" />
+        <Setter Property="FontFamily" Value="{ThemeResource BodyFontFamily}" />
+        <Setter Property="IndicatorBrush" Value="{ThemeResource TabItemIndicator}" />
         <Setter Property="IndicatorHeight" Value="2" />
-        <Setter Property="SelectedBackground" Value="{DynamicResource TabItemSelectedBackground}" />
-        <Setter Property="HoverBackground" Value="{DynamicResource TabItemHoverBackground}" />
+        <Setter Property="SelectedBackground" Value="{ThemeResource TabItemSelectedBackground}" />
+        <Setter Property="HoverBackground" Value="{ThemeResource TabItemHoverBackground}" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -50,7 +50,7 @@
     <!-- TabPanel Style -->
     <!-- ============================================== -->
     <Style TargetType="TabPanel">
-        <Setter Property="Background" Value="{DynamicResource TabStripBackground}" />
+        <Setter Property="Background" Value="{ThemeResource TabStripBackground}" />
     </Style>
 
 </ResourceDictionary>

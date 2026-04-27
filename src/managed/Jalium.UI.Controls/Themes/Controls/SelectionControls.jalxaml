@@ -6,8 +6,8 @@
 	<!-- ComboBox Style -->
 	<!-- ============================================== -->
 	<Style TargetType="ComboBox">
-		<Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-		<Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+		<Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+		<Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
 		<Setter Property="BorderThickness" Value="1" />
 		<Setter Property="Padding" Value="6" />
 		<Setter Property="CornerRadius" Value="8" />
@@ -15,12 +15,6 @@
 		<Setter Property="Template">
 			<ControlTemplate TargetType="ComboBox">
 				<Grid>
-					<Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Visibility="Collapsed" />
 					<Border Name="PART_MainBorder"
                             Background="{TemplateBinding Background}"
                             BorderBrush="{TemplateBinding BorderBrush}"
@@ -71,7 +65,7 @@
                                         Margin="0,1,0,1"
                                         HorizontalAlignment="Left"
                                         VerticalAlignment="Stretch"
-                                        Background="{DynamicResource DividerStrokeColorDefaultBrush}" />
+                                        Background="{ThemeResource DividerStrokeColorDefaultBrush}" />
 								<ToggleButton Name="PART_ToggleButton"
                                               Margin="1,0,0,0"
                                               Background="Transparent"
@@ -84,7 +78,7 @@
 									<ToggleButton.Template>
 										<ControlTemplate TargetType="ToggleButton">
 											<Path Data="M 733.87,841.90 L 1160.54,273.07 A 170.67,170.67,0,0,0,1024.00,0 H 170.67 A 170.67,170.67,0,0,0,34.14,273.07 L 460.80,841.90 A 170.67,170.67,0,0,0,733.87,841.90 Z"
-												  Fill="{DynamicResource TextSecondary}"
+												  Fill="{ThemeResource TextSecondary}"
 												  Width="8"
 												  Height="8"
 												  Stretch="Uniform"
@@ -101,8 +95,8 @@
                            StaysOpen="False"
                            Placement="Bottom"
                            PlacementTarget="{Binding RelativeSource={RelativeSource AncestorType=ComboBox}}">
-						<Border Background="{DynamicResource SurfaceBackground}"
-                                BorderBrush="{DynamicResource ControlBorder}"
+						<Border Background="{ThemeResource SurfaceBackground}"
+                                BorderBrush="{ThemeResource ControlBorder}"
                                 BorderThickness="1"
                                 CornerRadius="8"
                                 Margin="0,4,0,0">
@@ -123,19 +117,17 @@
 				<Setter TargetName="PART_DropDownDivider" Property="Opacity" Value="0" />
 			</PropertyTrigger>
 			<PropertyTrigger Property="IsMouseOver" Value="True">
-				<Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+				<Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
 			</PropertyTrigger>
 			<PropertyTrigger Property="IsKeyboardFocusWithin" Value="True">
-				<Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-				<Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+				<Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
 			</PropertyTrigger>
 			<PropertyTrigger Property="IsDropDownOpen" Value="True">
-				<Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+				<Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
 			</PropertyTrigger>
 			<PropertyTrigger Property="IsEnabled" Value="False">
-				<Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-				<Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-				<Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+				<Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+				<Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
 			</PropertyTrigger>
 		</Style.Triggers>
 	</Style>
@@ -174,8 +166,8 @@
 	<!-- ListBox Style -->
 	<!-- ============================================== -->
 	<Style TargetType="ListBox">
-		<Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-		<Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+		<Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+		<Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
 		<Setter Property="BorderThickness" Value="1" />
 		<Setter Property="CornerRadius" Value="8" />
 		<Setter Property="Padding" Value="2" />
@@ -193,25 +185,17 @@
 							<ItemsPresenter />
 						</ScrollViewer>
 					</Border>
-					<Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Visibility="Collapsed" />
 				</Grid>
 			</ControlTemplate>
 		</Setter>
 
 		<Style.Triggers>
 			<PropertyTrigger Property="IsKeyboardFocused" Value="True">
-				<Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-				<Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+				<Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
 			</PropertyTrigger>
 			<PropertyTrigger Property="IsEnabled" Value="False">
-				<Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-				<Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-				<Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+				<Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+				<Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
 			</PropertyTrigger>
 		</Style.Triggers>
 	</Style>
@@ -232,21 +216,9 @@
                             Padding="{TemplateBinding Padding}">
 						<ContentPresenter VerticalAlignment="Center" />
 					</Border>
-					<Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="4"
-                            Visibility="Collapsed" />
 				</Grid>
 			</ControlTemplate>
 		</Setter>
-
-		<Style.Triggers>
-			<PropertyTrigger Property="IsKeyboardFocused" Value="True">
-				<Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-			</PropertyTrigger>
-		</Style.Triggers>
 
 	</Style>
 
@@ -254,8 +226,8 @@
 	<!-- ListView Style -->
 	<!-- ============================================== -->
 	<Style TargetType="ListView">
-		<Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-		<Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+		<Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+		<Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
 		<Setter Property="BorderThickness" Value="1" />
 		<Setter Property="CornerRadius" Value="4" />
 		<Setter Property="Template">
@@ -274,8 +246,8 @@
 							<!-- Column headers (visible when using GridView) -->
 							<Border Name="PART_ColumnHeadersBorder"
                                     Grid.Row="0"
-                                    Background="{DynamicResource SurfaceBackground}"
-                                    BorderBrush="{DynamicResource ControlBorder}"
+                                    Background="{ThemeResource SurfaceBackground}"
+                                    BorderBrush="{ThemeResource ControlBorder}"
                                     BorderThickness="0,0,0,1"
                                     Visibility="Collapsed">
 								<StackPanel Name="PART_ColumnHeadersHost" Orientation="Horizontal" />
@@ -288,25 +260,17 @@
 							</ScrollViewer>
 						</Grid>
 					</Border>
-					<Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="{TemplateBinding CornerRadius}"
-                            Visibility="Collapsed" />
 				</Grid>
 			</ControlTemplate>
 		</Setter>
 
 		<Style.Triggers>
 			<PropertyTrigger Property="IsKeyboardFocused" Value="True">
-				<Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-				<Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+				<Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
 			</PropertyTrigger>
 			<PropertyTrigger Property="IsEnabled" Value="False">
-				<Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-				<Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-				<Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+				<Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+				<Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
 			</PropertyTrigger>
 		</Style.Triggers>
 	</Style>
@@ -329,21 +293,9 @@
 							<ContentPresenter VerticalAlignment="Center" />
 						</StackPanel>
 					</Border>
-					<Border Name="FocusBorder"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="2"
-                            CornerRadius="4"
-                            Visibility="Collapsed" />
 				</Grid>
 			</ControlTemplate>
 		</Setter>
-
-		<Style.Triggers>
-			<PropertyTrigger Property="IsKeyboardFocused" Value="True">
-				<Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-			</PropertyTrigger>
-		</Style.Triggers>
 
 	</Style>
 
@@ -351,14 +303,14 @@
 	<!-- GridViewColumnHeader Style -->
 	<!-- ============================================== -->
 	<Style TargetType="GridViewColumnHeader">
-		<Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
+		<Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
 		<Setter Property="Padding" Value="8,4,8,4" />
 		<Setter Property="MinHeight" Value="28" />
 		<Setter Property="Template">
 			<ControlTemplate TargetType="GridViewColumnHeader">
 				<Border Name="PART_HeaderBorder"
                         Background="{TemplateBinding Background}"
-                        BorderBrush="{DynamicResource ControlBorder}"
+                        BorderBrush="{ThemeResource ControlBorder}"
                         BorderThickness="0,0,1,0"
                         Padding="{TemplateBinding Padding}">
 					<Grid>
@@ -371,7 +323,7 @@
                                           VerticalAlignment="Center" />
 						<TextBlock Name="PART_SortIndicator"
                                    Grid.Column="1"
-                                   Foreground="{DynamicResource TextSecondary}"
+                                   Foreground="{ThemeResource TextSecondary}"
                                    VerticalAlignment="Center"
                                    Margin="4,0,0,0"
                                    Visibility="Collapsed" />
@@ -382,7 +334,7 @@
 
 		<Style.Triggers>
 			<PropertyTrigger Property="IsMouseOver" Value="True">
-				<Setter Property="Background" Value="{DynamicResource HighlightBackground}" />
+				<Setter Property="Background" Value="{ThemeResource HighlightBackground}" />
 			</PropertyTrigger>
 		</Style.Triggers>
 	</Style>

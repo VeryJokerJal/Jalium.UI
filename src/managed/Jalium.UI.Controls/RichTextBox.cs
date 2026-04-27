@@ -20,7 +20,7 @@ public class RichTextBox : Control, IImeSupport
     #region Static Brushes
 
     private static readonly SolidColorBrush s_defaultForegroundBrush = new(Color.White);
-    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0, 120, 212));
+    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
     private static readonly SolidColorBrush s_defaultCaretBrush = new(Color.White);
     private static readonly SolidColorBrush s_compositionBgBrush = new(Color.FromRgb(60, 60, 80));
     private static readonly SolidColorBrush s_compositionTextBrush = new(Color.FromRgb(255, 255, 200));
@@ -1145,10 +1145,7 @@ public class RichTextBox : Control, IImeSupport
             dc.DrawRectangle(null, new Pen(BorderBrush, BorderThickness.Left), bounds);
         }
 
-        if (IsKeyboardFocused)
-        {
-            ControlFocusVisual.Draw(dc, this, bounds, CornerRadius);
-        }
+        // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
         // Calculate content area
         var contentBounds = new Rect(

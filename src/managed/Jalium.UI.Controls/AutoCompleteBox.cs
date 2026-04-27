@@ -1071,10 +1071,7 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
             directDc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
         }
 
-        if (IsKeyboardFocused)
-        {
-            ControlFocusVisual.Draw(directDc, this, inputRect, cornerRadius);
-        }
+        // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
         // Content area
         var contentRect = new Rect(

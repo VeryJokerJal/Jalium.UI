@@ -22,6 +22,17 @@ public sealed class DynamicRenderer : StylusPlugIn
     /// </summary>
     public DrawingAttributes DrawingAttributes { get; set; } = new();
 
+    /// <summary>
+    /// The in-progress stylus stroke being previewed, or null when no
+    /// stylus session is active. Exposed so <see cref="InkCanvas"/> can
+    /// dispatch the same pixel-shader brush over its preview bitmap —
+    /// keeping stylus preview pixel-identical with the eventual commit.
+    /// Returns null when there aren't yet enough points for a shader
+    /// dispatch (minimum 2).
+    /// </summary>
+    internal Stroke? CurrentPreviewStroke
+        => _previewStroke is { } s && s.StylusPoints.Count >= 2 ? s : null;
+
     internal void SetInkPresenter(InkPresenter? inkPresenter)
     {
         if (ReferenceEquals(_inkPresenter, inkPresenter))

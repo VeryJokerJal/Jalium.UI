@@ -727,6 +727,16 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
 
     #endregion
 
+    /// <summary>
+    /// Code editors don't display the framework's focus ring: the caret already
+    /// indicates focus, and a ring around the entire editing surface would obscure
+    /// the code being read/edited (matches how VS / VS Code / Sublime present focus).
+    /// Per-instance override is still possible by explicitly assigning
+    /// <see cref="FrameworkElement.FocusVisualStyle"/>, which takes precedence over
+    /// this opt-out.
+    /// </summary>
+    protected override bool SuppressFocusVisualByDefault => true;
+
     #region Rendering
 
     protected override void OnRender(object drawingContext)
@@ -765,10 +775,7 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
                 dc.DrawRectangle(null, new Pen(BorderBrush, borderThickness), borderRect);
             }
 
-            if (IsKeyboardFocused)
-            {
-                ControlFocusVisual.Draw(dc, this, bounds, CornerRadius);
-            }
+            // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
             bool hasContentClip = contentBackdropWidth > 0 && contentHeight > 0;
             if (hasContentClip)

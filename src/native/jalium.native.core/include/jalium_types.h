@@ -16,6 +16,8 @@ typedef struct JaliumBrush JaliumBrush;
 typedef struct JaliumTextFormat JaliumTextFormat;
 typedef struct JaliumGeometry JaliumGeometry;
 typedef struct JaliumImage JaliumImage;
+typedef struct JaliumInkLayerBitmap JaliumInkLayerBitmap;
+typedef struct JaliumBrushShader   JaliumBrushShader;
 
 // ============================================================================
 // Enumerations

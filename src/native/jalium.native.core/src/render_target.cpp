@@ -427,6 +427,134 @@ JALIUM_API void jalium_stroke_path(
     }
 }
 
+
+// C API forwarder: composites an ink-layer bitmap onto the render target.
+// The bitmap / shader entry points themselves live in the backend-specific
+// translation unit (d3d12_ink_layer.cpp for D3D12); only this blit sits
+// on the backend-neutral RenderTarget base via a virtual method.
+JALIUM_API void jalium_render_target_blit_ink_layer(
+    JaliumRenderTarget* rt,
+    JaliumInkLayerBitmap* bitmap,
+    float dstX, float dstY,
+    float opacity)
+{
+    if (!rt || !bitmap) return;
+    // Unwrap the handle — we want the backend-native inner pointer, not
+    // the wrapper itself, since D3D12RenderTarget::BlitInkLayer expects
+    // a D3D12InkLayerBitmap*.
+    struct BackendOwnedHandle { jalium::IRenderBackend* backend; void* native; };
+    auto* h = reinterpret_cast<BackendOwnedHandle*>(bitmap);
+    if (!h->native) return;
+    reinterpret_cast<jalium::RenderTarget*>(rt)->BlitInkLayer(h->native, dstX, dstY, opacity);
+}
+
+// ─── Ink-layer bitmap + brush-shader C API ──────────────────────────────
+//
+// Thin forwarders over IRenderBackend virtuals. Each handle wraps the
+// concrete backend pointer + the backend-specific native handle so
+// destroy / dispatch can find their way back to the right backend
+// without a global registry. A null return signals "backend doesn't
+// support the new pipeline yet" — managed code then falls back to the
+// legacy CPU raster path.
+
+namespace {
+
+// Opaque handle struct (matches the forward-decl in jalium_types.h).
+struct BackendOwnedHandle {
+    jalium::IRenderBackend* backend;
+    void*                   native;
+};
+
+BackendOwnedHandle* WrapHandle(jalium::IRenderBackend* backend, void* native)
+{
+    if (!native) return nullptr;
+    auto* h = new (std::nothrow) BackendOwnedHandle{backend, native};
+    if (!h) backend->DestroyInkLayerBitmap(native);  // best-effort cleanup
+    return h;
+}
+
+BackendOwnedHandle* WrapShaderHandle(jalium::IRenderBackend* backend, void* native)
+{
+    if (!native) return nullptr;
+    auto* h = new (std::nothrow) BackendOwnedHandle{backend, native};
+    if (!h) backend->DestroyBrushShader(native);
+    return h;
+}
+
+} // namespace
+
+JALIUM_API JaliumInkLayerBitmap* jalium_ink_layer_bitmap_create(
+    JaliumContext* ctx, int32_t width, int32_t height)
+{
+    if (!ctx || width <= 0 || height <= 0) return nullptr;
+    auto* backend = jalium::GetBackendFromContext(ctx);
+    if (!backend) return nullptr;
+    void* native = backend->CreateInkLayerBitmap((uint32_t)width, (uint32_t)height);
+    return reinterpret_cast<JaliumInkLayerBitmap*>(WrapHandle(backend, native));
+}
+
+JALIUM_API void jalium_ink_layer_bitmap_destroy(JaliumInkLayerBitmap* bitmap)
+{
+    if (!bitmap) return;
+    auto* h = reinterpret_cast<BackendOwnedHandle*>(bitmap);
+    if (h->backend && h->native) h->backend->DestroyInkLayerBitmap(h->native);
+    delete h;
+}
+
+JALIUM_API int32_t jalium_ink_layer_bitmap_resize(
+    JaliumInkLayerBitmap* bitmap, int32_t width, int32_t height)
+{
+    if (!bitmap || width <= 0 || height <= 0) return -1;
+    auto* h = reinterpret_cast<BackendOwnedHandle*>(bitmap);
+    if (!h->backend || !h->native) return -2;
+    return h->backend->ResizeInkLayerBitmap(h->native, (uint32_t)width, (uint32_t)height);
+}
+
+JALIUM_API void jalium_ink_layer_bitmap_clear(
+    JaliumInkLayerBitmap* bitmap, float r, float g, float b, float a)
+{
+    if (!bitmap) return;
+    auto* h = reinterpret_cast<BackendOwnedHandle*>(bitmap);
+    if (h->backend && h->native) h->backend->ClearInkLayerBitmap(h->native, r, g, b, a);
+}
+
+JALIUM_API JaliumBrushShader* jalium_brush_shader_create(
+    JaliumContext* ctx, const char* shaderKey, const char* brushMainHlsl, int32_t blendMode)
+{
+    if (!ctx || !brushMainHlsl) return nullptr;
+    auto* backend = jalium::GetBackendFromContext(ctx);
+    if (!backend) return nullptr;
+    void* native = backend->CreateBrushShader(shaderKey, brushMainHlsl, blendMode);
+    return reinterpret_cast<JaliumBrushShader*>(WrapShaderHandle(backend, native));
+}
+
+JALIUM_API void jalium_brush_shader_destroy(JaliumBrushShader* shader)
+{
+    if (!shader) return;
+    auto* h = reinterpret_cast<BackendOwnedHandle*>(shader);
+    if (h->backend && h->native) h->backend->DestroyBrushShader(h->native);
+    delete h;
+}
+
+JALIUM_API int32_t jalium_ink_layer_bitmap_dispatch_brush(
+    JaliumInkLayerBitmap* bitmap,
+    JaliumBrushShader*    shader,
+    const void*           strokePoints,
+    int32_t               pointCount,
+    const void*           constants,
+    const void*           extraParams,
+    int32_t               extraParamsSize)
+{
+    if (!bitmap || !shader || !strokePoints || !constants || pointCount < 2) return -1;
+    auto* bh = reinterpret_cast<BackendOwnedHandle*>(bitmap);
+    auto* sh = reinterpret_cast<BackendOwnedHandle*>(shader);
+    if (!bh->backend || !bh->native || !sh->native) return -2;
+    uint32_t extraSize = (extraParams && extraParamsSize > 0) ? (uint32_t)extraParamsSize : 0;
+    return bh->backend->DispatchBrush(
+        bh->native, sh->native, strokePoints, (uint32_t)pointCount, constants,
+        extraParams, extraSize);
+}
+
 JALIUM_API void jalium_draw_content_border(
     JaliumRenderTarget* rt,
     float x, float y, float width, float height,

@@ -270,6 +270,21 @@ public partial class FrameworkElement : UIElement
             new PropertyMetadata(null, OnStyleChanged));
 
     /// <summary>
+    /// Identifies the FocusVisualStyle dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public static readonly DependencyProperty FocusVisualStyleProperty =
+        DependencyProperty.Register(nameof(FocusVisualStyle), typeof(Style), typeof(FrameworkElement),
+            new PropertyMetadata(null));
+
+    /// <summary>
+    /// Resource key used to look up the ambient default <see cref="FocusVisualStyle"/> from
+    /// the resource tree when an element has not set one explicitly. Themes register a
+    /// <see cref="UI.Style"/> under this key to supply the framework-wide focus indicator.
+    /// </summary>
+    public static readonly string DefaultFocusVisualStyleKey = "DefaultFocusVisualStyle";
+
+    /// <summary>
     /// Identifies the Cursor dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
@@ -841,6 +856,58 @@ public partial class FrameworkElement : UIElement
     {
         get => (Style?)GetValue(StyleProperty);
         set => SetValue(StyleProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the style describing how this element is decorated when it has keyboard
+    /// focus. The style's <see cref="UI.ControlTemplate"/> is instantiated on the nearest
+    /// <see cref="Documents.AdornerLayer"/>, so it does not replace the element's own
+    /// template or participate in its layout. When this value is null, the framework
+    /// resolves <see cref="DefaultFocusVisualStyleKey"/> from the resource tree.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
+    public Style? FocusVisualStyle
+    {
+        get => (Style?)GetValue(FocusVisualStyleProperty);
+        set => SetValue(FocusVisualStyleProperty, value);
+    }
+
+    /// <summary>
+    /// Controls whether this element type opts out of the framework's default focus
+    /// visual ring. Derived types that always want to suppress the ring (e.g. code
+    /// editors where the caret already conveys focus, or controls with their own
+    /// custom focus presentation) override this to return true. An explicit
+    /// <see cref="FocusVisualStyle"/> assignment still wins over this opt-out so
+    /// callers can re-enable a custom ring per-instance.
+    /// </summary>
+    protected virtual bool SuppressFocusVisualByDefault => false;
+
+    /// <summary>
+    /// Resolves the effective focus visual style. Lookup order:
+    /// <list type="number">
+    ///   <item>If <see cref="FocusVisualStyle"/> was explicitly assigned (any source —
+    ///   SetValue, Style Setter, Trigger, Template, Animation), use it — even an
+    ///   explicit null acts as a per-instance opt-out.</item>
+    ///   <item>If the element type opts out via <see cref="SuppressFocusVisualByDefault"/>,
+    ///   return null (no ring).</item>
+    ///   <item>Otherwise fall back to the ambient <see cref="DefaultFocusVisualStyleKey"/>
+    ///   resource so the framework default ring shows up everywhere by default.</item>
+    /// </list>
+    /// </summary>
+    internal Style? ResolveFocusVisualStyle()
+    {
+        // HasValueAboveInherited distinguishes "never assigned" from "explicitly
+        // assigned to null". HasLocalValue would be too narrow — it only covers
+        // SetValue, not Style Setters (which write through _styleSetterValues), so a
+        // XAML `<Setter Property="FocusVisualStyle" Value="{x:Null}" />` would be
+        // invisible and the default ring would still appear.
+        if (HasValueAboveInherited(FocusVisualStyleProperty))
+            return FocusVisualStyle;
+
+        if (SuppressFocusVisualByDefault)
+            return null;
+
+        return ResourceLookup.FindResource(this, DefaultFocusVisualStyleKey) as Style;
     }
 
     /// <summary>

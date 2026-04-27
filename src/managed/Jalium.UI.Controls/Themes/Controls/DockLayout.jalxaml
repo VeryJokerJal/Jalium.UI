@@ -4,28 +4,28 @@
 
     <!-- DockLayout -->
     <Style TargetType="DockLayout">
-        <Setter Property="Background" Value="{DynamicResource WindowBackground}" />
+        <Setter Property="Background" Value="{ThemeResource WindowBackground}" />
     </Style>
 
     <!-- DockTabPanel -->
     <Style TargetType="DockTabPanel">
-        <Setter Property="Background" Value="{DynamicResource DockContentBackground}" />
-        <Setter Property="TabStripBackground" Value="{DynamicResource DockTabStripBackground}" />
-        <Setter Property="TabStripBorderBrush" Value="{DynamicResource DockTabStripBorder}" />
+        <Setter Property="Background" Value="{ThemeResource DockContentBackground}" />
+        <Setter Property="TabStripBackground" Value="{ThemeResource DockTabStripBackground}" />
+        <Setter Property="TabStripBorderBrush" Value="{ThemeResource DockTabStripBorder}" />
         <Setter Property="TabStripHeight" Value="28" />
-        <Setter Property="FontSize" Value="{DynamicResource CaptionFontSize}" />
+        <Setter Property="FontSize" Value="{ThemeResource CaptionFontSize}" />
     </Style>
 
     <!-- DockItem -->
     <Style TargetType="DockItem">
-        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
-        <Setter Property="SelectedBackground" Value="{DynamicResource DockTabItemSelectedBackground}" />
-        <Setter Property="HoverBackground" Value="{DynamicResource DockTabItemHoverBackground}" />
-        <Setter Property="IndicatorBrush" Value="{DynamicResource AccentBrush}" />
+        <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
+        <Setter Property="SelectedBackground" Value="{ThemeResource DockTabItemSelectedBackground}" />
+        <Setter Property="HoverBackground" Value="{ThemeResource DockTabItemHoverBackground}" />
+        <Setter Property="IndicatorBrush" Value="{ThemeResource AccentBrush}" />
         <Setter Property="Padding" Value="10,5,10,5" />
         <Style.Triggers>
             <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -43,7 +43,7 @@
 
     <!-- Split (internal) -->
     <Style TargetType="Split">
-        <Setter Property="Background" Value="{DynamicResource DockSplitterBackground}" />
+        <Setter Property="Background" Value="{ThemeResource DockSplitterBackground}" />
     </Style>
 
 </ResourceDictionary>

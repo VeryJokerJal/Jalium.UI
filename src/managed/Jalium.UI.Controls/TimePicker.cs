@@ -643,10 +643,7 @@ public class TimePicker : Control
             dc.DrawRoundedRectangle(null, pen, borderRect, borderRadius);
         }
 
-        if (IsKeyboardFocused)
-        {
-            ControlFocusVisual.Draw(dc, this, inputRect, cornerRadius);
-        }
+        // Focus indicator is painted by FocusVisualManager into the adorner layer.
 
         // Draw time text or placeholder
         string displayText;

@@ -99,9 +99,9 @@
             <Color x:Key="SystemColorWindowColor">#FF202020</Color>
             <Color x:Key="SystemColorButtonFaceColor">#FF454545</Color>
             <Color x:Key="SystemColorButtonTextColor">#FFFFFFFF</Color>
-            <Color x:Key="SystemColorHighlightColor">#FF7C4DFF</Color>
-            <Color x:Key="SystemColorHighlightTextColor">#FF000000</Color>
-            <Color x:Key="SystemColorHotlightColor">#FF956EFF</Color>
+            <Color x:Key="SystemColorHighlightColor">#FF1E793F</Color>
+            <Color x:Key="SystemColorHighlightTextColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemColorHotlightColor">#FF278A52</Color>
             <Color x:Key="SystemColorGrayTextColor">#5DFFFFFF</Color>
             <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#FFFFFF" />
             <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#C5FFFFFF" />
@@ -195,9 +195,15 @@
             <SolidColorBrush x:Key="SystemColorWindowColorBrush" Color="#FF202020" />
             <SolidColorBrush x:Key="SystemColorButtonFaceColorBrush" Color="#FF454545" />
             <SolidColorBrush x:Key="SystemColorButtonTextColorBrush" Color="#FFFFFFFF" />
-            <SolidColorBrush x:Key="SystemColorHighlightColorBrush" Color="#FF7C4DFF" />
-            <SolidColorBrush x:Key="SystemColorHighlightTextColorBrush" Color="#FF000000" />
-            <SolidColorBrush x:Key="SystemColorHotlightColorBrush" Color="#FF956EFF" />
+            <LinearGradientBrush x:Key="SystemColorHighlightColorBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemColorHighlightTextColorBrush" Color="#FFFFFFFF" />
+            <LinearGradientBrush x:Key="SystemColorHotlightColorBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF278A52" />
+                <GradientStop Offset="1" Color="#FF22974F" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="SystemColorGrayTextColorBrush" Color="#5DFFFFFF" />
             <LinearGradientBrush x:Key="ControlElevationBorderBrush" MappingMode="Absolute" StartPoint="0,0" EndPoint="0,3">
                 <LinearGradientBrush.GradientStops>
@@ -205,7 +211,7 @@
                     <GradientStop Offset="1.0" Color="#12FFFFFF" />
                 </LinearGradientBrush.GradientStops>
             </LinearGradientBrush>
-            <LinearGradientBrush x:Key="CircleElevationBorderBrush" MappingMode="RelativeToBoundingBox" StartPoint="0,0" EndPoint="0,1">
+            <LinearGradientBrush x:Key="CircleElevationBorderBrush" MappingMode="RelativeToBoundingBox" StartPoint="0,0" EndPoint="1,0">
                 <LinearGradientBrush.GradientStops>
                     <GradientStop Offset="0.70" Color="#18FFFFFF" />
                     <GradientStop Offset="0.50" Color="#12FFFFFF" />
@@ -221,6 +227,192 @@
                 </LinearGradientBrush.GradientStops>
             </LinearGradientBrush>
 
+            <!-- ============================================================ -->
+            <!-- WinUI-compat System tokens (Jalium dark palette)              -->
+            <!-- Alt   = opposite of theme (black on dark)                     -->
+            <!-- Base  = same as theme foreground (white on dark)              -->
+            <!-- Chrome= theme-specific surfaces / framing                     -->
+            <!-- ============================================================ -->
+            <Color x:Key="SystemAltHighColor">#FF000000</Color>
+            <Color x:Key="SystemAltLowColor">#33000000</Color>
+            <Color x:Key="SystemAltMediumColor">#99000000</Color>
+            <Color x:Key="SystemAltMediumHighColor">#CC000000</Color>
+            <Color x:Key="SystemAltMediumLowColor">#66000000</Color>
+            <Color x:Key="SystemBaseHighColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemBaseLowColor">#33FFFFFF</Color>
+            <Color x:Key="SystemBaseMediumColor">#99FFFFFF</Color>
+            <Color x:Key="SystemBaseMediumHighColor">#CCFFFFFF</Color>
+            <Color x:Key="SystemBaseMediumLowColor">#66FFFFFF</Color>
+            <Color x:Key="SystemChromeAltLowColor">#FFF2F2F2</Color>
+            <Color x:Key="SystemChromeBlackHighColor">#FF000000</Color>
+            <Color x:Key="SystemChromeBlackLowColor">#33000000</Color>
+            <Color x:Key="SystemChromeBlackMediumLowColor">#66000000</Color>
+            <Color x:Key="SystemChromeBlackMediumColor">#CC000000</Color>
+            <Color x:Key="SystemChromeDisabledHighColor">#FF454545</Color>
+            <Color x:Key="SystemChromeDisabledLowColor">#FF858585</Color>
+            <Color x:Key="SystemChromeHighColor">#FF767676</Color>
+            <Color x:Key="SystemChromeLowColor">#FF171717</Color>
+            <Color x:Key="SystemChromeMediumColor">#FF1F1F1F</Color>
+            <Color x:Key="SystemChromeMediumLowColor">#FF2B2B2B</Color>
+            <Color x:Key="SystemChromeWhiteColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemChromeGrayColor">#FF767676</Color>
+            <Color x:Key="SystemListLowColor">#19FFFFFF</Color>
+            <Color x:Key="SystemListMediumColor">#33FFFFFF</Color>
+            <Color x:Key="SystemErrorTextColor">#FFFF99A4</Color>
+
+            <!-- Backgrounds -->
+            <LinearGradientBrush x:Key="SystemControlBackgroundAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlBackgroundAltHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltMediumHighBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltMediumLowBrush" Color="#66000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseLowBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseMediumHighBrush" Color="#CCFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseMediumLowBrush" Color="#66FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackMediumBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackLowBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackMediumLowBrush" Color="#66000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeMediumBrush" Color="#FF1F1F1F" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeMediumLowBrush" Color="#FF2B2B2B" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundListLowBrush" Color="#19FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundListMediumBrush" Color="#33FFFFFF" />
+
+            <!-- Disabled -->
+            <LinearGradientBrush x:Key="SystemControlDisabledAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF2A4A3A" />
+                <GradientStop Offset="1" Color="#FF2A503A" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlDisabledBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlDisabledBaseLowBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlDisabledBaseMediumLowBrush" Color="#66FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeDisabledHighBrush" Color="#FF454545" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeDisabledLowBrush" Color="#FF858585" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeHighBrush" Color="#FF767676" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeMediumLowBrush" Color="#FF2B2B2B" />
+            <SolidColorBrush x:Key="SystemControlDisabledListMediumBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlDisabledTransparentBrush" Color="Transparent" />
+
+            <!-- Focus -->
+            <SolidColorBrush x:Key="SystemControlFocusVisualPrimaryBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlFocusVisualSecondaryBrush" Color="#99000000" />
+            <LinearGradientBrush x:Key="SystemControlRevealFocusVisualBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+
+            <!-- Foreground -->
+            <LinearGradientBrush x:Key="SystemControlForegroundAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlForegroundAltHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundAltMediumHighBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseLowBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseMediumHighBrush" Color="#CCFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseMediumLowBrush" Color="#66FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeBlackHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeHighBrush" Color="#FF767676" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeMediumBrush" Color="#FF1F1F1F" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeDisabledLowBrush" Color="#FF858585" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeGrayBrush" Color="#FF767676" />
+            <SolidColorBrush x:Key="SystemControlForegroundListLowBrush" Color="#19FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundListMediumBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeBlackMediumBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeBlackMediumLowBrush" Color="#66000000" />
+
+            <!-- Highlight -->
+            <LinearGradientBrush x:Key="SystemControlHighlightAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightAltAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlHighlightAltAltHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseLowBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseMediumHighBrush" Color="#CCFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltAltMediumHighBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseMediumLowBrush" Color="#66FFFFFF" />
+            <LinearGradientBrush x:Key="SystemControlHighlightAltListAccentHighBrush" Opacity="0.9" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightAltListAccentLowBrush" Opacity="0.6" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightAltListAccentMediumBrush" Opacity="0.8" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlHighlightAltChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseLowBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseMediumHighBrush" Color="#CCFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseMediumLowBrush" Color="#66FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightChromeAltLowBrush" Color="#FFF2F2F2" />
+            <SolidColorBrush x:Key="SystemControlHighlightChromeHighBrush" Color="#FF767676" />
+            <LinearGradientBrush x:Key="SystemControlHighlightListAccentHighBrush" Opacity="0.9" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightListAccentLowBrush" Opacity="0.6" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightListAccentMediumBrush" Opacity="0.8" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlHighlightListMediumBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightListLowBrush" Color="#19FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightTransparentBrush" Color="Transparent" />
+
+            <!-- Hyperlink -->
+            <LinearGradientBrush x:Key="SystemControlHyperlinkTextBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlHyperlinkBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHyperlinkBaseMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHyperlinkBaseMediumHighBrush" Color="#CCFFFFFF" />
+
+            <!-- Page background / text -->
+            <SolidColorBrush x:Key="SystemControlPageBackgroundAltMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundAltHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundMediumAltMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundBaseLowBrush" Color="#33FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundBaseMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundListLowBrush" Color="#19FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundChromeLowBrush" Color="#FF171717" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundChromeMediumLowBrush" Color="#FF2B2B2B" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlPageTextBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageTextBaseMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageTextChromeBlackMediumLowBrush" Color="#66000000" />
+
+            <!-- Misc -->
+            <SolidColorBrush x:Key="SystemControlTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlErrorTextForegroundBrush" Color="#FFFF99A4" />
+            <SolidColorBrush x:Key="SystemControlTransientBorderBrush" Color="#5C000000" />
+
             <!-- Legacy Jalium aliases -->
             <SolidColorBrush x:Key="TextPrimary" Color="#FFFFFF" />
             <SolidColorBrush x:Key="TextSecondary" Color="#C5FFFFFF" />
@@ -229,11 +421,26 @@
             <SolidColorBrush x:Key="TextOnAccent" Color="#000000" />
             <SolidColorBrush x:Key="TextPlaceholder" Color="#87FFFFFF" />
 
-            <SolidColorBrush x:Key="AccentBrush" Color="#7C4DFF" />
-            <SolidColorBrush x:Key="AccentBrushHover" Color="#956EFF" />
-            <SolidColorBrush x:Key="AccentBrushPressed" Color="#5A2ED5" />
-            <SolidColorBrush x:Key="AccentBrushDisabled" Color="#5D4A8A" />
-            <SolidColorBrush x:Key="SelectionBackground" Color="#997C4DFF" />
+            <LinearGradientBrush x:Key="AccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#207245" />
+                <GradientStop Offset="1" Color="#1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="AccentBrushHover" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#278A52" />
+                <GradientStop Offset="1" Color="#22974F" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="AccentBrushPressed" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#185A37" />
+                <GradientStop Offset="1" Color="#166635" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="AccentBrushDisabled" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#2A4A3A" />
+                <GradientStop Offset="1" Color="#2A503A" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SelectionBackground" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#99207245" />
+                <GradientStop Offset="1" Color="#991C8043" />
+            </LinearGradientBrush>
 
             <SolidColorBrush x:Key="ControlBackground" Color="#454545" />
             <SolidColorBrush x:Key="ControlBackgroundHover" Color="#15FFFFFF" />
@@ -261,10 +468,22 @@
             <SolidColorBrush x:Key="ToggleUncheckedBorderHover" Color="#8BFFFFFF" />
             <SolidColorBrush x:Key="ToggleDisabledBackground" Color="#0BFFFFFF" />
             <SolidColorBrush x:Key="ToggleDisabledBorder" Color="#28FFFFFF" />
-            <SolidColorBrush x:Key="ToggleCheckedBackground" Color="#7C4DFF" />
-            <SolidColorBrush x:Key="ToggleCheckedBackgroundHover" Color="#956EFF" />
-            <SolidColorBrush x:Key="ToggleCheckedBorder" Color="#7C4DFF" />
-            <SolidColorBrush x:Key="ToggleCheckedBorderHover" Color="#956EFF" />
+            <LinearGradientBrush x:Key="ToggleCheckedBackground" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#207245" />
+                <GradientStop Offset="1" Color="#1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="ToggleCheckedBackgroundHover" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#278A52" />
+                <GradientStop Offset="1" Color="#22974F" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="ToggleCheckedBorder" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#207245" />
+                <GradientStop Offset="1" Color="#1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="ToggleCheckedBorderHover" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#278A52" />
+                <GradientStop Offset="1" Color="#22974F" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="CheckMark" Color="#FFFFFF" />
 
             <SolidColorBrush x:Key="TabStripBackground" Color="#4C3A3A3A" />
@@ -296,16 +515,25 @@
             <SolidColorBrush x:Key="QRCodeBackground" Color="#FFFFFF" />
             <SolidColorBrush x:Key="QRCodeForeground" Color="#000000" />
 
-            <SolidColorBrush x:Key="SelectionBackground" Color="#993A76F0" />
+            <LinearGradientBrush x:Key="SelectionBackground" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#99207245" />
+                <GradientStop Offset="1" Color="#991C8043" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="HyperlinkForeground" Color="#87FFFFFF" />
             <SolidColorBrush x:Key="HyperlinkForegroundHover" Color="#C5FFFFFF" />
             <SolidColorBrush x:Key="HyperlinkForegroundPressed" Color="#FFFFFF" />
 
             <SolidColorBrush x:Key="DockTabStripBackground" Color="#1C1C1C" />
             <SolidColorBrush x:Key="DockTabStripBorder" Color="#33757575" />
-            <SolidColorBrush x:Key="DockTabStripBorderFocused" Color="#667C4DFF" />
+            <LinearGradientBrush x:Key="DockTabStripBorderFocused" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#66207245" />
+                <GradientStop Offset="1" Color="#661C8043" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="DockTabItemSelectedBackground" Color="Transparent" />
-            <SolidColorBrush x:Key="DockTabItemSelectedBackgroundFocused" Color="#1A7C4DFF" />
+            <LinearGradientBrush x:Key="DockTabItemSelectedBackgroundFocused" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#1A207245" />
+                <GradientStop Offset="1" Color="#1A1C8043" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="DockTabItemHoverBackground" Color="#0FFFFFFF" />
             <SolidColorBrush x:Key="DockContentBackground" Color="#202020" />
             <SolidColorBrush x:Key="DockSplitterBackground" Color="Transparent" />
@@ -450,9 +678,9 @@
             <Color x:Key="SystemColorWindowColor">#FFF3F3F3</Color>
             <Color x:Key="SystemColorButtonFaceColor">#FFFFFFFF</Color>
             <Color x:Key="SystemColorButtonTextColor">#E4000000</Color>
-            <Color x:Key="SystemColorHighlightColor">#FF6537E8</Color>
+            <Color x:Key="SystemColorHighlightColor">#FF1E793F</Color>
             <Color x:Key="SystemColorHighlightTextColor">#FFFFFFFF</Color>
-            <Color x:Key="SystemColorHotlightColor">#FF8C61FF</Color>
+            <Color x:Key="SystemColorHotlightColor">#FF278A52</Color>
             <Color x:Key="SystemColorGrayTextColor">#5C000000</Color>
             <SolidColorBrush x:Key="TextFillColorPrimaryBrush" Color="#E4000000" />
             <SolidColorBrush x:Key="TextFillColorSecondaryBrush" Color="#9E000000" />
@@ -546,9 +774,15 @@
             <SolidColorBrush x:Key="SystemColorWindowColorBrush" Color="#FFF3F3F3" />
             <SolidColorBrush x:Key="SystemColorButtonFaceColorBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="SystemColorButtonTextColorBrush" Color="#E4000000" />
-            <SolidColorBrush x:Key="SystemColorHighlightColorBrush" Color="#FF6537E8" />
+            <LinearGradientBrush x:Key="SystemColorHighlightColorBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="SystemColorHighlightTextColorBrush" Color="#FFFFFFFF" />
-            <SolidColorBrush x:Key="SystemColorHotlightColorBrush" Color="#FF8C61FF" />
+            <LinearGradientBrush x:Key="SystemColorHotlightColorBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF278A52" />
+                <GradientStop Offset="1" Color="#FF22974F" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="SystemColorGrayTextColorBrush" Color="#5C000000" />
             <LinearGradientBrush x:Key="ControlElevationBorderBrush" MappingMode="Absolute" StartPoint="0,0" EndPoint="0,3">
                 <LinearGradientBrush.Transform>
@@ -559,7 +793,7 @@
                     <GradientStop Offset="1.0" Color="#0F000000" />
                 </LinearGradientBrush.GradientStops>
             </LinearGradientBrush>
-            <LinearGradientBrush x:Key="CircleElevationBorderBrush" MappingMode="RelativeToBoundingBox" StartPoint="0,0" EndPoint="0,1">
+            <LinearGradientBrush x:Key="CircleElevationBorderBrush" MappingMode="RelativeToBoundingBox" StartPoint="0,0" EndPoint="1,0">
                 <LinearGradientBrush.GradientStops>
                     <GradientStop Offset="0.50" Color="#0F000000" />
                     <GradientStop Offset="0.70" Color="#29000000" />
@@ -575,6 +809,192 @@
                 </LinearGradientBrush.GradientStops>
             </LinearGradientBrush>
 
+            <!-- ============================================================ -->
+            <!-- WinUI-compat System tokens (Jalium light palette)             -->
+            <!-- Alt   = opposite of theme (white on light)                    -->
+            <!-- Base  = same as theme foreground (black on light)             -->
+            <!-- Chrome= theme-specific surfaces / framing                     -->
+            <!-- ============================================================ -->
+            <Color x:Key="SystemAltHighColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemAltLowColor">#33FFFFFF</Color>
+            <Color x:Key="SystemAltMediumColor">#99FFFFFF</Color>
+            <Color x:Key="SystemAltMediumHighColor">#CCFFFFFF</Color>
+            <Color x:Key="SystemAltMediumLowColor">#66FFFFFF</Color>
+            <Color x:Key="SystemBaseHighColor">#FF000000</Color>
+            <Color x:Key="SystemBaseLowColor">#33000000</Color>
+            <Color x:Key="SystemBaseMediumColor">#99000000</Color>
+            <Color x:Key="SystemBaseMediumHighColor">#CC000000</Color>
+            <Color x:Key="SystemBaseMediumLowColor">#66000000</Color>
+            <Color x:Key="SystemChromeAltLowColor">#FF171717</Color>
+            <Color x:Key="SystemChromeBlackHighColor">#FF000000</Color>
+            <Color x:Key="SystemChromeBlackLowColor">#33000000</Color>
+            <Color x:Key="SystemChromeBlackMediumLowColor">#66000000</Color>
+            <Color x:Key="SystemChromeBlackMediumColor">#CC000000</Color>
+            <Color x:Key="SystemChromeDisabledHighColor">#FFCCCCCC</Color>
+            <Color x:Key="SystemChromeDisabledLowColor">#FF7A7A7A</Color>
+            <Color x:Key="SystemChromeHighColor">#FFCCCCCC</Color>
+            <Color x:Key="SystemChromeLowColor">#FFF2F2F2</Color>
+            <Color x:Key="SystemChromeMediumColor">#FFE6E6E6</Color>
+            <Color x:Key="SystemChromeMediumLowColor">#FFF9F9F9</Color>
+            <Color x:Key="SystemChromeWhiteColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemChromeGrayColor">#FF767676</Color>
+            <Color x:Key="SystemListLowColor">#19000000</Color>
+            <Color x:Key="SystemListMediumColor">#33000000</Color>
+            <Color x:Key="SystemErrorTextColor">#FFC42B1C</Color>
+
+            <!-- Backgrounds -->
+            <LinearGradientBrush x:Key="SystemControlBackgroundAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlBackgroundAltHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltMediumHighBrush" Color="#CCFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltMediumLowBrush" Color="#66FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseLowBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseMediumHighBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseMediumLowBrush" Color="#66000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackMediumBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackLowBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackMediumLowBrush" Color="#66000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeMediumBrush" Color="#FFE6E6E6" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeMediumLowBrush" Color="#FFF9F9F9" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundListLowBrush" Color="#19000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundListMediumBrush" Color="#33000000" />
+
+            <!-- Disabled -->
+            <LinearGradientBrush x:Key="SystemControlDisabledAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF9FC5AB" />
+                <GradientStop Offset="1" Color="#FF9ECCAE" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlDisabledBaseHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlDisabledBaseLowBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlDisabledBaseMediumLowBrush" Color="#66000000" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeDisabledHighBrush" Color="#FFCCCCCC" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeDisabledLowBrush" Color="#FF7A7A7A" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeHighBrush" Color="#FFCCCCCC" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeMediumLowBrush" Color="#FFF9F9F9" />
+            <SolidColorBrush x:Key="SystemControlDisabledListMediumBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlDisabledTransparentBrush" Color="Transparent" />
+
+            <!-- Focus -->
+            <SolidColorBrush x:Key="SystemControlFocusVisualPrimaryBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlFocusVisualSecondaryBrush" Color="#99FFFFFF" />
+            <LinearGradientBrush x:Key="SystemControlRevealFocusVisualBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+
+            <!-- Foreground -->
+            <LinearGradientBrush x:Key="SystemControlForegroundAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlForegroundAltHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundAltMediumHighBrush" Color="#CCFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseLowBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseMediumHighBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseMediumLowBrush" Color="#66000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeBlackHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeHighBrush" Color="#FFCCCCCC" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeMediumBrush" Color="#FFE6E6E6" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeDisabledLowBrush" Color="#FF7A7A7A" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeGrayBrush" Color="#FF767676" />
+            <SolidColorBrush x:Key="SystemControlForegroundListLowBrush" Color="#19000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundListMediumBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeBlackMediumBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeBlackMediumLowBrush" Color="#66000000" />
+
+            <!-- Highlight -->
+            <LinearGradientBrush x:Key="SystemControlHighlightAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightAltAccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlHighlightAltAltHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseLowBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseMediumHighBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltAltMediumHighBrush" Color="#CCFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseMediumLowBrush" Color="#66000000" />
+            <LinearGradientBrush x:Key="SystemControlHighlightAltListAccentHighBrush" Opacity="0.9" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightAltListAccentLowBrush" Opacity="0.6" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightAltListAccentMediumBrush" Opacity="0.8" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlHighlightAltChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseLowBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseMediumHighBrush" Color="#CC000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseMediumLowBrush" Color="#66000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightChromeAltLowBrush" Color="#FF171717" />
+            <SolidColorBrush x:Key="SystemControlHighlightChromeHighBrush" Color="#FFCCCCCC" />
+            <LinearGradientBrush x:Key="SystemControlHighlightListAccentHighBrush" Opacity="0.9" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightListAccentLowBrush" Opacity="0.6" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SystemControlHighlightListAccentMediumBrush" Opacity="0.8" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlHighlightListMediumBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightListLowBrush" Color="#19000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightTransparentBrush" Color="Transparent" />
+
+            <!-- Hyperlink -->
+            <LinearGradientBrush x:Key="SystemControlHyperlinkTextBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#FF207245" />
+                <GradientStop Offset="1" Color="#FF1C8043" />
+            </LinearGradientBrush>
+            <SolidColorBrush x:Key="SystemControlHyperlinkBaseHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlHyperlinkBaseMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlHyperlinkBaseMediumHighBrush" Color="#CC000000" />
+
+            <!-- Page background / text -->
+            <SolidColorBrush x:Key="SystemControlPageBackgroundAltMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundAltHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundMediumAltMediumBrush" Color="#99FFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundBaseLowBrush" Color="#33000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundBaseMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundListLowBrush" Color="#19000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundChromeLowBrush" Color="#FFF2F2F2" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundChromeMediumLowBrush" Color="#FFF9F9F9" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlPageTextBaseHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlPageTextBaseMediumBrush" Color="#99000000" />
+            <SolidColorBrush x:Key="SystemControlPageTextChromeBlackMediumLowBrush" Color="#66000000" />
+
+            <!-- Misc -->
+            <SolidColorBrush x:Key="SystemControlTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlErrorTextForegroundBrush" Color="#FFC42B1C" />
+            <SolidColorBrush x:Key="SystemControlTransientBorderBrush" Color="#5C000000" />
+
             <!-- Legacy Jalium aliases -->
             <SolidColorBrush x:Key="TextPrimary" Color="#E4000000" />
             <SolidColorBrush x:Key="TextSecondary" Color="#9E000000" />
@@ -583,11 +1003,26 @@
             <SolidColorBrush x:Key="TextOnAccent" Color="#FFFFFF" />
             <SolidColorBrush x:Key="TextPlaceholder" Color="#72000000" />
 
-            <SolidColorBrush x:Key="AccentBrush" Color="#7C4DFF" />
-            <SolidColorBrush x:Key="AccentBrushHover" Color="#8C61FF" />
-            <SolidColorBrush x:Key="AccentBrushPressed" Color="#6537E8" />
-            <SolidColorBrush x:Key="AccentBrushDisabled" Color="#B29CE6" />
-            <SolidColorBrush x:Key="SelectionBackground" Color="#4D7C4DFF" />
+            <LinearGradientBrush x:Key="AccentBrush" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#207245" />
+                <GradientStop Offset="1" Color="#1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="AccentBrushHover" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#278A52" />
+                <GradientStop Offset="1" Color="#22974F" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="AccentBrushPressed" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#185A37" />
+                <GradientStop Offset="1" Color="#166635" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="AccentBrushDisabled" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#9FC5AB" />
+                <GradientStop Offset="1" Color="#9ECCAE" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="SelectionBackground" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#4D207245" />
+                <GradientStop Offset="1" Color="#4D1C8043" />
+            </LinearGradientBrush>
 
             <SolidColorBrush x:Key="ControlBackground" Color="#FFFFFF" />
             <SolidColorBrush x:Key="ControlBackgroundHover" Color="#80F9F9F9" />
@@ -615,10 +1050,22 @@
             <SolidColorBrush x:Key="ToggleUncheckedBorderHover" Color="#72000000" />
             <SolidColorBrush x:Key="ToggleDisabledBackground" Color="#4DF9F9F9" />
             <SolidColorBrush x:Key="ToggleDisabledBorder" Color="#37000000" />
-            <SolidColorBrush x:Key="ToggleCheckedBackground" Color="#7C4DFF" />
-            <SolidColorBrush x:Key="ToggleCheckedBackgroundHover" Color="#8C61FF" />
-            <SolidColorBrush x:Key="ToggleCheckedBorder" Color="#7C4DFF" />
-            <SolidColorBrush x:Key="ToggleCheckedBorderHover" Color="#8C61FF" />
+            <LinearGradientBrush x:Key="ToggleCheckedBackground" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#207245" />
+                <GradientStop Offset="1" Color="#1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="ToggleCheckedBackgroundHover" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#278A52" />
+                <GradientStop Offset="1" Color="#22974F" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="ToggleCheckedBorder" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#207245" />
+                <GradientStop Offset="1" Color="#1C8043" />
+            </LinearGradientBrush>
+            <LinearGradientBrush x:Key="ToggleCheckedBorderHover" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#278A52" />
+                <GradientStop Offset="1" Color="#22974F" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="CheckMark" Color="#FFFFFF" />
 
             <SolidColorBrush x:Key="TabStripBackground" Color="#80FFFFFF" />
@@ -650,16 +1097,25 @@
             <SolidColorBrush x:Key="QRCodeBackground" Color="#FFFFFF" />
             <SolidColorBrush x:Key="QRCodeForeground" Color="#000000" />
 
-            <SolidColorBrush x:Key="SelectionBackground" Color="#993A76F0" />
+            <LinearGradientBrush x:Key="SelectionBackground" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#99207245" />
+                <GradientStop Offset="1" Color="#991C8043" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="HyperlinkForeground" Color="#9E000000" />
             <SolidColorBrush x:Key="HyperlinkForegroundHover" Color="#E4000000" />
             <SolidColorBrush x:Key="HyperlinkForegroundPressed" Color="#E4000000" />
 
             <SolidColorBrush x:Key="DockTabStripBackground" Color="#EEEEEE" />
             <SolidColorBrush x:Key="DockTabStripBorder" Color="#66757575" />
-            <SolidColorBrush x:Key="DockTabStripBorderFocused" Color="#667C4DFF" />
+            <LinearGradientBrush x:Key="DockTabStripBorderFocused" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#66207245" />
+                <GradientStop Offset="1" Color="#661C8043" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="DockTabItemSelectedBackground" Color="#FFFFFF" />
-            <SolidColorBrush x:Key="DockTabItemSelectedBackgroundFocused" Color="#1A7C4DFF" />
+            <LinearGradientBrush x:Key="DockTabItemSelectedBackgroundFocused" StartPoint="0,0" EndPoint="1,0">
+                <GradientStop Offset="0" Color="#1A207245" />
+                <GradientStop Offset="1" Color="#1A1C8043" />
+            </LinearGradientBrush>
             <SolidColorBrush x:Key="DockTabItemHoverBackground" Color="#09000000" />
             <SolidColorBrush x:Key="DockContentBackground" Color="#F3F3F3" />
             <SolidColorBrush x:Key="DockSplitterBackground" Color="Transparent" />
@@ -774,6 +1230,142 @@
             <SolidColorBrush x:Key="ControlElevationBorderBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="CircleElevationBorderBrush" Color="#FFFFFFFF" />
             <SolidColorBrush x:Key="AccentControlElevationBorderBrush" Color="#FFFFFFFF" />
+
+            <!-- ============================================================ -->
+            <!-- WinUI-compat System tokens (HighContrast)                     -->
+            <!-- ============================================================ -->
+            <Color x:Key="SystemAltHighColor">#FF000000</Color>
+            <Color x:Key="SystemAltLowColor">#FF000000</Color>
+            <Color x:Key="SystemAltMediumColor">#FF000000</Color>
+            <Color x:Key="SystemAltMediumHighColor">#FF000000</Color>
+            <Color x:Key="SystemAltMediumLowColor">#FF000000</Color>
+            <Color x:Key="SystemBaseHighColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemBaseLowColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemBaseMediumColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemBaseMediumHighColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemBaseMediumLowColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemChromeAltLowColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemChromeBlackHighColor">#FF000000</Color>
+            <Color x:Key="SystemChromeBlackLowColor">#FF000000</Color>
+            <Color x:Key="SystemChromeBlackMediumLowColor">#FF000000</Color>
+            <Color x:Key="SystemChromeBlackMediumColor">#FF000000</Color>
+            <Color x:Key="SystemChromeDisabledHighColor">#FF7F7F7F</Color>
+            <Color x:Key="SystemChromeDisabledLowColor">#FF7F7F7F</Color>
+            <Color x:Key="SystemChromeHighColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemChromeLowColor">#FF000000</Color>
+            <Color x:Key="SystemChromeMediumColor">#FF000000</Color>
+            <Color x:Key="SystemChromeMediumLowColor">#FF000000</Color>
+            <Color x:Key="SystemChromeWhiteColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemChromeGrayColor">#FF7F7F7F</Color>
+            <Color x:Key="SystemListLowColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemListMediumColor">#FFFFFFFF</Color>
+            <Color x:Key="SystemErrorTextColor">#FFFFFF00</Color>
+
+            <SolidColorBrush x:Key="SystemControlBackgroundAccentBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltMediumHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltMediumBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundAltMediumLowBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseMediumBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseMediumHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundBaseMediumLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackMediumBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackLowBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeBlackMediumLowBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeMediumBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeMediumLowBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlBackgroundChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundListLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlBackgroundListMediumBrush" Color="#FFFFFFFF" />
+
+            <SolidColorBrush x:Key="SystemControlDisabledAccentBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlDisabledBaseHighBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlDisabledBaseLowBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlDisabledBaseMediumLowBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeDisabledHighBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeDisabledLowBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeHighBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlDisabledChromeMediumLowBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlDisabledListMediumBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlDisabledTransparentBrush" Color="Transparent" />
+
+            <SolidColorBrush x:Key="SystemControlFocusVisualPrimaryBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlFocusVisualSecondaryBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlRevealFocusVisualBrush" Color="#FFFFFF00" />
+
+            <SolidColorBrush x:Key="SystemControlForegroundAccentBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlForegroundAltHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundAltMediumHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseMediumBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseMediumHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundBaseMediumLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeBlackHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeMediumBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeDisabledLowBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeGrayBrush" Color="#FF7F7F7F" />
+            <SolidColorBrush x:Key="SystemControlForegroundListLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundListMediumBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlForegroundTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeBlackMediumBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlForegroundChromeBlackMediumLowBrush" Color="#FF000000" />
+
+            <SolidColorBrush x:Key="SystemControlHighlightAccentBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltAccentBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltAltHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseMediumBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseMediumHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltAltMediumHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltBaseMediumLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltListAccentHighBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltListAccentLowBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltListAccentMediumBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightAltTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseMediumBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseMediumHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightBaseMediumLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightChromeAltLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightChromeHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightListAccentHighBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlHighlightListAccentLowBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlHighlightListAccentMediumBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlHighlightListMediumBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightListLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightChromeWhiteBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHighlightTransparentBrush" Color="Transparent" />
+
+            <SolidColorBrush x:Key="SystemControlHyperlinkTextBrush" Color="#FF00FFFF" />
+            <SolidColorBrush x:Key="SystemControlHyperlinkBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHyperlinkBaseMediumBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlHyperlinkBaseMediumHighBrush" Color="#FFFFFFFF" />
+
+            <SolidColorBrush x:Key="SystemControlPageBackgroundAltMediumBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundAltHighBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundMediumAltMediumBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundBaseLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundBaseMediumBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundListLowBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundChromeLowBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundChromeMediumLowBrush" Color="#FF000000" />
+            <SolidColorBrush x:Key="SystemControlPageBackgroundTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlPageTextBaseHighBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageTextBaseMediumBrush" Color="#FFFFFFFF" />
+            <SolidColorBrush x:Key="SystemControlPageTextChromeBlackMediumLowBrush" Color="#FF000000" />
+
+            <SolidColorBrush x:Key="SystemControlTransparentBrush" Color="Transparent" />
+            <SolidColorBrush x:Key="SystemControlErrorTextForegroundBrush" Color="#FFFFFF00" />
+            <SolidColorBrush x:Key="SystemControlTransientBorderBrush" Color="#FFFFFFFF" />
         </ResourceDictionary>
     </ResourceDictionary.ThemeDictionaries>
 </ResourceDictionary>

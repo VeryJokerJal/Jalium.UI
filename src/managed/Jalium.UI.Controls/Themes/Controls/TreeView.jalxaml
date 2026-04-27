@@ -6,8 +6,8 @@
     <!-- TreeView Style -->
     <!-- ============================================== -->
     <Style TargetType="TreeView">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Template">
             <ControlTemplate TargetType="TreeView">
@@ -20,26 +20,13 @@
                             <ItemsPresenter />
                         </ScrollViewer>
                     </Border>
-                    <Border Name="FocusOuter"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                            BorderThickness="1"
-                            Opacity="0" />
-                    <Border Name="FocusInner"
-                            IsHitTestVisible="False"
-                            BorderBrush="{DynamicResource FocusStrokeColorInnerBrush}"
-                            BorderThickness="1"
-                            Margin="2"
-                            Opacity="0" />
                 </Grid>
             </ControlTemplate>
         </Setter>
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusOuter" Property="Opacity" Value="1" />
-                <Setter TargetName="FocusInner" Property="Opacity" Value="1" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

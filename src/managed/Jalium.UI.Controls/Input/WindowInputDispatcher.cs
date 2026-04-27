@@ -418,7 +418,7 @@ internal sealed class WindowInputDispatcher
             return true;
 
         // F3 toggles debug HUD — silently ignored unless the app opted in via
-        // builder.UseDebugHud(). Treat as unhandled so other handlers can claim F3.
+        // app.UseDebugHud(). Treat as unhandled so other handlers can claim F3.
         if (key == Key.F3 && !isRepeat && _host.CanToggleDebugHud)
         {
             _host.DebugHudEnabled = !_host.DebugHudEnabled;

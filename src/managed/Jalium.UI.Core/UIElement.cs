@@ -1486,6 +1486,13 @@ public abstract partial class UIElement : Visual, IInputElement
         }
     }
 
+    /// <summary>
+    /// Raised whenever any element's <see cref="IsKeyboardFocused"/> state transitions.
+    /// Used by higher layers (e.g. the focus visual adorner manager in Jalium.UI.Controls)
+    /// to react to focus changes without taking a dependency on the Controls assembly.
+    /// </summary>
+    internal static event Action<UIElement, bool>? IsKeyboardFocusedChangedStatic;
+
     private static void OnIsKeyboardFocusedPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is UIElement element)
@@ -1506,6 +1513,8 @@ public abstract partial class UIElement : Visual, IInputElement
                 if (peer != null)
                     Automation.AutomationPeer.EventSink?.OnFocusChanged(peer);
             }
+
+            IsKeyboardFocusedChangedStatic?.Invoke(element, isFocused);
         }
     }
 

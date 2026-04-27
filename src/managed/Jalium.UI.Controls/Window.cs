@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using Jalium.UI.Controls.Platform;
 using Jalium.UI.Controls.Primitives;
+using Jalium.UI.Documents;
 using Jalium.UI.Input;
 using Jalium.UI.Input.StylusPlugIns;
 using Jalium.UI.Interop;
@@ -15,7 +16,7 @@ namespace Jalium.UI.Controls;
 /// <summary>
 /// Represents a window in the Jalium.UI framework.
 /// </summary>
-public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, IInputDispatcherHost
+public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, IInputDispatcherHost, IAdornerLayerHost
 {
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
     private static readonly bool DebugRender = IsEnvironmentSwitchEnabled("JALIUM_DEBUG_RENDER");
@@ -647,6 +648,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     internal OverlayLayer OverlayLayer { get; private set; }
 
     /// <summary>
+    /// Gets the adorner layer that hosts keyboard focus indicators and other decorations
+    /// targeting elements in this window. Positioned above all content but below popups.
+    /// </summary>
+    public AdornerLayer? AdornerLayer { get; private set; }
+
+    /// <summary>
     /// Gets or sets the TaskbarItemInfo object that provides taskbar integration features.
     /// </summary>
     public TaskbarItemInfo? TaskbarItemInfo { get; set; }
@@ -1123,12 +1130,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         Width = 800;
         Height = 600;
 
+        // Create adorner layer first so it sits below the popup layer in the visual order.
+        // Adorners (including focus visuals) paint above content but must remain below
+        // popups like dropdowns and ContextMenus.
+        AdornerLayer = new AdornerLayer();
+        AddVisualChild(AdornerLayer);
+
         // Create overlay layer for popup hosting (must be created before title bar)
         OverlayLayer = new OverlayLayer();
         AddVisualChild(OverlayLayer);
 
         // Debug HUD overlay (F3 to toggle, rendered as a normal control in the overlay layer)
         OverlayLayer.Children.Add(_debugHudOverlay);
+
+        // Ensure keyboard focus visuals materialize as adorners whenever focus moves.
+        FocusVisualManager.EnsureInitialized();
 
         _realTimeStylus = new RealTimeStylus(this);
         AddHandler(GotKeyboardFocusEvent, new KeyboardFocusChangedEventHandler(OnWindowKeyboardFocusChanged), handledEventsToo: true);
@@ -1995,6 +2011,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             int count = base.VisualChildrenCount;
             if (TitleBar != null) count++;
+            count++; // AdornerLayer is always present
             count++; // OverlayLayer is always present
             return count;
         }
@@ -2003,7 +2020,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// <inheritdoc />
     public override Visual? GetVisualChild(int index)
     {
-        // Order: ContentElement(s) 鈫?TitleBar 鈫?OverlayLayer (last = rendered on top, hit-tested first)
+        // Order: ContentElement(s) → TitleBar → AdornerLayer → OverlayLayer
+        // (last = rendered on top, hit-tested first). Adorners paint above content but
+        // below popups so that dropdowns and context menus naturally cover focus rects.
         int baseCount = base.VisualChildrenCount;
 
         if (index < baseCount)
@@ -2016,11 +2035,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (TitleBar != null)
         {
             if (extra == 0) return TitleBar;
-            if (extra == 1) return OverlayLayer;
+            if (extra == 1) return AdornerLayer;
+            if (extra == 2) return OverlayLayer;
         }
         else
         {
-            if (extra == 0) return OverlayLayer;
+            if (extra == 0) return AdornerLayer;
+            if (extra == 1) return OverlayLayer;
         }
 
         throw new ArgumentOutOfRangeException(nameof(index));
@@ -2064,7 +2085,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             contentElement.Measure(contentAvailable);
         }
 
-        // Measure overlay layer with full window size (it doesn't consume space)
+        // Measure adorner and overlay layers with full window size (they don't consume space)
+        AdornerLayer?.Measure(availableSize);
         OverlayLayer?.Measure(availableSize);
 
         return availableSize;
@@ -2108,7 +2130,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // Note: Do NOT call SetVisualBounds here - ArrangeCore already handles margin
         }
 
-        // Arrange overlay layer over the full window area
+        // Arrange adorner and overlay layers over the full window area. AdornerLayer is
+        // forced to re-arrange every Window arrange pass because its adorners track
+        // descendants whose positions can change (e.g. scrolling, animations) without
+        // altering the AdornerLayer's own final rect. Without this invalidation, the
+        // framework's "same rect, already valid → skip" short-circuit would leave focus
+        // rings stranded at their old locations.
+        AdornerLayer!.InvalidateArrange();
+        AdornerLayer.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
         OverlayLayer.Arrange(new Rect(0, 0, finalSize.Width, finalSize.Height));
 
         // Keep DWM non-client hover tracking region aligned with current title bar/button geometry.
@@ -4340,9 +4369,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// Gets whether this window can open DevTools.
     /// Default: reads <see cref="Jalium.UI.Hosting.DeveloperToolsOptions.EnableDevTools"/>
     /// from the application's DI container — apps must call
-    /// <c>builder.UseDevTools()</c> to opt in. Without that call F12 is inert.
-    /// Subclasses (e.g. <c>DevToolsWindow</c>) can still override to force a
-    /// stricter policy (hard-disable regardless of the service flag).
+    /// <c>app.UseDevTools()</c> on the built <see cref="JaliumApp"/> to opt in.
+    /// Without that call F12 is inert. Subclasses (e.g. <c>DevToolsWindow</c>)
+    /// can still override to force a stricter policy (hard-disable regardless
+    /// of the service flag).
     /// </summary>
     protected virtual bool CanOpenDevTools
         => Jalium.UI.Hosting.DeveloperToolsResolver.IsDevToolsEnabled;
@@ -6690,7 +6720,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 _isActive = false;
                 OnDeactivated(EventArgs.Empty);
             }
-            _inputDispatcher.HandleWindowDeactivated(newForegroundWindow, clearKeyboardFocus: true);
+            // Match WPF semantics: a window losing activation must NOT drop the logical
+            // keyboard focus. The focused element stays focused so that re-activation
+            // restores input naturally, and so that transient activation flickers
+            // (briefly-shown tooltips, IME windows, system popups stealing focus for a
+            // single message pump cycle) don't visibly tear down the focus visual or
+            // strand the user mid-Tab. Clearing focus here was the root cause of focus
+            // rings disappearing one frame after each Tab landed on a NavigationViewItem.
+            _inputDispatcher.HandleWindowDeactivated(newForegroundWindow, clearKeyboardFocus: false);
             return;
         }
 
@@ -6710,7 +6747,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private void OnKillFocus(nint newFocusWindow)
     {
-        _inputDispatcher.HandleWindowDeactivated(newFocusWindow, clearKeyboardFocus: true);
+        // Same rationale as OnActivateChanged: WM_KILLFOCUS arrives on activation
+        // transitions and on transient focus thefts (popup windows, IME). Preserve
+        // the logical keyboard focus so the next WM_SETFOCUS resumes seamlessly.
+        _inputDispatcher.HandleWindowDeactivated(newFocusWindow, clearKeyboardFocus: false);
     }
 
     private void OnSetFocus()

@@ -36,11 +36,13 @@ public class ToggleSwitch : Control
 
     private const double DragThreshold = 3.0;
 
-    // Theme colors (matching Colors.jalxaml)
+    // Theme colors (matching Colors.jalxaml). On-state uses the midpoint of the
+    // #207245 -> #1C8043 gradient so that solid-color fallbacks match the themed
+    // LinearGradientBrush as closely as a single color allows.
     private static readonly Color OffColor = Color.FromArgb(0xFF, 0x2D, 0x2D, 0x2D);
-    private static readonly Color OnColor = Color.FromArgb(0xFF, 0x00, 0x78, 0xD4);
+    private static readonly Color OnColor = Color.FromArgb(0xFF, 0x1E, 0x79, 0x3F);
     private static readonly Color OffBorderColor = Color.FromArgb(0xFF, 0x8C, 0x8C, 0x8C);
-    private static readonly Color OnBorderColor = Color.FromArgb(0xFF, 0x00, 0x78, 0xD4);
+    private static readonly Color OnBorderColor = Color.FromArgb(0xFF, 0x1E, 0x79, 0x3F);
     private static readonly Color DisabledBgColor = Color.FromArgb(0xFF, 0x28, 0x28, 0x28);
     private static readonly Color DisabledBorderColor = Color.FromArgb(0xFF, 0x46, 0x46, 0x46);
     private static readonly SolidColorBrush s_disabledBgBrush = new(DisabledBgColor);
@@ -357,10 +359,25 @@ public class ToggleSwitch : Control
         // Track colors (interpolate based on position)
         if (!IsEnabled) return; // disabled colors handled separately
 
-        var offBg = GetOffColor();
-        var onBg = GetOnColor();
-        _switchTrack.Background = new SolidColorBrush(LerpColor(offBg, onBg, progress));
+        _switchTrack.Background = ResolveTrackBackground(progress);
         _switchTrack.BorderBrush = new SolidColorBrush(LerpColor(GetOffBorderColor(), GetOnBorderColor(), progress));
+    }
+
+    // When the toggle is fully off or fully on, hand the themed Brush to the
+    // track directly so non-solid brushes (LinearGradientBrush, etc.) render
+    // faithfully. During the spring-driven transition we fall back to a single
+    // interpolated colour because cross-fading arbitrary brushes would require
+    // an extra layer in the template.
+    private Brush ResolveTrackBackground(double progress)
+    {
+        if (progress <= 0.001 && OffBackground != null)
+            return OffBackground;
+        if (progress >= 0.999 && OnBackground != null)
+            return OnBackground;
+
+        var offC = GetOffColor();
+        var onC = GetOnColor();
+        return new SolidColorBrush(LerpColor(offC, onC, progress));
     }
 
     #endregion

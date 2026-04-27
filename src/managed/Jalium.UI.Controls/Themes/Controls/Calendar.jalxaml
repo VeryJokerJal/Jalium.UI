@@ -6,8 +6,8 @@
     <!-- DatePicker Style -->
     <!-- ============================================== -->
     <Style TargetType="DatePicker">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
@@ -15,7 +15,7 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -24,8 +24,8 @@
     <!-- TimePicker Style -->
     <!-- ============================================== -->
     <Style TargetType="TimePicker">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,4,8,4" />
         <Setter Property="CornerRadius" Value="4" />
@@ -33,7 +33,7 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -42,15 +42,15 @@
     <!-- Calendar Style -->
     <!-- ============================================== -->
     <Style TargetType="Calendar">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8" />
         <Setter Property="CornerRadius" Value="4" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -59,14 +59,14 @@
     <!-- ColorPicker Style -->
     <!-- ============================================== -->
     <Style TargetType="ColorPicker">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8" />
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -84,21 +84,17 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource HighlightBackground}" />
+                <Setter Property="Background" Value="{ThemeResource HighlightBackground}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsPressed" Value="True">
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundPressed}" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
-                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundPressed}" />
             </PropertyTrigger>
             <PropertyTrigger Property="HasSelectedDays" Value="True">
-                <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+                <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextPrimary}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsInactive" Value="True">
-                <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -117,27 +113,23 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource HighlightBackground}" />
-            </PropertyTrigger>
-            <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource FocusStrokeColorOuterBrush}" />
-                <Setter Property="BorderThickness" Value="1" />
+                <Setter Property="Background" Value="{ThemeResource HighlightBackground}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsToday" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource AccentBrush}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource AccentBrush}" />
                 <Setter Property="BorderThickness" Value="2" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
+                <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsBlackedOut" Value="True">
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsInactive" Value="True">
-                <Setter Property="Foreground" Value="{DynamicResource TextSecondary}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextSecondary}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsHighlighted" Value="True">
-                <Setter Property="Background" Value="{DynamicResource HighlightBackground}" />
+                <Setter Property="Background" Value="{ThemeResource HighlightBackground}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -146,8 +138,8 @@
     <!-- CalendarItem Style -->
     <!-- ============================================== -->
     <Style TargetType="CalendarItem">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
     </Style>
 
@@ -155,8 +147,8 @@
     <!-- DatePickerTextBox Style -->
     <!-- ============================================== -->
     <Style TargetType="DatePickerTextBox">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="8,6,8,6" />
         <Setter Property="CornerRadius" Value="4" />
@@ -165,14 +157,14 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Background" Value="{DynamicResource ControlBackgroundDisabled}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Background" Value="{ThemeResource ControlBackgroundDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

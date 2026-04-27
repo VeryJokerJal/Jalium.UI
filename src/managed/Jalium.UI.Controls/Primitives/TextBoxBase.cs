@@ -198,7 +198,7 @@ public abstract class TextBoxBase : Control
     private static readonly CubicEase ContextMenuOpenEase = new() { EasingMode = EasingMode.EaseOut };
     private static readonly CubicEase ContextMenuCloseEase = new() { EasingMode = EasingMode.EaseIn };
 
-    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0, 120, 212));
+    private static readonly SolidColorBrush s_defaultSelectionBrush = new(Color.FromArgb(180, 0x1E, 0x79, 0x3F));
     private static readonly SolidColorBrush s_defaultCaretBrush = new(Color.White);
 
     // Static brushes for context menu rendering

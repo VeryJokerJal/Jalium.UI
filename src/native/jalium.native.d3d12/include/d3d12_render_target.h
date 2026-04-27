@@ -5,6 +5,7 @@
 #include "d3d12_backend.h"
 #include "d3d12_direct_renderer.h"
 #include "d3d12_impeller_engine.h"
+#include "d3d12_ink_layer.h"
 #include <dcomp.h>
 #include <stack>
 #include <unordered_map>
@@ -86,6 +87,23 @@ public:
     void SetFullInvalidation() override;
     void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity) override;
     void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode) override;
+
+    /// Blits the contents of <paramref name="inkBitmap"/> onto the swap
+    /// chain at (dstX, dstY). Used by InkCanvas to composite its
+    /// committed-ink layer each frame after brush dispatches. The ink
+    /// bitmap's texture is expected to be in PIXEL_SHADER_RESOURCE state
+    /// (DispatchBrush / Clear leave it there).
+    void BlitInkLayer(D3D12InkLayerBitmap* inkBitmap,
+                      float dstX, float dstY, float opacity);
+
+    /// Base-class virtual dispatch for the C API — forwards to the D3D12
+    /// typed overload after casting the opaque handle.
+    void BlitInkLayer(void* inkLayerBitmap,
+                      float dstX, float dstY, float opacity) override
+    {
+        BlitInkLayer(reinterpret_cast<D3D12InkLayerBitmap*>(inkLayerBitmap),
+                     dstX, dstY, opacity);
+    }
     void DrawBackdropFilter(
         float x, float y, float w, float h,
         const char* backdropFilter, const char* material, const char* materialTint,

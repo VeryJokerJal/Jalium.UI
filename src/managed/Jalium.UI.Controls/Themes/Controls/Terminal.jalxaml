@@ -10,16 +10,16 @@
          character grid is hosted inside a ScrollViewer whose content is
          programmatically set to a TerminalView in OnApplyTemplate. -->
     <Style TargetType="Terminal">
-        <Setter Property="Background" Value="{DynamicResource TerminalBackground}" />
-        <Setter Property="Foreground" Value="{DynamicResource TerminalForeground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource TerminalBackground}" />
+        <Setter Property="Foreground" Value="{ThemeResource TerminalForeground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="Padding" Value="4" />
-        <Setter Property="FontFamily" Value="{DynamicResource MonospaceFontFamily}" />
+        <Setter Property="FontFamily" Value="{ThemeResource MonospaceFontFamily}" />
         <Setter Property="FontSize" Value="14" />
         <Setter Property="CornerRadius" Value="8" />
-        <Setter Property="SelectionBrush" Value="{DynamicResource SelectionBackground}" />
-        <Setter Property="CaretBrush" Value="{DynamicResource TerminalCaret}" />
+        <Setter Property="SelectionBrush" Value="{ThemeResource SelectionBackground}" />
+        <Setter Property="CaretBrush" Value="{ThemeResource TerminalCaret}" />
         <Setter Property="MinWidth" Value="200" />
         <Setter Property="MinHeight" Value="100" />
         <Setter Property="Template">
@@ -42,13 +42,13 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderHover}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderHover}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsFocused" Value="True">
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

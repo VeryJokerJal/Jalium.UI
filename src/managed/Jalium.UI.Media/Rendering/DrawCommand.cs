@@ -27,6 +27,7 @@ internal enum DrawCommandKind : byte
     DrawContentBorder,
     DrawPoints,
     DrawLines,
+    DrawLiquidGlass,
 }
 
 /// <summary>
@@ -156,4 +157,17 @@ internal readonly struct DrawCommand
     public static DrawCommand Lines(Pen pen, Point[] endpoints) =>
         new(DrawCommandKind.DrawLines, pen, null, endpoints,
             0, 0, 0, 0, 0, 0, 0, 0);
+
+    /// <summary>
+    /// Liquid-glass effect with all its parameters aggregated in the
+    /// payload object (~20 scalars plus the neighbor fusion buffer don't
+    /// fit in the fixed V0-V7 slots). <c>A</c> owns the payload outright —
+    /// the recorder constructs a fresh <see cref="LiquidGlassParameters"/>
+    /// instance per capture so replays don't observe a subsequent frame's
+    /// mutated state.
+    /// </summary>
+    public static DrawCommand LiquidGlass(LiquidGlassParameters parameters) =>
+        new(DrawCommandKind.DrawLiquidGlass, parameters, null, null,
+            0, 0, 0, 0, 0, 0, 0, 0);
+
 }

@@ -6,14 +6,14 @@
     <!-- TreeDataGrid Style -->
     <!-- ============================================== -->
     <Style TargetType="TreeDataGrid">
-        <Setter Property="Background" Value="{DynamicResource SurfaceBackground}" />
-        <Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}" />
+        <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
+        <Setter Property="BorderBrush" Value="{ThemeResource ControlBorder}" />
         <Setter Property="BorderThickness" Value="1" />
         <Setter Property="RowHeight" Value="28" />
         <Setter Property="ColumnHeaderHeight" Value="32" />
-        <Setter Property="HorizontalGridLinesBrush" Value="{DynamicResource ControlBorder}" />
-        <Setter Property="VerticalGridLinesBrush" Value="{DynamicResource ControlBorder}" />
-        <Setter Property="AlternatingRowBackground" Value="{DynamicResource ControlBackgroundPressed}" />
+        <Setter Property="HorizontalGridLinesBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="VerticalGridLinesBrush" Value="{ThemeResource ControlBorder}" />
+        <Setter Property="AlternatingRowBackground" Value="{ThemeResource ControlBackgroundPressed}" />
         <Setter Property="RowBackground" Value="Transparent" />
         <Setter Property="Template">
             <ControlTemplate TargetType="TreeDataGrid">
@@ -30,8 +30,8 @@
                         <!-- Column headers area -->
                         <Border Name="PART_ColumnHeadersBorder"
                                 Grid.Row="0"
-                                Background="{DynamicResource ControlBackground}"
-                                BorderBrush="{DynamicResource ControlBorder}"
+                                Background="{ThemeResource ControlBackground}"
+                                BorderBrush="{ThemeResource ControlBorder}"
                                 BorderThickness="0,0,0,1">
                             <ScrollViewer Name="PART_ColumnHeadersScrollViewer"
                                           HorizontalScrollBarVisibility="Hidden"
@@ -53,14 +53,6 @@
                                 Grid.RowSpan="2"
                                 IsHitTestVisible="False"
                                 Visibility="Collapsed" />
-                        <!-- Focus ring -->
-                        <Border Name="FocusBorder"
-                                Grid.RowSpan="2"
-                                IsHitTestVisible="False"
-                                BorderBrush="{DynamicResource FocusStrokeColorOuterBrush}"
-                                BorderThickness="2"
-                                CornerRadius="4"
-                                Visibility="Collapsed" />
                     </Grid>
                 </Border>
             </ControlTemplate>
@@ -68,12 +60,10 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsKeyboardFocused" Value="True">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Visible" />
-                <Setter Property="BorderBrush" Value="{DynamicResource ControlBorderFocused}" />
+                <Setter Property="BorderBrush" Value="{ThemeResource ControlBorderFocused}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsEnabled" Value="False">
-                <Setter TargetName="FocusBorder" Property="Visibility" Value="Collapsed" />
-                <Setter Property="Foreground" Value="{DynamicResource TextDisabled}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextDisabled}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>
@@ -87,7 +77,7 @@
             <ControlTemplate TargetType="TreeDataGridRow">
                 <Border Name="PART_RowBorder"
                         Background="{TemplateBinding Background}"
-                        BorderBrush="{DynamicResource ControlBorder}"
+                        BorderBrush="{ThemeResource ControlBorder}"
                         BorderThickness="0,0,0,1">
                     <StackPanel Name="PART_CellsPanel" Orientation="Horizontal" />
                 </Border>
@@ -96,11 +86,11 @@
 
         <Style.Triggers>
             <PropertyTrigger Property="IsMouseOver" Value="True">
-                <Setter Property="Background" Value="{DynamicResource HighlightBackground}" />
+                <Setter Property="Background" Value="{ThemeResource HighlightBackground}" />
             </PropertyTrigger>
             <PropertyTrigger Property="IsSelected" Value="True">
-                <Setter Property="Background" Value="{DynamicResource AccentBrush}" />
-                <Setter Property="Foreground" Value="{DynamicResource TextOnAccent}" />
+                <Setter Property="Background" Value="{ThemeResource AccentBrush}" />
+                <Setter Property="Foreground" Value="{ThemeResource TextOnAccent}" />
             </PropertyTrigger>
         </Style.Triggers>
     </Style>

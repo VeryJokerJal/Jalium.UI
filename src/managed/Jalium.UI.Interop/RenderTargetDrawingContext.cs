@@ -142,6 +142,34 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// </summary>
     public RenderTarget RenderTarget => _renderTarget;
 
+    /// <summary>Gets the render context this drawing session is bound to.</summary>
+    public RenderContext Context => _context;
+
+    /// <summary>
+    /// Composites an <see cref="InkLayerBitmap"/> onto the render target.
+    /// Used by InkCanvas to flush its GPU-side committed-ink layer each
+    /// frame after per-stroke brush shader dispatches.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="dstX"/> / <paramref name="dstY"/> are in the
+    /// caller's local coordinate space. Translate-only transforms go
+    /// through the managed <see cref="Offset"/> fast-path (not the native
+    /// transform stack), so every other draw method in this class adds
+    /// the offset before forwarding to native — we do the same here or
+    /// the bitmap lands at screen (0,0) regardless of the owning visual's
+    /// position.
+    /// </remarks>
+    public void BlitInkLayer(InkLayerBitmap bitmap, float dstX, float dstY, float opacity = 1.0f)
+    {
+        if (_closed || bitmap is null || !bitmap.IsValid) return;
+        if (_renderTarget is null || _renderTarget.Handle == nint.Zero) return;
+        NativeMethods.RenderTargetBlitInkLayer(
+            _renderTarget.Handle, bitmap.Handle,
+            dstX + (float)Offset.X,
+            dstY + (float)Offset.Y,
+            opacity);
+    }
+
     /// <summary>
     /// Gets or sets the current transform offset for child rendering.
     /// </summary>
@@ -924,7 +952,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 DrawPathFigurePolygon(brush, null, figure, pathGeom.FillRule, geoBounds);
         }
 
-        // Stroke rendering: each figure stroked individually
+        // Stroke rendering: each figure stroked individually.
         if (pen?.Brush != null)
         {
             foreach (var figure in pathGeom.Figures)
@@ -2084,26 +2112,16 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     }
 
     /// <summary>
-    /// Draws a liquid glass effect at the specified rectangle.
+    /// Draws a liquid glass effect. Overrides the base <see cref="DrawingContext"/>
+    /// entry point so the call survives the retained-mode recorder round-trip
+    /// (the recorder captures the parameter object; on replay, the cached
+    /// <see cref="DrawingReplayer"/> dispatches back here on the live target).
     /// </summary>
-    public void DrawLiquidGlass(
-        Rect rectangle,
-        float cornerRadius,
-        float blurRadius = 8f,
-        float refractionAmount = 60f,
-        float chromaticAberration = 0f,
-        float tintR = 0.08f, float tintG = 0.08f, float tintB = 0.08f,
-        float tintOpacity = 0.3f,
-        float lightX = -1f, float lightY = -1f,
-        float highlightBoost = 0f,
-        int shapeType = 0,
-        float shapeExponent = 4f,
-        int neighborCount = 0,
-        float fusionRadius = 30f,
-        ReadOnlySpan<float> neighborData = default)
+    public override void DrawLiquidGlass(LiquidGlassParameters parameters)
     {
-        if (_closed) return;
+        if (_closed || parameters is null) return;
 
+        var rectangle = parameters.Rectangle;
         var x = (float)Math.Round(rectangle.X + Offset.X);
         var y = (float)Math.Round(rectangle.Y + Offset.Y);
         var width = (float)rectangle.Width;
@@ -2111,19 +2129,29 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         if (SimplifyGpuEffects)
         {
-            float overlayAlpha = Math.Clamp(tintOpacity > 0 ? tintOpacity : 0.22f, 0.14f, 0.42f);
-            FillTransientOverlay(x, y, width, height, cornerRadius, cornerRadius, tintR, tintG, tintB, overlayAlpha);
+            float overlayAlpha = Math.Clamp(
+                parameters.TintOpacity > 0 ? parameters.TintOpacity : 0.22f,
+                0.14f, 0.42f);
+            FillTransientOverlay(
+                x, y, width, height,
+                parameters.CornerRadius, parameters.CornerRadius,
+                parameters.TintR, parameters.TintG, parameters.TintB,
+                overlayAlpha);
             return;
         }
 
+        var neighborData = parameters.NeighborData is { } buffer
+            ? new ReadOnlySpan<float>(buffer, 0, Math.Min(buffer.Length, parameters.NeighborCount * 5))
+            : ReadOnlySpan<float>.Empty;
+
         _renderTarget.DrawLiquidGlass(
             x, y, width, height,
-            cornerRadius, blurRadius,
-            refractionAmount, chromaticAberration,
-            tintR, tintG, tintB, tintOpacity,
-            lightX, lightY, highlightBoost,
-            shapeType, shapeExponent,
-            neighborCount, fusionRadius, neighborData);
+            parameters.CornerRadius, parameters.BlurRadius,
+            parameters.RefractionAmount, parameters.ChromaticAberration,
+            parameters.TintR, parameters.TintG, parameters.TintB, parameters.TintOpacity,
+            parameters.LightX, parameters.LightY, parameters.HighlightBoost,
+            parameters.ShapeType, parameters.ShapeExponent,
+            parameters.NeighborCount, parameters.FusionRadius, neighborData);
     }
 
     /// <summary>
