@@ -25,6 +25,7 @@
 
 #ifdef _WIN32
 #include <Windows.h>
+#include "win32_gdi_pool.h"
 #else
 #include "text_engine.h"
 #include "text_layout.h"
@@ -251,6 +252,14 @@ struct TriangleFillPushConstants {
     float roundedClipRect[4];
     float roundedClipRadius[2];
     float clipFlags[2];
+    // 2x3 affine transform: world.x = m11*x + m12*y + dx;
+    //                        world.y = m21*x + m22*y + dy.
+    // Packed as two float4 (.w slots are unused/padding) so std430 layout
+    // matches the GLSL push-constant block one-for-one. Lets the vertex
+    // shader transform local-space path coords on the GPU instead of
+    // having the CPU pre-transform every vertex on each FillPath hit.
+    float transformRow0[4]; // (m11, m12, dx, _)
+    float transformRow1[4]; // (m21, m22, dy, _)
 };
 
 struct TransitionPushConstants {
@@ -544,6 +553,8 @@ VulkanRenderTarget::VulkanRenderTarget(
     : backend_(backend)
     , surface_(surface)
     , isComposition_(useComposition)
+    , textCache_(std::make_unique<TextLruCache>(kMaxTextCacheEntries))
+    , pathCache_(std::make_unique<PathGeometryCache>(kMaxPathCacheEntries))
     , impl_(std::make_unique<Impl>())
 {
     width_ = width;
@@ -573,8 +584,8 @@ JaliumResult VulkanRenderTarget::QueryGpuStats(JaliumGpuStats* out) const
 
 #ifndef _WIN32
     // On non-Windows the Vulkan backend owns a cross-platform TextEngine
-    // + GlyphAtlas (FreeType / HarfBuzz). Windows uses per-frame GDI text
-    // rasterization with a bounded textCache_ — see #else branch.
+    // + GlyphAtlas (FreeType / HarfBuzz). Windows uses GDI text
+    // rasterization fed through TextLruCache — see #else branch.
     if (backend_) {
         if (auto* textEngine = backend_->GetTextEngine()) {
             if (auto* atlas = textEngine->GetGlyphAtlas()) {
@@ -588,18 +599,15 @@ JaliumResult VulkanRenderTarget::QueryGpuStats(JaliumGpuStats* out) const
     }
 #else
     // Windows Vulkan path uses a GDI-rendered bitmap text cache instead of a
-    // glyph atlas. Expose the cache size so the Perf tab still surfaces text
-    // working-set info — slot/byte totals approximate since entry sizes vary.
-    out->glyphSlotsUsed = static_cast<int32_t>(textCache_.size());
-    out->glyphSlotsTotal = static_cast<int32_t>(kMaxTextCacheEntries);
-    // Pixel bytes across every cached bitmap (RGBA8).
-    int64_t bytes = 0;
-    for (const auto& kvp : textCache_) {
-        bytes += static_cast<int64_t>(kvp.second.width) * kvp.second.height * 4;
+    // glyph atlas. TextLruCache exposes O(1) accessors for size and total
+    // bytes so we don't have to walk the entries here.
+    if (textCache_) {
+        out->glyphSlotsUsed  = static_cast<int32_t>(textCache_->Size());
+        out->glyphSlotsTotal = static_cast<int32_t>(textCache_->Capacity());
+        out->glyphBytes      = textCache_->TotalBytes();
+        out->textureBytes    = textCache_->TotalBytes();
+        out->textureCount    = static_cast<int32_t>(textCache_->Size());
     }
-    out->glyphBytes = bytes;
-    out->textureBytes = bytes;
-    out->textureCount = static_cast<int32_t>(textCache_.size());
 #endif
 
     // Path cache — Impeller tessellates per-frame; Vello is compute-based.
@@ -1065,10 +1073,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     BeginFrame();
 
     initialized = RecreateSwapchain(width, height, vsync);
-    if (initialized) {
-        VK_LOG("[Vulkan] Initialize succeeded: format=%d extent=%ux%u images=%zu\n",
-                static_cast<int>(format), extent.width, extent.height, images.size());
-    } else {
+    if (!initialized) {
         VK_LOG("[Vulkan] Initialize failed: RecreateSwapchain returned false\n");
     }
     return initialized;
@@ -1081,7 +1086,18 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
         return false;
     }
 
-    if (swapchain != VK_NULL_HANDLE && deviceWaitIdle) {
+    // Must drain ALL in-flight GPU work before tearing down any resource the
+    // descriptor sets / command buffers reference. Gating this on
+    // swapchain != VK_NULL_HANDLE was too narrow — a rapid sequence of
+    // window-state changes (minimize → restore, or two resize messages back
+    // to back) can leave swapchain == VK_NULL_HANDLE here while the GPU is
+    // still executing commands recorded against the previous frameDescriptor
+    // pool / sampler / upload image. The next DestroyGraphicsResources then
+    // frees those objects out from under the GPU and the *next* descriptor
+    // update walks freed memory inside nvoglv64 (AV at offset 0x104). Wait
+    // unconditionally as long as the device is alive — Resize is rare so the
+    // cost is negligible.
+    if (device != VK_NULL_HANDLE && deviceWaitIdle) {
         deviceWaitIdle(device);
     }
 
@@ -1112,6 +1128,20 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
         s.uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
         s.uploadWidth = 0;
         s.uploadHeight = 0;
+
+        // DestroyGraphicsResources just freed frameDescriptorPool (and with
+        // it every descriptor set allocated from it), and zero'd the alias
+        // frameDescriptorSet field. But each per-frame slot also caches the
+        // descriptor set handle it allocated during its own BeginFrame —
+        // those handles point into the now-freed pool. If we leave them set,
+        // the next BeginFrame copies a stale handle into the alias,
+        // EnsureGraphicsResources sees alias != VK_NULL_HANDLE and skips
+        // allocation, and UpdateFrameDescriptorSet writes through the stale
+        // handle. The NVIDIA driver's vkUpdateDescriptorSets then walks the
+        // freed pool's bookkeeping and AVs (typically reading offset 0x104).
+        // Clear them here so EnsureGraphicsResources reallocates from the
+        // newly-created pool on the next frame.
+        s.frameDescriptorSet = VK_NULL_HANDLE;
     }
     // Clear the current alias too.
     uploadImage = VK_NULL_HANDLE;
@@ -1158,9 +1188,6 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
             }
         }
     }
-    VK_LOG("[Vulkan] Selected swapchain format: %d (from %u available)\n",
-            static_cast<int>(selectedFormat.format), formatCount);
-
     uint32_t presentModeCount = 0;
     if (getSurfacePresentModes(physicalDevice, surface, &presentModeCount, nullptr) != VK_SUCCESS || presentModeCount == 0) {
         return false;
@@ -1287,6 +1314,21 @@ bool VulkanRenderTarget::Impl::EnsureUploadImage(uint32_t width, uint32_t height
 
     if (uploadImage != VK_NULL_HANDLE && uploadWidth == width && uploadHeight == height) {
         return true;
+    }
+
+    // GPU may still be sampling the current uploadImage / uploadImageView via
+    // an in-flight frameDescriptorSet — destroying them out from under it
+    // (and writing the descriptor to point at the replacement view immediately
+    // after) trips an access violation deep inside the NVIDIA Vulkan driver
+    // (vkUpdateDescriptorSets dereferences the descriptor's previous image
+    // view as part of its bookkeeping). We can't tear down the upload image
+    // mid-flight; wait until the device is idle, then it's safe.
+    //
+    // This path is rare — only hit when a draw command needs an upload image
+    // larger than the cached one. It does NOT run every frame, so the cost
+    // of vkDeviceWaitIdle here doesn't undo the MAX_FRAMES_IN_FLIGHT win.
+    if (deviceWaitIdle && uploadImage != VK_NULL_HANDLE) {
+        deviceWaitIdle(device);
     }
 
     DestroyUploadImage();
@@ -3644,12 +3686,13 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
 
         if (command.kind == GpuReplayCommandKind::FilledPolygon) {
-            if (command.filledPolygon.triangleVertices.size() < 6 || (command.filledPolygon.triangleVertices.size() % 2) != 0) {
+            const auto& verts = command.filledPolygon.GetTriangleVertices();
+            if (verts.size() < 6 || (verts.size() % 2) != 0) {
                 return false;
             }
 
             polygonOffsets[index] = totalPolygonBytes;
-            totalPolygonBytes += static_cast<VkDeviceSize>(command.filledPolygon.triangleVertices.size() * sizeof(float));
+            totalPolygonBytes += static_cast<VkDeviceSize>(verts.size() * sizeof(float));
             hasPolygonCommands = true;
             continue;
         }
@@ -3717,8 +3760,9 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             const size_t pixelBytes = static_cast<size_t>(command.blur.pixelWidth) * static_cast<size_t>(command.blur.pixelHeight) * 4u;
             std::memcpy(stagingBytes + totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes + blurOffsets[index], command.blur.pixels.data(), pixelBytes);
         } else if (command.kind == GpuReplayCommandKind::FilledPolygon) {
-            const size_t vertexBytes = command.filledPolygon.triangleVertices.size() * sizeof(float);
-            std::memcpy(stagingBytes + totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes + totalBlurBytes + polygonOffsets[index], command.filledPolygon.triangleVertices.data(), vertexBytes);
+            const auto& verts = command.filledPolygon.GetTriangleVertices();
+            const size_t vertexBytes = verts.size() * sizeof(float);
+            std::memcpy(stagingBytes + totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes + totalBlurBytes + polygonOffsets[index], verts.data(), vertexBytes);
         } else if (command.kind == GpuReplayCommandKind::Transition) {
             const size_t pixelBytes = static_cast<size_t>(command.transition.pixelWidth) * static_cast<size_t>(command.transition.pixelHeight) * 4u;
             const VkDeviceSize baseOffset = totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes + totalBlurBytes + totalPolygonBytes;
@@ -3969,7 +4013,20 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pushConstants.roundedClipRadius[1] = command.roundedClipRadiusY;
                 pushConstants.clipFlags[0] = 1.0f;
             }
+            // Affine 2x3 transform applied by the vertex shader. Cache hits
+            // emit local-space vertices and the recorded transform; rasterize-
+            // fallback paths leave it at identity (their vertices are already
+            // pre-transformed to world space).
+            pushConstants.transformRow0[0] = command.filledPolygon.transformRow0[0];
+            pushConstants.transformRow0[1] = command.filledPolygon.transformRow0[1];
+            pushConstants.transformRow0[2] = command.filledPolygon.transformRow0[2];
+            pushConstants.transformRow0[3] = command.filledPolygon.transformRow0[3];
+            pushConstants.transformRow1[0] = command.filledPolygon.transformRow1[0];
+            pushConstants.transformRow1[1] = command.filledPolygon.transformRow1[1];
+            pushConstants.transformRow1[2] = command.filledPolygon.transformRow1[2];
+            pushConstants.transformRow1[3] = command.filledPolygon.transformRow1[3];
             const VkDeviceSize vertexOffset = totalBitmapBytes + polygonOffsets[index];
+            const auto& verts = command.filledPolygon.GetTriangleVertices();
             cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, triangleFillPipeline);
             cmdBindVertexBuffers(commandBuffer, 0, 1, &stagingBuffer, &vertexOffset);
             cmdPushConstants(
@@ -3979,7 +4036,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 0,
                 sizeof(pushConstants),
                 &pushConstants);
-            cmdDraw(commandBuffer, static_cast<uint32_t>(command.filledPolygon.triangleVertices.size() / 2), 1, 0, 0);
+            cmdDraw(commandBuffer, static_cast<uint32_t>(verts.size() / 2), 1, 0, 0);
             cmdEndRenderPass(commandBuffer);
             continue;
         }
@@ -5039,7 +5096,22 @@ void VulkanRenderTarget::ReplayCommandToCpu(const GpuReplayCommand& command)
         case GpuReplayCommandKind::FilledPolygon: {
             const auto& p = command.filledPolygon;
             pushScissor();
-            RasterizePolygon(p.triangleVertices, 0,
+            // sharedTriangleVertices carries vertices in local (pre-transform)
+            // space and the affine transform travels in transformRow0/1; we
+            // must apply it before rasterizing to the CPU canvas. The legacy
+            // pre-transformed path (rasterize-fallback) leaves the transform
+            // at identity, so the same code handles both.
+            const auto& src = p.GetTriangleVertices();
+            std::vector<float> worldVerts;
+            worldVerts.reserve(src.size());
+            for (size_t i = 0; i + 1 < src.size(); i += 2) {
+                const float lx = src[i], ly = src[i + 1];
+                const float wx = p.transformRow0[0] * lx + p.transformRow0[1] * ly + p.transformRow0[2];
+                const float wy = p.transformRow1[0] * lx + p.transformRow1[1] * ly + p.transformRow1[2];
+                worldVerts.push_back(wx);
+                worldVerts.push_back(wy);
+            }
+            RasterizePolygon(worldVerts, 0,
                              toByte(p.b), toByte(p.g), toByte(p.r), toByte(p.a));
             popScissor();
             break;
@@ -5378,13 +5450,29 @@ bool VulkanRenderTarget::TryRecordGpuFilledPolygonCommand(const std::vector<floa
         return false;
     }
 
-    uint8_t b = 0, g = 0, r = 0, a = 0;
-    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
+    std::vector<float> triangleVertices;
+    if (!TriangulateSimplePolygon(points, triangleVertices)) {
         return false;
     }
 
-    std::vector<float> triangleVertices;
-    if (!TriangulateSimplePolygon(points, triangleVertices)) {
+    return TryRecordPreTriangulatedFilledPolygon(std::move(triangleVertices), brush);
+}
+
+bool VulkanRenderTarget::TryRecordSharedLocalFilledPolygon(
+    std::shared_ptr<const std::vector<float>> sharedLocalTriangles,
+    const CpuTransform& transform,
+    Brush* brush)
+{
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || !sharedLocalTriangles ||
+        sharedLocalTriangles->size() < 6) {
+        return false;
+    }
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return false;
+    }
+
+    uint8_t b = 0, g = 0, r = 0, a = 0;
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
         return false;
     }
 
@@ -5397,7 +5485,15 @@ bool VulkanRenderTarget::TryRecordGpuFilledPolygonCommand(const std::vector<floa
         return true;
     }
 
-    replayCommand.filledPolygon.triangleVertices = std::move(triangleVertices);
+    replayCommand.filledPolygon.sharedTriangleVertices = std::move(sharedLocalTriangles);
+    replayCommand.filledPolygon.transformRow0[0] = transform.m11;
+    replayCommand.filledPolygon.transformRow0[1] = transform.m12;
+    replayCommand.filledPolygon.transformRow0[2] = transform.dx;
+    replayCommand.filledPolygon.transformRow0[3] = 0.0f;
+    replayCommand.filledPolygon.transformRow1[0] = transform.m21;
+    replayCommand.filledPolygon.transformRow1[1] = transform.m22;
+    replayCommand.filledPolygon.transformRow1[2] = transform.dy;
+    replayCommand.filledPolygon.transformRow1[3] = 0.0f;
     replayCommand.filledPolygon.r = static_cast<float>(r) / 255.0f;
     replayCommand.filledPolygon.g = static_cast<float>(g) / 255.0f;
     replayCommand.filledPolygon.b = static_cast<float>(b) / 255.0f;
@@ -5408,6 +5504,129 @@ bool VulkanRenderTarget::TryRecordGpuFilledPolygonCommand(const std::vector<floa
 
     gpuReplayCommands_.push_back(std::move(replayCommand));
     return true;
+}
+
+bool VulkanRenderTarget::TryRecordPreTriangulatedFilledPolygon(std::vector<float>&& worldTriangles, Brush* brush)
+{
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || worldTriangles.size() < 6) {
+        return false;
+    }
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return false;
+    }
+
+    uint8_t b = 0, g = 0, r = 0, a = 0;
+    if (!TryGetApproximateBrushColor(brush, b, g, r, a)) {
+        return false;
+    }
+
+    GpuReplayCommand replayCommand {};
+    replayCommand.kind = GpuReplayCommandKind::FilledPolygon;
+    if (!TryPopulateReplayClip(replayCommand)) {
+        return false;
+    }
+    if (replayCommand.scissorRight <= replayCommand.scissorLeft || replayCommand.scissorBottom <= replayCommand.scissorTop) {
+        return true;
+    }
+
+    replayCommand.filledPolygon.triangleVertices = std::move(worldTriangles);
+    replayCommand.filledPolygon.r = static_cast<float>(r) / 255.0f;
+    replayCommand.filledPolygon.g = static_cast<float>(g) / 255.0f;
+    replayCommand.filledPolygon.b = static_cast<float>(b) / 255.0f;
+    replayCommand.filledPolygon.a = (static_cast<float>(a) / 255.0f) * std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
+    if (replayCommand.filledPolygon.a <= 0.0f) {
+        return false;
+    }
+
+    gpuReplayCommands_.push_back(std::move(replayCommand));
+    return true;
+}
+
+void VulkanRenderTarget::DecomposePathToLocalPoints(float startX, float startY,
+                                                    const float* commands,
+                                                    uint32_t commandLength,
+                                                    std::vector<float>& outLocalPoints)
+{
+    outLocalPoints.clear();
+    if (!commands || commandLength == 0) return;
+    outLocalPoints.reserve(static_cast<size_t>(commandLength) * 2u);
+
+    float currentX = startX;
+    float currentY = startY;
+    outLocalPoints.push_back(currentX);
+    outLocalPoints.push_back(currentY);
+
+    uint32_t index = 0;
+    while (index < commandLength) {
+        const int tag = static_cast<int>(commands[index++]);
+        if (tag == 0 && index + 1 < commandLength) {
+            // LineTo
+            currentX = commands[index++];
+            currentY = commands[index++];
+            outLocalPoints.push_back(currentX);
+            outLocalPoints.push_back(currentY);
+        } else if (tag == 1 && index + 5 < commandLength) {
+            // CubicBezier
+            const float cp1x = commands[index++];
+            const float cp1y = commands[index++];
+            const float cp2x = commands[index++];
+            const float cp2y = commands[index++];
+            const float endX = commands[index++];
+            const float endY = commands[index++];
+            for (int step = 1; step <= 16; ++step) {
+                const float t = static_cast<float>(step) / 16.0f;
+                const float omt = 1.0f - t;
+                const float bx =
+                    omt * omt * omt * currentX +
+                    3.0f * omt * omt * t * cp1x +
+                    3.0f * omt * t * t * cp2x +
+                    t * t * t * endX;
+                const float by =
+                    omt * omt * omt * currentY +
+                    3.0f * omt * omt * t * cp1y +
+                    3.0f * omt * t * t * cp2y +
+                    t * t * t * endY;
+                outLocalPoints.push_back(bx);
+                outLocalPoints.push_back(by);
+            }
+            currentX = endX;
+            currentY = endY;
+        } else if (tag == 2 && index + 1 < commandLength) {
+            // MoveTo: new sub-path
+            currentX = commands[index++];
+            currentY = commands[index++];
+            outLocalPoints.push_back(currentX);
+            outLocalPoints.push_back(currentY);
+        } else if (tag == 3 && index + 3 < commandLength) {
+            // QuadraticBezier
+            const float cpx = commands[index++];
+            const float cpy = commands[index++];
+            const float endX = commands[index++];
+            const float endY = commands[index++];
+            for (int step = 1; step <= 8; ++step) {
+                const float t = static_cast<float>(step) / 8.0f;
+                const float omt = 1.0f - t;
+                const float qx = omt * omt * currentX + 2.0f * omt * t * cpx + t * t * endX;
+                const float qy = omt * omt * currentY + 2.0f * omt * t * cpy + t * t * endY;
+                outLocalPoints.push_back(qx);
+                outLocalPoints.push_back(qy);
+            }
+            currentX = endX;
+            currentY = endY;
+        } else if (tag == 5) {
+            // ClosePath: line back to sub-path start (the very first point)
+            const float firstX = outLocalPoints[0];
+            const float firstY = outLocalPoints[1];
+            if (std::abs(currentX - firstX) > 1e-4f || std::abs(currentY - firstY) > 1e-4f) {
+                currentX = firstX;
+                currentY = firstY;
+                outLocalPoints.push_back(currentX);
+                outLocalPoints.push_back(currentY);
+            }
+        } else {
+            break;
+        }
+    }
 }
 
 bool VulkanRenderTarget::TryRecordGpuTransitionCommand(const std::vector<uint8_t>& fromPixels, const std::vector<uint8_t>& toPixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float progress, int mode)
@@ -7038,121 +7257,80 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
         }
     }
 
-    std::vector<float> localPoints;
-    localPoints.reserve(commandLength * 2);
-
     uint8_t b = 0, g = 0, r = 0, a = 0;
     if (!commands || commandLength == 0 || !TryGetSolidBrushColor(brush, b, g, r, a)) {
         return;
     }
 
-    const auto transform = GetCurrentTransform();
-    std::vector<float> points;
-    points.reserve(commandLength * 2);
+    // Cache lookup: same path data → same local-space decomposition and
+    // triangulation. Bezier decompose is O(N); ear-clip triangulation is
+    // O(N³). Both are paid only on the first frame that sees a given path;
+    // later frames hit the cache and the per-call work shrinks to applying
+    // the current transform to the cached vertex list (O(N), trivial).
+    const uint64_t pathHash = HashPathInput(startX, startY, commands, commandLength, fillRule);
 
-    float currentX = startX;
-    float currentY = startY;
-    float worldX = 0.0f;
-    float worldY = 0.0f;
-    localPoints.push_back(currentX);
-    localPoints.push_back(currentY);
-    ApplyTransform(transform, currentX, currentY, worldX, worldY);
-    points.push_back(worldX);
-    points.push_back(worldY);
-
-    uint32_t index = 0;
-    while (index < commandLength) {
-        const int tag = static_cast<int>(commands[index++]);
-        if (tag == 0 && index + 1 < commandLength) {
-            currentX = commands[index++];
-            currentY = commands[index++];
-            localPoints.push_back(currentX);
-            localPoints.push_back(currentY);
-            ApplyTransform(transform, currentX, currentY, worldX, worldY);
-            points.push_back(worldX);
-            points.push_back(worldY);
-        } else if (tag == 1 && index + 5 < commandLength) {
-            const float cp1x = commands[index++];
-            const float cp1y = commands[index++];
-            const float cp2x = commands[index++];
-            const float cp2y = commands[index++];
-            const float endX = commands[index++];
-            const float endY = commands[index++];
-            for (int step = 1; step <= 16; ++step) {
-                const float t = static_cast<float>(step) / 16.0f;
-                const float omt = 1.0f - t;
-                const float bezierX =
-                    omt * omt * omt * currentX +
-                    3.0f * omt * omt * t * cp1x +
-                    3.0f * omt * t * t * cp2x +
-                    t * t * t * endX;
-                const float bezierY =
-                    omt * omt * omt * currentY +
-                    3.0f * omt * omt * t * cp1y +
-                    3.0f * omt * t * t * cp2y +
-                    t * t * t * endY;
-                localPoints.push_back(bezierX);
-                localPoints.push_back(bezierY);
-                ApplyTransform(transform, bezierX, bezierY, worldX, worldY);
-                points.push_back(worldX);
-                points.push_back(worldY);
-            }
-            currentX = endX;
-            currentY = endY;
-        } else if (tag == 2 && index + 1 < commandLength) {
-            // MoveTo: new sub-path
-            currentX = commands[index++];
-            currentY = commands[index++];
-            localPoints.push_back(currentX);
-            localPoints.push_back(currentY);
-            ApplyTransform(transform, currentX, currentY, worldX, worldY);
-            points.push_back(worldX);
-            points.push_back(worldY);
-        } else if (tag == 3 && index + 3 < commandLength) {
-            // QuadTo [cx, cy, ex, ey]
-            const float cpx = commands[index++];
-            const float cpy = commands[index++];
-            const float endX = commands[index++];
-            const float endY = commands[index++];
-            for (int step = 1; step <= 8; ++step) {
-                const float t = static_cast<float>(step) / 8.0f;
-                const float omt = 1.0f - t;
-                const float qx = omt * omt * currentX + 2.0f * omt * t * cpx + t * t * endX;
-                const float qy = omt * omt * currentY + 2.0f * omt * t * cpy + t * t * endY;
-                localPoints.push_back(qx);
-                localPoints.push_back(qy);
-                ApplyTransform(transform, qx, qy, worldX, worldY);
-                points.push_back(worldX);
-                points.push_back(worldY);
-            }
-            currentX = endX;
-            currentY = endY;
-        } else if (tag == 5) {
-            // ClosePath: add line back to the sub-path start if not already there
-            float firstX = localPoints[0], firstY = localPoints[1];
-            if (std::abs(currentX - firstX) > 1e-4f || std::abs(currentY - firstY) > 1e-4f) {
-                currentX = firstX;
-                currentY = firstY;
-                localPoints.push_back(currentX);
-                localPoints.push_back(currentY);
-                ApplyTransform(transform, currentX, currentY, worldX, worldY);
-                points.push_back(worldX);
-                points.push_back(worldY);
-            }
-        } else {
-            break;
+    std::shared_ptr<const CachedPathGeometry> geometry;
+    if (auto hit = pathCache_->FindAndTouch(pathHash)) {
+        geometry = std::move(hit->entry);
+    } else {
+        auto fresh = std::make_shared<CachedPathGeometry>();
+        DecomposePathToLocalPoints(startX, startY, commands, commandLength, fresh->localPoints);
+        std::vector<float> tri;
+        if (TriangulateSimplePolygon(fresh->localPoints, tri)) {
+            fresh->localTriangles = std::move(tri);
+            fresh->triangulationSucceeded = true;
         }
+        pathCache_->Insert(pathHash, fresh);
+        geometry = std::move(fresh);
     }
 
-    if (!TryRecordGpuFilledPolygonCommand(points, fillRule, brush)) {
-        // Path can't be triangulated (typical for SVG icons with multiple
-        // subpaths or self-intersecting glyph outlines). Rasterize the path
-        // into a local bitmap and record it as a GPU bitmap command, which
-        // keeps the frame on the replay path and still shows the icon.
-        RasterizePolygonToGpuBitmap(points, fillRule, b, g, r, a);
+    if (geometry->localPoints.size() < 4) {
+        return;
     }
 
-    RasterizePolygon(points, fillRule, b, g, r, a);
+    const auto transform = GetCurrentTransform();
+
+    if (geometry->triangulationSucceeded) {
+        // Fast GPU path: zero-copy share the cached local-space triangle
+        // list with the GPU command, and let the vertex shader apply the
+        // affine transform from a push constant. No CPU per-vertex work.
+        // The shared_ptr aliasing constructor ties the shared lifetime to
+        // the cache entry — when the cache evicts and the recorded command
+        // also drops its ref, the underlying vector is freed.
+        auto sharedTris = std::shared_ptr<const std::vector<float>>(
+            geometry, &geometry->localTriangles);
+        TryRecordSharedLocalFilledPolygon(std::move(sharedTris), transform, brush);
+    } else {
+        // Triangulation failed for this path (multi-subpath SVG icon,
+        // self-intersecting outline). Fall back to CPU rasterization into a
+        // local bitmap; the frame still stays on the GPU replay path and
+        // the icon shows. RasterizePolygonToGpuBitmap needs world-space pts.
+        std::vector<float> worldPoints;
+        worldPoints.reserve(geometry->localPoints.size());
+        for (size_t i = 0; i + 1 < geometry->localPoints.size(); i += 2) {
+            float wx = 0.0f, wy = 0.0f;
+            ApplyTransform(transform, geometry->localPoints[i], geometry->localPoints[i + 1], wx, wy);
+            worldPoints.push_back(wx);
+            worldPoints.push_back(wy);
+        }
+        RasterizePolygonToGpuBitmap(worldPoints, fillRule, b, g, r, a);
+    }
+
+    // CPU canvas update — RasterizePolygon is a self-guarded no-op when the
+    // frame is on the GPU replay path (cpuRasterNeeded_ = false). Only when
+    // we've already committed to CPU rasterization this frame does it have
+    // to do real work, in which case it needs world-space points.
+    if (cpuRasterNeeded_) {
+        std::vector<float> worldPoints;
+        worldPoints.reserve(geometry->localPoints.size());
+        for (size_t i = 0; i + 1 < geometry->localPoints.size(); i += 2) {
+            float wx = 0.0f, wy = 0.0f;
+            ApplyTransform(transform, geometry->localPoints[i], geometry->localPoints[i + 1], wx, wy);
+            worldPoints.push_back(wx);
+            worldPoints.push_back(wy);
+        }
+        RasterizePolygon(worldPoints, fillRule, b, g, r, a);
+    }
 }
 
 void VulkanRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount, float dashOffset)
@@ -7847,175 +8025,177 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
 
 #ifdef _WIN32
     const auto* textFormat = static_cast<VulkanTextFormat*>(format);
-    const int bitmapWidth = std::max(1, static_cast<int>(std::ceil(w)));
+    const int bitmapWidth  = std::max(1, static_cast<int>(std::ceil(w)));
     const int bitmapHeight = std::max(1, static_cast<int>(std::ceil(h)));
 
     const int fontHeight = -static_cast<int>(std::round(textFormat->GetFontSize()));
 
     UINT drawFlags = DT_NOPREFIX;
     switch (textFormat->GetAlignment()) {
-        case JALIUM_TEXT_ALIGN_CENTER:
-            drawFlags |= DT_CENTER;
-            break;
-        case JALIUM_TEXT_ALIGN_TRAILING:
-            drawFlags |= DT_RIGHT;
-            break;
-        default:
-            drawFlags |= DT_LEFT;
-            break;
+        case JALIUM_TEXT_ALIGN_CENTER:   drawFlags |= DT_CENTER; break;
+        case JALIUM_TEXT_ALIGN_TRAILING: drawFlags |= DT_RIGHT;  break;
+        default:                          drawFlags |= DT_LEFT;   break;
     }
     switch (textFormat->GetParagraphAlignment()) {
-        case JALIUM_PARAGRAPH_ALIGN_CENTER:
-            drawFlags |= DT_VCENTER | DT_SINGLELINE;
-            break;
-        case JALIUM_PARAGRAPH_ALIGN_FAR:
-            drawFlags |= DT_BOTTOM | DT_SINGLELINE;
-            break;
-        default:
-            drawFlags |= DT_TOP | DT_WORDBREAK;
-            break;
+        case JALIUM_PARAGRAPH_ALIGN_CENTER: drawFlags |= DT_VCENTER | DT_SINGLELINE; break;
+        case JALIUM_PARAGRAPH_ALIGN_FAR:    drawFlags |= DT_BOTTOM  | DT_SINGLELINE; break;
+        default:                             drawFlags |= DT_TOP | DT_WORDBREAK;       break;
     }
 
-    // Cache lookup: GDI CreateDIBSection + CreateFontW + DrawTextW costs
-    // ~2–5ms per call and Gallery re-runs that for every static label every
-    // frame. Same (text, font, size, extents, color, alignment) → same
-    // premultiplied BGRA pixels, so we can cache the rasterized bitmap.
     const uint32_t brushBgra =
-        static_cast<uint32_t>(b) |
-        (static_cast<uint32_t>(g) << 8) |
-        (static_cast<uint32_t>(r) << 16) |
-        (static_cast<uint32_t>(a) << 24);
-    TextCacheKey cacheKey = std::make_tuple(
-        std::wstring(text, textLength),
-        textFormat->GetFontFamily(),
+          static_cast<uint32_t>(b)
+        | (static_cast<uint32_t>(g) << 8)
+        | (static_cast<uint32_t>(r) << 16)
+        | (static_cast<uint32_t>(a) << 24);
+
+    const int  fontWeight = textFormat->GetFontWeight();
+    const int  fontStyle  = textFormat->GetFontStyle();
+    const bool italic     = (fontStyle == 1 || fontStyle == 2);
+
+    // Intern the family wstring → uint32_t. Hot path: no allocation when the
+    // family was seen before.
+    const uint32_t fontFamilyId = familyInterner_.Intern(textFormat->GetFontFamily());
+
+    // Acquire pool resources up-front so we can MEASURE the text's tight
+    // (renderedW, renderedH). The caller hands us (w, h) sized to the
+    // available layout space — Gallery passes w=10000 for "infinite" width
+    // because that's what the measure-pass propagates. If we keyed the cache
+    // and sized the DIB on (10000 × bh) every time, every "Home"/"Basic"/
+    // etc. produces a 760 KB DIB, the pixel loop is 19 万 iters per call,
+    // and the cache key is poisoned by the layout context — miss rate stays
+    // 100% even though the rendered pixels are identical.
+    //
+    // DT_CALCRECT is a metrics-only GDI call — it walks the text and
+    // computes the tight RECT without rasterizing. Then we use the tight
+    // size for both the cache key (so two different layout contexts of the
+    // same text hit the same entry) and the DIB allocation (so pixel loops
+    // process the actually-occupied region, not the layout slack).
+    HDC dc = Win32GdiPool::AcquireMemoryDc();
+    if (!dc) return;
+
+    HFONT font = Win32GdiPool::AcquireFont(
+        fontFamilyId,
+        textFormat->GetFontFamily().c_str(),
         fontHeight,
-        bitmapWidth,
-        bitmapHeight,
-        brushBgra,
-        static_cast<int>(drawFlags),
-        textFormat->GetFontWeight(),
-        textFormat->GetFontStyle());
+        fontWeight,
+        italic);
+    if (!font) return;
 
-    std::shared_ptr<const std::vector<uint8_t>> pixelsForDraw;
-    int drawWidth = bitmapWidth;
-    int drawHeight = bitmapHeight;
+    SelectObject(dc, font);
 
-    auto cacheIt = textCache_.find(cacheKey);
-    if (cacheIt != textCache_.end()) {
-        pixelsForDraw = cacheIt->second.pixels;
-        drawWidth = cacheIt->second.width;
-        drawHeight = cacheIt->second.height;
-    } else {
-        BITMAPINFO bitmapInfo {};
-        bitmapInfo.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
-        bitmapInfo.bmiHeader.biWidth = bitmapWidth;
-        bitmapInfo.bmiHeader.biHeight = -bitmapHeight;
-        bitmapInfo.bmiHeader.biPlanes = 1;
-        bitmapInfo.bmiHeader.biBitCount = 32;
-        bitmapInfo.bmiHeader.biCompression = BI_RGB;
-
-        void* dibPixels = nullptr;
-        HDC screenDc = GetDC(nullptr);
-        if (!screenDc) {
-            return;
+    int renderedW = bitmapWidth;
+    int renderedH = bitmapHeight;
+    {
+        RECT calcRect { 0, 0, bitmapWidth, bitmapHeight };
+        if (DrawTextW(dc, text, static_cast<int>(textLength), &calcRect,
+                      drawFlags | DT_CALCRECT) > 0) {
+            renderedW = std::max(1, std::min(bitmapWidth,  static_cast<int>(calcRect.right)));
+            renderedH = std::max(1, std::min(bitmapHeight, static_cast<int>(calcRect.bottom)));
         }
-
-        HDC memoryDc = CreateCompatibleDC(screenDc);
-        HBITMAP dib = CreateDIBSection(screenDc, &bitmapInfo, DIB_RGB_COLORS, &dibPixels, nullptr, 0);
-        ReleaseDC(nullptr, screenDc);
-        if (!memoryDc || !dib || !dibPixels) {
-            if (dib) DeleteObject(dib);
-            if (memoryDc) DeleteDC(memoryDc);
-            return;
-        }
-
-        HGDIOBJ oldBitmap = SelectObject(memoryDc, dib);
-
-        // CreateDIBSection does not zero the backing memory.  Stale heap bytes
-        // would show up as random sub-pixel coverage and let GDI's ClearType
-        // blend against garbage, so wipe the DIB to fully transparent black
-        // before any text is drawn into it.
-        std::memset(dibPixels, 0, static_cast<size_t>(bitmapWidth) * static_cast<size_t>(bitmapHeight) * 4u);
-
-        SetBkMode(memoryDc, TRANSPARENT);
-        SetTextColor(memoryDc, RGB(255, 255, 255));
-
-        HFONT font = CreateFontW(
-            fontHeight,
-            0,
-            0,
-            0,
-            textFormat->GetFontWeight(),
-            (textFormat->GetFontStyle() == 1 || textFormat->GetFontStyle() == 2) ? TRUE : FALSE,
-            FALSE,
-            FALSE,
-            DEFAULT_CHARSET,
-            OUT_DEFAULT_PRECIS,
-            CLIP_DEFAULT_PRECIS,
-            CLEARTYPE_QUALITY,
-            DEFAULT_PITCH | FF_DONTCARE,
-            textFormat->GetFontFamily().c_str());
-        HGDIOBJ oldFont = font ? SelectObject(memoryDc, font) : nullptr;
-
-        RECT rect { 0, 0, bitmapWidth, bitmapHeight };
-        DrawTextW(memoryDc, text, static_cast<int>(textLength), &rect, drawFlags);
-
-        // GDI batches drawing commands and does not commit them to a DIB
-        // section's memory until the batch is flushed (or the DC is released).
-        // Reading dibPixels before GdiFlush yields partially-written glyphs
-        // — the visible symptom is filled letter interiors disappearing, so a
-        // bold 'e' loses its crossbar and reads as 'c', and a solid block
-        // glyph degenerates into a hollow outline.
-        ::GdiFlush();
-
-        auto* source = static_cast<uint8_t*>(dibPixels);
-        std::vector<uint8_t> textPixels(static_cast<size_t>(bitmapWidth) * static_cast<size_t>(bitmapHeight) * 4u, 0);
-        for (int py = 0; py < bitmapHeight; ++py) {
-            for (int px = 0; px < bitmapWidth; ++px) {
-                const size_t offset = (static_cast<size_t>(py) * static_cast<size_t>(bitmapWidth) + static_cast<size_t>(px)) * 4u;
-                const uint8_t coverage = std::max({ source[offset + 0], source[offset + 1], source[offset + 2] });
-                textPixels[offset + 0] = static_cast<uint8_t>((static_cast<uint32_t>(b) * coverage) / 255u);
-                textPixels[offset + 1] = static_cast<uint8_t>((static_cast<uint32_t>(g) * coverage) / 255u);
-                textPixels[offset + 2] = static_cast<uint8_t>((static_cast<uint32_t>(r) * coverage) / 255u);
-                textPixels[offset + 3] = static_cast<uint8_t>((static_cast<uint32_t>(a) * coverage) / 255u);
-            }
-        }
-
-        if (oldFont) {
-            SelectObject(memoryDc, oldFont);
-        }
-        if (font) {
-            DeleteObject(font);
-        }
-        if (oldBitmap) {
-            SelectObject(memoryDc, oldBitmap);
-        }
-        DeleteObject(dib);
-        DeleteDC(memoryDc);
-
-        // Simple bounded cache: once we blow past the cap, dump the whole map
-        // rather than maintaining LRU bookkeeping. In practice a frame touches
-        // a small working set (~100 labels), so hitting the cap means the UI
-        // is cycling through content anyway — restarting from empty is fine.
-        if (textCache_.size() >= kMaxTextCacheEntries) {
-            textCache_.clear();
-        }
-
-        TextCacheEntry entry;
-        entry.pixels = std::make_shared<const std::vector<uint8_t>>(std::move(textPixels));
-        entry.width = bitmapWidth;
-        entry.height = bitmapHeight;
-        auto [insertedIt, _] = textCache_.emplace(std::move(cacheKey), std::move(entry));
-        pixelsForDraw = insertedIt->second.pixels;
-        drawWidth = insertedIt->second.width;
-        drawHeight = insertedIt->second.height;
     }
 
-    // Fast path: record directly into the GPU replay command list with a
-    // shared_ptr to the cached pixels. No VulkanBitmap construction, no
-    // vector copy — just a ref-count bump and a single push_back. This is
-    // the single biggest Render-time win for Gallery.
-    RecordCachedTextBitmap(std::move(pixelsForDraw), drawWidth, drawHeight, x, y);
+    // View-only key — wstring_view directly into the caller's stack buffer,
+    // no heap allocation. The TextLruCache uses C++20 transparent lookup so
+    // the cache hit path never builds a wstring or tuple. Note that the key
+    // uses the MEASURED extents, not the layout-pass (w, h).
+    const TextCacheKeyView keyView {
+        std::wstring_view{ text, textLength },
+        fontFamilyId,
+        static_cast<int16_t>(fontHeight),
+        static_cast<int16_t>(renderedW),
+        static_cast<int16_t>(renderedH),
+        brushBgra,
+        static_cast<uint16_t>(drawFlags),
+        static_cast<int16_t>(fontWeight),
+        static_cast<uint8_t>(fontStyle)
+    };
+
+    if (auto hit = textCache_->FindAndTouch(keyView)) {
+        // Hot path: O(1) hash lookup + O(1) list splice + a shared_ptr ref-bump.
+        // The DT_CALCRECT call above is the only GDI work we did.
+        RecordCachedTextBitmap(std::move(hit->pixels), hit->width, hit->height, x, y);
+        return;
+    }
+
+    // Miss path. We already have HDC + HFONT + measured size; just acquire
+    // the DIB sized to the rendered region (much smaller than input w/h).
+    auto lease = Win32GdiPool::AcquireDib(renderedW, renderedH);
+    if (!lease.dib || !lease.pixels) return;
+
+    auto* dibBytes = static_cast<uint8_t*>(lease.pixels);
+    const size_t srcStride = static_cast<size_t>(lease.capacityW) * 4u;
+
+    // The DIB is grow-only and shared across calls; clear only the
+    // (renderedW, renderedH) sub-region we're drawing into. Stale bytes
+    // outside that region don't matter because we'll only read pixels
+    // inside RECT{0,0,renderedW,renderedH}.
+    for (int row = 0; row < renderedH; ++row) {
+        std::memset(dibBytes + static_cast<size_t>(row) * srcStride, 0,
+                    static_cast<size_t>(renderedW) * 4u);
+    }
+
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, RGB(255, 255, 255));
+    // SelectObject's previous-binding return is intentionally discarded —
+    // the next RenderText will SelectObject another font and override us.
+    // Pool handles outlive the call, so no restore is needed.
+    SelectObject(dc, font);
+
+    RECT rect { 0, 0, renderedW, renderedH };
+    DrawTextW(dc, text, static_cast<int>(textLength), &rect, drawFlags);
+
+    // GDI batches drawing commands and does not commit them to a DIB
+    // section's memory until the batch is flushed. Reading dibBytes before
+    // GdiFlush yields partially-written glyphs — filled letter interiors
+    // disappear and a bold 'e' reads as 'c' because its crossbar is missing.
+    ::GdiFlush();
+
+    // Build the premultiplied BGRA payload sized to the tight rendered
+    // (renderedW, renderedH). Source rows step by srcStride (DIB capacity
+    // may be larger than renderedW*4); destination rows step by
+    // renderedW*4 because the cached payload is tightly packed.
+    std::vector<uint8_t> textPixels(static_cast<size_t>(renderedW)
+                                  * static_cast<size_t>(renderedH) * 4u, 0);
+    for (int py = 0; py < renderedH; ++py) {
+        const size_t srcRow = static_cast<size_t>(py) * srcStride;
+        const size_t dstRow = static_cast<size_t>(py) * static_cast<size_t>(renderedW) * 4u;
+        for (int px = 0; px < renderedW; ++px) {
+            const size_t srcOff = srcRow + static_cast<size_t>(px) * 4u;
+            const size_t dstOff = dstRow + static_cast<size_t>(px) * 4u;
+            const uint8_t coverage = std::max({ dibBytes[srcOff + 0],
+                                                dibBytes[srcOff + 1],
+                                                dibBytes[srcOff + 2] });
+            textPixels[dstOff + 0] = static_cast<uint8_t>((static_cast<uint32_t>(b) * coverage) / 255u);
+            textPixels[dstOff + 1] = static_cast<uint8_t>((static_cast<uint32_t>(g) * coverage) / 255u);
+            textPixels[dstOff + 2] = static_cast<uint8_t>((static_cast<uint32_t>(r) * coverage) / 255u);
+            textPixels[dstOff + 3] = static_cast<uint8_t>((static_cast<uint32_t>(a) * coverage) / 255u);
+        }
+    }
+
+    auto pixels = std::make_shared<const std::vector<uint8_t>>(std::move(textPixels));
+
+    // True LRU: at capacity, evicts ONE tail entry instead of clearing the
+    // whole map. Already-recorded GpuReplayCommands hold a separate strong
+    // ref to the pixel buffer, so an eviction during the same frame is safe.
+    // Note: key dimensions are the MEASURED extents so different layout
+    // contexts of the same text hit the same cache entry.
+    textCache_->Insert(
+        TextCacheKey {
+            std::wstring{ text, textLength },
+            fontFamilyId,
+            static_cast<int16_t>(fontHeight),
+            static_cast<int16_t>(renderedW),
+            static_cast<int16_t>(renderedH),
+            brushBgra,
+            static_cast<uint16_t>(drawFlags),
+            static_cast<int16_t>(fontWeight),
+            static_cast<uint8_t>(fontStyle)
+        },
+        pixels,
+        renderedW,
+        renderedH);
+
+    RecordCachedTextBitmap(std::move(pixels), renderedW, renderedH, x, y);
 #else
     // FreeType + HarfBuzz glyph atlas text rendering (Android / Linux)
     // Render glyphs into a temporary BGRA bitmap in local (DIP) space,
@@ -8167,13 +8347,32 @@ void VulkanRenderTarget::DrawBackdropFilter(float x, float y, float w, float h, 
     (void)cornerRadiusBR;
     (void)cornerRadiusBL;
 
-    // Backdrop reads pixelBuffer_ (both to record the GPU command and to apply
-    // the CPU fallback blur), so pixelBuffer_ must reflect every command
-    // recorded so far this frame. If we've been lazily skipping CPU work, catch
-    // it up now; from this point in the frame on, cpuRasterNeeded_ stays true.
+    if (w <= 0.0f || h <= 0.0f) {
+        return;
+    }
+
+    // Backdrop reads pixelBuffer_ to record the GPU command's source pixels and
+    // to apply the CPU fallback blur. EnsureCpuRasterization brings pixelBuffer_
+    // up to date when we're already on the CPU path; on the GPU replay path it
+    // intentionally does nothing because committing to CPU rasterization
+    // mid-frame would force every Draw* through the slow CPU path.
     EnsureCpuRasterization();
 
-    if (pixelBuffer_.empty() || w <= 0.0f || h <= 0.0f) {
+    // GPU path short-circuit. With cpuRasterNeeded_=false, pixelBuffer_ is the
+    // initial 4.6 MB of zeros (never written to since ResizeCpuCanvas), so
+    // BlurPixels would copy 4.6 MB twice and run a double pass over zeros, and
+    // TryRecordGpuBackdropCommand would copy 4.6 MB of zeros into a replay
+    // command that the GPU shader then samples to produce a blank backdrop —
+    // about 6 ms of CPU per call to render literally nothing. The proper long-
+    // term fix is to make the GPU backdrop command sample the swap-chain image
+    // directly (see EnsureCpuRasterization comment); until that lands, the
+    // visual is "blank backdrop" with or without this short-circuit, so we just
+    // skip the wasted work. Profile (Gallery, Vulkan): 57% → ~0% of frame CPU.
+    if (!cpuRasterNeeded_) {
+        return;
+    }
+
+    if (pixelBuffer_.empty()) {
         return;
     }
 
@@ -8627,6 +8826,14 @@ void VulkanRenderTarget::DrawLiquidGlass(float x, float y, float w, float h, flo
     // LiquidGlass samples pixelBuffer_ for both the GPU command payload and the
     // CPU blur fallback, so bring pixelBuffer_ up to date before either path.
     EnsureCpuRasterization();
+
+    // Same short-circuit as DrawBackdropFilter: when on the GPU replay path,
+    // pixelBuffer_ is the initial zeros and feeding it through BlurPixels +
+    // GPU upload renders a blank LiquidGlass at the cost of a 4.6 MB blur
+    // pass. The blank visual is unchanged with or without the short-circuit.
+    if (!cpuRasterNeeded_) {
+        return;
+    }
 
     if (!TryRecordGpuLiquidGlassCommand(pixelBuffer_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, cornerRadius, blurRadius, refractionAmount, chromaticAberration, tintR, tintG, tintB, tintOpacity, lightX, lightY, highlightBoost)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;

@@ -844,9 +844,6 @@ JALIUM_API void jalium_effect_begin_capture(
     JaliumRenderTarget* rt,
     float x, float y, float w, float h)
 {
-    #ifdef _WIN32
-    OutputDebugStringA("[C API] jalium_effect_begin_capture CALLED\n");
-    #endif
     if (rt && w > 0 && h > 0) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->BeginEffectCapture(x, y, w, h);
     }
@@ -854,9 +851,6 @@ JALIUM_API void jalium_effect_begin_capture(
 
 JALIUM_API void jalium_effect_end_capture(JaliumRenderTarget* rt)
 {
-    #ifdef _WIN32
-    OutputDebugStringA("[C API] jalium_effect_end_capture CALLED\n");
-    #endif
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->EndEffectCapture();
     }

@@ -157,11 +157,11 @@ bool ImpellerVulkanEngine::CreateGraphicsPipeline() {
     VkVertexInputAttributeDescription attrDescs[2] = {};
     attrDescs[0].binding = 0;
     attrDescs[0].location = 0;
-    attrDescs[0].format = VK_FORMAT_R32G32_FLOAT;
+    attrDescs[0].format = VK_FORMAT_R32G32_SFLOAT;
     attrDescs[0].offset = 0;
     attrDescs[1].binding = 0;
     attrDescs[1].location = 1;
-    attrDescs[1].format = VK_FORMAT_R32G32B32A32_FLOAT;
+    attrDescs[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
     attrDescs[1].offset = 8;
 
     VkPipelineVertexInputStateCreateInfo vertexInput = {};

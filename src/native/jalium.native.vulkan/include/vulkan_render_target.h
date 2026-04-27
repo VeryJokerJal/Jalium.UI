@@ -3,13 +3,13 @@
 #include "jalium_backend.h"
 #include "jalium_types.h"
 #include "jalium_rendering_engine.h"
+#include "path_cache.h"
+#include "text_cache.h"
 #include "vulkan_impeller_engine.h"
 #include "vulkan_vello_engine.h"
 
-#include <map>
 #include <memory>
 #include <string>
-#include <tuple>
 #include <vector>
 
 namespace jalium {
@@ -153,7 +153,22 @@ private:
     };
 
     struct GpuFilledPolygonCommand {
+        // Either an owning vertex buffer (rare — used by rasterize-fallback
+        // paths that triangulate ad hoc) OR a shared_ptr into a cached path's
+        // local-space triangle list (hot path: FillPath cache hits). The
+        // latter avoids both the per-call heap allocation and the per-vertex
+        // CPU transform — the CPU now records just (sharedTriangleVertices,
+        // transform) and the GPU vertex shader applies the affine transform
+        // when it samples each vertex.
         std::vector<float> triangleVertices;
+        std::shared_ptr<const std::vector<float>> sharedTriangleVertices;
+        const std::vector<float>& GetTriangleVertices() const {
+            return sharedTriangleVertices ? *sharedTriangleVertices : triangleVertices;
+        }
+        // Affine transform applied by the vertex shader. Identity by default
+        // (rasterize-fallback paths still pre-transform their vertices).
+        float transformRow0[4] = { 1.0f, 0.0f, 0.0f, 0.0f }; // (m11, m12, dx, _)
+        float transformRow1[4] = { 0.0f, 1.0f, 0.0f, 0.0f }; // (m21, m22, dy, _)
         float r = 0.0f;
         float g = 0.0f;
         float b = 0.0f;
@@ -362,6 +377,29 @@ private:
     bool TryRecordGpuLiquidGlassCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost);
     bool TryRecordGpuDimOutsideRectCommand(float x, float y, float w, float h, uint8_t b, uint8_t g, uint8_t r, uint8_t a);
     bool TryRecordGpuFilledPolygonCommand(const std::vector<float>& points, int32_t fillRule, Brush* brush);
+    // Pre-triangulated variant of TryRecordGpuFilledPolygonCommand. Skips
+    // the O(N³) ear-clip and uses the supplied (already triangulated, world-
+    // space) vertex list directly. Used by rasterize-fallback paths that
+    // build their vertices in world space.
+    bool TryRecordPreTriangulatedFilledPolygon(std::vector<float>&& worldTriangles, Brush* brush);
+    // Hot path: record a filled polygon whose vertices live in *local*
+    // (pre-transform) space and are shared with the path geometry cache.
+    // The supplied transform travels in the GPU command and is applied by
+    // the vertex shader at draw time. This avoids both the per-vertex CPU
+    // transform and the per-call heap allocation that the world-space
+    // variant above pays.
+    bool TryRecordSharedLocalFilledPolygon(std::shared_ptr<const std::vector<float>> sharedLocalTriangles,
+                                           const CpuTransform& transform,
+                                           Brush* brush);
+    // Walk the FillPath/StrokePath command stream and emit (x, y) sample
+    // points in *local* (pre-transform) space — bezier curves get sampled
+    // into 16 (cubic) or 8 (quad) line segments, MoveTo/LineTo/Close are
+    // copied verbatim. The result is exactly what the cached entry stores
+    // so subsequent draws of the same path skip this work entirely.
+    static void DecomposePathToLocalPoints(float startX, float startY,
+                                           const float* commands,
+                                           uint32_t commandLength,
+                                           std::vector<float>& outLocalPoints);
     bool TryRecordGpuTransitionCommand(const std::vector<uint8_t>& fromPixels, const std::vector<uint8_t>& toPixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float progress, int mode);
     bool TryRecordGpuSolidRectCommand(float x, float y, float w, float h, Brush* brush);
     bool TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush);
@@ -412,33 +450,29 @@ private:
     // Rasterized-text cache. Windows RenderText used to call CreateDIBSection +
     // CreateFontW + DrawTextW on every frame, which dominated the Vulkan
     // backend's frame time (~150ms/frame in Gallery) because every static label
-    // re-ran GDI. This cache keys on (text, font family, size, bitmap extents,
-    // premultiplied BGRA color, draw flags) and stores the BGRA pixel payload
-    // ready for DrawBitmap, so the GDI dance only runs the first time a given
-    // string is drawn at a given size/color.
+    // re-ran GDI. This cache stores the rasterized BGRA pixel payload keyed
+    // by (text, font family id, size, bitmap extents, premultiplied BGRA
+    // color, draw flags, weight, style) so the GDI dance only runs the first
+    // time a given string is drawn at a given size/color.
     //
-    // Key members (ordered the same as operator< for std::tuple):
-    //   [0] text as wstring
-    //   [1] font family as wstring
-    //   [2] fontHeight (rounded px, signed — matches GDI LOGFONT.lfHeight)
-    //   [3] bitmapWidth
-    //   [4] bitmapHeight
-    //   [5] brush BGRA packed (b | g<<8 | r<<16 | a<<24)
-    //   [6] drawFlags (alignment bits)
-    //   [7] fontWeight (LOGFONT.lfWeight — Bold/Light/etc. produces different glyphs)
-    //   [8] fontStyle (italic flag — italic produces different glyphs from upright)
-    using TextCacheKey = std::tuple<std::wstring, std::wstring, int, int, int, uint32_t, int, int, int>;
-    struct TextCacheEntry {
-        // Stored as shared_ptr so the bitmap command can alias it instead of
-        // deep-copying 16 KB per text primitive. The cache owns a strong ref;
-        // each recorded GpuReplayCommand holds a second strong ref until the
-        // command list is cleared at the next frame boundary.
-        std::shared_ptr<const std::vector<uint8_t>> pixels;
-        int width = 0;
-        int height = 0;
-    };
-    std::map<TextCacheKey, TextCacheEntry> textCache_;
-    static constexpr size_t kMaxTextCacheEntries = 512;
+    // Implementation: TextLruCache (text_cache.h) — std::unordered_map with
+    // C++20 transparent lookup, a doubly linked list for O(1) LRU touch,
+    // and per-insert eviction (no more "clear-the-world when full"). The
+    // hot path uses a wstring_view-based key view so a cache hit allocates
+    // nothing.
+    std::unique_ptr<TextLruCache> textCache_;
+    FontFamilyInterner            familyInterner_;
+    static constexpr size_t       kMaxTextCacheEntries = 512;
+
+    // Path geometry cache. FillPath / StrokePath both decompose Bezier curves
+    // into a dense local-space point list and (for FillPath) ear-clip into
+    // triangles — the latter is O(N³) on the vertex count. Caching the local-
+    // space output lets every subsequent draw of the same icon skip both the
+    // bezier decompose and the triangulation; the only per-call work left is
+    // applying the current frame's transform to the cached vertices, which is
+    // O(N) and trivially cheap. See path_cache.h.
+    std::unique_ptr<PathGeometryCache> pathCache_;
+    static constexpr size_t            kMaxPathCacheEntries = 512;
 
     // Fast-path used by RenderText to emit a cached text bitmap straight into
     // the GPU replay command list, skipping both the VulkanBitmap wrapper

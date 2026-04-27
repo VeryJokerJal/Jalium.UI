@@ -1,7 +1,6 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
     <RootNamespace>Jalium.UI.Build</RootNamespace>
@@ -44,22 +43,18 @@
     <BuildJaliumNativeStaticProjects Condition="'$(BuildJaliumNativeStaticProjects)' == ''">true</BuildJaliumNativeStaticProjects>
     <JaliumNativeStaticConfiguration Condition="'$(JaliumNativeStaticConfiguration)' == ''">Release</JaliumNativeStaticConfiguration>
     <JaliumNativeStaticPlatform Condition="'$(JaliumNativeStaticPlatform)' == ''">x64</JaliumNativeStaticPlatform>
+    <TargetFramework>net10.0</TargetFramework>
   </PropertyGroup>
 
   <ItemGroup>
-    <JaliumNativeProject Include="$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.vcxproj"
-                         Condition="Exists('$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.vcxproj')" />
-    <JaliumNativeProject Include="$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.vcxproj"
-                         Condition="Exists('$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.vcxproj')" />
+    <JaliumNativeProject Include="$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.vcxproj')" />
+    <JaliumNativeProject Include="$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.vcxproj')" />
   </ItemGroup>
 
   <ItemGroup>
-    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.static.vcxproj"
-                               Condition="Exists('$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.static.vcxproj')" />
-    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.static.vcxproj"
-                               Condition="Exists('$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.static.vcxproj')" />
-    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.browser\jalium.native.browser.static.vcxproj"
-                               Condition="Exists('$(JaliumNativeRootPath)\jalium.native.browser\jalium.native.browser.static.vcxproj')" />
+    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.core\jalium.native.core.static.vcxproj')" />
+    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.d3d12\jalium.native.d3d12.static.vcxproj')" />
+    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.browser\jalium.native.browser.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.browser\jalium.native.browser.static.vcxproj')" />
   </ItemGroup>
 
   <ItemGroup>
@@ -71,9 +66,7 @@
   </ItemGroup>
 
   <Target Name="BuildJalxamlCompilerBeforePack" BeforeTargets="GenerateNuspec">
-    <MSBuild Projects="..\Jalium.UI.Compiler\Jalium.UI.Compiler.csproj"
-             Targets="Build"
-             Properties="Configuration=$(Configuration)" />
+    <MSBuild Projects="..\Jalium.UI.Compiler\Jalium.UI.Compiler.csproj" Targets="Build" Properties="Configuration=$(Configuration)" />
   </Target>
 
   <!--
@@ -85,26 +78,14 @@
     out-of-band via samples/build-native-static.ps1 or by opening
     Jalium.Native.sln in Visual Studio.
   -->
-  <Target Name="BuildNativeProjectsBeforeBuild"
-          BeforeTargets="PrepareForBuild"
-          Condition="'$(BuildJaliumNativeProjects)' == 'true' and '$(DesignTimeBuild)' != 'true' and '@(JaliumNativeProject)' != '' and '$(OS)' == 'Windows_NT' and '$(MSBuildRuntimeType)' == 'Full'">
-    <Message Text="Building native projects @(JaliumNativeProject) (Configuration=$(JaliumNativeConfiguration), Platform=$(JaliumNativePlatform))"
-             Importance="high" />
-    <MSBuild Projects="@(JaliumNativeProject)"
-             Targets="Build"
-             BuildInParallel="true"
-             Properties="Configuration=$(JaliumNativeConfiguration);Platform=$(JaliumNativePlatform);SolutionDir=$(JaliumNativeRootPath)\;ShouldUnsetParentConfigurationAndPlatform=false" />
+  <Target Name="BuildNativeProjectsBeforeBuild" BeforeTargets="PrepareForBuild" Condition="'$(BuildJaliumNativeProjects)' == 'true' and '$(DesignTimeBuild)' != 'true' and '@(JaliumNativeProject)' != '' and '$(OS)' == 'Windows_NT' and '$(MSBuildRuntimeType)' == 'Full'">
+    <Message Text="Building native projects @(JaliumNativeProject) (Configuration=$(JaliumNativeConfiguration), Platform=$(JaliumNativePlatform))" Importance="high" />
+    <MSBuild Projects="@(JaliumNativeProject)" Targets="Build" BuildInParallel="true" Properties="Configuration=$(JaliumNativeConfiguration);Platform=$(JaliumNativePlatform);SolutionDir=$(JaliumNativeRootPath)\;ShouldUnsetParentConfigurationAndPlatform=false" />
   </Target>
 
-  <Target Name="BuildStaticNativeProjectsBeforeBuild"
-          BeforeTargets="PrepareForBuild"
-          Condition="'$(BuildJaliumNativeStaticProjects)' == 'true' and '$(DesignTimeBuild)' != 'true' and '@(JaliumNativeStaticProject)' != '' and '$(OS)' == 'Windows_NT' and '$(MSBuildRuntimeType)' == 'Full'">
-    <Message Text="Building NativeAOT static projects @(JaliumNativeStaticProject) (Configuration=$(JaliumNativeStaticConfiguration), Platform=$(JaliumNativeStaticPlatform))"
-             Importance="high" />
-    <MSBuild Projects="@(JaliumNativeStaticProject)"
-             Targets="Build"
-             BuildInParallel="true"
-             Properties="Configuration=$(JaliumNativeStaticConfiguration);Platform=$(JaliumNativeStaticPlatform);SolutionDir=$(JaliumNativeRootPath)\;ShouldUnsetParentConfigurationAndPlatform=false" />
+  <Target Name="BuildStaticNativeProjectsBeforeBuild" BeforeTargets="PrepareForBuild" Condition="'$(BuildJaliumNativeStaticProjects)' == 'true' and '$(DesignTimeBuild)' != 'true' and '@(JaliumNativeStaticProject)' != '' and '$(OS)' == 'Windows_NT' and '$(MSBuildRuntimeType)' == 'Full'">
+    <Message Text="Building NativeAOT static projects @(JaliumNativeStaticProject) (Configuration=$(JaliumNativeStaticConfiguration), Platform=$(JaliumNativeStaticPlatform))" Importance="high" />
+    <MSBuild Projects="@(JaliumNativeStaticProject)" Targets="Build" BuildInParallel="true" Properties="Configuration=$(JaliumNativeStaticConfiguration);Platform=$(JaliumNativeStaticPlatform);SolutionDir=$(JaliumNativeRootPath)\;ShouldUnsetParentConfigurationAndPlatform=false" />
   </Target>
 
   <!-- 将 Roslyn 依赖打包到 tasks 目录，MSBuild 任务需要这些程序集 -->
@@ -138,30 +119,21 @@
          single-exe builds via <UseJaliumNativeAot>true</UseJaliumNativeAot>.
          The build/Jalium.UI.Build.targets ConfigureJaliumNativeAot target wires
          these into <NativeLibrary> + <DirectPInvoke> at the consumer side. -->
-    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.core.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false"
-             Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.core.static.lib')" />
-    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.d3d12.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false"
-             Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.d3d12.static.lib')" />
-    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.software.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false"
-             Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.software.static.lib')" />
-    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.platform.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false"
-             Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.platform.static.lib')" />
-    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.aot.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false"
-             Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.aot.static.lib')" />
-    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.browser.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false"
-             Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.browser.static.lib')" />
+    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.core.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.core.static.lib')" />
+    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.d3d12.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.d3d12.static.lib')" />
+    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.software.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.software.static.lib')" />
+    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.platform.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.platform.static.lib')" />
+    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.aot.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.aot.static.lib')" />
+    <Content Include="..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.browser.static.lib" PackagePath="build\nativeaot\win-x64\" Visible="false" Condition="Exists('..\..\native\bin\native-static\$(JaliumNativeStaticConfiguration)\jalium.native.browser.static.lib')" />
   </ItemGroup>
 
   <!-- Also surface the new static projects to the BeforeBuild static-builder
        so a top-level 'msbuild Jalium.UI.Build.csproj' (full MSBuild only)
        produces every archive consumed by ConfigureJaliumNativeAot. -->
   <ItemGroup>
-    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.software\jalium.native.software.static.vcxproj"
-                               Condition="Exists('$(JaliumNativeRootPath)\jalium.native.software\jalium.native.software.static.vcxproj')" />
-    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.platform\jalium.native.platform.static.vcxproj"
-                               Condition="Exists('$(JaliumNativeRootPath)\jalium.native.platform\jalium.native.platform.static.vcxproj')" />
-    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.aot\jalium.native.aot.static.vcxproj"
-                               Condition="Exists('$(JaliumNativeRootPath)\jalium.native.aot\jalium.native.aot.static.vcxproj')" />
+    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.software\jalium.native.software.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.software\jalium.native.software.static.vcxproj')" />
+    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.platform\jalium.native.platform.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.platform\jalium.native.platform.static.vcxproj')" />
+    <JaliumNativeStaticProject Include="$(JaliumNativeRootPath)\jalium.native.aot\jalium.native.aot.static.vcxproj" Condition="Exists('$(JaliumNativeRootPath)\jalium.native.aot\jalium.native.aot.static.vcxproj')" />
   </ItemGroup>
 
 </Project>

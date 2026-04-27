@@ -15,6 +15,8 @@ endif()
 set(JALIUM_STB_ROOT "${JALIUM_SDK_ROOT}/stb")
 
 set(HEADERS
+    include/path_cache.h
+    include/text_cache.h
     include/vulkan_backend.h
     include/vulkan_impeller_engine.h
     include/vulkan_render_target.h
@@ -24,6 +26,8 @@ set(HEADERS
 )
 
 set(SOURCES
+    src/path_cache.cpp
+    src/text_cache.cpp
     src/vulkan_backend.cpp
     src/vulkan_impeller_engine.cpp
     src/vulkan_init.cpp
@@ -32,6 +36,11 @@ set(SOURCES
     src/vulkan_runtime.cpp
     src/vulkan_vello_engine.cpp
 )
+
+if(WIN32)
+    list(APPEND HEADERS include/win32_gdi_pool.h)
+    list(APPEND SOURCES src/win32_gdi_pool.cpp)
+endif()
 
 add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE} ${HEADERS} ${SOURCES})
 

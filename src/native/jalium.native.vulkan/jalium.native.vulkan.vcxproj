@@ -101,18 +101,28 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClInclude Include="include\path_cache.h" />
+    <ClInclude Include="include\text_cache.h" />
     <ClInclude Include="include\vulkan_backend.h" />
     <ClInclude Include="include\vulkan_embedded_shaders.h" />
+    <ClInclude Include="include\vulkan_impeller_engine.h" />
     <ClInclude Include="include\vulkan_render_target.h" />
     <ClInclude Include="include\vulkan_resources.h" />
     <ClInclude Include="include\vulkan_runtime.h" />
+    <ClInclude Include="include\vulkan_vello_engine.h" />
+    <ClInclude Include="include\win32_gdi_pool.h" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="src\path_cache.cpp" />
+    <ClCompile Include="src\text_cache.cpp" />
     <ClCompile Include="src\vulkan_backend.cpp" />
+    <ClCompile Include="src\vulkan_impeller_engine.cpp" />
     <ClCompile Include="src\vulkan_init.cpp" />
     <ClCompile Include="src\vulkan_render_target.cpp" />
     <ClCompile Include="src\vulkan_resources.cpp" />
     <ClCompile Include="src\vulkan_runtime.cpp" />
+    <ClCompile Include="src\vulkan_vello_engine.cpp" />
+    <ClCompile Include="src\win32_gdi_pool.cpp" />
   </ItemGroup>
   <ItemGroup>
     <None Include="shaders\blur_quad.frag.hlsl" />
