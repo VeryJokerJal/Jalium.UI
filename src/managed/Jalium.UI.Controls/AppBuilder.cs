@@ -239,14 +239,6 @@ public sealed class AppBuilder : IHostApplicationBuilder
     /// Dispose it (or call <see cref="JaliumApp.Run()"/>, which disposes on exit)
     /// to tear everything down cleanly.
     /// </returns>
-    [UnconditionalSuppressMessage(
-        "Trimming",
-        "IL2026:Members annotated with RequiresUnreferencedCodeAttribute",
-        Justification = "HostApplicationBuilder default configuration providers are analyzer-safe; consumers opt in to reflective features explicitly.")]
-    [UnconditionalSuppressMessage(
-        "AOT",
-        "IL3050:Generic code may not be available at runtime",
-        Justification = "HostApplicationBuilder.Build uses reflection only for optional features not enabled by default.")]
     public JaliumApp Build()
     {
         if (_isBuilt)

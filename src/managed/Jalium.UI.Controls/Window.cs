@@ -118,7 +118,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         private readonly System.Diagnostics.Stopwatch _intervalSw = System.Diagnostics.Stopwatch.StartNew();
         private readonly System.Diagnostics.Stopwatch _frameSw = new();
         private int _frameCount;
-        private double _fps;
         private double _lastFrameMs, _worstFrameMs;
         private double _layoutMs, _renderMs, _presentMs;
 
@@ -1089,7 +1088,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public TitleBar? TitleBar { get; private set; }
 
-    private MouseButton? _suppressMouseUpButton;
     private const uint MousePointerId = 1;
     private readonly Dictionary<uint, UIElement?> _activePointerTargets = [];
     private readonly Dictionary<uint, PointerPoint> _lastPointerPoints = [];
@@ -1674,9 +1672,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return hitTest == HTMINBUTTON || hitTest == HTMAXBUTTON || hitTest == HTCLOSE;
     }
 
-    private TitleBarButton? _hoveredTitleBarButton;
-    private TitleBarButton? _pressedTitleBarButton;
-
     private void OnNcMouseMove(nint wParam, nint lParam)
     {
         _ = wParam;
@@ -2070,7 +2065,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         // Measure overlay layer with full window size (it doesn't consume space)
-        OverlayLayer.Measure(availableSize);
+        OverlayLayer?.Measure(availableSize);
 
         return availableSize;
     }
@@ -3850,9 +3845,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             ? _renderBackendOverride
             : RenderBackend.Auto;
 
-        Console.Error.WriteLine($"[EnsureRenderTarget] creating context: requested={requestedBackend} size={physicalWidth}x{physicalHeight}");
         var context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
-        Console.Error.WriteLine($"[EnsureRenderTarget] context created: backend={context.Backend} valid={context.IsValid}");
 
         try
         {
@@ -3860,9 +3853,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             {
                 // Cross-platform path: use surface descriptor from platform window
                 var surface = _platformWindow.GetSurface();
-                Console.Error.WriteLine($"[EnsureRenderTarget] creating RT for surface: platform={surface.Platform} handle0=0x{surface.Handle0:X} size={physicalWidth}x{physicalHeight}");
                 RenderTarget = context.CreateRenderTarget(surface, physicalWidth, physicalHeight);
-                Console.Error.WriteLine($"[EnsureRenderTarget] RT created: {RenderTarget != null}");
             }
             else
             {
@@ -3894,8 +3885,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         // Set D2D DPI so DIP coordinates map correctly to physical pixels
         float dpi = (float)(_dpiScale * 96.0);
-        RenderTarget.SetDpi(dpi, dpi);
-        Console.Error.WriteLine($"[EnsureRenderTarget] DONE: dpi={dpi}");
+        RenderTarget?.SetDpi(dpi, dpi);
     }
 
     /// <summary>
@@ -5779,8 +5769,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             if (RenderTarget == null || !RenderTarget.IsValid)
             {
-                if (_renderFrameLogCount < 3)
-                    Console.Error.WriteLine($"[RenderFrame] RT null/invalid, attempting EnsureRenderTarget");
                 EnsureRenderTarget();
             }
 
@@ -6639,6 +6627,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// Toggles the DevTools window for this window.
     /// Press F12 to open/close DevTools in DEBUG builds.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("DevToolsWindow includes a REPL and inspector that reflect on user types.")]
     public void ToggleDevTools()
     {
         if (_devToolsWindow != null)
@@ -6770,7 +6759,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         UIElement.ForceReleaseMouseCapture();
         ClearPressedChains();
-        _suppressMouseUpButton = null;
         _lastHitTestElement = null;
 
         if (TitleBarStyle == WindowTitleBarStyle.Custom)
