@@ -3,6 +3,7 @@
 
 #include "vulkan_backend.h"
 #include "vulkan_embedded_shaders.h"
+#include "vulkan_impeller_shaders.h"   // kImpellerSolidFillVertShaderSpv etc. — used by EnsureEngineBatchPipeline
 #include "vulkan_minimal.h"
 #include "vulkan_resources.h"
 #include "vulkan_runtime.h"
@@ -457,6 +458,12 @@ public:
     VkPipeline glowPipeline = VK_NULL_HANDLE;
     VkPipelineLayout triangleFillPipelineLayout = VK_NULL_HANDLE;
     VkPipeline triangleFillPipeline = VK_NULL_HANDLE;
+    // Engine-batches pipeline (VkImpellerVertex / VkVelloVertex: pos+color, 24B):
+    // Used by RenderEngineBatches to drain Impeller / Vello engines' GetBatches()
+    // into draw calls on the swap-chain. Vertex shader takes a 4×4 MVP push
+    // constant; fragment shader is passthrough (premultiplied alpha).
+    VkPipelineLayout engineBatchPipelineLayout = VK_NULL_HANDLE;
+    VkPipeline engineBatchPipeline = VK_NULL_HANDLE;
     VkImage transitionImages[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkDeviceMemory transitionImageMemory[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
     VkImageView transitionImageViews[2] = { VK_NULL_HANDLE, VK_NULL_HANDLE };
@@ -509,6 +516,14 @@ public:
         uint32_t uploadHeight = 0;
         VkDescriptorSet frameDescriptorSet = VK_NULL_HANDLE;
         bool submitted = false;
+        // Engine batches buffer (vertex+index, host-visible coherent):
+        // RenderEngineBatches uploads VkImpellerDrawBatch contents here each
+        // frame. Per-frame so we don't trample data the GPU is still reading
+        // from the previous frame.
+        VkBuffer engineBatchBuffer = VK_NULL_HANDLE;
+        VkDeviceMemory engineBatchMemory = VK_NULL_HANDLE;
+        void* engineBatchMapped = nullptr;
+        VkDeviceSize engineBatchCapacity = 0;
     };
     PerFrameState perFrameStates_[MAX_FRAMES_IN_FLIGHT];
     uint32_t currentFrame_ = 0;
@@ -533,7 +548,23 @@ public:
     bool EnsureTransitionImagesCapacity(uint32_t width, uint32_t height);
     bool EnsureGraphicsResources();
     bool DrawFrame(const uint8_t* pixels, uint32_t width, uint32_t height);
-    bool DrawReplayFrame(const std::vector<VulkanRenderTarget::GpuReplayCommand>& commands, const float clearColor[4]);
+    bool DrawReplayFrame(const std::vector<VulkanRenderTarget::GpuReplayCommand>& commands,
+                         const float clearColor[4],
+                         const std::vector<VkImpellerDrawBatch>* engineBatches = nullptr);
+    /// Lazy-create the POSITION+COLOR pipeline used to drain Impeller / Vello
+    /// engine batches.
+    bool EnsureEngineBatchPipeline();
+    /// Lazy-grow the per-frame engine-batch upload buffer.
+    bool EnsureEngineBatchBuffer(uint32_t frameIdx, VkDeviceSize requiredSize);
+    /// Drain the supplied batches into draw calls on the current swap-chain
+    /// frame. Caller is responsible for being inside an active command buffer
+    /// and for ending any open render pass before invoking this.
+    void RenderEngineBatches(VkCommandBuffer cmd,
+                             const std::vector<VkImpellerDrawBatch>& batches,
+                             VkExtent2D extent,
+                             uint32_t frameIdx,
+                             VkRenderPass renderPass,
+                             VkFramebuffer framebuffer);
     uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags requiredProperties) const;
     bool UpdateFrameDescriptorSet();
     bool UpdateTransitionDescriptorSet();
@@ -568,6 +599,13 @@ VulkanRenderTarget::VulkanRenderTarget(
     if (!impl_->Initialize(surface, width, height, vsyncEnabled_)) {
         VK_LOG("[Vulkan] VulkanRenderTarget: initialization failed, GPU presentation will not work\n");
     }
+    // Lazy-construct the default-active engine so the first frame already has
+    // a valid encoder. With the Impl::RenderEngineBatches consumer in place,
+    // batches now flow through to actual draw calls on the swap chain.
+    // Failure here is non-fatal — the existing GPU-replay path keeps working
+    // when the engine cannot initialize (e.g. impl_->Initialize failed above).
+    if (activeEngine_ == JALIUM_ENGINE_IMPELLER) EnsureImpellerEngine();
+    else if (activeEngine_ == JALIUM_ENGINE_VELLO) EnsureVelloEngine();
 }
 
 VulkanRenderTarget::~VulkanRenderTarget() = default;
@@ -635,6 +673,58 @@ JaliumResult VulkanRenderTarget::Resize(int32_t width, int32_t height)
         : JALIUM_ERROR_RESOURCE_CREATION_FAILED;
 }
 
+// ---------------------------------------------------------------------------
+// Engine lazy initialization
+//
+// The Impeller / Vello engine classes share their CPU algorithms with the
+// D3D12 engines through jalium_impeller_stroke.h / jalium_impeller_shapes.h
+// / jalium_scanline_rasterizer.h. The Vulkan GPU consumer that turns the
+// engine-emitted batches into actual draws on the swap chain is implemented
+// in Impl::RenderEngineBatches (called from DrawReplayFrame after all
+// GPU-replay commands have been emitted, so the engines paint over the
+// existing framebuffer contents).
+//
+// SetRenderingEngine() (in vulkan_render_target.h) calls Ensure* whenever
+// the user toggles RenderContext.DefaultRenderingEngine; the helpers
+// construct the chosen engine on demand. FillPath / FillPolygon /
+// StrokePath route through the engine when impellerEngine_ / velloEngine_
+// is alive and the active engine matches.
+// ---------------------------------------------------------------------------
+bool VulkanRenderTarget::EnsureImpellerEngine()
+{
+    if (impellerEngine_) return true;
+    if (!impl_ || impl_->device == VK_NULL_HANDLE || impl_->physicalDevice == VK_NULL_HANDLE) {
+        return false;
+    }
+    impellerEngine_ = std::make_unique<ImpellerVulkanEngine>(
+        impl_->device, impl_->physicalDevice);
+    if (!impellerEngine_->Initialize()) {
+        impellerEngine_.reset();
+        return false;
+    }
+    impellerEngine_->BeginFrame(static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
+    return true;
+}
+
+bool VulkanRenderTarget::EnsureVelloEngine()
+{
+    if (velloEngine_) return true;
+    if (!impl_ || impl_->device == VK_NULL_HANDLE || impl_->physicalDevice == VK_NULL_HANDLE
+        || impl_->queue == VK_NULL_HANDLE
+        || impl_->queueFamilyIndex == VK_QUEUE_FAMILY_IGNORED) {
+        return false;
+    }
+    velloEngine_ = std::make_unique<VelloVulkanEngine>(
+        impl_->device, impl_->physicalDevice,
+        impl_->queue, impl_->queueFamilyIndex);
+    if (!velloEngine_->Initialize()) {
+        velloEngine_.reset();
+        return false;
+    }
+    velloEngine_->BeginFrame(static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
+    return true;
+}
+
 JaliumResult VulkanRenderTarget::BeginDraw()
 {
     if (isDrawing_) {
@@ -644,10 +734,21 @@ JaliumResult VulkanRenderTarget::BeginDraw()
     // Apply pending engine switch at frame boundary
     if (pendingEngine_ != activeEngine_) {
         activeEngine_ = pendingEngine_;
+        // Make sure the newly-active engine exists by the time the first
+        // Encode call comes in below.
+        if (activeEngine_ == JALIUM_ENGINE_IMPELLER) EnsureImpellerEngine();
+        else if (activeEngine_ == JALIUM_ENGINE_VELLO) EnsureVelloEngine();
     }
 
     isDrawing_ = true;
     ResetGpuReplay();
+    // Reset engine batches for the new frame.
+    if (impellerEngine_) {
+        impellerEngine_->BeginFrame(static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
+    }
+    if (velloEngine_) {
+        velloEngine_->BeginFrame(static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
+    }
     // Eagerly flag the frame as "cleared" so that the first Draw* before the
     // caller gets a chance to invoke Clear() can still record GPU replay
     // commands. The Vulkan DrawReplayFrame unconditionally clears the
@@ -690,17 +791,33 @@ JaliumResult VulkanRenderTarget::EndDraw()
         PopTransform();
     }
 
+    // Pick the active rendering engine's pending batches (if any) so the GPU
+    // replay pass can drain them after its own commands. Only one engine is
+    // active at a time; the other holds an empty batch list.
+    const std::vector<VkImpellerDrawBatch>* engineBatches = nullptr;
+    if (IsImpellerActive() && impellerEngine_ && impellerEngine_->HasPendingWork()) {
+        engineBatches = &impellerEngine_->GetBatches();
+    } else if (IsVelloActive() && velloEngine_ && velloEngine_->HasPendingWork()) {
+        engineBatches = &velloEngine_->GetBatches();
+    }
+
     bool ok = false;
     if (impl_) {
         if (!impl_->initialized) {
             VK_LOG("[Vulkan] EndDraw: impl not initialized, skipping draw");
         } else if (gpuReplaySupported_ && gpuReplayHasClear_) {
-            ok = impl_->DrawReplayFrame(gpuReplayCommands_, clearColor_);
+            ok = impl_->DrawReplayFrame(gpuReplayCommands_, clearColor_, engineBatches);
         } else {
             EnsureCpuRasterization();
             ok = impl_->DrawFrame(pixelBuffer_.data(), static_cast<uint32_t>(width_), static_cast<uint32_t>(height_));
         }
     }
+
+    // Reset engine batches for the next frame — we just consumed them (or
+    // dropped them if the frame fell back to the CPU upload path).
+    if (impellerEngine_) impellerEngine_->ClearBatches();
+    if (velloEngine_) velloEngine_->ClearBatches();
+
     cpuRasterNeededLastFrame_ = cpuRasterNeeded_;
     isDrawing_ = false;
     dirtyRects_.clear();
@@ -3146,6 +3263,9 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     if (destroyPipeline && triangleFillPipeline != VK_NULL_HANDLE) {
         destroyPipeline(device, triangleFillPipeline, nullptr);
     }
+    if (destroyPipeline && engineBatchPipeline != VK_NULL_HANDLE) {
+        destroyPipeline(device, engineBatchPipeline, nullptr);
+    }
     if (destroyPipeline && transitionPipeline != VK_NULL_HANDLE) {
         destroyPipeline(device, transitionPipeline, nullptr);
     }
@@ -3172,6 +3292,9 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     }
     if (destroyPipelineLayout && triangleFillPipelineLayout != VK_NULL_HANDLE) {
         destroyPipelineLayout(device, triangleFillPipelineLayout, nullptr);
+    }
+    if (destroyPipelineLayout && engineBatchPipelineLayout != VK_NULL_HANDLE) {
+        destroyPipelineLayout(device, engineBatchPipelineLayout, nullptr);
     }
     if (destroyPipelineLayout && transitionPipelineLayout != VK_NULL_HANDLE) {
         destroyPipelineLayout(device, transitionPipelineLayout, nullptr);
@@ -3210,6 +3333,8 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     glowPipelineLayout = VK_NULL_HANDLE;
     triangleFillPipeline = VK_NULL_HANDLE;
     triangleFillPipelineLayout = VK_NULL_HANDLE;
+    engineBatchPipeline = VK_NULL_HANDLE;
+    engineBatchPipelineLayout = VK_NULL_HANDLE;
     transitionPipeline = VK_NULL_HANDLE;
     transitionPipelineLayout = VK_NULL_HANDLE;
     transitionDescriptorSet = VK_NULL_HANDLE;
@@ -3305,6 +3430,16 @@ void VulkanRenderTarget::Impl::DestroyPerFrameResources()
         }
         if (s.stagingMemory != VK_NULL_HANDLE && freeMemory) {
             freeMemory(device, s.stagingMemory, nullptr);
+        }
+        // Engine batches per-frame upload buffer.
+        if (s.engineBatchMapped != nullptr && s.engineBatchMemory != VK_NULL_HANDLE && unmapMemory) {
+            unmapMemory(device, s.engineBatchMemory);
+        }
+        if (s.engineBatchBuffer != VK_NULL_HANDLE && destroyBuffer) {
+            destroyBuffer(device, s.engineBatchBuffer, nullptr);
+        }
+        if (s.engineBatchMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, s.engineBatchMemory, nullptr);
         }
         if (s.inFlight != VK_NULL_HANDLE && destroyFence) {
             destroyFence(device, s.inFlight, nullptr);
@@ -3564,7 +3699,391 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     return true;
 }
 
-bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTarget::GpuReplayCommand>& commands, const float clearColor[4])
+// ---------------------------------------------------------------------------
+// Engine batches GPU consumer
+//
+// EnsureEngineBatchPipeline / EnsureEngineBatchBuffer / RenderEngineBatches
+// turn the encoder side (ImpellerVulkanEngine / VelloVulkanEngine) into
+// actual draws on the swap-chain frame. The pipeline reads VkImpellerVertex
+// (pos + premultiplied-alpha color, 24B) and a 4×4 MVP push constant; the
+// fragment shader passes the vertex color through. Per-frame upload buffers
+// (PerFrameState::engineBatchBuffer) prevent the GPU from reading data the
+// CPU is overwriting in the next frame.
+// ---------------------------------------------------------------------------
+
+bool VulkanRenderTarget::Impl::EnsureEngineBatchPipeline()
+{
+    if (engineBatchPipeline != VK_NULL_HANDLE) return true;
+    if (device == VK_NULL_HANDLE || frameRenderPass == VK_NULL_HANDLE) return false;
+
+    auto createPipelineLayout =
+        LoadDeviceProc<PFN_vkCreatePipelineLayout>(getDeviceProcAddr, device, "vkCreatePipelineLayout");
+    auto createShaderModule =
+        LoadDeviceProc<PFN_vkCreateShaderModule>(getDeviceProcAddr, device, "vkCreateShaderModule");
+    auto destroyShaderModule =
+        LoadDeviceProc<PFN_vkDestroyShaderModule>(getDeviceProcAddr, device, "vkDestroyShaderModule");
+    auto createGraphicsPipelines =
+        LoadDeviceProc<PFN_vkCreateGraphicsPipelines>(getDeviceProcAddr, device, "vkCreateGraphicsPipelines");
+    if (!createPipelineLayout || !createShaderModule || !destroyShaderModule || !createGraphicsPipelines) {
+        return false;
+    }
+
+    if (engineBatchPipelineLayout == VK_NULL_HANDLE) {
+        VkPushConstantRange pushConstantRange {};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+        pushConstantRange.size = 64; // 4x4 float MVP
+
+        VkPipelineLayoutCreateInfo layoutInfo {};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &pushConstantRange;
+        if (createPipelineLayout(device, &layoutInfo, nullptr, &engineBatchPipelineLayout) != VK_SUCCESS
+            || engineBatchPipelineLayout == VK_NULL_HANDLE) {
+            return false;
+        }
+    }
+
+    VkShaderModule vertexShader = VK_NULL_HANDLE;
+    VkShaderModule fragmentShader = VK_NULL_HANDLE;
+
+    VkShaderModuleCreateInfo vertexShaderInfo {};
+    vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vertexShaderInfo.codeSize = kImpellerSolidFillVertShaderSpvSize;
+    vertexShaderInfo.pCode = kImpellerSolidFillVertShaderSpv;
+    if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS
+        || vertexShader == VK_NULL_HANDLE) {
+        return false;
+    }
+
+    VkShaderModuleCreateInfo fragmentShaderInfo {};
+    fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    fragmentShaderInfo.codeSize = kImpellerSolidFillFragShaderSpvSize;
+    fragmentShaderInfo.pCode = kImpellerSolidFillFragShaderSpv;
+    if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS
+        || fragmentShader == VK_NULL_HANDLE) {
+        destroyShaderModule(device, vertexShader, nullptr);
+        return false;
+    }
+
+    VkPipelineShaderStageCreateInfo shaderStages[2] {};
+    shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    shaderStages[0].module = vertexShader;
+    shaderStages[0].pName = "main";
+    shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    shaderStages[1].module = fragmentShader;
+    shaderStages[1].pName = "main";
+
+    VkVertexInputBindingDescription bindingDescription {};
+    bindingDescription.binding = 0;
+    bindingDescription.stride = sizeof(VkImpellerVertex);
+    bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+    VkVertexInputAttributeDescription attributes[2] {};
+    attributes[0].location = 0;
+    attributes[0].binding = 0;
+    attributes[0].format = VK_FORMAT_R32G32_SFLOAT;
+    attributes[0].offset = 0;
+    attributes[1].location = 1;
+    attributes[1].binding = 0;
+    attributes[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+    attributes[1].offset = sizeof(float) * 2;
+
+    VkPipelineVertexInputStateCreateInfo vertexInputInfo {};
+    vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    vertexInputInfo.vertexBindingDescriptionCount = 1;
+    vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+    vertexInputInfo.vertexAttributeDescriptionCount = 2;
+    vertexInputInfo.pVertexAttributeDescriptions = attributes;
+
+    VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo {};
+    inputAssemblyInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    inputAssemblyInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+    VkPipelineViewportStateCreateInfo viewportStateInfo {};
+    viewportStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    viewportStateInfo.viewportCount = 1;
+    viewportStateInfo.scissorCount = 1;
+
+    VkPipelineRasterizationStateCreateInfo rasterizationInfo {};
+    rasterizationInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rasterizationInfo.polygonMode = VK_POLYGON_MODE_FILL;
+    rasterizationInfo.cullMode = VK_CULL_MODE_NONE;
+    rasterizationInfo.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rasterizationInfo.lineWidth = 1.0f;
+
+    VkPipelineMultisampleStateCreateInfo multisampleInfo {};
+    multisampleInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    multisampleInfo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+    // Premultiplied-alpha SrcOver blend (engines pre-multiply at encode time
+    // and the fragment shader passes the color through unchanged).
+    VkPipelineColorBlendAttachmentState colorBlendAttachment {};
+    colorBlendAttachment.blendEnable = VK_TRUE;
+    colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+    colorBlendAttachment.colorWriteMask =
+        VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+    VkPipelineColorBlendStateCreateInfo colorBlendInfo {};
+    colorBlendInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    colorBlendInfo.attachmentCount = 1;
+    colorBlendInfo.pAttachments = &colorBlendAttachment;
+
+    VkDynamicState dynamicStates[] = {
+        VK_DYNAMIC_STATE_VIEWPORT,
+        VK_DYNAMIC_STATE_SCISSOR
+    };
+    VkPipelineDynamicStateCreateInfo dynamicStateInfo {};
+    dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(std::size(dynamicStates));
+    dynamicStateInfo.pDynamicStates = dynamicStates;
+
+    VkGraphicsPipelineCreateInfo pipelineInfo {};
+    pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pipelineInfo.stageCount = 2;
+    pipelineInfo.pStages = shaderStages;
+    pipelineInfo.pVertexInputState = &vertexInputInfo;
+    pipelineInfo.pInputAssemblyState = &inputAssemblyInfo;
+    pipelineInfo.pViewportState = &viewportStateInfo;
+    pipelineInfo.pRasterizationState = &rasterizationInfo;
+    pipelineInfo.pMultisampleState = &multisampleInfo;
+    pipelineInfo.pColorBlendState = &colorBlendInfo;
+    pipelineInfo.pDynamicState = &dynamicStateInfo;
+    pipelineInfo.layout = engineBatchPipelineLayout;
+    pipelineInfo.renderPass = frameRenderPass;
+    pipelineInfo.subpass = 0;
+
+    const VkResult pipelineResult = createGraphicsPipelines(
+        device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &engineBatchPipeline);
+    destroyShaderModule(device, fragmentShader, nullptr);
+    destroyShaderModule(device, vertexShader, nullptr);
+    if (pipelineResult != VK_SUCCESS || engineBatchPipeline == VK_NULL_HANDLE) {
+        return false;
+    }
+    return true;
+}
+
+bool VulkanRenderTarget::Impl::EnsureEngineBatchBuffer(uint32_t frameIdx, VkDeviceSize requiredSize)
+{
+    if (frameIdx >= MAX_FRAMES_IN_FLIGHT) return false;
+    PerFrameState& frame = perFrameStates_[frameIdx];
+    if (frame.engineBatchBuffer != VK_NULL_HANDLE && frame.engineBatchCapacity >= requiredSize) {
+        return true;
+    }
+
+    auto createBuffer = LoadDeviceProc<PFN_vkCreateBuffer>(getDeviceProcAddr, device, "vkCreateBuffer");
+    auto destroyBuffer = LoadDeviceProc<PFN_vkDestroyBuffer>(getDeviceProcAddr, device, "vkDestroyBuffer");
+    auto allocateMemory = LoadDeviceProc<PFN_vkAllocateMemory>(getDeviceProcAddr, device, "vkAllocateMemory");
+    auto freeMemory = LoadDeviceProc<PFN_vkFreeMemory>(getDeviceProcAddr, device, "vkFreeMemory");
+    auto bindBufferMemory = LoadDeviceProc<PFN_vkBindBufferMemory>(getDeviceProcAddr, device, "vkBindBufferMemory");
+    auto getBufferMemReqs = LoadDeviceProc<PFN_vkGetBufferMemoryRequirements>(getDeviceProcAddr, device, "vkGetBufferMemoryRequirements");
+    auto mapMemory = LoadDeviceProc<PFN_vkMapMemory>(getDeviceProcAddr, device, "vkMapMemory");
+    auto unmapMemory = LoadDeviceProc<PFN_vkUnmapMemory>(getDeviceProcAddr, device, "vkUnmapMemory");
+    if (!createBuffer || !destroyBuffer || !allocateMemory || !freeMemory
+        || !bindBufferMemory || !getBufferMemReqs || !mapMemory || !unmapMemory) {
+        return false;
+    }
+
+    // Tear down any previous, smaller buffer first.
+    if (frame.engineBatchMapped && frame.engineBatchMemory) {
+        unmapMemory(device, frame.engineBatchMemory);
+        frame.engineBatchMapped = nullptr;
+    }
+    if (frame.engineBatchBuffer != VK_NULL_HANDLE) {
+        destroyBuffer(device, frame.engineBatchBuffer, nullptr);
+        frame.engineBatchBuffer = VK_NULL_HANDLE;
+    }
+    if (frame.engineBatchMemory != VK_NULL_HANDLE) {
+        freeMemory(device, frame.engineBatchMemory, nullptr);
+        frame.engineBatchMemory = VK_NULL_HANDLE;
+    }
+    frame.engineBatchCapacity = 0;
+
+    // Round to next power-of-two-ish chunk so we don't realloc every frame
+    // for shapes that grow modestly.
+    VkDeviceSize allocSize = 64 * 1024;
+    while (allocSize < requiredSize) allocSize *= 2;
+
+    VkBufferCreateInfo bufferInfo {};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = allocSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    if (createBuffer(device, &bufferInfo, nullptr, &frame.engineBatchBuffer) != VK_SUCCESS) {
+        return false;
+    }
+
+    VkMemoryRequirements memReqs {};
+    getBufferMemReqs(device, frame.engineBatchBuffer, &memReqs);
+    const uint32_t typeIndex = FindMemoryType(memReqs.memoryTypeBits,
+        VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+    if (typeIndex == UINT32_MAX) {
+        destroyBuffer(device, frame.engineBatchBuffer, nullptr);
+        frame.engineBatchBuffer = VK_NULL_HANDLE;
+        return false;
+    }
+
+    VkMemoryAllocateInfo allocInfo {};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.allocationSize = memReqs.size;
+    allocInfo.memoryTypeIndex = typeIndex;
+    if (allocateMemory(device, &allocInfo, nullptr, &frame.engineBatchMemory) != VK_SUCCESS) {
+        destroyBuffer(device, frame.engineBatchBuffer, nullptr);
+        frame.engineBatchBuffer = VK_NULL_HANDLE;
+        return false;
+    }
+    if (bindBufferMemory(device, frame.engineBatchBuffer, frame.engineBatchMemory, 0) != VK_SUCCESS
+        || mapMemory(device, frame.engineBatchMemory, 0, allocSize, 0, &frame.engineBatchMapped) != VK_SUCCESS) {
+        freeMemory(device, frame.engineBatchMemory, nullptr);
+        destroyBuffer(device, frame.engineBatchBuffer, nullptr);
+        frame.engineBatchMemory = VK_NULL_HANDLE;
+        frame.engineBatchBuffer = VK_NULL_HANDLE;
+        return false;
+    }
+    frame.engineBatchCapacity = allocSize;
+    return true;
+}
+
+void VulkanRenderTarget::Impl::RenderEngineBatches(
+    VkCommandBuffer cmd,
+    const std::vector<VkImpellerDrawBatch>& batches,
+    VkExtent2D extent,
+    uint32_t frameIdx,
+    VkRenderPass renderPass,
+    VkFramebuffer framebuffer)
+{
+    if (batches.empty() || cmd == VK_NULL_HANDLE) return;
+    if (!EnsureEngineBatchPipeline()) return;
+
+    // Pack all batches into a single host-visible buffer: vertices first
+    // (sequential per batch), then indices. Per-batch offsets recorded so
+    // we can issue one bind+draw per batch.
+    struct BatchOffsets {
+        VkDeviceSize vertexByteOffset;
+        VkDeviceSize indexByteOffset;
+        uint32_t indexCount;
+    };
+    std::vector<BatchOffsets> offsets;
+    offsets.reserve(batches.size());
+
+    VkDeviceSize totalVertexBytes = 0;
+    VkDeviceSize totalIndexBytes = 0;
+    for (const auto& batch : batches) {
+        if (batch.indices.empty()) continue;
+        totalVertexBytes += batch.vertices.size() * sizeof(VkImpellerVertex);
+        totalIndexBytes += batch.indices.size() * sizeof(uint32_t);
+    }
+    if (totalVertexBytes == 0 || totalIndexBytes == 0) return;
+
+    const VkDeviceSize totalBytes = totalVertexBytes + totalIndexBytes;
+    if (!EnsureEngineBatchBuffer(frameIdx, totalBytes)) return;
+
+    PerFrameState& frame = perFrameStates_[frameIdx];
+    uint8_t* mapped = static_cast<uint8_t*>(frame.engineBatchMapped);
+    VkDeviceSize vertexCursor = 0;
+    VkDeviceSize indexCursor = totalVertexBytes;
+    for (const auto& batch : batches) {
+        if (batch.indices.empty()) continue;
+        const VkDeviceSize vBytes = batch.vertices.size() * sizeof(VkImpellerVertex);
+        const VkDeviceSize iBytes = batch.indices.size() * sizeof(uint32_t);
+        std::memcpy(mapped + vertexCursor, batch.vertices.data(), vBytes);
+        std::memcpy(mapped + indexCursor, batch.indices.data(), iBytes);
+        offsets.push_back({ vertexCursor, indexCursor, static_cast<uint32_t>(batch.indices.size()) });
+        vertexCursor += vBytes;
+        indexCursor += iBytes;
+    }
+
+    // Begin a load-op render pass on the swap-chain image so we paint over
+    // whatever the GPU-replay path already drew this frame.
+    auto cmdBeginRenderPass = LoadDeviceProc<PFN_vkCmdBeginRenderPass>(getDeviceProcAddr, device, "vkCmdBeginRenderPass");
+    auto cmdEndRenderPass = LoadDeviceProc<PFN_vkCmdEndRenderPass>(getDeviceProcAddr, device, "vkCmdEndRenderPass");
+    auto cmdBindPipeline = LoadDeviceProc<PFN_vkCmdBindPipeline>(getDeviceProcAddr, device, "vkCmdBindPipeline");
+    auto cmdSetViewport = LoadDeviceProc<PFN_vkCmdSetViewport>(getDeviceProcAddr, device, "vkCmdSetViewport");
+    auto cmdSetScissor = LoadDeviceProc<PFN_vkCmdSetScissor>(getDeviceProcAddr, device, "vkCmdSetScissor");
+    auto cmdPushConstants = LoadDeviceProc<PFN_vkCmdPushConstants>(getDeviceProcAddr, device, "vkCmdPushConstants");
+    auto cmdBindVertexBuffers = LoadDeviceProc<PFN_vkCmdBindVertexBuffers>(getDeviceProcAddr, device, "vkCmdBindVertexBuffers");
+    auto cmdBindIndexBuffer = LoadDeviceProc<PFN_vkCmdBindIndexBuffer>(getDeviceProcAddr, device, "vkCmdBindIndexBuffer");
+    auto cmdDrawIndexed = LoadDeviceProc<PFN_vkCmdDrawIndexed>(getDeviceProcAddr, device, "vkCmdDrawIndexed");
+    if (!cmdBeginRenderPass || !cmdEndRenderPass || !cmdBindPipeline || !cmdSetViewport
+        || !cmdSetScissor || !cmdPushConstants || !cmdBindVertexBuffers
+        || !cmdBindIndexBuffer || !cmdDrawIndexed) {
+        return;
+    }
+
+    VkClearValue dummyClear {};
+    VkRenderPassBeginInfo rpBegin {};
+    rpBegin.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+    rpBegin.renderPass = renderPass;
+    rpBegin.framebuffer = framebuffer;
+    rpBegin.renderArea.extent = extent;
+    rpBegin.clearValueCount = 1;
+    rpBegin.pClearValues = &dummyClear;
+    cmdBeginRenderPass(cmd, &rpBegin, VK_SUBPASS_CONTENTS_INLINE);
+
+    cmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, engineBatchPipeline);
+
+    VkViewport viewport {};
+    viewport.width = static_cast<float>(extent.width);
+    viewport.height = static_cast<float>(extent.height);
+    viewport.maxDepth = 1.0f;
+    cmdSetViewport(cmd, 0, 1, &viewport);
+
+    // Push a screen-pixel-to-clip-space MVP. Engine-emitted vertices live in
+    // pixel coordinates already, so the transform is just the standard
+    // ortho mapping (0,0) → top-left, (W,H) → bottom-right.
+    const float w = std::max(1.0f, static_cast<float>(extent.width));
+    const float h = std::max(1.0f, static_cast<float>(extent.height));
+    float mvp[16] = {
+        2.0f / w,      0,             0, 0,
+        0,            -2.0f / h,      0, 0,
+        0,             0,             1, 0,
+        -1.0f,         1.0f,          0, 1
+    };
+
+    cmdBindIndexBuffer(cmd, frame.engineBatchBuffer, 0, VK_INDEX_TYPE_UINT32);
+
+    for (const auto& batch : offsets) {
+        // Per-batch scissor: engine emits screen-space scissor when the user
+        // pushed a clip; otherwise the full viewport.
+        const auto& source = batches[&batch - offsets.data()];
+        VkRect2D scissor {};
+        if (source.hasScissor) {
+            const int32_t left = static_cast<int32_t>(std::max(0.0f, source.scissorL));
+            const int32_t top = static_cast<int32_t>(std::max(0.0f, source.scissorT));
+            const int32_t right = static_cast<int32_t>(std::max(0.0f, source.scissorR));
+            const int32_t bottom = static_cast<int32_t>(std::max(0.0f, source.scissorB));
+            scissor.offset.x = left;
+            scissor.offset.y = top;
+            scissor.extent.width = static_cast<uint32_t>(std::max(0, right - left));
+            scissor.extent.height = static_cast<uint32_t>(std::max(0, bottom - top));
+        } else {
+            scissor.extent = extent;
+        }
+        cmdSetScissor(cmd, 0, 1, &scissor);
+
+        cmdPushConstants(cmd, engineBatchPipelineLayout,
+                         VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp), mvp);
+        const VkDeviceSize vertexOffset = batch.vertexByteOffset;
+        cmdBindVertexBuffers(cmd, 0, 1, &frame.engineBatchBuffer, &vertexOffset);
+        // Index buffer was bound at offset 0; pass per-batch firstIndex
+        // computed from the byte offset relative to that.
+        const uint32_t firstIndex = static_cast<uint32_t>(
+            (batch.indexByteOffset) / sizeof(uint32_t));
+        cmdDrawIndexed(cmd, batch.indexCount, 1, firstIndex, 0, 0);
+    }
+
+    cmdEndRenderPass(cmd);
+}
+
+bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTarget::GpuReplayCommand>& commands,
+                                               const float clearColor[4],
+                                               const std::vector<VkImpellerDrawBatch>* engineBatches)
 {
     BeginFrame();
     if (!device || !swapchain || !commandBuffer) {
@@ -4485,6 +5004,14 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         cmdEndRenderPass(commandBuffer);
     }
 
+    // Drain Impeller / Vello engine batches AFTER all GPU-replay commands so
+    // the engine paints over the existing framebuffer contents using its own
+    // load-op render pass and the Impeller solid-fill pipeline.
+    if (engineBatches && !engineBatches->empty()) {
+        RenderEngineBatches(commandBuffer, *engineBatches, extent,
+                            currentFrame_, frameRenderPass, framebuffers[imageIndex]);
+    }
+
     VkImageMemoryBarrier toPresent {};
     toPresent.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
     toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -4609,6 +5136,8 @@ void VulkanRenderTarget::Impl::Destroy()
     glowPipeline = VK_NULL_HANDLE;
     triangleFillPipelineLayout = VK_NULL_HANDLE;
     triangleFillPipeline = VK_NULL_HANDLE;
+    engineBatchPipelineLayout = VK_NULL_HANDLE;
+    engineBatchPipeline = VK_NULL_HANDLE;
     transitionPipelineLayout = VK_NULL_HANDLE;
     transitionPipeline = VK_NULL_HANDLE;
     transitionDescriptorSetLayout = VK_NULL_HANDLE;
@@ -7113,25 +7642,30 @@ void VulkanRenderTarget::FillPolygon(const float* points, uint32_t pointCount, B
 {
     TouchFrame();
 
-    // Route through Impeller engine when active
-    if (IsImpellerActive() && impellerEngine_ && points && pointCount >= 3) {
-        uint8_t br = 0, bg = 0, bb = 0, ba = 0;
-        if (TryGetSolidBrushColor(brush, bb, bg, br, ba)) {
-            auto t = GetCurrentTransform();
-            float opacity = GetCurrentOpacity();
+    // Route through the active rendering engine when available.
+    if (points && pointCount >= 3) {
+        IRenderingEngine* engine = nullptr;
+        if (IsImpellerActive() && impellerEngine_) engine = impellerEngine_.get();
+        else if (IsVelloActive() && velloEngine_)  engine = velloEngine_.get();
+        if (engine) {
+            uint8_t br = 0, bg = 0, bb = 0, ba = 0;
+            if (TryGetSolidBrushColor(brush, bb, bg, br, ba)) {
+                auto t = GetCurrentTransform();
+                float opacity = GetCurrentOpacity();
 
-            EngineBrushData bd;
-            bd.type = 0;
-            bd.r = br / 255.0f; bd.g = bg / 255.0f; bd.b = bb / 255.0f; bd.a = (ba / 255.0f) * opacity;
+                EngineBrushData bd;
+                bd.type = 0;
+                bd.r = br / 255.0f; bd.g = bg / 255.0f; bd.b = bb / 255.0f; bd.a = (ba / 255.0f) * opacity;
 
-            EngineTransform et;
-            et.m11 = t.m11; et.m12 = t.m12;
-            et.m21 = t.m21; et.m22 = t.m22;
-            et.dx = t.dx; et.dy = t.dy;
+                EngineTransform et;
+                et.m11 = t.m11; et.m12 = t.m12;
+                et.m21 = t.m21; et.m22 = t.m22;
+                et.dx = t.dx; et.dy = t.dy;
 
-            FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
-            if (impellerEngine_->EncodeFillPolygon(points, pointCount, bd, fr, et))
-                return;
+                FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+                if (engine->EncodeFillPolygon(points, pointCount, bd, fr, et))
+                    return;
+            }
         }
     }
 
@@ -7235,25 +7769,30 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
 {
     TouchFrame();
 
-    // Route through Impeller engine when active
-    if (IsImpellerActive() && impellerEngine_) {
-        uint8_t br = 0, bg = 0, bb = 0, ba = 0;
-        if (TryGetSolidBrushColor(brush, bb, bg, br, ba)) {
-            auto t = GetCurrentTransform();
-            float opacity = GetCurrentOpacity();
+    // Route through the active rendering engine when available.
+    {
+        IRenderingEngine* engine = nullptr;
+        if (IsImpellerActive() && impellerEngine_) engine = impellerEngine_.get();
+        else if (IsVelloActive() && velloEngine_)  engine = velloEngine_.get();
+        if (engine) {
+            uint8_t br = 0, bg = 0, bb = 0, ba = 0;
+            if (TryGetSolidBrushColor(brush, bb, bg, br, ba)) {
+                auto t = GetCurrentTransform();
+                float opacity = GetCurrentOpacity();
 
-            EngineBrushData bd;
-            bd.type = 0;
-            bd.r = br / 255.0f; bd.g = bg / 255.0f; bd.b = bb / 255.0f; bd.a = (ba / 255.0f) * opacity;
+                EngineBrushData bd;
+                bd.type = 0;
+                bd.r = br / 255.0f; bd.g = bg / 255.0f; bd.b = bb / 255.0f; bd.a = (ba / 255.0f) * opacity;
 
-            EngineTransform et;
-            et.m11 = t.m11; et.m12 = t.m12;
-            et.m21 = t.m21; et.m22 = t.m22;
-            et.dx = t.dx; et.dy = t.dy;
+                EngineTransform et;
+                et.m11 = t.m11; et.m12 = t.m12;
+                et.m21 = t.m21; et.m22 = t.m22;
+                et.dx = t.dx; et.dy = t.dy;
 
-            FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
-            if (impellerEngine_->EncodeFillPath(startX, startY, commands, commandLength, bd, fr, et))
-                return;
+                FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
+                if (engine->EncodeFillPath(startX, startY, commands, commandLength, bd, fr, et))
+                    return;
+            }
         }
     }
 
@@ -7338,25 +7877,30 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
     TouchFrame();
 
     // Route through Impeller engine when active
-    if (IsImpellerActive() && impellerEngine_) {
-        uint8_t br = 0, bg = 0, bb = 0, ba = 0;
-        if (TryGetSolidBrushColor(brush, bb, bg, br, ba)) {
-            auto t = GetCurrentTransform();
-            float opacity = GetCurrentOpacity();
+    {
+        IRenderingEngine* engine = nullptr;
+        if (IsImpellerActive() && impellerEngine_) engine = impellerEngine_.get();
+        else if (IsVelloActive() && velloEngine_)  engine = velloEngine_.get();
+        if (engine) {
+            uint8_t br = 0, bg = 0, bb = 0, ba = 0;
+            if (TryGetSolidBrushColor(brush, bb, bg, br, ba)) {
+                auto t = GetCurrentTransform();
+                float opacity = GetCurrentOpacity();
 
-            EngineBrushData bd;
-            bd.type = 0;
-            bd.r = br / 255.0f; bd.g = bg / 255.0f; bd.b = bb / 255.0f; bd.a = (ba / 255.0f) * opacity;
+                EngineBrushData bd;
+                bd.type = 0;
+                bd.r = br / 255.0f; bd.g = bg / 255.0f; bd.b = bb / 255.0f; bd.a = (ba / 255.0f) * opacity;
 
-            EngineTransform et;
-            et.m11 = t.m11; et.m12 = t.m12;
-            et.m21 = t.m21; et.m22 = t.m22;
-            et.dx = t.dx; et.dy = t.dy;
+                EngineTransform et;
+                et.m11 = t.m11; et.m12 = t.m12;
+                et.m21 = t.m21; et.m22 = t.m22;
+                et.dx = t.dx; et.dy = t.dy;
 
-            if (impellerEngine_->EncodeStrokePath(startX, startY, commands, commandLength,
-                    bd, strokeWidth, closed, lineJoin, miterLimit, lineCap,
-                    dashPattern, dashCount, dashOffset, et))
-                return;
+                if (engine->EncodeStrokePath(startX, startY, commands, commandLength,
+                        bd, strokeWidth, closed, lineJoin, miterLimit, lineCap,
+                        dashPattern, dashCount, dashOffset, et))
+                    return;
+            }
         }
     }
 
@@ -8110,10 +8654,27 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         static_cast<uint8_t>(fontStyle)
     };
 
+    // Layout-box alignment offset. The cached bitmap is tightly sized to the
+    // measured (renderedW, renderedH); GDI used to realize DT_CENTER/RIGHT
+    // and DT_VCENTER/BOTTOM by offsetting glyphs inside the (bitmapWidth,
+    // bitmapHeight) layout box. We must reproduce that offset on the record
+    // side or anything centered/trailing/vcentered/bottom-aligned shifts to
+    // the top-left corner of its layout box (PR #114 codex review P1).
+    auto computeOffset = [](UINT flags, UINT bitFar, UINT bitMid, int box, int rendered) {
+        const int slack = box - rendered;
+        if (slack <= 0) return 0.0f;
+        if (flags & bitFar) return static_cast<float>(slack);
+        if (flags & bitMid) return slack * 0.5f;
+        return 0.0f;
+    };
+    const float xOffset = computeOffset(drawFlags, DT_RIGHT, DT_CENTER, bitmapWidth, renderedW);
+    const float yOffset = computeOffset(drawFlags, DT_BOTTOM, DT_VCENTER, bitmapHeight, renderedH);
+
     if (auto hit = textCache_->FindAndTouch(keyView)) {
         // Hot path: O(1) hash lookup + O(1) list splice + a shared_ptr ref-bump.
         // The DT_CALCRECT call above is the only GDI work we did.
-        RecordCachedTextBitmap(std::move(hit->pixels), hit->width, hit->height, x, y);
+        RecordCachedTextBitmap(std::move(hit->pixels), hit->width, hit->height,
+                               x + xOffset, y + yOffset);
         return;
     }
 
@@ -8195,7 +8756,8 @@ void VulkanRenderTarget::RenderText(const wchar_t* text, uint32_t textLength, Te
         renderedW,
         renderedH);
 
-    RecordCachedTextBitmap(std::move(pixels), renderedW, renderedH, x, y);
+    RecordCachedTextBitmap(std::move(pixels), renderedW, renderedH,
+                           x + xOffset, y + yOffset);
 #else
     // FreeType + HarfBuzz glyph atlas text rendering (Android / Linux)
     // Render glyphs into a temporary BGRA bitmap in local (DIP) space,
@@ -8358,28 +8920,21 @@ void VulkanRenderTarget::DrawBackdropFilter(float x, float y, float w, float h, 
     // mid-frame would force every Draw* through the slow CPU path.
     EnsureCpuRasterization();
 
-    // GPU path short-circuit. With cpuRasterNeeded_=false, pixelBuffer_ is the
-    // initial 4.6 MB of zeros (never written to since ResizeCpuCanvas), so
-    // BlurPixels would copy 4.6 MB twice and run a double pass over zeros, and
-    // TryRecordGpuBackdropCommand would copy 4.6 MB of zeros into a replay
-    // command that the GPU shader then samples to produce a blank backdrop —
-    // about 6 ms of CPU per call to render literally nothing. The proper long-
-    // term fix is to make the GPU backdrop command sample the swap-chain image
-    // directly (see EnsureCpuRasterization comment); until that lands, the
-    // visual is "blank backdrop" with or without this short-circuit, so we just
-    // skip the wasted work. Profile (Gallery, Vulkan): 57% → ~0% of frame CPU.
-    if (!cpuRasterNeeded_) {
-        return;
-    }
-
     if (pixelBuffer_.empty()) {
         return;
     }
 
     uint8_t tintB = 0, tintG = 0, tintR = 0;
     ParseTintColor(materialTint, 1.0f, 1.0f, 1.0f, tintB, tintG, tintR);
-    auto blurred = BlurPixels(pixelBuffer_, width_, height_, std::max(1, static_cast<int>(std::round(blurRadius))), x, y, w, h);
+
     PushTemporaryClip(x, y, w, h, cornerRadiusTL, cornerRadiusTL);
+
+    // Always record the GPU command. backdrop_quad.frag.hlsl enforces a
+    // non-zero alpha floor (`max(blurred.a, 0.08 + tintAlpha*0.25)`), so
+    // even when the GPU replay path leaves pixelBuffer_ as initial zeros
+    // the shader still composites a visible tint/glass overlay. PR #114
+    // codex review (P1) flagged that the previous GPU-path short-circuit
+    // dropped this overlay entirely.
     if (!TryRecordGpuBackdropCommand(
             pixelBuffer_,
             static_cast<uint32_t>(width_),
@@ -8401,22 +8956,26 @@ void VulkanRenderTarget::DrawBackdropFilter(float x, float y, float w, float h, 
             0.0f)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
-    BlendBuffer(blurred, width_, height_, x, y, w, h, 1.0f);
 
-    VulkanSolidBrush tintBrush(
-        static_cast<float>(tintR) / 255.0f,
-        static_cast<float>(tintG) / 255.0f,
-        static_cast<float>(tintB) / 255.0f,
-        std::clamp(tintOpacity, 0.0f, 1.0f));
-    FillSolidRect(
-        static_cast<int>(std::floor(x)),
-        static_cast<int>(std::floor(y)),
-        static_cast<int>(std::ceil(x + w)),
-        static_cast<int>(std::ceil(y + h)),
-        tintB, tintG, tintR,
-        static_cast<uint8_t>(std::clamp(tintOpacity, 0.0f, 1.0f) * 255.0f + 0.5f));
+    // CPU compositing only when we're already on the CPU rasterization path.
+    // BlurPixels is ~6 ms of work on a 4.6 MB buffer; on the GPU path its
+    // result is consumed only by BlendBuffer (which self-guards on
+    // cpuRasterNeeded_), so the entire chain — blur, blend, tint fill — is
+    // wasted. Skipping it keeps the GPU-side overlay intact (see above)
+    // while removing the CPU spike that originally motivated this code path.
+    if (cpuRasterNeeded_) {
+        auto blurred = BlurPixels(pixelBuffer_, width_, height_, std::max(1, static_cast<int>(std::round(blurRadius))), x, y, w, h);
+        BlendBuffer(blurred, width_, height_, x, y, w, h, 1.0f);
+        FillSolidRect(
+            static_cast<int>(std::floor(x)),
+            static_cast<int>(std::floor(y)),
+            static_cast<int>(std::ceil(x + w)),
+            static_cast<int>(std::ceil(y + h)),
+            tintB, tintG, tintR,
+            static_cast<uint8_t>(std::clamp(tintOpacity, 0.0f, 1.0f) * 255.0f + 0.5f));
+    }
+
     PopTemporaryClip();
-    (void)tintBrush;
 }
 
 void VulkanRenderTarget::DrawGlowingBorderHighlight(float x, float y, float w, float h, float animationPhase, float glowColorR, float glowColorG, float glowColorB, float strokeWidth, float trailLength, float dimOpacity, float screenWidth, float screenHeight)
@@ -8827,33 +9386,37 @@ void VulkanRenderTarget::DrawLiquidGlass(float x, float y, float w, float h, flo
     // CPU blur fallback, so bring pixelBuffer_ up to date before either path.
     EnsureCpuRasterization();
 
-    // Same short-circuit as DrawBackdropFilter: when on the GPU replay path,
-    // pixelBuffer_ is the initial zeros and feeding it through BlurPixels +
-    // GPU upload renders a blank LiquidGlass at the cost of a 4.6 MB blur
-    // pass. The blank visual is unchanged with or without the short-circuit.
-    if (!cpuRasterNeeded_) {
-        return;
-    }
+    PushTemporaryClip(x, y, w, h, cornerRadius, cornerRadius);
 
+    // Always record the GPU command. liquid_glass_quad.frag.hlsl enforces a
+    // non-zero alpha floor (`max(glass.a, 0.15 + tintAlpha*0.35)`), so the
+    // shader still composites a visible glass/tint layer even when the GPU
+    // replay path leaves pixelBuffer_ as initial zeros. PR #114 codex
+    // review (P1) flagged that the previous GPU-path short-circuit dropped
+    // this overlay entirely.
     if (!TryRecordGpuLiquidGlassCommand(pixelBuffer_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, cornerRadius, blurRadius, refractionAmount, chromaticAberration, tintR, tintG, tintB, tintOpacity, lightX, lightY, highlightBoost)) {
         /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
     }
 
-    auto blurred = BlurPixels(pixelBuffer_, width_, height_, std::max(1, static_cast<int>(std::round(blurRadius))), x, y, w, h);
-    PushTemporaryClip(x, y, w, h, cornerRadius, cornerRadius);
-    BlendBuffer(blurred, width_, height_, x, y, w, h, 1.0f);
+    // CPU compositing only when we're already on the CPU rasterization path
+    // (see DrawBackdropFilter for the same gating rationale).
+    if (cpuRasterNeeded_) {
+        auto blurred = BlurPixels(pixelBuffer_, width_, height_, std::max(1, static_cast<int>(std::round(blurRadius))), x, y, w, h);
+        BlendBuffer(blurred, width_, height_, x, y, w, h, 1.0f);
 
-    const uint8_t b = static_cast<uint8_t>(std::clamp(tintB, 0.0f, 1.0f) * 255.0f + 0.5f);
-    const uint8_t g = static_cast<uint8_t>(std::clamp(tintG, 0.0f, 1.0f) * 255.0f + 0.5f);
-    const uint8_t r = static_cast<uint8_t>(std::clamp(tintR, 0.0f, 1.0f) * 255.0f + 0.5f);
-    FillSolidRect(
-        static_cast<int>(std::floor(x)),
-        static_cast<int>(std::floor(y)),
-        static_cast<int>(std::ceil(x + w)),
-        static_cast<int>(std::ceil(y + h)),
-        b, g, r,
-        static_cast<uint8_t>(std::clamp(tintOpacity, 0.0f, 1.0f) * 255.0f + 0.5f));
-    StrokeRoundedRectApprox(x, y, w, h, cornerRadius, cornerRadius, 1.5f, 255, 255, 255, 80);
+        const uint8_t b = static_cast<uint8_t>(std::clamp(tintB, 0.0f, 1.0f) * 255.0f + 0.5f);
+        const uint8_t g = static_cast<uint8_t>(std::clamp(tintG, 0.0f, 1.0f) * 255.0f + 0.5f);
+        const uint8_t r = static_cast<uint8_t>(std::clamp(tintR, 0.0f, 1.0f) * 255.0f + 0.5f);
+        FillSolidRect(
+            static_cast<int>(std::floor(x)),
+            static_cast<int>(std::floor(y)),
+            static_cast<int>(std::ceil(x + w)),
+            static_cast<int>(std::ceil(y + h)),
+            b, g, r,
+            static_cast<uint8_t>(std::clamp(tintOpacity, 0.0f, 1.0f) * 255.0f + 0.5f));
+        StrokeRoundedRectApprox(x, y, w, h, cornerRadius, cornerRadius, 1.5f, 255, 255, 255, 80);
+    }
+
     PopTemporaryClip();
 }
 
