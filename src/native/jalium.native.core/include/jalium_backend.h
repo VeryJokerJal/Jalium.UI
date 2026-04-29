@@ -657,6 +657,30 @@ public:
         return JALIUM_OK;
     }
 
+    // ========================================================================
+    // Idle-Resource Reclamation
+    // ========================================================================
+
+    /// Drops any reusable GPU / CPU caches the backend has accumulated during
+    /// rendering. Invoked by the managed-side idle reclaimer
+    /// (`app.UseIdleResourceReclamation()`) on a periodic tick — typically once
+    /// per second — so backends can shrink their path-geometry, text-bitmap,
+    /// glyph-atlas, and gradient caches when the application has been quiet.
+    ///
+    /// Contract:
+    /// * MUST be safe to call from the UI / render thread between frames. Implementations
+    ///   that touch GPU resources still in use by an in-flight frame are responsible for
+    ///   deferring the destroy through the backend's own frame-fence machinery
+    ///   (e.g. Vulkan's PerFrameState ring, D3D12's BeginFrame boundary).
+    /// * MUST be idempotent — repeated calls with no fresh activity in between should
+    ///   be cheap no-ops, not progressively destroy more.
+    /// * MUST NOT throw or invalidate any JaliumNativeBitmap / JaliumGeometry handles
+    ///   that managed code still holds; only internal lookup caches go.
+    ///
+    /// Default implementation returns JALIUM_OK with no work done so backends that
+    /// have nothing to reclaim do not need to override.
+    virtual JaliumResult ReclaimIdleResources() { return JALIUM_OK; }
+
 protected:
     int32_t width_ = 0;
     int32_t height_ = 0;
@@ -713,6 +737,14 @@ public:
     virtual ~Bitmap() = default;
     virtual uint32_t GetWidth() const = 0;
     virtual uint32_t GetHeight() const = 0;
+
+    /// Hot-update packed BGRA8 pixels in place. Default implementation refuses;
+    /// D3D12 / Vulkan override to skip per-frame texture / VkImage recreation.
+    /// Returns true on success. Stride is the source row pitch in bytes.
+    virtual bool UpdatePackedPixels(const uint8_t* /*pixels*/, uint32_t /*width*/,
+                                    uint32_t /*height*/, uint32_t /*stride*/) {
+        return false;
+    }
 };
 
 } // namespace jalium

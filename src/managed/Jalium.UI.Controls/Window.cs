@@ -2153,12 +2153,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     public virtual void Show()
     {
+        // Optional startup tracing — set JALIUM_STARTUP_TRACE=1 to print one summary
+        // line per major phase to Console.Error.  Off by default, no production cost.
+        bool trace = Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") == "1";
+        long tShowEnter = trace ? Stopwatch.GetTimestamp() : 0;
+        long tStyles = 0, tEnsureHandle = 0, tRefreshRate = 0, tStartupLoc = 0;
+        long tPrepareSize = 0, tFirstFrame = 0, tShowWindow = 0, tEvents = 0;
+
         // Ensure implicit styles are applied to the entire visual tree.
         // This handles the case where elements (e.g., TitleBar) were created in the
         // Window constructor BEFORE the theme was loaded by the Xaml module initializer.
         // In non-AOT mode, the theme loads lazily when XamlReader is first accessed
         // (during InitializeComponent), but TitleBar is created earlier in Window().
         EnsureImplicitStyles();
+        if (trace) tStyles = Stopwatch.GetTimestamp();
 
         _dispatcher = Dispatcher.CurrentDispatcher;
         CompositionTarget.FrameStarting += OnFrameStarting;
@@ -2169,13 +2177,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         var desiredState = WindowState;
 
         EnsureHandle();
+        if (trace) tEnsureHandle = Stopwatch.GetTimestamp();
 
         // Detect monitor refresh rate and update CompositionTarget for adaptive frame rate
         var refreshRate = DetectMonitorRefreshRate();
         CompositionTarget.UpdateRefreshRate(refreshRate);
+        if (trace) tRefreshRate = Stopwatch.GetTimestamp();
 
         // Apply startup location before showing
         ApplyWindowStartupLocation();
+        if (trace) tStartupLoc = Stopwatch.GetTimestamp();
 
         var showCmd = desiredState switch
         {
@@ -2192,6 +2203,26 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             try { WindowState = desiredState; }
             finally { _isSyncingWindowState = false; }
         }
+        // Two-phase startup display:
+        //   1) Pre-size the swap chain to the target monitor for Maximized/FullScreen
+        //      so we don't pay a second full-render after ShowWindow's WM_SIZE.
+        //   2) Present a single ClearBackground frame to the swap chain BEFORE the
+        //      HWND becomes visible — the back-buffer is no longer the
+        //      uninitialized memory that DWM commonly shows as white during the
+        //      window-visible-but-content-not-yet-rendered gap.
+        //   3) ShowWindow — DWM picks up the cleared back-buffer immediately, so
+        //      the user sees the window appear with its final background color
+        //      (no white flash, no delayed window).
+        //   4) ForceRenderFrame — the full first frame is rendered synchronously
+        //      AFTER the window is on-screen.  The user perceives "window opens
+        //      instantly, content paints a moment later" instead of "window
+        //      doesn't appear for 400 ms" or "window opens white for 500 ms".
+        PrepareInitialRenderTargetSize(desiredState);
+        if (trace) tPrepareSize = Stopwatch.GetTimestamp();
+
+        PaintInitialBackgroundFrame();
+        long tPaintBg = trace ? Stopwatch.GetTimestamp() : 0;
+
         if (_platformWindow != null)
         {
             _platformWindow.Show();
@@ -2203,23 +2234,28 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             _ = ShowWindow(Handle, showCmd);
             // Fullscreen needs a second step on Win32: strip the frame + resize
             // to cover the monitor. Done AFTER ShowWindow so the HWND has valid
-            // window rect / monitor assignment.
+            // window rect / monitor assignment.  The pre-show background frame
+            // above already covered the target monitor dimensions, so
+            // EnterFullScreen's WM_SIZE arrives at the correct size.
             if (desiredState == WindowState.FullScreen)
             {
                 EnterFullScreen();
             }
         }
+        if (trace) tShowWindow = Stopwatch.GetTimestamp();
+
+        // First full frame — runs AFTER the window is visible so the user
+        // perceives an instant "window opens" rather than a delayed launch.
+        // The UI thread blocks here for the visual tree's measure/arrange
+        // and full render, but the window is already on screen showing the
+        // pre-show background frame, so the wait reads as "content appearing"
+        // rather than "app stuck loading".
+        TryRenderInitialFrame();
+        if (trace) tFirstFrame = Stopwatch.GetTimestamp();
 
         // SWP_FRAMECHANGED for custom title bar was already applied in EnsureHandle
         // (combined with DPI adjustment), so no additional call is needed here.
         // Removing the duplicate saves a DWM roundtrip (~10-50ms).
-
-        // Render the first frame. UpdateWindow is intentionally omitted —
-        // ForceRenderFrame already performs a synchronous full render (layout +
-        // draw + present), and the preceding ShowWindow triggers a WM_PAINT
-        // that RenderFrame would handle.  Calling both caused two redundant
-        // full renders, adding 50-200ms of blocking time.
-        ForceRenderFrame();
 
         OnLoaded(new RoutedEventArgs());
 
@@ -2230,6 +2266,214 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         OnShown(EventArgs.Empty);
+        if (trace)
+        {
+            tEvents = Stopwatch.GetTimestamp();
+            static long Ms(long start, long end) =>
+                (long)Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
+            // Measure the *real* user-perceived startup window: from process
+            // creation (CLR boot + JIT + assembly load + Main entry + everything
+            // before this constructor) to when ShowWindow returns.  Process.StartTime
+            // is set by the kernel at CreateProcess time and is accurate to ~10 ms.
+            // Split into three intervals so we can attribute the cost:
+            //   process-start → module-load: CLR boot + Jalium.UI.Controls JIT/load
+            //   module-load   → app-ctor:    user Main + AppBuilder + builder.Build
+            //   app-ctor      → window-visible: framework Application ctor + Window.Show
+            double processToVisibleMs = 0, processToFirstFrameMs = 0;
+            double processToModuleLoadMs = 0, moduleLoadToAppCtorMs = 0, appCtorToVisibleMs = 0;
+            long appCtorExit = Application.ApplicationCtorExitTimestamp;
+            try
+            {
+                var processStart = System.Diagnostics.Process.GetCurrentProcess().StartTime;
+                processToVisibleMs = (DateTime.Now.Subtract(TimeSpan.FromMilliseconds(Ms(tShowWindow, tEvents))) - processStart).TotalMilliseconds;
+                processToFirstFrameMs = (DateTime.Now.Subtract(TimeSpan.FromMilliseconds(Ms(tFirstFrame, tEvents))) - processStart).TotalMilliseconds;
+
+                // Four-segment breakdown using the inline static timestamps:
+                //   process-start → module-load (GpuPrewarmInitializer)
+                //   module-load   → app-ctor enter (CLR + Main + AppBuilder.Build)
+                //   app-ctor (91 ms or so) — captured by Application's own trace
+                //   app-ctor exit → Show entry (user MainWindow construction)
+                //   Show entry → ShowWindow (framework)
+                long moduleLoad = GpuPrewarmInitializer.ModuleLoadTimestamp;
+                long appCtorEnter = Application.ApplicationCtorEnterTimestamp;
+                if (moduleLoad != 0 && appCtorEnter != 0)
+                {
+                    moduleLoadToAppCtorMs = Ms(moduleLoad, appCtorEnter);
+                    appCtorToVisibleMs = Ms(appCtorEnter, tShowWindow);
+                    processToModuleLoadMs = processToVisibleMs - moduleLoadToAppCtorMs - appCtorToVisibleMs;
+                }
+            }
+            catch { /* StartTime can fail under some sandboxes; report only Show-relative timing */ }
+
+            Console.Error.WriteLine(
+                $"[Jalium.UI startup] Window.Show: total {Ms(tShowEnter, tEvents)}ms " +
+                $"(styles {Ms(tShowEnter, tStyles)}ms, EnsureHandle {Ms(tStyles, tEnsureHandle)}ms, " +
+                $"refresh-rate {Ms(tEnsureHandle, tRefreshRate)}ms, startup-loc {Ms(tRefreshRate, tStartupLoc)}ms, " +
+                $"prepare-size {Ms(tStartupLoc, tPrepareSize)}ms, paint-bg {Ms(tPrepareSize, tPaintBg)}ms, " +
+                $"ShowWindow {Ms(tPaintBg, tShowWindow)}ms, first-frame {Ms(tShowWindow, tFirstFrame)}ms, " +
+                $"events {Ms(tFirstFrame, tEvents)}ms)");
+            double appCtorBodyMs = (Application.ApplicationCtorEnterTimestamp != 0 && appCtorExit != 0)
+                ? Ms(Application.ApplicationCtorEnterTimestamp, appCtorExit) : 0;
+            double userMainWindowMs = (appCtorExit != 0)
+                ? Ms(appCtorExit, tShowEnter) : 0;
+            double frameworkShowMs = Ms(tShowEnter, tShowWindow);
+
+            Console.Error.WriteLine(
+                $"[Jalium.UI startup] === PROCESS-START → WINDOW-VISIBLE: {processToVisibleMs:F0}ms === " +
+                $"(process→module {processToModuleLoadMs:F0}ms, " +
+                $"module→app-ctor {moduleLoadToAppCtorMs:F0}ms, " +
+                $"app-ctor-body {appCtorBodyMs:F0}ms, " +
+                $"user-MainWindow-construction {userMainWindowMs:F0}ms, " +
+                $"framework-Show {frameworkShowMs:F0}ms; " +
+                $"to first-frame {processToFirstFrameMs:F0}ms)");
+
+            // jalxaml load aggregate: how much of the user-MainWindow-construction
+            // is the framework's XamlReader.LoadComponent — counts every
+            // InitializeComponent invocation across MainWindow + each Page +
+            // every ResourceDictionary parsed from a code path under the user app.
+            long xamlCalls = Interlocked.Read(ref XamlLoadStartupTrace.LoadCallCount);
+            long xamlTicks = Interlocked.Read(ref XamlLoadStartupTrace.LoadTotalTicks);
+            double xamlTotalMs = xamlTicks > 0
+                ? Stopwatch.GetElapsedTime(0, xamlTicks).TotalMilliseconds
+                : 0;
+            Console.Error.WriteLine(
+                $"[Jalium.UI startup]   jalxaml deserialization: {xamlCalls} LoadComponent calls totaling {xamlTotalMs:F0}ms " +
+                $"(avg {(xamlCalls > 0 ? xamlTotalMs / xamlCalls : 0):F1}ms/call)");
+        }
+    }
+
+    /// <summary>
+    /// Aligns the render target with the monitor work / display area before the
+    /// pre-show first frame is rendered, so Maximized/FullScreen startup paints
+    /// directly at the final dimensions instead of paying a second full-render
+    /// after ShowWindow's WM_SIZE arrives.  No-op for Normal/Minimized startup
+    /// and for the cross-platform PlatformWindow path.
+    /// </summary>
+    private void PrepareInitialRenderTargetSize(WindowState desiredState)
+    {
+        if (_platformWindow != null || Handle == nint.Zero)
+        {
+            return;
+        }
+
+        if (desiredState != WindowState.Maximized && desiredState != WindowState.FullScreen)
+        {
+            return;
+        }
+
+        if (RenderTarget == null || !RenderTarget.IsValid)
+        {
+            return;
+        }
+
+        var monitor = MonitorFromWindow(Handle, MONITOR_DEFAULTTONEAREST);
+        if (monitor == nint.Zero)
+        {
+            return;
+        }
+
+        var mi = new MONITORINFO { cbSize = (uint)Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(monitor, ref mi))
+        {
+            return;
+        }
+
+        // Maximized fills the work area (excludes taskbar); FullScreen covers the
+        // entire monitor.  Mirrors the post-ShowWindow rcWork / rcMonitor split
+        // used by EnterFullScreen.
+        var rc = desiredState == WindowState.FullScreen ? mi.rcMonitor : mi.rcWork;
+        int targetPhysicalWidth = rc.right - rc.left;
+        int targetPhysicalHeight = rc.bottom - rc.top;
+        if (targetPhysicalWidth <= 0 || targetPhysicalHeight <= 0)
+        {
+            return;
+        }
+
+        int currentPhysicalWidth = (int)(Width * _dpiScale);
+        int currentPhysicalHeight = (int)(Height * _dpiScale);
+        if (currentPhysicalWidth == targetPhysicalWidth && currentPhysicalHeight == targetPhysicalHeight)
+        {
+            return;
+        }
+
+        // Reuse the standard WM_SIZE handler so logical Width/Height, the swap-chain
+        // resize, RequestFullInvalidation and InvalidateMeasure all stay in sync —
+        // identical to what would happen post-ShowWindow, just performed while the
+        // HWND is still hidden.
+        OnSizeChanged(targetPhysicalWidth, targetPhysicalHeight);
+    }
+
+    /// <summary>
+    /// Presents a single ClearBackground frame to the swap chain while the HWND
+    /// is still hidden.  This puts a known background color into the back-buffer
+    /// before DWM ever shows the window, so the moment ShowWindow makes the
+    /// HWND visible the compositor picks up that cleared buffer instead of the
+    /// uninitialized memory that drivers commonly display as a white flash.
+    /// Cheap (single Clear + Present, ~3-10 ms) compared to the full first
+    /// frame, so it does not delay window visibility appreciably.  The full
+    /// visual tree render still happens via <see cref="TryRenderInitialFrame"/>
+    /// after ShowWindow.
+    /// </summary>
+    private void PaintInitialBackgroundFrame()
+    {
+        if (RenderTarget is null || !RenderTarget.IsValid)
+        {
+            return;
+        }
+
+        try
+        {
+            if (!RenderTarget.TryBeginDraw())
+            {
+                return;
+            }
+
+            try
+            {
+                ClearBackground();
+            }
+            finally
+            {
+                _ = RenderTarget.TryEndDraw();
+            }
+        }
+        catch (RenderPipelineException)
+        {
+            // Best-effort — if the platform refuses Present before window is
+            // shown (rare on Win32, possible on some cross-platform surfaces),
+            // fall through silently.  ShowWindow + the post-show first frame
+            // will still paint correctly; user just sees the legacy uninitialized
+            // back-buffer for the brief instant before the full first frame.
+        }
+    }
+
+    /// <summary>
+    /// Renders the first full visual-tree frame.  Called AFTER ShowWindow so the
+    /// window is already on-screen (showing the pre-show ClearBackground frame
+    /// painted by <see cref="PaintInitialBackgroundFrame"/>) — the synchronous
+    /// layout + render + Present blocks the UI thread, but to the user this
+    /// reads as "content appearing" rather than "the app froze on launch".
+    /// Wrapped for the cross-platform PlatformWindow path because some
+    /// surfaces (e.g. unmapped X11, unattached Android SurfaceView) may have
+    /// edge-case Present failures.
+    /// </summary>
+    private void TryRenderInitialFrame()
+    {
+        if (_platformWindow != null)
+        {
+            try
+            {
+                ForceRenderFrame();
+            }
+            catch (RenderPipelineException ex)
+            {
+                Console.Error.WriteLine($"[Show] post-show ForceRenderFrame failed on platform window: {ex.Message}");
+            }
+        }
+        else
+        {
+            ForceRenderFrame();
+        }
     }
 
     /// <summary>
@@ -2632,9 +2876,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
 
         // ---- Windows code path (Win32) ----
+        bool trace = Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") == "1";
+        long tEnter = trace ? Stopwatch.GetTimestamp() : 0;
+        long tRegisterClass = 0, tCreateWindow = 0, tSetWindowPos = 0, tEnsureRT = 0, tBackdrop = 0, tOleDrop = 0;
 
         // Register window class if needed
         RegisterWindowClass();
+        if (trace) tRegisterClass = Stopwatch.GetTimestamp();
 
         // Determine window style based on WindowStyle/ResizeMode/TitleBarStyle.
         // For custom title bar we keep standard caption style bits and remove the
@@ -2692,6 +2940,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             nint.Zero,
             GetModuleHandle(null),
             nint.Zero);
+        if (trace) tCreateWindow = Stopwatch.GetTimestamp();
 
         if (Handle == nint.Zero)
         {
@@ -2744,6 +2993,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 needsDpiAdjust ? physicalHeight : 0,
                 needsDpiAdjust ? (flags | SWP_NOMOVE) : flags);
         }
+        if (trace) tSetWindowPos = Stopwatch.GetTimestamp();
 
         // Create render target for this window.
         // During GPU switching this can fail transiently; defer to render-loop recovery.
@@ -2755,19 +3005,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             ScheduleRenderRecoveryRetry();
         }
+        if (trace) tEnsureRT = Stopwatch.GetTimestamp();
 
         // Apply system backdrop after render target is ready
         if (SystemBackdrop != WindowBackdropType.None)
         {
             ApplySystemBackdrop(SystemBackdrop);
         }
+        if (trace) tBackdrop = Stopwatch.GetTimestamp();
 
         // Register OLE drop target for external drag-and-drop (e.g. files from Explorer)
         OleDropTarget.RegisterWindow(this);
+        if (trace) tOleDrop = Stopwatch.GetTimestamp();
 
         UpdateInputMethodAssociation();
 
         OnSourceInitialized(EventArgs.Empty);
+
+        if (trace)
+        {
+            static long Ms(long start, long end) =>
+                (long)Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
+            long tExit = Stopwatch.GetTimestamp();
+            Console.Error.WriteLine(
+                $"[Jalium.UI startup]   EnsureHandle breakdown: total {Ms(tEnter, tExit)}ms " +
+                $"(register-class {Ms(tEnter, tRegisterClass)}ms, CreateWindowEx {Ms(tRegisterClass, tCreateWindow)}ms, " +
+                $"SetWindowPos {Ms(tCreateWindow, tSetWindowPos)}ms, EnsureRenderTarget {Ms(tSetWindowPos, tEnsureRT)}ms, " +
+                $"backdrop {Ms(tEnsureRT, tBackdrop)}ms, ole-drop {Ms(tBackdrop, tOleDrop)}ms, source-init {Ms(tOleDrop, tExit)}ms)");
+        }
     }
 
     /// <summary>
@@ -3870,11 +4135,15 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        bool trace = Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") == "1";
+        long tEnter = trace ? Stopwatch.GetTimestamp() : 0;
+
         var requestedBackend = _renderBackendOverride != RenderBackend.Auto
             ? _renderBackendOverride
             : RenderBackend.Auto;
 
         var context = RenderContext.GetOrCreateCurrent(requestedBackend, forceReplace: forceNewContext);
+        long tContext = trace ? Stopwatch.GetTimestamp() : 0;
 
         try
         {
@@ -3915,6 +4184,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Set D2D DPI so DIP coordinates map correctly to physical pixels
         float dpi = (float)(_dpiScale * 96.0);
         RenderTarget?.SetDpi(dpi, dpi);
+
+        if (trace)
+        {
+            static long Ms(long start, long end) =>
+                (long)Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
+            long tExit = Stopwatch.GetTimestamp();
+            Console.Error.WriteLine(
+                $"[Jalium.UI startup]     EnsureRenderTarget: total {Ms(tEnter, tExit)}ms " +
+                $"(GetOrCreateCurrent {Ms(tEnter, tContext)}ms — was the bg prewarm done?, " +
+                $"CreateRenderTarget+swap-chain {Ms(tContext, tExit)}ms)");
+        }
     }
 
     /// <summary>
@@ -4262,6 +4542,34 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         return handle != nint.Zero && _windows.TryGetValue(handle, out var window)
             ? window
             : null;
+    }
+
+    /// <summary>
+    /// Snapshots the set of currently-open <see cref="Window"/> instances.
+    /// The returned array is a copy — safe to iterate without holding any
+    /// lock and resilient to windows opening/closing during traversal.
+    /// </summary>
+    /// <remarks>
+    /// Used by the idle-resource reclaimer to walk every active render
+    /// target and ask its backend to drop accumulated caches. The list is
+    /// snapshotted intentionally: callers that want a live view need to
+    /// re-snapshot each frame.
+    /// </remarks>
+    internal static Window[] SnapshotOpenWindows()
+    {
+        // _windows is mutated only on the UI thread (WM_NCCREATE / WM_DESTROY
+        // run inside the message pump); the reclaimer is also on the UI
+        // thread, so a plain ToArray() is race-free in practice. We still
+        // copy to a fresh array so iteration cannot be invalidated by a
+        // window closing later in the same call chain (e.g. a reclaim
+        // implementation that destroys a popup).
+        var result = new Window[_windows.Count];
+        var i = 0;
+        foreach (var w in _windows.Values)
+        {
+            result[i++] = w;
+        }
+        return result;
     }
 
     /// <summary>
@@ -4675,6 +4983,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 {
                     if ((int)lParam == -25 /* UiaRootObjectId */)
                     {
+                        // First WM_GETOBJECT means a real UIA client (Narrator,
+                        // Inspect, an automation test harness, etc.) is asking
+                        // for the root provider. Wire the event sink now so
+                        // subsequent RaiseAutomationEvent/PropertyChanged calls
+                        // forward into UIAutomationCore — but not a tick earlier,
+                        // because doing so during Application ctor would force
+                        // UIAutomationCore.dll to load on every process startup
+                        // even when no UIA client is ever attached.
+                        Jalium.UI.Automation.AutomationPeer.EventSink ??=
+                            new Automation.Uia.UiaAutomationEventSink();
+
                         var peer = window.GetAutomationPeer();
                         if (peer != null)
                         {
@@ -5227,15 +5546,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 case WM_SETFOCUS:
                     window.OnSetFocus();
                     // Notify UIA that this window received focus so Narrator can announce it.
-                    // Must be deferred — UIA COM calls cannot be made during
-                    // input-synchronous messages (WM_SETFOCUS) or RPC_E_CANTCALLOUT occurs.
+                    // Routed through EventSink (instead of UiaAccessibilityBridge directly)
+                    // so the UIAutomationCore.dll first-touch is gated on a real UIA client
+                    // having attached via WM_GETOBJECT — otherwise the [DllImport] inside
+                    // UiaClientsAreListening() forces UIAutomationCore + Oleacc to load on
+                    // every process startup. Must be deferred either way: UIA COM calls
+                    // during input-synchronous messages cause RPC_E_CANTCALLOUT.
                     if (OperatingSystem.IsWindows())
                     {
                         window.Dispatcher.BeginInvoke(() =>
                         {
                             var focusPeer = window.GetAutomationPeer();
                             if (focusPeer != null)
-                                Automation.Uia.UiaAccessibilityBridge.RaiseFocusChanged(focusPeer);
+                                Jalium.UI.Automation.AutomationPeer.EventSink?.OnFocusChanged(focusPeer);
                         });
                     }
                     break;
@@ -5789,11 +6112,20 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     ///   preventing GPU saturation from rapid input events (scrolling, mouse drag).
     /// </summary>
     private int _renderFrameLogCount;
+    private bool _firstFrameTraceLogged;
     private void RenderFrame()
     { _debugHud.OnRenderFrame();
         if (HasRenderFlag(RenderFlag_Rendering)) return;
         SetRenderFlag(RenderFlag_Rendering);
         ClearRenderFlag(RenderFlag_Requested);
+
+        // First-frame breakdown trace — only emitted on the very first paint
+        // when JALIUM_STARTUP_TRACE=1; cheap branch on subsequent frames.
+        bool firstFrameTrace = !_firstFrameTraceLogged
+            && Environment.GetEnvironmentVariable("JALIUM_STARTUP_TRACE") == "1";
+        long fEnter = firstFrameTrace ? Stopwatch.GetTimestamp() : 0;
+        long fAfterLayout = 0, fAfterDirtyCalc = 0, fAfterBeginDraw = 0;
+        long fAfterClear = 0, fAfterRender = 0, fAfterEndDraw = 0;
 
         try
         {
@@ -5813,6 +6145,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // UpdateLayout may trigger further invalidations via AddDirtyElement.
             UpdateLayout();
             _debugHud.MarkLayout();
+            if (firstFrameTrace) fAfterLayout = Stopwatch.GetTimestamp();
 
             // ── Compute dirty region from accumulated dirty elements ──
             // Check dirty AFTER UpdateLayout so layout-triggered invalidations are included.
@@ -5881,6 +6214,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 // repaint everything on those buffers.
                 SeedDirtyHistoryFullWindow(windowBounds);
                 RenderTarget.SetFullInvalidation();
+                if (firstFrameTrace) fAfterDirtyCalc = Stopwatch.GetTimestamp();
 
                 // TryBeginDraw: non-blocking.  If the GPU hasn't finished the
                 // previous frame for this swap chain buffer, skip this frame
@@ -5890,6 +6224,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 {
                     return;
                 }
+                if (firstFrameTrace) fAfterBeginDraw = Stopwatch.GetTimestamp();
 
                 // GPU is ready — commit dirty state now.
                 lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
@@ -5898,13 +6233,27 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 {
                     _debugHud.OnFull();
                     ClearBackground();
+                    if (firstFrameTrace) fAfterClear = Stopwatch.GetTimestamp();
                     _drawingContext.Offset = Point.Zero;
                     Render(_drawingContext);
                     _debugHud.MarkRender();
+                    if (firstFrameTrace) fAfterRender = Stopwatch.GetTimestamp();
                     DevToolsOverlay?.DrawOverlay(_drawingContext);
                     OnRender(RenderTarget);
                     if (!CompleteEndDrawOrHandleFailure()) { return; }
+                    if (firstFrameTrace) fAfterEndDraw = Stopwatch.GetTimestamp();
                     _debugHud.UpdateOverlay(_debugHudOverlay);
+                    if (firstFrameTrace)
+                    {
+                        _firstFrameTraceLogged = true;
+                        static long Ms(long start, long end) =>
+                            (long)Stopwatch.GetElapsedTime(start, end).TotalMilliseconds;
+                        Console.Error.WriteLine(
+                            $"[Jalium.UI startup]   first RenderFrame breakdown: total {Ms(fEnter, fAfterEndDraw)}ms " +
+                            $"(UpdateLayout {Ms(fEnter, fAfterLayout)}ms, dirty-prep {Ms(fAfterLayout, fAfterDirtyCalc)}ms, " +
+                            $"BeginDraw {Ms(fAfterDirtyCalc, fAfterBeginDraw)}ms, ClearBackground {Ms(fAfterBeginDraw, fAfterClear)}ms, " +
+                            $"Render+overlay {Ms(fAfterClear, fAfterRender)}ms, EndDraw+Present {Ms(fAfterRender, fAfterEndDraw)}ms)");
+                    }
                 }
                 catch (RenderPipelineException ex)
                 {
@@ -6963,14 +7312,17 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         UpdateInputMethodAssociation();
 
-        // Notify UIA of focus change — deferred to avoid RPC_E_CANTCALLOUT
+        // Notify UIA of focus change — routed through EventSink (null-skip when no
+        // UIA client has attached) so UIAutomationCore.dll stays unloaded on
+        // processes Narrator / Inspect never touch. Deferred via Dispatcher to
+        // avoid RPC_E_CANTCALLOUT during input-synchronous focus messages.
         if (OperatingSystem.IsWindows() && e.NewFocus is UIElement focused)
         {
             Dispatcher.BeginInvoke(() =>
             {
                 var peer = focused.GetAutomationPeer();
                 if (peer != null)
-                    Automation.Uia.UiaAccessibilityBridge.RaiseFocusChanged(peer);
+                    Jalium.UI.Automation.AutomationPeer.EventSink?.OnFocusChanged(peer);
             });
         }
     }

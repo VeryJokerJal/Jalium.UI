@@ -68,6 +68,10 @@ public:
 
     const std::vector<uint8_t>& GetPixels() const { return pixelData_; }
 
+    /// Replaces the packed BGRA8 pixels in-place. Used by video / WriteableBitmap
+    /// hot paths to avoid per-frame VulkanBitmap reconstruction. Returns true on success.
+    bool UpdatePackedPixels(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t stride) override;
+
 private:
     uint32_t width_ = 0;
     uint32_t height_ = 0;

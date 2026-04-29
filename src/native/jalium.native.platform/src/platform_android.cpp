@@ -336,6 +336,28 @@ static JNIEnv* GetJNIEnv()
     return env;
 }
 
+/// Public C ABI: returns the JNIEnv for the calling thread, attaching it to
+/// the JavaVM if necessary. Returns nullptr if the platform was never bound
+/// to a JavaVM via jalium_android_set_jni_env. Used by jalium.native.media.android
+/// to call Java APIs (BitmapFactory fallback, MediaCodecList probe).
+extern "C" JNIEnv* jalium_android_get_jni_env(void)
+{
+    return GetJNIEnv();
+}
+
+/// Public C ABI: returns the global Activity reference cached by
+/// jalium_android_set_jni_env. Returns nullptr when not bound.
+extern "C" jobject jalium_android_get_activity(void)
+{
+    return g_activityObj;
+}
+
+/// Public C ABI: returns the cached JavaVM pointer (or nullptr).
+extern "C" JavaVM* jalium_android_get_java_vm(void)
+{
+    return g_javaVM;
+}
+
 // ============================================================================
 // Android Native Activity Callbacks
 // ============================================================================

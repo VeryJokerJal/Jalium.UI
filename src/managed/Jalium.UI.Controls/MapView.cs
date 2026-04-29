@@ -336,14 +336,10 @@ public class MapView : Control
     private Point _dragStart;
     private GeoPoint _dragStartCenter;
 
-    // Template parts
-    private Canvas? _tileCanvas;
-    private Canvas? _overlayCanvas;
-    private Canvas? _markerCanvas;
-    private Border? _scaleBar;
-    private TextBlock? _attribution;
-    private Button? _zoomInButton;
-    private Button? _zoomOutButton;
+    // Hit-test rectangles for the on-rendered zoom buttons. Updated by
+    // DrawZoomControls each frame and read by OnMouseDownHandler.
+    private Rect _zoomInButtonRect;
+    private Rect _zoomOutButtonRect;
 
     #endregion
 
@@ -369,39 +365,11 @@ public class MapView : Control
 
     #endregion
 
-    #region Template
-
-    /// <inheritdoc />
-    protected override void OnApplyTemplate()
-    {
-        base.OnApplyTemplate();
-
-        // Unhook previous zoom buttons
-        if (_zoomInButton != null)
-            _zoomInButton.Click -= OnZoomInClick;
-        if (_zoomOutButton != null)
-            _zoomOutButton.Click -= OnZoomOutClick;
-
-        _tileCanvas = GetTemplateChild("PART_TileCanvas") as Canvas;
-        _overlayCanvas = GetTemplateChild("PART_OverlayCanvas") as Canvas;
-        _markerCanvas = GetTemplateChild("PART_MarkerCanvas") as Canvas;
-        _scaleBar = GetTemplateChild("PART_ScaleBar") as Border;
-        _attribution = GetTemplateChild("PART_Attribution") as TextBlock;
-        _zoomInButton = GetTemplateChild("PART_ZoomInButton") as Button;
-        _zoomOutButton = GetTemplateChild("PART_ZoomOutButton") as Button;
-
-        if (_zoomInButton != null)
-            _zoomInButton.Click += OnZoomInClick;
-        if (_zoomOutButton != null)
-            _zoomOutButton.Click += OnZoomOutClick;
-
-        UpdateVisualState();
-    }
-
-    private void OnZoomInClick(object sender, RoutedEventArgs e) => ZoomIn();
-    private void OnZoomOutClick(object sender, RoutedEventArgs e) => ZoomOut();
-
-    #endregion
+    // MapView is intentionally template-less: every visual element (tiles,
+    // markers, polylines, polygons, scale bar, attribution, zoom buttons)
+    // is drawn directly in OnRender. Visual children would render on top of
+    // OnRender's output and occlude the map surface, so a ControlTemplate
+    // is deliberately omitted from Maps.jalxaml.
 
     #region Public Methods
 
@@ -485,7 +453,26 @@ public class MapView : Control
             Focus();
             var position = e.GetPosition(this);
 
-            // Check if click is on a zoom button area (handled by template)
+            // Hit-test the zoom buttons that OnRender draws as part of the
+            // map overlay. They are not real Visual children, so input must
+            // be dispatched manually from the rectangles cached during the
+            // last DrawZoomControls pass.
+            if (ShowZoomControls)
+            {
+                if (_zoomInButtonRect.Contains(position))
+                {
+                    ZoomIn();
+                    e.Handled = true;
+                    return;
+                }
+                if (_zoomOutButtonRect.Contains(position))
+                {
+                    ZoomOut();
+                    e.Handled = true;
+                    return;
+                }
+            }
+
             if (IsPanEnabled)
             {
                 CaptureMouse();
@@ -592,11 +579,28 @@ public class MapView : Control
         var bounds = new Rect(RenderSize);
         if (bounds.Width <= 0 || bounds.Height <= 0) return;
 
-        // Clip to bounds
-        dc.PushClip(new RectangleGeometry(bounds));
+        var cornerRadius = CornerRadius;
+        var borderThickness = BorderThickness;
+        var borderBrush = BorderBrush;
+        bool hasCorners = cornerRadius.TopLeft > 0 || cornerRadius.TopRight > 0
+            || cornerRadius.BottomLeft > 0 || cornerRadius.BottomRight > 0;
 
-        // Draw background
-        dc.DrawRectangle(Background ?? s_mapBackground, null, bounds);
+        // Clip the map surface to the (possibly rounded) control bounds so
+        // tiles/markers don't leak past the styled border.
+        if (hasCorners)
+        {
+            dc.PushClip(CreateRoundedClip(bounds, cornerRadius));
+        }
+        else
+        {
+            dc.PushClip(new RectangleGeometry(bounds));
+        }
+
+        // Draw background — Style sets Background to SurfaceBackground, so
+        // honour it; only fall back to the neutral map colour when nothing
+        // is supplied (e.g. when MapView is used outside any theme).
+        var bgBrush = Background ?? s_mapBackground;
+        dc.DrawRectangle(bgBrush, null, bounds);
 
         // Draw tiles
         DrawTiles(dc, bounds);
@@ -623,6 +627,68 @@ public class MapView : Control
             DrawZoomControls(dc, bounds);
 
         dc.Pop(); // clip
+
+        // Draw the styled border on top of the map content so it's not
+        // overwritten by tile pixels along the edges.
+        if (borderBrush != null && (borderThickness.Left > 0 || borderThickness.Top > 0
+            || borderThickness.Right > 0 || borderThickness.Bottom > 0))
+        {
+            DrawBorder(dc, bounds, borderBrush, borderThickness, cornerRadius);
+        }
+    }
+
+    private static Geometry CreateRoundedClip(Rect bounds, CornerRadius cornerRadius)
+    {
+        if (cornerRadius.TopLeft == cornerRadius.TopRight
+            && cornerRadius.TopLeft == cornerRadius.BottomLeft
+            && cornerRadius.TopLeft == cornerRadius.BottomRight)
+        {
+            return new RectangleGeometry(bounds, cornerRadius.TopLeft, cornerRadius.TopLeft);
+        }
+        // Uneven corners — fall back to a rectangle clip; uneven CornerRadius
+        // on MapView is unusual and the styled border still paints the visual
+        // rounded outline on top.
+        return new RectangleGeometry(bounds);
+    }
+
+    private static void DrawBorder(DrawingContext dc, Rect bounds, Brush borderBrush,
+        Thickness borderThickness, CornerRadius cornerRadius)
+    {
+        // Use uniform thickness when all sides are equal — that's the common
+        // theme case (BorderThickness="1") and yields a clean stroke that
+        // sits on the bounds. For non-uniform thickness fall back to the
+        // simplest correct approach: stroke each side as a filled rectangle.
+        if (borderThickness.Left == borderThickness.Top
+            && borderThickness.Left == borderThickness.Right
+            && borderThickness.Left == borderThickness.Bottom)
+        {
+            double t = borderThickness.Left;
+            double half = t / 2.0;
+            var inset = new Rect(bounds.X + half, bounds.Y + half,
+                Math.Max(0, bounds.Width - t), Math.Max(0, bounds.Height - t));
+            var pen = new Pen(borderBrush, t);
+            if (cornerRadius.TopLeft > 0)
+            {
+                dc.DrawRoundedRectangle(null, pen, inset, cornerRadius.TopLeft, cornerRadius.TopLeft);
+            }
+            else
+            {
+                dc.DrawRectangle(null, pen, inset);
+            }
+            return;
+        }
+
+        // Non-uniform: paint each edge separately. CornerRadius is ignored in
+        // this rare path — controls rarely combine non-uniform thickness with
+        // rounded corners.
+        if (borderThickness.Top > 0)
+            dc.DrawRectangle(borderBrush, null, new Rect(bounds.X, bounds.Y, bounds.Width, borderThickness.Top));
+        if (borderThickness.Bottom > 0)
+            dc.DrawRectangle(borderBrush, null, new Rect(bounds.X, bounds.Bottom - borderThickness.Bottom, bounds.Width, borderThickness.Bottom));
+        if (borderThickness.Left > 0)
+            dc.DrawRectangle(borderBrush, null, new Rect(bounds.X, bounds.Y, borderThickness.Left, bounds.Height));
+        if (borderThickness.Right > 0)
+            dc.DrawRectangle(borderBrush, null, new Rect(bounds.Right - borderThickness.Right, bounds.Y, borderThickness.Right, bounds.Height));
     }
 
     private void DrawTiles(DrawingContext dc, Rect bounds)
@@ -920,24 +986,12 @@ public class MapView : Control
         _zoomOutButtonRect = zoomOutRect;
     }
 
-    private Rect _zoomInButtonRect;
-    private Rect _zoomOutButtonRect;
-
     #endregion
 
     #region Visual State
 
     private void UpdateVisualState()
     {
-        if (_scaleBar != null)
-            _scaleBar.Visibility = ShowScaleBar ? Visibility.Visible : Visibility.Collapsed;
-        if (_attribution != null)
-        {
-            _attribution.Visibility = ShowAttribution ? Visibility.Visible : Visibility.Collapsed;
-            if (ShowAttribution && TileSource.Attribution != null)
-                _attribution.Text = TileSource.Attribution;
-        }
-
         InvalidateVisual();
     }
 

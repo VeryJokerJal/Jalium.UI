@@ -122,6 +122,8 @@ public static class XamlReader
         ArgumentNullException.ThrowIfNull(component);
         ArgumentNullException.ThrowIfNull(resourceName);
 
+        long traceStart = System.Diagnostics.Stopwatch.GetTimestamp();
+
         assembly ??= component.GetType().Assembly;
 
         var stream = GetResourceStream(resourceName, assembly);
@@ -140,6 +142,13 @@ public static class XamlReader
         }
 
         HotReloadRuntime.RegisterComponent(component);
+
+        // Aggregate startup-trace counters live in Jalium.UI.Controls (target of
+        // InternalsVisibleTo) so Window.Show can summarize them without forcing
+        // a Controls→Xaml dependency.
+        Interlocked.Increment(ref Jalium.UI.Controls.XamlLoadStartupTrace.LoadCallCount);
+        Interlocked.Add(ref Jalium.UI.Controls.XamlLoadStartupTrace.LoadTotalTicks,
+            System.Diagnostics.Stopwatch.GetTimestamp() - traceStart);
     }
 
     // Per-assembly cache of manifest resource names for O(1) case-insensitive lookup.

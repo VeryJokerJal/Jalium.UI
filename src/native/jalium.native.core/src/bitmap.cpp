@@ -54,6 +54,20 @@ JALIUM_API uint32_t jalium_bitmap_get_height(JaliumImage* bitmap) {
     return reinterpret_cast<jalium::Bitmap*>(bitmap)->GetHeight();
 }
 
+JALIUM_API int32_t jalium_bitmap_update_pixels(
+    JaliumImage* bitmap,
+    const uint8_t* pixels,
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride)
+{
+    if (!bitmap || !pixels || width == 0 || height == 0 || stride < width * 4u) {
+        return 0;
+    }
+    auto* bmp = reinterpret_cast<jalium::Bitmap*>(bitmap);
+    return bmp->UpdatePackedPixels(pixels, width, height, stride) ? 1 : 0;
+}
+
 JALIUM_API void jalium_bitmap_destroy(JaliumImage* bitmap) {
     if (bitmap) {
         delete reinterpret_cast<jalium::Bitmap*>(bitmap);

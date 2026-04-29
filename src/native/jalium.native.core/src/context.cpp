@@ -306,4 +306,11 @@ JALIUM_API JaliumResult jalium_render_target_query_gpu_stats(
     return reinterpret_cast<jalium::RenderTarget*>(rt)->QueryGpuStats(out);
 }
 
+JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(
+    JaliumRenderTarget* rt)
+{
+    if (!rt) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->ReclaimIdleResources();
+}
+
 } // extern "C"

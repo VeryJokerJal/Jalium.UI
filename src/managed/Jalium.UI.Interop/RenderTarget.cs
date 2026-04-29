@@ -89,6 +89,28 @@ public sealed class RenderTarget : IDisposable
         }
     }
 
+    /// <summary>
+    /// Asks the active backend to drop any reusable GPU / CPU caches it has
+    /// accumulated (path tessellation, rasterized text bitmaps, glyph atlas
+    /// pages, etc). The backend rebuilds them lazily on the next frame that
+    /// needs them. Backends that have nothing to reclaim treat the call as a
+    /// no-op. Safe to invoke between frames; must NOT be called while a
+    /// drawing session is active.
+    /// </summary>
+    /// <remarks>
+    /// Used by <c>JaliumAppExtensions.UseIdleResourceReclamation</c>; can also
+    /// be called directly under memory pressure. No-op when the render target
+    /// has been disposed or never had a native handle.
+    /// </remarks>
+    public void ReclaimIdleResources()
+    {
+        if (_disposed || _handle == nint.Zero || _isDrawing)
+        {
+            return;
+        }
+        _ = NativeMethods.RenderTargetReclaimIdleResources(_handle);
+    }
+
     internal RenderTarget(RenderContext context, NativeSurfaceDescriptor surface, int width, int height, bool useComposition = false)
         : this(
             context.Backend,

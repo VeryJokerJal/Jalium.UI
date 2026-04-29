@@ -114,6 +114,23 @@ JALIUM_API JaliumResult jalium_render_target_query_gpu_stats(
     JaliumRenderTarget* rt,
     JaliumGpuStats* out);
 
+/// Asks the render target's backend to drop any reusable GPU / CPU caches it
+/// has accumulated (path tessellation results, rasterized text bitmaps, glyph
+/// atlas pages, gradient stops, etc). Invoked by the managed-side idle
+/// reclaimer when the app has been quiet long enough that holding the caches
+/// is no longer worth the memory; backends rebuild on demand on the next
+/// frame that needs them.
+///
+/// Safe to call from the UI thread between frames. Backends that need to
+/// touch GPU resources still in use by an in-flight frame are responsible for
+/// deferring the destroy through their own frame-fence machinery. Returns
+/// JALIUM_OK even if the backend has nothing to reclaim — the call is a hint,
+/// not a contract.
+/// @param rt The render target.
+/// @return JALIUM_OK on success.
+JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(
+    JaliumRenderTarget* rt);
+
 // ============================================================================
 // Render Target Management
 // ============================================================================
@@ -678,6 +695,23 @@ JALIUM_API uint32_t jalium_bitmap_get_width(JaliumImage* bitmap);
 /// @param bitmap The bitmap.
 /// @return The height in pixels.
 JALIUM_API uint32_t jalium_bitmap_get_height(JaliumImage* bitmap);
+
+/// Updates an existing bitmap's pixels in place. Avoids the per-frame
+/// CreateCommittedResource / VkImage churn that destroys swap-chain stability
+/// when a video / WriteableBitmap streams BGRA8 frames at 30+fps.
+/// @param bitmap The bitmap to update. Must have the same dimensions as the new pixels.
+/// @param pixels The new BGRA8 pixel buffer.
+/// @param width Must match the bitmap's current width; otherwise the call fails.
+/// @param height Must match the bitmap's current height.
+/// @param stride Source row stride in bytes (must be >= width * 4).
+/// @return Non-zero on success, zero on failure (size mismatch or backend doesn't support update).
+JALIUM_API int32_t jalium_bitmap_update_pixels(
+    JaliumImage* bitmap,
+    const uint8_t* pixels,
+    uint32_t width,
+    uint32_t height,
+    uint32_t stride
+);
 
 /// Destroys a bitmap.
 /// @param bitmap The bitmap to destroy.

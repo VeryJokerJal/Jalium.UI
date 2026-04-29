@@ -328,6 +328,17 @@ public:
     // --- Diagnostics accessors (Perf tab) ---
     D3D12GlyphAtlas* GetGlyphAtlas() const { return glyphAtlas_.get(); }
     int32_t GetBitmapBatchTextureCount() const { return static_cast<int32_t>(bitmapTextures_.size()); }
+
+    /// Drops every cached custom-shader pipeline state. The PSO ComPtrs
+    /// auto-release; any GPU work that referenced them earlier in the frame
+    /// keeps an implicit ref through the open command list until the frame's
+    /// fence completes (D3D12 ID3D12PipelineState lifetime is fence-bound).
+    /// Called from D3D12RenderTarget::ReclaimIdleResources when the
+    /// idle-resource reclaimer signals the application has been quiet long
+    /// enough that holding the cache is no longer worth the memory; rebuilt
+    /// lazily by GetOrCreateCustomShaderPSO on the next draw that needs a
+    /// custom shader.
+    void ClearCustomShaderCache() { customShaderCache_.clear(); }
     int64_t GetBitmapBatchTextureBytes() const {
         int64_t total = 0;
         for (const auto& tx : bitmapTextures_) {
@@ -367,13 +378,20 @@ private:
     static constexpr UINT kMaxFrames = 3;
     struct FrameResources {
         ComPtr<ID3D12CommandAllocator> commandAllocator;
-        ComPtr<ID3D12Resource> instanceUploadBuffer;  // upload heap, persistently mapped
+        ComPtr<ID3D12Resource> instanceUploadBuffer;  // upload heap, persistently mapped — lazy-allocated, grow ×2
         void* instanceMappedPtr = nullptr;
+        size_t instanceCapacity = 0;                  // current size in bytes of instanceUploadBuffer (0 = not yet allocated)
         ComPtr<ID3D12Resource> constantsBuffer;       // ring-buffer for per-flush constants
         void* constantsMappedPtr = nullptr;
         UINT constantsRingOffset = 0;                 // next free 256-byte slot in ring buffer
         uint64_t fenceValue = 0;
     };
+
+    // Grow the persistently-mapped UPLOAD heap that backs both per-frame instance
+    // SRVs and mid-frame constant buffers.  Safe to call after BeginFrame has waited
+    // this frame's previous fence and before any SRV referencing the buffer's GPU
+    // virtual address has been recorded onto the open command list.
+    bool EnsureFrameInstanceCapacity(FrameResources& fr, size_t requiredBytes);
     static constexpr UINT kConstantsRingSize = 256 * 64;  // 64 flush slots per frame
     FrameResources frames_[kMaxFrames];
     UINT frameCount_ = 0;
@@ -491,15 +509,26 @@ private:
     // Swap chain format (queried at init, used for PSO creation)
     DXGI_FORMAT swapChainFormat_ = DXGI_FORMAT_R8G8B8A8_UNORM;
 
-    // Limits — sized to handle many mid-frame FlushGraphicsForCompute calls
-    // without ring-buffer wrap (each flush uses 8 SRV slots + variable buffer space)
+    // Per-frame instance/constant UPLOAD heap is grown on demand.  Starts at the
+    // initial capacity below, doubles whenever UploadInstances or a mid-frame
+    // constant write needs more space.  This keeps a quiescent app (e.g. the
+    // single-button AOT demo) at a few hundred KB instead of 48 MB × kMaxFrames.
+    static constexpr size_t kInitialInstanceCapacityBytes = 256 * 1024;       // 256 KB
+    // Reserved tail (mid-frame CBs for backdrop blur, liquid glass, custom shader
+    // effects).  UploadInstances pads the requested capacity by this amount so a
+    // mid-frame write rarely needs to fall back even on the very first frame.
+    static constexpr size_t kMidFrameReserveBytes = 64 * 1024;                // 64 KB
+    // Sanity cap on instance / glyph / bitmap counts per frame — purely a safety
+    // valve to refuse pathologically broken pages.  No longer drives buffer size.
     static constexpr size_t kMaxInstancesPerFrame = 262144;
-    static constexpr size_t kInstanceBufferSize = kMaxInstancesPerFrame * sizeof(SdfRectInstance);
     // Complex pages can flush graphics many times per frame (snapshot/blur/offscreen/liquid glass).
-    // Give each frame a much larger shader-visible descriptor region so we don't
-    // wrap and overwrite descriptor tables that are still referenced by earlier
-    // draws on the same command list.
-    static constexpr UINT kMaxSrvDescriptors = 16384;
+    // Give each frame a shader-visible descriptor region big enough to handle
+    // a few hundred FlushGraphicsForCompute calls (8 SRV slots each) without
+    // wrapping the ring and overwriting tables still referenced by earlier
+    // draws on the same command list.  1024 × 32 B = 32 KB total — this is
+    // shader-visible memory, kept tight on purpose now that we serve real
+    // overhead reductions elsewhere.
+    static constexpr UINT kMaxSrvDescriptors = 1024;
 
     // --- Snapshot resources (for backdrop filter, liquid glass) ---
     ComPtr<ID3D12Resource> snapshotTexture_;

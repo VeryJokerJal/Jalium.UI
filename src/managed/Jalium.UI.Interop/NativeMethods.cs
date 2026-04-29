@@ -96,29 +96,74 @@ internal static partial class NativeMethods
     private const string SoftwareLib = "jalium.native.software";
     private const string PlatformLib = "jalium.native.platform";
 
+    // Per-backend "init attempted" flags. 0 = not yet, 1 = init() has been
+    // invoked once (whether it succeeded or threw). Interlocked CAS so the
+    // first-touch path through EnsureBackendInitialized is single-shot even
+    // under racy access from background prewarm + UI thread.
+    private static int s_d3d12InitTried;
+    private static int s_vulkanInitTried;
+    private static int s_metalInitTried;
+
     /// <summary>
-    /// Static constructor to register the platform-native backend.
-    /// Each platform uses exactly one GPU backend:
-    /// Windows → D3D12, macOS → Metal, Linux/Android → Vulkan.
+    /// Static constructor: only registers the Software fallback backend.
+    /// GPU backends (D3D12 / Vulkan / Metal) stay completely unloaded — their
+    /// native DLLs (and transitive dependencies like vulkan-1.dll) are not
+    /// brought into the process — until <see cref="EnsureBackendInitialized"/>
+    /// is called for that specific backend, which happens lazily inside
+    /// <see cref="RenderContext"/>'s constructor and inside
+    /// <see cref="IsBackendAvailable"/>. This shaves the secondary backend's
+    /// LoadLibrary chain (and its first-chance DllNotFoundException when its
+    /// runtime probe fails) off the startup path on machines that only ever
+    /// use the platform-default backend.
     /// </summary>
     static NativeMethods()
     {
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            TryInitializeBackend(D3D12Init);
-            TryInitializeBackend(VulkanInit);
-        }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
-            TryInitializeBackend(MetalInit);
-        }
-        else
-        {
-            // Linux / Android
-            TryInitializeBackend(VulkanInit);
-        }
-
         TryInitializeBackend(SoftwareInit);
+    }
+
+    /// <summary>
+    /// Ensures the native init function for <paramref name="backend"/> has
+    /// been invoked exactly once for the lifetime of the process. Calling this
+    /// triggers LoadLibrary of the backend's native DLL via the first P/Invoke
+    /// against it, which is what registers the backend's factory in the native
+    /// registry. Repeated calls are a no-op. Safe to call from any thread.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="RenderBackend.Software"/> is already initialized in the static
+    /// constructor and <see cref="RenderBackend.Auto"/> is a request marker, not
+    /// a backend — both are no-ops here. Callers that need to materialize the
+    /// platform default for an Auto request should resolve it through
+    /// <see cref="RenderBackendSelector"/> first.
+    /// </remarks>
+    internal static void EnsureBackendInitialized(RenderBackend backend)
+    {
+        switch (backend)
+        {
+            case RenderBackend.D3D12:
+                if (Interlocked.CompareExchange(ref s_d3d12InitTried, 1, 0) == 0)
+                {
+                    TryInitializeBackend(D3D12Init);
+                }
+                break;
+            case RenderBackend.Vulkan:
+                if (Interlocked.CompareExchange(ref s_vulkanInitTried, 1, 0) == 0)
+                {
+                    TryInitializeBackend(VulkanInit);
+                }
+                break;
+            case RenderBackend.Metal:
+                if (Interlocked.CompareExchange(ref s_metalInitTried, 1, 0) == 0)
+                {
+                    TryInitializeBackend(MetalInit);
+                }
+                break;
+            case RenderBackend.Software:
+            case RenderBackend.Auto:
+            default:
+                // Software handled by the static ctor; Auto is not a concrete
+                // backend. Both are intentionally no-ops.
+                break;
+        }
     }
 
     [LibraryImport(D3D12Lib, EntryPoint = "jalium_d3d12_init")]
@@ -240,6 +285,16 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_query_gpu_stats")]
     internal static partial int RenderTargetQueryGpuStats(nint renderTarget, out GpuStatsNative stats);
+
+    /// <summary>
+    /// Asks the backend to drop any reusable GPU / CPU caches it has accumulated
+    /// (path tessellation results, rasterized text bitmaps, glyph atlas pages,
+    /// gradient stops, etc). Invoked by the managed-side idle reclaimer once the
+    /// app has been quiet long enough that holding the caches is no longer worth
+    /// the memory; backends rebuild on demand on the next frame that needs them.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_reclaim_idle_resources")]
+    internal static partial int RenderTargetReclaimIdleResources(nint renderTarget);
 
     #endregion
 
@@ -954,6 +1009,14 @@ internal static partial class NativeMethods
     internal static partial uint BitmapGetHeight(nint bitmap);
 
     /// <summary>
+    /// Updates an existing bitmap's pixels in place. Avoids the per-frame texture
+    /// recreation that thrashes the swap chain when a video / WriteableBitmap streams
+    /// frames at 30+fps. Returns 1 on success, 0 on failure (size mismatch / unsupported backend).
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_bitmap_update_pixels")]
+    internal static partial int BitmapUpdatePixels(nint bitmap, [In] byte[] pixels, uint width, uint height, uint stride);
+
+    /// <summary>
     /// Destroys a bitmap.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_bitmap_destroy")]
@@ -998,7 +1061,20 @@ internal static partial class NativeMethods
     /// Checks if a backend is available.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_is_backend_available")]
-    internal static partial int IsBackendAvailable(RenderBackend backend);
+    private static partial int IsBackendAvailableNative(RenderBackend backend);
+
+    /// <summary>
+    /// Public availability probe. Performs the lazy backend init for the
+    /// requested backend before delegating to the native registry, so a
+    /// caller asking "is Vulkan available?" actually loads jalium.native.vulkan
+    /// (and its transitive vulkan-1.dll) at this point — and only at this
+    /// point — instead of paying that cost up front in the static ctor.
+    /// </summary>
+    internal static int IsBackendAvailable(RenderBackend backend)
+    {
+        EnsureBackendInitialized(backend);
+        return IsBackendAvailableNative(backend);
+    }
 
     #endregion
 

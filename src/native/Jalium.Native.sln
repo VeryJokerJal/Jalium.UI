@@ -29,6 +29,14 @@ Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.platform", "j
 EndProject
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.platform.static", "jalium.native.platform\jalium.native.platform.static.vcxproj", "{2C3D4E5F-6071-4283-94A5-B6C7D8E9F0A1}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.media.core", "jalium.native.media.core\jalium.native.media.core.vcxproj", "{C5D6E7F8-1234-4567-8901-23456789ABCD}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.media.windows", "jalium.native.media.windows\jalium.native.media.windows.vcxproj", "{D6E7F8A9-2345-5678-9012-3456789ABCDE}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.media.core.static", "jalium.native.media.core\jalium.native.media.core.static.vcxproj", "{E7F8A9B0-3456-6789-0123-456789ABCDEF}"
+EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "jalium.native.media.windows.static", "jalium.native.media.windows\jalium.native.media.windows.static.vcxproj", "{F8A9B0C1-4567-7890-1234-56789ABCDEF0}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -85,6 +93,22 @@ Global
 		{2C3D4E5F-6071-4283-94A5-B6C7D8E9F0A1}.Debug|x64.Build.0 = Debug|x64
 		{2C3D4E5F-6071-4283-94A5-B6C7D8E9F0A1}.Release|x64.ActiveCfg = Release|x64
 		{2C3D4E5F-6071-4283-94A5-B6C7D8E9F0A1}.Release|x64.Build.0 = Release|x64
+		{C5D6E7F8-1234-4567-8901-23456789ABCD}.Debug|x64.ActiveCfg = Debug|x64
+		{C5D6E7F8-1234-4567-8901-23456789ABCD}.Debug|x64.Build.0 = Debug|x64
+		{C5D6E7F8-1234-4567-8901-23456789ABCD}.Release|x64.ActiveCfg = Release|x64
+		{C5D6E7F8-1234-4567-8901-23456789ABCD}.Release|x64.Build.0 = Release|x64
+		{D6E7F8A9-2345-5678-9012-3456789ABCDE}.Debug|x64.ActiveCfg = Debug|x64
+		{D6E7F8A9-2345-5678-9012-3456789ABCDE}.Debug|x64.Build.0 = Debug|x64
+		{D6E7F8A9-2345-5678-9012-3456789ABCDE}.Release|x64.ActiveCfg = Release|x64
+		{D6E7F8A9-2345-5678-9012-3456789ABCDE}.Release|x64.Build.0 = Release|x64
+		{E7F8A9B0-3456-6789-0123-456789ABCDEF}.Debug|x64.ActiveCfg = Debug|x64
+		{E7F8A9B0-3456-6789-0123-456789ABCDEF}.Debug|x64.Build.0 = Debug|x64
+		{E7F8A9B0-3456-6789-0123-456789ABCDEF}.Release|x64.ActiveCfg = Release|x64
+		{E7F8A9B0-3456-6789-0123-456789ABCDEF}.Release|x64.Build.0 = Release|x64
+		{F8A9B0C1-4567-7890-1234-56789ABCDEF0}.Debug|x64.ActiveCfg = Debug|x64
+		{F8A9B0C1-4567-7890-1234-56789ABCDEF0}.Debug|x64.Build.0 = Debug|x64
+		{F8A9B0C1-4567-7890-1234-56789ABCDEF0}.Release|x64.ActiveCfg = Release|x64
+		{F8A9B0C1-4567-7890-1234-56789ABCDEF0}.Release|x64.Build.0 = Release|x64
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

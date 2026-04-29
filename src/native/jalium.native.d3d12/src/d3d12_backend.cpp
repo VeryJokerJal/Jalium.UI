@@ -512,6 +512,32 @@ Bitmap* D3D12Backend::CreateBitmapFromMemory(const uint8_t* data, uint32_t dataS
     return bitmap;
 }
 
+Bitmap* D3D12Backend::CreateBitmapFromPixels(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t stride) {
+    if (!initialized_ && !Initialize()) {
+        return nullptr;
+    }
+    if (!pixels || width == 0 || height == 0 || stride < width * 4u) {
+        return nullptr;
+    }
+
+    // Pack the input pixels (which may have padding beyond width*4) into a tight BGRA8 buffer.
+    const size_t rowBytes = static_cast<size_t>(width) * 4u;
+    std::vector<uint8_t> packed(rowBytes * height);
+    if (stride == rowBytes) {
+        std::memcpy(packed.data(), pixels, packed.size());
+    } else {
+        for (uint32_t row = 0; row < height; ++row) {
+            std::memcpy(packed.data() + row * rowBytes,
+                        pixels + static_cast<size_t>(row) * stride,
+                        rowBytes);
+        }
+    }
+
+    auto bitmap = new D3D12Bitmap(width, height);
+    bitmap->SetBitmapData(packed.data(), static_cast<uint32_t>(packed.size()));
+    return bitmap;
+}
+
 IRenderBackend* CreateD3D12Backend() {
     return new D3D12Backend();
 }

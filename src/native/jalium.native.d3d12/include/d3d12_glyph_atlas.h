@@ -104,9 +104,10 @@ public:
     /// Gets the atlas SRV resource for binding.
     ID3D12Resource* GetAtlasResource() const { return atlasTexture_.Get(); }
 
-    /// Gets atlas dimensions.
-    uint32_t GetWidth() const { return kAtlasWidth; }
-    uint32_t GetHeight() const { return kAtlasHeight; }
+    /// Gets atlas dimensions.  These reflect the CURRENT atlas size, which
+    /// starts at kInitialAtlasDim and grows ×2 as glyphs spill over the bottom.
+    uint32_t GetWidth() const { return atlasW_; }
+    uint32_t GetHeight() const { return atlasH_; }
 
     /// Sets the DPI scale factor for glyph rasterization.
     /// Default is 1.0 (96 DPI). Set to dpi/96.0 for high-DPI displays.
@@ -120,6 +121,27 @@ public:
     bool NeedsReset() const { return needsReset_; }
     void ClearResetFlag() { needsReset_ = false; }
 
+    /// Marks the atlas to be reset on the next BeginFrame, before any glyph
+    /// SRV is bound to the new frame's command list. Used by the idle-resource
+    /// reclaimer when the application has been quiet long enough that the
+    /// cache should be dropped to release GPU memory. Safe to call from any
+    /// thread that doesn't hold the render-target's command list, including
+    /// mid-frame — the actual GPU work happens later, inside
+    /// ApplyPendingGrowthOrReset on the next BeginFrame.
+    void RequestResetAtFrameBoundary() { needsReset_ = true; }
+
+    /// Returns true if AllocateAtlasRect ran out of space *and* the atlas can
+    /// still grow before hitting kMaxAtlasDim.  Caller (D3D12DirectRenderer
+    /// BeginFrame) should call ApplyPendingGrowthOrReset at the frame
+    /// boundary, which performs the actual GPU resource recreation.
+    bool NeedsGrow() const { return needsGrow_; }
+
+    /// Frame-boundary entry point: if the previous frame requested growth, do it
+    /// now (preserving cached glyph pixels); if the previous frame requested a
+    /// reset because growth wasn't possible, perform the reset.  Safe to call
+    /// before any glyph SRV is bound onto the new frame's command list.
+    void ApplyPendingGrowthOrReset();
+
     // ── Diagnostics accessors (used by DevTools Perf tab via RenderTarget::QueryGpuStats) ──
 
     /// Number of glyph entries currently resident in the cache.
@@ -130,32 +152,41 @@ public:
     /// Approximate slot capacity at average glyph size (16×16). Purely display-
     /// side — the packer itself has no slot grid.
     int32_t GetEstimatedCapacity() const {
-        return (kAtlasWidth * kAtlasHeight) / (16 * 16);
+        return (atlasW_ * atlasH_) / (16 * 16);
     }
 
     /// Bytes of atlas texture memory currently packed (approximate: rows packed
     /// + current row partial column).
     int64_t GetPackedBytes() const {
-        int64_t wholeRows = static_cast<int64_t>(packY_) * kAtlasWidth;
+        int64_t wholeRows = static_cast<int64_t>(packY_) * atlasW_;
         int64_t currentRowPartial = static_cast<int64_t>(packX_) * rowHeight_;
         return (wholeRows + currentRowPartial) * 4;  // RGBA8
     }
 
-    /// Total GPU bytes reserved for the atlas texture (static allocation).
+    /// Total GPU bytes reserved for the atlas texture at its CURRENT size.
     int64_t GetTotalBytes() const {
-        return static_cast<int64_t>(kAtlasWidth) * kAtlasHeight * 4;
+        return static_cast<int64_t>(atlasW_) * atlasH_ * 4;
     }
 
 private:
     bool RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry);
     bool AllocateAtlasRect(uint16_t w, uint16_t h, uint16_t& outX, uint16_t& outY);
+    // Grow atlasTexture_/uploadBuffer_/atlasBitmap_ to at least (reqW, reqH),
+    // capped at kMaxAtlasDim.  Preserves all already-packed glyph pixels.
+    // Safe to call only between frames or during batch-collect (before any
+    // SRV referencing atlasTexture_ has been recorded onto the open command
+    // list), so AllocateAtlasRect is the natural caller.
+    bool GrowAtlas(uint32_t reqW, uint32_t reqH);
 
     ID3D12Device* device_;
     IDWriteFactory* dwriteFactory_;
 
-    // Atlas texture
-    static constexpr uint32_t kAtlasWidth = 4096;
-    static constexpr uint32_t kAtlasHeight = 4096;
+    // Atlas texture — starts at kInitialAtlasDim and grows ×2 up to kMaxAtlasDim
+    // on overflow.  Sized lazily so an idle UI keeps a 1 MB atlas instead of 64 MB.
+    static constexpr uint32_t kInitialAtlasDim = 512;
+    static constexpr uint32_t kMaxAtlasDim = 4096;
+    uint32_t atlasW_ = kInitialAtlasDim;
+    uint32_t atlasH_ = kInitialAtlasDim;
     ComPtr<ID3D12Resource> atlasTexture_;
     ComPtr<ID3D12Resource> uploadBuffer_;
 
@@ -184,7 +215,10 @@ private:
     ComPtr<IDWriteRenderingParams> renderingParams_;
 
     bool initialized_ = false;
-    bool needsReset_ = false;  // Atlas overflow — reset at next frame start
+    bool needsReset_ = false;  // Atlas at max dim and overflowed — reset next frame
+    bool needsGrow_ = false;   // Atlas can still grow — recreate resources next frame
+    uint32_t pendingGrowW_ = 0;  // largest reqW seen this frame (px)
+    uint32_t pendingGrowH_ = 0;  // largest reqH seen this frame (px)
     float dpiScale_ = 1.0f;
 };
 

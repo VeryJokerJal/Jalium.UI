@@ -117,6 +117,8 @@ public sealed class AppBuilder : IHostApplicationBuilder
         _hostBuilder.Services.TryAddSingleton<ViewRegistry>();
         _hostBuilder.Services.TryAddSingleton<IViewFactory, ViewFactory>();
         _hostBuilder.Services.TryAddSingleton<DeveloperToolsOptions>();
+        _hostBuilder.Services.TryAddSingleton<ResourceReclamationOptions>();
+        _hostBuilder.Services.TryAddSingleton<ResourceReclaimer>();
         _hostBuilder.Services.AddOptions<JaliumRuntimeOptions>()
             .Bind(_hostBuilder.Configuration.GetSection(JaliumRuntimeOptions.SectionName));
     }

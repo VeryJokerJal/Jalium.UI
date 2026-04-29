@@ -100,11 +100,19 @@ public sealed class RenderContext : IDisposable
     {
         backend = NormalizeRequestedBackend(backend);
 
+        // Lazy load the chosen backend's native DLL right before we ask the
+        // native registry to materialize a context. This is the single point
+        // where a non-default backend (e.g. Vulkan on Windows) gets brought
+        // into the process; if no caller ever requests it, jalium.native.vulkan
+        // and vulkan-1.dll remain unloaded for the lifetime of the process.
+        NativeMethods.EnsureBackendInitialized(backend);
+
         _handle = NativeMethods.ContextCreate(backend);
 
         // If Auto failed, explicitly retry with Software as last-resort fallback.
         if (_handle == nint.Zero && backend != RenderBackend.Software)
         {
+            NativeMethods.EnsureBackendInitialized(RenderBackend.Software);
             _handle = NativeMethods.ContextCreate(RenderBackend.Software);
         }
 

@@ -71,9 +71,11 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         /// <summary>
         /// For mutable sources (<see cref="WriteableBitmap"/>) this holds the
         /// <c>ContentRevision</c> value at upload time. A mismatch on lookup
-        /// means the back-buffer has been rewritten and we must re-upload.
+        /// means the back-buffer has been rewritten — the cache entry will then
+        /// either update pixels in-place (D3D12 / Vulkan) and bump this counter,
+        /// or re-upload via destroy+recreate.
         /// </summary>
-        public uint ContentRevision { get; }
+        public uint ContentRevision { get; set; }
     }
 
     /// <summary>
@@ -248,6 +250,40 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         _renderTarget = renderTarget ?? throw new ArgumentNullException(nameof(renderTarget));
         _context = context ?? throw new ArgumentNullException(nameof(context));
+
+        // Subscribe to GPU bitmap eviction requests so the idle-resource
+        // reclaimer can free this context's NativeBitmap upload of a source
+        // when the owning element has been off-screen long enough.
+        _gpuEvictionHandler = OnGpuCacheEvictionRequested;
+        ImageSource.GpuCacheEvictionRequested += _gpuEvictionHandler;
+    }
+
+    private readonly Action<ImageSource> _gpuEvictionHandler;
+
+    private void OnGpuCacheEvictionRequested(ImageSource source)
+    {
+        if (_closed) return;
+
+        // The bitmap cache is keyed by ImageSource reference identity, so a
+        // direct lookup is enough — no scan needed. RemoveBitmapCacheEntry
+        // disposes the NativeBitmap (which calls jalium_bitmap_destroy on the
+        // GPU texture) and accounts for the freed bytes.
+        if (_bitmapCache.TryGetValue(source, out var entry))
+        {
+            RemoveBitmapCacheEntry(source, entry);
+        }
+
+        // Also drop any rasterized vector-drawing slot keyed on this source —
+        // it was uploaded as a NativeBitmap via the same pipeline.
+        if (_vectorDrawingCache.TryGetValue(source, out var vector))
+        {
+            if (vector.RasterizedBitmap != null &&
+                _bitmapCache.TryGetValue(vector.RasterizedBitmap, out var vectorEntry))
+            {
+                RemoveBitmapCacheEntry(vector.RasterizedBitmap, vectorEntry);
+            }
+            _vectorDrawingCache.Remove(source);
+        }
     }
 
     private static (float RadiusX, float RadiusY) NormalizeRoundedRectRadii(float width, float height, double radiusX, double radiusY)
@@ -2720,7 +2756,9 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     /// <inheritdoc />
     public override void Close()
     {
+        if (_closed) return;
         _closed = true;
+        ImageSource.GpuCacheEvictionRequested -= _gpuEvictionHandler;
         // Note: Don't dispose cached resources here - they may be reused
     }
 
@@ -3012,6 +3050,26 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
             if (!stale && cached.Bitmap.IsValid)
             {
+                cached.LastAccessSequence = ++_bitmapCacheSequence;
+                return cached.Bitmap;
+            }
+
+            // Hot path: WriteableBitmap content changed but the native bitmap is still
+            // valid AND has the same dimensions → update pixels in place. D3D12 reuses
+            // the default-heap texture (skipping CreateCommittedResource per frame),
+            // Vulkan just rewrites the staging pixel buffer. This is what keeps the
+            // swap chain stable when video streams 1080p frames at 30+fps.
+            if (cached.Bitmap.IsValid &&
+                imageSource is Jalium.UI.Media.WriteableBitmap writeableUpdate &&
+                cached.Bitmap.Width == (uint)writeableUpdate.PixelWidth &&
+                cached.Bitmap.Height == (uint)writeableUpdate.PixelHeight &&
+                cached.Bitmap.TryUpdatePixels(
+                    writeableUpdate.BackBufferArray,
+                    writeableUpdate.PixelWidth,
+                    writeableUpdate.PixelHeight,
+                    writeableUpdate.BackBufferStride))
+            {
+                cached.ContentRevision = currentRevision;
                 cached.LastAccessSequence = ++_bitmapCacheSequence;
                 return cached.Bitmap;
             }

@@ -118,6 +118,37 @@ JaliumResult D3D12RenderTarget::QueryGpuStats(JaliumGpuStats* out) const {
     return JALIUM_OK;
 }
 
+JaliumResult D3D12RenderTarget::ReclaimIdleResources() {
+    // Glyph atlas: the only persistent GPU cache the D3D12 backend keeps
+    // across frames. Mid-frame Reset() would shift the UV coordinates of
+    // every glyph already emitted earlier in the current frame
+    // (see project_d3d12_glyph_atlas_no_midframe_reset memory entry), so we
+    // cannot just call atlas->Reset() here. Instead we set the atlas's
+    // pending-reset flag — D3D12DirectRenderer::BeginFrame already invokes
+    // ApplyPendingGrowthOrReset() once the previous frame's fence has fired,
+    // which honors the flag and recreates the atlas exactly once on the
+    // safe boundary. Lazily rebuilt as text re-renders.
+    //
+    // Other D3D12 caches (bitmap-batch textures, instance buffers, blur
+    // temps, snapshot RTs) either reset every frame (cleared in BeginFrame
+    // around line 792) or are ComPtr-managed scratch resources that don't
+    // benefit from explicit eviction. The custom-shader PSO cache is
+    // negligibly sized for typical apps and not worth touching here.
+    if (directRenderer_) {
+        if (auto* atlas = directRenderer_->GetGlyphAtlas()) {
+            atlas->RequestResetAtFrameBoundary();
+        }
+
+        // Custom-shader PSO cache: tiny by entry count but each entry holds
+        // an ID3D12PipelineState (driver-side pipeline + bytecode). ComPtrs
+        // auto-release on clear(); any in-flight draw using these PSOs
+        // keeps its own implicit ref through the open command list until
+        // the next fence completes — frame-safe.
+        directRenderer_->ClearCustomShaderCache();
+    }
+    return JALIUM_OK;
+}
+
 bool D3D12RenderTarget::EnsureImpellerEngine() {
     if (impellerEngine_) return true;
     if (!backend_ || !backend_->GetDevice()) return false;
@@ -776,24 +807,9 @@ void D3D12RenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* 
 // Drawing — Polygons & Paths (triangulated)
 // ============================================================================
 
-// Check if a polygon is convex by verifying all cross products have the same sign.
-static bool IsConvexPolygon(const float* points, uint32_t count) {
-    if (count < 3) return false;
-    bool hasPositive = false, hasNegative = false;
-    for (uint32_t i = 0; i < count; i++) {
-        uint32_t j = (i + 1) % count;
-        uint32_t k = (i + 2) % count;
-        float ax = points[j * 2] - points[i * 2];
-        float ay = points[j * 2 + 1] - points[i * 2 + 1];
-        float bx = points[k * 2] - points[j * 2];
-        float by = points[k * 2 + 1] - points[j * 2 + 1];
-        float cross = ax * by - ay * bx;
-        if (cross > 1e-6f) hasPositive = true;
-        if (cross < -1e-6f) hasNegative = true;
-        if (hasPositive && hasNegative) return false;
-    }
-    return true;
-}
+// IsConvexPolygon now lives in jalium_impeller_shapes.h (cross-backend).
+// d3d12_impeller_engine.h transitively includes it, so it is visible here
+// via the namespace-jalium ADL chain that d3d12_render_target.cpp pulls in.
 
 void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) {
     if (!isDrawing_ || !brush || !directRenderer_ || pointCount < 3) return;

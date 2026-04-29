@@ -58,6 +58,33 @@ VulkanBitmap::VulkanBitmap(uint32_t width, uint32_t height, std::vector<uint8_t>
     }
 }
 
+bool VulkanBitmap::UpdatePackedPixels(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t stride)
+{
+    if (!pixels || width == 0 || height == 0 || stride < width * 4u) {
+        return false;
+    }
+    if (width != width_ || height != height_) {
+        return false;  // Size change requires recreation.
+    }
+
+    const size_t rowBytes = static_cast<size_t>(width) * 4u;
+    const size_t requiredSize = rowBytes * height;
+    if (pixelData_.size() != requiredSize) {
+        pixelData_.resize(requiredSize);
+    }
+
+    if (stride == rowBytes) {
+        std::memcpy(pixelData_.data(), pixels, requiredSize);
+    } else {
+        for (uint32_t row = 0; row < height; ++row) {
+            std::memcpy(pixelData_.data() + row * rowBytes,
+                        pixels + static_cast<size_t>(row) * stride,
+                        rowBytes);
+        }
+    }
+    return true;
+}
+
 #ifdef _WIN32
 
 namespace {

@@ -85,14 +85,36 @@ public:
         if (!isDrawing_) {
             activeEngine_ = resolved;
         }
+        // Lazy-construct the engine that the user just opted into so the
+        // first frame after a switch already has a valid encoder.
+        if (resolved == JALIUM_ENGINE_IMPELLER) EnsureImpellerEngine();
+        else if (resolved == JALIUM_ENGINE_VELLO) EnsureVelloEngine();
         return JALIUM_OK;
     }
 
     /// Override: report glyph atlas / path / texture usage for DevTools Perf tab.
     JaliumResult QueryGpuStats(JaliumGpuStats* out) const override;
 
+    /// Override: drop the host-side path-geometry and text-rasterization caches
+    /// when the managed reclaimer signals idle. Both caches hold
+    /// `std::shared_ptr` payloads, so any in-flight render command keeps its
+    /// own entry alive past the eviction — the call is therefore safe to
+    /// invoke between frames without `vkDeviceWaitIdle`. GPU-resident upload
+    /// buffers / descriptor sets stay put: those live in the per-frame ring
+    /// and are recycled by the swapchain anyway.
+    JaliumResult ReclaimIdleResources() override;
+
     /// Returns true if the active engine is Impeller.
     bool IsImpellerActive() const { return activeEngine_ == JALIUM_ENGINE_IMPELLER; }
+    /// Returns true if the active engine is Vello.
+    bool IsVelloActive() const { return activeEngine_ == JALIUM_ENGINE_VELLO; }
+
+    /// Lazily construct the Impeller engine. Returns true if the engine is
+    /// alive after the call. Idempotent — safe to call every frame.
+    bool EnsureImpellerEngine();
+    /// Lazily construct the Vello engine. Returns true if the engine is alive
+    /// after the call. Idempotent.
+    bool EnsureVelloEngine();
 
 private:
     // Rendering engines (lazy-initialized)

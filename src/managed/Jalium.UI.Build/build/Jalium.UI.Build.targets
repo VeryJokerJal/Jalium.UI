@@ -388,6 +388,15 @@
       <_JaliumNativeAotAssetDirectory Condition="'$(RuntimeIdentifier)' == 'win-x64' and !Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.core.static.lib') and Exists('$(_JaliumNativeAotFallbackAssetDirectory)jalium.native.core.static.lib')">$(_JaliumNativeAotFallbackAssetDirectory)</_JaliumNativeAotAssetDirectory>
 
       <JaliumIncludeBrowserAot Condition="'$(JaliumIncludeBrowserAot)' == ''">false</JaliumIncludeBrowserAot>
+      <!-- Opt-in: include the Vulkan rendering backend in the AOT image alongside D3D12.
+           When enabled, jalium.native.vulkan.static.lib is linked, vulkan-1.lib (the
+           Vulkan loader import library, shipped with the Vulkan SDK) must be on the
+           linker's lib search path, and at runtime the managed-side NativeMethods
+           static ctor will invoke jalium_vulkan_init() so RenderBackend.Vulkan
+           becomes selectable.
+           Default off — most Windows AOT consumers ship D3D12-only and don't want
+           a hard dependency on the Vulkan SDK at link time. -->
+      <JaliumIncludeVulkanAot Condition="'$(JaliumIncludeVulkanAot)' == ''">false</JaliumIncludeVulkanAot>
 
       <!-- WebView2LoaderStatic.lib resolution: prefer the copy shipped inside
            Jalium.UI.Build's package, fall back to the source-tree third_party
@@ -407,6 +416,8 @@
            Text="Jalium NativeAOT static assets not found at '$(_JaliumNativeAotAssetDirectory)'. Restore the Jalium.UI.Build package, or build src/native/Jalium.Native.sln (Configuration=Release Platform=x64) for in-source consumers." />
     <Error Condition="!Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.aot.static.lib')"
            Text="Missing jalium.native.aot.static.lib at '$(_JaliumNativeAotAssetDirectory)'. The package is older than the AOT-aware Jalium.UI.Build — bump Jalium.UI.Build to a version that ships the aggregator archive." />
+    <Error Condition="'$(JaliumIncludeVulkanAot)' == 'true' and !Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.vulkan.static.lib')"
+           Text="JaliumIncludeVulkanAot=true requires jalium.native.vulkan.static.lib at '$(_JaliumNativeAotAssetDirectory)'. Build the Vulkan static archive (samples\build-native-static.ps1) or restore a Jalium.UI.Build package that ships it." />
 
     <ItemGroup>
       <!-- Managed-side P/Invoke hooks. The strings here MUST match the DLL
@@ -417,15 +428,34 @@
       <DirectPInvoke Include="jalium.native.software" />
       <DirectPInvoke Include="jalium.native.platform" />
       <DirectPInvoke Include="jalium.native.browser" Condition="'$(JaliumIncludeBrowserAot)' == 'true'" />
+      <!-- NativeMethods.cs's static ctor P/Invokes VulkanInit; registering the import
+           lets ILC resolve it as a direct static-symbol call instead of LoadLibrary. -->
+      <DirectPInvoke Include="jalium.native.vulkan" Condition="'$(JaliumIncludeVulkanAot)' == 'true'" />
+      <!-- NativeMediaInterop's [LibraryImport("jalium.native.media")] resolves to
+           jalium_media_* symbols that the linker pulls from media.windows.static.lib. -->
+      <DirectPInvoke Include="jalium.native.media" />
 
       <!-- Static archives. Order matters loosely: aggregator first so the
            linker sees its strong references to per-backend init functions
            before scanning the per-backend archives. -->
       <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.aot.static.lib" />
       <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.d3d12.static.lib" />
+      <!-- Vulkan static archive — only linked when JaliumIncludeVulkanAot=true.
+           Order vs d3d12 doesn't matter because both expose disjoint *_init symbol
+           sets and managed RenderBackendSelector picks one at runtime. -->
+      <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.vulkan.static.lib"
+                     Condition="'$(JaliumIncludeVulkanAot)' == 'true'" />
       <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.software.static.lib" />
       <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.platform.static.lib" />
       <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.core.static.lib" />
+      <!-- Media archives — must come AFTER the aggregator (whose strong references
+           to jalium_media_initialize/shutdown/supported_video_codecs are what tells
+           the linker to pull these in). The .core archive holds the cross-platform
+           status helpers; .windows holds the WIC + Media Foundation implementations. -->
+      <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.media.windows.static.lib"
+                     Condition="Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.media.windows.static.lib')" />
+      <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.media.core.static.lib"
+                     Condition="Exists('$(_JaliumNativeAotAssetDirectory)jalium.native.media.core.static.lib')" />
       <NativeLibrary Include="$(_JaliumNativeAotAssetDirectory)jalium.native.browser.static.lib"
                      Condition="'$(JaliumIncludeBrowserAot)' == 'true'" />
       <!-- WebView2LoaderStatic.lib is the in-process WebView2 loader: it
@@ -464,6 +494,18 @@
       <NativeLibrary Include="imm32.lib" />
       <NativeLibrary Include="winmm.lib" />
       <NativeLibrary Include="propsys.lib" />
+      <!-- Media Foundation + WIC — required by jalium.native.media.windows.static.lib.
+           Mirrors the AdditionalDependencies of the dynamic media.windows.vcxproj. -->
+      <NativeLibrary Include="windowscodecs.lib" />
+      <NativeLibrary Include="mfplat.lib" />
+      <NativeLibrary Include="mfreadwrite.lib" />
+      <NativeLibrary Include="mf.lib" />
+      <NativeLibrary Include="mfuuid.lib" />
+      <NativeLibrary Include="shlwapi.lib" />
+      <!-- Vulkan loader (vulkan-1.dll) import library. Ships with the LunarG Vulkan SDK
+           or VS Vulkan workload; consumers enabling JaliumIncludeVulkanAot must have
+           it on the linker's lib search path. -->
+      <NativeLibrary Include="vulkan-1.lib" Condition="'$(JaliumIncludeVulkanAot)' == 'true'" />
     </ItemGroup>
   </Target>
 
@@ -491,6 +533,10 @@
       <_JaliumDllsToStrip Include="$(PublishDir)jalium.native.vulkan.dll" />
       <_JaliumDllsToStrip Include="$(PublishDir)jalium.native.software.dll" />
       <_JaliumDllsToStrip Include="$(PublishDir)jalium.native.platform.dll" />
+      <!-- Media DLLs: image / video / camera ABI now ships in jalium.native.media.windows.static.lib
+           inside the AOT exe; the dynamic DLLs are pure dead weight after publish. -->
+      <_JaliumDllsToStrip Include="$(PublishDir)jalium.native.media.dll" />
+      <_JaliumDllsToStrip Include="$(PublishDir)jalium.native.media.core.dll" />
       <!-- jalium.native.browser.dll is removed unconditionally: when
            JaliumIncludeBrowserAot=false the browser feature is excluded; when
            true, the .static.lib is linked instead and the .dll alongside is

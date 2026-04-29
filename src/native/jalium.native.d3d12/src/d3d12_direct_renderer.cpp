@@ -422,15 +422,11 @@ bool D3D12DirectRenderer::CreateFrameResources()
                 IID_PPV_ARGS(&fr.commandAllocator))))
             return false;
 
-        // Instance upload buffer (persistently mapped)
-        auto heapProps = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
-        auto bufDesc = MakeBufferDesc(kInstanceBufferSize);
-        if (FAILED(device_->CreateCommittedResource(
-                &heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
-                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
-                IID_PPV_ARGS(&fr.instanceUploadBuffer))))
-            return false;
-        fr.instanceUploadBuffer->Map(0, nullptr, &fr.instanceMappedPtr);
+        // Instance upload buffer is allocated lazily on first use and grows as
+        // needed — see EnsureFrameInstanceCapacity.  A bare AOT window draws a
+        // few KB of instances; preallocating the historical 48 MB up front
+        // wasted ~144 MB across the three in-flight frames.
+        fr.instanceCapacity = 0;
 
         // Per-frame constants ring buffer — each FlushGraphicsForCompute gets its own
         // 256-byte aligned slot, so offscreen and main-RT draws see correct constants.
@@ -457,6 +453,43 @@ bool D3D12DirectRenderer::CreateFrameResources()
         return false;
     commandList_->Close();
 
+    return true;
+}
+
+bool D3D12DirectRenderer::EnsureFrameInstanceCapacity(FrameResources& fr, size_t requiredBytes)
+{
+    if (fr.instanceUploadBuffer && fr.instanceCapacity >= requiredBytes) {
+        return true;
+    }
+
+    // Caller contract: BeginFrame has already waited fr.fenceValue, so the GPU
+    // is no longer reading the current upload buffer.  Mid-frame growth would
+    // be unsafe because the open command list may already reference the old
+    // buffer's GPU virtual address through SRVs / VBVs / root CBVs — those
+    // descriptors must not be rebound.  UploadInstances grows once at the top
+    // of the frame, before any SRV referencing this buffer is recorded.
+    size_t newCap = std::max<size_t>(fr.instanceCapacity, kInitialInstanceCapacityBytes);
+    while (newCap < requiredBytes) {
+        newCap *= 2;
+    }
+
+    if (fr.instanceMappedPtr) {
+        fr.instanceUploadBuffer->Unmap(0, nullptr);
+        fr.instanceMappedPtr = nullptr;
+    }
+    fr.instanceUploadBuffer.Reset();
+
+    auto heapProps = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
+    auto bufDesc = MakeBufferDesc(newCap);
+    if (FAILED(device_->CreateCommittedResource(
+            &heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&fr.instanceUploadBuffer)))) {
+        fr.instanceCapacity = 0;
+        return false;
+    }
+    fr.instanceUploadBuffer->Map(0, nullptr, &fr.instanceMappedPtr);
+    fr.instanceCapacity = newCap;
     return true;
 }
 
@@ -773,10 +806,13 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     uploadBufferOffset_ = 0;
     srvAllocOffset_ = currentFrame_ * frameSrvRegionSize_;
 
-    // Reset glyph atlas if it overflowed in the previous frame
-    if (glyphAtlas_ && glyphAtlas_->NeedsReset()) {
-        glyphAtlas_->Reset();
-        glyphAtlas_->ClearResetFlag();
+    // If the atlas overflowed last frame, grow it (or reset if already at max).
+    // This is a frame boundary — BeginFrame has already waited this frame's
+    // previous fence, so recreating the atlas resources is safe.  Mid-frame
+    // would be unsafe because it changes atlas dimensions and invalidates the
+    // UV coordinates of every glyph instance already emitted this frame.
+    if (glyphAtlas_) {
+        glyphAtlas_->ApplyPendingGrowthOrReset();
     }
 
     // Reset scissor stack
@@ -954,9 +990,6 @@ void D3D12DirectRenderer::SetDpiScale(float dpiScale)
 void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
 {
     if (rectInstances_.size() >= kMaxInstancesPerFrame) {
-        if (inOffscreenCapture_) {
-            OutputDebugStringA("[AddSdfRect] AUTO-FLUSH during offscreen! CLEARING all instances\n");
-        }
         // Auto-flush: upload and record the current batch, then continue
         // instead of dropping the draw call.
         FlushGraphicsForCompute();
@@ -1011,12 +1044,6 @@ void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
     adjusted.shapeN = currentShapeN_;
 
     rectInstances_.push_back(adjusted);
-    if (inOffscreenCapture_) {
-        char buf[128];
-        sprintf_s(buf, "[AddSdfRect OFFSCREEN] pos=(%.0f,%.0f) size=(%.0f,%.0f) rects=%zu\n",
-            adjusted.posX, adjusted.posY, adjusted.sizeX, adjusted.sizeY, rectInstances_.size());
-        OutputDebugStringA(buf);
-    }
 }
 
 void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
@@ -1025,9 +1052,6 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     if (!glyphAtlas_ || !layout) return;
 
     if (textInstances_.size() >= kMaxInstancesPerFrame) {
-        if (inOffscreenCapture_) {
-            OutputDebugStringA("[AddText] AUTO-FLUSH during offscreen! CLEARING all instances\n");
-        }
         FlushGraphicsForCompute();
     }
 
@@ -1100,9 +1124,6 @@ void D3D12DirectRenderer::AddBitmap(float x, float y, float w, float h, float op
 {
     if (!textureResource) return;
     if (bitmapInstances_.size() >= kMaxInstancesPerFrame) {
-        if (inOffscreenCapture_) {
-            OutputDebugStringA("[AddBitmap] AUTO-FLUSH during offscreen! CLEARING all instances\n");
-        }
         // Auto-flush: upload and record the current batch, then continue
         FlushGraphicsForCompute();
     }
@@ -1286,18 +1307,12 @@ void D3D12DirectRenderer::PushScissor(float x, float y, float w, float h)
     }
 
     scissorStack_.push(rect);
-    if (inOffscreenCapture_) {
-        OutputDebugStringA("[PushScissor OFFSCREEN] called — triggers FlushGfx\n");
-    }
 }
 
 void D3D12DirectRenderer::PopScissor()
 {
     if (!scissorStack_.empty())
         scissorStack_.pop();
-    if (inOffscreenCapture_) {
-        OutputDebugStringA("[PopScissor OFFSCREEN] called\n");
-    }
 }
 
 void D3D12DirectRenderer::ApplyScissorToVello()
@@ -1352,7 +1367,41 @@ void D3D12DirectRenderer::FlushVelloPaths()
 void D3D12DirectRenderer::UploadInstances()
 {
     auto& fr = frames_[currentFrame_];
+
+    // Compute the exact instance footprint (with the same per-stage alignment
+    // RecordDrawCommands depends on) and grow the per-frame UPLOAD heap before
+    // we touch the mapped pointer.  Padding by kMidFrameReserveBytes lets
+    // FlushGraphicsForCompute / DrawCustomShaderEffect / DrawLiquidGlass append
+    // their constant buffers in the same buffer without triggering a fallback.
+    {
+        const size_t rectAlignProbe = sizeof(SdfRectInstance);
+        size_t probe = ((uploadBufferOffset_ + rectAlignProbe - 1) / rectAlignProbe) * rectAlignProbe;
+        if (!rectInstances_.empty()) {
+            probe += rectInstances_.size() * sizeof(SdfRectInstance);
+        }
+        const size_t textAlignProbe = sizeof(GlyphQuadInstance);
+        probe = ((probe + textAlignProbe - 1) / textAlignProbe) * textAlignProbe;
+        if (!textInstances_.empty()) {
+            probe += textInstances_.size() * sizeof(GlyphQuadInstance);
+        }
+        const size_t bitmapAlignProbe = sizeof(BitmapQuadInstance);
+        probe = ((probe + bitmapAlignProbe - 1) / bitmapAlignProbe) * bitmapAlignProbe;
+        if (!bitmapInstances_.empty()) {
+            probe += bitmapInstances_.size() * sizeof(BitmapQuadInstance);
+        }
+        probe = ((probe + 3) / 4) * 4;
+        if (!triangleVertices_.empty()) {
+            probe += triangleVertices_.size() * sizeof(TriangleVertex);
+        }
+        const size_t requiredBytes = probe + kMidFrameReserveBytes;
+        if (!EnsureFrameInstanceCapacity(fr, requiredBytes)) {
+            OutputDebugStringA("[D3D12DirectRenderer] FATAL: failed to grow instance upload buffer\n");
+            return;
+        }
+    }
+
     uint8_t* dst = (uint8_t*)fr.instanceMappedPtr;
+    const size_t cap = fr.instanceCapacity;
 
     // Align start offset to SdfRectInstance stride for StructuredBuffer SRV compatibility
     size_t rectAlign = sizeof(SdfRectInstance);
@@ -1362,7 +1411,7 @@ void D3D12DirectRenderer::UploadInstances()
     // Upload rect instances
     if (!rectInstances_.empty()) {
         size_t rectDataSize = rectInstances_.size() * sizeof(SdfRectInstance);
-        if (offset + rectDataSize <= kInstanceBufferSize) {
+        if (offset + rectDataSize <= cap) {
             memcpy(dst + offset, rectInstances_.data(), rectDataSize);
             offset += rectDataSize;
         } else {
@@ -1377,7 +1426,7 @@ void D3D12DirectRenderer::UploadInstances()
     textBufferByteOffset_ = textBufferOffset;
     if (!textInstances_.empty()) {
         size_t textDataSize = textInstances_.size() * sizeof(GlyphQuadInstance);
-        if (textBufferOffset + textDataSize <= kInstanceBufferSize) {
+        if (textBufferOffset + textDataSize <= cap) {
             memcpy(dst + textBufferOffset, textInstances_.data(), textDataSize);
             offset = textBufferOffset + textDataSize;
         } else {
@@ -1391,7 +1440,7 @@ void D3D12DirectRenderer::UploadInstances()
     bitmapBufferByteOffset_ = bitmapBufferOffset;
     if (!bitmapInstances_.empty()) {
         size_t bitmapDataSize = bitmapInstances_.size() * sizeof(BitmapQuadInstance);
-        if (bitmapBufferOffset + bitmapDataSize <= kInstanceBufferSize) {
+        if (bitmapBufferOffset + bitmapDataSize <= cap) {
             memcpy(dst + bitmapBufferOffset, bitmapInstances_.data(), bitmapDataSize);
             offset = bitmapBufferOffset + bitmapDataSize;
         } else {
@@ -1404,7 +1453,7 @@ void D3D12DirectRenderer::UploadInstances()
     triBufferByteOffset_ = triBufferOffset;
     if (!triangleVertices_.empty()) {
         size_t triDataSize = triangleVertices_.size() * sizeof(TriangleVertex);
-        if (triBufferOffset + triDataSize <= kInstanceBufferSize) {
+        if (triBufferOffset + triDataSize <= cap) {
             memcpy(dst + triBufferOffset, triangleVertices_.data(), triDataSize);
             offset = triBufferOffset + triDataSize;
         } else {
@@ -1991,12 +2040,6 @@ bool D3D12DirectRenderer::EnsureOffscreenTargets(UINT requiredWidth, UINT requir
 
 void D3D12DirectRenderer::FlushGraphicsForCompute()
 {
-    if (inOffscreenCapture_) {
-        char buf[256];
-        sprintf_s(buf, "[FlushGfx OFFSCREEN] rects=%zu text=%zu batches=%zu — CLEARING ALL\n",
-            rectInstances_.size(), textInstances_.size(), batches_.size());
-        OutputDebugStringA(buf);
-    }
     // Record any pending graphics draw commands before switching to compute.
     UploadInstances();
     RecordDrawCommands();
@@ -2881,14 +2924,9 @@ void D3D12DirectRenderer::DrawRippleEffect(
 bool D3D12DirectRenderer::BeginOffscreenCapture(int slot, float x, float y, float w, float h)
 {
     if (!inFrame_ || slot < 0 || slot > 1 || w <= 0 || h <= 0) {
-        char buf[256];
-        sprintf_s(buf, "[BeginOffscreenCapture] FAIL precondition: inFrame=%d slot=%d w=%.1f h=%.1f\n",
-            (int)inFrame_, slot, w, h);
-        OutputDebugStringA(buf);
         return false;
     }
     if (inOffscreenCapture_) {
-        OutputDebugStringA("[BeginOffscreenCapture] FAIL: already in offscreen capture\n");
         return false;
     }
 
@@ -2903,10 +2941,6 @@ bool D3D12DirectRenderer::BeginOffscreenCapture(int slot, float x, float y, floa
     FlushGraphicsForCompute();
 
     if (!EnsureOffscreenTargets(pw, ph)) {
-        char buf[256];
-        sprintf_s(buf, "[BeginOffscreenCapture] FAIL EnsureOffscreenTargets: pw=%u ph=%u offscreenW=%u offscreenH=%u usedThisFrame=%d\n",
-            pw, ph, offscreenW_, offscreenH_, (int)offscreenResourcesUsedThisFrame_);
-        OutputDebugStringA(buf);
         offscreenCaptureValid_[slot] = false;
         return false;
     }
@@ -2960,12 +2994,6 @@ bool D3D12DirectRenderer::BeginOffscreenCapture(int slot, float x, float y, floa
     currentFrameConstants_.invScreenHeight = 1.0f / h;
 
     inOffscreenCapture_ = true;
-    {
-        char buf[256];
-        sprintf_s(buf, "[BeginOffscreenCapture] OK: rects=%zu batches=%zu after setup\n",
-            rectInstances_.size(), batches_.size());
-        OutputDebugStringA(buf);
-    }
     return true;
 }
 
@@ -2973,26 +3001,11 @@ void D3D12DirectRenderer::EndOffscreenCapture(int slot)
 {
     if (!inFrame_ || slot < 0 || slot > 1 || !inOffscreenCapture_) return;
 
-    {
-        char buf[512];
-        sprintf_s(buf, "[EndOffscreenCapture] slot=%d rects=%zu text=%zu bitmaps=%zu triangles=%zu batches=%zu screenW=%.1f screenH=%.1f\n",
-            slot, rectInstances_.size(), textInstances_.size(), bitmapInstances_.size(),
-            triangleVertices_.size(), batches_.size(),
-            currentFrameConstants_.screenWidth, currentFrameConstants_.screenHeight);
-        OutputDebugStringA(buf);
-    }
-
     // Pop the offset transform
     PopTransform();
 
     // Flush pending draws to the offscreen RT
     FlushGraphicsForCompute();
-    {
-        char buf[128];
-        sprintf_s(buf, "[EndOffscreenCapture] AFTER FLUSH: rects=%zu batches=%zu\n",
-            rectInstances_.size(), batches_.size());
-        OutputDebugStringA(buf);
-    }
 
     auto* cl = commandList_.Get();
 
@@ -3209,7 +3222,10 @@ void D3D12DirectRenderer::DrawCustomShaderEffect(int slot,
     const size_t constantBytes = static_cast<size_t>(effectiveFloatCount) * sizeof(float);
     const size_t cbSize = ((std::max<size_t>(constantBytes, 16) + 255) / 256) * 256;
     size_t cbOffset = ((uploadBufferOffset_ + 255) / 256) * 256;
-    if (cbOffset + cbSize > kInstanceBufferSize) {
+    if (cbOffset + cbSize > fr.instanceCapacity) {
+        // Buffer was sized at UploadInstances time — mid-frame growth would
+        // invalidate the SRVs/CBVs already recorded on this command list.
+        // Skip the custom shader and use the simple offscreen blit fallback.
         DrawOffscreenBitmap(slot, x, y, w, h, 1.0f);
         return;
     }
@@ -3839,7 +3855,9 @@ void D3D12DirectRenderer::DrawLiquidGlass(
     auto& fr = frames_[currentFrame_];
     constexpr size_t cbAligned = 256; // D3D12 CBV alignment
     size_t cbOffset = ((uploadBufferOffset_ + cbAligned - 1) / cbAligned) * cbAligned;
-    if (cbOffset + cbAligned > kInstanceBufferSize) {
+    if (cbOffset + cbAligned > fr.instanceCapacity) {
+        // Mid-frame buffer growth would invalidate already-recorded GPU VAs.
+        // Fall back to plain blur+tint when the per-frame UPLOAD heap is full.
         DrawSnapshotBlurred(x, y, w, h, blurRadius, tintR, tintG, tintB, tintOpacity, cornerRadius);
         return;
     }

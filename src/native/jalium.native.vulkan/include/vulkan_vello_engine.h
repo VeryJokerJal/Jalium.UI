@@ -1,67 +1,58 @@
 #pragma once
 
 #include "jalium_rendering_engine.h"
+#include "jalium_impeller_shapes.h"
+#include "jalium_impeller_stroke.h"
+#include "jalium_gradient_sample.h"
+#include "jalium_triangulate.h"
+#include "vulkan_impeller_engine.h"   // for VkImpellerVertex / VkImpellerDrawBatch — Vello shares the same on-wire type
 #include "vulkan_minimal.h"
 #include <vector>
 #include <cstdint>
+#include <limits>
 
 namespace jalium {
 
+// VelloVulkanEngine and ImpellerVulkanEngine emit binary-identical batches
+// today — same vertex layout (pos+color, 24 bytes), same per-batch metadata.
+// Aliasing the Vello types to the Impeller types lets vulkan_render_target.cpp
+// consume both engines through one RenderEngineBatches function. When real
+// Vello compute shaders ship the alias can be replaced with a distinct struct
+// without touching either engine class's encoder side.
+using VkVelloVertex = VkImpellerVertex;
+using VkVelloDrawBatch = VkImpellerDrawBatch;
+
 // ============================================================================
-// VelloVulkanEngine — Vello GPU compute pipeline on Vulkan
+// VelloVulkanEngine — Vulkan Vello-engine adapter.
 //
-// Translates the Vello rendering architecture to Vulkan compute shaders.
-// Pipeline stages (matching the D3D12 implementation):
-//   1. Path Encode  (CPU) — encode path segments into GPU buffers
-//   2. Flatten      (CS)  — bezier curves → line segments (Wang's formula)
-//   3. Bin + Alloc  (CS)  — assign segments to 16×16 tiles, allocate storage
-//   4. Backdrop     (CS)  — prefix-sum winding number propagation
-//   5. Coarse       (CS)  — generate per-tile command lists (PTCL)
-//   6. Fine         (CS)  — render final pixels with analytical AA coverage
+// **Status (2026-04-28):** runs on the same CPU-tessellation + scanline-AA
+// pipeline as ImpellerVulkanEngine, NOT on the Vello GPU compute pipeline.
 //
-// Uses SPIR-V compute shaders compiled from the same algorithm as HLSL.
+// Why: the original 5-stage SPIR-V compute pipeline (vulkan_vello_shaders.h:
+// flatten/binAlloc/backdrop/coarse/fine) was wired into Execute() with
+// missing descriptor bindings, no output image layout transition, and only
+// 2 of the 5 storage buffers actually allocated in EnsureBuffers — so it
+// could never produce visually correct output. Rewiring that requires the
+// SPIR-V's std430 buffer layout to match the C++ structs, which the binary
+// doesn't expose. Until proper Vello compute shaders land, this engine
+// shares the Impeller path so Vello hot-switch at least produces visually
+// correct frames (algorithmically identical to Impeller, just labelled
+// VELLO so RenderingEngine.GetType()/the user-facing toggle works).
+//
+// The engine is intentionally a copy of the Impeller engine's structure
+// (rather than a `using` alias) so that future work can swap in real
+// compute-pipeline rendering without touching every Encode caller.
 // ============================================================================
 
-// Tile dimensions (must match compute shaders)
-static constexpr uint32_t kVkTileWidth  = 16;
-static constexpr uint32_t kVkTileHeight = 16;
-
-// Fill rules
-static constexpr uint32_t kVkFillRuleEvenOdd = 0;
-static constexpr uint32_t kVkFillRuleNonZero = 1;
-
-// GPU-side data structures (must match SPIR-V shaders)
-struct VkPathSegment {
-    float p0x, p0y;
-    float p1x, p1y;
-    float p2x, p2y;
-    float p3x, p3y;
-    uint32_t tag;
-    uint32_t pathIndex;
-    uint32_t pad0, pad1;
-};
-static_assert(sizeof(VkPathSegment) == 48, "VkPathSegment must be 48 bytes");
-
-struct VkLineSeg {
-    float p0x, p0y;
-    float p1x, p1y;
-    uint32_t pathIndex;
-    uint32_t pad;
-};
-static_assert(sizeof(VkLineSeg) == 24, "VkLineSeg must be 24 bytes");
-
-// Per-path metadata
-struct VkPathInfo {
-    float bboxMinX, bboxMinY, bboxMaxX, bboxMaxY;
-    float r, g, b, a;       // Solid color (premultiplied)
-    uint32_t segmentOffset;
-    uint32_t segmentCount;
-    uint32_t fillRule;
-    uint32_t brushType;      // 0=solid, 1=linearGrad, etc.
-};
+// VkVelloVertex / VkVelloDrawBatch are aliases above; struct definitions
+// removed to avoid type duplication.
 
 class VelloVulkanEngine : public IRenderingEngine {
 public:
+    /// `computeQueue` and `computeQueueFamily` are accepted to keep the
+    /// constructor signature stable for the day a real GPU compute pipeline
+    /// returns; today they are unused (the engine runs entirely on the CPU
+    /// tessellation + scanline-AA path).
     VelloVulkanEngine(VkDevice device, VkPhysicalDevice physicalDevice,
                       VkQueue computeQueue, uint32_t computeQueueFamily);
     ~VelloVulkanEngine() override;
@@ -101,94 +92,86 @@ public:
         const EngineBrushData& brush,
         const EngineTransform& transform) override;
 
+    /// IRenderingEngine::Execute — no-op. Same contract as ImpellerVulkanEngine:
+    /// vulkan_render_target.cpp consumes batches via GetBatches() once the
+    /// consumer side is wired up.
     bool Execute(void* commandList, void* renderTarget, uint32_t width, uint32_t height) override;
     bool HasPendingWork() const override;
     uint32_t GetEncodedPathCount() const override;
 
-    /// Get the output image for compositing.
-    VkImage GetOutputImage() const { return outputImage_; }
-    VkImageView GetOutputImageView() const { return outputImageView_; }
+    const std::vector<VkVelloDrawBatch>& GetBatches() const { return batches_; }
+    void ClearBatches() { batches_.clear(); }
+
+    void PushBatch(VkVelloDrawBatch&& batch) {
+        batch.hasScissor = hasScissor_;
+        if (hasScissor_) {
+            batch.scissorL = scissorLeft_;
+            batch.scissorT = scissorTop_;
+            batch.scissorR = scissorRight_;
+            batch.scissorB = scissorBottom_;
+        }
+        ComputeBatchCoverage(batch);
+        batches_.push_back(std::move(batch));
+    }
+
+    static void ComputeBatchCoverage(VkVelloDrawBatch& batch) {
+        float minX =  std::numeric_limits<float>::infinity();
+        float minY =  std::numeric_limits<float>::infinity();
+        float maxX = -std::numeric_limits<float>::infinity();
+        float maxY = -std::numeric_limits<float>::infinity();
+        bool any = false;
+
+        for (const auto& v : batch.vertices) {
+            if (v.x < minX) minX = v.x;
+            if (v.y < minY) minY = v.y;
+            if (v.x > maxX) maxX = v.x;
+            if (v.y > maxY) maxY = v.y;
+            any = true;
+        }
+        if (!any || !(maxX >= minX) || !(maxY >= minY)) {
+            batch.hasCoverage = false;
+            return;
+        }
+        batch.hasCoverage = true;
+        batch.coverageL = minX;
+        batch.coverageT = minY;
+        batch.coverageR = maxX;
+        batch.coverageB = maxY;
+    }
 
 private:
-    // --- Path encoding helpers (CPU, same algorithm as D3D12 version) ---
-
-    void FlattenBezier(float x0, float y0, float x1, float y1,
-                       float x2, float y2, float x3, float y3,
-                       float tolerance);
-
     void TransformPoint(float& x, float& y, const EngineTransform& t) const {
         float tx = t.m11 * x + t.m21 * y + t.dx;
         float ty = t.m12 * x + t.m22 * y + t.dy;
-        x = tx; y = ty;
+        x = tx;
+        y = ty;
     }
 
-    // --- GPU Resource Management ---
-
-    bool CreateComputePipelines();
-    bool CreateDescriptorSetLayouts();
-    bool EnsureBuffers(size_t segmentBytes, size_t pathInfoBytes);
-    bool EnsureOutputImage(uint32_t w, uint32_t h);
-    uint32_t FindMemoryType(uint32_t typeFilter, VkMemoryPropertyFlags properties);
-
-    VkBuffer CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage,
-                          VkMemoryPropertyFlags properties, VkDeviceMemory& memory);
+    bool ExpandStroke(const EngineBrushData& brush,
+                      float strokeWidth,
+                      ImpellerJoin join, float miterLimit,
+                      ImpellerCap cap, bool closed,
+                      std::vector<Contour>* collectContours = nullptr);
 
     VkDevice device_;
     VkPhysicalDevice physicalDevice_;
-    VkQueue computeQueue_;
-    uint32_t computeQueueFamily_;
+    VkQueue computeQueue_;            // accepted for ABI; unused today.
+    uint32_t computeQueueFamily_;     // accepted for ABI; unused today.
     bool initialized_ = false;
 
-    // Viewport
     uint32_t viewportW_ = 0, viewportH_ = 0;
-    uint32_t tilesX_ = 0, tilesY_ = 0;
 
-    // Scissor
     float scissorLeft_ = 0, scissorTop_ = 0, scissorRight_ = 0, scissorBottom_ = 0;
     bool hasScissor_ = false;
 
-    // CPU staging
-    std::vector<VkPathSegment> segments_;
-    std::vector<VkPathInfo> pathInfos_;
+    std::vector<float> flatPoints_;
 
-    // --- Vulkan Resources ---
+    std::vector<VkVelloDrawBatch> batches_;
+    uint32_t encodedPathCount_ = 0;
 
-    // Compute pipelines for each Vello stage
-    VkPipelineLayout pipelineLayout_ = VK_NULL_HANDLE;
-    VkPipeline flattenPipeline_ = VK_NULL_HANDLE;
-    VkPipeline binAllocPipeline_ = VK_NULL_HANDLE;
-    VkPipeline backdropPipeline_ = VK_NULL_HANDLE;
-    VkPipeline coarsePipeline_ = VK_NULL_HANDLE;
-    VkPipeline finePipeline_ = VK_NULL_HANDLE;
+    float flattenTolerance_ = 0.25f;
 
-    VkDescriptorSetLayout descriptorSetLayout_ = VK_NULL_HANDLE;
-    VkDescriptorPool descriptorPool_ = VK_NULL_HANDLE;
-
-    // GPU buffers
-    VkBuffer segmentBuffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory segmentMemory_ = VK_NULL_HANDLE;
-    VkBuffer pathInfoBuffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory pathInfoMemory_ = VK_NULL_HANDLE;
-    VkBuffer lineSegBuffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory lineSegMemory_ = VK_NULL_HANDLE;
-    VkBuffer tileBuffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory tileMemory_ = VK_NULL_HANDLE;
-    VkBuffer ptclBuffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory ptclMemory_ = VK_NULL_HANDLE;
-
-    // Staging buffer (host-visible)
-    VkBuffer stagingBuffer_ = VK_NULL_HANDLE;
-    VkDeviceMemory stagingMemory_ = VK_NULL_HANDLE;
-    size_t stagingSize_ = 0;
-
-    // Output image
-    VkImage outputImage_ = VK_NULL_HANDLE;
-    VkDeviceMemory outputMemory_ = VK_NULL_HANDLE;
-    VkImageView outputImageView_ = VK_NULL_HANDLE;
-    uint32_t outputW_ = 0, outputH_ = 0;
-
-    // Command pool for compute
-    VkCommandPool commandPool_ = VK_NULL_HANDLE;
+    TrigCache trigCache_;
 };
 
 } // namespace jalium

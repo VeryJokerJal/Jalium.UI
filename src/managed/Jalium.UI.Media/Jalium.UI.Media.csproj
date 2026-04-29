@@ -19,7 +19,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="OpenCvSharp4" Version="4.13.0.20260318" />
+    <!-- 视频解码改用平台原生技术（Windows MF / Android MediaCodec），通过 jalium.native.media 暴露 P/Invoke。 -->
+    <!-- 音频继续走 SoundFlow + FFmpeg。 -->
     <PackageReference Include="SoundFlow" Version="1.4.0" />
     <PackageReference Include="SoundFlow.Codecs.FFMpeg" Version="1.4.0" />
   </ItemGroup>

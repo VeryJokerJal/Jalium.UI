@@ -1,3 +1,6 @@
+using Jalium.UI.Media.Imaging;
+using Jalium.UI.Media.Native;
+
 namespace Jalium.UI.Media;
 
 /// <summary>
@@ -19,13 +22,49 @@ public abstract class ImageSource
     /// Gets the native handle of the image (platform-specific).
     /// </summary>
     public abstract nint NativeHandle { get; }
+
+    /// <summary>
+    /// Raised when an image source wants every GPU-side bitmap cache (one per
+    /// active <c>RenderTargetDrawingContext</c>) to drop its cached upload of
+    /// the source so the underlying <c>NativeBitmap</c> texture is released.
+    /// Used by the idle-resource reclaimer when an <c>IReclaimableResource</c>
+    /// element decides its source has been off-screen long enough to free GPU
+    /// memory; the upload is rebuilt from <see cref="BitmapImage.RawPixelData"/>
+    /// or <see cref="BitmapImage.ImageData"/> on the next render.
+    /// </summary>
+    /// <remarks>
+    /// Each <c>RenderTargetDrawingContext</c> subscribes in its constructor and
+    /// unsubscribes when the context closes. Handlers run synchronously on the
+    /// thread that raised the event — typically the UI thread — and must be
+    /// allocation-free; the source is the <see cref="ImageSource"/> whose GPU
+    /// upload should be dropped.
+    /// </remarks>
+    internal static event Action<ImageSource>? GpuCacheEvictionRequested;
+
+    /// <summary>
+    /// Asks every subscribed bitmap cache to drop its GPU upload of
+    /// <paramref name="source"/>. No-op when nothing is subscribed.
+    /// </summary>
+    internal static void RaiseGpuCacheEviction(ImageSource source)
+    {
+        var handler = GpuCacheEvictionRequested;
+        if (handler != null)
+        {
+            handler(source);
+        }
+    }
 }
 
 /// <summary>
-/// Represents a bitmap image source.
+/// Represents a bitmap image source. PNG / JPEG / WebP / GIF / BMP / HEIF input is
+/// decoded to BGRA8 pixels by the platform-native <see cref="INativeImageDecoder"/>
+/// (WIC on Windows, NDK <c>AImageDecoder</c> / <c>BitmapFactory</c> on Android).
 /// </summary>
-public sealed class BitmapImage : ImageSource, IDisposable
+public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
 {
+    private static INativeImageDecoder? s_decoder;
+    private static readonly object s_decoderLock = new();
+
     private nint _nativeHandle;
     private double _width;
     private double _height;
@@ -40,38 +79,32 @@ public sealed class BitmapImage : ImageSource, IDisposable
     /// </summary>
     public event EventHandler? OnImageLoaded;
 
-    /// <summary>
-    /// Gets the width of the image.
-    /// </summary>
+    /// <inheritdoc />
     public override double Width => _width;
 
-    /// <summary>
-    /// Gets the height of the image.
-    /// </summary>
+    /// <inheritdoc />
     public override double Height => _height;
 
-    /// <summary>
-    /// Gets the native handle.
-    /// </summary>
+    /// <inheritdoc />
     public override nint NativeHandle => _nativeHandle;
 
     /// <summary>
-    /// Gets the raw image data bytes.
+    /// Gets the raw image data bytes (encoded PNG/JPEG/etc.).
     /// </summary>
     public byte[]? ImageData => _imageData;
 
     /// <summary>
-    /// Gets the raw BGRA8 pixel buffer when the image was created from pixels.
+    /// Gets the raw BGRA8 pixel buffer (always populated after decode).
     /// </summary>
     public byte[]? RawPixelData => _rawPixelData;
 
     /// <summary>
-    /// Gets the pixel width when raw pixel data is available.
+    /// Gets the pixel width.
     /// </summary>
     public int PixelWidth => (int)Math.Round(_width);
 
     /// <summary>
-    /// Gets the pixel height when raw pixel data is available.
+    /// Gets the pixel height.
     /// </summary>
     public int PixelHeight => (int)Math.Round(_height);
 
@@ -88,7 +121,6 @@ public sealed class BitmapImage : ImageSource, IDisposable
         get => _uriSource;
         set
         {
-            // Cancel any in-flight HTTP load before starting a new one
             _httpCts?.Cancel();
             _httpCts?.Dispose();
             _httpCts = null;
@@ -117,7 +149,20 @@ public sealed class BitmapImage : ImageSource, IDisposable
     }
 
     /// <summary>
-    /// Creates a BitmapImage from a file path.
+    /// 注入自定义 <see cref="INativeImageDecoder"/>。当 <see cref="MediaAppBuilderExtensions"/>
+    /// 注册原生媒体管道时会自动调用；测试可手动设置 mock 实现。
+    /// </summary>
+    public static void SetDecoder(INativeImageDecoder decoder)
+    {
+        ArgumentNullException.ThrowIfNull(decoder);
+        lock (s_decoderLock)
+        {
+            s_decoder = decoder;
+        }
+    }
+
+    /// <summary>
+    /// 创建 BitmapImage 从文件路径。
     /// </summary>
     public static BitmapImage FromFile(string filePath)
     {
@@ -127,12 +172,12 @@ public sealed class BitmapImage : ImageSource, IDisposable
     }
 
     /// <summary>
-    /// Creates a BitmapImage from raw pixel data.
+    /// 创建 BitmapImage 从 BGRA8 原始像素。
     /// </summary>
-    /// <param name="pixels">The pixel data in BGRA format.</param>
-    /// <param name="width">The width in pixels.</param>
-    /// <param name="height">The height in pixels.</param>
-    /// <param name="stride">The number of bytes between two adjacent rows. Defaults to <c>width * 4</c>.</param>
+    /// <param name="pixels">BGRA8 像素数据。</param>
+    /// <param name="width">像素宽度。</param>
+    /// <param name="height">像素高度。</param>
+    /// <param name="stride">行跨度（字节）。0 表示 <c>width * 4</c>。</param>
     public static BitmapImage FromPixels(byte[] pixels, int width, int height, int stride = 0)
     {
         ArgumentNullException.ThrowIfNull(pixels);
@@ -163,6 +208,38 @@ public sealed class BitmapImage : ImageSource, IDisposable
         return image;
     }
 
+    /// <summary>
+    /// 创建 BitmapImage 从已解码的 <see cref="DecodedImage"/>。
+    /// </summary>
+    public static BitmapImage FromDecodedImage(DecodedImage decoded)
+    {
+        var image = new BitmapImage();
+        image.AdoptDecoded(decoded);
+        return image;
+    }
+
+    /// <summary>
+    /// 创建 BitmapImage 从池化的 <see cref="MediaFrame"/>。这条路径专供 VideoDrawing /
+    /// CameraView 热路径使用 — 数据被复制出来，调用方可立即 Dispose 帧以归还池。
+    /// </summary>
+    public static BitmapImage FromMediaFrame(MediaFrame frame)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+
+        var pixels = frame.Pixels.Span;
+        var copy = new byte[pixels.Length];
+        pixels.CopyTo(copy);
+
+        var image = new BitmapImage
+        {
+            _width = frame.Width,
+            _height = frame.Height,
+            _rawPixelData = copy,
+            _pixelStride = frame.Stride
+        };
+        return image;
+    }
+
     private void LoadFromUri(Uri uri)
     {
         if (uri.IsFile || uri.Scheme == "file")
@@ -171,7 +248,6 @@ public sealed class BitmapImage : ImageSource, IDisposable
         }
         else if (uri.Scheme == "http" || uri.Scheme == "https")
         {
-            // Load asynchronously from HTTP/HTTPS URL
             var cts = new CancellationTokenSource();
             _httpCts = cts;
             _ = LoadFromHttpAsync(uri, cts.Token);
@@ -199,11 +275,10 @@ public sealed class BitmapImage : ImageSource, IDisposable
         }
         catch (OperationCanceledException)
         {
-            // Load was cancelled (URI changed or object disposed)
         }
         catch
         {
-            // Image load failed
+            // HTTP 请求失败、网络错误等：保持空状态。
         }
     }
 
@@ -219,104 +294,49 @@ public sealed class BitmapImage : ImageSource, IDisposable
 
     private void LoadFromBytes(byte[] data)
     {
-        // Store the raw bytes for the native rendering backend to process
+        ArgumentNullException.ThrowIfNull(data);
+        if (data.Length == 0) throw new ArgumentException("Image data is empty.", nameof(data));
+
         _imageData = data;
-        _rawPixelData = null;
-        _pixelStride = 0;
-
-        // Try to read image dimensions from the header
-        if (TryReadImageDimensions(data, out var width, out var height))
-        {
-            _width = width;
-            _height = height;
-        }
-        else
-        {
-            // Default dimensions if we can't read the header
-            _width = 100;
-            _height = 100;
-        }
-
-        // Notify that the image has been updated
-        OnImageLoaded?.Invoke(this, EventArgs.Empty);
-    }
-
-    private static bool TryReadImageDimensions(byte[] data, out int width, out int height)
-    {
-        width = 0;
-        height = 0;
-
-        if (data == null || data.Length < 24)
-            return false;
-
-        // Check for PNG signature
-        if (data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47)
-        {
-            // PNG: width at offset 16, height at offset 20 (big-endian)
-            width = (data[16] << 24) | (data[17] << 16) | (data[18] << 8) | data[19];
-            height = (data[20] << 24) | (data[21] << 16) | (data[22] << 8) | data[23];
-            return true;
-        }
-
-        // Check for JPEG signature
-        if (data[0] == 0xFF && data[1] == 0xD8)
-        {
-            // JPEG: need to parse markers to find SOF
-            int offset = 2;
-            while (offset < data.Length - 1)
-            {
-                if (data[offset] != 0xFF)
-                {
-                    offset++;
-                    continue;
-                }
-
-                if (offset + 1 >= data.Length)
-                    break;
-
-                byte marker = data[offset + 1];
-
-                // SOF0, SOF1, SOF2 (Start of Frame markers)
-                if (marker == 0xC0 || marker == 0xC1 || marker == 0xC2)
-                {
-                    if (offset + 8 >= data.Length)
-                        break;
-
-                    height = (data[offset + 5] << 8) | data[offset + 6];
-                    width = (data[offset + 7] << 8) | data[offset + 8];
-                    return true;
-                }
-
-                // Skip to next marker
-                if (offset + 3 >= data.Length)
-                    break;
-
-                int length = (data[offset + 2] << 8) | data[offset + 3];
-                offset += length + 2;
-            }
-        }
-
-        return false;
+        var decoder = GetDecoderOrThrow();
+        var decoded = decoder.Decode(data);
+        AdoptDecoded(decoded);
     }
 
     private void LoadFromFile(string filePath)
     {
-        if (!System.IO.File.Exists(filePath))
-        {
-            return;
-        }
+        ArgumentException.ThrowIfNullOrEmpty(filePath);
 
-        try
+        var bytes = System.IO.File.ReadAllBytes(filePath);
+        LoadFromBytes(bytes);
+    }
+
+    private void AdoptDecoded(DecodedImage decoded)
+    {
+        var span = decoded.Pixels.Span;
+        var copy = new byte[span.Length];
+        span.CopyTo(copy);
+
+        _width = decoded.Width;
+        _height = decoded.Height;
+        _rawPixelData = copy;
+        _pixelStride = decoded.Stride;
+
+        OnImageLoaded?.Invoke(this, EventArgs.Empty);
+    }
+
+    private static INativeImageDecoder GetDecoderOrThrow()
+    {
+        var decoder = Volatile.Read(ref s_decoder);
+        if (decoder is not null) return decoder;
+
+        lock (s_decoderLock)
         {
-            // Read the file bytes and load using the bytes loader
-            // The native rendering backend (NativeBitmap) will decode the image
-            // using Windows Imaging Component (WIC) which supports PNG, JPG, BMP, GIF, etc.
-            var bytes = System.IO.File.ReadAllBytes(filePath);
-            LoadFromBytes(bytes);
-        }
-        catch
-        {
-            // Image load failed silently
+            if (s_decoder is null)
+            {
+                s_decoder = new NativeImageDecoder();
+            }
+            return s_decoder;
         }
     }
 
@@ -328,6 +348,36 @@ public sealed class BitmapImage : ImageSource, IDisposable
         _httpCts?.Cancel();
         _httpCts?.Dispose();
         _httpCts = null;
+    }
+
+    /// <summary>
+    /// Drops the decoded BGRA8 pixel buffer and asks every active GPU bitmap
+    /// cache to release its upload of this image. Idempotent. Encoded
+    /// <see cref="ImageData"/> is preserved so the next render that needs the
+    /// bitmap can re-decode and re-upload; if no encoded source is available
+    /// (the bitmap was loaded directly from raw pixels and the encoded bytes
+    /// were never captured), the pixel buffer is kept so the image is not
+    /// lost permanently.
+    /// </summary>
+    /// <remarks>
+    /// Called by the framework's idle-resource reclaimer when an
+    /// <see cref="IReclaimableResource"/> element that owns this source has
+    /// stayed off-screen past the configured idle window — see
+    /// <c>JaliumAppExtensions.UseIdleResourceReclamation</c>. Safe to call
+    /// directly to free memory under pressure.
+    /// </remarks>
+    public void ReclaimIdleResources()
+    {
+        // Always evict GPU uploads — they can be rebuilt from either
+        // _rawPixelData (if still around) or _imageData (re-decode).
+        RaiseGpuCacheEviction(this);
+
+        // Drop CPU pixels only when we still have an encoded source we can
+        // re-decode from; otherwise the image would be unrecoverable.
+        if (_imageData != null)
+        {
+            _rawPixelData = null;
+        }
     }
 
     /// <summary>

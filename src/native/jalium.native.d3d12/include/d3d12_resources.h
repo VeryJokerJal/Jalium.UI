@@ -66,6 +66,12 @@ public:
     /// Sets the bitmap data from WIC.
     void SetBitmapData(const uint8_t* data, uint32_t dataSize);
 
+    /// Updates packed BGRA8 pixels in place. Marks the bitmap as dynamic — subsequent
+    /// GPU uploads will reuse the existing default-heap texture (no mip chain) instead
+    /// of recreating a fresh committed resource per call. Returns true on success.
+    /// Used by video frame / WriteableBitmap hot paths to avoid GPU memory thrashing.
+    bool UpdatePackedPixels(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t stride) override;
+
     /// Releases old resources that are no longer needed by the GPU.
     /// Call after a fence wait confirms the GPU finished using old textures.
     void ReleasePendingResources();
@@ -78,6 +84,9 @@ private:
     ComPtr<ID3D12Resource> d3d12Texture_;
     ComPtr<ID3D12Resource> d3d12UploadBuffer_;
     bool d3d12TextureValid_ = false;
+    // True for video / WriteableBitmap fast-update path: skip mip chain generation
+    // and reuse the existing default-heap texture across uploads.
+    bool isDynamic_ = false;
     // Deferred release: old resources kept alive until GPU finishes using them
     std::vector<ComPtr<ID3D12Resource>> pendingRelease_;
 };

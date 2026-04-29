@@ -73,4 +73,52 @@ public static class JaliumAppExtensions
 
         return app;
     }
+
+    /// <summary>
+    /// Opts in to the idle-resource reclaimer. Once enabled, every visual that
+    /// has stayed off-screen — collapsed, hidden, scrolled out of the viewport,
+    /// or in a window that is no longer being painted — for longer than
+    /// <see cref="ResourceReclamationOptions.IdleTimeoutMs"/> has its retained
+    /// drawing-cache slot evicted, and any element that implements
+    /// <see cref="IReclaimableResource"/> has its
+    /// <see cref="IReclaimableResource.ReclaimIdleResources"/> method invoked
+    /// so it can release decoded pixels, GPU uploads, decoder state, and other
+    /// re-acquirable resources.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Tunables live on the singleton <see cref="ResourceReclamationOptions"/>
+    /// resolved from the application's service provider. Defaults: idle window
+    /// 2 s, scan once every 60 frames (~once per second at 60 Hz), both the
+    /// drawing-cache eviction and the <see cref="IReclaimableResource"/>
+    /// callback are on. Mutate the options at any time to retune at runtime.
+    /// </para>
+    /// <para>
+    /// The reclaimer is stopped and disposed automatically when the host
+    /// shuts down (it is registered as a DI singleton, so the service-provider
+    /// dispose chain handles teardown). Calling this method more than once is
+    /// a no-op after the first call.
+    /// </para>
+    /// </remarks>
+    /// <example>
+    /// <code>
+    /// var builder = AppBuilder.CreateBuilder(args);
+    /// using var app = builder.Build();
+    /// app.UseIdleResourceReclamation();   // default: 2 s idle window
+    /// app.Run();
+    /// </code>
+    /// To tune the idle window:
+    /// <code>
+    /// app.Services.GetRequiredService&lt;ResourceReclamationOptions&gt;().IdleTimeoutMs = 5000;
+    /// app.UseIdleResourceReclamation();
+    /// </code>
+    /// </example>
+    public static JaliumApp UseIdleResourceReclamation(this JaliumApp app)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        var reclaimer = app.Services.GetRequiredService<ResourceReclaimer>();
+        reclaimer.Start();
+        return app;
+    }
 }

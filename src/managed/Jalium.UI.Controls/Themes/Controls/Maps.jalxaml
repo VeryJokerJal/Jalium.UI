@@ -5,8 +5,11 @@
     <!-- ============================================== -->
     <!-- MapView Style                                    -->
     <!-- ============================================== -->
-    <!-- An interactive map viewer with pan/zoom, layers,
-         zoom controls, scale bar, and attribution display. -->
+    <!-- MapView is a self-rendering control: OnRender draws the tiles,
+         markers, polylines, polygons, scale bar, attribution and zoom
+         buttons directly. A ControlTemplate is intentionally omitted —
+         a templated Border child would render *after* OnRender (children
+         render on top) and occlude the map surface. -->
     <Style TargetType="MapView">
         <Setter Property="Background" Value="{ThemeResource SurfaceBackground}" />
         <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}" />
@@ -16,77 +19,6 @@
         <Setter Property="Padding" Value="0" />
         <Setter Property="MinWidth" Value="200" />
         <Setter Property="MinHeight" Value="200" />
-        <Setter Property="Template">
-            <ControlTemplate TargetType="MapView">
-                <Border Name="RootBorder"
-                        Background="{TemplateBinding Background}"
-                        BorderBrush="{TemplateBinding BorderBrush}"
-                        BorderThickness="{TemplateBinding BorderThickness}"
-                        CornerRadius="{TemplateBinding CornerRadius}"
-                        ClipToBounds="True">
-                    <Grid>
-                        <!-- Map canvas layers -->
-                        <Canvas Name="PART_MapCanvas" />
-
-                        <!-- Zoom controls (top-right) -->
-                        <StackPanel Name="PART_ZoomControls"
-                                    Orientation="Vertical"
-                                    HorizontalAlignment="Right"
-                                    VerticalAlignment="Top"
-                                    Margin="0,8,8,0">
-                            <Button Name="PART_ZoomInButton"
-                                    Content="+"
-                                    Width="32"
-                                    Height="32"
-                                    MinWidth="0"
-                                    MinHeight="0"
-                                    Padding="0"
-                                    HorizontalContentAlignment="Center"
-                                    VerticalContentAlignment="Center"
-                                    Margin="0,0,0,2" />
-                            <Button Name="PART_ZoomOutButton"
-                                    Content="-"
-                                    Width="32"
-                                    Height="32"
-                                    MinWidth="0"
-                                    MinHeight="0"
-                                    Padding="0"
-                                    HorizontalContentAlignment="Center"
-                                    VerticalContentAlignment="Center" />
-                        </StackPanel>
-
-                        <!-- Scale bar (bottom-left) -->
-                        <Border Name="PART_ScaleBar"
-                                HorizontalAlignment="Left"
-                                VerticalAlignment="Bottom"
-                                Margin="8,0,0,8"
-                                Background="{ThemeResource ControlBackground}"
-                                BorderBrush="{ThemeResource ControlBorder}"
-                                BorderThickness="1"
-                                CornerRadius="2"
-                                Padding="6,2,6,2">
-                            <TextBlock Name="PART_ScaleText"
-                                       FontSize="10"
-                                       Foreground="{ThemeResource TextSecondary}" />
-                        </Border>
-
-                        <!-- Attribution (bottom-right) -->
-                        <Border Name="PART_Attribution"
-                                HorizontalAlignment="Right"
-                                VerticalAlignment="Bottom"
-                                Margin="0,0,8,8"
-                                Background="{ThemeResource ControlBackground}"
-                                CornerRadius="2"
-                                Padding="4,2,4,2"
-                                Opacity="0.8">
-                            <TextBlock Name="PART_AttributionText"
-                                       FontSize="9"
-                                       Foreground="{ThemeResource TextSecondary}" />
-                        </Border>
-                    </Grid>
-                </Border>
-            </ControlTemplate>
-        </Setter>
 
         <Style.Triggers>
             <PropertyTrigger Property="IsEnabled" Value="False">

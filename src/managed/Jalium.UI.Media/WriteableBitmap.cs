@@ -216,7 +216,17 @@ public sealed class WriteableBitmap : BitmapSource
     public void WritePixels(Int32Rect sourceRect, byte[] pixels, int stride, int offset)
     {
         if (pixels == null) throw new ArgumentNullException(nameof(pixels));
+        WritePixels(sourceRect, new ReadOnlySpan<byte>(pixels, offset, pixels.Length - offset), stride);
+    }
 
+    /// <summary>
+    /// Writes pixel data from a read-only span. Hot path for video frame ingestion —
+    /// when <paramref name="sourceRect"/> covers the full bitmap and the source stride
+    /// equals the back-buffer stride, a single <see cref="Buffer.BlockCopy"/> moves the
+    /// payload; otherwise the routine falls back to a row-by-row copy.
+    /// </summary>
+    public void WritePixels(Int32Rect sourceRect, ReadOnlySpan<byte> pixels, int stride)
+    {
         var x = sourceRect.X;
         var y = sourceRect.Y;
         var width = sourceRect.Width;
@@ -226,14 +236,32 @@ public sealed class WriteableBitmap : BitmapSource
             throw new ArgumentOutOfRangeException(nameof(sourceRect));
 
         var bytesPerPixel = GetBytesPerPixel(_format);
+        var rowBytes = width * bytesPerPixel;
 
-        for (var row = 0; row < height; row++)
+        if (stride <= 0) stride = rowBytes;
+        if (rowBytes > stride)
+            throw new ArgumentOutOfRangeException(nameof(stride), "Source stride is smaller than the row width.");
+
+        var requiredSrcBytes = stride * (height - 1) + rowBytes;
+        if (height > 0 && pixels.Length < requiredSrcBytes)
+            throw new ArgumentException("Source pixel buffer is smaller than the requested rectangle.", nameof(pixels));
+
+        if (x == 0 && y == 0 && width == _pixelWidth && height == _pixelHeight && stride == _stride)
         {
-            var srcOffset = offset + (row * stride);
-            var dstOffset = ((y + row) * _stride) + (x * bytesPerPixel);
-            var bytesToCopy = Math.Min(width * bytesPerPixel, stride);
-            Array.Copy(pixels, srcOffset, _backBuffer, dstOffset, bytesToCopy);
+            // Single contiguous BlockCopy — typical video frame path.
+            pixels.Slice(0, _backBuffer.Length).CopyTo(_backBuffer);
         }
+        else
+        {
+            var dstX = x * bytesPerPixel;
+            for (var row = 0; row < height; row++)
+            {
+                var srcStart = row * stride;
+                var dstStart = (y + row) * _stride + dstX;
+                pixels.Slice(srcStart, rowBytes).CopyTo(new Span<byte>(_backBuffer, dstStart, rowBytes));
+            }
+        }
+
         unchecked { _contentRevision++; }
     }
 

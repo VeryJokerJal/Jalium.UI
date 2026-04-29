@@ -24,6 +24,13 @@ int  jalium_webview2_initialize(void);
 void jalium_webview2_shutdown(void);
 #endif
 
+// jalium.native.media has no "register" entry — instead force-link by taking the
+// address of jalium_media_initialize so the linker pulls the .lib in.
+typedef int jalium_media_status_t;
+extern jalium_media_status_t jalium_media_initialize(void);
+extern void                  jalium_media_shutdown(void);
+extern uint32_t              jalium_media_supported_video_codecs(void);
+
 // Sole AOT aggregation entry. Managed code P/Invokes this once before any
 // jalium_context_create. JALIUM_API collapses to nothing under JALIUM_STATIC,
 // so the symbol is just an extern "C" function in the .lib that NativeAOT
@@ -40,6 +47,14 @@ JALIUM_API void jalium_aot_register_all_backends(void) {
 
     // Software rasterizer is always registered as the universal fallback.
     jalium_software_init();
+
+    // Force-pull jalium.native.media symbols so NativeAOT's DirectPInvoke can
+    // resolve jalium_media_* without needing a runtime DLL search. A taken-address
+    // alone can be elided by LTO; a real init/shutdown round-trip cannot.
+    if (jalium_media_initialize() == 0) {
+        (void)jalium_media_supported_video_codecs();
+        jalium_media_shutdown();
+    }
 }
 
 } // extern "C"

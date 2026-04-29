@@ -1,14 +1,7 @@
-using OpenCvSharp;
-using SoundFlow.Abstracts;
-using SoundFlow.Abstracts.Devices;
-using SoundFlow.Backends.MiniAudio;
-using SoundFlow.Codecs.FFMpeg;
-using SoundFlow.Components;
-using SoundFlow.Enums;
-using SoundFlow.Providers;
-using SoundFlow.Structs;
 using System.Diagnostics;
-using System.Reflection;
+using Jalium.UI.Media.Imaging;
+using Jalium.UI.Media.Native;
+using Jalium.UI.Media.Pipeline;
 
 namespace Jalium.UI.Media;
 
@@ -64,17 +57,39 @@ public sealed class VideoDrawing : Drawing
 }
 
 /// <summary>
-/// Non-visual media player that handles audio/video playback and exposes the current video frame.
-/// Uses OpenCvSharp for video decoding and SoundFlow + FFmpeg for audio playback.
+/// 非视觉媒体播放器:视频解码走 <see cref="INativeVideoDecoder"/>(Windows MF / Android MediaCodec),
+/// 音频走 <see cref="AudioPlayer"/>(SoundFlow + MiniAudio + FFmpeg)。
 /// </summary>
 public sealed class MediaPlayer : IDisposable
 {
-    private VideoCapture? _videoCapture;
-    private MiniAudioEngine? _audioEngine;
-    private SoundPlayer? _soundPlayer;
-    private StreamDataProvider? _dataProvider;
-    private FileStream? _fileStream;
-    private AudioPlaybackDevice? _playbackDevice;
+    private static INativeVideoDecoderFactory? s_videoDecoderFactory;
+    private static readonly object s_factoryLock = new();
+
+    /// <summary>
+    /// 注入自定义 <see cref="INativeVideoDecoderFactory"/>。
+    /// </summary>
+    public static void SetVideoDecoderFactory(INativeVideoDecoderFactory factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        lock (s_factoryLock)
+        {
+            s_videoDecoderFactory = factory;
+        }
+    }
+
+    private static INativeVideoDecoderFactory GetVideoDecoderFactory()
+    {
+        var f = Volatile.Read(ref s_videoDecoderFactory);
+        if (f is not null) return f;
+        lock (s_factoryLock)
+        {
+            s_videoDecoderFactory ??= new NativeVideoDecoderFactory();
+            return s_videoDecoderFactory;
+        }
+    }
+
+    private INativeVideoDecoder? _videoDecoder;
+    private readonly AudioPlayer _audioPlayer = new();
 
     private CancellationTokenSource? _playbackCts;
     private Task? _videoDecodeTask;
@@ -87,7 +102,6 @@ public sealed class MediaPlayer : IDisposable
     private TimeSpan _duration;
     private bool _isPlaying;
     private TimeSpan _position;
-    private readonly object _lock = new();
     private bool _disposed;
 
     private double _currentVolume = 0.5;
@@ -95,55 +109,52 @@ public sealed class MediaPlayer : IDisposable
     private double _speedRatio = 1.0;
     private readonly Stopwatch _playbackClock = new();
     private TimeSpan _clockBaseTime;
+    private WriteableBitmap? _frameBitmap;
 
-    /// <summary>
-    /// Gets or sets the source URI for the media.
-    /// </summary>
+    /// <summary>Gets or sets the source URI for the media.</summary>
     public Uri? Source { get; set; }
 
-    /// <summary>
-    /// Gets or sets the volume level (0.0 to 1.0).
-    /// </summary>
+    /// <summary>Gets or sets the volume level (0.0 to 1.0).</summary>
     public double Volume
     {
         get => _currentVolume;
         set
         {
             _currentVolume = Math.Clamp(value, 0.0, 1.0);
-            UpdateAudioVolume();
+            _audioPlayer.Volume = _currentVolume;
         }
     }
 
-    /// <summary>
-    /// Gets or sets the balance between left and right speakers (-1.0 to 1.0).
-    /// </summary>
-    public double Balance { get; set; }
+    /// <summary>Gets or sets the balance between left and right speakers (-1.0 to 1.0).</summary>
+    public double Balance
+    {
+        get => _audioPlayer.Balance;
+        set => _audioPlayer.Balance = value;
+    }
 
-    /// <summary>
-    /// Gets or sets whether the media is muted.
-    /// </summary>
+    /// <summary>Gets or sets whether the media is muted.</summary>
     public bool IsMuted
     {
         get => _isMuted;
         set
         {
             _isMuted = value;
-            UpdateAudioVolume();
+            _audioPlayer.IsMuted = value;
         }
     }
 
-    /// <summary>
-    /// Gets or sets the speed ratio for playback.
-    /// </summary>
+    /// <summary>Gets or sets the speed ratio for playback.</summary>
     public double SpeedRatio
     {
         get => _speedRatio;
-        set => _speedRatio = Math.Clamp(value, 0.1, 10.0);
+        set
+        {
+            _speedRatio = Math.Clamp(value, 0.1, 10.0);
+            _audioPlayer.SpeedRatio = _speedRatio;
+        }
     }
 
-    /// <summary>
-    /// Gets or sets the current position in the media.
-    /// </summary>
+    /// <summary>Gets or sets the current position in the media.</summary>
     public TimeSpan Position
     {
         get => _position;
@@ -157,99 +168,100 @@ public sealed class MediaPlayer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Gets the natural duration of the media.
-    /// </summary>
+    /// <summary>Gets the natural duration of the media.</summary>
     public TimeSpan? NaturalDuration { get; private set; }
 
-    /// <summary>
-    /// Gets the natural width of the video.
-    /// </summary>
+    /// <summary>Gets the natural width of the video.</summary>
     public int NaturalVideoWidth => _videoWidth;
 
-    /// <summary>
-    /// Gets the natural height of the video.
-    /// </summary>
+    /// <summary>Gets the natural height of the video.</summary>
     public int NaturalVideoHeight => _videoHeight;
 
-    /// <summary>
-    /// Gets a value indicating whether the media has audio.
-    /// </summary>
+    /// <summary>Gets a value indicating whether the media has audio.</summary>
     public bool HasAudio { get; private set; }
 
-    /// <summary>
-    /// Gets a value indicating whether the media has video.
-    /// </summary>
+    /// <summary>Gets a value indicating whether the media has video.</summary>
     public bool HasVideo { get; private set; }
 
-    /// <summary>
-    /// Gets the current video frame as an ImageSource, or null if no frame is available.
-    /// </summary>
+    /// <summary>Gets the active video codec (or <see cref="SupportedCodec.None"/> if no video).</summary>
+    public SupportedCodec ActiveVideoCodec => _videoDecoder?.ActiveVideoCodec ?? SupportedCodec.None;
+
+    /// <summary>Gets the current video frame as an ImageSource, or null if no frame is available.</summary>
     public ImageSource? CurrentFrame { get; private set; }
 
-    /// <summary>
-    /// Occurs when the media is opened.
-    /// </summary>
+    /// <summary>Occurs when the media is opened.</summary>
     public event EventHandler? MediaOpened;
 
-    /// <summary>
-    /// Occurs when media playback ends.
-    /// </summary>
+    /// <summary>Occurs when media playback ends.</summary>
     public event EventHandler? MediaEnded;
 
-    /// <summary>
-    /// Occurs when an error is encountered.
-    /// </summary>
+    /// <summary>Occurs when an error is encountered.</summary>
     public event EventHandler<ExceptionEventArgs>? MediaFailed;
 
-    /// <summary>
-    /// Occurs when a new video frame is available.
-    /// </summary>
+    /// <summary>Occurs when a new video frame is available.</summary>
     public event EventHandler? FrameReady;
 
-    /// <summary>
-    /// Opens the specified URI for playback.
-    /// </summary>
-    /// <param name="source">The URI of the media to open.</param>
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Audio probe reflectively configures the SoundFlow CodecManager.")]
+    /// <summary>Opens the specified URI for playback.</summary>
     public void Open(Uri source)
     {
         Source = source;
-        var path = source.IsFile ? source.LocalPath : source.ToString();
 
         try
         {
             StopInternal();
 
             // 视频探测
-            _videoCapture?.Dispose();
-            _videoCapture = new VideoCapture(path);
+            _videoDecoder?.Dispose();
+            _videoDecoder = null;
 
-            if (_videoCapture.IsOpened())
+            try
             {
-                _videoWidth = (int)_videoCapture.Get(VideoCaptureProperties.FrameWidth);
-                _videoHeight = (int)_videoCapture.Get(VideoCaptureProperties.FrameHeight);
-                _videoFps = _videoCapture.Get(VideoCaptureProperties.Fps);
+                var decoder = GetVideoDecoderFactory().Create();
+                decoder.Open(source);
+                _videoDecoder = decoder;
+                _videoWidth = decoder.Width;
+                _videoHeight = decoder.Height;
+                _videoFps = decoder.Fps > 0 ? decoder.Fps : 30.0;
                 HasVideo = _videoWidth > 0 && _videoHeight > 0;
 
-                var frameCount = _videoCapture.Get(VideoCaptureProperties.FrameCount);
-                if (_videoFps > 0 && frameCount > 0)
+                if (decoder.Duration > TimeSpan.Zero)
                 {
-                    _duration = TimeSpan.FromSeconds(frameCount / _videoFps);
+                    _duration = decoder.Duration;
                     NaturalDuration = _duration;
                 }
 
-                if (_videoFps <= 0) _videoFps = 30.0;
                 _frameDelayMs = 1000.0 / _videoFps;
             }
-            else
+            catch (Exception ex)
             {
-                _videoCapture.Dispose();
-                _videoCapture = null;
+                // 视频解码器打不开,可能是纯音频文件 — 继续探测音频。
+                System.Diagnostics.Debug.WriteLine($"Native video decoder open failed: {ex.Message}");
+                _videoDecoder?.Dispose();
+                _videoDecoder = null;
+                HasVideo = false;
             }
 
-            // 音频探测
-            HasAudio = TryInitializeAudio(path);
+            // 音频探测 — 委托给 AudioPlayer。失败时 AudioPlayer 自己 raise MediaFailed。
+            try
+            {
+                _audioPlayer.Close();
+                _audioPlayer.Open(source);
+                HasAudio = _audioPlayer.HasAudio;
+                _audioPlayer.Volume = _currentVolume;
+                _audioPlayer.IsMuted = _isMuted;
+                _audioPlayer.SpeedRatio = _speedRatio;
+
+                if (HasAudio && NaturalDuration is null && _audioPlayer.NaturalDuration is { } audioDur)
+                {
+                    _duration = audioDur;
+                    NaturalDuration = _duration;
+                }
+            }
+            catch (Exception audioEx)
+            {
+                System.Diagnostics.Debug.WriteLine($"AudioPlayer.Open failed: {audioEx.Message}");
+                HasAudio = false;
+            }
 
             MediaOpened?.Invoke(this, EventArgs.Empty);
         }
@@ -259,9 +271,7 @@ public sealed class MediaPlayer : IDisposable
         }
     }
 
-    /// <summary>
-    /// Starts or resumes playback.
-    /// </summary>
+    /// <summary>Starts or resumes playback.</summary>
     public void Play()
     {
         if (_isPlaying) return;
@@ -273,32 +283,22 @@ public sealed class MediaPlayer : IDisposable
         _clockBaseTime = _position;
         _playbackClock.Restart();
 
-        // 启动音频
         if (HasAudio)
         {
-            try
-            {
-                _playbackDevice?.Start();
-                _soundPlayer?.Play();
-            }
-            catch { }
+            try { _audioPlayer.Play(); } catch { }
         }
 
-        // 启动视频解码线程
         if (HasVideo)
         {
             _videoDecodeTask = Task.Run(() => DecodeLoop(token), token);
         }
         else if (HasAudio)
         {
-            // 纯音频 - 跟踪位置
             _audioSyncTask = Task.Run(() => AudioPositionLoop(token), token);
         }
     }
 
-    /// <summary>
-    /// Pauses playback.
-    /// </summary>
+    /// <summary>Pauses playback.</summary>
     public void Pause()
     {
         if (!_isPlaying) return;
@@ -307,12 +307,10 @@ public sealed class MediaPlayer : IDisposable
         _playbackClock.Stop();
         _position = GetMediaTime();
 
-        try { _soundPlayer?.Pause(); } catch { }
+        try { _audioPlayer.Pause(); } catch { }
     }
 
-    /// <summary>
-    /// Stops playback and resets position to the beginning.
-    /// </summary>
+    /// <summary>Stops playback and resets position to the beginning.</summary>
     public void Stop()
     {
         _isPlaying = false;
@@ -321,16 +319,14 @@ public sealed class MediaPlayer : IDisposable
         CurrentFrame = null;
     }
 
-    /// <summary>
-    /// Closes the media player and releases resources.
-    /// </summary>
+    /// <summary>Closes the media player and releases resources.</summary>
     public void Close()
     {
         Stop();
 
-        _videoCapture?.Dispose();
-        _videoCapture = null;
-        CleanupAudio();
+        _videoDecoder?.Dispose();
+        _videoDecoder = null;
+        _audioPlayer.Close();
 
         _videoWidth = 0;
         _videoHeight = 0;
@@ -339,15 +335,16 @@ public sealed class MediaPlayer : IDisposable
         NaturalDuration = null;
         Source = null;
         CurrentFrame = null;
+        _frameBitmap = null;
     }
 
+    /// <inheritdoc />
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
         Close();
-        _audioEngine?.Dispose();
-        _audioEngine = null;
+        _audioPlayer.Dispose();
     }
 
     #region 内部实现
@@ -366,10 +363,16 @@ public sealed class MediaPlayer : IDisposable
 
         _position = position;
 
-        if (_videoCapture != null && HasVideo)
+        if (_videoDecoder != null && HasVideo)
         {
-            var framePos = position.TotalSeconds * _videoFps;
-            _videoCapture.Set(VideoCaptureProperties.PosFrames, framePos);
+            try { _videoDecoder.Seek(position); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Seek failed: {ex.Message}"); }
+        }
+
+        if (HasAudio)
+        {
+            try { _audioPlayer.Seek(position); }
+            catch (Exception ex) { System.Diagnostics.Debug.WriteLine($"Audio seek failed: {ex.Message}"); }
         }
 
         if (wasPlaying)
@@ -397,44 +400,59 @@ public sealed class MediaPlayer : IDisposable
         _playbackClock.Stop();
         _playbackClock.Reset();
 
-        try
-        {
-            _soundPlayer?.Stop();
-            _playbackDevice?.Stop();
-        }
-        catch { }
+        try { _audioPlayer.Stop(); } catch { }
     }
 
     private void DecodeLoop(CancellationToken token)
     {
+        if (_videoDecoder is null) return;
+
         try
         {
-            using var mat = new Mat();
-
             while (!token.IsCancellationRequested && _isPlaying)
             {
-                if (_videoCapture == null || !_videoCapture.Read(mat) || mat.Empty())
+                MediaFrame? mediaFrame;
+                bool hasFrame;
+                try
                 {
-                    // 播放结束
+                    hasFrame = _videoDecoder.TryReadFrame(out mediaFrame);
+                }
+                catch (Exception ex)
+                {
+                    MediaFailed?.Invoke(this, new ExceptionEventArgs(ex));
+                    break;
+                }
+
+                if (!hasFrame || mediaFrame is null)
+                {
                     _isPlaying = false;
                     MediaEnded?.Invoke(this, EventArgs.Empty);
                     break;
                 }
 
-                // 转换为 BGRA 像素
-                var width = mat.Width;
-                var height = mat.Height;
-                var frameData = MatToBgraBytes(mat, width, height);
+                using (mediaFrame)
+                {
+                    var width = mediaFrame.Width;
+                    var height = mediaFrame.Height;
+                    var stride = mediaFrame.Stride;
 
-                // 创建 ImageSource
-                var stride = width * 4;
-                CurrentFrame = BitmapImage.FromPixels(frameData, width, height, stride);
-                FrameReady?.Invoke(this, EventArgs.Empty);
+                    // 复用同一个 WriteableBitmap，让 ContentRevision 触发 GPU cache 失效。
+                    // 每帧 new BitmapImage 会让 RenderTargetDrawingContext._bitmapCache 永远 miss，
+                    // 1080p 30fps 下变成每秒 8MB×30 = 240MB GPU 上传 + 240MB GC。
+                    var bitmap = _frameBitmap;
+                    if (bitmap is null || bitmap.PixelWidth != width || bitmap.PixelHeight != height)
+                    {
+                        bitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgra32, null);
+                        _frameBitmap = bitmap;
+                    }
 
-                // 更新位置
+                    bitmap.WritePixels(new Int32Rect(0, 0, width, height), mediaFrame.Pixels.Span, stride);
+                    CurrentFrame = bitmap;
+                    FrameReady?.Invoke(this, EventArgs.Empty);
+                }
+
                 _position = GetMediaTime();
 
-                // 帧延迟（按速度比）
                 var delayMs = _frameDelayMs / _speedRatio;
                 if (delayMs > 1)
                 {
@@ -470,35 +488,6 @@ public sealed class MediaPlayer : IDisposable
         catch (OperationCanceledException) { }
     }
 
-    private static byte[] MatToBgraBytes(Mat mat, int width, int height)
-    {
-        var pixelCount = width * height;
-        var bgraData = new byte[pixelCount * 4];
-
-        using var continuousMat = mat.IsContinuous() ? mat : mat.Clone();
-        using var bgrMat = continuousMat.Type() == MatType.CV_8UC3
-            ? continuousMat
-            : continuousMat.CvtColor(ColorConversionCodes.RGBA2BGR);
-
-        unsafe
-        {
-            byte* srcPtr = bgrMat.DataPointer;
-
-            for (int i = 0; i < pixelCount; i++)
-            {
-                int srcIdx = i * 3;
-                int dstIdx = i * 4;
-
-                bgraData[dstIdx + 0] = srcPtr[srcIdx + 0]; // B
-                bgraData[dstIdx + 1] = srcPtr[srcIdx + 1]; // G
-                bgraData[dstIdx + 2] = srcPtr[srcIdx + 2]; // R
-                bgraData[dstIdx + 3] = 255;                // A
-            }
-        }
-
-        return bgraData;
-    }
-
     private static void PreciseDelay(TimeSpan delay, CancellationToken token)
     {
         if (delay <= TimeSpan.Zero) return;
@@ -528,117 +517,17 @@ public sealed class MediaPlayer : IDisposable
     }
 
     #endregion
-
-    #region 音频管理
-
-    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Reflectively calls AudioEngine.CodecManager.AddFactory on the SoundFlow runtime type.")]
-    private bool TryInitializeAudio(string filePath)
-    {
-        try
-        {
-            if (_audioEngine == null)
-            {
-                _audioEngine = new MiniAudioEngine();
-                var factory = new FFmpegCodecFactory();
-
-                // 注册编解码器
-                var registerMethod = typeof(AudioEngine).GetMethod("RegisterCodecFactory",
-                    BindingFlags.Public | BindingFlags.Instance);
-                if (registerMethod != null)
-                {
-                    registerMethod.Invoke(_audioEngine, new object[] { factory });
-                }
-                else
-                {
-                    var codecManagerProp = typeof(AudioEngine).GetProperty("CodecManager",
-                        BindingFlags.Public | BindingFlags.Instance);
-                    if (codecManagerProp != null)
-                    {
-                        var codecManager = codecManagerProp.GetValue(_audioEngine);
-                        var addMethod = codecManager?.GetType().GetMethod("AddFactory",
-                            BindingFlags.Public | BindingFlags.Instance);
-                        addMethod?.Invoke(codecManager, new object[] { factory });
-                    }
-                }
-            }
-
-            var format = AudioFormat.Dvd;
-            var defaultDevice = _audioEngine.PlaybackDevices.FirstOrDefault(x => x.IsDefault);
-            _playbackDevice = _audioEngine.InitializePlaybackDevice(defaultDevice, format);
-
-            _fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
-                bufferSize: 262144, useAsync: true);
-            _dataProvider = new StreamDataProvider(_audioEngine, format, _fileStream);
-            _soundPlayer = new SoundPlayer(_audioEngine, format, _dataProvider);
-
-            UpdateAudioVolume();
-            _playbackDevice.MasterMixer.AddComponent(_soundPlayer);
-
-            // 探测成功后先停掉，等 Play() 再启动
-            _soundPlayer.Stop();
-
-            return true;
-        }
-        catch
-        {
-            CleanupAudio();
-            return false;
-        }
-    }
-
-    private void CleanupAudio()
-    {
-        if (_soundPlayer != null)
-        {
-            try
-            {
-                _playbackDevice?.MasterMixer.RemoveComponent(_soundPlayer);
-                _soundPlayer.Stop();
-                _soundPlayer.Dispose();
-            }
-            catch { }
-            _soundPlayer = null;
-        }
-
-        _dataProvider?.Dispose();
-        _dataProvider = null;
-        _fileStream?.Dispose();
-        _fileStream = null;
-        _playbackDevice?.Stop();
-        _playbackDevice?.Dispose();
-        _playbackDevice = null;
-    }
-
-    private void UpdateAudioVolume()
-    {
-        lock (_lock)
-        {
-            if (_soundPlayer != null)
-            {
-                _soundPlayer.Volume = _isMuted ? 0.0f : (float)_currentVolume;
-            }
-        }
-    }
-
-    #endregion
 }
 
-/// <summary>
-/// Provides data for media failure events.
-/// </summary>
+/// <summary>Provides data for media failure events.</summary>
 public sealed class ExceptionEventArgs : EventArgs
 {
-    /// <summary>
-    /// Initializes a new instance of the <see cref="ExceptionEventArgs"/> class.
-    /// </summary>
-    /// <param name="exception">The exception that caused the failure.</param>
+    /// <summary>Initializes a new instance of the <see cref="ExceptionEventArgs"/> class.</summary>
     public ExceptionEventArgs(Exception exception)
     {
         ErrorException = exception;
     }
 
-    /// <summary>
-    /// Gets the exception that caused the failure.
-    /// </summary>
+    /// <summary>Gets the exception that caused the failure.</summary>
     public Exception ErrorException { get; }
 }

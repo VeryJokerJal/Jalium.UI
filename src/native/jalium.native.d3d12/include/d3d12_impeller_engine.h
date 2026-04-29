@@ -1,6 +1,9 @@
 #pragma once
 
 #include "jalium_rendering_engine.h"
+#include "jalium_impeller_shapes.h"   // Trig / TrigCache / shape generators
+#include "jalium_impeller_stroke.h"   // ImpellerCap / ImpellerJoin / ExpandStrokePath
+#include "jalium_gradient_sample.h"   // SampleBrushGradient / FlattenGradientStops
 #include "d3d12_backend.h"
 #include "d3d12_triangulate.h"
 #include <vector>
@@ -58,41 +61,8 @@ struct ImpellerDrawBatch {
     float stencilR = 0, stencilG = 0, stencilB = 0, stencilA = 0;
 };
 
-/// Stroke cap style.
-enum class ImpellerCap : int32_t { Butt = 0, Square = 1, Round = 2 };
-
-/// Stroke join style.
-enum class ImpellerJoin : int32_t { Miter = 0, Bevel = 1, Round = 2 };
-
-// ============================================================================
-// Precomputed trig table (Flutter Impeller: Trigs class)
-// ============================================================================
-
-struct Trig {
-    float cos, sin;
-    Trig() : cos(1.0f), sin(0.0f) {}
-    Trig(float c, float s) : cos(c), sin(s) {}
-};
-
-/// Precomputed quadrant division trig tables, cached per division count.
-/// kCircleTolerance = 0.1 pixel max deviation from true circle arc.
-class TrigCache {
-public:
-    static constexpr float kCircleTolerance = 0.1f;
-    static constexpr size_t kCachedCount = 300;
-
-    TrigCache();
-
-    /// Get trig values for the given number of quadrant divisions.
-    const std::vector<Trig>& Get(size_t divisions) const;
-
-    /// Compute quadrant divisions for a given pixel radius.
-    static size_t ComputeDivisions(float pixelRadius);
-
-private:
-    mutable std::vector<std::vector<Trig>> cache_;
-    void Ensure(size_t divisions) const;
-};
+// ImpellerCap / ImpellerJoin enums and the Trig / TrigCache trig table now
+// live in jalium_impeller_stroke.h and jalium_impeller_shapes.h (cross-backend).
 
 // ============================================================================
 // ImpellerD3D12Engine
@@ -211,46 +181,6 @@ public:
         uint32_t viewportW, uint32_t viewportH);
 
 private:
-    // --- Convex Detection & Fast Path ---
-
-    /// Check if a polygon (flat point array) is convex.
-    static bool IsConvexPolygon(const float* points, uint32_t pointCount);
-
-    /// Tessellate a convex polygon as a triangle fan (O(n) vertices).
-    /// Much faster than ear-clipping for convex shapes.
-    bool TessellateConvexFan(const float* points, uint32_t pointCount,
-                             float r, float g, float b, float a);
-
-    // --- Optimized Shape Generators (Flutter Impeller-style) ---
-
-    /// Generate a filled circle as triangle strip using precomputed trigs.
-    bool GenerateFilledCircleStrip(float cx, float cy, float radius,
-                                   float r, float g, float b, float a,
-                                   const EngineTransform& transform);
-
-    /// Generate a filled ellipse as triangle strip.
-    bool GenerateFilledEllipseStrip(float cx, float cy, float rx, float ry,
-                                    float r, float g, float b, float a,
-                                    const EngineTransform& transform);
-
-    /// Generate a filled rounded rect as triangle strip.
-    bool GenerateFilledRoundRectStrip(float x, float y, float w, float h,
-                                      float rx, float ry,
-                                      float r, float g, float b, float a,
-                                      const EngineTransform& transform);
-
-    /// Generate a stroked circle as triangle strip (inner+outer ring).
-    bool GenerateStrokedCircleStrip(float cx, float cy, float radius,
-                                    float strokeWidth,
-                                    float r, float g, float b, float a,
-                                    const EngineTransform& transform);
-
-    /// Generate a round-cap line as triangle strip (two hemicircles + rect).
-    bool GenerateRoundCapLineStrip(float x0, float y0, float x1, float y1,
-                                   float radius,
-                                   float r, float g, float b, float a,
-                                   const EngineTransform& transform);
-
     // --- Gradient Fill ---
 
     /// Encode a gradient-filled path (linear or radial).
@@ -281,34 +211,18 @@ private:
 
     bool TessellateCurrentPath(const EngineBrushData& brush, FillRule fillRule);
 
+    /// CPU stroke expansion. Thin wrapper around the cross-backend
+    /// jalium::ExpandStrokePath template — keeps the same signature so the
+    /// existing dash-walker in EncodeStrokePath can keep calling it.
     bool ExpandStroke(const EngineBrushData& brush,
                       float strokeWidth,
                       ImpellerJoin join, float miterLimit,
                       ImpellerCap cap, bool closed,
                       std::vector<Contour>* collectContours = nullptr);
 
-    void GenerateRoundCap(std::vector<ImpellerVertex>& verts,
-                          std::vector<uint32_t>& indices,
-                          float cx, float cy,
-                          float nx, float ny,
-                          float halfWidth,
-                          float r, float g, float b, float a,
-                          bool isStart);
-
-    void GenerateRoundJoin(std::vector<ImpellerVertex>& verts,
-                           std::vector<uint32_t>& indices,
-                           float cx, float cy,
-                           float n0x, float n0y,
-                           float n1x, float n1y,
-                           float halfWidth,
-                           float r, float g, float b, float a);
-
-    static uint32_t ComputeQuadrantDivisions(float pixelRadius);
-
-    // --- Alpha Coverage (Flutter Impeller-style) ---
-
-    /// Compute stroke alpha coverage for subpixel strokes.
-    static float ComputeStrokeAlphaCoverage(float strokeWidth, float transformScale);
+    // GenerateRoundCap / GenerateRoundJoin / ComputeQuadrantDivisions /
+    // ComputeStrokeAlphaCoverage now live in jalium_impeller_stroke.h /
+    // jalium_impeller_shapes.h and are invoked through ExpandStrokePath.
 
     // --- Stencil-then-Cover (non-convex path fill) ---
 

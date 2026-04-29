@@ -33,6 +33,19 @@ public:
     /// Override: report glyph atlas / path cache / texture usage for DevTools.
     JaliumResult QueryGpuStats(JaliumGpuStats* out) const override;
 
+    /// Override: drop the D3D12 glyph atlas at the next BeginFrame boundary.
+    /// We deliberately do NOT call `D3D12GlyphAtlas::Reset()` directly here —
+    /// glyph entries already emitted earlier in the frame carry baked UV
+    /// coordinates that point into the existing atlas, and a mid-frame reset
+    /// would shift every cached glyph's UV under their feet (memory entry
+    /// `project_d3d12_glyph_atlas_no_midframe_reset.md`). Instead we set the
+    /// atlas's `needsReset_` flag through the public RequestResetAtFrameBoundary
+    /// helper; D3D12DirectRenderer::BeginFrame already calls
+    /// `glyphAtlas_->ApplyPendingGrowthOrReset()` after the frame fence wait,
+    /// which honors the flag and recreates the atlas exactly once on the
+    /// safe boundary.
+    JaliumResult ReclaimIdleResources() override;
+
     // RenderTarget implementation
     JaliumResult Resize(int32_t width, int32_t height) override;
     JaliumResult BeginDraw() override;

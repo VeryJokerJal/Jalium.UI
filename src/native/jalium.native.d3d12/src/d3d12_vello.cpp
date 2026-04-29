@@ -265,12 +265,11 @@ bool D3D12VelloRenderer::Initialize()
 
     initialized_ = true;
 
-    // Pre-warm GPU compute pipeline (shader compilation + PSO creation) so the
-    // first rendered frame doesn't pay the full cost (~800ms in debug).
-    if (!CreateGPUPipeline()) {
-        OutputDebugStringA("[Vello] GPU pipeline pre-warm failed (non-fatal, will retry on first dispatch)\n");
-    }
-
+    // Vello compute pipelines (13 PSOs) are created lazily inside DispatchGPU
+    // on the first path-rendering frame.  Pre-warming here used to avoid an
+    // ~800ms first-path latency in debug builds, but it also held PSO memory
+    // permanently — even for apps that never draw paths.  DispatchGPU's lazy
+    // CreateGPUPipeline path handles the cold-start case automatically.
     return true;
 }
 

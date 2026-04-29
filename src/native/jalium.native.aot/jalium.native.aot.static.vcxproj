@@ -102,6 +102,19 @@
       <SetConfiguration>Configuration=$(Configuration)</SetConfiguration>
       <SetPlatform>Platform=$(Platform)</SetPlatform>
     </ProjectReference>
+    <!-- Media (image / video / camera) — pulled in so jalium_media_initialize/shutdown
+         /supported_video_codecs and the MF / WIC decoders link directly into the AOT
+         single-exe instead of requiring jalium.native.media.dll alongside it. -->
+    <ProjectReference Include="..\jalium.native.media.core\jalium.native.media.core.static.vcxproj">
+      <Project>{E7F8A9B0-3456-6789-0123-456789ABCDEF}</Project>
+      <SetConfiguration>Configuration=$(Configuration)</SetConfiguration>
+      <SetPlatform>Platform=$(Platform)</SetPlatform>
+    </ProjectReference>
+    <ProjectReference Include="..\jalium.native.media.windows\jalium.native.media.windows.static.vcxproj">
+      <Project>{F8A9B0C1-4567-7890-1234-56789ABCDEF0}</Project>
+      <SetConfiguration>Configuration=$(Configuration)</SetConfiguration>
+      <SetPlatform>Platform=$(Platform)</SetPlatform>
+    </ProjectReference>
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

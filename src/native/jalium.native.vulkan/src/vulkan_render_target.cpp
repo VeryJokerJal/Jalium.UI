@@ -538,6 +538,7 @@ public:
     void CommitCurrentFrame();
     void EndFrame();
     void DestroyPerFrameResources();
+    void ShrinkPerFrameBuffers();
 
     bool Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync);
     bool RecreateSwapchain(int32_t width, int32_t height, bool vsync);
@@ -671,6 +672,65 @@ JaliumResult VulkanRenderTarget::Resize(int32_t width, int32_t height)
     return impl_ && impl_->RecreateSwapchain(width, height, vsyncEnabled_)
         ? JALIUM_OK
         : JALIUM_ERROR_RESOURCE_CREATION_FAILED;
+}
+
+JaliumResult VulkanRenderTarget::ReclaimIdleResources()
+{
+    // Both caches store payloads as std::shared_ptr — any in-flight GPU
+    // command that referenced an entry holds its own strong ref through the
+    // PerFrameState lifetime, so dropping the cache lookup table here cannot
+    // dangle a pointer the swapchain still needs. That's why this is safe
+    // between frames without vkDeviceWaitIdle.
+    //
+    // Rebuilding cost on the next frame:
+    //   * PathGeometryCache miss → re-decompose Bezier + ear-clip (O(N³) per
+    //     path, but typically <200 verts → sub-millisecond per icon).
+    //   * TextLruCache miss → one GDI draw + readback per text run.
+    // Both are amortized over the IdleTimeoutMs window, which is why the
+    // managed reclaimer's default (2 s) is far above any user-visible
+    // latency budget.
+
+    if (pathCache_) {
+        pathCache_->Clear();
+    }
+
+    if (textCache_) {
+        textCache_->Clear();
+    }
+
+#ifndef _WIN32
+    // Cross-platform GlyphAtlas (FreeType + HarfBuzz) used on Linux/Android.
+    // Clear() drops the cache map + dirty-rect list and zeroes the CPU-side
+    // atlas pixel buffer. The GPU-side atlas texture (owned by Impl) keeps
+    // its existing memory but its contents will be progressively overwritten
+    // as new dirty rects are uploaded for re-rasterized glyphs. Frame-safe
+    // because GPU-bound glyph quads carry their UV coordinates in the
+    // already-recorded vertex buffer; they are not re-fetched from the
+    // cache on the in-flight frame.
+    if (backend_) {
+        if (auto* textEngine = backend_->GetTextEngine()) {
+            if (auto* atlas = textEngine->GetGlyphAtlas()) {
+                atlas->Clear();
+            }
+        }
+    }
+#endif
+
+    // Per-frame VkBuffer / VkImage / VkDeviceMemory release (staging buffer,
+    // upload image, engine batch buffer for each MAX_FRAMES_IN_FLIGHT slot).
+    // These grow lazily to accommodate peak desktop captures and Impeller
+    // batch sizes; on a now-idle UI the peak capacity may be tens of MB of
+    // pinned host memory plus the matching GPU-resident texture. Shrinking
+    // here calls vkDeviceWaitIdle (cheap when nothing is in flight) and then
+    // destroys+forgets the per-frame buffers; EnsureStagingCapacity /
+    // EnsureUploadImage / EnsureEngineBatchBuffer re-allocate from scratch
+    // on the next draw. Per-frame fences, semaphores, and command buffers
+    // are intentionally preserved.
+    if (impl_) {
+        impl_->ShrinkPerFrameBuffers();
+    }
+
+    return JALIUM_OK;
 }
 
 // ---------------------------------------------------------------------------
@@ -3476,6 +3536,106 @@ void VulkanRenderTarget::Impl::DestroyPerFrameResources()
     frameDescriptorSet = VK_NULL_HANDLE;
     submitted = false;
     currentFrame_ = 0;
+}
+
+// Releases the per-frame staging buffers, upload images, and engine batch
+// buffers — but keeps the per-frame fences, semaphores, command buffers,
+// descriptor sets, and renderFinishedPerImage semaphores intact so the next
+// BeginFrame can resume rendering without re-initializing the per-frame
+// command-buffer protocol. EnsureStagingCapacity / EnsureUploadImage /
+// EnsureEngineBatchBuffer all check their alias-field capacity first; once
+// we zero those, the next draw lazily re-allocates with the smallest power-
+// of-two it actually needs, which on a now-quiet UI is typically a fraction
+// of the peak.
+//
+// Called from VulkanRenderTarget::ReclaimIdleResources only when the managed
+// reclaimer has confirmed the application is idle (see
+// ResourceReclaimer.ScanAndReclaim). Idle implies in-flight fences have
+// already fired in practice — vkDeviceWaitIdle still runs as a belt-and-
+// braces guard against a frame the GPU has not finished while the UI thread
+// raced ahead between Render and the reclaim tick.
+void VulkanRenderTarget::Impl::ShrinkPerFrameBuffers()
+{
+    if (!device || !deviceWaitIdle) {
+        return;
+    }
+
+    // Drain all in-flight GPU work so it is safe to destroy the per-frame
+    // VkBuffer / VkImage / VkDeviceMemory objects below. The only
+    // alternative is a deferred-destroy queue keyed on per-frame fences;
+    // since this path runs at most once every IdleTimeoutMs (default 2 s)
+    // on an idle UI, deferring would only add complexity without saving
+    // any wall-clock time — the wait completes immediately when there is
+    // nothing in flight.
+    deviceWaitIdle(device);
+
+    // Make sure the alias slot is written back into perFrameStates_ first,
+    // otherwise the iteration below would free stale slot pointers and leak
+    // the live alias allocations.
+    CommitCurrentFrame();
+
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        auto& s = perFrameStates_[i];
+
+        // Upload image (per-frame texture for bitmap / desktop-capture uploads)
+        if (s.uploadImageView != VK_NULL_HANDLE && destroyImageView) {
+            destroyImageView(device, s.uploadImageView, nullptr);
+            s.uploadImageView = VK_NULL_HANDLE;
+        }
+        if (s.uploadImage != VK_NULL_HANDLE && destroyImage) {
+            destroyImage(device, s.uploadImage, nullptr);
+            s.uploadImage = VK_NULL_HANDLE;
+        }
+        if (s.uploadImageMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, s.uploadImageMemory, nullptr);
+            s.uploadImageMemory = VK_NULL_HANDLE;
+        }
+        s.uploadWidth = 0;
+        s.uploadHeight = 0;
+        s.uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+        // Staging buffer (host-visible, for bitmap pixel transfers)
+        if (s.mappedPixels && s.stagingMemory != VK_NULL_HANDLE && unmapMemory) {
+            unmapMemory(device, s.stagingMemory);
+            s.mappedPixels = nullptr;
+        }
+        if (s.stagingBuffer != VK_NULL_HANDLE && destroyBuffer) {
+            destroyBuffer(device, s.stagingBuffer, nullptr);
+            s.stagingBuffer = VK_NULL_HANDLE;
+        }
+        if (s.stagingMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, s.stagingMemory, nullptr);
+            s.stagingMemory = VK_NULL_HANDLE;
+        }
+        s.mappedPixelCapacity = 0;
+
+        // Engine batch buffer (vertex+index, Impeller engine output)
+        if (s.engineBatchMapped && s.engineBatchMemory != VK_NULL_HANDLE && unmapMemory) {
+            unmapMemory(device, s.engineBatchMemory);
+            s.engineBatchMapped = nullptr;
+        }
+        if (s.engineBatchBuffer != VK_NULL_HANDLE && destroyBuffer) {
+            destroyBuffer(device, s.engineBatchBuffer, nullptr);
+            s.engineBatchBuffer = VK_NULL_HANDLE;
+        }
+        if (s.engineBatchMemory != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, s.engineBatchMemory, nullptr);
+            s.engineBatchMemory = VK_NULL_HANDLE;
+        }
+        s.engineBatchCapacity = 0;
+
+        // Intentionally NOT touched: commandBuffer, inFlight (fence),
+        // imageAvailable (semaphore), frameDescriptorSet, submitted,
+        // initialized — those describe the per-frame protocol state the
+        // command-buffer ring depends on. Destroying them would force a
+        // full PerFrameState rebuild on the next draw, which is the job of
+        // DestroyPerFrameResources at swapchain teardown, not idle reclaim.
+    }
+
+    // Re-aliase the current slot's now-zeroed values into the alias fields
+    // so EnsureStagingCapacity / EnsureUploadImage / EnsureEngineBatchBuffer
+    // see "no buffer" on their next call and lazily re-allocate.
+    BeginFrame();
 }
 
 bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, uint32_t height)

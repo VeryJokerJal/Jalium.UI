@@ -1,22 +1,17 @@
 using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
+using Jalium.UI.Media.Imaging;
+using Jalium.UI.Media.Native;
+using Jalium.UI.Media.Pipeline;
 using Jalium.UI.Threading;
-using OpenCvSharp;
-using SoundFlow.Abstracts;
-using SoundFlow.Abstracts.Devices;
-using SoundFlow.Backends.MiniAudio;
-using SoundFlow.Codecs.FFMpeg;
-using SoundFlow.Components;
 using SoundFlow.Enums;
-using SoundFlow.Providers;
-using SoundFlow.Structs;
 using System;
+using System.Buffers;
 using System.Collections;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -124,63 +119,55 @@ public sealed class MediaInfo
 
 #endregion
 
-#region 文件日志记录器
-
-public static class FileLogger
-{
-    private static readonly object _lock = new();
-    private static string _logPath = Path.Combine(AppContext.BaseDirectory, "mediaplayer.log");
-
-    public static void Log(string message)
-    {
-        var timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-        var logMessage = $"[{timestamp}] {message}";
-
-        lock (_lock)
-        {
-            try
-            {
-                File.AppendAllText(_logPath, logMessage + Environment.NewLine);
-            }
-            catch { }
-        }
-
-        Debug.WriteLine(logMessage);
-    }
-
-    public static void LogError(string message, Exception? ex = null)
-    {
-        var logMessage = $"[ERROR] {message}";
-        if (ex != null)
-        {
-            logMessage += $" - Exception: {ex.GetType().Name}: {ex.Message}";
-        }
-        Log(logMessage);
-    }
-}
-
-#endregion
-
 #region 视频帧缓冲队列
 
+/// <summary>
+/// 池化的解码视频帧。<see cref="Pixels"/> 是从 <see cref="ArrayPool{Byte}.Shared"/> 租用的 BGRA8
+/// 缓冲，调用方必须 <see cref="Dispose"/> 归还，否则会让池被逐渐抽空。
+/// </summary>
 public sealed class VideoFrame : IDisposable
 {
-    public byte[] Data { get; }
+    private byte[]? _buffer;
+    private readonly int _length;
+
+    public ReadOnlySpan<byte> Pixels =>
+        _buffer is null
+            ? ReadOnlySpan<byte>.Empty
+            : _buffer.AsSpan(0, _length);
+
     public int Width { get; }
     public int Height { get; }
-    public long TimestampMs { get; }  // 绝对时间戳（从视频开始计算的毫秒数）
+    public int Stride { get; }
+    public long TimestampMs { get; }
     public int FrameIndex { get; }
 
-    public VideoFrame(byte[] data, int width, int height, long timestampMs, int frameIndex)
+    public VideoFrame(int width, int height, int stride, long timestampMs, int frameIndex)
     {
-        Data = data;
         Width = width;
         Height = height;
+        Stride = stride;
         TimestampMs = timestampMs;
         FrameIndex = frameIndex;
+        _length = checked(stride * height);
+        _buffer = ArrayPool<byte>.Shared.Rent(_length);
     }
 
-    public void Dispose() { }
+    /// <summary>把源像素拷贝到内部缓冲。源 stride 必须 == <see cref="Stride"/>。</summary>
+    internal void CopyFrom(ReadOnlySpan<byte> source)
+    {
+        if (_buffer is null) throw new ObjectDisposedException(nameof(VideoFrame));
+        if (source.Length < _length)
+            throw new ArgumentException("Source span is smaller than the frame buffer.", nameof(source));
+        source.Slice(0, _length).CopyTo(_buffer);
+    }
+
+    public void Dispose()
+    {
+        var buffer = _buffer;
+        if (buffer is null) return;
+        _buffer = null;
+        ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+    }
 }
 
 public sealed class VideoFrameBuffer : IDisposable
@@ -261,386 +248,6 @@ public sealed class AudioStreamInfo
 
 #endregion
 
-#region 音频管理器
-
-public sealed class AudioPlaybackManager : IDisposable
-{
-    private MiniAudioEngine? _audioEngine;
-    private AudioPlaybackDevice? _playbackDevice;
-    private SoundPlayer? _soundPlayer;
-    private StreamDataProvider? _dataProvider;
-    private FileStream? _fileStream;
-    private readonly object _lock = new();
-    private bool _disposed;
-    private double _currentVolume = 1.0;
-    private bool _isMuted;
-    private string? _currentFilePath;
-
-    // 使用音频引擎内部时间，而不是自己计算
-    private TimeSpan _basePosition;
-    private DateTime _lastPlayTime;
-    private bool _isActuallyPlaying;
-
-    private const int FORCED_SAMPLE_RATE = 44100;
-    private const int FORCED_CHANNELS = 2;
-    private const SampleFormat FORCED_FORMAT = SampleFormat.F32;
-
-    public TimeSpan CurrentPosition
-    {
-        get
-        {
-            lock (_lock)
-            {
-                if (_soundPlayer == null) return TimeSpan.Zero;
-
-                // 优先使用 SoundPlayer 的内部位置（如果有）
-                // 否则基于已播放时间计算
-                if (_isActuallyPlaying && _soundPlayer.State == PlaybackState.Playing)
-                {
-                    var elapsed = DateTime.Now - _lastPlayTime;
-                    return _basePosition + elapsed;
-                }
-                return _basePosition;
-            }
-        }
-    }
-
-    public TimeSpan Duration { get; private set; }
-
-    public AudioPlaybackManager()
-    {
-        InitializeEngineAndCodecs();
-    }
-
-    private void InitializeEngineAndCodecs()
-    {
-        try
-        {
-            _audioEngine = new MiniAudioEngine();
-            FileLogger.Log($"AudioPlaybackManager: Engine initialized");
-
-            var factory = new FFmpegCodecFactory();
-            TryRegisterFactory(factory);
-        }
-        catch (Exception ex)
-        {
-            FileLogger.LogError("Failed to initialize engine and codecs", ex);
-        }
-    }
-
-    private void TryRegisterFactory(FFmpegCodecFactory factory)
-    {
-        try
-        {
-            var engineType = typeof(AudioEngine);
-            var registerMethod = engineType.GetMethod("RegisterCodecFactory",
-                BindingFlags.Public | BindingFlags.Instance);
-
-            if (registerMethod != null && _audioEngine != null)
-            {
-                registerMethod.Invoke(_audioEngine, new object[] { factory });
-                FileLogger.Log("FFmpeg codec factory registered");
-                return;
-            }
-        }
-        catch (Exception ex)
-        {
-            FileLogger.LogError("Error in TryRegisterFactory", ex);
-        }
-    }
-
-    private bool EnsureEngineInitialized()
-    {
-        try
-        {
-            if (_audioEngine == null)
-            {
-                InitializeEngineAndCodecs();
-            }
-            return _audioEngine != null;
-        }
-        catch (Exception ex)
-        {
-            FileLogger.LogError("Failed to ensure engine initialization", ex);
-            return false;
-        }
-    }
-
-    public bool OpenAndPlay(string filePath)
-    {
-        lock (_lock)
-        {
-            try
-            {
-                Close();
-
-                if (!EnsureEngineInitialized())
-                    return false;
-
-                _currentFilePath = filePath;
-                Duration = TimeSpan.Zero;
-
-                var defaultDevice = _audioEngine!.PlaybackDevices.FirstOrDefault(x => x.IsDefault);
-                if (defaultDevice.Name == null)
-                {
-                    defaultDevice = _audioEngine.PlaybackDevices.FirstOrDefault();
-                }
-
-                if (string.IsNullOrEmpty(defaultDevice.Name))
-                {
-                    FileLogger.LogError("No playback device found");
-                    return false;
-                }
-
-                var forcedFormat = new AudioFormat
-                {
-                    SampleRate = FORCED_SAMPLE_RATE,
-                    Channels = FORCED_CHANNELS,
-                    Format = FORCED_FORMAT
-                };
-
-                _playbackDevice = _audioEngine.InitializePlaybackDevice(defaultDevice, forcedFormat);
-                _fileStream = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read,
-                    bufferSize: 262144, useAsync: true);
-
-                _dataProvider = new StreamDataProvider(_audioEngine, forcedFormat, _fileStream);
-                _soundPlayer = new SoundPlayer(_audioEngine, forcedFormat, _dataProvider);
-
-                UpdateVolume();
-                _playbackDevice.MasterMixer.AddComponent(_soundPlayer);
-
-                _basePosition = TimeSpan.Zero;
-                _isActuallyPlaying = false;
-
-                FileLogger.Log($"Audio opened: {filePath}");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                FileLogger.LogError($"Failed to open audio: {filePath}", ex);
-                Cleanup();
-                return false;
-            }
-        }
-    }
-
-    public bool Play()
-    {
-        lock (_lock)
-        {
-            if (_soundPlayer == null || _playbackDevice == null) return false;
-
-            try
-            {
-                if (_soundPlayer.State == PlaybackState.Playing)
-                    return true;
-
-                if (_soundPlayer.State == PlaybackState.Paused)
-                {
-                    // 恢复播放时，更新基准时间
-                    _soundPlayer.Play();
-                    _lastPlayTime = DateTime.Now;
-                    _isActuallyPlaying = true;
-                    FileLogger.Log($"Audio resumed from {_basePosition}");
-                    return true;
-                }
-
-                _playbackDevice.Start();
-                _soundPlayer.Play();
-                _lastPlayTime = DateTime.Now;
-                _isActuallyPlaying = true;
-
-                FileLogger.Log("Audio started");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                FileLogger.LogError("Audio play failed", ex);
-                return false;
-            }
-        }
-    }
-
-    public bool Pause()
-    {
-        lock (_lock)
-        {
-            if (_soundPlayer == null) return false;
-
-            try
-            {
-                if (_soundPlayer.State == PlaybackState.Playing)
-                {
-                    _soundPlayer.Pause();
-                    // 暂停时，累加已播放时间到基准位置
-                    var elapsed = DateTime.Now - _lastPlayTime;
-                    _basePosition += elapsed;
-                    _isActuallyPlaying = false;
-                    FileLogger.Log($"Audio paused at {_basePosition}");
-                }
-                return true;
-            }
-            catch (Exception ex)
-            {
-                FileLogger.LogError("Audio pause failed", ex);
-                return false;
-            }
-        }
-    }
-
-    public bool Stop()
-    {
-        lock (_lock)
-        {
-            if (_soundPlayer == null) return false;
-
-            try
-            {
-                _soundPlayer.Stop();
-                _basePosition = TimeSpan.Zero;
-                _isActuallyPlaying = false;
-                FileLogger.Log("Audio stopped");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                FileLogger.LogError("Audio stop failed", ex);
-                return false;
-            }
-        }
-    }
-
-    public bool Seek(TimeSpan position)
-    {
-        lock (_lock)
-        {
-            if (_audioEngine == null || _playbackDevice == null || string.IsNullOrEmpty(_currentFilePath))
-                return false;
-
-            try
-            {
-                FileLogger.Log($"Audio seeking to {position.TotalSeconds:F2}s");
-
-                // Seek 时重置内部位置状态
-                _soundPlayer?.Stop();
-                _playbackDevice.MasterMixer.RemoveComponent(_soundPlayer!);
-                _dataProvider?.Dispose();
-                _fileStream?.Dispose();
-
-                _fileStream = new FileStream(_currentFilePath, FileMode.Open, FileAccess.Read, FileShare.Read,
-                    bufferSize: 262144, useAsync: true);
-
-                var forcedFormat = new AudioFormat
-                {
-                    SampleRate = FORCED_SAMPLE_RATE,
-                    Channels = FORCED_CHANNELS,
-                    Format = FORCED_FORMAT
-                };
-
-                _dataProvider = new StreamDataProvider(_audioEngine, forcedFormat, _fileStream);
-                _soundPlayer = new SoundPlayer(_audioEngine, forcedFormat, _dataProvider);
-
-                UpdateVolume();
-                _playbackDevice.MasterMixer.AddComponent(_soundPlayer);
-
-                // 更新基准位置为 Seek 目标位置
-                _basePosition = position;
-
-                // 如果正在播放，继续播放
-                if (_isActuallyPlaying)
-                {
-                    _lastPlayTime = DateTime.Now;
-                    _soundPlayer.Play();
-                }
-
-                FileLogger.Log($"Audio seek completed");
-                return true;
-            }
-            catch (Exception ex)
-            {
-                FileLogger.LogError($"Audio seek failed", ex);
-                return false;
-            }
-        }
-    }
-
-    public void SetVolume(double volume)
-    {
-        _currentVolume = Math.Clamp(volume, 0.0, 1.0);
-        UpdateVolume();
-    }
-
-    public void SetMuted(bool muted)
-    {
-        _isMuted = muted;
-        UpdateVolume();
-    }
-
-    private void UpdateVolume()
-    {
-        lock (_lock)
-        {
-            if (_soundPlayer != null)
-            {
-                _soundPlayer.Volume = _isMuted ? 0.0f : (float)_currentVolume;
-            }
-        }
-    }
-
-    public PlaybackState PlaybackState => _soundPlayer?.State ?? PlaybackState.Stopped;
-
-    private void Cleanup()
-    {
-        if (_soundPlayer != null)
-        {
-            try
-            {
-                _playbackDevice?.MasterMixer.RemoveComponent(_soundPlayer);
-                _soundPlayer.Stop();
-                _soundPlayer.Dispose();
-            }
-            catch { }
-            _soundPlayer = null;
-        }
-
-        _dataProvider?.Dispose();
-        _dataProvider = null;
-        _fileStream?.Dispose();
-        _fileStream = null;
-
-        if (_playbackDevice != null)
-        {
-            try
-            {
-                _playbackDevice.Stop();
-                _playbackDevice.Dispose();
-            }
-            catch { }
-            _playbackDevice = null;
-        }
-    }
-
-    public void Close()
-    {
-        lock (_lock)
-        {
-            Cleanup();
-            _basePosition = TimeSpan.Zero;
-            _isActuallyPlaying = false;
-        }
-    }
-
-    public void Dispose()
-    {
-        if (_disposed) return;
-        _disposed = true;
-        Close();
-        _audioEngine?.Dispose();
-        _audioEngine = null;
-    }
-}
-
-#endregion
 
 #region 同步时钟
 
@@ -691,7 +298,6 @@ public sealed class AVSyncClock : IDisposable
             _baseMediaTime = startPosition;
             _systemClock.Restart();
             _isRunning = true;
-            FileLogger.Log($"AVSyncClock started at {startPosition.TotalSeconds:F3}s");
         }
     }
 
@@ -705,7 +311,6 @@ public sealed class AVSyncClock : IDisposable
                 _baseMediaTime += TimeSpan.FromTicks((long)(_systemClock.Elapsed.Ticks / _speedRatio));
                 _systemClock.Stop();
                 _isRunning = false;
-                FileLogger.Log($"AVSyncClock paused at {_baseMediaTime.TotalSeconds:F3}s");
             }
         }
     }
@@ -718,7 +323,6 @@ public sealed class AVSyncClock : IDisposable
             {
                 _systemClock.Restart();
                 _isRunning = true;
-                FileLogger.Log($"AVSyncClock resumed, base time {_baseMediaTime.TotalSeconds:F3}s");
             }
         }
     }
@@ -780,8 +384,35 @@ public class MediaElement : FrameworkElement, IDisposable
 {
     #region 私有字段
 
-    private VideoCapture? _videoCapture;
-    private AudioPlaybackManager? _audioManager;
+    private static INativeVideoDecoderFactory? s_videoDecoderFactory;
+    private static readonly object s_factoryLock = new();
+
+    /// <summary>
+    /// 注入自定义 <see cref="INativeVideoDecoderFactory"/>。MediaAppBuilderExtensions
+    /// 在注册原生媒体管道时自动调用；测试可手动设置 mock 工厂。
+    /// </summary>
+    public static void SetVideoDecoderFactory(INativeVideoDecoderFactory factory)
+    {
+        ArgumentNullException.ThrowIfNull(factory);
+        lock (s_factoryLock)
+        {
+            s_videoDecoderFactory = factory;
+        }
+    }
+
+    private static INativeVideoDecoderFactory GetVideoDecoderFactory()
+    {
+        var f = Volatile.Read(ref s_videoDecoderFactory);
+        if (f is not null) return f;
+        lock (s_factoryLock)
+        {
+            s_videoDecoderFactory ??= new NativeVideoDecoderFactory();
+            return s_videoDecoderFactory;
+        }
+    }
+
+    private INativeVideoDecoder? _videoDecoder;
+    private AudioPlayer? _audioManager;
     private VideoFrameBuffer? _frameBuffer;
     private string? _mediaPath;
     private TimeSpan _position;
@@ -797,7 +428,6 @@ public class MediaElement : FrameworkElement, IDisposable
     private readonly object _lock = new();
 
     private WriteableBitmap? _frameBitmap;
-    private ImageSource? _frameImage;
     private readonly SolidColorBrush _backgroundBrush = new(Color.FromRgb(0, 0, 0));
     private int _videoWidth;
     private int _videoHeight;
@@ -823,6 +453,19 @@ public class MediaElement : FrameworkElement, IDisposable
 
     // 记录视频应该从什么时间戳开始解码（解决多次暂停后的时间戳漂移）
     private double _videoStartTimeMs;
+
+    // 异步 OpenMedia 的代次序号 — 快速切换 Source 时让旧的后台探测完成回调直接作废，
+    // 避免旧文件的元数据覆盖新文件的状态。
+    private int _openMediaGeneration;
+
+    // 解码线程将最新一帧 atomic 换入此槽位；UI 线程（OnRender 时）原子换出并归还 ArrayPool。
+    // 不再走 Dispatcher.BeginInvoke 闭包传 frame — 否则 UI 线程偶尔卡顿就会让 8MB×N 帧
+    // 堆积在 Dispatcher 队列里，100MB 视频可在数秒内膨胀到 1GB+。
+    private VideoFrame? _pendingDisplayFrame;
+
+    // 0 = 没有 pending 的 InvalidateVisual；1 = 已经 BeginInvoke 一个，重复触发被吞掉。
+    // 解决高频 frame ready 时 InvalidateVisual delegate 在 Dispatcher 队列里堆积的问题。
+    private int _renderRequestPending;
 
     #endregion
 
@@ -1012,8 +655,7 @@ public class MediaElement : FrameworkElement, IDisposable
     public MediaElement()
     {
         Unloaded += OnUnloaded;
-        _audioManager = new AudioPlaybackManager();
-        FileLogger.Log("MediaElement created");
+        _audioManager = new AudioPlayer();
     }
 
     ~MediaElement()
@@ -1031,7 +673,7 @@ public class MediaElement : FrameworkElement, IDisposable
     {
         StopPlayback();
         _syncClock?.Dispose();
-        _videoCapture?.Dispose();
+        _videoDecoder?.Dispose();
         _frameBuffer?.Dispose();
         _audioManager?.Dispose();
     }
@@ -1049,8 +691,6 @@ public class MediaElement : FrameworkElement, IDisposable
     {
         if (_isPlaying) return;
 
-        FileLogger.Log("Play() called");
-
         if (_isPaused)
         {
             ResumePlayback();
@@ -1066,7 +706,6 @@ public class MediaElement : FrameworkElement, IDisposable
     {
         if (!_isPlaying || _isPaused) return;
 
-        FileLogger.Log("Pause() called");
         _isPlaying = false;
         _isPaused = true;
         PausePlayback();
@@ -1074,7 +713,6 @@ public class MediaElement : FrameworkElement, IDisposable
 
     public void Stop()
     {
-        FileLogger.Log("Stop() called");
         _isPlaying = false;
         _isPaused = false;
         _pendingPlay = false;
@@ -1086,7 +724,6 @@ public class MediaElement : FrameworkElement, IDisposable
 
     public void Close()
     {
-        FileLogger.Log("Close() called");
         _isPlaying = false;
         _isPaused = false;
         _pendingPlay = false;
@@ -1201,10 +838,10 @@ public class MediaElement : FrameworkElement, IDisposable
 
         dc.DrawRectangle(_backgroundBrush, null, rect);
 
-        var imageSourceToDraw = _frameImage as ImageSource ?? _frameBitmap as ImageSource;
-        if (imageSourceToDraw != null && _hasVideo)
+        var bitmap = _frameBitmap;
+        if (bitmap != null && _hasVideo)
         {
-            var frameSize = new Size(imageSourceToDraw.Width, imageSourceToDraw.Height);
+            var frameSize = new Size(bitmap.Width, bitmap.Height);
             var scaledSize = ComputeScaledSize(rect.Size, frameSize);
 
             if (scaledSize.Width > 0 && scaledSize.Height > 0)
@@ -1212,7 +849,9 @@ public class MediaElement : FrameworkElement, IDisposable
                 var x = (rect.Width - scaledSize.Width) / 2;
                 var y = (rect.Height - scaledSize.Height) / 2;
 
-                dc.DrawImage(imageSourceToDraw, new Rect(x, y, scaledSize.Width, scaledSize.Height));
+                // 视频帧每帧 ContentRevision 自增 — Linear 采样比 HighQuality 便宜得多，
+                // 在 30+fps 重绘时是关键热路径（HighQuality 默认走各向异性 + mipmap）。
+                dc.DrawImage(bitmap, new Rect(x, y, scaledSize.Width, scaledSize.Height), BitmapScalingMode.Linear);
             }
         }
         else if (_hasVideo)
@@ -1242,7 +881,6 @@ public class MediaElement : FrameworkElement, IDisposable
         if (newSource != null)
         {
             var path = newSource.IsFile ? newSource.LocalPath : newSource.ToString();
-            FileLogger.Log($"OnSourceChanged: {path}");
             _mediaPath = path;
             OpenMedia(path);
         }
@@ -1322,105 +960,144 @@ public class MediaElement : FrameworkElement, IDisposable
 
     #region 媒体打开与初始化
 
+    /// <summary>
+    /// 启动异步媒体打开。UI 线程不做任何 IO — native video probe（IMFSourceReader 创建）+
+    /// audio engine 初始化都搬到 ThreadPool，完成后回 UI 线程更新状态并按 LoadedBehavior 启动播放。
+    /// 期间 _hasVideo/_hasAudio 为 false，OnRender 显示"Loading..."而不阻塞 WM_PAINT。
+    /// </summary>
     private void OpenMedia(string source)
     {
-        FileLogger.Log($"OpenMedia: {source}");
+        // 立即停止旧播放并清掉显示中的帧；但**不**重置 _hasVideo / _videoWidth / _videoHeight,
+        // 否则 MeasureOverride 会立即返回 (0,0)，触发 layout 塌陷让父容器闪黑。
+        // 这些字段在 probe 完成的 BeginInvoke 中一次性更新到新视频尺寸。
+        // StopPlayback 已经把 _videoDecoder 设 null 并放后台 dispose — 不需要再手动 Dispose。
+        StopPlayback();
+        _frameBitmap = null;
+        DropPendingDisplayFrame();
+        InvalidateVisual();
 
-        try
+        var generation = ++_openMediaGeneration;
+        var dispatcher = Dispatcher.MainDispatcher;
+
+        Task.Run(() =>
         {
-            StopPlayback();
+            INativeVideoDecoder? probe = null;
+            var probeHasVideo = false;
+            var probeWidth = 0;
+            var probeHeight = 0;
+            var probeFps = 30.0;
+            var probeDuration = 0.0;
+            var probeHasAudio = false;
+            var audioDurationSeconds = 0.0;
+            Exception? probeError = null;
 
-            var hasVideo = false;
-            var hasAudio = false;
-            var videoWidth = 0;
-            var videoHeight = 0;
-            var videoFps = 30.0;
-            var duration = 0.0;
-
-            _videoCapture?.Dispose();
-            _videoCapture = new VideoCapture(source);
-
-            if (_videoCapture.IsOpened())
+            try
             {
-                var videoInfo = GetVideoInfo(_videoCapture);
-                hasVideo = videoInfo.HasVideo;
-                videoWidth = videoInfo.VideoWidth;
-                videoHeight = videoInfo.VideoHeight;
-                videoFps = videoInfo.VideoFps;
-                duration = videoInfo.Duration;
-
-                FileLogger.Log($"Video: {videoWidth}x{videoHeight}@{videoFps}fps, {duration}s");
-            }
-            else
-            {
-                _videoCapture.Dispose();
-                _videoCapture = null;
-            }
-
-            if (_audioManager != null)
-            {
-                _audioManager.Close();
-                if (_audioManager.OpenAndPlay(source))
+                probe = GetVideoDecoderFactory().Create();
+                try
                 {
-                    hasAudio = true;
-                    var audioDuration = _audioManager.Duration.TotalSeconds;
-                    if (duration <= 0 && audioDuration > 0)
-                        duration = audioDuration;
-                    _audioManager.Stop();
+                    probe.Open(BuildSourceUri(source));
+                    probeHasVideo = probe.Width > 0 && probe.Height > 0;
+                    probeWidth = probe.Width;
+                    probeHeight = probe.Height;
+                    probeFps = probe.Fps > 0 ? probe.Fps : 30.0;
+                    probeDuration = probe.Duration.TotalSeconds;
+                }
+                catch
+                {
+                    probe.Dispose();
+                    probe = null;
+                }
+
+                // audio probe — Open/Stop 序列只为知道是否有 audio track + 拿 duration。
+                // 完整启动 audio device 在后台线程完成,UI 线程不感知。
+                var audioMgr = _audioManager;
+                if (audioMgr != null)
+                {
+                    try
+                    {
+                        audioMgr.Close();
+                        audioMgr.Open(BuildSourceUri(source));
+                        if (audioMgr.HasAudio)
+                        {
+                            probeHasAudio = true;
+                            audioDurationSeconds = audioMgr.NaturalDuration?.TotalSeconds ?? 0;
+                            audioMgr.Stop();
+                        }
+                    }
+                    catch
+                    {
+                    }
                 }
             }
-
-            _hasVideo = hasVideo;
-            _hasAudio = hasAudio;
-            _videoWidth = videoWidth;
-            _videoHeight = videoHeight;
-            _videoFps = videoFps > 0 ? videoFps : 30.0;
-            _duration = TimeSpan.FromSeconds(duration);
-            _frameDelayMs = 1000.0 / _videoFps;
-            _videoStartTimeMs = 0;
-
-            _syncClock?.Dispose();
-            _syncClock = new AVSyncClock();
-            _syncClock.SpeedRatio = SpeedRatio;
-
-            _frameBuffer?.Dispose();
-            _frameBuffer = new VideoFrameBuffer(3); // 减小缓冲大小，降低延迟
-
-            if (_hasVideo)
+            catch (Exception ex)
             {
-                UpdateDisplayScale(RenderSize);
-                InvalidateMeasure();
+                probeError = ex;
+                probe?.Dispose();
+                probe = null;
             }
 
-            RaiseMediaOpened();
-            ApplyLoadedBehavior(LoadedBehavior);
-        }
-        catch (Exception ex)
-        {
-            FileLogger.LogError("OpenMedia failed", ex);
-            RaiseMediaFailed(ex);
-        }
+            var capturedDecoder = probe;
+            dispatcher?.BeginInvoke(() =>
+            {
+                // 期间用户切换了 Source — 旧探测结果作废。
+                if (generation != _openMediaGeneration)
+                {
+                    capturedDecoder?.Dispose();
+                    return;
+                }
+
+                if (probeError != null)
+                {
+                    RaiseMediaFailed(probeError);
+                    return;
+                }
+
+                _videoDecoder = capturedDecoder;
+                _hasVideo = probeHasVideo;
+                _hasAudio = probeHasAudio;
+                _videoWidth = probeWidth;
+                _videoHeight = probeHeight;
+                _videoFps = probeFps;
+
+                var totalDuration = probeDuration;
+                if (totalDuration <= 0 && audioDurationSeconds > 0)
+                {
+                    totalDuration = audioDurationSeconds;
+                }
+                _duration = TimeSpan.FromSeconds(totalDuration);
+                _frameDelayMs = 1000.0 / _videoFps;
+                _videoStartTimeMs = 0;
+
+                _syncClock?.Dispose();
+                _syncClock = new AVSyncClock();
+                _syncClock.SpeedRatio = SpeedRatio;
+
+                _frameBuffer?.Dispose();
+                _frameBuffer = new VideoFrameBuffer(3);
+
+                if (_hasVideo)
+                {
+                    UpdateDisplayScale(RenderSize);
+                    InvalidateMeasure();
+                }
+
+                RaiseMediaOpened();
+                ApplyLoadedBehavior(LoadedBehavior);
+            });
+        });
     }
 
-    private MediaInfo GetVideoInfo(VideoCapture capture)
+    private static Uri BuildSourceUri(string source)
     {
-        var info = new MediaInfo();
+        if (string.IsNullOrEmpty(source))
+            throw new ArgumentException("Source path is empty.", nameof(source));
 
-        info.VideoWidth = (int)capture.Get(VideoCaptureProperties.FrameWidth);
-        info.VideoHeight = (int)capture.Get(VideoCaptureProperties.FrameHeight);
-        info.VideoFps = capture.Get(VideoCaptureProperties.Fps);
-        info.HasVideo = info.VideoWidth > 0 && info.VideoHeight > 0;
+        if (Uri.TryCreate(source, UriKind.Absolute, out var absolute))
+            return absolute;
 
-        var frameCount = capture.Get(VideoCaptureProperties.FrameCount);
-        if (info.VideoFps > 0 && frameCount > 0)
-        {
-            info.Duration = frameCount / info.VideoFps;
-        }
-
-        if (info.VideoFps <= 0)
-            info.VideoFps = 30.0;
-
-        return info;
+        var fullPath = Path.GetFullPath(source);
+        return new Uri(fullPath, UriKind.Absolute);
     }
 
     #endregion
@@ -1459,8 +1136,8 @@ public class MediaElement : FrameworkElement, IDisposable
 
         if (_hasAudio && _audioManager != null)
         {
-            _audioManager.SetVolume(_currentVolume);
-            _audioManager.SetMuted(_isMuted);
+            _audioManager.Volume = _currentVolume;
+            _audioManager.IsMuted = _isMuted;
 
             if (_position > TimeSpan.Zero)
                 _audioManager.Seek(_position);
@@ -1490,152 +1167,188 @@ public class MediaElement : FrameworkElement, IDisposable
 
     private void StartVideoPlayback(CancellationToken token, int videoWidth, int videoHeight)
     {
-        _videoCapture?.Dispose();
-        _videoCapture = new VideoCapture(_mediaPath!);
-
-        if (!_videoCapture.IsOpened())
+        try
         {
-            RaiseMediaFailed(new InvalidOperationException("Failed to open video"));
+            EnsureVideoDecoderForPlayback();
+        }
+        catch (Exception ex)
+        {
+            RaiseMediaFailed(ex);
             return;
         }
 
-        // 定位到正确位置
         if (_position > TimeSpan.Zero)
         {
-            var framePos = _position.TotalSeconds * _videoFps;
-            _videoCapture.Set(VideoCaptureProperties.PosFrames, framePos);
+            try { _videoDecoder!.Seek(_position); }
+            catch { }
         }
 
         _videoDecodeTask = Task.Run(() => VideoDecodeLoop(token, videoWidth, videoHeight), token);
         _videoRenderTask = Task.Run(() => VideoRenderLoop(token), token);
     }
 
+    private void EnsureVideoDecoderForPlayback()
+    {
+        if (_videoDecoder is null)
+        {
+            _videoDecoder = GetVideoDecoderFactory().Create();
+            _videoDecoder.Open(BuildSourceUri(_mediaPath!));
+        }
+    }
+
     /// <summary>
-    /// Resume时保持时间戳连续性，避免音视频错位
+    /// 不阻塞 UI 线程的 Resume — 旧 task 的退出 + decoder Seek + 启动新 task 全部
+    /// 在 ThreadPool 上完成，UI 线程几个字段赋值就返回。
+    /// IMFSourceReader 支持 SetCurrentPosition 后继续 ReadSample — 不再每次重建 decoder。
     /// </summary>
     private void ResumePlayback()
     {
-        FileLogger.Log($"ResumePlayback: position={_position.TotalSeconds:F3}s");
+        var oldCts = _playbackCts;
+        var oldDecodeTask = _videoDecodeTask;
+        var oldRenderTask = _videoRenderTask;
+        var oldAudioTask = _audioSyncTask;
 
-        // 先确保之前的任务完全停止，避免资源冲突
-        _playbackCts?.Cancel();
-        try
-        {
-            _videoDecodeTask?.Wait(TimeSpan.FromMilliseconds(500));
-            _videoRenderTask?.Wait(TimeSpan.FromMilliseconds(500));
-        }
-        catch { }
-
-        _playbackCts = new CancellationTokenSource();
-        var token = _playbackCts.Token;
-
-        // 保持当前位置作为视频起始时间戳，不要累加！
-        // 这样解码出的帧时间戳 = _position + (当前帧 - 起始帧) * frameDelay
+        var newCts = new CancellationTokenSource();
+        var token = newCts.Token;
+        _playbackCts = newCts;
+        _videoDecodeTask = null;
+        _videoRenderTask = null;
+        _audioSyncTask = null;
         _videoStartTimeMs = _position.TotalMilliseconds;
+        _isPlaying = true;
+        _isPaused = false;
 
-        // 先启动音频，再启动视频，确保音频先运行
+        // audio.Play 是 lock 包裹的轻量调用 — 安全在 UI 线程上做。
         if (_hasAudio && _audioManager != null)
         {
             _audioManager.Play();
         }
-
-        // 同步时钟恢复，保持时间连续性
         _syncClock?.Resume();
-
-        // 清空旧帧缓冲，避免显示旧帧造成卡顿感
         _frameBuffer?.Clear();
 
-        if (_hasVideo && _targetWidth > 0 && _targetHeight > 0)
+        var resumeWidth = _targetWidth;
+        var resumeHeight = _targetHeight;
+        var resumePosition = _position;
+        var hasVideo = _hasVideo;
+        var hasAudio = _hasAudio;
+
+        Task.Run(async () =>
         {
-            // 重新打开视频并定位到当前位置
-            _videoCapture?.Dispose();
-            _videoCapture = new VideoCapture(_mediaPath!);
+            try { oldCts?.Cancel(); } catch { }
+            try { if (oldDecodeTask != null) await oldDecodeTask.ConfigureAwait(false); } catch { }
+            try { if (oldRenderTask != null) await oldRenderTask.ConfigureAwait(false); } catch { }
+            try { if (oldAudioTask != null) await oldAudioTask.ConfigureAwait(false); } catch { }
+            try { oldCts?.Dispose(); } catch { }
 
-            if (_videoCapture.IsOpened())
+            if (token.IsCancellationRequested) return;
+
+            // 老 task 已退，_videoDecoder 现在是单线程访问。Seek 安全。
+            try
             {
-                var framePos = _position.TotalSeconds * _videoFps;
-                _videoCapture.Set(VideoCaptureProperties.PosFrames, framePos);
+                _videoDecoder?.Seek(resumePosition);
+            }
+            catch
+            {
+                return;
+            }
 
-                FileLogger.Log($"Resume video at frame {framePos:F0}, timeMs={_videoStartTimeMs:F1}");
+            if (token.IsCancellationRequested) return;
 
-                _videoDecodeTask = Task.Run(() => VideoDecodeLoop(token, _targetWidth, _targetHeight), token);
+            if (hasVideo && resumeWidth > 0 && resumeHeight > 0 && _videoDecoder != null)
+            {
+                _videoDecodeTask = Task.Run(() => VideoDecodeLoop(token, resumeWidth, resumeHeight), token);
                 _videoRenderTask = Task.Run(() => VideoRenderLoop(token), token);
             }
-        }
-
-        if (_hasAudio)
-        {
-            _audioSyncTask = Task.Run(() => AudioSyncLoop(token), token);
-        }
-
-        _isPlaying = true;
-        _isPaused = false;
+            if (hasAudio)
+            {
+                _audioSyncTask = Task.Run(() => AudioSyncLoop(token), token);
+            }
+        });
     }
 
+    /// <summary>
+    /// 在 UI 线程瞬间完成 Pause — 不再 task.Wait。decode/render task 看到 cancel 后自然退出，
+    /// 它们持有的资源由 task 自身或下次 OpenMedia/StopPlayback 清理。
+    /// </summary>
     private void PausePlayback()
     {
-        // 先暂停时钟，确保时间停止在正确位置
         _syncClock?.Pause();
-        _audioManager?.Pause();
-
-        _playbackCts?.Cancel();
-
-        try
-        {
-            // 减少等待时间，提高响应速度
-            _videoDecodeTask?.Wait(TimeSpan.FromMilliseconds(500));
-            _videoRenderTask?.Wait(TimeSpan.FromMilliseconds(500));
-            _audioSyncTask?.Wait(TimeSpan.FromMilliseconds(200));
-        }
-        catch { }
-
-        // 更新位置到暂停时的准确时间
         if (_syncClock != null)
         {
             _position = _syncClock.GetMediaTime();
         }
+
+        // audio 的 Pause 是 lock 包裹的 SoundPlayer.Pause — 几个微秒级别，安全在 UI 线程。
+        _audioManager?.Pause();
+
+        // cancel token 让 VideoRenderLoop 从 BlockingCollection.Take 立即醒来。
+        _playbackCts?.Cancel();
     }
 
+    /// <summary>
+    /// 不阻塞 UI 线程。把 decoder / 老 task 的 dispose 工作扔到 ThreadPool。
+    /// </summary>
     private void StopPlayback()
     {
-        _playbackCts?.Cancel();
+        var oldCts = _playbackCts;
+        var oldDecodeTask = _videoDecodeTask;
+        var oldRenderTask = _videoRenderTask;
+        var oldAudioTask = _audioSyncTask;
+        var oldDecoder = _videoDecoder;
 
-        try
-        {
-            _videoDecodeTask?.Wait(TimeSpan.FromSeconds(1));
-            _videoRenderTask?.Wait(TimeSpan.FromSeconds(1));
-            _audioSyncTask?.Wait(TimeSpan.FromSeconds(1));
-        }
-        catch { }
-
-        _playbackCts?.Dispose();
         _playbackCts = null;
         _videoDecodeTask = null;
         _videoRenderTask = null;
         _audioSyncTask = null;
+        _videoDecoder = null;
         _isPlaying = false;
         _pendingPlay = false;
-
         _syncClock?.Stop();
         _frameBuffer?.Clear();
-
+        DropPendingDisplayFrame();
         _audioManager?.Stop();
-        _videoCapture?.Dispose();
-        _videoCapture = null;
+
+        if (oldCts == null && oldDecoder == null) return;
+
+        try { oldCts?.Cancel(); } catch { }
+
+        if (oldDecodeTask == null && oldRenderTask == null && oldAudioTask == null)
+        {
+            try { oldCts?.Dispose(); } catch { }
+            try { oldDecoder?.Dispose(); } catch { }
+            return;
+        }
+
+        // 后台等老 task 退出再 dispose 资源；UI 线程立即返回。
+        Task.Run(async () =>
+        {
+            try { if (oldDecodeTask != null) await oldDecodeTask.ConfigureAwait(false); } catch { }
+            try { if (oldRenderTask != null) await oldRenderTask.ConfigureAwait(false); } catch { }
+            try { if (oldAudioTask != null) await oldAudioTask.ConfigureAwait(false); } catch { }
+            try { oldCts?.Dispose(); } catch { }
+            try { oldDecoder?.Dispose(); } catch { }
+        });
     }
 
     private void CloseMedia()
     {
         StopPlayback();
 
-        _videoCapture?.Dispose();
-        _videoCapture = null;
-        _audioManager?.Close();
+        // _audioManager.Close 会停止 device 并 dispose stream — 100ms+，移到后台。
+        var audioMgr = _audioManager;
+        if (audioMgr != null)
+        {
+            Task.Run(() =>
+            {
+                try { audioMgr.Close(); } catch { }
+            });
+        }
+
         _frameBuffer?.Dispose();
         _frameBuffer = null;
+        DropPendingDisplayFrame();
 
         _frameBitmap = null;
-        _frameImage = null;
         _position = TimeSpan.Zero;
         _duration = TimeSpan.Zero;
         _hasVideo = false;
@@ -1677,83 +1390,75 @@ public class MediaElement : FrameworkElement, IDisposable
     #region 播放循环
 
     /// <summary>
-    /// 视频解码循环 - 使用绝对时间戳，确保暂停后继续播放时间正确
+    /// 视频解码循环 — 使用 <see cref="INativeVideoDecoder"/> (Windows MF / Android MediaCodec)
+    /// 直出 BGRA8 帧。GPU 采样器在 OnRender 时承担缩放，CPU 不再做 resize。
     /// </summary>
     private void VideoDecodeLoop(CancellationToken token, int targetWidth, int targetHeight)
     {
-        // 获取当前视频位置（帧号）
-        var currentFramePos = _videoCapture?.Get(VideoCaptureProperties.PosFrames) ?? 0;
-        var startFrameIndex = (long)currentFramePos;
-
-        FileLogger.Log($"VideoDecodeLoop: startFrame={startFrameIndex}, startTimeMs={_videoStartTimeMs:F1}");
+        if (_videoDecoder is null) return;
 
         try
         {
-            var frameIndex = startFrameIndex;
-
-            using var mat = new Mat();
+            var frameIndex = 0L;
+            var startTimeMs = _videoStartTimeMs;
 
             while (!token.IsCancellationRequested && _isPlaying)
             {
-                if (_videoCapture == null || !_videoCapture.Read(mat) || mat.Empty())
+                MediaFrame? mediaFrame = null;
+                bool hasFrame;
+                try
                 {
-                    FileLogger.Log("VideoDecodeLoop: End of stream");
+                    hasFrame = _videoDecoder.TryReadFrame(out mediaFrame);
+                }
+                catch
+                {
                     break;
                 }
 
-                // 计算绝对时间戳：基于起始时间 + 相对偏移
-                // 这样无论Resume多少次，时间戳都是正确的绝对时间
-                var relativeFrameIndex = frameIndex - startFrameIndex;
-                var framePts = _videoStartTimeMs + (relativeFrameIndex * _frameDelayMs);
+                if (!hasFrame || mediaFrame is null) break;
 
-                Mat processedMat;
-                if (mat.Width != targetWidth || mat.Height != targetHeight)
+                using (mediaFrame)
                 {
-                    using var resizedMat = mat.Resize(new OpenCvSharp.Size(targetWidth, targetHeight));
-                    processedMat = resizedMat.Clone();
-                }
-                else
-                {
-                    processedMat = mat.Clone();
-                }
-
-                var frameData = MatToBgraBytes(processedMat, targetWidth, targetHeight);
-                processedMat.Dispose();
-
-                var frame = new VideoFrame(frameData, targetWidth, targetHeight, (long)framePts, (int)frameIndex);
-
-                // 使用非阻塞添加，避免解码线程卡住
-                if (!_frameBuffer!.TryAdd(frame, 50))
-                {
-                    // 如果缓冲满，丢弃最旧的帧
-                    if (_frameBuffer.TryTake(out var oldFrame))
+                    var pts = mediaFrame.PresentationTime.TotalMilliseconds;
+                    if (pts <= 0)
                     {
-                        oldFrame?.Dispose();
+                        // 容器没给 PTS — 退化为按 fps 推算
+                        pts = startTimeMs + frameIndex * _frameDelayMs;
                     }
-                    _frameBuffer.TryAdd(frame);
-                }
 
-                frameIndex++;
+                    var frame = new VideoFrame(
+                        mediaFrame.Width,
+                        mediaFrame.Height,
+                        mediaFrame.Stride,
+                        (long)pts,
+                        (int)frameIndex);
+                    frame.CopyFrom(mediaFrame.Pixels.Span);
+
+                    if (!_frameBuffer!.TryAdd(frame, 50))
+                    {
+                        if (_frameBuffer.TryTake(out var oldFrame))
+                        {
+                            oldFrame?.Dispose();
+                        }
+                        if (!_frameBuffer.TryAdd(frame))
+                        {
+                            // 缓冲在我们丢弃旧帧后被关闭 — 归还当前帧避免泄漏。
+                            frame.Dispose();
+                        }
+                    }
+
+                    frameIndex++;
+                }
             }
         }
-        catch (OperationCanceledException)
-        {
-            FileLogger.Log("VideoDecodeLoop cancelled");
-        }
-        catch (Exception ex)
-        {
-            FileLogger.LogError("VideoDecodeLoop error", ex);
-        }
+        catch (OperationCanceledException) { }
+        catch { }
     }
 
     private async Task VideoRenderLoop(CancellationToken token)
     {
-        FileLogger.Log("VideoRenderLoop started");
-
         try
         {
-            var firstFrame = true;
-
             while (!token.IsCancellationRequested && _isPlaying)
             {
                 var frame = _frameBuffer?.Take(token);
@@ -1765,10 +1470,6 @@ public class MediaElement : FrameworkElement, IDisposable
                 if (delay < TimeSpan.FromMilliseconds(-AVSyncClock.VideoCatchUpThresholdMs))
                 {
                     _framesDropped++;
-                    if (_framesDropped % 30 == 0)
-                    {
-                        FileLogger.Log($"Dropped {_framesDropped} frames, current drift: {-delay.TotalMilliseconds:F1}ms");
-                    }
                     frame.Dispose();
                     continue;
                 }
@@ -1782,28 +1483,55 @@ public class MediaElement : FrameworkElement, IDisposable
                 _position = _syncClock.GetMediaTime();
                 _framesRendered++;
 
-                Dispatcher.MainDispatcher?.BeginInvoke(() =>
-                {
-                    UpdateFrameBitmap(frame.Data, frame.Width, frame.Height);
-                });
+                // 把当前帧 atomic 换入显示槽，旧帧立即归还 ArrayPool。
+                // 这样无论 UI 线程多卡，内存上限永远是 _frameBuffer (3) + 槽位 (1) = 4 帧。
+                var oldPending = Interlocked.Exchange(ref _pendingDisplayFrame, frame);
+                oldPending?.Dispose();
 
-                if (firstFrame)
-                {
-                    FileLogger.Log($"First frame rendered: PTS={frame.TimestampMs:F1}ms, drift={delay.TotalMilliseconds:F1}ms");
-                    firstFrame = false;
-                }
-
-                frame.Dispose();
+                RequestUiRefresh();
             }
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) { }
+        catch { }
+    }
+
+    /// <summary>
+    /// 节流的 UI 重绘请求 — 同一时刻 Dispatcher 队列里最多一个 ApplyPendingFrame delegate。
+    /// 视频帧更新极频繁（30+fps），不节流会让 UI 线程偶尔卡顿时队列积累上千个 delegate。
+    /// </summary>
+    private void RequestUiRefresh()
+    {
+        if (Interlocked.Exchange(ref _renderRequestPending, 1) == 0)
         {
-            FileLogger.Log("VideoRenderLoop cancelled");
+            Dispatcher.MainDispatcher?.BeginInvoke(ApplyPendingFrame);
         }
-        catch (Exception ex)
+    }
+
+    /// <summary>
+    /// UI 线程：从 atomic 槽位取最新一帧，写入 WriteableBitmap，归还 ArrayPool。
+    /// 同时间最多有一个 frame 在槽位里，老的早已被解码线程换出并 Dispose。
+    /// </summary>
+    private void ApplyPendingFrame()
+    {
+        Volatile.Write(ref _renderRequestPending, 0);
+
+        var pending = Interlocked.Exchange(ref _pendingDisplayFrame, null);
+        if (pending == null) return;
+
+        try
         {
-            FileLogger.LogError("VideoRenderLoop error", ex);
+            UpdateFrameBitmap(pending);
         }
+        finally
+        {
+            pending.Dispose();
+        }
+    }
+
+    private void DropPendingDisplayFrame()
+    {
+        var pending = Interlocked.Exchange(ref _pendingDisplayFrame, null);
+        pending?.Dispose();
     }
 
     private void AudioSyncLoop(CancellationToken token)
@@ -1818,9 +1546,9 @@ public class MediaElement : FrameworkElement, IDisposable
                 if (_audioManager != null && _syncClock != null)
                 {
                     // 使用音频实际位置更新同步时钟
-                    var audioPos = _audioManager.CurrentPosition.TotalSeconds;
+                    var audioPos = _audioManager.Position.TotalSeconds;
                     _syncClock.UpdateAudioPosition(audioPos);
-                    _position = _audioManager.CurrentPosition;
+                    _position = _audioManager.Position;
                 }
 
                 // 降低同步频率，减少CPU占用
@@ -1828,10 +1556,7 @@ public class MediaElement : FrameworkElement, IDisposable
             }
         }
         catch (OperationCanceledException) { }
-        catch (Exception ex)
-        {
-            FileLogger.LogError("AudioSyncLoop error", ex);
-        }
+        catch { }
     }
 
     private async Task AudioOnlyPositionLoop(CancellationToken token)
@@ -1842,7 +1567,7 @@ public class MediaElement : FrameworkElement, IDisposable
             {
                 if (_audioManager != null)
                 {
-                    _position = _audioManager.CurrentPosition;
+                    _position = _audioManager.Position;
                 }
 
                 if (_duration > TimeSpan.Zero && _position >= _duration)
@@ -1867,36 +1592,6 @@ public class MediaElement : FrameworkElement, IDisposable
     #endregion
 
     #region 辅助方法
-
-    private byte[] MatToBgraBytes(Mat mat, int width, int height)
-    {
-        var pixelCount = width * height;
-        var bgraData = new byte[pixelCount * 4];
-
-        using var continuousMat = mat.IsContinuous() ? mat : mat.Clone();
-
-        using var bgrMat = continuousMat.Type() == MatType.CV_8UC3
-            ? continuousMat
-            : continuousMat.CvtColor(ColorConversionCodes.RGBA2BGR);
-
-        unsafe
-        {
-            byte* srcPtr = bgrMat.DataPointer;
-
-            for (int i = 0; i < pixelCount; i++)
-            {
-                int srcIdx = i * 3;
-                int dstIdx = i * 4;
-
-                bgraData[dstIdx + 0] = srcPtr[srcIdx + 0];
-                bgraData[dstIdx + 1] = srcPtr[srcIdx + 1];
-                bgraData[dstIdx + 2] = srcPtr[srcIdx + 2];
-                bgraData[dstIdx + 3] = 255;
-            }
-        }
-
-        return bgraData;
-    }
 
     private async Task PreciseDelay(TimeSpan delay, CancellationToken token)
     {
@@ -1936,30 +1631,33 @@ public class MediaElement : FrameworkElement, IDisposable
 
     #region 帧渲染
 
-    private void UpdateFrameBitmap(byte[] pixelData, int width, int height)
+    /// <summary>
+    /// UI 线程：把解码出的 BGRA8 帧拷贝到唯一的 <see cref="WriteableBitmap"/>，并触发重绘。
+    /// </summary>
+    /// <remarks>
+    /// 关键路径只有一次拷贝（Span → WriteableBitmap.BackBuffer），WriteableBitmap 的 ContentRevision
+    /// 自增让 <c>RenderTargetDrawingContext._bitmapCache</c> 检测到脏并重新上传 GPU 纹理。
+    /// 不再做 BMP 编解码也不再创建新 BitmapImage 实例 — 视频帧通过同一个 ImageSource 引用持续刷新。
+    /// </remarks>
+    private void UpdateFrameBitmap(VideoFrame frame)
     {
-        if (width <= 0 || height <= 0 || pixelData == null || pixelData.Length == 0)
-            return;
+        var width = frame.Width;
+        var height = frame.Height;
+        if (width <= 0 || height <= 0) return;
+        if (width > 8192 || height > 8192) return;
 
-        var expectedLength = width * height * 4;
-        if (pixelData.Length < expectedLength)
-            return;
+        var pixels = frame.Pixels;
+        if (pixels.IsEmpty) return;
 
-        var needsNewBitmap = _frameBitmap == null ||
-                            _frameBitmap.Width != width ||
-                            _frameBitmap.Height != height;
+        var needsNewBitmap = _frameBitmap is null ||
+                             _frameBitmap.PixelWidth != width ||
+                             _frameBitmap.PixelHeight != height;
 
         if (needsNewBitmap)
         {
-            if (width > 8192 || height > 8192)
-                return;
-
             try
             {
-                _frameBitmap = new WriteableBitmap(
-                    width, height,
-                    96, 96,
-                    PixelFormats.Bgra32, null);
+                _frameBitmap = new WriteableBitmap(width, height, 96, 96, PixelFormats.Bgra32, null);
             }
             catch
             {
@@ -1970,60 +1668,10 @@ public class MediaElement : FrameworkElement, IDisposable
 
         try
         {
-            var stride = width * 4;
-            _frameBitmap!.WritePixels(
-                new Int32Rect(0, 0, width, height),
-                pixelData,
-                stride,
-                0);
-
-            try
-            {
-                var bmp = EncodeBmp32TopDown(pixelData, width, height);
-                _frameImage = BitmapImage.FromBytes(bmp);
-            }
-            catch { }
-
+            _frameBitmap!.WritePixels(new Int32Rect(0, 0, width, height), pixels, frame.Stride);
             InvalidateVisual();
         }
         catch { }
-    }
-
-    private static byte[] EncodeBmp32TopDown(byte[] bgraData, int width, int height)
-    {
-        if (bgraData == null) throw new ArgumentNullException(nameof(bgraData));
-
-        var stride = width * 4;
-        var pixelDataSize = (uint)(stride * height);
-        const int fileHeaderSize = 14;
-        const int infoHeaderSize = 40;
-        var bfOffBits = fileHeaderSize + infoHeaderSize;
-        var bfSize = bfOffBits + pixelDataSize;
-
-        using var ms = new MemoryStream((int)bfSize);
-        using var bw = new BinaryWriter(ms);
-
-        bw.Write((ushort)0x4D42);
-        bw.Write((uint)bfSize);
-        bw.Write((ushort)0);
-        bw.Write((ushort)0);
-        bw.Write((uint)bfOffBits);
-
-        bw.Write((uint)infoHeaderSize);
-        bw.Write((int)width);
-        bw.Write((int)(-height));
-        bw.Write((ushort)1);
-        bw.Write((ushort)32);
-        bw.Write((uint)0);
-        bw.Write((uint)pixelDataSize);
-        bw.Write((int)3780);
-        bw.Write((int)3780);
-        bw.Write((uint)0);
-        bw.Write((uint)0);
-
-        bw.Write(bgraData, 0, bgraData.Length);
-        bw.Flush();
-        return ms.ToArray();
     }
 
     private void UpdateDisplayScale(Size availableSize)
@@ -2069,10 +1717,12 @@ public class MediaElement : FrameworkElement, IDisposable
 
     #region 跳转
 
+    /// <summary>
+    /// 不阻塞 UI 线程的 Seek。AudioPlayer.Seek 走 SoundFlow 的内部 SoundPlayerBase.Seek,
+    /// 不再重建 stream/data provider,但仍放后台执行以避免任何潜在阻塞 UI 调度的开销。
+    /// </summary>
     private void SeekToPosition(TimeSpan position)
     {
-        FileLogger.Log($"SeekToPosition: {position.TotalSeconds:F3}s");
-
         var wasPlaying = _isPlaying;
         var wasPaused = _isPaused;
 
@@ -2082,19 +1732,25 @@ public class MediaElement : FrameworkElement, IDisposable
         }
 
         _position = position;
-        _videoStartTimeMs = position.TotalMilliseconds;  // Seek时更新时间基准
+        _videoStartTimeMs = position.TotalMilliseconds;
 
-        if (_audioManager != null)
-        {
-            _audioManager.Seek(position);
-        }
+        var willResume = wasPlaying || wasPaused;
+        var audioMgr = _audioManager;
+        var dispatcher = Dispatcher.MainDispatcher;
 
-        if (wasPlaying || wasPaused)
+        Task.Run(() =>
         {
-            _isPlaying = true;
-            _isPaused = false;
-            StartPlaybackInternal();
-        }
+            try { audioMgr?.Seek(position); } catch { }
+
+            if (!willResume) return;
+
+            dispatcher?.BeginInvoke(() =>
+            {
+                _isPlaying = true;
+                _isPaused = false;
+                StartPlaybackInternal();
+            });
+        });
     }
 
     #endregion
@@ -2104,13 +1760,13 @@ public class MediaElement : FrameworkElement, IDisposable
     private void SetVolumeInternal(double volume)
     {
         _currentVolume = volume;
-        _audioManager?.SetVolume(volume);
+        if (_audioManager != null) _audioManager.Volume = volume;
     }
 
     private void SetMutedInternal(bool isMuted)
     {
         _isMuted = isMuted;
-        _audioManager?.SetMuted(isMuted);
+        if (_audioManager != null) _audioManager.IsMuted = isMuted;
     }
 
     #endregion

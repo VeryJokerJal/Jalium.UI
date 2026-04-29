@@ -205,7 +205,8 @@ public:
 D3D12GlyphAtlas::D3D12GlyphAtlas(ID3D12Device* device, IDWriteFactory* dwriteFactory)
     : device_(device), dwriteFactory_(dwriteFactory)
 {
-    atlasBitmap_.resize((size_t)kAtlasWidth * kAtlasHeight * 4, 0);  // RGBA = 4 bytes per pixel
+    // Atlas bitmap is sized in Initialize() at kInitialAtlasDim and grown by
+    // GrowAtlas() — no 64 MB up-front allocation.
 }
 
 D3D12GlyphAtlas::~D3D12GlyphAtlas() = default;
@@ -219,13 +220,17 @@ void D3D12GlyphAtlas::Reset()
     rowHeight_ = 0;
     dirty_ = true;
     dirtyMinY_ = 0;
-    dirtyMaxY_ = kAtlasHeight;
+    dirtyMaxY_ = static_cast<uint16_t>(atlasH_);
 }
 
 bool D3D12GlyphAtlas::Initialize()
 {
+    atlasW_ = kInitialAtlasDim;
+    atlasH_ = kInitialAtlasDim;
+    atlasBitmap_.assign((size_t)atlasW_ * atlasH_ * 4, 0);  // RGBA = 4 bytes per pixel
+
     // Create atlas texture (R8G8B8A8_UNORM for ClearType sub-pixel coverage, GPU default heap)
-    auto texDesc = MakeTex2DDesc(DXGI_FORMAT_R8G8B8A8_UNORM, kAtlasWidth, kAtlasHeight);
+    auto texDesc = MakeTex2DDesc(DXGI_FORMAT_R8G8B8A8_UNORM, atlasW_, atlasH_);
     auto defaultHeap = MakeHeapProps(D3D12_HEAP_TYPE_DEFAULT);
 
     if (FAILED(device_->CreateCommittedResource(
@@ -236,8 +241,8 @@ bool D3D12GlyphAtlas::Initialize()
 
     // Upload buffer for atlas updates — size = width * height * 4 (RGBA = 4 bytes per pixel)
     // Add row alignment padding (D3D12 requires 256-byte row pitch alignment)
-    UINT rowPitch = (kAtlasWidth * 4 + 255) & ~255u;
-    UINT64 uploadSize = (UINT64)rowPitch * kAtlasHeight;
+    UINT rowPitch = (atlasW_ * 4 + 255) & ~255u;
+    UINT64 uploadSize = (UINT64)rowPitch * atlasH_;
     auto uploadHeap = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
     auto uploadDesc = MakeBufferDesc(uploadSize);
 
@@ -298,20 +303,28 @@ bool D3D12GlyphAtlas::AllocateAtlasRect(uint16_t w, uint16_t h, uint16_t& outX, 
     uint16_t pw = w + 2;
     uint16_t ph = h + 2;
 
-    if (packX_ + pw > kAtlasWidth) {
+    if (packX_ + pw > atlasW_) {
         // Move to next row
         packX_ = 0;
         packY_ += rowHeight_;
         rowHeight_ = 0;
     }
 
-    if (packY_ + ph > kAtlasHeight) {
-        // Atlas full — signal reset for the NEXT frame.
-        // We cannot reset mid-frame because already-generated glyph instances
-        // reference current atlas UV coords. Resetting would invalidate them,
-        // causing garbage rendering for the remainder of this frame.
-        needsReset_ = true;
-        return false;  // skip this glyph for now
+    if (packY_ + ph > atlasH_) {
+        // Atlas is full at the current size.  We can't grow mid-batch because
+        // that would change atlasW_/atlasH_ and make every UV the GenerateGlyphs
+        // caller has already pushed point at the wrong coordinate.  Defer the
+        // grow (or, if we're already at kMaxAtlasDim, the reset) to the next
+        // BeginFrame, where ApplyPendingGrowthOrReset runs at the frame
+        // boundary and the next frame's GenerateGlyphs sees consistent dims.
+        if (atlasW_ < kMaxAtlasDim || atlasH_ < kMaxAtlasDim) {
+            needsGrow_ = true;
+            pendingGrowW_ = (std::max<uint32_t>)(pendingGrowW_, (uint32_t)(packX_ + pw));
+            pendingGrowH_ = (std::max<uint32_t>)(pendingGrowH_, (uint32_t)(packY_ + ph));
+        } else {
+            needsReset_ = true;
+        }
+        return false;  // skip this glyph for now — it will be re-rasterized next frame
     }
 
     outX = packX_ + 1; // 1px padding
@@ -319,6 +332,88 @@ bool D3D12GlyphAtlas::AllocateAtlasRect(uint16_t w, uint16_t h, uint16_t& outX, 
     packX_ += pw;
     rowHeight_ = std::max(rowHeight_, ph);
     return true;
+}
+
+bool D3D12GlyphAtlas::GrowAtlas(uint32_t reqW, uint32_t reqH)
+{
+    uint32_t newW = atlasW_;
+    uint32_t newH = atlasH_;
+    while (newW < reqW && newW < kMaxAtlasDim) newW *= 2;
+    while (newH < reqH && newH < kMaxAtlasDim) newH *= 2;
+    if (newW > kMaxAtlasDim) newW = kMaxAtlasDim;
+    if (newH > kMaxAtlasDim) newH = kMaxAtlasDim;
+    if (newW == atlasW_ && newH == atlasH_) {
+        return false;  // already at max — caller must fall back
+    }
+
+    // Reallocate the CPU shadow, copying preserved rows pixel-aligned.
+    std::vector<uint8_t> newBitmap((size_t)newW * newH * 4, 0);
+    const size_t oldRowBytes = (size_t)atlasW_ * 4;
+    const size_t newRowBytes = (size_t)newW * 4;
+    for (uint32_t y = 0; y < atlasH_; ++y) {
+        memcpy(newBitmap.data() + (size_t)y * newRowBytes,
+               atlasBitmap_.data() + (size_t)y * oldRowBytes,
+               oldRowBytes);
+    }
+
+    // Recreate the GPU resources at the new size.  Caller is responsible for
+    // the safety contract (no command list outstanding that references the
+    // old atlasTexture_); see GrowAtlas comment in the header.
+    auto texDesc = MakeTex2DDesc(DXGI_FORMAT_R8G8B8A8_UNORM, newW, newH);
+    auto defaultHeap = MakeHeapProps(D3D12_HEAP_TYPE_DEFAULT);
+    ComPtr<ID3D12Resource> newTex;
+    if (FAILED(device_->CreateCommittedResource(
+            &defaultHeap, D3D12_HEAP_FLAG_NONE, &texDesc,
+            D3D12_RESOURCE_STATE_COMMON, nullptr,
+            IID_PPV_ARGS(&newTex)))) {
+        return false;
+    }
+
+    UINT rowPitch = (newW * 4 + 255) & ~255u;
+    UINT64 uploadSize = (UINT64)rowPitch * newH;
+    auto uploadHeap = MakeHeapProps(D3D12_HEAP_TYPE_UPLOAD);
+    auto uploadDesc = MakeBufferDesc(uploadSize);
+    ComPtr<ID3D12Resource> newUpload;
+    if (FAILED(device_->CreateCommittedResource(
+            &uploadHeap, D3D12_HEAP_FLAG_NONE, &uploadDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ, nullptr,
+            IID_PPV_ARGS(&newUpload)))) {
+        return false;
+    }
+
+    atlasTexture_ = newTex;
+    uploadBuffer_ = newUpload;
+    atlasBitmap_ = std::move(newBitmap);
+    atlasW_ = newW;
+    atlasH_ = newH;
+    atlasState_ = D3D12_RESOURCE_STATE_COMMON;
+
+    // The full atlas needs reupload — old rows preserved data is on the CPU
+    // shadow, but the new GPU texture is freshly created and empty.
+    dirty_ = true;
+    dirtyMinY_ = 0;
+    dirtyMaxY_ = static_cast<uint16_t>((std::min<uint32_t>)(atlasH_, UINT16_MAX));
+    return true;
+}
+
+void D3D12GlyphAtlas::ApplyPendingGrowthOrReset()
+{
+    if (needsGrow_) {
+        uint32_t reqW = pendingGrowW_ ? pendingGrowW_ : atlasW_ * 2;
+        uint32_t reqH = pendingGrowH_ ? pendingGrowH_ : atlasH_ * 2;
+        if (!GrowAtlas(reqW, reqH)) {
+            // GrowAtlas failed (allocation failure or already at max).  If we
+            // never got off kMaxAtlasDim, fall through to a full reset so this
+            // frame at least has a usable empty atlas.
+            Reset();
+        }
+        needsGrow_ = false;
+        pendingGrowW_ = 0;
+        pendingGrowH_ = 0;
+    } else if (needsReset_) {
+        Reset();
+        needsReset_ = false;
+    }
 }
 
 // ============================================================================
@@ -418,11 +513,11 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
 
             // Copy 3-byte-per-pixel ClearType data to RGBA atlas
             for (int y = 0; y < glyphH; y++) {
-                if ((uint32_t)(atlasY + y) >= kAtlasHeight) break;
+                if ((uint32_t)(atlasY + y) >= atlasH_) break;
                 for (int x = 0; x < glyphW; x++) {
-                    if ((uint32_t)(atlasX + x) >= kAtlasWidth) break;
+                    if ((uint32_t)(atlasX + x) >= atlasW_) break;
                     const uint8_t* src = alphaValues.data() + ((size_t)y * glyphW + x) * 3;
-                    size_t atlasOffset = ((size_t)(atlasY + y) * kAtlasWidth + (atlasX + x)) * 4;
+                    size_t atlasOffset = ((size_t)(atlasY + y) * atlasW_ + (atlasX + x)) * 4;
                     atlasBitmap_[atlasOffset + 0] = src[0]; // R sub-pixel coverage
                     atlasBitmap_[atlasOffset + 1] = src[1]; // G sub-pixel coverage
                     atlasBitmap_[atlasOffset + 2] = src[2]; // B sub-pixel coverage
@@ -497,11 +592,11 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
     }
 
     for (int y = 0; y < glyphH; y++) {
-        if ((uint32_t)(atlasY + y) >= kAtlasHeight) break;
+        if ((uint32_t)(atlasY + y) >= atlasH_) break;
         for (int x = 0; x < glyphW; x++) {
-            if ((uint32_t)(atlasX + x) >= kAtlasWidth) break;
+            if ((uint32_t)(atlasX + x) >= atlasW_) break;
             const uint8_t* pixel = glyphPixels.data() + (((size_t)y * glyphW) + x) * 4;
-            size_t atlasOffset = ((size_t)(atlasY + y) * kAtlasWidth + (atlasX + x)) * 4;
+            size_t atlasOffset = ((size_t)(atlasY + y) * atlasW_ + (atlasX + x)) * 4;
             atlasBitmap_[atlasOffset + 0] = pixel[2]; // R (BGRA→RGBA)
             atlasBitmap_[atlasOffset + 1] = pixel[1]; // G
             atlasBitmap_[atlasOffset + 2] = pixel[0]; // B
@@ -554,8 +649,8 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     layout->Draw(nullptr, &collector, originX, originY);
 
     uint32_t count = 0;
-    float invW = 1.0f / kAtlasWidth;
-    float invH = 1.0f / kAtlasHeight;
+    float invW = 1.0f / static_cast<float>(atlasW_);
+    float invH = 1.0f / static_cast<float>(atlasH_);
 
     for (auto& run : collector.runs) {
         float penX = run.baselineX;
@@ -666,15 +761,15 @@ void D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
     // Only upload the dirty region (dirtyMinY_ to dirtyMaxY_) instead of the full atlas.
     // This reduces upload bandwidth from ~16MB to just the modified rows.
     UINT uploadMinY = dirtyMinY_;
-    UINT uploadMaxY = (std::min)((UINT)dirtyMaxY_, (UINT)kAtlasHeight);
+    UINT uploadMaxY = (std::min)((UINT)dirtyMaxY_, (UINT)atlasH_);
     if (uploadMinY >= uploadMaxY) {
-        // Full atlas was dirtied (e.g. after Reset)
+        // Full atlas was dirtied (e.g. after Reset / GrowAtlas)
         uploadMinY = 0;
-        uploadMaxY = kAtlasHeight;
+        uploadMaxY = atlasH_;
     }
     UINT uploadHeight = uploadMaxY - uploadMinY;
 
-    UINT rowPitch = (kAtlasWidth * 4 + 255) & ~255u;  // RGBA = 4 bytes per pixel
+    UINT rowPitch = (atlasW_ * 4 + 255) & ~255u;  // RGBA = 4 bytes per pixel
     void* mapped = nullptr;
     HRESULT hr = uploadBuffer_->Map(0, nullptr, &mapped);
     if (FAILED(hr) || !mapped) {
@@ -685,8 +780,8 @@ void D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
     UINT64 uploadRowOffset = (UINT64)uploadMinY * rowPitch;
     for (UINT y = 0; y < uploadHeight; y++) {
         memcpy((uint8_t*)mapped + uploadRowOffset + y * rowPitch,
-               atlasBitmap_.data() + ((size_t)uploadMinY + y) * kAtlasWidth * 4,
-               kAtlasWidth * 4);
+               atlasBitmap_.data() + ((size_t)uploadMinY + y) * atlasW_ * 4,
+               atlasW_ * 4);
     }
     uploadBuffer_->Unmap(0, nullptr);
 
@@ -701,15 +796,15 @@ void D3D12GlyphAtlas::FlushToGpu(ID3D12GraphicsCommandList* cmdList)
     src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
     src.PlacedFootprint.Offset = 0;
     src.PlacedFootprint.Footprint.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
-    src.PlacedFootprint.Footprint.Width = kAtlasWidth;
-    src.PlacedFootprint.Footprint.Height = kAtlasHeight;
+    src.PlacedFootprint.Footprint.Width = atlasW_;
+    src.PlacedFootprint.Footprint.Height = atlasH_;
     src.PlacedFootprint.Footprint.Depth = 1;
     src.PlacedFootprint.Footprint.RowPitch = rowPitch;
 
     D3D12_BOX srcBox = {};
     srcBox.left = 0;
     srcBox.top = uploadMinY;
-    srcBox.right = kAtlasWidth;
+    srcBox.right = atlasW_;
     srcBox.bottom = uploadMaxY;
     srcBox.front = 0;
     srcBox.back = 1;

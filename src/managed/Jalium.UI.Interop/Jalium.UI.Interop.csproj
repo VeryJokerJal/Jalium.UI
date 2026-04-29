@@ -35,6 +35,17 @@
     <Content Include="..\..\native\bin\native\Debug\jalium.native.vulkan.dll" Link="jalium.native.vulkan.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.vulkan.dll')" />
     <Content Include="..\..\native\bin\native\Debug\jalium.native.software.dll" Link="jalium.native.software.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.software.dll')" />
     <Content Include="..\..\native\bin\native\Debug\jalium.native.browser.dll" Link="jalium.native.browser.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
+    <!-- Media native (image/video/camera via Windows MF + WIC). NativeMediaInitializer
+         loads jalium.native.media.dll lazily on first BitmapImage/VideoElement/etc. use,
+         so missing the DLL turns into a runtime DllNotFoundException at the first
+         decoder construction (which BitmapImage hits while parsing the embedded
+         pane-header bitmap in the consumer's MainWindow ctor). Ship it alongside
+         the other backends so the failure mode is identical to the rest of them.
+         The .core companion is the cross-platform C-ABI layer that .windows links
+         against — it must be next to .dll on disk or LoadLibrary fails with
+         "or one of its dependencies" before reaching the real entry points. -->
+    <Content Include="..\..\native\bin\native\Debug\jalium.native.media.dll" Link="jalium.native.media.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.media.dll')" />
+    <Content Include="..\..\native\bin\native\Debug\jalium.native.media.core.dll" Link="jalium.native.media.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.media.core.dll')" />
     <Content Include="..\..\native\jalium.native.browser\redist\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
   </ItemGroup>
 
@@ -44,6 +55,8 @@
     <Content Include="..\..\native\bin\native\Release\jalium.native.vulkan.dll" Link="jalium.native.vulkan.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.vulkan.dll')" />
     <Content Include="..\..\native\bin\native\Release\jalium.native.software.dll" Link="jalium.native.software.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.software.dll')" />
     <Content Include="..\..\native\bin\native\Release\jalium.native.browser.dll" Link="jalium.native.browser.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
+    <Content Include="..\..\native\bin\native\Release\jalium.native.media.dll" Link="jalium.native.media.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.media.dll')" />
+    <Content Include="..\..\native\bin\native\Release\jalium.native.media.core.dll" Link="jalium.native.media.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.media.core.dll')" />
     <Content Include="..\..\native\jalium.native.browser\redist\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/win-x64/native" />
   </ItemGroup>
 

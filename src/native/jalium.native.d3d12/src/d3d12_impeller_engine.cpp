@@ -1,4 +1,5 @@
 #include "d3d12_impeller_engine.h"
+#include "jalium_scanline_rasterizer.h"   // PixelRect / RasterizePathToRects
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -11,96 +12,19 @@
 
 namespace jalium {
 
-// ============================================================================
-// TrigCache — Precomputed trig table (Flutter Impeller: Trigs class)
-// ============================================================================
+// TrigCache and IsConvexPolygon now live in jalium_impeller_shapes.h
+// (cross-backend); the D3D12 engine consumes them through that header.
 
-TrigCache::TrigCache() : cache_(kCachedCount + 1) {}
+// TessellateConvexFan moved to jalium_impeller_shapes.h.
+// All filled-circle / filled-ellipse / filled-round-rect / stroked-circle /
+// round-cap-line shape generators moved to jalium_impeller_shapes.h —
+// EncodeFillEllipse below now invokes the cross-backend template directly.
 
-void TrigCache::Ensure(size_t divisions) const {
-    if (divisions >= cache_.size()) cache_.resize(divisions + 1);
-    if (!cache_[divisions].empty()) return;
-
-    auto& v = cache_[divisions];
-    v.reserve(divisions + 1);
-    double angleScale = (M_PI / 2.0) / divisions;
-    v.push_back({ 1.0f, 0.0f });
-    for (size_t i = 1; i < divisions; ++i) {
-        double a = i * angleScale;
-        v.push_back({ (float)std::cos(a), (float)std::sin(a) });
-    }
-    v.push_back({ 0.0f, 1.0f });
-}
-
-const std::vector<Trig>& TrigCache::Get(size_t divisions) const {
-    Ensure(divisions);
-    return cache_[divisions];
-}
-
-size_t TrigCache::ComputeDivisions(float pixelRadius) {
-    if (pixelRadius <= 0.0f) return 1;
-    float k = kCircleTolerance / pixelRadius;
-    if (k >= 1.0f) return 1;
-    return (size_t)std::ceil((float)(M_PI / 4.0) / std::acos(1.0f - k));
-}
-
-// ============================================================================
-// Convex Detection (Flutter Impeller: Path::IsConvex)
-// ============================================================================
-
-bool ImpellerD3D12Engine::IsConvexPolygon(const float* points, uint32_t pointCount) {
-    if (pointCount < 3) return false;
-    bool hasPositive = false, hasNegative = false;
-    for (uint32_t i = 0; i < pointCount; ++i) {
-        uint32_t j = (i + 1) % pointCount;
-        uint32_t k = (i + 2) % pointCount;
-        float ax = points[j * 2] - points[i * 2];
-        float ay = points[j * 2 + 1] - points[i * 2 + 1];
-        float bx = points[k * 2] - points[j * 2];
-        float by = points[k * 2 + 1] - points[j * 2 + 1];
-        float cross = ax * by - ay * bx;
-        if (cross > 1e-6f) hasPositive = true;
-        if (cross < -1e-6f) hasNegative = true;
-        if (hasPositive && hasNegative) return false;
-    }
-    return true;
-}
-
-// ============================================================================
-// Convex Triangle Fan (O(n) vs O(n²) ear-clipping)
-// ============================================================================
-
-bool ImpellerD3D12Engine::TessellateConvexFan(
-    const float* points, uint32_t pointCount,
-    float r, float g, float b, float a)
-{
-    if (pointCount < 3) return false;
-
-    ImpellerDrawBatch batch;
-    batch.vertices.reserve(pointCount);
-    for (uint32_t i = 0; i < pointCount; ++i) {
-        batch.vertices.push_back({ points[i * 2], points[i * 2 + 1], r, g, b, a });
-    }
-
-    // Triangle fan: vertex 0 is the hub, connect to each consecutive pair
-    batch.indices.reserve((pointCount - 2) * 3);
-    for (uint32_t i = 1; i + 1 < pointCount; ++i) {
-        batch.indices.push_back(0);
-        batch.indices.push_back(i);
-        batch.indices.push_back(i + 1);
-    }
-
-    batch.pipelineType = 0;
-    PushBatch(std::move(batch));
-    return true;
-}
-
-// ============================================================================
-// Optimized Shape Generators (Flutter Impeller: EllipticalVertexGenerator)
-// Uses triangle strip via zig-zag between quadrant pairs.
-// ============================================================================
-
-bool ImpellerD3D12Engine::GenerateFilledCircleStrip(
+// (Old GenerateFilledCircleStrip / EllipseStrip / RoundRectStrip /
+//  StrokedCircleStrip / RoundCapLineStrip implementations removed —
+//  the templated versions in jalium_impeller_shapes.h are now used.)
+#if 0
+bool ImpellerD3D12Engine::GenerateFilledCircleStrip_DEAD_DELETE_ME(
     float cx, float cy, float radius,
     float r, float g, float b, float a,
     const EngineTransform& transform)
@@ -437,6 +361,7 @@ bool ImpellerD3D12Engine::GenerateRoundCapLineStrip(
     PushBatch(std::move(batch));
     return true;
 }
+#endif
 
 // ============================================================================
 // Gradient Fill (Linear/Radial/Sweep via vertex color interpolation)
@@ -459,60 +384,16 @@ bool ImpellerD3D12Engine::EncodeGradientFillPath(
     batch.vertices.reserve(vertCount);
     batch.indices.reserve(vertCount);
 
-    // Build gradient stop array for SampleLinearGradient
     std::vector<float> stopData;
-    stopData.reserve(brush.stopCount * 5);
-    for (uint32_t i = 0; i < brush.stopCount; ++i) {
-        stopData.push_back(brush.stops[i].position);
-        stopData.push_back(brush.stops[i].r);
-        stopData.push_back(brush.stops[i].g);
-        stopData.push_back(brush.stops[i].b);
-        stopData.push_back(brush.stops[i].a);
-    }
+    FlattenGradientStops(brush, stopData);
 
     for (uint32_t i = 0; i < vertCount; ++i) {
         float px = triVerts[i * 2], py = triVerts[i * 2 + 1];
 
-        // Sample gradient color at this vertex position (in path space)
-        GradientColor gc;
-        if (brush.type == 1) {
-            // Linear gradient
-            gc = SampleLinearGradient(px, py,
-                brush.startX, brush.startY, brush.endX, brush.endY,
-                stopData.data(), brush.stopCount);
-        } else if (brush.type == 2) {
-            // Radial gradient: distance from center → t
-            float dx = px - brush.centerX, dy = py - brush.centerY;
-            float dist = std::sqrt(dx * dx + dy * dy);
-            float maxR = std::max(brush.radiusX, brush.radiusY);
-            float t = (maxR > 1e-6f) ? dist / maxR : 0.0f;
-            t = std::max(0.0f, std::min(1.0f, t));
-            float projX = brush.startX + t * (brush.endX - brush.startX);
-            gc = SampleLinearGradient(projX, 0,
-                brush.startX, 0, brush.endX, 0,
-                stopData.data(), brush.stopCount);
-        } else if (brush.type == 3) {
-            // Sweep gradient: angle from center → t
-            float dx = px - brush.centerX, dy = py - brush.centerY;
-            float angle = std::atan2(dy, dx); // [-pi, pi]
-            float t = (angle + (float)M_PI) / (2.0f * (float)M_PI); // [0, 1]
-            // Apply start/end angle if specified (startX/endX repurposed as angles in radians)
-            if (std::abs(brush.endX - brush.startX) > 1e-6f) {
-                float startA = brush.startX, endA = brush.endX;
-                float range = endA - startA;
-                t = (angle - startA) / range;
-                t = t - std::floor(t); // wrap to [0,1]
-            }
-            t = std::max(0.0f, std::min(1.0f, t));
-            float projX = stopData[0] + t * (stopData[(brush.stopCount - 1) * 5] - stopData[0]);
-            gc = SampleLinearGradient(projX, 0,
-                stopData[0], 0, stopData[(brush.stopCount - 1) * 5], 0,
-                stopData.data(), brush.stopCount);
-        } else {
-            gc = { brush.r * brush.a, brush.g * brush.a, brush.b * brush.a, brush.a };
-        }
+        // Sample gradient color in PATH space (gradient brush coords are in
+        // path space) then transform vertex into pixel space.
+        GradientColor gc = SampleBrushGradient(brush, stopData.data(), px, py);
 
-        // Premultiply and transform
         float vx = px, vy = py;
         TransformPoint(vx, vy, transform);
         batch.vertices.push_back({ vx, vy, gc.r * gc.a, gc.g * gc.a, gc.b * gc.a, gc.a });
@@ -524,16 +405,7 @@ bool ImpellerD3D12Engine::EncodeGradientFillPath(
     return true;
 }
 
-// ============================================================================
-// Alpha Coverage (Flutter Impeller: ComputeStrokeAlphaCoverage)
-// ============================================================================
-
-float ImpellerD3D12Engine::ComputeStrokeAlphaCoverage(float strokeWidth, float transformScale) {
-    float pixelWidth = strokeWidth * transformScale;
-    if (pixelWidth >= 1.0f) return 1.0f;
-    // Subpixel stroke: fade alpha proportionally
-    return std::max(pixelWidth, 0.05f);
-}
+// ComputeStrokeAlphaCoverage moved to jalium_impeller_shapes.h.
 
 // ============================================================================
 // ImpellerD3D12Engine — Impeller-style tessellation pipeline on D3D12
@@ -1030,6 +902,39 @@ bool ImpellerD3D12Engine::ExpandStroke(
     uint32_t pointCount = (uint32_t)(flatPoints_.size() / 2);
     if (pointCount < 2) return false;
 
+    ImpellerDrawBatch batch;
+    bool ok = jalium::ExpandStrokePath<ImpellerVertex>(
+        batch.vertices, batch.indices,
+        flatPoints_.data(), pointCount,
+        strokeWidth, join, miterLimit, cap, closed,
+        brush.r, brush.g, brush.b, brush.a,
+        collectContours);
+    if (!ok) return false;
+
+    // Collect-mode wrote into collectContours, not batch — nothing more to push.
+    if (collectContours) return true;
+
+    if (batch.vertices.empty() || batch.indices.empty()) return true;
+    batch.pipelineType = 0;
+    PushBatch(std::move(batch));
+    return true;
+}
+
+#if 0
+// Legacy inline ExpandStroke body — superseded by jalium::ExpandStrokePath in
+// jalium_impeller_stroke.h. Retained under #if 0 so the diff trivially shows
+// the original algorithm we forwarded to. Will be physically deleted in a
+// follow-up cleanup commit; the templated header is the source of truth now.
+bool ImpellerD3D12Engine::ExpandStroke_LEGACY(
+    const EngineBrushData& brush,
+    float strokeWidth,
+    ImpellerJoin join, float miterLimit,
+    ImpellerCap cap, bool closed,
+    std::vector<Contour>* collectContours)
+{
+    uint32_t pointCount = (uint32_t)(flatPoints_.size() / 2);
+    if (pointCount < 2) return false;
+
     float halfWidth = strokeWidth * 0.5f;
 
     // Premultiply alpha
@@ -1249,8 +1154,12 @@ bool ImpellerD3D12Engine::ExpandStroke(
     PushBatch(std::move(batch));
     return true;
 }
+#endif // legacy ExpandStroke
 
-void ImpellerD3D12Engine::GenerateRoundCap(
+#if 0
+// Legacy GenerateRoundCap / GenerateRoundJoin / ComputeQuadrantDivisions —
+// all moved to jalium_impeller_stroke.h / jalium_impeller_shapes.h.
+void ImpellerD3D12Engine::GenerateRoundCap_LEGACY(
     std::vector<ImpellerVertex>& verts,
     std::vector<uint32_t>& indices,
     float cx, float cy,
@@ -1283,7 +1192,7 @@ void ImpellerD3D12Engine::GenerateRoundCap(
     }
 }
 
-void ImpellerD3D12Engine::GenerateRoundJoin(
+void ImpellerD3D12Engine::GenerateRoundJoin_LEGACY(
     std::vector<ImpellerVertex>& verts,
     std::vector<uint32_t>& indices,
     float cx, float cy,
@@ -1336,50 +1245,26 @@ void ImpellerD3D12Engine::GenerateRoundJoin(
     }
 }
 
-// ============================================================================
-// Ellipse Tessellation (Impeller-style)
-// ============================================================================
-
-uint32_t ImpellerD3D12Engine::ComputeQuadrantDivisions(float pixelRadius) {
-    // Impeller formula: N = ceil(pi/4 / acos(1 - tolerance/radius))
+uint32_t ImpellerD3D12Engine::ComputeQuadrantDivisions_LEGACY(float pixelRadius) {
     constexpr float kCircleTolerance = 0.1f;
     if (pixelRadius <= 0.0f) return 1;
-
     float k = kCircleTolerance / pixelRadius;
     if (k >= 1.0f) return 1;
-
     float n = std::ceil((float)M_PI / 4.0f / std::acos(1.0f - k));
     return std::max(1u, std::min((uint32_t)n, 64u));
 }
+#endif // legacy GenerateRoundCap / GenerateRoundJoin / ComputeQuadrantDivisions
 
-// ============================================================================
-// Scanline rasterizer (Vello-inspired analytic coverage, no triangulation)
-// ============================================================================
-//
-// For paths small enough that ear-clipping triangulation produces visible
-// pixel cracks (icon glyphs, scrollbar arrows, the rounded play arrow at
-// 8×8), we evaluate fill coverage exactly per pixel using horizontal
-// scanline + edge-crossing winding count. This mirrors the math Vello
-// uses on the GPU but on the CPU, so the resulting batch is just a list
-// of 1-pixel-tall solid rectangles that go through Impeller's existing
-// solid-fill PSO — meaning per-batch GPU scissor (UI clipping) still
-// applies. Vello as an engine renders correctly but ignores the UI clip
-// stack; this approach gets Vello's pixel correctness AND Impeller's
-// clipping in one go.
-//
-// Coverage is binary (no analytic AA) — matches what the triangulation
-// path already produces for tiny shapes, which look fine. Adding analytic
-// AA would multiply each span by a per-pixel alpha mask and double the
-// vertex count; revisit once the correctness baseline is solid.
-// ============================================================================
+// PixelRect / RasterizePathToRects moved to jalium_scanline_rasterizer.h so
+// the Vulkan Impeller engine shares the exact pixel output. The legacy
+// in-place implementation is parked under `#if 0` below to keep the original
+// algorithm visible in this commit's diff; it will be physically removed in
+// a follow-up cleanup pass.
+#if 0
 
 namespace {
 
-// Analytic AA output unit: an axis-aligned rectangle with a per-rect
-// alpha in [0, 1]. The alpha is applied to the already-premultiplied
-// brush color at emit time (color * alpha, alpha * alpha), keeping the
-// solid-fill PSO's premult-alpha blending correct.
-struct PixelRect { int x; int y; int w; int h; float alpha; };
+struct PixelRect_LEGACY { int x; int y; int w; int h; float alpha; };
 
 // ----------------------------------------------------------------------------
 // RasterizePathToRects — analytic anti-aliased scanline rasterizer
@@ -1661,6 +1546,7 @@ inline void RasterizePathToRects(
 }
 
 } // namespace
+#endif // legacy in-place RasterizePathToRects (now in jalium_scanline_rasterizer.h)
 
 // ============================================================================
 // Path Encoding Entry Points
@@ -2305,16 +2191,24 @@ bool ImpellerD3D12Engine::EncodeFillEllipse(
     const EngineBrushData& brush,
     const EngineTransform& transform)
 {
-    // Premultiply alpha
+    // Premultiply alpha for the solid-fill PSO's premult-alpha blend mode.
     float r = brush.r * brush.a;
     float g = brush.g * brush.a;
     float b = brush.b * brush.a;
     float a = brush.a;
 
-    // Use optimized triangle strip generator (Flutter Impeller-style)
-    bool ok = GenerateFilledEllipseStrip(cx, cy, rx, ry, r, g, b, a, transform);
-    if (ok) encodedPathCount_++;
-    return ok;
+    // Cross-backend triangle-strip generator (TrigCache-backed quadrant pairs).
+    ImpellerDrawBatch batch;
+    if (!jalium::GenerateFilledEllipseStrip<ImpellerVertex>(
+            batch.vertices, batch.indices,
+            cx, cy, rx, ry, r, g, b, a,
+            trigCache_, transform)) {
+        return false;
+    }
+    batch.pipelineType = 0;
+    PushBatch(std::move(batch));
+    encodedPathCount_++;
+    return true;
 }
 
 // ============================================================================

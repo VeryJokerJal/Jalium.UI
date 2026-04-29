@@ -7,12 +7,26 @@ namespace Jalium.UI.Controls;
 /// Uses ControlTemplate for visual customization (border, corner radius, etc.)
 /// and an internal ImageHost element for actual bitmap rendering.
 /// </summary>
-public class Image : Control
+public class Image : Control, IReclaimableResource
 {
     /// <inheritdoc />
     protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
     {
         return new Jalium.UI.Controls.Automation.ImageAutomationPeer(this);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Forwards to the assigned <see cref="Source"/> when it implements
+    /// <see cref="IReclaimableResource"/> (true for the built-in
+    /// <see cref="BitmapImage"/>). For a <see cref="BitmapImage"/> source this
+    /// drops the decoded BGRA8 pixel buffer and asks every active GPU bitmap
+    /// cache to release its <c>NativeBitmap</c> upload, so both CPU and GPU
+    /// memory shrink while the image is off-screen.
+    /// </remarks>
+    public void ReclaimIdleResources()
+    {
+        (Source as IReclaimableResource)?.ReclaimIdleResources();
     }
 
     private ImageHost? _imageHost;

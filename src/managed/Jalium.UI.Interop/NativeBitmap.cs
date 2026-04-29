@@ -129,6 +129,26 @@ public sealed class NativeBitmap : IDisposable
     private static void WriteInt32(byte[] buffer, int offset, int value)
         => WriteUInt32(buffer, offset, unchecked((uint)value));
 
+    /// <summary>
+    /// Updates the bitmap's pixels in place. The dimensions must match the bitmap's existing
+    /// width / height — size changes still require destroying and recreating the bitmap.
+    /// Returns true if the native backend accepted the update (D3D12 / Vulkan), false otherwise
+    /// (caller should fall back to recreate).
+    /// </summary>
+    public bool TryUpdatePixels(byte[] pixelData, int width, int height, int stride)
+    {
+        if (_disposed || _handle == nint.Zero) return false;
+        ArgumentNullException.ThrowIfNull(pixelData);
+        if (width <= 0 || height <= 0) return false;
+        if (stride <= 0) stride = checked(width * 4);
+        if (stride < width * 4) return false;
+        if ((uint)width != Width || (uint)height != Height) return false;
+        if (pixelData.Length < checked(stride * height)) return false;
+
+        var ok = NativeMethods.BitmapUpdatePixels(_handle, pixelData, (uint)width, (uint)height, (uint)stride);
+        return ok != 0;
+    }
+
     /// <inheritdoc />
     public void Dispose()
     {

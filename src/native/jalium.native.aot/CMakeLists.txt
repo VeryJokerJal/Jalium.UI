@@ -39,6 +39,16 @@ elseif(APPLE AND TARGET jalium.native.metal)
     target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.metal)
 endif()
 
+# Pull jalium.native.media (image/video/camera) into the static AOT image.
+if(TARGET jalium.native.media.core)
+    target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.media.core)
+endif()
+if(WIN32 AND TARGET jalium.native.media.windows)
+    target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.media.windows)
+elseif(ANDROID AND TARGET jalium.native.media.android)
+    target_link_libraries(${PROJECT_NAME} PUBLIC jalium.native.media.android)
+endif()
+
 set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "jalium.native.aot"
     DEBUG_POSTFIX ""

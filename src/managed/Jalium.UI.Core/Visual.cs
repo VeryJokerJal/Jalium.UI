@@ -21,6 +21,66 @@ public abstract class Visual : DependencyObject
     // object so Core doesn't leak the Media.Rendering.Drawing type.
     private object? _cachedDrawing;
 
+    // Wall-clock tick (Environment.TickCount64) of the last time this visual
+    // entered RenderDirect with Visibility.Visible. The idle-resource reclaimer
+    // uses this together with VisualRenderedObserver to find visuals that have
+    // been hidden / clipped out of the viewport / detached from a painted window
+    // for long enough that their cached resources can be released.
+    // 0 means "never rendered" (still being constructed, or never attached).
+    private long _lastRenderedTickMs;
+
+    /// <summary>
+    /// Static hook raised at the entry of <see cref="RenderDirect"/> after the
+    /// visibility check passes. Stays <see langword="null"/> in default builds
+    /// (no overhead beyond a single field-load + null branch on the render hot
+    /// path); the idle-resource reclaimer installs a handler when
+    /// <c>app.UseIdleResourceReclamation()</c> is called so it can track which
+    /// visuals are still being painted each frame.
+    /// </summary>
+    /// <remarks>
+    /// Handlers run on the UI thread, synchronously, on the render hot path.
+    /// They MUST be allocation-free and MUST NOT throw, mutate the visual tree,
+    /// or call back into rendering.
+    /// </remarks>
+    internal static Action<Visual>? VisualRenderedObserver;
+
+    /// <summary>
+    /// Wall-clock tick (<see cref="Environment.TickCount64"/>) of the last time
+    /// this visual rendered with <see cref="Visibility.Visible"/>. Returns 0 if
+    /// the visual has never been rendered. Read by the idle-resource reclaimer
+    /// to compute how long the visual has been idle.
+    /// </summary>
+    internal long LastRenderedTickMs => _lastRenderedTickMs;
+
+    /// <summary>
+    /// Set to <see langword="true"/> the first time the idle-resource reclaimer
+    /// records this visual into its tracked set, so the per-frame
+    /// <see cref="VisualRenderedObserver"/> callback can early-return on the
+    /// next thousand-plus frames without re-touching the tracking table.
+    /// Reset to <see langword="false"/> if the reclaimer is shut down (so a
+    /// subsequent <c>UseIdleResourceReclamation</c> call would re-track).
+    /// </summary>
+    internal bool IsTrackedByIdleReclaimer;
+
+    /// <summary>
+    /// Releases the retained-mode drawing cache slot, if any, and forces the
+    /// next render pass to re-record from <see cref="OnRender"/>. Called by
+    /// the idle-resource reclaimer when the visual has been idle long enough
+    /// that holding its baked command list is no longer worth the memory.
+    /// </summary>
+    /// <remarks>
+    /// Safe to call from the UI thread at any time outside the render pass.
+    /// The cache will be re-populated on the next dirty frame; correctness of
+    /// the rendered output is unaffected.
+    /// </remarks>
+    internal void EvictRetainedDrawingCache()
+    {
+        if (_cachedDrawing == null) return;
+        _cachedDrawing = null;
+        // Force RenderDirect's record-or-replay branch to re-record next time.
+        _isRenderDirty = true;
+    }
+
     /// <summary>
     /// Installs the process-wide retained-mode drawing cache. When non-null,
     /// every visual's <c>OnRender</c> is recorded into an immutable Drawing
@@ -332,6 +392,20 @@ public abstract class Visual : DependencyObject
             _isRenderDirty = false;
             _isSubtreeDirty = false;
             return;
+        }
+
+        // Stamp the "last rendered" tick so the idle-resource reclaimer can
+        // tell how long this visual has been off-screen. Updated AFTER the
+        // visibility gate so Hidden/Collapsed visuals correctly look idle, and
+        // BEFORE we recurse into children so the parent counts as rendered the
+        // moment its own subtree starts. Viewport-clipped children naturally
+        // never reach this line because ShouldRenderChild short-circuits the
+        // child.Render() call entirely.
+        _lastRenderedTickMs = Environment.TickCount64;
+        var renderedObserver = VisualRenderedObserver;
+        if (renderedObserver != null)
+        {
+            renderedObserver(this);
         }
 
         // Check for element effect (BlurEffect, DropShadowEffect, etc.)
