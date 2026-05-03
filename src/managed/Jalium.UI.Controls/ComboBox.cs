@@ -32,7 +32,6 @@ public class ComboBox : Selector
     private TextBox? _editableTextBox;
     private ContentPresenter? _selectionPresenter;
     private Grid? _dropDownArea;
-    private StackPanel? _itemsPanel;
     private bool _isDropDownOpen;
     private bool _isUpdatingEditableText;
 
@@ -395,7 +394,7 @@ public class ComboBox : Selector
         switch (e.Key)
         {
             case Key.Down:
-                if (SelectedIndex < Items.Count - 1)
+                if (SelectedIndex < GetItemCount() - 1)
                     SelectedIndex++;
                 e.Handled = true;
                 break;
@@ -435,16 +434,19 @@ public class ComboBox : Selector
                 break;
 
             case Key.Home:
-                if (Items.Count > 0)
+                if (GetItemCount() > 0)
                     SelectedIndex = 0;
                 e.Handled = true;
                 break;
 
             case Key.End:
-                if (Items.Count > 0)
-                    SelectedIndex = Items.Count - 1;
+            {
+                var count = GetItemCount();
+                if (count > 0)
+                    SelectedIndex = count - 1;
                 e.Handled = true;
                 break;
+            }
 
             case Key.F4:
                 // F4 toggles dropdown (standard Windows behavior)
@@ -482,10 +484,11 @@ public class ComboBox : Selector
 
     private void SyncItemContainerSelection()
     {
-        if (_itemsPanel == null) return;
+        var host = ItemsHost;
+        if (host == null) return;
 
         var selectedItem = SelectedItem;
-        foreach (var child in _itemsPanel.Children)
+        foreach (var child in host.Children)
         {
             if (child is ComboBoxItem container)
             {
@@ -765,8 +768,6 @@ public class ComboBox : Selector
 
         _isCloseAnimating = false;
 
-        PopulateDropdownItems();
-
         if (_popup != null)
         {
             UpdatePopupPlacementAndWidth();
@@ -970,55 +971,54 @@ public class ComboBox : Selector
 
     #endregion
 
-    private void PopulateDropdownItems()
+    /// <inheritdoc />
+    protected override bool IsItemItsOwnContainer(object item) => item is ComboBoxItem;
+
+    /// <inheritdoc />
+    protected override FrameworkElement GetContainerForItem(object item) => new ComboBoxItem();
+
+    /// <inheritdoc />
+    protected override void PrepareContainerForItem(FrameworkElement element, object item)
     {
-        // Find the items panel in the popup
-        if (_popup?.Child is Border border)
+        if (element is not ComboBoxItem container)
         {
-            // Look for ScrollViewer containing ItemsPresenter or StackPanel
-            if (border.Child is ScrollViewer scrollViewer)
-            {
-                if (scrollViewer.Content is StackPanel panel)
-                {
-                    _itemsPanel = panel;
-                }
-            }
+            base.PrepareContainerForItem(element, item);
+            return;
         }
 
-        if (_itemsPanel == null)
+        // 当 item 已经是 ComboBoxItem 自身时,不要把它的 Content 改写成自己的 ToString;
+        // 否则用 GetItemText 把数据项转成可显示文本(尊重 ItemTemplate 不在 ComboBox 路径中的简单文本场景)。
+        if (!ReferenceEquals(container, item))
         {
-            // Create items panel if not found in template
-            _itemsPanel = new StackPanel();
-
-            if (_popup?.Child is Border b && b.Child is ScrollViewer sv)
-            {
-                sv.Content = _itemsPanel;
-            }
+            container.Content = GetItemText(item);
         }
 
-        _itemsPanel.Children.Clear();
+        // Tag 用作"逻辑数据项"的反查通道:点击或同步选中态时通过 container.Tag 拿回原始 item。
+        container.Tag = item;
+        container.IsSelected = Equals(item, SelectedItem);
 
-        for (int i = 0; i < Items.Count; i++)
+        // 幂等 hook:Delegate.Remove 对未注册的 handler 是 no-op,所以 -=/+= 安全可重入,
+        // 避免容器在 ItemsSource Reset 时被复用导致重复触发 SelectedIndex 设置。
+        container.ItemClicked -= OnContainerItemClicked;
+        container.ItemClicked += OnContainerItemClicked;
+    }
+
+    private void OnContainerItemClicked(object? sender, EventArgs e)
+    {
+        if (sender is not ComboBoxItem container) return;
+
+        var logicalItem = container.Tag ?? container.Content;
+        var index = GetIndexOf(logicalItem);
+        if (index >= 0)
         {
-            var item = Items[i];
-            var index = i;
-
-            var itemContainer = new ComboBoxItem
-            {
-                Content = GetItemText(item),
-                Tag = item,
-                IsSelected = item == SelectedItem
-            };
-
-            itemContainer.ItemClicked += (s, e) =>
-            {
-                SelectedIndex = index;
-                SelectedItem = item;
-                CloseDropDown();
-            };
-
-            _itemsPanel.Children.Add(itemContainer);
+            SelectedIndex = index;
         }
+        else
+        {
+            SelectedItem = logicalItem;
+        }
+
+        CloseDropDown();
     }
 
     private string GetItemText(object? item)

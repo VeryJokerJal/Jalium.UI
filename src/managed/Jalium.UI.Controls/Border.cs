@@ -377,10 +377,19 @@ public class Border : FrameworkElement
     /// <inheritdoc />
     protected override Size MeasureOverride(Size availableSize)
     {
-        var border = BorderThickness;
+        // BorderThickness 必须按 ArrangeOverride 同样的物理像素 snap 计算,
+        // 否则 MeasureOverride 用 raw 1px、ArrangeOverride 用 snapped(如 DPI=1.5 时 ≈1.333px),
+        // 子元素 measure 时以为自己有 N-2px 空间,arrange 实际只拿到 N-2.667px,
+        // 子内容刚好溢出 ScrollViewer viewport,会冒出 0.5–0.7px 的虚假滚动条。
+        var rawBorder = BorderThickness;
+        var snappedLeft = SnapLayoutValue(rawBorder.Left);
+        var snappedTop = SnapLayoutValue(rawBorder.Top);
+        var snappedRight = SnapLayoutValue(rawBorder.Right);
+        var snappedBottom = SnapLayoutValue(rawBorder.Bottom);
+
         var padding = Padding;
-        var totalHorizontal = border.Left + border.Right + padding.Left + padding.Right;
-        var totalVertical = border.Top + border.Bottom + padding.Top + padding.Bottom;
+        var totalHorizontal = snappedLeft + snappedRight + padding.Left + padding.Right;
+        var totalVertical = snappedTop + snappedBottom + padding.Top + padding.Bottom;
 
         var childAvailable = new Size(
             Math.Max(0, availableSize.Width - totalHorizontal),
@@ -426,10 +435,20 @@ public class Border : FrameworkElement
             var rightInset = snappedRight + padding.Right;
             var bottomInset = snappedBottom + padding.Bottom;
 
+            // right / bottom 不要再 SnapLayoutValue —— 那是按"最近物理像素四舍五入",
+            // 当 finalSize 小数部分 < 0.5 时会向下取整,childRect 比 MeasureOverride 用
+            // (snapped 的 totalHorizontal/Vertical) 算出来的 childAvailable 少 0.25–0.5px,
+            // 子元素 measure 时拿到 N-totalInset 空间,arrange 实际只拿 SnapDown(N-totalInset),
+            // 内嵌 ScrollViewer 的 _extentHeight 比 finalSize.Height 多 0.25–0.5,
+            // 触发 Auto 模式下的虚假 0.5px 滚动条(典型 ComboBox dropdown 表现)。
+            // x / y(insets)继续 snap,因为它们是从原点向内的偏移,需要和 OnRender 画的
+            // background/stroke 顶左对齐;right / bottom 直接用精确值,允许子元素的右下边
+            // 落在亚像素位置,边缘最多 0.5px 落进 stroke 区——而 stroke 在 OnPostRender
+            // 之后画,会盖住子内容的亚像素溢出,视觉上无副作用。
             var x = SnapLayoutValue(leftInset);
             var y = SnapLayoutValue(topInset);
-            var right = SnapLayoutValue(finalSize.Width - rightInset);
-            var bottom = SnapLayoutValue(finalSize.Height - bottomInset);
+            var right = finalSize.Width - rightInset;
+            var bottom = finalSize.Height - bottomInset;
 
             var childRect = new Rect(
                 x,

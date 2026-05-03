@@ -387,6 +387,106 @@ public class ComboBoxEditableTests
         Assert.False(comboBox.IsDropDownOpen);
     }
 
+    [Fact]
+    public void ComboBox_ItemsSource_ChangedAfterTemplateApplied_ShouldStillRender()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var comboBox = new ComboBox { Width = 220 };
+
+            var host = new StackPanel { Width = 400, Height = 300 };
+            host.Children.Add(comboBox);
+            host.Measure(new Size(400, 300));
+            host.Arrange(new Rect(0, 0, 400, 300));
+
+            comboBox.IsDropDownOpen = true;
+
+            var popup = FindDescendant<Popup>(comboBox);
+            Assert.NotNull(popup);
+            var popupChild = popup!.Child as FrameworkElement;
+            Assert.NotNull(popupChild);
+            popupChild!.Measure(new Size(220, double.PositiveInfinity));
+
+            comboBox.ItemsSource = new System.Collections.ObjectModel.ObservableCollection<string>
+            {
+                "A", "B", "C",
+            };
+
+            popupChild.Measure(new Size(220, double.PositiveInfinity));
+
+            var itemsHostProp = typeof(ItemsControl).GetProperty(
+                "ItemsHost",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            var itemsHost = itemsHostProp?.GetValue(comboBox) as Panel;
+            Assert.NotNull(itemsHost);
+            Assert.Equal(3, itemsHost!.Children.Count);
+            Assert.Equal("B", (itemsHost.Children[1] as ComboBoxItem)?.Content);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void ComboBox_ItemsSource_ShouldPopulateDropdownContainers()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var items = new System.Collections.ObjectModel.ObservableCollection<string>
+            {
+                "xUnit v3", "xUnit v2", "NUnit", "MSTest", "TUnit", "Fixie",
+            };
+            var comboBox = new ComboBox
+            {
+                Width = 220,
+                ItemsSource = items,
+                SelectedItem = "xUnit v3",
+            };
+
+            var host = new StackPanel { Width = 400, Height = 300 };
+            host.Children.Add(comboBox);
+            host.Measure(new Size(400, 300));
+            host.Arrange(new Rect(0, 0, 400, 300));
+
+            comboBox.IsDropDownOpen = true;
+
+            var popup = FindDescendant<Popup>(comboBox);
+            Assert.NotNull(popup);
+
+            var popupChild = popup!.Child as FrameworkElement;
+            Assert.NotNull(popupChild);
+            popupChild!.Measure(new Size(220, double.PositiveInfinity));
+            popupChild.Arrange(new Rect(0, 0, 220, popupChild.DesiredSize.Height));
+
+            var itemsHostProp = typeof(ItemsControl).GetProperty(
+                "ItemsHost",
+                BindingFlags.NonPublic | BindingFlags.Instance);
+            var itemsHost = itemsHostProp?.GetValue(comboBox) as Panel;
+            Assert.NotNull(itemsHost);
+            Assert.Equal(6, itemsHost!.Children.Count);
+
+            var first = itemsHost.Children[0] as ComboBoxItem;
+            Assert.NotNull(first);
+            Assert.Equal("xUnit v3", first!.Content);
+            Assert.True(first.IsSelected);
+
+            var third = itemsHost.Children[2] as ComboBoxItem;
+            Assert.Equal("NUnit", third!.Content);
+            Assert.False(third.IsSelected);
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
     private static void ResetApplicationState()
     {
         var currentField = typeof(Application).GetField("_current",

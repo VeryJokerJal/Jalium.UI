@@ -394,15 +394,8 @@ public static class XamlReader
             }
             else
             {
-                try
-                {
-                    instance = Activator.CreateInstance(resolvedType)
-                        ?? throw new XamlParseException($"Failed to create instance of type '{resolvedType.FullName}'.");
-                }
-                catch (Exception ex)
-                {
-                    throw;
-                }
+                instance = Activator.CreateInstance(resolvedType)
+                    ?? throw new XamlParseException($"Failed to create instance of type '{resolvedType.FullName}'.");
             }
         }
 
