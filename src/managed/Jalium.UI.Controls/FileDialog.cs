@@ -184,6 +184,11 @@ public sealed class OpenFileDialog : FileDialog
     #region Properties
 
     /// <summary>
+    /// Gets or sets whether the dialog should pick folders instead of files.
+    /// </summary>
+    public bool IsFolderPicker { get; set; }
+
+    /// <summary>
     /// Gets or sets whether multiple files can be selected.
     /// </summary>
     public bool Multiselect { get; set; }
@@ -216,6 +221,11 @@ public sealed class OpenFileDialog : FileDialog
 
     private bool? ShowWindowsDialog(IntPtr owner)
     {
+        if (IsFolderPicker)
+        {
+            return ShowWindowsFolderPickerDialog(owner);
+        }
+
         // Use Windows Common File Dialog via COM interop
         // This is a simplified implementation - in production, use proper COM interop
 
@@ -285,6 +295,32 @@ public sealed class OpenFileDialog : FileDialog
         {
             handle.Free();
         }
+    }
+
+    private bool? ShowWindowsFolderPickerDialog(IntPtr owner)
+    {
+        var dialog = new FolderBrowserDialog
+        {
+            Title = Title,
+            Description = Title,
+            InitialDirectory = !string.IsNullOrWhiteSpace(FileName) ? FileName : InitialDirectory,
+            SelectedPath = !string.IsNullOrWhiteSpace(FileName) ? FileName : InitialDirectory,
+            Multiselect = Multiselect
+        };
+
+        if (dialog.ShowDialog(owner) != true)
+        {
+            return false;
+        }
+
+        FileNames = dialog.SelectedPaths.Length > 0
+            ? dialog.SelectedPaths
+            : string.IsNullOrWhiteSpace(dialog.SelectedPath)
+                ? Array.Empty<string>()
+                : [dialog.SelectedPath];
+        FileName = FileNames.FirstOrDefault();
+        OnFileOk();
+        return true;
     }
 
     private bool? ShowFallbackDialog()
