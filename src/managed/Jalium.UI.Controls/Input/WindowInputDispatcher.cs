@@ -15,7 +15,6 @@ internal sealed class WindowInputDispatcher
 
     // ── Mouse state ──
     private UIElement? _lastMouseOverElement;
-    private UIElement? _lastHitTestElement;
     private readonly List<UIElement> _mousePressedChain = [];
     private MouseButton? _suppressMouseUpButton;
     private TitleBarButton? _hoveredTitleBarButton;
@@ -49,7 +48,6 @@ internal sealed class WindowInputDispatcher
     // ── Public state accessors ──
 
     internal UIElement? LastMouseOverElement => _lastMouseOverElement;
-    internal UIElement? LastHitTestElement => _lastHitTestElement;
     internal TitleBarButton? HoveredTitleBarButton => _hoveredTitleBarButton;
     internal TitleBarButton? PressedTitleBarButton => _pressedTitleBarButton;
     internal TitleBarButton? PressedTitleBarButtonField { get => _pressedTitleBarButton; set => _pressedTitleBarButton = value; }
@@ -399,8 +397,6 @@ internal sealed class WindowInputDispatcher
             RaiseMouseLeaveChain(_lastMouseOverElement, null, Environment.TickCount);
             _lastMouseOverElement = null;
         }
-
-        _lastHitTestElement = null;
     }
 
     // ══════════════════════════════════════════════════════════════
@@ -673,7 +669,6 @@ internal sealed class WindowInputDispatcher
         UIElement.ForceReleaseMouseCapture();
         ClearPressedChains();
         _suppressMouseUpButton = null;
-        _lastHitTestElement = null;
 
         if (_host.TitleBarStyle == WindowTitleBarStyle.Custom)
             ClearTitleBarInteractionState();

@@ -49,6 +49,26 @@ internal static class RazorExpressionLowering
     }
 
     /// <summary>
+    /// Extract the dependency paths a Razor <c>@if</c> condition must observe. Unlike
+    /// <see cref="TryLowerAttributeValue"/> the condition is a bare C# boolean expression
+    /// (no <c>@</c> sigil) — e.g. <c>Count &gt; 0</c>, <c>IsBusy &amp;&amp; $.Ready</c> — so we
+    /// run the same identifier walker used inside <c>@(...)</c>. The result is handed to
+    /// the runtime via <c>XamlBuilder.SetRazorIfVisibility</c> so
+    /// <see cref="Jalium.UI.Markup.RazorExpressionAnalyzer"/> can skip its reflection walk
+    /// (it consults the pre-registered metadata first).
+    /// </summary>
+    public static string[] ExtractConditionDependencies(string? condition)
+    {
+        if (string.IsNullOrWhiteSpace(condition))
+            return System.Array.Empty<string>();
+        var deps = new HashSet<string>(System.StringComparer.Ordinal);
+        ExtractIdentifiersFromExpression(condition!, 0, condition!.Length, deps);
+        return deps.Count == 0
+            ? System.Array.Empty<string>()
+            : new List<string>(deps).ToArray();
+    }
+
+    /// <summary>
     /// Emit a C# array-literal expression for the dependency list. Empty list emits
     /// <c>global::System.Array.Empty&lt;string&gt;()</c> to avoid one allocation per call.
     /// </summary>

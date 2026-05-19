@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "jalium_api.h"
+#include "jalium_triangulate.h"  // Contour (cached boundary for edge-AA feather)
 
 namespace jalium {
 
@@ -45,6 +46,14 @@ struct CachedPathGeometry {
     // intersecting glyph outline, multi-subpath SVG icon) — the caller must
     // fall back to CPU rasterization in that case.
     std::vector<float> localTriangles;
+
+    // Local-space boundary contours (post-bezier-flatten, pre-transform).
+    // Populated by the D3D12 Impeller engine so the per-frame emit step can
+    // build a constant-width edge-AA feather ring around the fill on its
+    // non-MSAA target without re-flattening. Vulkan leaves this empty (its
+    // pipeline AAs differently). Cached here, like localTriangles, so a
+    // moving / scaled / rotated path never re-flattens.
+    std::vector<Contour> contours;
 
     bool triangulationSucceeded = false;
 };

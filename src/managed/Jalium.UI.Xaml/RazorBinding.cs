@@ -437,6 +437,40 @@ internal static class RazorBindingEngine
     }
 
     /// <summary>
+    /// SourceGenerator-lowered Razor <c>@if</c>. The parser lifted a simple
+    /// <c>@if(cond) { ... }</c> block into a synthetic wrapper, flattened it away, and the
+    /// SG emitted one call here per conditional child immediately after adding it to its
+    /// parent. This is the exact <see cref="TryApplyIfVisibility"/> binding the streaming
+    /// parser's <c>ShouldIncludeConditionalChild</c> applies — same
+    /// <c>RazorConditionalVisibilityConverter</c>, same DataContext trigger — but reached
+    /// from straight-line generated C# instead of a runtime document re-parse
+    /// (<c>XamlReader.LoadComponentFromString</c> is no longer involved for these blocks).
+    /// <para>
+    /// <paramref name="dependencies"/> is the SG-computed identifier set for
+    /// <paramref name="condition"/>; pre-registering it lets
+    /// <see cref="RazorExpressionAnalyzer.GetPlan"/> skip its reflection/Roslyn walk (the
+    /// documented SG fast path). The set is a superset of the precise dependencies so the
+    /// binding never misses an update.
+    /// </para>
+    /// </summary>
+    internal static void ApplySgLoweredIfVisibility(
+        object child,
+        string condition,
+        string[] dependencies,
+        XamlParserContext context)
+    {
+        if (dependencies is { Length: > 0 })
+            RazorExpressionRegistry.RegisterMetadata(condition, condition, dependencies);
+
+        // For a lifted simple @if the child is always a UIElement and the condition is
+        // never blank (the parser refuses to lift text-only / bodyless @if), so this
+        // applies the visibility binding exactly as the streaming parser would. The
+        // non-UIElement branch ShouldIncludeConditionalChild has (EvaluateConditionOnce)
+        // is unreachable here by construction, so it is intentionally not duplicated.
+        TryApplyIfVisibility(child, condition, context);
+    }
+
+    /// <summary>
     /// SourceGenerator-lowered Razor value-expression on a named property. The SG
     /// pre-computed <paramref name="dependencies"/> from the expression text at codegen
     /// time so we skip the reflection walk in <see cref="RazorExpressionAnalyzer"/>.
@@ -997,6 +1031,41 @@ public static class RazorExpressionRegistry
     internal static bool TryGetGlobalSection(string name, out string content)
     {
         return GlobalSections.TryGetValue(name, out content!);
+    }
+
+    // ── Compiled section factories (SourceGenerator-lowered @section) ──
+    //
+    // The runtime preprocessor path registers a section's raw XAML *string*
+    // (RegisterSection above); RazorSectionHost then re-parses it via
+    // XamlReader.Parse on render. The SG instead compiles the @section body to a
+    // straight-line element factory and registers the delegate here, so the host
+    // can invoke it directly with no document re-parse. Both stores share the
+    // SectionRegistered/SectionUnregistered events and the same name space; the
+    // host prefers a factory and falls back to the string store, so SG-compiled
+    // and runtime-parsed documents interoperate.
+
+    private static readonly ConcurrentDictionary<string, Func<object?>> SectionFactories = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Registers a compiled <c>@section</c> body factory. Emitted by the
+    /// SourceGenerator into the defining component's <c>InitializeComponent</c>.
+    /// Each invocation produces a fresh visual tree (factory semantics, matching
+    /// the runtime which re-parses the section XAML per host). Fires
+    /// <see cref="SectionRegistered"/> so any already-loaded
+    /// <see cref="RazorSectionHost"/> for this name re-renders.
+    /// </summary>
+    public static void RegisterSectionFactory(string name, Func<object?> factory)
+    {
+        if (!string.IsNullOrWhiteSpace(name) && factory != null)
+        {
+            SectionFactories[name] = factory;
+            SectionRegistered?.Invoke(name);
+        }
+    }
+
+    internal static bool TryGetSectionFactory(string name, out Func<object?> factory)
+    {
+        return SectionFactories.TryGetValue(name, out factory!);
     }
 
     // ── AOT-safe property accessor registry ──

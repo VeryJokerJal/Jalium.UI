@@ -269,6 +269,49 @@ public:
         uint32_t viewportW, uint32_t viewportH);
 
 private:
+    // --- Fill: transform-independent geometry cache + legacy fallback ---
+
+    /// Legacy pixel-space scanline fill. Preserved verbatim from the old
+    /// EncodeFillPath; EncodeFillPath now delegates here for gradient brushes
+    /// and for outlines its local-space triangulator can't handle.
+    bool EncodeFillPathScanline(
+        float startX, float startY,
+        const float* commands, uint32_t commandLength,
+        const EngineBrushData& brush,
+        FillRule fillRule,
+        const EngineTransform& transform,
+        int32_t edgeMode);
+
+    /// Legacy per-call pixel-space scanline polygon fill. EncodeFillPolygon
+    /// delegates here for gradient brushes and polygons its local-space
+    /// triangulator rejects.
+    bool EncodeFillPolygonScanline(
+        const float* points, uint32_t pointCount,
+        const EngineBrushData& brush,
+        FillRule fillRule,
+        const EngineTransform& transform);
+
+    /// Legacy pixel-space, transform-keyed stroke pipeline (analytic scanline
+    /// or binary mesh). EncodeStrokePath delegates here for dashed strokes,
+    /// explicit Antialiased mode, gradient brushes and the empty-command case.
+    bool EncodeStrokePathPixelCached(
+        float startX, float startY,
+        const float* commands, uint32_t commandLength,
+        const EngineBrushData& brush,
+        float strokeWidth, bool closed,
+        int32_t lineJoin, float miterLimit,
+        int32_t lineCap,
+        const float* dashPattern, uint32_t dashCount, float dashOffset,
+        const EngineTransform& transform,
+        int32_t edgeMode);
+
+    /// Per-frame constant-width edge-AA feather ring built from the cached
+    /// local-space boundary contours (our solid-fill target has no MSAA).
+    void EmitContourFeather(
+        const std::vector<Contour>& contours,
+        const EngineTransform& transform,
+        float r, float g, float b, float a);
+
     // --- Gradient Fill ---
 
     /// Encode a gradient-filled path (linear or radial).
@@ -351,14 +394,14 @@ private:
 
     float flattenTolerance_ = 0.25f;
 
-    // Source-space PathGeometryCache. Hoisted from jalium.native.vulkan to
-    // jalium.native.core; D3D12 holds it but does NOT use it yet — the
-    // pixel-space flatten that EncodeFillPath does today bakes transform
-    // into the cached vertices, so naively caching by source-only key would
-    // re-introduce the under-subdivision bug that pixel-space flatten was
-    // supposed to fix (see d3d12_impeller_engine.cpp:1737-1755). Wired up in
-    // the tolerance-scale-aware commit once scaleBucket lands in the cache
-    // key — only then is source-space caching safe across scales.
+    // Source-space PathGeometryCache (hoisted from jalium.native.vulkan to
+    // jalium.native.core). EncodeFillPath caches the local-space flatten +
+    // triangulation + boundary contours here, keyed by path data + fillRule +
+    // scaleBucket (NOT the full transform). scaleBucket gives each scale
+    // octave its own entry so source-space caching is safe across scales (the
+    // under-subdivision concern that previously kept this unused). A moving /
+    // scaled / rotated path now reuses the cached geometry and only pays an
+    // O(N) per-frame vertex transform instead of re-rasterizing every frame.
     std::unique_ptr<PathGeometryCache> pathGeometryCache_;
 
     // Precomputed trig cache (shared across frames)

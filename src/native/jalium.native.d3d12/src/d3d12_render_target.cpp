@@ -1332,8 +1332,9 @@ void D3D12RenderTarget::RenderText(
     ExtractBrushColor(brush, r, g, b, a);
 
     ComPtr<IDWriteTextLayout> layout;
-    if (FAILED(tf->CreateLayout(text, textLength, w, h, &layout))) return;
-    directRenderer_->AddText(layout.Get(), x, y, r, g, b, a);
+    uint64_t layoutKey = 0;
+    if (FAILED(tf->CreateLayout(text, textLength, w, h, &layout, &layoutKey))) return;
+    directRenderer_->AddText(layout.Get(), x, y, r, g, b, a, layoutKey);
 }
 
 // ============================================================================

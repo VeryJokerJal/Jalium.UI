@@ -204,7 +204,8 @@ public:
     // --- Draw commands (called between BeginFrame/EndFrame) ---
     void AddSdfRect(const SdfRectInstance& inst);
     void AddText(IDWriteTextLayout* layout, float x, float y,
-                 float r, float g, float b, float a);
+                 float r, float g, float b, float a,
+                 uint64_t layoutKey = 0);
     void AddBitmap(float x, float y, float w, float h, float opacity,
                    ID3D12Resource* textureResource, DXGI_FORMAT format,
                    float uvMaxX = 1.0f, float uvMaxY = 1.0f,

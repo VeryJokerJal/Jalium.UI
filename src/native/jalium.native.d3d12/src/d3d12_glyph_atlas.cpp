@@ -213,6 +213,10 @@ D3D12GlyphAtlas::~D3D12GlyphAtlas() = default;
 
 void D3D12GlyphAtlas::Reset()
 {
+    // Every cached glyph slot is about to be invalidated — bump the
+    // generation so the resolved-glyph memo treats all its entries (which
+    // hold now-stale atlas UVs) as misses.
+    ++atlasGeneration_;
     cache_.clear();
     std::fill(atlasBitmap_.begin(), atlasBitmap_.end(), (uint8_t)0);
     packX_ = 0;
@@ -403,6 +407,9 @@ bool D3D12GlyphAtlas::GrowAtlas(uint32_t reqW, uint32_t reqH)
     atlasW_ = newW;
     atlasH_ = newH;
     atlasState_ = D3D12_RESOURCE_STATE_COMMON;
+    // Atlas dimensions changed → every cached UV (entry.x*invW etc.) is now
+    // wrong. Bump generation so the resolved-glyph memo rebuilds.
+    ++atlasGeneration_;
 
     // The full atlas needs reupload — old rows preserved data is on the CPU
     // shadow, but the new GPU texture is freshly created and empty.
@@ -639,14 +646,69 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
 // Generate Glyph Instances
 // ============================================================================
 
+uint64_t D3D12GlyphAtlas::HashInstanceKey(uint64_t layoutKey,
+                                          float originX, float originY,
+                                          float dpiScale) noexcept
+{
+    uint64_t h = 0xCBF29CE484222325ull;  // FNV-1a 64-bit
+    auto mix = [&h](const void* p, size_t n) {
+        const uint8_t* b = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 0x100000001B3ull; }
+    };
+    mix(&layoutKey, sizeof(layoutKey));
+    mix(&originX, sizeof(originX));
+    mix(&originY, sizeof(originY));
+    mix(&dpiScale, sizeof(dpiScale));
+    return h;
+}
+
 uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     IDWriteTextLayout* layout,
     float originX, float originY,
     float colorR, float colorG, float colorB, float colorA,
     std::vector<GlyphQuadInstance>& outInstances,
-    std::vector<TextDecorationRect>* outDecorations)
+    std::vector<TextDecorationRect>* outDecorations,
+    uint64_t layoutKey)
 {
     if (!layout || !initialized_) return 0;
+
+    // Apply this call's premultiplied colour to a colour-neutral run (cached
+    // or freshly built) and append it to the caller's buffers. Decorations
+    // are always built so the memo is correct even if outDecorations varies
+    // between calls; they're only emitted when the caller asked for them.
+    auto emitRun = [&](const CachedGlyphRun& run) -> uint32_t {
+        const float pr = colorR * colorA, pg = colorG * colorA,
+                    pb = colorB * colorA, pa = colorA;
+        outInstances.reserve(outInstances.size() + run.instances.size());
+        for (GlyphQuadInstance gi : run.instances) {
+            gi.colorR = pr; gi.colorG = pg; gi.colorB = pb; gi.colorA = pa;
+            outInstances.push_back(gi);
+        }
+        if (outDecorations) {
+            for (TextDecorationRect dr : run.decos) {
+                dr.colorR = pr; dr.colorG = pg; dr.colorB = pb; dr.colorA = pa;
+                outDecorations->push_back(dr);
+            }
+        }
+        return (uint32_t)run.instances.size();
+    };
+
+    // Cache hit: skip layout->Draw + the entire per-glyph atlas walk. The
+    // generation guard rejects any entry built before a Reset()/GrowAtlas()
+    // (its cached UVs would now point at the wrong atlas slots) so stale-UV
+    // garbled text is impossible.
+    if (layoutKey != 0) {
+        const uint64_t ck = HashInstanceKey(layoutKey, originX, originY, dpiScale_);
+        auto mit = instMap_.find(ck);
+        if (mit != instMap_.end()) {
+            if (mit->second->run.gen == atlasGeneration_) {
+                instLru_.splice(instLru_.begin(), instLru_, mit->second);
+                return emitRun(mit->second->run);
+            }
+            instLru_.erase(mit->second);   // stale generation → rebuild
+            instMap_.erase(mit);
+        }
+    }
 
     // Atlas overflow recycling happens at the real frame boundary inside
     // D3D12DirectRenderer::BeginFrame (see NeedsReset/ClearResetFlag pair).
@@ -664,7 +726,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     GlyphRunCollector collector;
     layout->Draw(nullptr, &collector, originX, originY);
 
-    uint32_t count = 0;
+    CachedGlyphRun built;
     float invW = 1.0f / static_cast<float>(atlasW_);
     float invH = 1.0f / static_cast<float>(atlasH_);
 
@@ -725,12 +787,9 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
                 inst.uvMinY = entry.y * invH;
                 inst.uvMaxX = (entry.x + entry.w) * invW;
                 inst.uvMaxY = (entry.y + entry.h) * invH;
-                inst.colorR = colorR * colorA; // premultiply
-                inst.colorG = colorG * colorA;
-                inst.colorB = colorB * colorA;
-                inst.colorA = colorA;
-                outInstances.push_back(inst);
-                count++;
+                // Colour applied at emit so one cached run serves any colour.
+                inst.colorR = inst.colorG = inst.colorB = inst.colorA = 0.0f;
+                built.instances.push_back(inst);
             }
 
             if (i < run.glyphAdvances.size())
@@ -738,23 +797,34 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
         }
     }
 
-    // Output text decorations (underline/strikethrough) as rect primitives
-    if (outDecorations && !collector.decorations.empty()) {
-        for (auto& dec : collector.decorations) {
-            TextDecorationRect rect;
-            rect.x = dec.x;
-            rect.y = dec.y;
-            rect.width = dec.width;
-            rect.thickness = std::max(dec.thickness, 1.0f);
-            // Premultiply color
-            rect.colorR = colorR * colorA;
-            rect.colorG = colorG * colorA;
-            rect.colorB = colorB * colorA;
-            rect.colorA = colorA;
-            outDecorations->push_back(rect);
-        }
+    // Build decorations unconditionally so the memo stays correct even if a
+    // later same-key call passes outDecorations; emit gates on the pointer.
+    for (auto& dec : collector.decorations) {
+        TextDecorationRect rect;
+        rect.x = dec.x;
+        rect.y = dec.y;
+        rect.width = dec.width;
+        rect.thickness = std::max(dec.thickness, 1.0f);
+        rect.colorR = rect.colorG = rect.colorB = rect.colorA = 0.0f;
+        built.decos.push_back(rect);
     }
 
+    const uint32_t count = emitRun(built);
+
+    if (layoutKey != 0) {
+        built.gen = atlasGeneration_;
+        const uint64_t ck = HashInstanceKey(layoutKey, originX, originY, dpiScale_);
+        if (auto ex = instMap_.find(ck); ex != instMap_.end()) {
+            instLru_.erase(ex->second);
+            instMap_.erase(ex);
+        }
+        if (instLru_.size() >= kInstCacheCap) {
+            instMap_.erase(instLru_.back().key);
+            instLru_.pop_back();
+        }
+        instLru_.push_front(InstNode{ ck, std::move(built) });
+        instMap_[ck] = instLru_.begin();
+    }
     return count;
 }
 

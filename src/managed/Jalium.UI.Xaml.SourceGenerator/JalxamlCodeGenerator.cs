@@ -27,6 +27,7 @@ internal static class JalxamlCodeGenerator
         {
             return null;
         }
+        AugmentUnresolvedTypes(result.Root!, xmlnsResolver);
         if (string.IsNullOrEmpty(result.Root!.ResolvedClrTypeName))
         {
             return null;
@@ -189,6 +190,7 @@ internal static class JalxamlCodeGenerator
     {
         if (result.Root == null || result.HasStructuralRazor)
             return null;
+        AugmentUnresolvedTypes(result.Root!, xmlnsResolver);
         if (string.IsNullOrEmpty(result.Root!.ResolvedClrTypeName))
             return null;
         if (HasUnresolvedNode(result.Root!))
@@ -208,6 +210,44 @@ internal static class JalxamlCodeGenerator
         EmitElementBody(sb, result.Root, "__target", counter, namedAlready, indent: 8, ctx);
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Fill in element types the parser's curated table could not resolve, using the
+    /// compilation-backed <see cref="XmlnsTypeResolver"/> (clr-namespace + assembly-declared
+    /// <c>XmlnsDefinition</c> + every referenced assembly). Without this, an element whose
+    /// XML namespace is a custom URI mapped via <c>[assembly: XmlnsDefinition]</c>
+    /// (third-party / library controls) is left unresolved and the WHOLE document falls
+    /// back to the runtime parser (<c>XamlReader.LoadComponentFromString</c>). Only fills
+    /// when the parser left the type empty — the curated fast path and the parser's
+    /// <c>clr-namespace:</c> concatenation stay authoritative where they apply. A null
+    /// resolver (e.g. white-box unit tests) makes this a no-op so prior behaviour is
+    /// preserved. Genuinely unknown types stay empty and still bail via
+    /// <see cref="HasUnresolvedNode"/> — this never forces a wrong type.
+    /// </summary>
+    private static void AugmentUnresolvedTypes(JalxamlAstNode node, XmlnsTypeResolver? resolver)
+    {
+        if (resolver == null)
+            return;
+
+        if (string.IsNullOrEmpty(node.ResolvedClrTypeName))
+        {
+            var g = resolver.ResolveToGlobalQualifiedName(node.LocalName, node.NamespaceUri);
+            if (!string.IsNullOrEmpty(g))
+            {
+                // ResolveToGlobalQualifiedName yields a `global::`-prefixed name; the
+                // codegen re-prefixes `global::` itself, so store the bare FQN.
+                var bare = g!.StartsWith("global::", StringComparison.Ordinal) ? g!.Substring(8) : g!;
+                node.ResolvedClrTypeName = bare;
+                node.FallbackClrTypeName = bare;
+            }
+        }
+
+        foreach (var child in node.Children)
+            AugmentUnresolvedTypes(child, resolver);
+        foreach (var pe in node.PropertyElements)
+            foreach (var child in pe.Children)
+                AugmentUnresolvedTypes(child, resolver);
     }
 
     private static bool HasUnresolvedNode(JalxamlAstNode node)
@@ -346,7 +386,7 @@ internal static class JalxamlCodeGenerator
                 continue;
             if (attr.LocalName == "Name" && string.IsNullOrEmpty(attr.Prefix))
                 continue;
-            EmitValueAttribute(sb, varName, attr, elementSymbol, ctx, pad);
+            EmitValueAttribute(sb, varName, attr, elementSymbol, ctx, pad, node.ResolvedClrTypeName);
         }
 
         // Attached properties — use strongly-typed fast paths for known framework owners,
@@ -490,6 +530,83 @@ internal static class JalxamlCodeGenerator
     }
 
     /// <summary>
+    /// Emit a compiled <c>@section Name { body }</c> registration. The body is built by a
+    /// captured factory delegate (same lambda + ambient-resource priming as
+    /// <see cref="EmitTemplateVisualTree"/>) and registered via
+    /// <c>XamlBuilder.RegisterRazorSection</c>. <see cref="Jalium.UI.Markup.RazorSectionHost"/>
+    /// invokes the factory per render — no XAML string is stored or re-parsed. The body is
+    /// a single element (enforced by <c>JalxamlParser.ValidateLiftedSections</c>); a lifted
+    /// <c>@if</c> directly wrapping it carries its condition through, applied before return.
+    /// </summary>
+    private static void EmitRazorSectionRegistration(
+        StringBuilder sb,
+        JalxamlAstNode sectionNode,
+        IndexCounter counter,
+        int indent,
+        EmitContext ctx)
+    {
+        if (sectionNode.Children.Count == 0)
+            return; // empty @section — nothing to register (matches an empty runtime body).
+
+        string sectionName = "";
+        foreach (var a in sectionNode.Attributes)
+        {
+            if (a.Kind == JalxamlAttributeKind.Value &&
+                string.Equals(a.LocalName, "__SectionName", StringComparison.Ordinal))
+            {
+                sectionName = a.Value;
+                break;
+            }
+        }
+        if (sectionName.Length == 0)
+            return;
+
+        var pad = new string(' ', indent);
+        var rootChild = sectionNode.Children[0];
+
+        sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.RegisterRazorSection({EscapeStringLiteral(sectionName)}, () =>");
+        sb.AppendLine($"{pad}{{");
+
+        var inner = indent + 4;
+        var innerPad = new string(' ', inner);
+        var rootIndex = counter.Next();
+        var rootVar = $"__sec{rootIndex}";
+
+        // Prime the ambient resource stack with the defining component so
+        // {StaticResource} inside the section body resolves against its Resources —
+        // same rationale as EmitTemplateVisualTree.
+        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, __ctx);");
+        sb.AppendLine($"{innerPad}try");
+        sb.AppendLine($"{innerPad}{{");
+
+        var bodyInner = inner + 4;
+        var bodyPad = new string(' ', bodyInner);
+
+        sb.AppendLine($"{bodyPad}var {rootVar} = new global::{rootChild.ResolvedClrTypeName!}();");
+        EmitElementBody(sb, rootChild, rootVar, counter, new HashSet<string>(StringComparer.Ordinal), bodyInner, ctx);
+
+        // A lifted @if wrapping the whole section body stamped the root with a combined
+        // condition — bind its Visibility exactly as elsewhere so the section content
+        // honours the conditional.
+        if (!string.IsNullOrEmpty(rootChild.RazorIfCondition))
+        {
+            var ifDeps = RazorExpressionLowering.ExtractConditionDependencies(rootChild.RazorIfCondition);
+            sb.AppendLine(
+                $"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.SetRazorIfVisibility({rootVar}, {EscapeStringLiteral(rootChild.RazorIfCondition!)}, {RazorExpressionLowering.EmitDependencyArray(ifDeps)}, __ctx);");
+        }
+
+        sb.AppendLine($"{bodyPad}return ({rootVar} as object);");
+
+        sb.AppendLine($"{innerPad}}}");
+        sb.AppendLine($"{innerPad}finally");
+        sb.AppendLine($"{innerPad}{{");
+        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent(__ctx);");
+        sb.AppendLine($"{innerPad}}}");
+
+        sb.AppendLine($"{pad}}});");
+    }
+
+    /// <summary>
     /// Emit one value attribute (<c>PropName="value"</c>). Tries to lower the assignment
     /// to a strongly-typed setter call (<c>__c.Prop = literal;</c>) when:
     /// <list type="bullet">
@@ -506,7 +623,8 @@ internal static class JalxamlCodeGenerator
         JalxamlAstAttribute attr,
         INamedTypeSymbol? elementSymbol,
         EmitContext ctx,
-        string pad)
+        string pad,
+        string? elementClrTypeName = null)
     {
         // Razor value-expression fast path. Detected forms (in attribute values):
         //   PropName="@Identifier"         — bind to DataContext path "Identifier"
@@ -543,10 +661,17 @@ internal static class JalxamlCodeGenerator
         // So we route Setter.Value through the runtime SetProperty(string) path
         // unconditionally, which invokes the same deferred-resolution machinery the
         // streaming parser used.
+        // Recognise <Setter Value="..."> symbol-independently: the deferred-resolution
+        // exclusion is behaviour-critical, so it must hold even when no SymbolTypeHelper
+        // resolved the element symbol (the parser always resolves <Setter> to the CLR
+        // type name via the curated table). Relying on the symbol alone would wrongly
+        // eager-resolve a Setter.Value markup extension at construction time whenever
+        // the symbol is unavailable.
         bool isSetterValueAttribute =
             string.Equals(attr.LocalName, "Value", StringComparison.Ordinal) &&
-            string.Equals(elementSymbol?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                          "global::Jalium.UI.Setter", StringComparison.Ordinal);
+            (string.Equals(elementSymbol?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                           "global::Jalium.UI.Setter", StringComparison.Ordinal) ||
+             string.Equals(elementClrTypeName, "Jalium.UI.Setter", StringComparison.Ordinal));
 
         if (!isSetterValueAttribute && TryMatchSimpleMarkupExtension(attr.Value, out var extKind, out var extKey))
         {
@@ -566,6 +691,22 @@ internal static class JalxamlCodeGenerator
                     sb.AppendLine($"{pad}{varName}.{attr.LocalName} = null!;");
                     return;
             }
+        }
+
+        // {Binding ...} — split the envelope at compile time and hand the structured
+        // parts to the runtime trampoline, which rebuilds the BindingExtension through
+        // the verbatim SetBindingParameter and applies it via the same path a
+        // runtime-parsed binding uses (Converter / Source / RelativeSource / nested
+        // markup all handled identically). Setter.Value stays on the runtime
+        // SetProperty path — its markup-extension resolution is intentionally deferred
+        // to setter-apply time, so it must NOT be evaluated here during construction.
+        if (!isSetterValueAttribute &&
+            BindingMarkupLowering.TryLower(attr.Value, out var bindPath, out var bindNames, out var bindValues))
+        {
+            var pathExpr = bindPath == null ? "null" : EscapeStringLiteral(bindPath);
+            sb.AppendLine(
+                $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetCompiledBinding({varName}, \"{attr.LocalName}\", {pathExpr}, {EmitStringArray(bindNames)}, {EmitStringArray(bindValues)}, __ctx);");
+            return;
         }
 
         if (elementSymbol != null && ctx.Symbols != null)
@@ -861,6 +1002,15 @@ internal static class JalxamlCodeGenerator
         PropertyElementTarget? asPropertyElementChild,
         JalxamlAstNode? parentNode = null)
     {
+        // @section Name { body } — a definition, not in-place content. Emit a compiled
+        // body-factory registration and no visual child (the runtime's
+        // RazorSectionHost invokes the factory; no XAML string is re-parsed).
+        if (child.LocalName == JalxamlParser.RazorSectionElementName)
+        {
+            EmitRazorSectionRegistration(sb, child, counter, indent, ctx);
+            return;
+        }
+
         var pad = new string(' ', indent);
         var childIndex = counter.Next();
         var childVar = $"__c{childIndex}";
@@ -896,6 +1046,18 @@ internal static class JalxamlCodeGenerator
         else
         {
             EmitAddChildToParent(sb, parentVar, childVar, parentNode, child, ctx, innerPad);
+        }
+
+        // Lifted @if(cond) { ... }: the parser flattened the synthetic wrapper and stamped
+        // this child with the combined condition. Bind its Visibility exactly as the
+        // streaming parser's ShouldIncludeConditionalChild would have — same runtime
+        // binding, no document re-parse. Emitted after the add so the element is parented
+        // before the binding attaches (matching XamlReader's order).
+        if (!string.IsNullOrEmpty(child.RazorIfCondition))
+        {
+            var ifDeps = RazorExpressionLowering.ExtractConditionDependencies(child.RazorIfCondition);
+            sb.AppendLine(
+                $"{innerPad}global::Jalium.UI.Markup.XamlBuilder.SetRazorIfVisibility({childVar}, {EscapeStringLiteral(child.RazorIfCondition!)}, {RazorExpressionLowering.EmitDependencyArray(ifDeps)}, __ctx);");
         }
 
         sb.AppendLine($"{pad}}}");
@@ -1087,6 +1249,26 @@ internal static class JalxamlCodeGenerator
             }
         }
         sb.Append('"');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Emit a C# <c>string[]</c> literal (each element via <see cref="EscapeStringLiteral"/>),
+    /// or <c>global::System.Array.Empty&lt;string&gt;()</c> for an empty array to avoid an
+    /// allocation. Used for the SG-split <c>{Binding}</c> name/value pairs.
+    /// </summary>
+    private static string EmitStringArray(string[] items)
+    {
+        if (items.Length == 0)
+            return "global::System.Array.Empty<string>()";
+        var sb = new StringBuilder();
+        sb.Append("new string[] { ");
+        for (var i = 0; i < items.Length; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append(EscapeStringLiteral(items[i]));
+        }
+        sb.Append(" }");
         return sb.ToString();
     }
 
