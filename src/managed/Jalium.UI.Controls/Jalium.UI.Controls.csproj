@@ -15,6 +15,9 @@
 	<ItemGroup>
 		<InternalsVisibleTo Include="Jalium.UI.Xaml" />
 		<InternalsVisibleTo Include="Jalium.UI.Tests" />
+		<!-- Note: <GenerateAssemblyInfo>false</GenerateAssemblyInfo> in
+		     Directory.Build.props means these MSBuild items are decorative.
+		     The actual [InternalsVisibleTo] attributes live in Properties/AssemblyInfo.cs. -->
 	</ItemGroup>
 
 	<ItemGroup>
@@ -22,12 +25,23 @@
 		<ProjectReference Include="..\Jalium.UI.Media\Jalium.UI.Media.csproj" />
 		<ProjectReference Include="..\Jalium.UI.Input\Jalium.UI.Input.csproj" />
 		<ProjectReference Include="..\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+		<!--
+		  Pull in the JALXAML SourceGenerator as an analyzer-only reference so that the framework
+		  theme dictionaries (Themes/**/*.jalxaml) get compiled to C# at build time. The generator
+		  emits prebuilt-dictionary builders into Jalium.UI.Controls itself; XamlPrebuiltDictionaryRegistry
+		  is consulted by ThemeLoader before the embedded-resource fallback.
+		-->
+		<ProjectReference Include="..\Jalium.UI.Xaml.SourceGenerator\Jalium.UI.Xaml.SourceGenerator.csproj"
+		                  OutputItemType="Analyzer"
+		                  ReferenceOutputAssembly="false"
+		                  PrivateAssets="all"
+		                  UndefineProperties="PublishAot;PublishTrimmed;PublishSingleFile;PublishReadyToRun;SelfContained;IsTrimmable;IsAotCompatible" />
 	</ItemGroup>
 
 	<ItemGroup>
 		<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
 		<!-- 视频解码改用平台原生技术（Windows MF / Android MediaCodec），通过 jalium.native.media 暴露 P/Invoke。 -->
-		<PackageReference Include="QRCoder" Version="*" />
+		<!-- QR 码改用 Jalium.UI.Controls.QR 自研编码器，移除 QRCoder 第三方依赖。 -->
 		<PackageReference Include="SoundFlow" Version="1.4.0" />
 		<PackageReference Include="SoundFlow.Codecs.FFMpeg" Version="1.4.0" />
 	</ItemGroup>
@@ -39,9 +53,18 @@
 		</EmbeddedResource>
 	</ItemGroup>
 
-	<!-- Embed theme files as resources (default naming: Jalium.UI.Controls.Themes.{path}.{filename}.jalxaml) -->
+	<!--
+	  Surface every theme dictionary to the SourceGenerator so it can emit prebuilt-dictionary
+	  builders that bypass the runtime XAML reader for Generic.jalxaml + every Controls/*.jalxaml.
+
+	  The .jalxaml files are NO LONGER embedded as manifest resources — the SG inlines the
+	  original document content as a verbatim C# string literal whenever a fallback is
+	  generated (see XamlBuilder.RunFallbackContentLoad). The shipped dll therefore carries
+	  the jalxaml bytes only inside the static-string constant pool, with no manifest
+	  resource overhead.
+	-->
 	<ItemGroup>
-		<EmbeddedResource Include="Themes\**\*.jalxaml" />
+		<AdditionalFiles Include="Themes\**\*.jalxaml" />
 	</ItemGroup>
 
 </Project>
