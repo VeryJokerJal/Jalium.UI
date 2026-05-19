@@ -119,6 +119,16 @@ internal static class XamlBuilderInitializer
         {
             RazorBindingEngine.ApplySgLoweredContentExpression(target, expression, dependencies, CtxOf(ctx));
         };
+
+        XamlBuilder.SetRazorIfVisibilityImpl = static (child, condition, dependencies, ctx) =>
+        {
+            RazorBindingEngine.ApplySgLoweredIfVisibility(child, condition, dependencies, CtxOf(ctx));
+        };
+
+        XamlBuilder.RegisterRazorSectionImpl = static (name, factory) =>
+        {
+            RazorExpressionRegistry.RegisterSectionFactory(name, factory);
+        };
     }
 
     /// <summary>

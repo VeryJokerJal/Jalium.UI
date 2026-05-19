@@ -800,6 +800,29 @@ public sealed class JalxamlParseResult
     /// </summary>
     public bool HasRazorExpressions { get; set; }
 
+    /// <summary>
+    /// True if the document contained lowerable structural Razor (simple <c>@if</c> /
+    /// <c>@section</c> / <c>@RenderSection</c>) that the parser lifted into synthetic
+    /// wrappers and codegen turned into straight-line C#
+    /// (<c>SetRazorIfVisibility</c> / <c>RegisterRazorSection</c> /
+    /// <see cref="Jalium.UI.Markup.RazorSectionHost"/>). Purely informational — unlike
+    /// <see cref="HasStructuralRazor"/> it does NOT force the runtime fallback (the
+    /// whole point is that these no longer hit
+    /// <see cref="Jalium.UI.Markup.XamlReader.LoadComponentFromString(object, string, Uri?, System.Reflection.Assembly?)"/>
+    /// or <c>XamlReader.Parse</c>).
+    /// </summary>
+    public bool HasLoweredStructuralRazor { get; set; }
+
+    /// <summary>
+    /// Set during the lifted parse when an <c>@if</c> or <c>@section</c> block turned out
+    /// to contain block-level text or a property element (not purely child elements),
+    /// which the per-child visibility binding / single-root section factory can't
+    /// represent faithfully. <see cref="JalxamlParser.Parse"/> then discards the lifted
+    /// result and reparses the original document via the legacy strip + runtime-fallback
+    /// path. Never observed by codegen — it only gates the parse-time fallback decision.
+    /// </summary>
+    public bool RazorLiftUnfaithful { get; set; }
+
     public List<NamedElement> NamedElements { get; } = new();
 
     /// <summary>

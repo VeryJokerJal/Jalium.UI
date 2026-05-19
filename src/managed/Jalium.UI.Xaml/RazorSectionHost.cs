@@ -48,7 +48,28 @@ public sealed class RazorSectionHost : ContentControl
         var name = SectionName;
         if (string.IsNullOrWhiteSpace(name)) return;
 
-        if (!RazorExpressionRegistry.TryGetGlobalSection(name, out var xaml))
+        // SG-compiled @section: invoke the registered factory directly — the section
+        // body was lowered to straight-line C# at build time, so there is no XAML
+        // string to re-parse here. This is the path that removes XamlReader.Parse
+        // from section rendering entirely.
+        if (RazorExpressionRegistry.TryGetSectionFactory(name!, out var factory))
+        {
+            try
+            {
+                Content = factory();
+                InvalidateMeasure();
+            }
+            catch
+            {
+                // Compiled section factory threw — leave Content unchanged.
+            }
+            return;
+        }
+
+        // Runtime-preprocessor @section: only the raw XAML string was registered
+        // (the defining document was loaded via the runtime parser, not the SG), so
+        // fall back to parsing it. Kept for interop with non-SG-compiled documents.
+        if (!RazorExpressionRegistry.TryGetGlobalSection(name!, out var xaml))
             return;
 
         try

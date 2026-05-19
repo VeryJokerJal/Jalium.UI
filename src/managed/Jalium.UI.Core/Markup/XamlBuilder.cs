@@ -265,6 +265,12 @@ public static class XamlBuilder
     /// <summary>Registered by Jalium.UI.Xaml: lower SG-detected Razor expression onto the element's content property (Text / Content).</summary>
     public static Action<object, string, string[], XamlBuildContext>? SetContentRazorBindingImpl { get; set; }
 
+    /// <summary>Registered by Jalium.UI.Xaml: bind a lifted <c>@if</c> child's Visibility to the (combined) condition.</summary>
+    public static Action<object, string, string[], XamlBuildContext>? SetRazorIfVisibilityImpl { get; set; }
+
+    /// <summary>Registered by Jalium.UI.Xaml: register a compiled <c>@section</c> body factory under a name.</summary>
+    public static Action<string, Func<object?>>? RegisterRazorSectionImpl { get; set; }
+
     /// <summary>
     /// Bind <paramref name="propertyName"/> on <paramref name="target"/> to a Razor value-expression
     /// (<c>@(expr)</c>, <c>@identifier</c>, <c>$.path</c>, <c>#.path</c>, or interpolated mix).
@@ -282,6 +288,30 @@ public static class XamlBuilder
     /// </summary>
     public static void SetContentRazorBinding(object target, string expression, string[] dependencies, XamlBuildContext ctx)
         => Required(SetContentRazorBindingImpl, nameof(SetContentRazorBindingImpl))(target, expression, dependencies, ctx);
+
+    /// <summary>
+    /// Bind <paramref name="child"/>'s <c>Visibility</c> to a Razor <c>@if</c>
+    /// <paramref name="condition"/> (already combined across nesting levels, matching the
+    /// runtime <c>BuildCombinedIfConditionExpression</c> shape). The SG calls this once per
+    /// element that sat inside a lifted <c>@if(...) { ... }</c> block, immediately after the
+    /// child is added to its parent. Behaviour is identical to the streaming parser's
+    /// <c>ShouldIncludeConditionalChild</c> path — the same
+    /// <c>RazorBindingEngine.TryApplyIfVisibility</c> binding — but with no document
+    /// re-parse. <paramref name="dependencies"/> are pre-computed by the SG so the runtime
+    /// analyzer skips its reflection walk.
+    /// </summary>
+    public static void SetRazorIfVisibility(object child, string condition, string[] dependencies, XamlBuildContext ctx)
+        => Required(SetRazorIfVisibilityImpl, nameof(SetRazorIfVisibilityImpl))(child, condition, dependencies, ctx);
+
+    /// <summary>
+    /// Register a compiled <c>@section <paramref name="name"/> { ... }</c> body factory.
+    /// The SG emits this into the defining component's <c>InitializeComponent</c> instead
+    /// of registering the section's raw XAML string; <see cref="RazorSectionHost"/> then
+    /// invokes <paramref name="factory"/> directly (no <c>XamlReader.Parse</c>). Each call
+    /// produces a fresh visual tree, matching the runtime's per-host re-parse semantics.
+    /// </summary>
+    public static void RegisterRazorSection(string name, Func<object?> factory)
+        => Required(RegisterRazorSectionImpl, nameof(RegisterRazorSectionImpl))(name, factory);
 
     // Strongly-typed attached fast paths.
     /// <summary>Strongly-typed setter for <c>Grid.Row</c>.</summary>

@@ -61,6 +61,19 @@ public sealed class JalxamlAstNode
     /// generic <c>FrameworkElement</c> field is too weak even for the fallback.
     /// </summary>
     public string FallbackClrTypeName { get; set; } = "Jalium.UI.FrameworkElement";
+
+    /// <summary>
+    /// Combined Razor <c>@if</c> condition guarding this child, set when the element sat
+    /// inside one or more <c>@if(...) { ... }</c> blocks that the parser lifted into the
+    /// synthetic <c>__RazorIf</c> wrapper and then flattened away. Null for unconditional
+    /// elements. The string mirrors the runtime
+    /// <c>XamlReader.BuildCombinedIfConditionExpression</c> shape — each nesting level wrapped
+    /// in parentheses, outermost first, joined by <c> &amp;&amp; </c> (e.g. <c>(A) &amp;&amp; (B)</c>).
+    /// The generator emits one <c>XamlBuilder.SetRazorIfVisibility</c> call per conditional
+    /// child so the runtime applies the exact same visibility binding the streaming parser
+    /// would, with no document re-parse.
+    /// </summary>
+    public string? RazorIfCondition { get; set; }
 }
 
 /// <summary>

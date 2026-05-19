@@ -490,6 +490,83 @@ internal static class JalxamlCodeGenerator
     }
 
     /// <summary>
+    /// Emit a compiled <c>@section Name { body }</c> registration. The body is built by a
+    /// captured factory delegate (same lambda + ambient-resource priming as
+    /// <see cref="EmitTemplateVisualTree"/>) and registered via
+    /// <c>XamlBuilder.RegisterRazorSection</c>. <see cref="Jalium.UI.Markup.RazorSectionHost"/>
+    /// invokes the factory per render — no XAML string is stored or re-parsed. The body is
+    /// a single element (enforced by <c>JalxamlParser.ValidateLiftedSections</c>); a lifted
+    /// <c>@if</c> directly wrapping it carries its condition through, applied before return.
+    /// </summary>
+    private static void EmitRazorSectionRegistration(
+        StringBuilder sb,
+        JalxamlAstNode sectionNode,
+        IndexCounter counter,
+        int indent,
+        EmitContext ctx)
+    {
+        if (sectionNode.Children.Count == 0)
+            return; // empty @section — nothing to register (matches an empty runtime body).
+
+        string sectionName = "";
+        foreach (var a in sectionNode.Attributes)
+        {
+            if (a.Kind == JalxamlAttributeKind.Value &&
+                string.Equals(a.LocalName, "__SectionName", StringComparison.Ordinal))
+            {
+                sectionName = a.Value;
+                break;
+            }
+        }
+        if (sectionName.Length == 0)
+            return;
+
+        var pad = new string(' ', indent);
+        var rootChild = sectionNode.Children[0];
+
+        sb.AppendLine($"{pad}global::Jalium.UI.Markup.XamlBuilder.RegisterRazorSection({EscapeStringLiteral(sectionName)}, () =>");
+        sb.AppendLine($"{pad}{{");
+
+        var inner = indent + 4;
+        var innerPad = new string(' ', inner);
+        var rootIndex = counter.Next();
+        var rootVar = $"__sec{rootIndex}";
+
+        // Prime the ambient resource stack with the defining component so
+        // {StaticResource} inside the section body resolves against its Resources —
+        // same rationale as EmitTemplateVisualTree.
+        sb.AppendLine($"{innerPad}global::Jalium.UI.Markup.XamlBuilder.PushParent({ctx.OwnerExpression}, __ctx);");
+        sb.AppendLine($"{innerPad}try");
+        sb.AppendLine($"{innerPad}{{");
+
+        var bodyInner = inner + 4;
+        var bodyPad = new string(' ', bodyInner);
+
+        sb.AppendLine($"{bodyPad}var {rootVar} = new global::{rootChild.ResolvedClrTypeName!}();");
+        EmitElementBody(sb, rootChild, rootVar, counter, new HashSet<string>(StringComparer.Ordinal), bodyInner, ctx);
+
+        // A lifted @if wrapping the whole section body stamped the root with a combined
+        // condition — bind its Visibility exactly as elsewhere so the section content
+        // honours the conditional.
+        if (!string.IsNullOrEmpty(rootChild.RazorIfCondition))
+        {
+            var ifDeps = RazorExpressionLowering.ExtractConditionDependencies(rootChild.RazorIfCondition);
+            sb.AppendLine(
+                $"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.SetRazorIfVisibility({rootVar}, {EscapeStringLiteral(rootChild.RazorIfCondition!)}, {RazorExpressionLowering.EmitDependencyArray(ifDeps)}, __ctx);");
+        }
+
+        sb.AppendLine($"{bodyPad}return ({rootVar} as object);");
+
+        sb.AppendLine($"{innerPad}}}");
+        sb.AppendLine($"{innerPad}finally");
+        sb.AppendLine($"{innerPad}{{");
+        sb.AppendLine($"{bodyPad}global::Jalium.UI.Markup.XamlBuilder.PopParent(__ctx);");
+        sb.AppendLine($"{innerPad}}}");
+
+        sb.AppendLine($"{pad}}});");
+    }
+
+    /// <summary>
     /// Emit one value attribute (<c>PropName="value"</c>). Tries to lower the assignment
     /// to a strongly-typed setter call (<c>__c.Prop = literal;</c>) when:
     /// <list type="bullet">
@@ -861,6 +938,15 @@ internal static class JalxamlCodeGenerator
         PropertyElementTarget? asPropertyElementChild,
         JalxamlAstNode? parentNode = null)
     {
+        // @section Name { body } — a definition, not in-place content. Emit a compiled
+        // body-factory registration and no visual child (the runtime's
+        // RazorSectionHost invokes the factory; no XAML string is re-parsed).
+        if (child.LocalName == JalxamlParser.RazorSectionElementName)
+        {
+            EmitRazorSectionRegistration(sb, child, counter, indent, ctx);
+            return;
+        }
+
         var pad = new string(' ', indent);
         var childIndex = counter.Next();
         var childVar = $"__c{childIndex}";
@@ -896,6 +982,18 @@ internal static class JalxamlCodeGenerator
         else
         {
             EmitAddChildToParent(sb, parentVar, childVar, parentNode, child, ctx, innerPad);
+        }
+
+        // Lifted @if(cond) { ... }: the parser flattened the synthetic wrapper and stamped
+        // this child with the combined condition. Bind its Visibility exactly as the
+        // streaming parser's ShouldIncludeConditionalChild would have — same runtime
+        // binding, no document re-parse. Emitted after the add so the element is parented
+        // before the binding attaches (matching XamlReader's order).
+        if (!string.IsNullOrEmpty(child.RazorIfCondition))
+        {
+            var ifDeps = RazorExpressionLowering.ExtractConditionDependencies(child.RazorIfCondition);
+            sb.AppendLine(
+                $"{innerPad}global::Jalium.UI.Markup.XamlBuilder.SetRazorIfVisibility({childVar}, {EscapeStringLiteral(child.RazorIfCondition!)}, {RazorExpressionLowering.EmitDependencyArray(ifDeps)}, __ctx);");
         }
 
         sb.AppendLine($"{pad}}}");

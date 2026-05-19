@@ -25,6 +25,31 @@ public static class JalxamlParser
     private const string JaliumLegacyNamespace = "http://schemas.jalium.ui/2024";
     private const string PresentationNamespace = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
 
+    /// <summary>
+    /// Synthetic element name a simple <c>@if(...) { ... }</c> block is lifted into so the
+    /// XML reader can parse the conditional region. It never resolves to a CLR type and is
+    /// flattened out of the AST (its children inherit a combined
+    /// <see cref="JalxamlAstNode.RazorIfCondition"/>) before codegen runs, so it never
+    /// reaches type resolution or AOT pinning.
+    /// </summary>
+    internal const string RazorIfElementName = "__RazorIf";
+
+    /// <summary>
+    /// Synthetic element a <c>@section Name { ... }</c> definition is lifted into. Codegen
+    /// turns it into a <c>XamlBuilder.RegisterRazorSection</c> factory registration and
+    /// emits NO visual child (a section is a definition, not in-place content). Never
+    /// resolves to a CLR type; never AOT-pinned.
+    /// </summary>
+    internal const string RazorSectionElementName = "__RazorSection";
+
+    /// <summary>
+    /// Synthetic element a <c>@RenderSection("Name")</c> call is lifted into. Codegen
+    /// constructs a <see cref="Jalium.UI.Markup.RazorSectionHost"/> with
+    /// <c>SectionName</c> set and adds it as a normal child (this is exactly what the
+    /// runtime preprocessor emits for a not-yet-registered section).
+    /// </summary>
+    internal const string RazorRenderSectionElementName = "__RazorRenderSection";
+
     // Mapping from XML element names to C# fully-qualified type names. Covers framework
     // types whose simple name maps to a single CLR type at compile time. Anything not in
     // this table (e.g. user-defined controls, third-party controls) is resolved through
@@ -205,6 +230,38 @@ public static class JalxamlParser
 
     public static JalxamlParseResult? Parse(string content, string filePath)
     {
+        // Lift lowerable structural Razor (simple @if / @section / @RenderSection) into
+        // synthetic XML so the SG can emit straight-line C# — the runtime then applies
+        // the exact same visibility binding / section host the streaming parser would,
+        // with NO document re-parse (no XamlReader.LoadComponentFromString /
+        // XamlReader.Parse). The lift is purely additive in risk: if it produces XML the
+        // streaming pass cannot consume, or any block turns out non-pure, we drop it
+        // entirely and reparse the ORIGINAL content via the legacy strip path, so the
+        // worst case is identical to the pre-lift behaviour.
+        if (TryLowerStructuralRazor(content, out var lifted))
+        {
+            var liftedResult = new JalxamlParseResult();
+            var liftedStripped = StripRazorCodeBlocks(lifted, out var liftedStructural, out var liftedExpr);
+            if (TryStreamingParse(liftedStripped, liftedResult) && liftedResult.Root != null)
+            {
+                // @if purity is flagged during the parse (FlattenRazorIf). @section nodes
+                // survive the tree, so validate their single-root-element shape here.
+                ValidateLiftedSections(liftedResult.Root!, liftedResult);
+            }
+            if (liftedResult.Root != null && !liftedResult.RazorLiftUnfaithful)
+            {
+                liftedResult.HasLoweredStructuralRazor = true;
+                // No @if/@section survives the lift, so the strip pass sees no structural
+                // Razor — the SG codegen path proceeds and lowers each construct.
+                liftedResult.HasStructuralRazor = liftedStructural;
+                liftedResult.HasRazorExpressions = liftedExpr;
+                return liftedResult;
+            }
+            // Lift unusable for this document (unparseable, rooted on a synthetic
+            // wrapper, or a non-pure @if/@section body) — fall through to the legacy
+            // path on the ORIGINAL content so behaviour is identical to before.
+        }
+
         var result = new JalxamlParseResult();
 
         // Strip Razor directives that would break the XML reader (text-content @if/@section/
@@ -216,6 +273,25 @@ public static class JalxamlParser
         result.HasStructuralRazor = hasStructural;
         result.HasRazorExpressions = hasExpressions;
 
+        if (!TryStreamingParse(stripped, result))
+        {
+            // The streaming pass blew up (typical trigger: Razor @{ ... } code blocks
+            // containing XML fragments). Fall back to a regex-based metadata sweep over
+            // the ORIGINAL content. TryStreamingParse already cleared partial state.
+            ParseWithRegexFallback(content, result);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Streaming XML pass that builds <see cref="JalxamlParseResult.Root"/> and the
+    /// AOT-pinning metadata from <paramref name="strippedXml"/> (Razor already
+    /// stripped/lifted). Returns <c>false</c> and resets partial state if the reader
+    /// throws, so the caller can choose a fallback without inheriting a half-built tree.
+    /// </summary>
+    private static bool TryStreamingParse(string strippedXml, JalxamlParseResult result)
+    {
         try
         {
             var settings = new XmlReaderSettings
@@ -227,7 +303,7 @@ public static class JalxamlParser
                 IgnoreWhitespace = false,
             };
 
-            using var stringReader = new StringReader(stripped);
+            using var stringReader = new StringReader(strippedXml);
             using var reader = XmlReader.Create(stringReader, settings);
 
             while (reader.Read())
@@ -266,26 +342,42 @@ public static class JalxamlParser
 
                     // Build the AST root — this descends into the entire document.
                     result.Root = ParseElementTree(reader, result);
+
+                    // Defensive: a component has a single x:Class root. An @if wrapper or
+                    // a bare @section definition must never be that root (the former is
+                    // not a real element; the latter produces no visual tree). A
+                    // @RenderSection root IS valid — it resolves to a real RazorSectionHost.
+                    // If a non-renderable synthetic bubbled up, the lift was malformed for
+                    // this document — fail so the caller falls back to the legacy path.
+                    if (result.Root != null &&
+                        (result.Root.LocalName == RazorIfElementName ||
+                         result.Root.LocalName == RazorSectionElementName))
+                    {
+                        ResetStreamingState(result);
+                        return false;
+                    }
                     break;
                 }
             }
+
+            return true;
         }
         catch
         {
-            // The streaming pass blew up (typical trigger: Razor @{ ... } code blocks
-            // containing XML fragments). Fall back to a regex-based metadata sweep over
-            // the ORIGINAL content. Clear partial state so the codegen path sees a clean
-            // "fallback only" result.
-            result.NamedElements.Clear();
-            result.ReferencedElements.Clear();
-            result.DataTypeReferences.Clear();
-            result.ClassName = null;
-            result.RootElementType = null;
-            result.Root = null;
-            ParseWithRegexFallback(content, result);
+            ResetStreamingState(result);
+            return false;
         }
+    }
 
-        return result;
+    private static void ResetStreamingState(JalxamlParseResult result)
+    {
+        result.NamedElements.Clear();
+        result.ReferencedElements.Clear();
+        result.DataTypeReferences.Clear();
+        result.RootPrefixMappings.Clear();
+        result.ClassName = null;
+        result.RootElementType = null;
+        result.Root = null;
     }
 
     // ============================================================
@@ -293,15 +385,49 @@ public static class JalxamlParser
     // children and property-element bodies so the generator has everything to emit C#.
     // ============================================================
 
-    private static JalxamlAstNode ParseElementTree(XmlReader reader, JalxamlParseResult result)
+    private static JalxamlAstNode ParseElementTree(XmlReader reader, JalxamlParseResult result, bool suppressNames = false)
     {
+        var localName = reader.LocalName;
+        var isSynthetic = localName == RazorIfElementName ||
+                          localName == RazorSectionElementName ||
+                          localName == RazorRenderSectionElementName;
+
+        // Synthetic type resolution:
+        //  - __RazorRenderSection  → a real RazorSectionHost (flows through normal codegen
+        //    as a typed child with SectionName set).
+        //  - __RazorSection        → sentinel (non-empty so FindFirstUnresolved doesn't
+        //    flag it; codegen special-cases by LocalName and never news the sentinel).
+        //  - __RazorIf             → left null; flattened out before codegen.
+        string? resolved;
+        string fallback;
+        if (localName == RazorRenderSectionElementName)
+        {
+            resolved = "Jalium.UI.Markup.RazorSectionHost";
+            fallback = "Jalium.UI.Markup.RazorSectionHost";
+        }
+        else if (localName == RazorSectionElementName)
+        {
+            resolved = RazorSectionElementName;
+            fallback = "Jalium.UI.FrameworkElement";
+        }
+        else if (localName == RazorIfElementName)
+        {
+            resolved = null;
+            fallback = "Jalium.UI.FrameworkElement";
+        }
+        else
+        {
+            resolved = GetTypeName(localName, reader.NamespaceURI);
+            fallback = GetTypeNameWithFallback(localName, reader.NamespaceURI);
+        }
+
         var node = new JalxamlAstNode
         {
-            LocalName = reader.LocalName,
+            LocalName = localName,
             NamespaceUri = reader.NamespaceURI,
             Prefix = string.IsNullOrEmpty(reader.Prefix) ? null : reader.Prefix,
-            ResolvedClrTypeName = GetTypeName(reader.LocalName, reader.NamespaceURI),
-            FallbackClrTypeName = GetTypeNameWithFallback(reader.LocalName, reader.NamespaceURI),
+            ResolvedClrTypeName = resolved,
+            FallbackClrTypeName = fallback,
         };
 
         if (reader is IXmlLineInfo lineInfo && lineInfo.HasLineInfo())
@@ -311,15 +437,24 @@ public static class JalxamlParser
         }
 
         // Track every element type for AOT pinning (legacy metadata path used by the SG to
-        // emit `RegisterType<T>()` calls in the ModuleInitializer).
-        AddReferencedElement(result, reader.LocalName, reader.NamespaceURI);
+        // emit `RegisterType<T>()` calls in the ModuleInitializer). The synthetic Razor
+        // wrappers have no element-named CLR type (RazorSectionHost is referenced directly
+        // by the emitted `new` instead), so they must never enter the referenced-type set.
+        if (!isSynthetic)
+            AddReferencedElement(result, reader.LocalName, reader.NamespaceURI);
 
         // Capture attributes. We also have to feed the legacy metadata structures because
         // the existing AOT-pinning emit reads them.
         if (reader.HasAttributes)
         {
-            CaptureAttributes(reader, node, result);
+            CaptureAttributes(reader, node, result, suppressNames);
         }
+
+        // A @section body is registered as a compiled factory invoked by RazorSectionHost
+        // — its x:Names are scoped to that subtree (like a template), NOT codebehind
+        // fields on the defining component, matching the runtime which parses the section
+        // separately. Suppress name capture for everything inside a __RazorSection.
+        var childSuppressNames = suppressNames || localName == RazorSectionElementName;
 
         if (reader.IsEmptyElement)
         {
@@ -343,13 +478,20 @@ public static class JalxamlParser
                     if (reader.LocalName.Contains('.'))
                     {
                         // Property element: <Foo.Bar>...</Foo.Bar>
-                        var pe = ParsePropertyElementBody(reader, result);
+                        var pe = ParsePropertyElementBody(reader, result, childSuppressNames);
                         node.PropertyElements.Add(pe);
                     }
                     else
                     {
-                        var child = ParseElementTree(reader, result);
-                        node.Children.Add(child);
+                        var child = ParseElementTree(reader, result, childSuppressNames);
+                        // Flatten a lifted @if wrapper into this parent, stamping each
+                        // conditional child with the combined condition. While building a
+                        // <__RazorIf> subtree itself, keep nested wrappers intact so
+                        // FlattenRazorIf can layer the conditions in the correct order.
+                        if (child.LocalName == RazorIfElementName && node.LocalName != RazorIfElementName)
+                            FlattenRazorIf(child, null, node.Children, result);
+                        else
+                            node.Children.Add(child);
                     }
                     break;
                 }
@@ -374,7 +516,7 @@ public static class JalxamlParser
         return node;
     }
 
-    private static JalxamlAstPropertyElement ParsePropertyElementBody(XmlReader reader, JalxamlParseResult result)
+    private static JalxamlAstPropertyElement ParsePropertyElementBody(XmlReader reader, JalxamlParseResult result, bool suppressNames = false)
     {
         var parts = reader.LocalName.Split('.');
         var ownerName = parts.Length > 0 ? parts[0] : reader.LocalName;
@@ -413,8 +555,11 @@ public static class JalxamlParser
                 }
                 else
                 {
-                    var child = ParseElementTree(reader, result);
-                    pe.Children.Add(child);
+                    var child = ParseElementTree(reader, result, suppressNames);
+                    if (child.LocalName == RazorIfElementName)
+                        FlattenRazorIf(child, null, pe.Children, result);
+                    else
+                        pe.Children.Add(child);
                 }
             }
         }
@@ -454,7 +599,7 @@ public static class JalxamlParser
         }
     }
 
-    private static void CaptureAttributes(XmlReader reader, JalxamlAstNode node, JalxamlParseResult result)
+    private static void CaptureAttributes(XmlReader reader, JalxamlAstNode node, JalxamlParseResult result, bool suppressNames = false)
     {
         for (var i = 0; i < reader.AttributeCount; i++)
         {
@@ -483,7 +628,7 @@ public static class JalxamlParser
             // tag for the codegen to invoke ApplyXDirective.
             if (IsXamlMarkupNamespace(ns))
             {
-                if (string.Equals(local, "Name", StringComparison.Ordinal))
+                if (!suppressNames && string.Equals(local, "Name", StringComparison.Ordinal))
                 {
                     result.NamedElements.Add(new NamedElement
                     {
@@ -529,7 +674,7 @@ public static class JalxamlParser
             }
 
             // Compatibility: an unprefixed `Name="Foo"` is treated as x:Name by the runtime.
-            if (string.Equals(local, "Name", StringComparison.Ordinal) && string.IsNullOrEmpty(prefix))
+            if (!suppressNames && string.Equals(local, "Name", StringComparison.Ordinal) && string.IsNullOrEmpty(prefix))
             {
                 result.NamedElements.Add(new NamedElement
                 {
@@ -1026,4 +1171,455 @@ public static class JalxamlParser
         // Stray flow-control that escaped the build task. Same treatment.
         "for", "foreach", "while", "switch", "do", "try", "using", "lock"
     };
+
+    /// <summary>
+    /// Rewrite structural Razor the SG can lower into synthetic XML so the reader can
+    /// parse it and codegen can emit straight-line C# (no document re-parse):
+    /// <list type="bullet">
+    ///   <item><c>@if(cond) { ... }</c> → <c>&lt;__RazorIf Condition="cond"&gt;...&lt;/__RazorIf&gt;</c>
+    ///   — each conditional child later gets a <c>SetRazorIfVisibility</c> binding
+    ///   (same as the streaming parser's <c>ShouldIncludeConditionalChild</c>).</item>
+    ///   <item><c>@section Name { ... }</c> → <c>&lt;__RazorSection Name="Name"&gt;...&lt;/__RazorSection&gt;</c>
+    ///   — codegen registers a compiled body factory (<c>RegisterRazorSection</c>),
+    ///   replacing the runtime's "store XAML string, re-parse per host".</item>
+    ///   <item><c>@RenderSection("Name")</c> → <c>&lt;__RazorRenderSection Name="Name"/&gt;</c>
+    ///   — codegen builds a <see cref="Jalium.UI.Markup.RazorSectionHost"/> (exactly what
+    ///   the runtime preprocessor emits for a not-yet-registered section).</item>
+    /// </list>
+    /// <para>
+    /// Returns <c>false</c> — leaving <paramref name="rewritten"/> equal to
+    /// <paramref name="content"/> — for any document this cannot faithfully lower so the
+    /// caller keeps the legacy strip + runtime-fallback path: <c>else</c> / <c>else if</c>
+    /// chains; stray <c>@{ ... }</c> or leaked loop/flow keywords
+    /// (<c>@for</c>/<c>@foreach</c>/<c>@while</c>/<c>@switch</c>/<c>@do</c>/<c>@try</c>/
+    /// <c>@using</c>/<c>@lock</c>); a <c>@RenderSection</c> whose name is not a string
+    /// literal; unbalanced braces; or no structural Razor at all.
+    /// </para>
+    /// <para>
+    /// Purity (an <c>@if</c> / <c>@section</c> body holding only child elements — no
+    /// block-level text, no property element) is enforced after parsing in
+    /// <see cref="FlattenRazorIf"/> / the section-node check, where the real tree
+    /// distinguishes block-level text from text inside a child element. A non-pure block
+    /// sets <see cref="JalxamlParseResult.RazorLiftUnfaithful"/> so <see cref="Parse"/>
+    /// discards the lift and falls back to the legacy path — behaviour identical to before.
+    /// </para>
+    /// </summary>
+    private static bool TryLowerStructuralRazor(string content, out string rewritten)
+    {
+        rewritten = content;
+        if (content.IndexOf("@if", StringComparison.Ordinal) < 0 &&
+            content.IndexOf("@section", StringComparison.Ordinal) < 0 &&
+            content.IndexOf("@RenderSection", StringComparison.Ordinal) < 0)
+        {
+            return false;
+        }
+
+        var sb = new System.Text.StringBuilder(content.Length + 64);
+        var i = 0;
+        var inTag = false;
+        var inAttr = false;
+        char attrQuote = '\0';
+        // Open block stack — 'I' = @if, 'S' = @section. A text-level '}' closes the
+        // innermost block and emits the matching close tag. @if condition layering for
+        // nesting is rebuilt later from the XML nesting of <__RazorIf> (FlattenRazorIf),
+        // not from this scan; the stack only needs the block kind.
+        var blocks = new System.Collections.Generic.Stack<char>();
+        var liftedAny = false;
+
+        while (i < content.Length)
+        {
+            char c = content[i];
+
+            if (inAttr)
+            {
+                sb.Append(c);
+                if (c == attrQuote) { inAttr = false; attrQuote = '\0'; }
+                i++;
+                continue;
+            }
+
+            if (inTag)
+            {
+                sb.Append(c);
+                if (c == '"' || c == '\'') { inAttr = true; attrQuote = c; }
+                else if (c == '>') inTag = false;
+                i++;
+                continue;
+            }
+
+            // XML comment / CDATA — copy verbatim, never interpret Razor inside.
+            if (c == '<' && StartsWith(content, i, "<!--"))
+            {
+                var end = content.IndexOf("-->", i + 4, StringComparison.Ordinal);
+                if (end < 0) return false;
+                end += 3;
+                sb.Append(content, i, end - i);
+                i = end;
+                continue;
+            }
+            if (c == '<' && StartsWith(content, i, "<![CDATA["))
+            {
+                var end = content.IndexOf("]]>", i + 9, StringComparison.Ordinal);
+                if (end < 0) return false;
+                end += 3;
+                sb.Append(content, i, end - i);
+                i = end;
+                continue;
+            }
+
+            if (c == '<' && i + 1 < content.Length &&
+                (char.IsLetter(content[i + 1]) || content[i + 1] == '/' ||
+                 content[i + 1] == '!' || content[i + 1] == '?'))
+            {
+                inTag = true;
+                sb.Append(c);
+                i++;
+                continue;
+            }
+
+            if (c == '@' && i + 1 < content.Length)
+            {
+                // @@ → literal '@'.
+                if (content[i + 1] == '@') { sb.Append("@@"); i += 2; continue; }
+
+                // @if ( cond ) {  → open a conditional block.
+                if (IsWordAt(content, i + 1, "if", out var afterIf))
+                {
+                    var openParen = SkipWhitespace(content, afterIf);
+                    if (openParen < content.Length && content[openParen] == '(')
+                    {
+                        if (!TryReadBalancedParens(content, openParen, out var condition, out var afterParen))
+                            return false;
+                        var brace = SkipWhitespace(content, afterParen);
+                        if (brace >= content.Length || content[brace] != '{')
+                            return false;
+
+                        sb.Append('<').Append(RazorIfElementName)
+                          .Append(" Condition=\"").Append(EscapeXmlAttribute(condition.Trim()))
+                          .Append("\">");
+                        blocks.Push('I');
+                        liftedAny = true;
+                        i = brace + 1;
+                        continue;
+                    }
+                    return false; // `@if` without `(...)` body — not a form we lower.
+                }
+
+                // @section Name { ... }  → open a section-definition block.
+                if (IsWordAt(content, i + 1, "section", out var afterSec))
+                {
+                    var nameStart = SkipWhitespace(content, afterSec);
+                    var p = nameStart;
+                    while (p < content.Length &&
+                           (char.IsLetterOrDigit(content[p]) || content[p] == '_'))
+                    {
+                        p++;
+                    }
+                    if (p == nameStart) return false; // no name — cannot lower.
+                    var sectionName = content.Substring(nameStart, p - nameStart);
+                    var brace = SkipWhitespace(content, p);
+                    if (brace >= content.Length || content[brace] != '{')
+                        return false;
+
+                    // Use a non-reserved attribute name: an unprefixed `Name=` would be
+                    // captured as an x:Name and emit a bogus codebehind field.
+                    sb.Append('<').Append(RazorSectionElementName)
+                      .Append(" __SectionName=\"").Append(EscapeXmlAttribute(sectionName))
+                      .Append("\">");
+                    blocks.Push('S');
+                    liftedAny = true;
+                    i = brace + 1;
+                    continue;
+                }
+
+                // @RenderSection ( "Name" [, ...] )  → a section host placeholder.
+                if (IsWordAt(content, i + 1, "RenderSection", out var afterRs))
+                {
+                    var op = SkipWhitespace(content, afterRs);
+                    if (op >= content.Length || content[op] != '(')
+                        return false;
+                    if (!TryReadBalancedParens(content, op, out var args, out var afterArgs))
+                        return false;
+                    var renderName = ExtractRenderSectionName(args);
+                    if (renderName == null) return false; // non-literal name — cannot lower.
+
+                    // Emit the real RazorSectionHost property name so the normal codegen
+                    // path sets it directly (no RenderSection-specific codegen needed).
+                    sb.Append('<').Append(RazorRenderSectionElementName)
+                      .Append(" SectionName=\"").Append(EscapeXmlAttribute(renderName))
+                      .Append("\" />");
+                    liftedAny = true;
+                    i = afterArgs;
+                    continue;
+                }
+
+                // Stray @{ ... } or a leaked loop/flow keyword — cannot lower.
+                if (content[i + 1] == '{' || IsLeakedFlowKeywordAt(content, i + 1))
+                    return false;
+
+                // Value-expression Razor (@id, @(expr)) — copy verbatim; SG lowers it.
+                sb.Append(c);
+                i++;
+                continue;
+            }
+
+            // Text-level '}' closes the innermost open block. Mirrors the runtime parser,
+            // which also treats a '}' in text content as the block terminator.
+            if (c == '}' && blocks.Count > 0)
+            {
+                var kind = blocks.Pop();
+                i++;
+                if (kind == 'I')
+                {
+                    sb.Append("</").Append(RazorIfElementName).Append('>');
+                    // `} else` / `} else if` — an else-chain is not lowerable.
+                    var afterBrace = SkipWhitespace(content, i);
+                    if (IsWordAt(content, afterBrace, "else", out _))
+                        return false;
+                }
+                else
+                {
+                    sb.Append("</").Append(RazorSectionElementName).Append('>');
+                }
+                continue;
+            }
+
+            sb.Append(c);
+            i++;
+        }
+
+        if (blocks.Count != 0 || !liftedAny)
+            return false;
+
+        rewritten = sb.ToString();
+        return true;
+    }
+
+    /// <summary>
+    /// Extract the section name from <c>@RenderSection</c> arguments. Mirrors the runtime
+    /// <c>RazorCodeBlockPreprocessor.ExtractSectionNameFromArgs</c>: the name is the first
+    /// string literal (<c>"Name"</c>, optionally followed by <c>, required: false</c> /
+    /// <c>, false</c>). Returns null when the first argument is not a string literal — a
+    /// dynamic name can't be resolved at compile time, so the document defers to runtime.
+    /// </summary>
+    private static string? ExtractRenderSectionName(string args)
+    {
+        var t = args.Trim();
+        if (t.Length < 2) return null;
+        var q = t[0];
+        if (q != '"' && q != '\'') return null;
+        var end = t.IndexOf(q, 1);
+        if (end <= 0) return null;
+        return t.Substring(1, end - 1);
+    }
+
+    private static bool StartsWith(string s, int pos, string token)
+        => pos + token.Length <= s.Length && string.CompareOrdinal(s, pos, token, 0, token.Length) == 0;
+
+    /// <summary>
+    /// True if <paramref name="word"/> sits at <paramref name="pos"/> as a whole token
+    /// (not a longer identifier — <c>@iffy</c> must not match <c>if</c>). On match
+    /// <paramref name="after"/> is the index just past the word.
+    /// </summary>
+    private static bool IsWordAt(string s, int pos, string word, out int after)
+    {
+        after = pos;
+        if (!StartsWith(s, pos, word))
+            return false;
+        var next = pos + word.Length;
+        if (next < s.Length)
+        {
+            var n = s[next];
+            if (n == '_' || char.IsLetterOrDigit(n))
+                return false;
+        }
+        after = next;
+        return true;
+    }
+
+    private static int SkipWhitespace(string s, int pos)
+    {
+        while (pos < s.Length && char.IsWhiteSpace(s[pos])) pos++;
+        return pos;
+    }
+
+    private static readonly string[] s_leakedFlowKeywords =
+    {
+        // @if / @section / @RenderSection are lowered, not bailed. These are the
+        // loop/flow keywords TransformJalxamlRazorTask should have build-time expanded;
+        // if one leaks, the doc can't be faithfully lowered.
+        "for", "foreach", "while", "switch", "do", "try", "using", "lock"
+    };
+
+    private static bool IsLeakedFlowKeywordAt(string content, int position)
+    {
+        foreach (var kw in s_leakedFlowKeywords)
+        {
+            if (IsWordAt(content, position, kw, out _))
+                return true;
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Read a balanced <c>( ... )</c> starting at <paramref name="openParen"/> (which must
+    /// index the '('). String / char literals inside are skipped so a ')' or '"' in the
+    /// condition text doesn't end the scan early. <paramref name="inner"/> is the text
+    /// between the outer parens; <paramref name="afterClose"/> is the index past ')'.
+    /// </summary>
+    private static bool TryReadBalancedParens(string s, int openParen, out string inner, out int afterClose)
+    {
+        inner = string.Empty;
+        afterClose = openParen;
+        var depth = 0;
+        var start = openParen + 1;
+        var i = openParen;
+        while (i < s.Length)
+        {
+            var c = s[i];
+            if (c == '"' || c == '\'')
+            {
+                var q = c;
+                i++;
+                while (i < s.Length && s[i] != q)
+                {
+                    if (s[i] == '\\' && i + 1 < s.Length) i++;
+                    i++;
+                }
+                if (i >= s.Length) return false; // unterminated literal
+                i++;
+                continue;
+            }
+            if (c == '(') depth++;
+            else if (c == ')')
+            {
+                depth--;
+                if (depth == 0)
+                {
+                    inner = s.Substring(start, i - start);
+                    afterClose = i + 1;
+                    return true;
+                }
+            }
+            i++;
+        }
+        return false;
+    }
+
+    private static string EscapeXmlAttribute(string value)
+    {
+        var sb = new System.Text.StringBuilder(value.Length + 8);
+        foreach (var c in value)
+        {
+            switch (c)
+            {
+                case '&': sb.Append("&amp;"); break;
+                case '<': sb.Append("&lt;"); break;
+                case '>': sb.Append("&gt;"); break;
+                case '"': sb.Append("&quot;"); break;
+                case '\'': sb.Append("&apos;"); break;
+                default: sb.Append(c); break;
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Combine an inherited (outer) <c>@if</c> condition with this level's condition,
+    /// matching the runtime <c>XamlReader.BuildCombinedIfConditionExpression</c> shape:
+    /// each level parenthesised, outermost first, joined by <c> &amp;&amp; </c>.
+    /// </summary>
+    private static string CombineRazorIfCondition(string? inherited, string own)
+    {
+        var wrapped = "(" + own.Trim() + ")";
+        return string.IsNullOrEmpty(inherited) ? wrapped : inherited + " && " + wrapped;
+    }
+
+    private static string? GetRazorIfConditionAttribute(JalxamlAstNode node)
+    {
+        foreach (var attr in node.Attributes)
+        {
+            if (attr.Kind == JalxamlAttributeKind.Value &&
+                string.Equals(attr.LocalName, "Condition", StringComparison.Ordinal))
+            {
+                return attr.Value;
+            }
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Flatten a synthetic <see cref="RazorIfElementName"/> subtree into
+    /// <paramref name="target"/>: each real descendant element is appended directly and
+    /// stamped with the combined condition; nested <see cref="RazorIfElementName"/> nodes
+    /// recurse with the condition extended. The wrapper itself never reaches codegen.
+    /// <para>
+    /// Purity gate: a faithful per-child visibility binding requires the block to hold
+    /// only child elements. If the wrapper captured block-level text or a property
+    /// element, <see cref="JalxamlParseResult.RazorLiftUnfaithful"/> is set so
+    /// <see cref="Parse"/> abandons the lift and reparses via the legacy path (identical
+    /// to the pre-lift behaviour). Text/expressions <em>inside</em> a child element are
+    /// that child's own content and are unaffected.
+    /// </para>
+    /// </summary>
+    private static void FlattenRazorIf(JalxamlAstNode razorIf, string? inherited, List<JalxamlAstNode> target, JalxamlParseResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(razorIf.TextContent) || razorIf.PropertyElements.Count > 0)
+            result.RazorLiftUnfaithful = true;
+
+        var combined = CombineRazorIfCondition(inherited, GetRazorIfConditionAttribute(razorIf) ?? "true");
+        foreach (var child in razorIf.Children)
+        {
+            if (child.LocalName == RazorIfElementName)
+            {
+                FlattenRazorIf(child, combined, target, result);
+            }
+            else
+            {
+                // An element can only ever sit on one @if path so a straight assign is
+                // correct (FlattenRazorIf is the single writer of RazorIfCondition).
+                child.RazorIfCondition = combined;
+                target.Add(child);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Walk the lifted tree and validate every <see cref="RazorSectionElementName"/>
+    /// node: a compiled section factory feeds a single-Content
+    /// <see cref="Jalium.UI.Markup.RazorSectionHost"/> (mirroring the runtime's
+    /// <c>&lt;Border&gt;{body}&lt;/Border&gt;</c> single child), so the body must be
+    /// exactly one element — no block-level text, no property element, and not itself a
+    /// bare section. A violation sets <see cref="JalxamlParseResult.RazorLiftUnfaithful"/>
+    /// so <see cref="Parse"/> drops the lift and the document renders via the legacy
+    /// runtime path exactly as before.
+    /// </summary>
+    private static void ValidateLiftedSections(JalxamlAstNode node, JalxamlParseResult result)
+    {
+        if (node.LocalName == RazorSectionElementName)
+        {
+            var bodyRoots = 0;
+            foreach (var c in node.Children)
+            {
+                if (c.LocalName == RazorSectionElementName)
+                {
+                    result.RazorLiftUnfaithful = true; // nested bare section — no visual root
+                    break;
+                }
+                bodyRoots++;
+            }
+            if (bodyRoots != 1 ||
+                !string.IsNullOrWhiteSpace(node.TextContent) ||
+                node.PropertyElements.Count > 0)
+            {
+                result.RazorLiftUnfaithful = true;
+            }
+        }
+
+        foreach (var child in node.Children)
+            ValidateLiftedSections(child, result);
+        foreach (var pe in node.PropertyElements)
+            foreach (var child in pe.Children)
+                ValidateLiftedSections(child, result);
+    }
 }
