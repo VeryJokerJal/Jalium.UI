@@ -66,7 +66,15 @@ public:
     uint32_t GetWidth() const override { return width_; }
     uint32_t GetHeight() const override { return height_; }
 
-    const std::vector<uint8_t>& GetPixels() const { return pixelData_; }
+    // Pixel data is held behind a shared_ptr so per-frame GpuReplayCommand
+    // entries can keep a reference instead of vector-copying ~5 MB/RGBA bitmap
+    // (Jalium.One CreateSolutionView's 31 × 1.3 MB PNGs were doing exactly
+    // that). UpdatePackedPixels swaps in a fresh shared_ptr instead of
+    // mutating the existing one — that way any GpuReplayCommand still
+    // referencing the previous frame's pixels keeps its data alive and replays
+    // correctly even after the source bitmap mutates.
+    const std::vector<uint8_t>& GetPixels() const { return *pixelData_; }
+    std::shared_ptr<const std::vector<uint8_t>> GetSharedPixels() const { return pixelData_; }
 
     /// Replaces the packed BGRA8 pixels in-place. Used by video / WriteableBitmap
     /// hot paths to avoid per-frame VulkanBitmap reconstruction. Returns true on success.
@@ -75,7 +83,7 @@ public:
 private:
     uint32_t width_ = 0;
     uint32_t height_ = 0;
-    std::vector<uint8_t> pixelData_;
+    std::shared_ptr<std::vector<uint8_t>> pixelData_;
 };
 
 class VulkanTextFormat : public TextFormat {

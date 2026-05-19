@@ -73,7 +73,8 @@ public:
         const float* commands, uint32_t commandLength,
         const EngineBrushData& brush,
         FillRule fillRule,
-        const EngineTransform& transform) override;
+        const EngineTransform& transform,
+        int32_t edgeMode = -1) override;
 
     bool EncodeStrokePath(
         float startX, float startY,
@@ -83,7 +84,8 @@ public:
         int32_t lineJoin, float miterLimit,
         int32_t lineCap,
         const float* dashPattern, uint32_t dashCount, float dashOffset,
-        const EngineTransform& transform) override;
+        const EngineTransform& transform,
+        int32_t edgeMode = -1) override;
 
     bool EncodeFillPolygon(
         const float* points, uint32_t pointCount,

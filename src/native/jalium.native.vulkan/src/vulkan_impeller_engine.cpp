@@ -1,6 +1,7 @@
 #include "vulkan_impeller_engine.h"
 #include "jalium_scanline_rasterizer.h"   // PixelRect / RasterizePathToRects
 #include "jalium_triangulate.h"           // TriangulateCompoundPath / FlattenPathToContours
+#include "jalium_path_stats.h"            // unified path telemetry
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -233,8 +234,10 @@ bool ImpellerVulkanEngine::EncodeFillPath(
     const float* commands, uint32_t commandLength,
     const EngineBrushData& brush,
     FillRule fillRule,
-    const EngineTransform& transform)
+    const EngineTransform& transform,
+    int32_t edgeMode)
 {
+    (void)edgeMode;  // Vulkan fill already runs analytic AA via RasterizePathToRects.
     // Gradient brushes flatten in source space because the gradient sampler
     // takes path-local coords; transform happens in the per-vertex bake step.
     if (brush.type == 1 || brush.type == 2 || brush.type == 3) {
@@ -243,16 +246,27 @@ bool ImpellerVulkanEngine::EncodeFillPath(
             ? flattenTolerance_ / gradMaxScale
             : flattenTolerance_;
 
-        std::vector<Contour> gradContours = FlattenPathToContours(
-            startX, startY, commands, commandLength, gradTolerance);
+        std::vector<Contour> gradContours;
+        {
+            path_stats::ScopedFlattenTimer flattenTimer(commandLength);
+            gradContours = FlattenPathToContours(
+                startX, startY, commands, commandLength, gradTolerance);
+            uint64_t outputVerts = 0;
+            for (const auto& c : gradContours) outputVerts += c.VertexCount();
+            flattenTimer.RecordOutputVerts(outputVerts);
+        }
         if (gradContours.empty()) return false;
 
         if (!brush.stops || brush.stopCount == 0) return false;
 
         int32_t fr = 0;
         std::vector<float> triVerts;
-        if (!TriangulateCompoundPath(gradContours, fr, triVerts) || triVerts.size() < 6)
-            return false;
+        {
+            path_stats::ScopedTriangulateTimer triTimer;
+            bool ok = TriangulateCompoundPath(gradContours, fr, triVerts) && triVerts.size() >= 6;
+            if (ok) triTimer.MarkOk();
+            if (!ok) return false;
+        }
 
         std::vector<float> stopData;
         FlattenGradientStops(brush, stopData);
@@ -284,9 +298,16 @@ bool ImpellerVulkanEngine::EncodeFillPath(
     std::vector<float> pxCommands;
     TransformCommandsToPixelSpace(commands, commandLength, transform, pxCommands);
 
-    std::vector<Contour> contours = FlattenPathToContours(
-        pxStartX, pxStartY, pxCommands.data(), (uint32_t)pxCommands.size(),
-        flattenTolerance_);
+    std::vector<Contour> contours;
+    {
+        path_stats::ScopedFlattenTimer flattenTimer(commandLength);
+        contours = FlattenPathToContours(
+            pxStartX, pxStartY, pxCommands.data(), (uint32_t)pxCommands.size(),
+            flattenTolerance_);
+        uint64_t outputVerts = 0;
+        for (const auto& c : contours) outputVerts += c.VertexCount();
+        flattenTimer.RecordOutputVerts(outputVerts);
+    }
 
     contours.erase(
         std::remove_if(contours.begin(), contours.end(),
@@ -319,7 +340,13 @@ bool ImpellerVulkanEngine::EncodeFillPath(
         uint32_t vc = c.VertexCount();
         if (vc < 3) continue;
         std::vector<uint32_t> indices;
-        if (TriangulatePolygon(c.points.data(), vc, indices) && indices.size() >= 3) {
+        bool triOk;
+        {
+            path_stats::ScopedTriangulateTimer triTimer;
+            triOk = TriangulatePolygon(c.points.data(), vc, indices) && indices.size() >= 3;
+            if (triOk) triTimer.MarkOk();
+        }
+        if (triOk) {
             VkImpellerDrawBatch batch;
             batch.vertices.reserve(indices.size());
             batch.indices.reserve(indices.size());
@@ -349,8 +376,10 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
     int32_t lineJoin, float miterLimit,
     int32_t lineCap,
     const float* dashPattern, uint32_t dashCount, float dashOffset,
-    const EngineTransform& transform)
+    const EngineTransform& transform,
+    int32_t edgeMode)
 {
+    (void)edgeMode;  // Vulkan stroke already runs analytic AA via RasterizePathToRects.
     float maxScale = MaxScale(transform);
     float pxStrokeWidth = strokeWidth * maxScale;
     float pxDashOffset  = dashOffset  * maxScale;
@@ -368,9 +397,16 @@ bool ImpellerVulkanEngine::EncodeStrokePath(
     std::vector<float> pxCommands;
     TransformCommandsToPixelSpace(commands, commandLength, transform, pxCommands);
 
-    std::vector<Contour> contours = FlattenPathToContours(
-        pxStartX, pxStartY, pxCommands.data(), (uint32_t)pxCommands.size(),
-        flattenTolerance_);
+    std::vector<Contour> contours;
+    {
+        path_stats::ScopedFlattenTimer flattenTimer(commandLength);
+        contours = FlattenPathToContours(
+            pxStartX, pxStartY, pxCommands.data(), (uint32_t)pxCommands.size(),
+            flattenTolerance_);
+        uint64_t outputVerts = 0;
+        for (const auto& c : contours) outputVerts += c.VertexCount();
+        flattenTimer.RecordOutputVerts(outputVerts);
+    }
 
     if (contours.empty()) return false;
 

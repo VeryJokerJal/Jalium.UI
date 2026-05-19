@@ -3,7 +3,7 @@
 #include "jalium_backend.h"
 #include "jalium_types.h"
 #include "jalium_rendering_engine.h"
-#include "path_cache.h"
+#include "jalium_path_cache.h"
 #include "text_cache.h"
 #include "vulkan_impeller_engine.h"
 #include "vulkan_vello_engine.h"
@@ -40,8 +40,8 @@ public:
     void DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) override;
     void FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) override;
     void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f) override;
-    void FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule) override;
-    void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0, const float* dashPattern = nullptr, uint32_t dashCount = 0, float dashOffset = 0.0f) override;
+    void FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule, int32_t edgeMode = -1) override;
+    void StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f, int32_t lineCap = 0, const float* dashPattern = nullptr, uint32_t dashCount = 0, float dashOffset = 0.0f, int32_t edgeMode = -1) override;
     void DrawContentBorder(float x, float y, float w, float h, float blRadius, float brRadius, Brush* fillBrush, Brush* strokeBrush, float strokeWidth) override;
     void RenderText(const wchar_t* text, uint32_t textLength, TextFormat* format, float x, float y, float w, float h, Brush* brush) override;
     void PushTransform(const float* matrix) override;
@@ -400,6 +400,13 @@ private:
     bool TryPopulateReplayClip(GpuReplayCommand& command) const;
     bool TryRecordGpuClearRectCommand(float x, float y, float w, float h);
     bool TryRecordGpuPixelBufferCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity);
+    // shared_ptr overload — used by VulkanBitmap-backed DrawBitmap so the
+    // per-frame GpuReplayCommand reference-counts the source pixels rather
+    // than vector-copying ~5 MB/RGBA bitmap on every call. The pointed-to
+    // buffer must remain immutable for the lifetime of any in-flight
+    // command that holds the shared_ptr (UpdatePackedPixels achieves this
+    // via copy-on-write — it allocates a new buffer instead of mutating).
+    bool TryRecordGpuPixelBufferCommandShared(std::shared_ptr<const std::vector<uint8_t>> pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity);
     bool TryRecordGpuBlurCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float radius, float opacity, bool alphaOnlyTint = false, float tintR = 0.0f, float tintG = 0.0f, float tintB = 0.0f, float tintA = 1.0f);
     bool TryRecordGpuBackdropCommand(const std::vector<uint8_t>& pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL, float tintR, float tintG, float tintB, float tintOpacity, float saturation = 1.0f, float noiseIntensity = 0.0f);
     bool TryRecordGpuGlowCommand(float x, float y, float w, float h, float cornerRadius, float strokeWidth, float glowR, float glowG, float glowB, float glowA, float dimOpacity, float intensity);
@@ -422,13 +429,21 @@ private:
                                            Brush* brush);
     // Walk the FillPath/StrokePath command stream and emit (x, y) sample
     // points in *local* (pre-transform) space — bezier curves get sampled
-    // into 16 (cubic) or 8 (quad) line segments, MoveTo/LineTo/Close are
-    // copied verbatim. The result is exactly what the cached entry stores
-    // so subsequent draws of the same path skip this work entirely.
+    // into adaptive line segments (more samples for larger on-screen scale),
+    // MoveTo/LineTo/Close are copied verbatim. The result is exactly what
+    // the cached entry stores so subsequent draws of the same path skip
+    // this work entirely.
+    //
+    // scaleFactor: the current transform's max scale (linear part). Used to
+    // pick a per-curve segment count: at 1.0× we use the historic 16/8
+    // cubic/quadratic samples; at 4.0× we proportionally raise it to keep
+    // on-screen vertex density flat. Pass 1.0f when the caller has no
+    // transform context.
     static void DecomposePathToLocalPoints(float startX, float startY,
                                            const float* commands,
                                            uint32_t commandLength,
-                                           std::vector<float>& outLocalPoints);
+                                           std::vector<float>& outLocalPoints,
+                                           float scaleFactor = 1.0f);
     bool TryRecordGpuTransitionCommand(const std::vector<uint8_t>& fromPixels, const std::vector<uint8_t>& toPixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float progress, int mode);
     bool TryRecordGpuSolidRectCommand(float x, float y, float w, float h, Brush* brush);
     bool TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush);

@@ -211,8 +211,10 @@ bool VelloVulkanEngine::EncodeFillPath(
     const float* commands, uint32_t commandLength,
     const EngineBrushData& brush,
     FillRule fillRule,
-    const EngineTransform& transform)
+    const EngineTransform& transform,
+    int32_t edgeMode)
 {
+    (void)edgeMode;  // Vello path currently runs analytic AA only.
     if (brush.type == 1 || brush.type == 2 || brush.type == 3) {
         float gradMaxScale = MaxScale(transform);
         float gradTolerance = (gradMaxScale > 0.001f)
@@ -317,8 +319,10 @@ bool VelloVulkanEngine::EncodeStrokePath(
     int32_t lineJoin, float miterLimit,
     int32_t lineCap,
     const float* dashPattern, uint32_t dashCount, float dashOffset,
-    const EngineTransform& transform)
+    const EngineTransform& transform,
+    int32_t edgeMode)
 {
+    (void)edgeMode;  // Vello path currently runs analytic AA only.
     float maxScale = MaxScale(transform);
     float pxStrokeWidth = strokeWidth * maxScale;
     float pxDashOffset  = dashOffset  * maxScale;

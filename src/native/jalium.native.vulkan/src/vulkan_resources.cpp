@@ -1,4 +1,5 @@
 #include "vulkan_resources.h"
+#include "jalium_bitmap_stats.h"
 
 #ifndef _WIN32
 #include "text_engine.h"
@@ -49,12 +50,12 @@ VulkanRadialGradientBrush::VulkanRadialGradientBrush(
 VulkanBitmap::VulkanBitmap(uint32_t width, uint32_t height, std::vector<uint8_t> pixelData)
     : width_(width > 0 ? width : 1)
     , height_(height > 0 ? height : 1)
-    , pixelData_(std::move(pixelData))
+    , pixelData_(std::make_shared<std::vector<uint8_t>>(std::move(pixelData)))
 {
     // Ensure pixel data matches expected size (4 bytes per RGBA pixel)
     size_t expected = static_cast<size_t>(width_) * height_ * 4;
-    if (pixelData_.size() < expected) {
-        pixelData_.resize(expected, 0);
+    if (pixelData_->size() < expected) {
+        pixelData_->resize(expected, 0);
     }
 }
 
@@ -69,19 +70,56 @@ bool VulkanBitmap::UpdatePackedPixels(const uint8_t* pixels, uint32_t width, uin
 
     const size_t rowBytes = static_cast<size_t>(width) * 4u;
     const size_t requiredSize = rowBytes * height;
-    if (pixelData_.size() != requiredSize) {
-        pixelData_.resize(requiredSize);
+    auto& current = *pixelData_;
+
+    // Memcmp short-circuit — same pattern as D3D12Bitmap. Video frames /
+    // WriteableBitmap hot paths commonly push the same pixels every frame
+    // when the underlying content is paused or unchanged; this lets us bail
+    // before the memcpy + GPU upload pipeline. memcmp returns at the first
+    // differing byte so genuinely-changed bitmaps pay only the diverging
+    // prefix.
+    if (current.size() == requiredSize) {
+        if (stride == rowBytes) {
+            if (std::memcmp(current.data(), pixels, requiredSize) == 0) {
+                bitmap_stats::AddMemcmpShortCircuit();
+                return true;
+            }
+        } else {
+            bool same = true;
+            for (uint32_t row = 0; row < height; ++row) {
+                if (std::memcmp(current.data() + row * rowBytes,
+                                pixels + static_cast<size_t>(row) * stride,
+                                rowBytes) != 0)
+                {
+                    same = false;
+                    break;
+                }
+            }
+            if (same) {
+                bitmap_stats::AddMemcmpShortCircuit();
+                return true;
+            }
+        }
     }
 
+    // Allocate a fresh shared buffer and copy into it. This is the
+    // copy-on-write step: any GpuReplayCommand still referring to the
+    // previous frame's shared_ptr keeps that buffer alive on its own, so
+    // in-flight GPU work continues to see consistent pixels even though we
+    // immediately publish the new content for subsequent draws.
+    auto next = std::make_shared<std::vector<uint8_t>>(requiredSize);
     if (stride == rowBytes) {
-        std::memcpy(pixelData_.data(), pixels, requiredSize);
+        std::memcpy(next->data(), pixels, requiredSize);
     } else {
         for (uint32_t row = 0; row < height; ++row) {
-            std::memcpy(pixelData_.data() + row * rowBytes,
+            std::memcpy(next->data() + row * rowBytes,
                         pixels + static_cast<size_t>(row) * stride,
                         rowBytes);
         }
     }
+    pixelData_ = std::move(next);
+
+    bitmap_stats::AddUpload(requiredSize);
     return true;
 }
 

@@ -84,7 +84,6 @@
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClInclude Include="include\path_cache.h" />
     <ClInclude Include="include\text_cache.h" />
     <ClInclude Include="include\vulkan_backend.h" />
     <ClInclude Include="include\vulkan_embedded_shaders.h" />
@@ -96,7 +95,6 @@
     <ClInclude Include="include\win32_gdi_pool.h" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="src\path_cache.cpp" />
     <ClCompile Include="src\text_cache.cpp" />
     <ClCompile Include="src\vulkan_backend.cpp" />
     <ClCompile Include="src\vulkan_impeller_engine.cpp" />

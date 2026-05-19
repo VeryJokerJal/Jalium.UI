@@ -1,5 +1,7 @@
 #include "vulkan_render_target.h"
 #include "jalium_internal.h"
+#include "jalium_path_stats.h"
+#include "jalium_flatten.h"
 
 #include "vulkan_backend.h"
 #include "vulkan_embedded_shaders.h"
@@ -6152,8 +6154,11 @@ bool VulkanRenderTarget::TryRecordGpuFilledPolygonCommand(const std::vector<floa
     }
 
     std::vector<float> triangleVertices;
-    if (!TriangulateSimplePolygon(points, triangleVertices)) {
-        return false;
+    {
+        path_stats::ScopedTriangulateTimer triTimer;
+        bool ok = TriangulateSimplePolygon(points, triangleVertices);
+        if (ok) triTimer.MarkOk();
+        if (!ok) return false;
     }
 
     return TryRecordPreTriangulatedFilledPolygon(std::move(triangleVertices), brush);
@@ -6246,11 +6251,25 @@ bool VulkanRenderTarget::TryRecordPreTriangulatedFilledPolygon(std::vector<float
 void VulkanRenderTarget::DecomposePathToLocalPoints(float startX, float startY,
                                                     const float* commands,
                                                     uint32_t commandLength,
-                                                    std::vector<float>& outLocalPoints)
+                                                    std::vector<float>& outLocalPoints,
+                                                    float scaleFactor)
 {
     outLocalPoints.clear();
     if (!commands || commandLength == 0) return;
     outLocalPoints.reserve(static_cast<size_t>(commandLength) * 2u);
+
+    // Adaptive segment count. Historic baselines: 16 (cubic) / 8 (quad) at
+    // 1.0×. We scale linearly with the transform max-scale so a 4× zoom uses
+    // 64/32 samples — keeping per-pixel vertex density roughly flat. Floor
+    // matches the historic baseline so we never *under-sample* relative to
+    // pre-scale-aware behavior. Ceiling caps cost on extreme zoom-in
+    // (the ear-clip step downstream is O(N²)+, see project_vulkan_path_cache).
+    const int cubicSteps = std::clamp(
+        static_cast<int>(16.0f * (scaleFactor > 1.0f ? scaleFactor : 1.0f)),
+        16, 64);
+    const int quadSteps = std::clamp(
+        static_cast<int>(8.0f * (scaleFactor > 1.0f ? scaleFactor : 1.0f)),
+        8, 32);
 
     float currentX = startX;
     float currentY = startY;
@@ -6274,8 +6293,9 @@ void VulkanRenderTarget::DecomposePathToLocalPoints(float startX, float startY,
             const float cp2y = commands[index++];
             const float endX = commands[index++];
             const float endY = commands[index++];
-            for (int step = 1; step <= 16; ++step) {
-                const float t = static_cast<float>(step) / 16.0f;
+            const float invSteps = 1.0f / static_cast<float>(cubicSteps);
+            for (int step = 1; step <= cubicSteps; ++step) {
+                const float t = static_cast<float>(step) * invSteps;
                 const float omt = 1.0f - t;
                 const float bx =
                     omt * omt * omt * currentX +
@@ -6304,8 +6324,9 @@ void VulkanRenderTarget::DecomposePathToLocalPoints(float startX, float startY,
             const float cpy = commands[index++];
             const float endX = commands[index++];
             const float endY = commands[index++];
-            for (int step = 1; step <= 8; ++step) {
-                const float t = static_cast<float>(step) / 8.0f;
+            const float invSteps = 1.0f / static_cast<float>(quadSteps);
+            for (int step = 1; step <= quadSteps; ++step) {
+                const float t = static_cast<float>(step) * invSteps;
                 const float omt = 1.0f - t;
                 const float qx = omt * omt * currentX + 2.0f * omt * t * cpx + t * t * endX;
                 const float qy = omt * omt * currentY + 2.0f * omt * t * cpy + t * t * endY;
@@ -6886,6 +6907,63 @@ bool VulkanRenderTarget::TryRecordGpuPixelBufferCommand(const std::vector<uint8_
         replayCommand.quadPoint2Y = p2y;
         replayCommand.quadPoint3X = p3x;
         replayCommand.quadPoint3Y = p3y;
+    }
+
+    gpuReplayCommands_.push_back(std::move(replayCommand));
+    return true;
+}
+
+bool VulkanRenderTarget::TryRecordGpuPixelBufferCommandShared(std::shared_ptr<const std::vector<uint8_t>> pixels, uint32_t pixelWidth, uint32_t pixelHeight, float x, float y, float w, float h, float opacity)
+{
+    // shared_ptr fast path: pin the source buffer by reference instead of
+    // vector-copying. Saves ~pixelWidth*pixelHeight*4 bytes per DrawBitmap
+    // call. The caller (VulkanBitmap-backed DrawBitmap) guarantees the
+    // pointed-to buffer is immutable while in flight via copy-on-write
+    // semantics in UpdatePackedPixels.
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || !pixels || pixels->empty() ||
+        pixelWidth == 0 || pixelHeight == 0 || opacity <= 0.0f || w == 0.0f || h == 0.0f) {
+        return false;
+    }
+
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return false;
+    }
+
+    const auto transform = GetCurrentTransform();
+    constexpr float kEpsilon = 0.0001f;
+    float p0x = 0.0f, p0y = 0.0f, p1x = 0.0f, p1y = 0.0f;
+    float p2x = 0.0f, p2y = 0.0f, p3x = 0.0f, p3y = 0.0f;
+    ApplyTransform(transform, x, y, p0x, p0y);
+    ApplyTransform(transform, x + w, y, p1x, p1y);
+    ApplyTransform(transform, x + w, y + h, p2x, p2y);
+    ApplyTransform(transform, x, y + h, p3x, p3y);
+
+    GpuReplayCommand replayCommand {};
+    replayCommand.kind = GpuReplayCommandKind::Bitmap;
+    replayCommand.bitmap.pixelWidth = pixelWidth;
+    replayCommand.bitmap.pixelHeight = pixelHeight;
+    replayCommand.bitmap.sharedPixels = std::move(pixels);
+    replayCommand.bitmap.x = std::min(std::min(p0x, p1x), std::min(p2x, p3x));
+    replayCommand.bitmap.y = std::min(std::min(p0y, p1y), std::min(p2y, p3y));
+    replayCommand.bitmap.w = std::max(std::max(p0x, p1x), std::max(p2x, p3x)) - replayCommand.bitmap.x;
+    replayCommand.bitmap.h = std::max(std::max(p0y, p1y), std::max(p2y, p3y)) - replayCommand.bitmap.y;
+    replayCommand.bitmap.opacity = std::clamp(opacity * GetCurrentOpacity(), 0.0f, 1.0f);
+    if (replayCommand.bitmap.w <= kEpsilon || replayCommand.bitmap.h <= kEpsilon || replayCommand.bitmap.opacity <= 0.0f) {
+        return false;
+    }
+
+    if (!TryPopulateReplayClip(replayCommand)) {
+        return false;
+    }
+    if (replayCommand.scissorRight <= replayCommand.scissorLeft || replayCommand.scissorBottom <= replayCommand.scissorTop) {
+        return true;
+    }
+    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+        replayCommand.hasCustomQuad = true;
+        replayCommand.quadPoint0X = p0x; replayCommand.quadPoint0Y = p0y;
+        replayCommand.quadPoint1X = p1x; replayCommand.quadPoint1Y = p1y;
+        replayCommand.quadPoint2X = p2x; replayCommand.quadPoint2Y = p2y;
+        replayCommand.quadPoint3X = p3x; replayCommand.quadPoint3Y = p3y;
     }
 
     gpuReplayCommands_.push_back(std::move(replayCommand));
@@ -7498,11 +7576,16 @@ bool VulkanRenderTarget::TryRecordGpuRectangleStrokeCommand(float x, float y, fl
 bool VulkanRenderTarget::TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, float y, float w, float h, float opacity)
 {
     const auto* sourceBitmap = static_cast<const VulkanBitmap*>(bitmap);
-    if (!sourceBitmap || sourceBitmap->GetWidth() == 0 || sourceBitmap->GetHeight() == 0 || sourceBitmap->GetPixels().empty()) {
+    if (!sourceBitmap || sourceBitmap->GetWidth() == 0 || sourceBitmap->GetHeight() == 0) {
         return false;
     }
 
-    return TryRecordGpuPixelBufferCommand(sourceBitmap->GetPixels(), sourceBitmap->GetWidth(), sourceBitmap->GetHeight(), x, y, w, h, opacity);
+    auto sharedPixels = sourceBitmap->GetSharedPixels();
+    if (!sharedPixels || sharedPixels->empty()) {
+        return false;
+    }
+
+    return TryRecordGpuPixelBufferCommandShared(std::move(sharedPixels), sourceBitmap->GetWidth(), sourceBitmap->GetHeight(), x, y, w, h, opacity);
 }
 
 void VulkanRenderTarget::RasterizePolygon(const std::vector<float>& points, int fillRule, uint8_t b, uint8_t g, uint8_t r, uint8_t a)
@@ -7937,7 +8020,7 @@ void VulkanRenderTarget::DrawPolygon(const float* points, uint32_t pointCount, B
     StrokePolyline(transformedPoints, closed, strokeWidth, b, g, r, a);
 }
 
-void VulkanRenderTarget::FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule)
+void VulkanRenderTarget::FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule, int32_t edgeMode)
 {
     TouchFrame();
 
@@ -7962,7 +8045,7 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
                 et.dx = t.dx; et.dy = t.dy;
 
                 FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
-                if (engine->EncodeFillPath(startX, startY, commands, commandLength, bd, fr, et))
+                if (engine->EncodeFillPath(startX, startY, commands, commandLength, bd, fr, et, edgeMode))
                     return;
             }
         }
@@ -7973,23 +8056,39 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
         return;
     }
 
-    // Cache lookup: same path data → same local-space decomposition and
-    // triangulation. Bezier decompose is O(N); ear-clip triangulation is
-    // O(N³). Both are paid only on the first frame that sees a given path;
-    // later frames hit the cache and the per-call work shrinks to applying
-    // the current transform to the cached vertex list (O(N), trivial).
-    const uint64_t pathHash = HashPathInput(startX, startY, commands, commandLength, fillRule);
+    // Cache lookup: same path data + same scale-bucket → same local-space
+    // decomposition and triangulation. Bezier decompose is O(N); ear-clip
+    // triangulation is O(N³). Both are paid only on the first frame that
+    // sees a given path; later frames hit the cache and the per-call work
+    // shrinks to applying the current transform to the cached vertex list
+    // (O(N), trivial). scaleBucket partitions by transform-scale octave so
+    // a 1.0× icon and a 4.0× icon get separate cache entries — the cached
+    // vertex density actually matches the on-screen scale.
+    const auto curT = GetCurrentTransform();
+    const float curMaxScale = MaxScaleFromMatrix(curT.m11, curT.m12, curT.m21, curT.m22);
+    const uint32_t curScaleBucket = ScaleBucketFromMaxScale(curMaxScale);
+    const uint64_t pathHash = HashPathInput(startX, startY, commands, commandLength, fillRule, curScaleBucket);
 
     std::shared_ptr<const CachedPathGeometry> geometry;
     if (auto hit = pathCache_->FindAndTouch(pathHash)) {
         geometry = std::move(hit->entry);
     } else {
         auto fresh = std::make_shared<CachedPathGeometry>();
-        DecomposePathToLocalPoints(startX, startY, commands, commandLength, fresh->localPoints);
+        {
+            path_stats::ScopedFlattenTimer flattenTimer(commandLength);
+            DecomposePathToLocalPoints(startX, startY, commands, commandLength,
+                                       fresh->localPoints, curMaxScale);
+            flattenTimer.RecordOutputVerts(fresh->localPoints.size() / 2);
+        }
         std::vector<float> tri;
-        if (TriangulateSimplePolygon(fresh->localPoints, tri)) {
-            fresh->localTriangles = std::move(tri);
-            fresh->triangulationSucceeded = true;
+        {
+            path_stats::ScopedTriangulateTimer triTimer;
+            bool ok = TriangulateSimplePolygon(fresh->localPoints, tri);
+            if (ok) triTimer.MarkOk();
+            if (ok) {
+                fresh->localTriangles = std::move(tri);
+                fresh->triangulationSucceeded = true;
+            }
         }
         pathCache_->Insert(pathHash, fresh);
         geometry = std::move(fresh);
@@ -8044,7 +8143,7 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
     }
 }
 
-void VulkanRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount, float dashOffset)
+void VulkanRenderTarget::StrokePath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin, float miterLimit, int32_t lineCap, const float* dashPattern, uint32_t dashCount, float dashOffset, int32_t edgeMode)
 {
     TouchFrame();
 
@@ -8070,7 +8169,7 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
 
                 if (engine->EncodeStrokePath(startX, startY, commands, commandLength,
                         bd, strokeWidth, closed, lineJoin, miterLimit, lineCap,
-                        dashPattern, dashCount, dashOffset, et))
+                        dashPattern, dashCount, dashOffset, et, edgeMode))
                     return;
             }
         }

@@ -15,7 +15,6 @@ endif()
 set(JALIUM_STB_ROOT "${JALIUM_SDK_ROOT}/stb")
 
 set(HEADERS
-    include/path_cache.h
     include/text_cache.h
     include/vulkan_backend.h
     include/vulkan_impeller_engine.h
@@ -26,7 +25,6 @@ set(HEADERS
 )
 
 set(SOURCES
-    src/path_cache.cpp
     src/text_cache.cpp
     src/vulkan_backend.cpp
     src/vulkan_impeller_engine.cpp
