@@ -271,6 +271,9 @@ public static class XamlBuilder
     /// <summary>Registered by Jalium.UI.Xaml: register a compiled <c>@section</c> body factory under a name.</summary>
     public static Action<string, Func<object?>>? RegisterRazorSectionImpl { get; set; }
 
+    /// <summary>Registered by Jalium.UI.Xaml: apply an SG-pre-split <c>{Binding ...}</c> to a property.</summary>
+    public static Action<object, string, string?, string[], string[], XamlBuildContext>? SetCompiledBindingImpl { get; set; }
+
     /// <summary>
     /// Bind <paramref name="propertyName"/> on <paramref name="target"/> to a Razor value-expression
     /// (<c>@(expr)</c>, <c>@identifier</c>, <c>$.path</c>, <c>#.path</c>, or interpolated mix).
@@ -312,6 +315,19 @@ public static class XamlBuilder
     /// </summary>
     public static void RegisterRazorSection(string name, Func<object?> factory)
         => Required(RegisterRazorSectionImpl, nameof(RegisterRazorSectionImpl))(name, factory);
+
+    /// <summary>
+    /// Apply a <c>{Binding ...}</c> the SourceGenerator already split at compile time:
+    /// <paramref name="positionalPath"/> is the leading path segment (or null) and
+    /// <paramref name="names"/>/<paramref name="values"/> are the <c>name=value</c> pairs.
+    /// The runtime rebuilds the binding via the verbatim
+    /// <c>MarkupExtensionParser.BuildBindingExtension</c> + the same apply path a
+    /// runtime-parsed binding uses, so behaviour is identical — only the
+    /// <c>{Binding}</c> string parse moved off the construction hot path (AOT-safe,
+    /// no per-element markup re-parse).
+    /// </summary>
+    public static void SetCompiledBinding(object target, string propertyName, string? positionalPath, string[] names, string[] values, XamlBuildContext ctx)
+        => Required(SetCompiledBindingImpl, nameof(SetCompiledBindingImpl))(target, propertyName, positionalPath, names, values, ctx);
 
     // Strongly-typed attached fast paths.
     /// <summary>Strongly-typed setter for <c>Grid.Row</c>.</summary>

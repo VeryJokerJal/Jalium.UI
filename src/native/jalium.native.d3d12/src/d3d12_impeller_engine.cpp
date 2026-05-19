@@ -2,6 +2,7 @@
 #include "jalium_scanline_rasterizer.h"   // PixelRect / RasterizePathToRects
 #include "jalium_api.h"                   // JALIUM_API export macro
 #include "jalium_path_stats.h"            // unified path telemetry (core dll)
+#include "jalium_flatten.h"               // MaxScaleFromTransform / ScaleBucketFromMaxScale
 #include <atomic>
 #include <cstring>
 #include <cmath>
@@ -460,6 +461,12 @@ float4 main(PSInput input) : SV_TARGET {
 ImpellerD3D12Engine::ImpellerD3D12Engine(ID3D12Device* device, DXGI_FORMAT rtvFormat)
     : device_(device), rtvFormat_(rtvFormat)
 {
+    // Transform-independent geometry cache (flatten + triangulate result keyed
+    // by path data + fill rule + scale octave, NOT by the full transform). A
+    // moving / scaled / rotated path hits this and only pays an O(N) per-frame
+    // vertex transform instead of re-rasterizing every frame. Same type and
+    // capacity Vulkan uses (vulkan_render_target.cpp kMaxPathCacheEntries).
+    pathGeometryCache_ = std::make_unique<PathGeometryCache>(512);
 }
 
 ImpellerD3D12Engine::~ImpellerD3D12Engine() = default;
@@ -1562,7 +1569,223 @@ inline void RasterizePathToRects(
 // Path Encoding Entry Points
 // ============================================================================
 
+// ============================================================================
+// EncodeFillPath — transform-independent local-space geometry cache.
+//
+// THE fix for "Geometry drawing is laggy under animation/scroll/zoom". The
+// legacy pipeline (now EncodeFillPathScanline, kept verbatim as the fallback)
+// transforms commands to PIXEL space, flattens + scanline-rasterizes, and
+// caches the resulting PixelRect list keyed by the FULL transform matrix. Any
+// scale/rotation change ⇒ cache miss ⇒ the whole O(W·H·edges) rasterizer
+// re-runs every frame for every visible path. WPF/WinUI3 (Direct2D) instead
+// tessellate ONCE in geometry-local space and let the GPU apply the transform.
+//
+// This mirrors VulkanRenderTarget::FillPath (vulkan_render_target.cpp:8059):
+// flatten + triangulate once in LOCAL space, cache keyed by (startX, startY,
+// commands, fillRule, scaleBucket) — translation & rotation are NOT in the
+// key — then each frame only transform the cached vertices (O(N)). Edge AA on
+// our non-MSAA solid-fill target is a constant-width feather ring built per
+// frame from the cached boundary contours (the same vertex-feather technique
+// the binary-mesh stroke path documents).
+//
+// Self-intersecting / multi-subpath outlines that TriangulateCompoundPath
+// can't handle fall through to EncodeFillPathScanline unchanged — those are
+// rare and usually static, so correctness wins there over transform-free
+// caching (exactly Vulkan's triangulationSucceeded ? fast : fallback split).
+// ============================================================================
 bool ImpellerD3D12Engine::EncodeFillPath(
+    float startX, float startY,
+    const float* commands, uint32_t commandLength,
+    const EngineBrushData& brush,
+    FillRule fillRule,
+    const EngineTransform& transformIn,
+    int32_t edgeMode)
+{
+    // Gradient brushes keep the legacy source-space sampler path (the gradient
+    // is sampled in path-local coords before the pixel transform). Solid-fill
+    // colour only here; everything else defers to the scanline implementation.
+    if (brush.type == 1 || brush.type == 2 || !pathGeometryCache_ ||
+        !commands || commandLength == 0) {
+        return EncodeFillPathScanline(startX, startY, commands, commandLength,
+                                      brush, fillRule, transformIn, edgeMode);
+    }
+
+    const float maxScale     = MaxScaleFromTransform(transformIn);
+    const uint32_t scaleBkt  = ScaleBucketFromMaxScale(maxScale);
+    const uint64_t key = HashPathInput(startX, startY, commands, commandLength,
+                                       (int32_t)fillRule, scaleBkt);
+
+    std::shared_ptr<const CachedPathGeometry> geom;
+    if (auto hit = pathGeometryCache_->FindAndTouch(key)) {
+        geom = std::move(hit->entry);
+        path_stats::AddGeometryHit();
+    } else {
+        auto fresh = std::make_shared<CachedPathGeometry>();
+        // Local-space flatten. Source-space tolerance = pixel tolerance /
+        // maxScale so the on-screen flattening error stays ≈flattenTolerance_
+        // px at this scale bucket (same contract the gradient branch in the
+        // scanline path relies on; scaleBucket gives each octave its own
+        // entry so density tracks on-screen size).
+        const float srcTol = (maxScale > 0.001f)
+            ? flattenTolerance_ / maxScale : flattenTolerance_;
+        {
+            path_stats::ScopedFlattenTimer flattenTimer(commandLength);
+            fresh->contours = FlattenPathToContours(
+                startX, startY, commands, commandLength, srcTol);
+            uint64_t ov = 0;
+            for (const auto& c : fresh->contours) ov += c.VertexCount();
+            flattenTimer.RecordOutputVerts(ov);
+        }
+        fresh->contours.erase(
+            std::remove_if(fresh->contours.begin(), fresh->contours.end(),
+                [](const Contour& c) { return c.VertexCount() < 3; }),
+            fresh->contours.end());
+        if (!fresh->contours.empty()) {
+            const int32_t fr = (fillRule == FillRule::NonZero) ? 1 : 0;
+            std::vector<float> tri;
+            {
+                path_stats::ScopedTriangulateTimer triTimer;
+                bool ok = TriangulateCompoundPath(fresh->contours, fr, tri)
+                          && tri.size() >= 6;
+                if (ok) {
+                    triTimer.MarkOk();
+                    fresh->localTriangles = std::move(tri);
+                    fresh->triangulationSucceeded = true;
+                }
+            }
+        }
+        pathGeometryCache_->Insert(key, fresh);
+        geom = std::move(fresh);
+        path_stats::AddGeometryMiss();
+    }
+
+    if (!geom->triangulationSucceeded || geom->localTriangles.empty()) {
+        // Not triangulable here — preserve the proven analytic-AA slow path.
+        return EncodeFillPathScanline(startX, startY, commands, commandLength,
+                                      brush, fillRule, transformIn, edgeMode);
+    }
+
+    const float r = brush.r * brush.a;
+    const float g = brush.g * brush.a;
+    const float b = brush.b * brush.a;
+    const float a = brush.a;
+    if (a <= 0.0f) return true;
+
+    // Interior: transform the cached local-space triangle soup to pixel space.
+    // This O(N) loop is the ONLY per-frame CPU cost for an animated fill now
+    // (was: full bezier flatten + AET scanline rasterization every frame).
+    {
+        const auto& lt = geom->localTriangles;       // x,y pairs, 3 per tri
+        const uint32_t vc = (uint32_t)(lt.size() / 2);
+        ImpellerDrawBatch batch;
+        batch.vertices.resize(vc);
+        batch.indices.resize(vc);
+        for (uint32_t i = 0; i < vc; ++i) {
+            float x = lt[i * 2], y = lt[i * 2 + 1];
+            TransformPoint(x, y, transformIn);
+            batch.vertices[i] = { x, y, r, g, b, a };
+            batch.indices[i]  = i;
+        }
+        batch.pipelineType = 0;
+        PushBatch(std::move(batch));
+    }
+
+    // Edge AA: constant-width feather ring around every boundary contour,
+    // built in pixel space from the cached local contours so the soft edge
+    // stays ~0.6 px on screen at any transform.
+    EmitContourFeather(geom->contours, transformIn, r, g, b, a);
+
+    encodedPathCount_++;
+    return true;
+}
+
+// ----------------------------------------------------------------------------
+// EmitContourFeather — 1 px-ish alpha-fade ring along each boundary contour.
+//
+// Our solid-fill PSO renders to a single-sample target (no MSAA), so raw
+// triangle edges would stair-step. For every contour we emit a centred ring:
+// each boundary vertex contributes an inner vertex (full fill alpha, ~0.3 px
+// inside) and an outer vertex (alpha 0, ~0.3 px outside) along the averaged
+// edge normal; consecutive pairs form a triangle strip. GPU bilinear blend of
+// the per-vertex alpha gives a clean ~0.6 px feather. The ring is centred so
+// it always overlaps the interior mesh — no seam, and the inner-side normal
+// sign is irrelevant to quality.
+// ----------------------------------------------------------------------------
+void ImpellerD3D12Engine::EmitContourFeather(
+    const std::vector<Contour>& contours,
+    const EngineTransform& transform,
+    float r, float g, float b, float a)
+{
+    if (a <= 0.0f) return;
+    constexpr float kHalfFeatherPx = 0.3f;  // ⇒ ~0.6 px total soft edge
+
+    ImpellerDrawBatch batch;
+    batch.pipelineType = 0;
+
+    for (const auto& c : contours) {
+        const uint32_t n = c.VertexCount();
+        if (n < 3) continue;
+
+        // Transform this contour's points to pixel space once.
+        std::vector<float> p(n * 2);
+        for (uint32_t i = 0; i < n; ++i) {
+            float x = c.X(i), y = c.Y(i);
+            TransformPoint(x, y, transform);
+            p[i * 2] = x;
+            p[i * 2 + 1] = y;
+        }
+
+        const uint32_t base = (uint32_t)batch.vertices.size();
+        batch.vertices.reserve(batch.vertices.size() + (size_t)n * 2 + 2);
+        batch.indices.reserve(batch.indices.size() + (size_t)n * 6 + 6);
+
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t prev = (i + n - 1) % n;
+            const uint32_t next = (i + 1) % n;
+            // Averaged adjacent-edge direction → outward normal (perp).
+            float dx = p[next * 2]     - p[prev * 2];
+            float dy = p[next * 2 + 1] - p[prev * 2 + 1];
+            float len = std::sqrt(dx * dx + dy * dy);
+            float nx, ny;
+            if (len > 1e-6f) { nx = -dy / len; ny = dx / len; }
+            else             { nx = 0.0f;      ny = 0.0f; }
+            const float px = p[i * 2], py = p[i * 2 + 1];
+            // Inner (solid) then outer (transparent).
+            batch.vertices.push_back(
+                { px - nx * kHalfFeatherPx, py - ny * kHalfFeatherPx, r, g, b, a });
+            batch.vertices.push_back(
+                { px + nx * kHalfFeatherPx, py + ny * kHalfFeatherPx, 0, 0, 0, 0 });
+        }
+
+        // Strip around the closed loop: (in_i,out_i,in_i+1)+(out_i,out_i+1,in_i+1)
+        for (uint32_t i = 0; i < n; ++i) {
+            const uint32_t j = (i + 1) % n;
+            const uint32_t in_i  = base + i * 2;
+            const uint32_t out_i = in_i + 1;
+            const uint32_t in_j  = base + j * 2;
+            const uint32_t out_j = in_j + 1;
+            batch.indices.push_back(in_i);
+            batch.indices.push_back(out_i);
+            batch.indices.push_back(in_j);
+            batch.indices.push_back(out_i);
+            batch.indices.push_back(out_j);
+            batch.indices.push_back(in_j);
+        }
+    }
+
+    if (!batch.vertices.empty())
+        PushBatch(std::move(batch));
+}
+
+// ============================================================================
+// EncodeFillPathScanline — legacy pixel-space scanline fill (UNCHANGED).
+//
+// Preserved verbatim as the fallback for paths EncodeFillPath's triangulator
+// can't handle (self-intersecting / multi-subpath glyph outlines) and for
+// gradient brushes. Its transform-coupled PixelRect cache is fine here: the
+// inputs that reach it are rare and typically static.
+// ============================================================================
+bool ImpellerD3D12Engine::EncodeFillPathScanline(
     float startX, float startY,
     const float* commands, uint32_t commandLength,
     const EngineBrushData& brush,
@@ -2184,7 +2407,164 @@ void ImpellerD3D12Engine::FillCacheInsert(
     fillCacheMap_[key] = fillCacheList_.begin();
 }
 
+// ============================================================================
+// EncodeStrokePath — transform-independent local-space cache for the common
+// case (solid, non-dashed, binary-mesh+feather — i.e. animated spinners /
+// progress rings / stroked Paths under a RenderTransform). Same root-cause fix
+// as EncodeFillPath/EncodeFillPolygon: the legacy body (now
+// EncodeStrokePathPixelCached) keys its cache on the FULL transform and runs
+// the whole flatten → ExpandStroke → (analytic) rasterize pipeline in pixel
+// space, so any scale/rotation/animation misses every frame.
+//
+// Here we flatten + expand ONCE in source space (source-unit strokeWidth →
+// thickness scales with the transform, exactly WPF Pen semantics), cache the
+// local-space feathered triangle mesh keyed by path + stroke params +
+// scaleBucket (NOT transform), then each frame only transform the cached
+// vertices (O(N)). Dashed strokes, explicit Antialiased (analytic, the
+// static-icon quality mode), gradient brushes and the no-command case defer
+// to EncodeStrokePathPixelCached unchanged.
+// ============================================================================
 bool ImpellerD3D12Engine::EncodeStrokePath(
+    float startX, float startY,
+    const float* commands, uint32_t commandLength,
+    const EngineBrushData& brush,
+    float strokeWidth, bool closed,
+    int32_t lineJoin, float miterLimit,
+    int32_t lineCap,
+    const float* dashPattern, uint32_t dashCount, float dashOffset,
+    const EngineTransform& transformIn,
+    int32_t edgeMode)
+{
+    int em = edgeMode;
+    if (em < 0) em = 1;                       // default = binary mesh + feather
+    const bool analytic = (em == 2);          // explicit Antialiased (static)
+
+    // Anything outside the cacheable common case keeps the proven legacy path.
+    if (analytic || dashCount > 0 || dashPattern ||
+        brush.type == 1 || brush.type == 2 ||
+        !commands || commandLength == 0 || strokeWidth <= 0.0f) {
+        return EncodeStrokePathPixelCached(
+            startX, startY, commands, commandLength, brush,
+            strokeWidth, closed, lineJoin, miterLimit, lineCap,
+            dashPattern, dashCount, dashOffset, transformIn, edgeMode);
+    }
+
+    const float maxScale    = MaxScaleFromTransform(transformIn);
+    const uint32_t scaleBkt = ScaleBucketFromMaxScale(maxScale);
+
+    // Key: geometry + scaleBucket (HashPathInput, same as fill) then the
+    // stroke-shape parameters mixed in. Transform is NOT in the key — it is
+    // applied per frame at emit. StrokeCache is a distinct map from the fill
+    // cache so there is no cross-pollution.
+    uint64_t key = HashPathInput(startX, startY, commands, commandLength,
+                                 /*fillRule*/ 0, scaleBkt);
+    FnvMix64(key, &strokeWidth, sizeof(strokeWidth));
+    uint8_t closedByte = closed ? 1 : 0;
+    FnvMix64(key, &closedByte, sizeof(closedByte));
+    FnvMix64(key, &lineJoin, sizeof(lineJoin));
+    FnvMix64(key, &miterLimit, sizeof(miterLimit));
+    FnvMix64(key, &lineCap, sizeof(lineCap));
+
+    const float br = brush.r * brush.a;
+    const float bg = brush.g * brush.a;
+    const float bb = brush.b * brush.a;
+    const float ba = brush.a;
+
+    // Emit a cached local-space mesh: transform every vertex by the current
+    // transform (O(N)) and reapply the per-vertex feather coverage. This is
+    // the ONLY per-frame CPU cost now for an animated stroke (was: full
+    // flatten + ExpandStroke + scanline rasterize every frame).
+    auto emitLocalMesh = [&](const CachedStrokeRects& m) {
+        const size_t vc = m.positions.size() / 2;
+        if (vc == 0 || m.indices.empty()) return;
+        ImpellerDrawBatch batch;
+        batch.vertices.resize(vc);
+        batch.indices = m.indices;
+        const float kInv255 = 1.0f / 255.0f;
+        for (size_t i = 0; i < vc; ++i) {
+            float x = m.positions[i * 2], y = m.positions[i * 2 + 1];
+            TransformPoint(x, y, transformIn);
+            float cov = m.coverage.empty() ? 1.0f : (float)m.coverage[i] * kInv255;
+            batch.vertices[i] = { x, y, br * cov, bg * cov, bb * cov, ba * cov };
+        }
+        batch.pipelineType = 0;
+        PushBatch(std::move(batch));
+        encodedPathCount_++;
+    };
+
+    if (auto cached = StrokeCacheFind(key)) {
+        path_stats::AddStrokeHit(cached->positions.size() / 2);
+        if (cached->positions.empty()) return false;
+        emitLocalMesh(*cached);
+        return true;
+    }
+    path_stats::AddStrokeMiss();
+
+    // Miss: flatten the raw commands in SOURCE space (tolerance scaled by
+    // 1/maxScale so on-screen smoothness matches this scale bucket — same
+    // contract EncodeFillPath uses) and expand the stroke at source-unit
+    // width into a binary feathered mesh.
+    const float srcTol = (maxScale > 0.001f)
+        ? flattenTolerance_ / maxScale : flattenTolerance_;
+    std::vector<Contour> contours;
+    {
+        path_stats::ScopedFlattenTimer flattenTimer(commandLength);
+        contours = FlattenPathToContours(startX, startY, commands,
+                                         commandLength, srcTol);
+        uint64_t ov = 0;
+        for (const auto& c : contours) ov += c.VertexCount();
+        flattenTimer.RecordOutputVerts(ov);
+    }
+
+    auto join = static_cast<ImpellerJoin>(lineJoin);
+    auto cap  = static_cast<ImpellerCap>(lineCap);
+    std::vector<ImpellerVertex> meshVerts;
+    std::vector<uint32_t>       meshIndices;
+    meshVerts.reserve(contours.size() * 64);
+    meshIndices.reserve(contours.size() * 96);
+    for (auto& c : contours) {
+        if (c.VertexCount() < 2) continue;
+        jalium::ExpandStrokePath<ImpellerVertex>(
+            meshVerts, meshIndices,
+            c.points.data(), c.VertexCount(),
+            strokeWidth, join, miterLimit, cap, closed,
+            brush.r, brush.g, brush.b, brush.a,
+            /*collectContours*/ nullptr);
+    }
+
+    auto entry = std::make_shared<CachedStrokeRects>();
+    if (meshVerts.empty() || meshIndices.empty()) {
+        StrokeCacheInsert(key, entry);   // negative cache: empty result
+        return false;
+    }
+    entry->positions.resize(meshVerts.size() * 2);
+    entry->coverage.resize(meshVerts.size());
+    float minX =  std::numeric_limits<float>::infinity();
+    float minY =  std::numeric_limits<float>::infinity();
+    float maxX = -std::numeric_limits<float>::infinity();
+    float maxY = -std::numeric_limits<float>::infinity();
+    const float invBrushA = (brush.a > 0.0f) ? (1.0f / brush.a) : 0.0f;
+    for (size_t i = 0; i < meshVerts.size(); ++i) {
+        const auto& v = meshVerts[i];
+        entry->positions[i * 2]     = v.x;
+        entry->positions[i * 2 + 1] = v.y;
+        float cov = v.a * invBrushA;
+        if (cov < 0.0f) cov = 0.0f; else if (cov > 1.0f) cov = 1.0f;
+        entry->coverage[i] = (uint8_t)std::lround(cov * 255.0f);
+        if (v.x < minX) minX = v.x;
+        if (v.y < minY) minY = v.y;
+        if (v.x > maxX) maxX = v.x;
+        if (v.y > maxY) maxY = v.y;
+    }
+    entry->indices = std::move(meshIndices);
+    entry->bboxL = minX; entry->bboxT = minY;
+    entry->bboxR = maxX; entry->bboxB = maxY;
+    StrokeCacheInsert(key, entry);
+    emitLocalMesh(*entry);
+    return true;
+}
+
+bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
     float startX, float startY,
     const float* commands, uint32_t commandLength,
     const EngineBrushData& brush,
@@ -2760,7 +3140,107 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
     return true;
 }
 
+// ============================================================================
+// EncodeFillPolygon — transform-independent local-space cache (same fix as
+// EncodeFillPath). This is THE hot path for straight-line filled figures
+// (Path/Shape Data without curves, ScrollBar/RepeatButton glyphs): managed
+// DrawPathFigurePolygon → RenderTarget.FillPolygon → here. The legacy body
+// (now EncodeFillPolygonScanline) re-ran the full AET scanline rasterizer for
+// EVERY polygon EVERY frame with NO cache at all — profiled at ~3.3 ms × 38
+// polygons = 127 ms/frame, the dominant "Geometry drawing is laggy" cost.
+//
+// The incoming points carry the element's stable layout Offset (baked managed-
+// side) but NOT scroll/animation — those live in `transform`, applied per
+// frame at emit. So hashing the raw points + fillRule + scaleBucket gives a
+// frame-stable key: triangulate once, then only an O(N) vertex transform per
+// frame. Mirrors VulkanRenderTarget::FillPath / our EncodeFillPath exactly.
+// ============================================================================
 bool ImpellerD3D12Engine::EncodeFillPolygon(
+    const float* points, uint32_t pointCount,
+    const EngineBrushData& brush,
+    FillRule fillRule,
+    const EngineTransform& transform)
+{
+    if (pointCount < 3 || !points) return false;
+
+    // Gradient brushes (sampled in path-local space) and the no-cache safety
+    // case defer to the legacy per-call scanline rasterizer unchanged.
+    if (brush.type == 1 || brush.type == 2 || !pathGeometryCache_) {
+        return EncodeFillPolygonScanline(points, pointCount, brush, fillRule,
+                                         transform);
+    }
+
+    const float maxScale    = MaxScaleFromTransform(transform);
+    const uint32_t scaleBkt = ScaleBucketFromMaxScale(maxScale);
+    // Hash the raw (pre-transform) point array as the geometry payload.
+    const uint64_t key = HashPathInput(points[0], points[1],
+                                       points, pointCount * 2u,
+                                       (int32_t)fillRule, scaleBkt);
+
+    std::shared_ptr<const CachedPathGeometry> geom;
+    if (auto hit = pathGeometryCache_->FindAndTouch(key)) {
+        geom = std::move(hit->entry);
+        path_stats::AddGeometryHit();
+    } else {
+        auto fresh = std::make_shared<CachedPathGeometry>();
+        fresh->contours.resize(1);
+        fresh->contours[0].points.assign(points, points + (size_t)pointCount * 2);
+        const int32_t fr = (fillRule == FillRule::NonZero) ? 1 : 0;
+        std::vector<float> tri;
+        {
+            path_stats::ScopedTriangulateTimer triTimer;
+            bool ok = TriangulateCompoundPath(fresh->contours, fr, tri)
+                      && tri.size() >= 6;
+            if (ok) {
+                triTimer.MarkOk();
+                fresh->localTriangles = std::move(tri);
+                fresh->triangulationSucceeded = true;
+            }
+        }
+        pathGeometryCache_->Insert(key, fresh);
+        geom = std::move(fresh);
+        path_stats::AddGeometryMiss();
+    }
+
+    if (!geom->triangulationSucceeded || geom->localTriangles.empty()) {
+        // Near-degenerate / self-intersecting: preserve the analytic slow path.
+        return EncodeFillPolygonScanline(points, pointCount, brush, fillRule,
+                                         transform);
+    }
+
+    const float r = brush.r * brush.a;
+    const float g = brush.g * brush.a;
+    const float b = brush.b * brush.a;
+    const float a = brush.a;
+    if (a <= 0.0f) return true;
+
+    {
+        const auto& lt = geom->localTriangles;       // x,y pairs, 3 per tri
+        const uint32_t vc = (uint32_t)(lt.size() / 2);
+        ImpellerDrawBatch batch;
+        batch.vertices.resize(vc);
+        batch.indices.resize(vc);
+        for (uint32_t i = 0; i < vc; ++i) {
+            float x = lt[i * 2], y = lt[i * 2 + 1];
+            TransformPoint(x, y, transform);
+            batch.vertices[i] = { x, y, r, g, b, a };
+            batch.indices[i]  = i;
+        }
+        batch.pipelineType = 0;
+        PushBatch(std::move(batch));
+    }
+    EmitContourFeather(geom->contours, transform, r, g, b, a);
+
+    encodedPathCount_++;
+    return true;
+}
+
+// ============================================================================
+// EncodeFillPolygonScanline — legacy per-call pixel-space scanline fill
+// (UNCHANGED). Fallback for gradient brushes and polygons EncodeFillPolygon's
+// triangulator rejects.
+// ============================================================================
+bool ImpellerD3D12Engine::EncodeFillPolygonScanline(
     const float* points, uint32_t pointCount,
     const EngineBrushData& brush,
     FillRule fillRule,

@@ -3,6 +3,9 @@
 #include "jalium_backend.h"
 #include "d3d12_backend.h"
 #include <vector>
+#include <list>
+#include <unordered_map>
+#include <cstdint>
 
 namespace jalium {
 
@@ -150,17 +153,43 @@ public:
     IDWriteTextFormat* GetFormat() const { return format_.Get(); }
     IDWriteFactory* GetFactory() const { return factory_; }
 
-    /// Creates an IDWriteTextLayout with the current format settings (including maxLines).
+    /// Creates an IDWriteTextLayout with the current format settings (including
+    /// maxLines). Cached: DirectWrite shaping/itemization/line-breaking is
+    /// ~10-15µs and a data-heavy frame issues hundreds of identical calls
+    /// (profiled: DrawText 344 calls / 5.46 ms). The shaped layout depends
+    /// only on (text, maxWidth, maxHeight, maxLines) for THIS format object —
+    /// the format (font/size/weight/style/alignment/wrap/trim/spacing) is the
+    /// natural cache partition, so a format mutation clears the whole cache.
+    /// AddText consumes the layout read-only, so sharing one instance across
+    /// draws and frames is safe.
+    /// `outKey` (optional) receives a globally-unique content hash of this
+    /// shaped layout (text + this format object + constraints). The glyph
+    /// atlas uses it to memoize resolved glyph quads across frames.
     HRESULT CreateLayout(const wchar_t* text, uint32_t textLength,
                          float maxWidth, float maxHeight,
-                         IDWriteTextLayout** layout);
+                         IDWriteTextLayout** layout,
+                         uint64_t* outKey = nullptr);
 
 private:
+    uint64_t HashLayoutKey(const wchar_t* text, uint32_t textLength,
+                           float maxWidth, float maxHeight) const noexcept;
+    /// Drop all cached layouts. Called by every setter that mutates a
+    /// layout-affecting format property so stale layouts are never served.
+    void InvalidateLayoutCache() noexcept;
 
     ComPtr<IDWriteTextFormat> format_;
     IDWriteFactory* factory_ = nullptr;
     float fontSize_ = 0.0f;
     uint32_t maxLines_ = 0;  // 0 = unlimited
+
+    // Bounded LRU of shaped layouts. Cap covers a data-heavy frame's full
+    // visible text set (hundreds of unique strings) so it reuses across
+    // frames instead of thrashing. Layouts are small (DirectWrite internal
+    // buffers, a few KB each).
+    struct LayoutCacheEntry { uint64_t key; ComPtr<IDWriteTextLayout> layout; };
+    std::list<LayoutCacheEntry> layoutLru_;
+    std::unordered_map<uint64_t, std::list<LayoutCacheEntry>::iterator> layoutMap_;
+    static constexpr size_t kLayoutCacheCap = 2048;
 };
 
 } // namespace jalium

@@ -47,6 +47,7 @@ void D3D12TextFormat::SetAlignment(int32_t alignment) {
     }
 
     format_->SetTextAlignment(textAlignment);
+    InvalidateLayoutCache();
 }
 
 void D3D12TextFormat::SetParagraphAlignment(int32_t alignment) {
@@ -69,6 +70,7 @@ void D3D12TextFormat::SetParagraphAlignment(int32_t alignment) {
     }
 
     format_->SetParagraphAlignment(paragraphAlignment);
+    InvalidateLayoutCache();
 }
 
 void D3D12TextFormat::SetTrimming(int32_t trimming) {
@@ -95,6 +97,7 @@ void D3D12TextFormat::SetTrimming(int32_t trimming) {
     }
 
     format_->SetTrimming(&trimmingOptions, ellipsis.Get());
+    InvalidateLayoutCache();
 }
 
 void D3D12TextFormat::SetWordWrapping(int32_t wrapping) {
@@ -120,6 +123,7 @@ void D3D12TextFormat::SetWordWrapping(int32_t wrapping) {
     }
 
     format_->SetWordWrapping(wordWrapping);
+    InvalidateLayoutCache();
 }
 
 void D3D12TextFormat::SetLineSpacing(int32_t method, float spacing, float baseline) {
@@ -134,17 +138,73 @@ void D3D12TextFormat::SetLineSpacing(int32_t method, float spacing, float baseli
     }
 
     format_->SetLineSpacing(dwMethod, spacing, baseline);
+    InvalidateLayoutCache();
 }
 
 void D3D12TextFormat::SetMaxLines(uint32_t maxLines) {
+    if (maxLines_ == maxLines) return;
     maxLines_ = maxLines;
+    InvalidateLayoutCache();
+}
+
+uint64_t D3D12TextFormat::HashLayoutKey(
+    const wchar_t* text, uint32_t textLength,
+    float maxWidth, float maxHeight) const noexcept
+{
+    uint64_t h = 0xCBF29CE484222325ull;  // FNV-1a 64-bit
+    auto mix = [&h](const void* p, size_t n) {
+        const uint8_t* b = static_cast<const uint8_t*>(p);
+        for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 0x100000001B3ull; }
+    };
+    mix(&textLength, sizeof(textLength));
+    if (text && textLength)
+        mix(text, static_cast<size_t>(textLength) * sizeof(wchar_t));
+    mix(&maxWidth, sizeof(maxWidth));
+    mix(&maxHeight, sizeof(maxHeight));
+    mix(&maxLines_, sizeof(maxLines_));
+    return h;
+}
+
+void D3D12TextFormat::InvalidateLayoutCache() noexcept
+{
+    layoutMap_.clear();
+    layoutLru_.clear();
 }
 
 HRESULT D3D12TextFormat::CreateLayout(
     const wchar_t* text, uint32_t textLength,
     float maxWidth, float maxHeight,
-    IDWriteTextLayout** layout)
+    IDWriteTextLayout** layout,
+    uint64_t* outKey)
 {
+    if (outKey) *outKey = 0;  // 0 = uncacheable; set on every success path below
+    if (!layout) return E_POINTER;
+    *layout = nullptr;
+    if (!factory_ || !format_) return E_FAIL;
+
+    const uint64_t key = HashLayoutKey(text, textLength, maxWidth, maxHeight);
+    if (outKey) {
+        // Globally-unique key for the atlas glyph memo: the per-format layout
+        // key disambiguated by THIS format object (different font/size/weight
+        // ⇒ different glyphs for identical text/constraints).
+        uint64_t gk = key;
+        gk ^= (uint64_t)reinterpret_cast<uintptr_t>(this)
+              + 0x9E3779B97F4A7C15ull + (gk << 6) + (gk >> 2);
+        *outKey = gk;
+    }
+    if (auto it = layoutMap_.find(key); it != layoutMap_.end()) {
+        // Hit: promote to MRU and hand back a ref. The cache keeps its own.
+        layoutLru_.splice(layoutLru_.begin(), layoutLru_, it->second);
+        IDWriteTextLayout* cached = it->second->layout.Get();
+        if (cached) {
+            cached->AddRef();
+            *layout = cached;
+            return S_OK;
+        }
+        // Defensive: empty slot — drop and fall through to recreate.
+        layoutMap_.erase(it);
+    }
+
     HRESULT hr = factory_->CreateTextLayout(
         text, textLength, format_.Get(), maxWidth, maxHeight, layout);
 
@@ -168,6 +228,18 @@ HRESULT D3D12TextFormat::CreateLayout(
                     text, textLength, format_.Get(), maxWidth, totalH, layout);
             }
         }
+    }
+
+    if (SUCCEEDED(hr) && *layout) {
+        // Insert final (post-maxLines) layout. ComPtr's raw-pointer ctor
+        // AddRefs, so the cache owns its own ref while *layout keeps the
+        // caller's +1 from CreateTextLayout. Evict LRU tail at capacity.
+        if (layoutLru_.size() >= kLayoutCacheCap) {
+            layoutMap_.erase(layoutLru_.back().key);
+            layoutLru_.pop_back();
+        }
+        layoutLru_.push_front({ key, ComPtr<IDWriteTextLayout>(*layout) });
+        layoutMap_[key] = layoutLru_.begin();
     }
 
     return hr;

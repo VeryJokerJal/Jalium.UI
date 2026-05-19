@@ -64,6 +64,14 @@ internal sealed class LayoutManager
     public bool HasPendingLayout => _measureQueue.Count > 0 || _arrangeQueue.Count > 0;
 
     /// <summary>
+    /// Monotonically increasing token bumped each time UpdateLayout completes.
+    /// Consumers (e.g. Window's per-frame hit-test memoize) compare this against
+    /// a captured value to detect "is layout the same as when I last looked?".
+    /// Wraps naturally on overflow; equality is the only operation used.
+    /// </summary>
+    public long Generation { get; private set; }
+
+    /// <summary>
     /// Processes all pending measure and arrange operations.
     /// Called by Window before rendering.
     /// </summary>
@@ -146,6 +154,7 @@ internal sealed class LayoutManager
         {
             _isUpdating = false;
             _depthCache.Clear();
+            Generation++;
         }
     }
 

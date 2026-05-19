@@ -951,20 +951,38 @@ internal static class MarkupExtensionParser
         if (extension == null)
             return false;
 
-        // Provide the value
+        result = ProvideExtensionValue(extension, targetObject, targetProperty?.Name, ambientProvider);
+        return true;
+    }
+
+    /// <summary>
+    /// Builds the markup-extension service provider, resolves the target
+    /// <see cref="DependencyProperty"/> from <paramref name="targetPropertyName"/>, and
+    /// invokes <see cref="MarkupExtension.ProvideValue"/> — the exact tail
+    /// <see cref="TryParse(string, object, PropertyInfo?, IAmbientResourceProvider?, out object?)"/>
+    /// uses. Factored out so the SG-lowered compiled-binding path
+    /// (<see cref="BuildBindingExtension"/>) applies a binding through byte-identical
+    /// runtime machinery — no behavioural divergence from a runtime-parsed
+    /// <c>{Binding ...}</c>.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("MarkupExtension.ProvideValue may reflect on resolved types.")]
+    internal static object? ProvideExtensionValue(
+        MarkupExtension extension,
+        object targetObject,
+        string? targetPropertyName,
+        IAmbientResourceProvider? ambientProvider)
+    {
         var serviceProvider = new MarkupExtensionServiceProvider();
 
-        // Add ambient resource provider if available
         if (ambientProvider != null)
         {
             serviceProvider.AddService(typeof(IAmbientResourceProvider), ambientProvider);
         }
 
-        // Find the DependencyProperty if the target is a DependencyObject
         DependencyProperty? dp = null;
-        if (targetObject is DependencyObject && targetProperty != null)
+        if (targetObject is DependencyObject && !string.IsNullOrEmpty(targetPropertyName))
         {
-            dp = FindDependencyProperty(targetObject.GetType(), targetProperty.Name);
+            dp = FindDependencyProperty(targetObject.GetType(), targetPropertyName!);
         }
 
         var provideValueTarget = new ProvideValueTarget
@@ -974,8 +992,39 @@ internal static class MarkupExtensionParser
         };
         serviceProvider.AddService(typeof(IProvideValueTarget), provideValueTarget);
 
-        result = extension.ProvideValue(serviceProvider);
-        return true;
+        return extension.ProvideValue(serviceProvider);
+    }
+
+    /// <summary>
+    /// Reconstructs a <see cref="BindingExtension"/> from the SG-pre-split
+    /// <c>{Binding ...}</c> parameter list. This is <see cref="CreateBindingExtension"/>
+    /// minus the <see cref="SplitParameters"/> string work (which the SourceGenerator did
+    /// at compile time): the positional segment becomes <see cref="BindingExtension.Path"/>
+    /// and every <c>name=value</c> pair flows through the <b>verbatim</b>
+    /// <see cref="SetBindingParameter"/> — so Converter / Source / RelativeSource /
+    /// ConverterParameter / FallbackValue / TargetNullValue and any nested markup
+    /// extension resolve exactly as a runtime-parsed binding (incl. the deferred
+    /// <c>Converter={StaticResource X}</c> → <see cref="BindingExtension.PendingConverterKey"/>
+    /// path).
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Forwards to SetBindingParameter which may invoke nested markup extensions that reflect on user types.")]
+    internal static BindingExtension BuildBindingExtension(
+        string? positionalPath,
+        IReadOnlyList<string> names,
+        IReadOnlyList<string> values,
+        IAmbientResourceProvider? ambientProvider)
+    {
+        var extension = new BindingExtension();
+        if (!string.IsNullOrEmpty(positionalPath))
+            extension.Path = positionalPath!.Trim();
+
+        var count = names.Count < values.Count ? names.Count : values.Count;
+        for (var i = 0; i < count; i++)
+        {
+            SetBindingParameter(extension, names[i].Trim(), values[i].Trim(), ambientProvider);
+        }
+
+        return extension;
     }
 
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Some markup extensions (e.g. x:Static) reflect on the resolved Type to read fields/properties.")]

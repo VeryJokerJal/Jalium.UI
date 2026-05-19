@@ -386,7 +386,7 @@ internal static class JalxamlCodeGenerator
                 continue;
             if (attr.LocalName == "Name" && string.IsNullOrEmpty(attr.Prefix))
                 continue;
-            EmitValueAttribute(sb, varName, attr, elementSymbol, ctx, pad);
+            EmitValueAttribute(sb, varName, attr, elementSymbol, ctx, pad, node.ResolvedClrTypeName);
         }
 
         // Attached properties — use strongly-typed fast paths for known framework owners,
@@ -623,7 +623,8 @@ internal static class JalxamlCodeGenerator
         JalxamlAstAttribute attr,
         INamedTypeSymbol? elementSymbol,
         EmitContext ctx,
-        string pad)
+        string pad,
+        string? elementClrTypeName = null)
     {
         // Razor value-expression fast path. Detected forms (in attribute values):
         //   PropName="@Identifier"         — bind to DataContext path "Identifier"
@@ -660,10 +661,17 @@ internal static class JalxamlCodeGenerator
         // So we route Setter.Value through the runtime SetProperty(string) path
         // unconditionally, which invokes the same deferred-resolution machinery the
         // streaming parser used.
+        // Recognise <Setter Value="..."> symbol-independently: the deferred-resolution
+        // exclusion is behaviour-critical, so it must hold even when no SymbolTypeHelper
+        // resolved the element symbol (the parser always resolves <Setter> to the CLR
+        // type name via the curated table). Relying on the symbol alone would wrongly
+        // eager-resolve a Setter.Value markup extension at construction time whenever
+        // the symbol is unavailable.
         bool isSetterValueAttribute =
             string.Equals(attr.LocalName, "Value", StringComparison.Ordinal) &&
-            string.Equals(elementSymbol?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
-                          "global::Jalium.UI.Setter", StringComparison.Ordinal);
+            (string.Equals(elementSymbol?.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat),
+                           "global::Jalium.UI.Setter", StringComparison.Ordinal) ||
+             string.Equals(elementClrTypeName, "Jalium.UI.Setter", StringComparison.Ordinal));
 
         if (!isSetterValueAttribute && TryMatchSimpleMarkupExtension(attr.Value, out var extKind, out var extKey))
         {
@@ -683,6 +691,22 @@ internal static class JalxamlCodeGenerator
                     sb.AppendLine($"{pad}{varName}.{attr.LocalName} = null!;");
                     return;
             }
+        }
+
+        // {Binding ...} — split the envelope at compile time and hand the structured
+        // parts to the runtime trampoline, which rebuilds the BindingExtension through
+        // the verbatim SetBindingParameter and applies it via the same path a
+        // runtime-parsed binding uses (Converter / Source / RelativeSource / nested
+        // markup all handled identically). Setter.Value stays on the runtime
+        // SetProperty path — its markup-extension resolution is intentionally deferred
+        // to setter-apply time, so it must NOT be evaluated here during construction.
+        if (!isSetterValueAttribute &&
+            BindingMarkupLowering.TryLower(attr.Value, out var bindPath, out var bindNames, out var bindValues))
+        {
+            var pathExpr = bindPath == null ? "null" : EscapeStringLiteral(bindPath);
+            sb.AppendLine(
+                $"{pad}global::Jalium.UI.Markup.XamlBuilder.SetCompiledBinding({varName}, \"{attr.LocalName}\", {pathExpr}, {EmitStringArray(bindNames)}, {EmitStringArray(bindValues)}, __ctx);");
+            return;
         }
 
         if (elementSymbol != null && ctx.Symbols != null)
@@ -1225,6 +1249,26 @@ internal static class JalxamlCodeGenerator
             }
         }
         sb.Append('"');
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Emit a C# <c>string[]</c> literal (each element via <see cref="EscapeStringLiteral"/>),
+    /// or <c>global::System.Array.Empty&lt;string&gt;()</c> for an empty array to avoid an
+    /// allocation. Used for the SG-split <c>{Binding}</c> name/value pairs.
+    /// </summary>
+    private static string EmitStringArray(string[] items)
+    {
+        if (items.Length == 0)
+            return "global::System.Array.Empty<string>()";
+        var sb = new StringBuilder();
+        sb.Append("new string[] { ");
+        for (var i = 0; i < items.Length; i++)
+        {
+            if (i > 0) sb.Append(", ");
+            sb.Append(EscapeStringLiteral(items[i]));
+        }
+        sb.Append(" }");
         return sb.ToString();
     }
 

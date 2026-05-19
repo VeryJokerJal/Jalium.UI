@@ -3055,6 +3055,41 @@ public static class XamlReader
         return SetProperty(instance, propertyName, value, context, null);
     }
 
+    /// <summary>
+    /// Apply a SourceGenerator-lowered <c>{Binding ...}</c>. The SG already did the
+    /// envelope + <c>SplitParameters</c> string work at compile time and hands us the
+    /// positional path and the <c>name=value</c> pairs. We rebuild the
+    /// <see cref="BindingExtension"/> via the verbatim <see cref="MarkupExtensionParser.BuildBindingExtension"/>
+    /// (so Converter / Source / RelativeSource / nested markup resolve identically) and
+    /// then run the <b>exact</b> apply/assign path the streaming parser uses for a
+    /// runtime-parsed binding (mirrors <c>SetProperty</c>'s markup-extension branch):
+    /// a produced <see cref="BindingExpressionBase"/> means
+    /// <see cref="DependencyObject.SetBinding(DependencyProperty, BindingBase)"/> already
+    /// bound it; otherwise the produced value is assigned through the same
+    /// <see cref="BuilderSetProperty"/> path. Behaviour is byte-identical to
+    /// <c>{Binding ...}</c> parsed at runtime — only the string parse moved to build time.
+    /// </summary>
+    [RequiresUnreferencedCode("Forwards to MarkupExtensionParser.BuildBindingExtension / ProvideExtensionValue which resolve nested markup extensions via reflection.")]
+    internal static void BuilderApplyCompiledBinding(
+        object target,
+        string propertyName,
+        string? positionalPath,
+        string[] names,
+        string[] values,
+        XamlParserContext context)
+    {
+        var extension = MarkupExtensionParser.BuildBindingExtension(positionalPath, names, values, context);
+        var result = MarkupExtensionParser.ProvideExtensionValue(extension, target, propertyName, context);
+
+        // Mirror SetProperty's markup-extension branch exactly: SetBinding already
+        // applied the binding when ProvideValue returned a BindingExpressionBase;
+        // anything else is a value to assign through the normal property path.
+        if (result is BindingExpressionBase)
+            return;
+        if (result != null)
+            BuilderSetProperty(target, propertyName, result, context);
+    }
+
     [RequiresUnreferencedCode("XamlBuilder.SetAttachedProperty resolves the static SetXxx method via reflection on the owner type.")]
     internal static void BuilderSetAttachedProperty(
         object instance,

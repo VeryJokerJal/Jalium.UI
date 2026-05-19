@@ -4840,8 +4840,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         // Convert physical client pixels to DIPs
         Point clientPos = new(screenPt.X / _dpiScale, screenPt.Y / _dpiScale);
 
-        var hitResult = HitTestWithCache(clientPos);
-        var element = hitResult?.VisualHit as UIElement;
+        var element = HitTestElement(clientPos, "cursor");
 
         // Walk up the visual tree to find the first element with a non-null Cursor
         var cursor = ResolveCursor(element);
@@ -6355,7 +6354,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private RenderTargetDrawingContext? _drawingContext;
     private UIElement? _lastMouseOverElement;
-    private UIElement? _lastHitTestElement;
+    // Per-frame hit-test memoize. `_hitMemoLayoutGeneration` snapshots
+    // LayoutManager.Generation at the time of the cached hit; any later
+    // measure/arrange (including ScrollViewer scrolling, animation, theme
+    // changes, etc.) bumps Generation and invalidates the memo automatically.
+    // Cache only hits for the exact same (point, generation) pair — same frame,
+    // same layout, same coordinate — so it removes redundant traversals from
+    // mouse-down/up/wheel at the same position without any manual invalidation.
+    private Point _hitMemoPoint;
+    private UIElement? _hitMemoElement;
+    private long _hitMemoLayoutGeneration = -1;
     private readonly List<UIElement> _mousePressedChain = [];
     private readonly List<UIElement> _keyboardPressedChain = [];
     private nint _detachedImeContext;
@@ -7525,7 +7533,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     {
         UIElement.ForceReleaseMouseCapture();
         ClearPressedChains();
-        _lastHitTestElement = null;
 
         if (TitleBarStyle == WindowTitleBarStyle.Custom)
         {
@@ -8050,170 +8057,41 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private UIElement? HitTestElement(Point windowPosition, string source = "hit-test")
     {
-        var hitElement = HitTestWithCache(windowPosition)?.VisualHit as UIElement;
-        _lastHitTestElement = hitElement;
+        // Bring layout up to date before reading any element's _visualBounds /
+        // _cachedScreenOffset. Mirrors WPF's MouseDevice.Synchronize →
+        // ContextLayoutManager.UpdateLayout pattern: an input event that arrives
+        // between an InvalidateArrange call and the next render frame would
+        // otherwise hit-test against stale geometry (the bug that forced the
+        // previous TryHitTestCachedSubtree fast path to be disabled).
+        EnsureLayoutValidForInput();
+
+        long generation = _layoutManager.Generation;
+        if (generation == _hitMemoLayoutGeneration && _hitMemoPoint == windowPosition)
+        {
+            return _hitMemoElement;
+        }
+
+        var hitElement = HitTest(windowPosition)?.VisualHit as UIElement;
+
+        _hitMemoLayoutGeneration = generation;
+        _hitMemoPoint = windowPosition;
+        _hitMemoElement = hitElement;
+
         return hitElement;
     }
 
-    private HitTestResult? HitTestWithCache(Point windowPosition)
+    // Flush any queued measure/arrange so input handlers see the same layout
+    // the next render will. No-op when the window is closing or the queue is
+    // empty — the common steady-state path stays free of layout work.
+    private void EnsureLayoutValidForInput()
     {
-        if (ActiveContentDialog != null || ActiveInPlaceDialogs.Count > 0 || OverlayLayer.HasModalRoots || OverlayLayer.HasLightDismissPopups || OverlayLayer.HasPopupRoots)
-        {
-            return HitTest(windowPosition);
-        }
+        if (_isClosing || Handle == nint.Zero)
+            return;
 
-        var cachedHit = TryHitTestCachedSubtree(windowPosition);
-        if (cachedHit != null)
-        {
-            return cachedHit;
-        }
+        if (!_layoutManager.HasPendingLayout && !_isFirstLayout)
+            return;
 
-        return HitTest(windowPosition);
-    }
-
-    private HitTestResult? TryHitTestCachedSubtree(Point windowPosition)
-    {
-        var current = _lastHitTestElement;
-        if (current == null)
-            return null;
-
-        if (!IsElementAttachedToThisWindow(current))
-        {
-            _lastHitTestElement = null;
-            return null;
-        }
-
-        // The fast path is only safe when the point is inside *every* ancestor's
-        // bounds and layout clip, AND no higher-z sibling of the cached element or
-        // any ancestor could intercept the click. Without either guard, clicks leak
-        // through to scrolled-off or visually clipped content that the user cannot
-        // see — e.g. clicking a title bar above a ScrollViewer should hit the title
-        // bar button, not whichever ScrollViewer child was hit most recently, and
-        // clicking a ScrollBar overlaying the content should hit the ScrollBar, not
-        // the content behind it.
-        if (current is not FrameworkElement fe
-            || !fe.IsHitTestVisible
-            || fe.Visibility != Visibility.Visible)
-        {
-            return null;
-        }
-
-        if (!IsCachedSubtreeSafeForPoint(fe, windowPosition))
-        {
-            return null;
-        }
-
-        var parent = fe.VisualParent as UIElement;
-        var pointInParent = parent == null
-            ? windowPosition
-            : new Point(
-                windowPosition.X - parent.GetScreenBounds().X,
-                windowPosition.Y - parent.GetScreenBounds().Y);
-
-        var subtreeHit = fe.HitTest(pointInParent);
-        if (subtreeHit != null)
-        {
-            return subtreeHit;
-        }
-
-        return null;
-    }
-
-    // Walks from the cached element up to the window, confirming at each level that
-    // the point is inside the element and its layout clip. At the cached element's
-    // immediate parent we also verify no higher-z sibling shadows the cached branch
-    // (the scrollbar-over-content case). Checking only the direct parent avoids
-    // false positives from transparent overlays that always span the window (e.g.
-    // OverlayLayer), while still catching the most common occlusion pattern where
-    // a sibling widget renders on top of the cached subtree.
-    private static bool IsCachedSubtreeSafeForPoint(UIElement cached, Point windowPosition)
-    {
-        var parent = cached.VisualParent;
-        if (parent != null && TryFindHigherZSiblingThatContains(parent, cached, windowPosition))
-        {
-            return false;
-        }
-
-        Visual? node = cached;
-        while (node != null && node is not IWindowHost)
-        {
-            if (node is not UIElement ui)
-            {
-                node = node.VisualParent;
-                continue;
-            }
-
-            var screenBounds = ui.GetScreenBounds();
-            if (!screenBounds.Contains(windowPosition))
-            {
-                return false;
-            }
-
-            var localPoint = new Point(
-                windowPosition.X - screenBounds.X,
-                windowPosition.Y - screenBounds.Y);
-            if (!ui.IsPointInsideLayoutClip(localPoint))
-            {
-                return false;
-            }
-
-            node = ui.VisualParent;
-        }
-
-        return true;
-    }
-
-    private static bool TryFindHigherZSiblingThatContains(Visual parent, Visual child, Point windowPosition)
-    {
-        int count = parent.VisualChildrenCount;
-
-        // Find the child's index.
-        int childIndex = -1;
-        for (int i = 0; i < count; i++)
-        {
-            if (ReferenceEquals(parent.GetVisualChild(i), child))
-            {
-                childIndex = i;
-                break;
-            }
-        }
-
-        if (childIndex < 0)
-        {
-            return false;
-        }
-
-        // Siblings at higher indices render on top of the cached branch; if one of
-        // them contains the point, it would win in a full hit test, so the cache
-        // cannot be trusted to produce the same answer.
-        for (int i = childIndex + 1; i < count; i++)
-        {
-            if (parent.GetVisualChild(i) is UIElement sibling
-                && sibling.IsHitTestVisible
-                && sibling.Visibility == Visibility.Visible
-                && sibling.GetScreenBounds().Contains(windowPosition))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private bool IsElementAttachedToThisWindow(UIElement element)
-    {
-        Visual? current = element;
-        while (current != null)
-        {
-            if (ReferenceEquals(current, this))
-            {
-                return true;
-            }
-
-            current = current.VisualParent;
-        }
-
-        return false;
+        UpdateLayout();
     }
 
     private static MenuItem? FindTopLevelMenuItemAncestor(UIElement? element)

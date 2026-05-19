@@ -4,6 +4,8 @@
 #include <dwrite_3.h>
 #include <unordered_map>
 #include <vector>
+#include <list>
+#include <cstdint>
 
 namespace jalium {
 
@@ -90,12 +92,20 @@ public:
     /// Generates glyph instances for a text layout.
     /// Returns the number of glyph instances added to `outInstances`.
     /// Optionally outputs text decoration rects (underline/strikethrough).
+    /// `layoutKey` (0 = uncacheable) is a stable content hash of the source
+    /// text + format + constraints (from D3D12TextFormat::CreateLayout). When
+    /// non-zero the resolved glyph quads + decorations are memoized per
+    /// (layoutKey, origin) so repeat frames skip layout->Draw + the per-glyph
+    /// atlas walk — the dominant DrawText cost once the layout itself is
+    /// cached. Entries are tagged with the atlas generation and ignored after
+    /// any Reset()/GrowAtlas() so stale atlas UVs are never served.
     uint32_t GenerateGlyphs(
         IDWriteTextLayout* layout,
         float originX, float originY,
         float colorR, float colorG, float colorB, float colorA,
         std::vector<GlyphQuadInstance>& outInstances,
-        std::vector<TextDecorationRect>* outDecorations = nullptr);
+        std::vector<TextDecorationRect>* outDecorations = nullptr,
+        uint64_t layoutKey = 0);
 
     /// Uploads any pending glyph data to the GPU atlas texture.
     /// Must be called before rendering text in a frame.
@@ -196,6 +206,31 @@ private:
 
     // Glyph cache (GlyphCacheValue holds a ComPtr to prevent dangling fontFace pointers)
     std::unordered_map<GlyphKey, GlyphCacheValue, GlyphKeyHash> cache_;
+
+    // Atlas generation: bumped on every Reset()/GrowAtlas() (anything that
+    // moves slots or changes atlas dimensions, invalidating cached UVs).
+    // The resolved-glyph cache tags entries with the generation they were
+    // built under and treats a mismatch as a miss — content-addressed key
+    // (no raw pointers) + generation guard makes stale-UV garbled text
+    // impossible by construction.
+    uint32_t atlasGeneration_ = 0;
+
+    // Resolved-glyph memo: color-neutral quads + decorations for a shaped
+    // run at a given (layoutKey, origin). Caller applies its premultiplied
+    // colour at emit, so different-coloured draws of the same text still hit.
+    struct CachedGlyphRun {
+        std::vector<GlyphQuadInstance> instances;  // colour left unset (filled at emit)
+        std::vector<TextDecorationRect> decos;     // colour left unset (filled at emit)
+        uint32_t gen = 0;
+    };
+    struct InstNode { uint64_t key; CachedGlyphRun run; };
+    std::list<InstNode> instLru_;
+    std::unordered_map<uint64_t, std::list<InstNode>::iterator> instMap_;
+    static constexpr size_t kInstCacheCap = 4096;
+
+    static uint64_t HashInstanceKey(uint64_t layoutKey,
+                                    float originX, float originY,
+                                    float dpiScale) noexcept;
 
     // Simple row-based atlas packer
     uint16_t packX_ = 0;

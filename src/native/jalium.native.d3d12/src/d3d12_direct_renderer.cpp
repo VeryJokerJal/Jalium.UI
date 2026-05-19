@@ -1150,7 +1150,8 @@ void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
 }
 
 void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
-                                   float r, float g, float b, float a)
+                                   float r, float g, float b, float a,
+                                   uint64_t layoutKey)
 {
     if (!glyphAtlas_ || !layout) return;
 
@@ -1171,7 +1172,8 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     // Collect glyph instances and text decorations
     std::vector<D3D12GlyphAtlas::TextDecorationRect> decorations;
     uint32_t count = glyphAtlas_->GenerateGlyphs(layout, tx, ty, r, g, b, effectiveA,
-                                                  textInstances_, &decorations);
+                                                  textInstances_, &decorations,
+                                                  layoutKey);
 
     // Apply transform scaling to each glyph instance.
     // GenerateGlyphs places glyphs at absolute screen positions using the

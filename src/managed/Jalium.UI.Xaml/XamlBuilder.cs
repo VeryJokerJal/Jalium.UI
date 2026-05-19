@@ -129,6 +129,11 @@ internal static class XamlBuilderInitializer
         {
             RazorExpressionRegistry.RegisterSectionFactory(name, factory);
         };
+
+        XamlBuilder.SetCompiledBindingImpl = static (target, propertyName, positionalPath, names, values, ctx) =>
+        {
+            XamlReader.BuilderApplyCompiledBinding(target, propertyName, positionalPath, names, values, CtxOf(ctx));
+        };
     }
 
     /// <summary>
