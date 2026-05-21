@@ -588,6 +588,16 @@ internal static partial class NativeMethods
     [LibraryImport(CoreLib, EntryPoint = "jalium_reset_path_stats")]
     internal static partial void ResetPathStats();
 
+    // Global text antialias mode. Mirrors managed Jalium.UI.Media.TextRenderingMode
+    // (0=Auto, 1=Aliased, 2=Grayscale, 3=ClearType). Setting the value bumps an
+    // internal generation token; backend glyph atlases compare against their
+    // cached gen on the next frame and reset their CPU/GPU bitmaps to match.
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_set_global_antialias_mode")]
+    internal static partial void SetGlobalTextAntialiasMode(int mode);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_text_get_global_antialias_mode")]
+    internal static partial int GetGlobalTextAntialiasMode();
+
     /// <summary>
     /// Unified bitmap telemetry from jalium.native.core. Cross-backend
     /// (D3D12 + Vulkan + software all write into the same atomic state in
