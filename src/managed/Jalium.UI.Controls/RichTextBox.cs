@@ -156,7 +156,25 @@ public class RichTextBox : Control, IImeSupport
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(RichTextBox),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnIsReadOnlyChangedStatic));
+
+    private static void OnIsReadOnlyChangedStatic(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is RichTextBox rtb && rtb.IsKeyboardFocused)
+        {
+            rtb.FindHostWindow()?.RefreshInputMethodAssociation();
+        }
+    }
+
+    private Window? FindHostWindow()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window w)
+                return w;
+        }
+        return null;
+    }
 
     /// <summary>
     /// Identifies the AcceptsTab dependency property.
@@ -2821,6 +2839,9 @@ public class RichTextBox : Control, IImeSupport
     #region IME Support
 
     /// <inheritdoc />
+    public bool IsImeAllowed => !IsReadOnly;
+
+    /// <inheritdoc />
     public Point GetImeCaretPosition()
     {
         var contentBounds = GetContentBounds();
@@ -2876,15 +2897,14 @@ public class RichTextBox : Control, IImeSupport
     /// <inheritdoc />
     public void OnImeCompositionEnd(string? resultString)
     {
+        // Result is routed via TextInput in Window.OnImeComposition — do NOT
+        // InsertText here. Inserting both ways was the root cause of duplicate
+        // characters when picking from the Win+. emoji panel, which raises
+        // WM_IME_COMPOSITION (GCS_RESULTSTR) and the TextInput bubble already
+        // commits the chosen glyph.
         _isImeComposing = false;
         _imeCompositionString = string.Empty;
         _imeCompositionCursor = 0;
-
-        if (!string.IsNullOrEmpty(resultString) && !IsReadOnly)
-        {
-            InsertText(resultString);
-        }
-
         _imeCompositionStart = _caretPosition?.DocumentOffset ?? 0;
         InvalidateVisual();
     }

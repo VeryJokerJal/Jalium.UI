@@ -2057,6 +2057,9 @@ public class TextBox : TextBoxBase, IImeSupport
     public bool IsImeComposing => _isImeComposing;
 
     /// <inheritdoc />
+    public bool IsImeAllowed => !IsReadOnly;
+
+    /// <inheritdoc />
     public Point GetImeCaretPosition()
     {
         return GetCaretScreenPosition();

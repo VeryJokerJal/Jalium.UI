@@ -245,7 +245,22 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(EditControl),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnIsReadOnlyChangedStatic));
+
+    private static void OnIsReadOnlyChangedStatic(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is EditControl ec && ec.IsKeyboardFocused)
+        {
+            for (Visual? current = ec; current != null; current = current.VisualParent)
+            {
+                if (current is Window w)
+                {
+                    w.RefreshInputMethodAssociation();
+                    break;
+                }
+            }
+        }
+    }
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
     public static readonly DependencyProperty ShowLineNumbersProperty =
@@ -3400,6 +3415,8 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
     #endregion
 
     #region IME Support
+
+    public bool IsImeAllowed => !IsReadOnly;
 
     public Point GetImeCaretPosition()
     {

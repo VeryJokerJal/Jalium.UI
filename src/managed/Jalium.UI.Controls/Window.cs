@@ -7727,8 +7727,29 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return false;
         }
 
+        // Honour IsImeAllowed=false (e.g. IsReadOnly text controls) — the
+        // IME context is detached below in UpdateInputMethodAssociation so
+        // the candidate window never opens for input that will be ignored.
+        if (!support.IsImeAllowed)
+        {
+            imeSupport = null;
+            return false;
+        }
+
         imeSupport = support;
         return true;
+    }
+
+    /// <summary>
+    /// Re-evaluates whether the focused element wants IME input and attaches
+    /// or detaches the window's IMM context accordingly. Call this after
+    /// changing properties that influence <see cref="IImeSupport.IsImeAllowed"/>
+    /// (most commonly <c>IsReadOnly</c>) so the IME candidate window appears
+    /// or disappears immediately rather than only on the next focus change.
+    /// </summary>
+    public void RefreshInputMethodAssociation()
+    {
+        UpdateInputMethodAssociation();
     }
 
     private void UpdateInputMethodAssociation()
