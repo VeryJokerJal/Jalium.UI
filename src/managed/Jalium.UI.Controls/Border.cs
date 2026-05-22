@@ -62,12 +62,13 @@ public class Border : FrameworkElement
     // +g·(drag/axis), and the perpendicular axis squashes by -g·(drag/axis)
     // — so the panel reads as a piece of taffy being pulled (longer in one
     // direction, narrower across) rather than as a uniform magnification.
-    // 0.0 = content stays rigid; 1.0 = content matches the full anisotropy
-    // of the shape SDF, which reads as a hard zoom. ~0.35 gives a clearly
-    // perceptible "pull" — on a 200×200 panel dragged 100px on X, content
-    // X stretches ~17% and Y squashes ~17%, so the body reads as "wider
-    // and flatter" not as "bigger".
-    private const double LgContentDeformationGain = 0.35;
+    // 0.0 = content stays rigid (the symptom that "only the content
+    // doesn't deform during drag"); 1.0 = content matches the full
+    // anisotropy of the shape SDF, so children visibly squeeze along
+    // with the glass — on a 200×200 panel dragged 100px on X, content X
+    // stretches +50 % while Y squashes ~50 %, keeping X·Y close to 1
+    // (taffy pull, not zoom-in).
+    private const double LgContentDeformationGain = 1.0;
 
     private Pen? GetOrCreateBorderPen(Brush borderBrush, double borderWidth)
     {
@@ -469,9 +470,42 @@ public class Border : FrameworkElement
         if (!ClipToBounds)
             return null;
 
-        // Clip to the Border's outer shape. Child layout is already inset by BorderThickness
-        // and Padding, so shrinking the clip here removes visible edge pixels from children.
-        var clipRect = new Rect(0, 0, _renderSize.Width, _renderSize.Height);
+        // Clip to the Border's *inner* shape — the same rect + per-corner radii
+        // that OnRender uses for the Background fill, NOT the outer RenderSize box.
+        //
+        // Why inner instead of outer:
+        //   The stroke ring sits between the outer shape and the inner shape,
+        //   `BorderThickness` pixels wide. If the layout clip were the outer
+        //   shape, child fragments along the corner arc would smoothstep-fade
+        //   past the visible Background and bleed 1–2 px into the stroke ring —
+        //   exactly the "red leaks past the grey stroke" artefact observed on
+        //   nested rounded panels. Clipping at the inner shape stops child
+        //   content cleanly at the stroke's inner edge.
+        //
+        // Why this doesn't truncate the stroke:
+        //   Visual.RenderDirect now pops the layout clip BEFORE invoking
+        //   OnPostRender (where Border paints its stroke). So the stroke is
+        //   rendered outside the inner clip, on the outer/centred ring as
+        //   intended; only children and the Border's own Background pass
+        //   through the inner clip, and both already conform to the inner
+        //   shape exactly. Result: stroke draws full width; child fragments
+        //   stop at the stroke's inner edge; nothing leaks into or past the
+        //   BorderThickness ring.
+        var rawBorder = BorderThickness;
+        var snappedLeft = SnapLayoutValue(rawBorder.Left);
+        var snappedTop = SnapLayoutValue(rawBorder.Top);
+        var snappedRight = SnapLayoutValue(rawBorder.Right);
+        var snappedBottom = SnapLayoutValue(rawBorder.Bottom);
+
+        var innerLeft = snappedLeft;
+        var innerTop = snappedTop;
+        var innerRight = _renderSize.Width - snappedRight;
+        var innerBottom = _renderSize.Height - snappedBottom;
+        var clipRect = new Rect(
+            innerLeft,
+            innerTop,
+            Math.Max(0, innerRight - innerLeft),
+            Math.Max(0, innerBottom - innerTop));
 
         if (Shape == BorderShape.SuperEllipse)
         {
@@ -479,17 +513,21 @@ public class Border : FrameworkElement
         }
 
         var cornerRadius = CornerRadius;
+        // Per-corner inner radius — same WPF formula OnRender uses for the
+        // Background fill, so the layout clip matches the Background outline.
+        var innerRadius = new CornerRadius(
+            Math.Max(0, cornerRadius.TopLeft - Math.Max(snappedLeft, snappedTop)),
+            Math.Max(0, cornerRadius.TopRight - Math.Max(snappedTop, snappedRight)),
+            Math.Max(0, cornerRadius.BottomRight - Math.Max(snappedRight, snappedBottom)),
+            Math.Max(0, cornerRadius.BottomLeft - Math.Max(snappedBottom, snappedLeft)));
+
         var maxRadius = Math.Max(
-            Math.Max(cornerRadius.TopLeft, cornerRadius.TopRight),
-            Math.Max(cornerRadius.BottomRight, cornerRadius.BottomLeft));
+            Math.Max(innerRadius.TopLeft, innerRadius.TopRight),
+            Math.Max(innerRadius.BottomRight, innerRadius.BottomLeft));
 
         if (maxRadius > 0)
         {
-            // Carry the full per-corner CornerRadius downstream so the native
-            // clip honors asymmetric corners (e.g. CornerRadius="13,13,0,0").
-            // RadiusX/RadiusY stay populated with maxRadius for any consumer
-            // that hasn't been taught about HasPerCornerRadii yet.
-            return new RectangleGeometry(clipRect, cornerRadius);
+            return new RectangleGeometry(clipRect, innerRadius);
         }
 
         return new RectangleGeometry(clipRect);
@@ -640,31 +678,25 @@ public class Border : FrameworkElement
                 lgSx = Math.Clamp(lgSx, 0.1, 3.2);
                 lgSy = Math.Clamp(lgSy, 0.1, 3.2);
 
-                // Content uses an isovolumetric (volume-preserving) anisotropic
-                // deformation. The axis aligned with the drag stretches by
-                // +gain·(drag / axis), and the perpendicular axis squashes
-                // by the same amount — so the panel's content reads as a
-                // piece of taffy being pulled, not as a zoomed image.
+                // Content and border stroke share the exact same scale as
+                // the SDF glass silhouette: lgSx / lgSy already carries
+                // the drag stretch + press spring + perpendicular
+                // compression that the glass is using. Reusing it here
+                // makes the inner box (children, child Border strokes,
+                // backgrounds) deform in lock-step with the outer glass
+                // shape — when the outer rectangle gets squeezed into a
+                // taller narrower box, the inner rectangle does the same
+                // thing at the same proportions, with the same center.
                 //
-                // The shape silhouette uses an additive stretch
-                // (rect + stretch) which is intentionally non-conserving:
-                // the SDF glass visibly bulges. Content cannot use that
-                // formula because it shows up on text & icons as a uniform
-                // magnification (X grows ~+50% while Y only shrinks ~-15%,
-                // so both axes end up >1 once press scale lands on top).
-                // The asymmetric ±gain·dragRatio formula here keeps the
-                // X/Y ratio shifted away from 1 (visible elasticity) while
-                // leaving X·Y close to 1 (no perceived zoom).
-                double dragRatioX = stretchW / rectWidth;
-                double dragRatioY = stretchH / rectHeight;
-                double horizFactor = 1.0 + (dragRatioX - dragRatioY) * LgContentDeformationGain;
-                double vertFactor = 1.0 + (dragRatioY - dragRatioX) * LgContentDeformationGain;
-
-                // Press-spring scale (0.97 when pressed → 1.0 when released)
-                // multiplies on top so press feedback still reads clearly
-                // independent of drag direction.
-                lgContentSx = Math.Clamp(horizFactor * scaleX, 0.1, 1.8);
-                lgContentSy = Math.Clamp(vertFactor * scaleY, 0.1, 1.8);
+                // The previous isovolumetric (±gain·dragRatio) formula
+                // intentionally kept content's X·Y close to 1 to avoid a
+                // perceived zoom, but the side effect was that the inner
+                // box only deformed by ~17 % while the outer one
+                // deformed by 50 % — visually the inner stayed
+                // rectangular while the outer flattened, which is the
+                // "only the content didn't deform" symptom.
+                lgContentSx = lgSx;
+                lgContentSy = lgSy;
 
                 lgShiftX = tx * LgDragAsymmetry;
                 lgShiftY = ty * LgDragAsymmetry;
@@ -989,8 +1021,7 @@ public class Border : FrameworkElement
     /// <inheritdoc />
     /// <remarks>
     /// 这里做两件事：
-    ///   1. Liquid Glass：弹出 OnRender 中 push 的 ScaleTransform。
-    ///   2. Border stroke：在 children 渲染之后再画一次 stroke。
+    ///   1. Border stroke：在 children 渲染之后再画一次 stroke。
     ///      原因：Visual.Render 顺序为 OnRender → children → OnPostRender，
     ///      若 stroke 只在 OnRender 中绘制，children 的 Background 在亚像素
     ///      抗锯齿区域会盖住 stroke 内半边（视觉表现："上面 stroke 看起来
@@ -998,26 +1029,38 @@ public class Border : FrameworkElement
     ///      把 stroke 放到 OnPostRender 保证它始终是当前 Border subtree 的最上层。
     ///      SuperEllipse 路径的 stroke 已经在 OnRender 中由原生渲染器特殊处理，
     ///      此处不再重画。
+    ///      在 Liquid Glass 模式下 stroke 必须在 Pop 之前画——这样描边和子内容
+    ///      共享同一个 lgContentSx/lgContentSy 形变矩阵，跟外层 SDF 玻璃保持
+    ///      一致的轮廓。否则 stroke 按原 RenderSize 静止绘制，外层玻璃和
+    ///      内层 stroke 不再同步，看起来"玻璃被压扁但 border 还在原位"。
+    ///   2. Liquid Glass：弹出 OnRender 中 push 的 ScaleTransform。
     /// </remarks>
     protected override void OnPostRender(DrawingContext drawingContext)
     {
         if (drawingContext is DrawingContext dc)
         {
-            // 1. Pop liquid-glass ScaleTransform pushed in OnRender.
+            // 1. Re-draw stroke on top of children, still under the
+            //    liquid-glass transform so the border deforms together
+            //    with the SDF glass silhouette.
+            DrawStrokeAboveChildren(dc);
+
+            // 2. Pop liquid-glass ScaleTransform pushed in OnRender.
             if (_lgPushedTransform)
             {
                 dc.Pop();
                 _lgPushedTransform = false;
             }
-
-            // 2. Re-draw stroke on top of children (Standard rounded rect path only).
-            DrawStrokeAboveChildren(dc);
         }
     }
 
     /// <summary>
     /// 把 BorderBrush stroke 画在 children 之上，避免 child 的 Background 把 stroke
     /// 内半边覆盖掉。仅对 Standard rounded rect 路径生效。
+    ///
+    /// 对称 BorderThickness（四边相同）走 pen-stroke 快路径，GPU SDF stroke 边缘更锐利。
+    /// 非对称 BorderThickness 走 donut-geometry-fill 慢路径：用 outer 圆角矩形 +
+    /// inner 圆角矩形 + FillRule.EvenOdd 形成空心 ring 几何，BorderBrush 填充。
+    /// 这样每条边的实际厚度由 inner rect 各自 inset 决定，完全独立。
     /// </summary>
     private void DrawStrokeAboveChildren(DrawingContext dc)
     {
@@ -1030,29 +1073,143 @@ public class Border : FrameworkElement
             SnapLayoutValue(rawBorder.Top),
             SnapLayoutValue(rawBorder.Right),
             SnapLayoutValue(rawBorder.Bottom));
-        var borderWidth = Math.Max(border.Left, Math.Max(border.Top, Math.Max(border.Right, border.Bottom)));
-        if (borderWidth <= 0) return;
+        if (border.Left <= 0 && border.Top <= 0 && border.Right <= 0 && border.Bottom <= 0) return;
 
         var rect = new Rect(RenderSize);
-        var halfBorder = borderWidth / 2;
         var cornerRadius = CornerRadius;
 
-        var pen = GetOrCreateBorderPen(BorderBrush, borderWidth);
+        var isUniform =
+            AreApproximatelyEqual(border.Left, border.Top) &&
+            AreApproximatelyEqual(border.Top, border.Right) &&
+            AreApproximatelyEqual(border.Right, border.Bottom);
 
-        var borderRect = new Rect(
-            rect.X + halfBorder,
-            rect.Y + halfBorder,
-            Math.Max(0, rect.Width - borderWidth),
-            Math.Max(0, rect.Height - borderWidth));
+        if (isUniform)
+        {
+            // Symmetric: pen-stroke fast path (SDF rounded-rect stroke on the GPU).
+            var borderWidth = border.Left;
+            var halfBorder = borderWidth / 2;
+            var pen = GetOrCreateBorderPen(BorderBrush, borderWidth);
 
-        var strokeRadius = new CornerRadius(
-            Math.Max(0, cornerRadius.TopLeft - halfBorder),
-            Math.Max(0, cornerRadius.TopRight - halfBorder),
-            Math.Max(0, cornerRadius.BottomRight - halfBorder),
-            Math.Max(0, cornerRadius.BottomLeft - halfBorder));
+            var borderRect = new Rect(
+                rect.X + halfBorder,
+                rect.Y + halfBorder,
+                Math.Max(0, rect.Width - borderWidth),
+                Math.Max(0, rect.Height - borderWidth));
 
-        dc.DrawRoundedRectangle(null, pen, borderRect, strokeRadius);
+            var strokeRadius = new CornerRadius(
+                Math.Max(0, cornerRadius.TopLeft - halfBorder),
+                Math.Max(0, cornerRadius.TopRight - halfBorder),
+                Math.Max(0, cornerRadius.BottomRight - halfBorder),
+                Math.Max(0, cornerRadius.BottomLeft - halfBorder));
+
+            dc.DrawRoundedRectangle(null, pen, borderRect, strokeRadius);
+            return;
+        }
+
+        // Asymmetric: 构造一个空心 ring PathGeometry 用 BorderBrush 填充。
+        //   outer figure  = 完整圆角矩形（沿 RenderSize 走外轮廓）
+        //   inner figure  = 各边按对应 BorderThickness inset 后的圆角矩形
+        //   FillRule.EvenOdd → 两个嵌套 figure 的"差"被填充 = 边框 ring。
+        // 每条边的实际可见厚度即 (outer 外缘 - inner 内缘)，所以
+        // BorderThickness=(1,0,1,1) 在 top 上 inner 与 outer 共边，top 边自动为 0。
+        var innerLeft = rect.X + border.Left;
+        var innerTop = rect.Y + border.Top;
+        var innerRight = rect.X + rect.Width - border.Right;
+        var innerBottom = rect.Y + rect.Height - border.Bottom;
+        var innerRect = new Rect(
+            innerLeft,
+            innerTop,
+            Math.Max(0, innerRight - innerLeft),
+            Math.Max(0, innerBottom - innerTop));
+
+        // Inner 圆角 = 外圆角减去相邻两边里较大的 thickness（WPF Border 同公式）。
+        var innerCorners = new CornerRadius(
+            Math.Max(0, cornerRadius.TopLeft - Math.Max(border.Left, border.Top)),
+            Math.Max(0, cornerRadius.TopRight - Math.Max(border.Top, border.Right)),
+            Math.Max(0, cornerRadius.BottomRight - Math.Max(border.Right, border.Bottom)),
+            Math.Max(0, cornerRadius.BottomLeft - Math.Max(border.Bottom, border.Left)));
+
+        var ring = new PathGeometry { FillRule = FillRule.EvenOdd };
+        ring.Figures.Add(BuildRoundedRectFigure(rect, cornerRadius));
+        if (innerRect.Width > 0 && innerRect.Height > 0)
+        {
+            ring.Figures.Add(BuildRoundedRectFigure(innerRect, innerCorners));
+        }
+
+        dc.DrawGeometry(BorderBrush, null, ring);
     }
+
+    /// <summary>
+    /// 构造一个闭合圆角矩形 PathFigure：起点位于 top 边左侧（top-left 圆角后），
+    /// 顺时针绕一圈回到起点。圆角用 ArcSegment（与 Jalium.UI 内部其它圆角几何
+    /// 一致），半径为 0 的角直接连线段。
+    /// </summary>
+    private static PathFigure BuildRoundedRectFigure(Rect rect, CornerRadius radii)
+    {
+        // 归一化：四角半径之和不能超过对应边的长度，避免画出"打结"的几何。
+        var normalized = radii.Normalize(rect.Width, rect.Height);
+        double tl = normalized.TopLeft;
+        double tr = normalized.TopRight;
+        double br = normalized.BottomRight;
+        double bl = normalized.BottomLeft;
+
+        double x = rect.X;
+        double y = rect.Y;
+        double w = rect.Width;
+        double h = rect.Height;
+
+        var figure = new PathFigure
+        {
+            StartPoint = new Point(x + tl, y),
+            IsClosed = true,
+            IsFilled = true,
+        };
+
+        // Top edge → top-right corner
+        figure.Segments.Add(new LineSegment(new Point(x + w - tr, y), true));
+        if (tr > 0)
+        {
+            figure.Segments.Add(new ArcSegment(
+                new Point(x + w, y + tr),
+                new Size(tr, tr),
+                0, false, SweepDirection.Clockwise, true));
+        }
+
+        // Right edge → bottom-right corner
+        figure.Segments.Add(new LineSegment(new Point(x + w, y + h - br), true));
+        if (br > 0)
+        {
+            figure.Segments.Add(new ArcSegment(
+                new Point(x + w - br, y + h),
+                new Size(br, br),
+                0, false, SweepDirection.Clockwise, true));
+        }
+
+        // Bottom edge → bottom-left corner
+        figure.Segments.Add(new LineSegment(new Point(x + bl, y + h), true));
+        if (bl > 0)
+        {
+            figure.Segments.Add(new ArcSegment(
+                new Point(x, y + h - bl),
+                new Size(bl, bl),
+                0, false, SweepDirection.Clockwise, true));
+        }
+
+        // Left edge → top-left corner
+        figure.Segments.Add(new LineSegment(new Point(x, y + tl), true));
+        if (tl > 0)
+        {
+            figure.Segments.Add(new ArcSegment(
+                new Point(x + tl, y),
+                new Size(tl, tl),
+                0, false, SweepDirection.Clockwise, true));
+        }
+
+        return figure;
+    }
+
+    private static bool AreApproximatelyEqual(double a, double b)
+        => Math.Abs(a - b) < 0.01;
 
     #endregion
 

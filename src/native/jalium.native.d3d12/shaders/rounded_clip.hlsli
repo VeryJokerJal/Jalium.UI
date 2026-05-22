@@ -48,10 +48,36 @@ float JaliumRoundedClipSdf(float2 p)
     return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - radius;
 }
 
-// Discards the fragment when the rounded clip is active and the pixel falls
-// outside the SDF.  Half-pixel slack matches the smoothstep AA used by the
-// SDF rect shader for the rounded rect itself, so clip edges align with
-// fill edges to avoid one-pixel seams along the corner.
+// Coverage of the rounded-clip mask at the given fragment, anti-aliased via
+// smoothstep over a 1-pixel band derived from fwidth(sdf).  Returns 1 inside,
+// 0 outside, and a soft transition across the corner edge so the four corner
+// arcs read as smooth curves rather than the 1-pixel stair-step the previous
+// hard-discard path produced.
+//
+// Callers multiply this against the fragment's output alpha (and any extra
+// alpha channels like dual-source coverage for ClearType text), so the
+// corner mask composes with the primitive's own AA / blending.  Keeping the
+// function side-effect-free (no discard) means fwidth() can read the SDF
+// across the 2x2 helper pixel quad without hitting undefined behaviour from
+// a sibling lane having executed discard.
+float RoundedClipCoverage(float2 fragPos)
+{
+    if (hasRoundedClip == 0u)
+        return 1.0;
+    float d = JaliumRoundedClipSdf(fragPos);
+    // fwidth(d) ≈ 1.0 inside a true distance field; we still clamp to a
+    // small floor so corners on very sharp transforms still get one pixel
+    // of smoothing instead of collapsing to a step function.
+    float aa = max(fwidth(d), 0.0001);
+    return 1.0 - smoothstep(-aa * 0.5, aa * 0.5, d);
+}
+
+// Legacy hard-discard variant.  Retained for callers that have not yet
+// migrated to alpha-based coverage (none in tree as of this change).
+// Prefer RoundedClipCoverage everywhere: a discard inside the helper
+// invocations of a 2x2 quad poisons fwidth() of neighbouring fragments, so
+// the corner aliasing we are trying to remove would come back from the
+// other primitives still on the hard-discard path.
 void DiscardOutsideRoundedClip(float2 fragPos)
 {
     if (hasRoundedClip != 0u)

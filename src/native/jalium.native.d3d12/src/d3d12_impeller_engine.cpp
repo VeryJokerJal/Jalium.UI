@@ -2522,6 +2522,12 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
     std::vector<uint32_t>       meshIndices;
     meshVerts.reserve(contours.size() * 64);
     meshIndices.reserve(contours.size() * 96);
+    // The cached mesh is emitted in SOURCE space and transformed to pixels at
+    // PushBatch time, so a "1 pixel" feather skirt must be sized in source
+    // units as 1/maxScale. Without this, the feather would be 1 source-unit
+    // wide → after a 2× transform it becomes a 2-px AA ring, fattening the
+    // stroke to ~strokeWidth+3px on screen.
+    const float featherSrcUnit = (maxScale > 1e-4f) ? (1.0f / maxScale) : 1.0f;
     for (auto& c : contours) {
         if (c.VertexCount() < 2) continue;
         jalium::ExpandStrokePath<ImpellerVertex>(
@@ -2529,7 +2535,8 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
             c.points.data(), c.VertexCount(),
             strokeWidth, join, miterLimit, cap, closed,
             brush.r, brush.g, brush.b, brush.a,
-            /*collectContours*/ nullptr);
+            /*collectContours*/ nullptr,
+            featherSrcUnit);
     }
 
     auto entry = std::make_shared<CachedStrokeRects>();

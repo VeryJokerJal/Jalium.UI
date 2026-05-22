@@ -64,6 +64,19 @@ public abstract class Visual : DependencyObject
     internal bool IsTrackedByIdleReclaimer;
 
     /// <summary>
+    /// Marks this visual as the root of a <c>ControlTemplate</c> instance owned
+    /// by its parent <see cref="Visual"/> (typically a <c>Control</c>). When
+    /// <see langword="true"/>, <see cref="RenderDirect"/> skips this visual in
+    /// the regular children-render loop because the owning control renders it
+    /// explicitly through <see cref="RenderTemplatedBackground"/> BEFORE its
+    /// own <see cref="OnRender"/>. The visual remains a real visual child for
+    /// layout, hit-testing, and visual-tree walks — only the render pass
+    /// re-orders so that a self-drawing control's <c>OnRender</c> output is
+    /// not painted over by an opaque template background.
+    /// </summary>
+    internal bool IsTemplatedRoot { get; set; }
+
+    /// <summary>
     /// Releases the retained-mode drawing cache slot, if any, and forces the
     /// next render pass to re-record from <see cref="OnRender"/>. Called by
     /// the idle-resource reclaimer when the visual has been idle long enough
@@ -488,6 +501,17 @@ public abstract class Visual : DependencyObject
             pushedClip = true;
         }
 
+        // Templated-background layer. Painted BEFORE OnRender so that a
+        // self-drawing control (e.g. ChartBase, custom visualisations) whose
+        // ControlTemplate has an opaque Background is not obscured by its
+        // own template root. The template root is rendered explicitly here
+        // and skipped in the regular children loop below (gated on
+        // child.IsTemplatedRoot). For visuals without a templated root this
+        // is a no-op virtual call. The live drawing context is used directly
+        // — the template's own cacheable visuals recurse through Render()
+        // and pick up the retained-mode cache themselves.
+        RenderTemplatedBackground(drawingContext);
+
         // Retained-mode cache path. When a render cache host is installed
         // AND the live drawing context opts in via ICacheableDrawingContext,
         // OnRender is captured into an immutable command list the first time
@@ -537,80 +561,37 @@ public abstract class Visual : DependencyObject
             var child = GetVisualChild(i);
             if (child == null) continue;
 
-            if (child is UIElement uiElement && uiElement.Visibility != Visibility.Visible)
+            // Skip the ControlTemplate root — it was already painted as the
+            // background layer by RenderTemplatedBackground above. Rendering
+            // it again here would double-paint, reintroducing the very
+            // overlay-obscures-OnRender bug this split is meant to fix.
+            if (child.IsTemplatedRoot)
             {
                 continue;
             }
 
-            if (child is UIElement uiChild && drawingContext is IOffsetDrawingContext offsetContext)
-            {
-                var bounds = uiChild.VisualBounds;
-                var savedOffset = offsetContext.Offset;
-                var ro = uiChild.RenderOffset;
-                var childOffset = new Point(
-                    savedOffset.X + bounds.X + ro.X,
-                    savedOffset.Y + bounds.Y + ro.Y);
-
-                if (!ShouldRenderChild(drawingContext, uiChild, childOffset))
-                {
-                    continue;
-                }
-
-                offsetContext.Offset = new Point(
-                    childOffset.X,
-                    childOffset.Y);
-
-                var childOpacity = uiChild.Opacity;
-                var pushedOpacity = false;
-                if (childOpacity < 1.0 && drawingContext is IOpacityDrawingContext opacityContext)
-                {
-                    opacityContext.PushOpacity(childOpacity);
-                    pushedOpacity = true;
-                }
-
-                // Apply the child's RenderTransform around its RenderTransformOrigin so that
-                // transforms declared on elements (e.g. ScaleTransform for zoom, RotateTransform
-                // for animations) actually affect the rendered subtree. Without this the
-                // RenderTransform DP would be a no-op during live drawing, matching the
-                // behavior already implemented in RenderTargetBitmap for offscreen capture.
-                var pushedTransform = false;
-                var childRenderTransform = uiChild.RenderTransform;
-                if (childRenderTransform != null && drawingContext is ITransformDrawingContext transformContext)
-                {
-                    var origin = uiChild.RenderTransformOrigin;
-                    var size = uiChild.RenderSize;
-                    var originX = origin.X * size.Width;
-                    var originY = origin.Y * size.Height;
-                    transformContext.PushTransform(childRenderTransform, originX, originY);
-                    pushedTransform = true;
-                }
-
-                child.Render(drawingContext);
-
-                if (pushedTransform && drawingContext is ITransformDrawingContext transformContextPop)
-                {
-                    transformContextPop.PopTransform();
-                }
-
-                if (pushedOpacity && drawingContext is IOpacityDrawingContext opacityContext2)
-                {
-                    opacityContext2.PopOpacity();
-                }
-
-                offsetContext.Offset = savedOffset;
-            }
-            else
-            {
-                child.Render(drawingContext);
-            }
+            RenderChildVisualInline(drawingContext, child);
         }
 
-        OnPostRender(drawingContext);
-
+        // Pop child clip BEFORE OnPostRender so OnPostRender executes outside the
+        // layout clip. This matters for Border: its stroke is rendered in
+        // OnPostRender on the *outer* rounded-rect (centred on the stroke ring),
+        // but the layout clip from GetLayoutClip uses the *inner* rounded-rect
+        // shape (matching the element's visible Background, so that child
+        // content is clipped to the visible area instead of bleeding past the
+        // stroke). If the stroke draw ran inside that inner clip, the outer
+        // half of the stroke pen would be sliced off and the stroke would visibly
+        // shrink. OnPostRender after the pop sidesteps that — children still
+        // get the inner clip; the stroke renders unconstrained on the outer
+        // shape; the result is a clean visible boundary where nothing leaks
+        // past the stroke into the BorderThickness ring.
         if (pushedClip && drawingContext is IClipDrawingContext clipContext2)
         {
             clipContext2.Pop();
+            pushedClip = false;
         }
+
+        OnPostRender(drawingContext);
 
         if (activeEffect != null && effectDc != null)
         {
@@ -669,18 +650,133 @@ public abstract class Visual : DependencyObject
     }
 
     /// <summary>
-    /// Override to provide custom rendering.
-    /// </summary>
-    /// <param name="drawingContext">The drawing context.</param>
-    protected virtual void OnRender(DrawingContext drawingContext)
-    {
-    }
-
-    /// <summary>
     /// Override to render content after children (useful for overlays like scrollbars).
     /// </summary>
     /// <param name="drawingContext">The drawing context.</param>
     protected virtual void OnPostRender(DrawingContext drawingContext)
+    {
+    }
+
+    /// <summary>
+    /// Renders a single child visual inline, applying the same offset, clip,
+    /// opacity and render-transform handling that <see cref="RenderDirect"/>
+    /// uses for the normal children loop.
+    /// </summary>
+    /// <remarks>
+    /// Extracted so that <see cref="RenderTemplatedBackground"/> overrides
+    /// (most importantly <c>Control.RenderTemplatedBackground</c>) can paint
+    /// the template root with identical ambient state — same offset push,
+    /// same viewport-cull, same opacity / transform stack — as the regular
+    /// child loop. Without that, a template root painted as a background
+    /// would skip viewport culling or render-transform application and drift
+    /// from how a normal child of the same control would behave.
+    /// </remarks>
+    /// <param name="drawingContext">The live drawing context.</param>
+    /// <param name="child">The child visual to render.</param>
+    /// <returns>
+    /// <see langword="true"/> if the child was rendered; <see langword="false"/>
+    /// if it was culled (invisible, viewport-clipped, etc.).
+    /// </returns>
+    internal bool RenderChildVisualInline(DrawingContext drawingContext, Visual child)
+    {
+        if (child is UIElement uiVisibility && uiVisibility.Visibility != Visibility.Visible)
+        {
+            return false;
+        }
+
+        if (child is UIElement uiChild && drawingContext is IOffsetDrawingContext offsetContext)
+        {
+            var bounds = uiChild.VisualBounds;
+            var savedOffset = offsetContext.Offset;
+            var ro = uiChild.RenderOffset;
+            var childOffset = new Point(
+                savedOffset.X + bounds.X + ro.X,
+                savedOffset.Y + bounds.Y + ro.Y);
+
+            if (!ShouldRenderChild(drawingContext, uiChild, childOffset))
+            {
+                return false;
+            }
+
+            offsetContext.Offset = new Point(
+                childOffset.X,
+                childOffset.Y);
+
+            var childOpacity = uiChild.Opacity;
+            var pushedOpacity = false;
+            if (childOpacity < 1.0 && drawingContext is IOpacityDrawingContext opacityContext)
+            {
+                opacityContext.PushOpacity(childOpacity);
+                pushedOpacity = true;
+            }
+
+            // Apply the child's RenderTransform around its RenderTransformOrigin so that
+            // transforms declared on elements (e.g. ScaleTransform for zoom, RotateTransform
+            // for animations) actually affect the rendered subtree. Without this the
+            // RenderTransform DP would be a no-op during live drawing, matching the
+            // behavior already implemented in RenderTargetBitmap for offscreen capture.
+            var pushedTransform = false;
+            var childRenderTransform = uiChild.RenderTransform;
+            if (childRenderTransform != null && drawingContext is ITransformDrawingContext transformContext)
+            {
+                var origin = uiChild.RenderTransformOrigin;
+                var size = uiChild.RenderSize;
+                var originX = origin.X * size.Width;
+                var originY = origin.Y * size.Height;
+                transformContext.PushTransform(childRenderTransform, originX, originY);
+                pushedTransform = true;
+            }
+
+            child.Render(drawingContext);
+
+            if (pushedTransform && drawingContext is ITransformDrawingContext transformContextPop)
+            {
+                transformContextPop.PopTransform();
+            }
+
+            if (pushedOpacity && drawingContext is IOpacityDrawingContext opacityContext2)
+            {
+                opacityContext2.PopOpacity();
+            }
+
+            offsetContext.Offset = savedOffset;
+            return true;
+        }
+
+        child.Render(drawingContext);
+        return true;
+    }
+
+    /// <summary>
+    /// Hook for rendering a control template's root visual as a BACKGROUND
+    /// layer, BEFORE this visual's own <see cref="OnRender"/> runs.
+    /// </summary>
+    /// <remarks>
+    /// Templated controls render in two layers:
+    /// <list type="number">
+    /// <item>
+    /// The <c>ControlTemplate</c> root (background / border / corner-radius
+    /// decoration) is painted first by this method.
+    /// </item>
+    /// <item>
+    /// The control's own <see cref="OnRender"/> then paints on top of that
+    /// background — this matters for self-drawing controls (charts, diagrams,
+    /// custom visualisations) that have an opaque template background. With
+    /// the default WPF-style order (OnRender first, then children), the
+    /// template root would be painted on top of OnRender and obscure its
+    /// output entirely. This hook inverts that ordering for template roots
+    /// specifically without affecting normal visual children.
+    /// </remarks>
+    /// <param name="drawingContext">The drawing context.</param>
+    protected virtual void RenderTemplatedBackground(DrawingContext drawingContext)
+    {
+    }
+
+    /// <summary>
+    /// Override to provide custom rendering.
+    /// </summary>
+    /// <param name="drawingContext">The drawing context.</param>
+    protected virtual void OnRender(DrawingContext drawingContext)
     {
     }
 

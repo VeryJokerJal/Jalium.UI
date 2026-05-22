@@ -19,7 +19,7 @@ struct PsInput
 
 float4 main(PsInput input) : SV_Target
 {
-    DiscardOutsideRoundedClip(input.clipPos.xy);
+    float clipCoverage = RoundedClipCoverage(input.clipPos.xy);
 
     int idx = (int)input.samplerIdx;
     float4 color;
@@ -42,6 +42,7 @@ float4 main(PsInput input) : SV_Target
         color = bitmapTexture.Sample(linearSampler, input.uv);
     }
     color *= input.opacity;
+    color *= clipCoverage;
     if (color.a < 1.0 / 255.0) discard;
     return color;
 }

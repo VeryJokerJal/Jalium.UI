@@ -394,6 +394,13 @@ public:
     void ApplyScissorToVello();
     void SetVelloEnabled(bool enabled) { velloEnabled_ = enabled; }
 
+    // 懒创建 Vello 子系统(root sig + 计算 PSO + 描述符堆 + 缓冲 + 驱动 compute
+    // 上下文)。仅当 velloEnabled_(active engine==Vello)且尚未创建时真正构造。
+    // 默认引擎是 Impeller → velloEnabled_=false → 整条 Vello 永不创建,省下其
+    // 全部 GPU/驱动开销且零性能代价(Vello 本就不用)。引擎热切到 Vello 时,
+    // 下一帧 BeginFrame 会按需创建。返回 true 表示创建后可用。
+    bool EnsureVelloRenderer();
+
     // --- Diagnostics accessors (Perf tab) ---
     D3D12GlyphAtlas* GetGlyphAtlas() const { return glyphAtlas_.get(); }
     int32_t GetBitmapBatchTextureCount() const { return static_cast<int32_t>(bitmapTextures_.size()); }

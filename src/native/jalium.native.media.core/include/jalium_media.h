@@ -126,6 +126,25 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_image_read_dimensions(
     uint32_t*      out_width,
     uint32_t*      out_height);
 
+/// Reads the frame count of an in-memory image. Animated formats (GIF, APNG,
+/// animated WebP) return >1; static images return 1. Returns 0 only on failure.
+JALIUM_MEDIA_API jalium_media_status_t jalium_image_read_frame_count(
+    const uint8_t* data,
+    size_t         size,
+    uint32_t*      out_frame_count);
+
+/// Decodes a single frame from a multi-frame in-memory image. <c>frame_index</c>
+/// must be in <c>[0, frame_count)</c>. <c>out_delay_ms</c> receives the frame
+/// delay (centiseconds-resolution in source files; converted to milliseconds
+/// here). For static formats / frames without a delay tag, <c>*out_delay_ms = 0</c>.
+JALIUM_MEDIA_API jalium_media_status_t jalium_image_decode_frame(
+    const uint8_t*        data,
+    size_t                size,
+    uint32_t              frame_index,
+    jalium_pixel_format_t requested_format,
+    jalium_image_t*       out_image,
+    uint32_t*             out_delay_ms);
+
 /// Releases the buffer owned by a jalium_image_t.
 JALIUM_MEDIA_API void jalium_image_free(jalium_image_t* image);
 

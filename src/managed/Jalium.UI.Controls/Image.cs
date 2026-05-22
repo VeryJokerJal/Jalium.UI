@@ -118,21 +118,39 @@ public class Image : Control, IReclaimableResource
     {
         if (d is Image image)
         {
-            // Unsubscribe from old source's async load event
+            // Unsubscribe from old source's async load / frame events
             if (e.OldValue is BitmapImage oldBitmap)
                 oldBitmap.OnImageLoaded -= image.OnSourceAsyncLoaded;
             else if (e.OldValue is SvgImage oldSvg)
                 oldSvg.OnSvgLoaded -= image.OnSourceAsyncLoaded;
+            else if (e.OldValue is AnimatedBitmap oldAnim)
+            {
+                oldAnim.FrameChanged -= image.OnAnimatedFrameChanged;
+                oldAnim.LoadCompleted -= image.OnSourceAsyncLoaded;
+            }
 
-            // Subscribe to new source's async load event for HTTP sources
+            // Subscribe to new source's async load / frame events
             if (e.NewValue is BitmapImage newBitmap)
                 newBitmap.OnImageLoaded += image.OnSourceAsyncLoaded;
             else if (e.NewValue is SvgImage newSvg)
                 newSvg.OnSvgLoaded += image.OnSourceAsyncLoaded;
+            else if (e.NewValue is AnimatedBitmap newAnim)
+            {
+                newAnim.FrameChanged += image.OnAnimatedFrameChanged;
+                newAnim.LoadCompleted += image.OnSourceAsyncLoaded;
+            }
 
             image._imageHost?.InvalidateMeasure();
             image._imageHost?.InvalidateVisual();
         }
+    }
+
+    private void OnAnimatedFrameChanged(object? sender, EventArgs e)
+    {
+        // Frame index changed on the UI thread (the AnimatedBitmap timer runs
+        // on the dispatcher). Re-render only — the bitmap dimensions are
+        // constant across frames, so measure doesn't need to be invalidated.
+        _imageHost?.InvalidateVisual();
     }
 
     private void OnSourceAsyncLoaded(object? sender, EventArgs e)

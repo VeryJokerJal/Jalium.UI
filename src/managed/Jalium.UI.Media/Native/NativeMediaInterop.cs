@@ -105,6 +105,23 @@ internal static partial class NativeMediaInterop
         out uint width,
         out uint height);
 
+    /// <summary>Reads the frame count of a (possibly animated) image. Returns 1 for static formats.</summary>
+    [LibraryImport(MediaLib, EntryPoint = "jalium_image_read_frame_count")]
+    internal static unsafe partial NativeMediaStatus jalium_image_read_frame_count(
+        byte* data,
+        nuint size,
+        out uint outFrameCount);
+
+    /// <summary>Decodes a single frame from a multi-frame image and reads its delay metadata (ms).</summary>
+    [LibraryImport(MediaLib, EntryPoint = "jalium_image_decode_frame")]
+    internal static unsafe partial NativeMediaStatus jalium_image_decode_frame(
+        byte* data,
+        nuint size,
+        uint frameIndex,
+        int requestedFormat,
+        out NativeImage outImage,
+        out uint outDelayMs);
+
     [LibraryImport(MediaLib, EntryPoint = "jalium_image_free")]
     internal static partial void jalium_image_free(ref NativeImage image);
 

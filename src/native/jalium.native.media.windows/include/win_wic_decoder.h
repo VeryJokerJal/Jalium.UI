@@ -25,4 +25,22 @@ jalium_media_status_t WicReadDimensions(
     uint32_t*      out_width,
     uint32_t*      out_height);
 
+/// Reads the frame count of an in-memory image (>1 for animated GIF/APNG/WebP,
+/// 1 for static formats).
+jalium_media_status_t WicReadFrameCount(
+    const uint8_t* data,
+    size_t         size,
+    uint32_t*      out_frame_count);
+
+/// Decodes a single frame from a multi-frame image and reads the frame delay
+/// metadata. <c>frame_index</c> must be in <c>[0, frame_count)</c>.
+/// <c>*out_delay_ms</c> = 0 when the source has no delay metadata.
+jalium_media_status_t WicDecodeFrame(
+    const uint8_t*        data,
+    size_t                size,
+    uint32_t              frame_index,
+    jalium_pixel_format_t requested_format,
+    jalium_image_t*       out_image,
+    uint32_t*             out_delay_ms);
+
 } // namespace jalium::media::win

@@ -6,6 +6,13 @@ namespace Jalium.UI;
 public interface IImeSupport
 {
     /// <summary>
+    /// Gets whether the element currently accepts IME composition input.
+    /// Read-only text controls return <c>false</c> so the host window detaches
+    /// the IME context and the candidate / composition window stays hidden.
+    /// </summary>
+    bool IsImeAllowed => true;
+
+    /// <summary>
     /// Gets the caret position for IME composition window positioning.
     /// </summary>
     /// <returns>The caret position in element-local DIPs.</returns>

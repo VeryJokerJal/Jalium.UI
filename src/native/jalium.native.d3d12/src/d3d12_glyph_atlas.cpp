@@ -1,9 +1,139 @@
 #include "d3d12_glyph_atlas.h"
+#include "jalium_text_options.h"
+#include <wincodec.h>
+#include <mutex>
 #include <cstring>
 #include <cmath>
 #include <algorithm>
 
 namespace jalium {
+
+// Shared WIC factory used by RasterizeColorGlyph to decode PNG/JPEG/TIFF
+// strikes embedded in colour-emoji fonts (Windows 11 Fluent Segoe UI Emoji).
+// The atlas does not own the factory's lifetime — it lives in a function-local
+// static so the first call lazily creates it and process teardown releases it
+// after every D3D12GlyphAtlas instance has gone away.
+static IWICImagingFactory* EnsureWicFactory()
+{
+    static std::mutex s_mutex;
+    static ComPtr<IWICImagingFactory> s_factory;
+    std::lock_guard<std::mutex> lock(s_mutex);
+    if (!s_factory) {
+        // CoInitializeEx is the host's responsibility (D3D12 backend Initialize
+        // already runs MTA Init); CoCreateInstance on the apartment thread is
+        // safe regardless of which thread first ends up here.
+        ComPtr<IWICImagingFactory> factory;
+        HRESULT hr = CoCreateInstance(
+            CLSID_WICImagingFactory,
+            nullptr,
+            CLSCTX_INPROC_SERVER,
+            IID_PPV_ARGS(factory.GetAddressOf()));
+        if (FAILED(hr)) return nullptr;
+        s_factory = std::move(factory);
+    }
+    return s_factory.Get();
+}
+
+// Decodes an in-memory PNG / JPEG / TIFF stream into 32bpp BGRA (premultiplied
+// alpha so atlas blit is a straight memcpy that the colour-emoji shader path
+// reads as authored). Returns false on any WIC failure — the caller falls
+// through to leaving that layer empty.
+static bool DecodeEmojiImageBytes(const void* bytes, uint32_t size,
+                                  uint32_t& outW, uint32_t& outH,
+                                  std::vector<uint8_t>& outPixels)
+{
+    if (!bytes || size == 0) return false;
+    IWICImagingFactory* factory = EnsureWicFactory();
+    if (!factory) return false;
+
+    ComPtr<IWICStream> stream;
+    if (FAILED(factory->CreateStream(stream.GetAddressOf()))) return false;
+    if (FAILED(stream->InitializeFromMemory(
+            const_cast<BYTE*>(static_cast<const BYTE*>(bytes)), size))) return false;
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    if (FAILED(factory->CreateDecoderFromStream(stream.Get(), nullptr,
+            WICDecodeMetadataCacheOnDemand, decoder.GetAddressOf()))) return false;
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    if (FAILED(decoder->GetFrame(0, frame.GetAddressOf()))) return false;
+
+    UINT w = 0, h = 0;
+    if (FAILED(frame->GetSize(&w, &h)) || w == 0 || h == 0) return false;
+
+    ComPtr<IWICFormatConverter> conv;
+    if (FAILED(factory->CreateFormatConverter(conv.GetAddressOf()))) return false;
+    // 32bppPBGRA = pre-multiplied BGRA, lays out byte-for-byte the same as the
+    // atlas (which is RGBA8_UNORM after a B↔R swap). We honour PNG's straight
+    // alpha by asking WIC for premultiplied, which matches the SrcOver-style
+    // shader path the colour-emoji branch uses.
+    if (FAILED(conv->Initialize(frame.Get(),
+            GUID_WICPixelFormat32bppPBGRA,
+            WICBitmapDitherTypeNone, nullptr, 0.0,
+            WICBitmapPaletteTypeCustom))) return false;
+
+    const size_t stride = (size_t)w * 4;
+    outPixels.assign(stride * h, 0);
+    if (FAILED(conv->CopyPixels(nullptr, (UINT)stride, (UINT)outPixels.size(),
+            outPixels.data()))) return false;
+
+    outW = w;
+    outH = h;
+    return true;
+}
+
+// Box-filter downscale (or nearest-neighbour upscale) of a BGRA / RGBA buffer.
+// Used to fit a colour-emoji strike rendered at, say, 64 ppem into the actual
+// font size requested (commonly 14-20 px). A real bicubic would be sharper but
+// box averaging is already much better than nearest, fast, and dependency-free.
+static void ResampleBgraNearestBox(const uint8_t* src, uint32_t srcW, uint32_t srcH,
+                                   std::vector<uint8_t>& dst, uint32_t dstW, uint32_t dstH)
+{
+    dst.assign((size_t)dstW * dstH * 4, 0);
+    if (srcW == 0 || srcH == 0 || dstW == 0 || dstH == 0) return;
+
+    const float xRatio = (float)srcW / (float)dstW;
+    const float yRatio = (float)srcH / (float)dstH;
+
+    if (dstW >= srcW && dstH >= srcH) {
+        // Upscale: nearest neighbour (avoids haloing artefacts on emoji edges).
+        for (uint32_t y = 0; y < dstH; ++y) {
+            uint32_t sy = (uint32_t)std::min<uint32_t>((uint32_t)(y * yRatio), srcH - 1);
+            for (uint32_t x = 0; x < dstW; ++x) {
+                uint32_t sx = (uint32_t)std::min<uint32_t>((uint32_t)(x * xRatio), srcW - 1);
+                const uint8_t* s = src + ((size_t)sy * srcW + sx) * 4;
+                uint8_t* d = dst.data() + ((size_t)y * dstW + x) * 4;
+                d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3];
+            }
+        }
+        return;
+    }
+
+    // Downscale: average over the src footprint of each dst pixel.
+    for (uint32_t y = 0; y < dstH; ++y) {
+        uint32_t sy0 = (uint32_t)std::floor(y * yRatio);
+        uint32_t sy1 = (uint32_t)std::min<uint32_t>(srcH, (uint32_t)std::ceil((y + 1) * yRatio));
+        if (sy1 <= sy0) sy1 = sy0 + 1;
+        for (uint32_t x = 0; x < dstW; ++x) {
+            uint32_t sx0 = (uint32_t)std::floor(x * xRatio);
+            uint32_t sx1 = (uint32_t)std::min<uint32_t>(srcW, (uint32_t)std::ceil((x + 1) * xRatio));
+            if (sx1 <= sx0) sx1 = sx0 + 1;
+            uint32_t accB = 0, accG = 0, accR = 0, accA = 0, count = 0;
+            for (uint32_t yy = sy0; yy < sy1; ++yy) {
+                for (uint32_t xx = sx0; xx < sx1; ++xx) {
+                    const uint8_t* s = src + ((size_t)yy * srcW + xx) * 4;
+                    accB += s[0]; accG += s[1]; accR += s[2]; accA += s[3];
+                    ++count;
+                }
+            }
+            uint8_t* d = dst.data() + ((size_t)y * dstW + x) * 4;
+            d[0] = (uint8_t)(accB / count);
+            d[1] = (uint8_t)(accG / count);
+            d[2] = (uint8_t)(accR / count);
+            d[3] = (uint8_t)(accA / count);
+        }
+    }
+}
 
 // ── Inline helpers replacing CD3DX12_* ──
 static D3D12_HEAP_PROPERTIES MakeHeapProps(D3D12_HEAP_TYPE type) {
@@ -271,6 +401,12 @@ bool D3D12GlyphAtlas::Initialize()
     // Cache IDWriteFactory3 for CreateGlyphRunAnalysis (ClearType path)
     dwriteFactory_->QueryInterface(IID_PPV_ARGS(&dwriteFactory3_));
 
+    // Cache IDWriteFactory4 for TranslateColorGlyphRun (colour emoji path).
+    // Available on Windows 10 1607+ — when absent, RasterizeColorGlyph reports
+    // false and the caller falls through to the monochrome glyph path so
+    // older systems still render emoji (as outlines), just without colour.
+    dwriteFactory_->QueryInterface(IID_PPV_ARGS(&dwriteFactory4_));
+
     // Create custom rendering params for ClearType sub-pixel rendering.
     // clearTypeLevel = 1.0 enables full ClearType; RGBA atlas stores per-channel coverage.
     if (dwriteFactory3_) {
@@ -443,15 +579,115 @@ void D3D12GlyphAtlas::ApplyPendingGrowthOrReset()
 // Glyph Rasterization
 // ============================================================================
 
+int32_t D3D12GlyphAtlas::SyncAntialiasMode()
+{
+    uint64_t gen = jalium_text_get_antialias_generation();
+    if (gen != lastAntialiasGen_) {
+        lastAntialiasGen_ = gen;
+        currentAntialiasMode_ = jalium::text_options::ResolveMode(
+            jalium_text_get_global_antialias_mode());
+        // Mode changed: existing atlas entries were rasterized with the old
+        // rendering mode (e.g. ClearType R/G/B fringes) and cannot be reused
+        // by the new mode (Grayscale needs R=G=B coverage). Reset on the next
+        // frame boundary so the swap is one-shot rather than mixing fragments.
+        needsReset_ = true;
+    }
+    return currentAntialiasMode_;
+}
+
 bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
 {
+    int32_t aaMode = SyncAntialiasMode();
+
+    // Colour-emoji fast path: Segoe UI Emoji and other COLR/CPAL fonts publish
+    // multiple layers per glyph that have to be composited in their authored
+    // colours. The mono ClearType / Grayscale path below would only see the
+    // outline-layer alpha and render a black mask — which is the original
+    // issue. Detecting IsColorFont up front lets us dispatch to the multi-
+    // layer rasterizer; on factory-4-less systems (Windows 10 < 1607) we
+    // fall through and emoji at least appears as a black outline rather
+    // than missing entirely.
+    bool isColorFont = false;
+    if (dwriteFactory4_) {
+        ComPtr<IDWriteFontFace2> fontFace2;
+        if (SUCCEEDED(key.fontFace->QueryInterface(IID_PPV_ARGS(&fontFace2))) &&
+            fontFace2 && fontFace2->IsColorFont())
+        {
+            isColorFont = true;
+            if (RasterizeColorGlyph(key, entry)) {
+                return true;
+            }
+            // Colour path declined this specific glyph. For codepoints that
+            // exist in BOTH the COLR set and as a plain outline glyph in the
+            // same font (rare but legal — e.g. CombiningGraphemeJoiner inside
+            // Segoe UI Emoji), the outline mono path below produces a useful
+            // dingbat. For codepoints that exist ONLY as colour-bitmap layers
+            // we failed to decode (SVG / COLR v1 paint-tree on older code
+            // paths), the mono path renders an empty box — visible to the
+            // user as a "blank, looks like it was clipped" glyph, which is
+            // worse than skipping the glyph entirely because cache stores
+            // it permanently. We mark the entry invalid + valid-cache-bit
+            // false so GenerateGlyphs skips emission this frame and the
+            // cache is repopulated next frame, giving DirectWrite another
+            // chance to publish a usable layer (e.g. after a font update or
+            // a strike load).
+            DWRITE_GLYPH_METRICS gm{};
+            if (SUCCEEDED(key.fontFace->GetDesignGlyphMetrics(&key.glyphIndex, 1, &gm, FALSE))) {
+                DWRITE_FONT_METRICS fm{};
+                key.fontFace->GetMetrics(&fm);
+                const float fmScale = (float)key.fontSize / (float)fm.designUnitsPerEm;
+                const int placeholderW = std::max(4, (int)std::round(gm.advanceWidth * fmScale));
+                const int placeholderH = std::max(4, (int)std::round((fm.ascent + fm.descent) * fmScale * 0.7f));
+                // Render a faint rounded grey square as a "this emoji could
+                // not be rasterised" hint — better signal than an invisible
+                // gap or a stray black mask. Pre-multiplied 30 % grey, full A.
+                uint16_t ax, ay;
+                if (AllocateAtlasRect((uint16_t)placeholderW, (uint16_t)placeholderH, ax, ay)) {
+                    for (int y = 0; y < placeholderH; ++y) {
+                        if ((uint32_t)(ay + y) >= atlasH_) break;
+                        uint8_t* row = atlasBitmap_.data() + ((size_t)(ay + y) * atlasW_ + ax) * 4;
+                        for (int x = 0; x < placeholderW; ++x) {
+                            const bool border = (x == 0 || x == placeholderW - 1 ||
+                                                 y == 0 || y == placeholderH - 1);
+                            const uint8_t v = border ? 90 : 40;
+                            row[x * 4 + 0] = v;
+                            row[x * 4 + 1] = v;
+                            row[x * 4 + 2] = v;
+                            row[x * 4 + 3] = border ? 160 : 80;
+                        }
+                    }
+                    entry.x = ax;
+                    entry.y = ay;
+                    entry.w = (uint16_t)placeholderW;
+                    entry.h = (uint16_t)placeholderH;
+                    entry.bearingX = 0;
+                    entry.bearingY = (int16_t)placeholderH;
+                    entry.valid = true;
+                    entry.isColor = true;  // route through SrcOver, not ClearType
+                    dirty_ = true;
+                    dirtyMinY_ = std::min(dirtyMinY_, ay);
+                    dirtyMaxY_ = std::max(dirtyMaxY_, (uint16_t)(ay + placeholderH));
+                    return true;
+                }
+            }
+            // Atlas allocation failed too — let the caller skip this glyph;
+            // it gets retried on the next frame after the pending reset.
+            entry.valid = false;
+            return false;
+        }
+    }
+    (void)isColorFont;
+
     DWRITE_GLYPH_RUN glyphRun = {};
     glyphRun.fontFace = key.fontFace;
     glyphRun.fontEmSize = (float)key.fontSize;
     glyphRun.glyphCount = 1;
     glyphRun.glyphIndices = &key.glyphIndex;
 
-    // ── Primary path: IDWriteGlyphRunAnalysis for accurate ClearType bounds ──
+    // ── Primary path: IDWriteGlyphRunAnalysis ──
+    // Use CLEARTYPE_3x1 alpha texture for ClearType mode, ALIASED_1x1 for
+    // Grayscale / Aliased. The alpha texture format dictates whether DirectWrite
+    // emits per-channel sub-pixel fringes or a single grayscale coverage value.
     if (dwriteFactory3_) {
         // Sub-pixel X offset: the glyph's appearance depends on where it falls
         // relative to the physical pixel grid.  We rasterize at the quantized
@@ -469,8 +705,16 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
         DWRITE_GRID_FIT_MODE gridFitMode = DWRITE_GRID_FIT_MODE_DEFAULT;
         bool useGdiFallback = false;
 
+        // For pure Aliased (bilevel) we route through GDI: CreateGlyphRunAnalysis
+        // can't produce an ALIASED texture without a matching rendering mode and
+        // the legacy GDI path is the established source of bilevel glyphs.
+        if (aaMode == JALIUM_TEXT_AA_ALIASED) {
+            useGdiFallback = true;
+        }
+
         ComPtr<IDWriteFontFace3> fontFace3;
-        if (SUCCEEDED(key.fontFace->QueryInterface(IID_PPV_ARGS(&fontFace3))) && fontFace3) {
+        if (!useGdiFallback &&
+            SUCCEEDED(key.fontFace->QueryInterface(IID_PPV_ARGS(&fontFace3))) && fontFace3) {
             DWRITE_RENDERING_MODE1 recMode = DWRITE_RENDERING_MODE1_DEFAULT;
             DWRITE_GRID_FIT_MODE recGridFit = DWRITE_GRID_FIT_MODE_DEFAULT;
             HRESULT recHr = fontFace3->GetRecommendedRenderingMode(
@@ -497,6 +741,15 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
             }
         }
 
+        const bool grayscale = (aaMode == JALIUM_TEXT_AA_GRAYSCALE);
+        const DWRITE_TEXT_ANTIALIAS_MODE dwriteAaMode = grayscale
+            ? DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE
+            : DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE;
+        const DWRITE_TEXTURE_TYPE textureType = grayscale
+            ? DWRITE_TEXTURE_ALIASED_1x1
+            : DWRITE_TEXTURE_CLEARTYPE_3x1;
+        const size_t bytesPerPixel = grayscale ? 1u : 3u;
+
         ComPtr<IDWriteGlyphRunAnalysis> analysis;
         HRESULT hr = useGdiFallback ? E_FAIL : dwriteFactory3_->CreateGlyphRunAnalysis(
             &glyphRun,
@@ -504,14 +757,14 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
             renderingMode,
             DWRITE_MEASURING_MODE_NATURAL,
             gridFitMode,
-            DWRITE_TEXT_ANTIALIAS_MODE_CLEARTYPE,
+            dwriteAaMode,
             subpixelOffset, 0.0f,  // sub-pixel X offset baked into bounds
             &analysis);
 
         if (SUCCEEDED(hr) && analysis) {
-            // Get exact pixel bounds including ClearType sub-pixel fringe
+            // Get exact pixel bounds for the chosen texture type.
             RECT bounds = {};
-            hr = analysis->GetAlphaTextureBounds(DWRITE_TEXTURE_CLEARTYPE_3x1, &bounds);
+            hr = analysis->GetAlphaTextureBounds(textureType, &bounds);
             if (FAILED(hr)) { entry.valid = false; return true; }
 
             int glyphW = bounds.right - bounds.left;
@@ -520,10 +773,10 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
             if (glyphW <= 0 || glyphH <= 0) { entry.valid = false; return true; }
             if (glyphW > 512 || glyphH > 512) { entry.valid = false; return true; }
 
-            // Get ClearType alpha texture (3 bytes per pixel: R, G, B coverage)
-            UINT32 bufferSize = (UINT32)((size_t)glyphW * glyphH * 3);
+            // Grayscale path: 1 byte/pixel of coverage; ClearType: 3 bytes/pixel.
+            UINT32 bufferSize = (UINT32)((size_t)glyphW * glyphH * bytesPerPixel);
             std::vector<uint8_t> alphaValues(bufferSize);
-            hr = analysis->CreateAlphaTexture(DWRITE_TEXTURE_CLEARTYPE_3x1,
+            hr = analysis->CreateAlphaTexture(textureType,
                 &bounds, alphaValues.data(), bufferSize);
             if (FAILED(hr)) { entry.valid = false; return false; }
 
@@ -534,17 +787,28 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
                 return true;
             }
 
-            // Copy 3-byte-per-pixel ClearType data to RGBA atlas
+            // Copy alpha-coverage data into the shared RGBA atlas. For Grayscale
+            // the single coverage byte is replicated across R/G/B so the existing
+            // shader (which multiplies atlas.rgb by the source colour and adds the
+            // alpha channel) renders crisp grayscale text with no further branch.
             for (int y = 0; y < glyphH; y++) {
                 if ((uint32_t)(atlasY + y) >= atlasH_) break;
                 for (int x = 0; x < glyphW; x++) {
                     if ((uint32_t)(atlasX + x) >= atlasW_) break;
-                    const uint8_t* src = alphaValues.data() + ((size_t)y * glyphW + x) * 3;
+                    const uint8_t* src = alphaValues.data() + ((size_t)y * glyphW + x) * bytesPerPixel;
                     size_t atlasOffset = ((size_t)(atlasY + y) * atlasW_ + (atlasX + x)) * 4;
-                    atlasBitmap_[atlasOffset + 0] = src[0]; // R sub-pixel coverage
-                    atlasBitmap_[atlasOffset + 1] = src[1]; // G sub-pixel coverage
-                    atlasBitmap_[atlasOffset + 2] = src[2]; // B sub-pixel coverage
-                    atlasBitmap_[atlasOffset + 3] = std::max(std::max(src[0], src[1]), src[2]);
+                    if (grayscale) {
+                        uint8_t cov = src[0];
+                        atlasBitmap_[atlasOffset + 0] = cov;
+                        atlasBitmap_[atlasOffset + 1] = cov;
+                        atlasBitmap_[atlasOffset + 2] = cov;
+                        atlasBitmap_[atlasOffset + 3] = cov;
+                    } else {
+                        atlasBitmap_[atlasOffset + 0] = src[0]; // R sub-pixel coverage
+                        atlasBitmap_[atlasOffset + 1] = src[1]; // G sub-pixel coverage
+                        atlasBitmap_[atlasOffset + 2] = src[2]; // B sub-pixel coverage
+                        atlasBitmap_[atlasOffset + 3] = std::max(std::max(src[0], src[1]), src[2]);
+                    }
                 }
             }
 
@@ -643,6 +907,424 @@ bool D3D12GlyphAtlas::RasterizeGlyph(const GlyphKey& key, GlyphEntry& entry)
 }
 
 // ============================================================================
+// Colour-Emoji Rasterization (COLR / CPAL)
+// ============================================================================
+//
+// TranslateColorGlyphRun decomposes a colour-font glyph run into a sequence of
+// monochrome sub-runs, each tagged with the palette colour it should be drawn
+// in. We rasterize every sub-run as a grayscale alpha mask (one channel of
+// coverage) and accumulate `colour × coverage` into a shared RGBA scratch
+// buffer using straight SrcOver, then copy the result into the atlas as
+// premultiplied RGBA. The atlas entry is flagged isColor so the text VS/PS
+// can sentinel-route it through the alpha-only blend path.
+//
+// We deliberately limit the desired image formats to COLR/CFF/TRUETYPE — adding
+// bitmap formats (PNG/JPEG/TIFF) would mean copying decoded WIC bitmaps into
+// the atlas as a separate code path, which is left as a follow-up for fonts
+// that ship CBDT/sbix bitmap strikes (Segoe UI Emoji on Win10 is COLR, so the
+// common case is covered).
+
+// Debug trace controlled by the JALIUM_EMOJI_TRACE environment variable —
+// dump glyph index, image format the layer enumerator reported, and whether
+// each layer succeeded. Enables remote-diagnosing "this one emoji renders
+// blank" cases without modifying source. Stays cheap (one env lookup per
+// process) when off.
+static bool EmojiTraceEnabled() {
+    static int state = -1;
+    if (state < 0) {
+        char buf[8];
+        DWORD n = GetEnvironmentVariableA("JALIUM_EMOJI_TRACE", buf, sizeof(buf));
+        state = (n > 0 && buf[0] != '0') ? 1 : 0;
+    }
+    return state == 1;
+}
+
+bool D3D12GlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entry)
+{
+    if (!dwriteFactory4_) return false;
+
+    DWRITE_GLYPH_RUN glyphRun = {};
+    glyphRun.fontFace   = key.fontFace;
+    glyphRun.fontEmSize = (float)key.fontSize;
+    glyphRun.glyphCount = 1;
+    glyphRun.glyphIndices = &key.glyphIndex;
+
+    const float subpixelOffset = key.subpixelX / 4.0f;
+
+    // Translate into per-layer sub-runs. DWRITE_E_NOCOLOR signals "this
+    // specific glyph has no colour layers" — common when a colour font holds
+    // both colour and outline glyphs; the caller will retry the mono path.
+    //
+    // Windows 11's Fluent Segoe UI Emoji is a hybrid font: classic Unicode
+    // pictographs stay in COLR/CPAL, but the modern 3D emoji set is shipped
+    // as PNG strikes (DWRITE_GLYPH_IMAGE_FORMATS_PNG / JPEG / TIFF / raw
+    // PREMULTIPLIED_B8G8R8A8). If we omit those formats from the desired
+    // mask, TranslateColorGlyphRun returns DWRITE_E_NOCOLOR for the
+    // bitmap-only glyphs and we drop back to the monochrome mask — which is
+    // exactly the "🍌 colour, 😄 colour, 🥹 colour, ⬛ black" pattern this
+    // issue reported. Asking for every format DirectWrite can return lets
+    // it dispatch each glyph to whichever storage the font author used.
+    ComPtr<IDWriteColorGlyphRunEnumerator1> enumerator;
+    const DWRITE_GLYPH_IMAGE_FORMATS desiredFormats =
+        DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE |
+        DWRITE_GLYPH_IMAGE_FORMATS_CFF |
+        DWRITE_GLYPH_IMAGE_FORMATS_COLR |
+        DWRITE_GLYPH_IMAGE_FORMATS_PNG |
+        DWRITE_GLYPH_IMAGE_FORMATS_JPEG |
+        DWRITE_GLYPH_IMAGE_FORMATS_TIFF |
+        DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8;
+
+    // D2D1_POINT_2F is the dcommon.h struct { x, y } — explicit aggregate-init
+    // keeps us from having to drag d2d1helper.h into this TU just for Point2F.
+    D2D1_POINT_2F baselineOrigin{};
+    baselineOrigin.x = subpixelOffset;
+    baselineOrigin.y = 0.0f;
+    HRESULT hr = dwriteFactory4_->TranslateColorGlyphRun(
+        baselineOrigin,
+        &glyphRun,
+        nullptr,
+        desiredFormats,
+        DWRITE_MEASURING_MODE_NATURAL,
+        nullptr,
+        /*colorPaletteIndex*/ 0,
+        &enumerator);
+    if (hr == DWRITE_E_NOCOLOR || FAILED(hr) || !enumerator) {
+        if (EmojiTraceEnabled()) {
+            char buf[160];
+            sprintf_s(buf, "[jalium emoji] glyph=%u ppem=%u TranslateColorGlyphRun hr=0x%08lX %s\n",
+                      key.glyphIndex, key.fontSize, hr,
+                      hr == DWRITE_E_NOCOLOR ? "NOCOLOR" : "FAIL");
+            OutputDebugStringA(buf);
+        }
+        return false;
+    }
+
+    // Build a scratch canvas large enough to hold every layer regardless of
+    // how far above/below the baseline the font author placed it. Fluent
+    // emoji often draw decorative elements (eyes, glints, drop shadows) well
+    // past the design ascent / descent box — sizing canvas as `2 × fontSize`
+    // and parking the baseline at canvas/2 + designAscent/2 (the previous
+    // attempt) clipped those elements at small sizes, which is the visible
+    // "rendered but blank" pattern this issue is about.
+    //
+    // Instead use 4 × fontSize (capped at 512) and put the baseline a quarter
+    // from the bottom: emoji can extend 3·fontSize above and 1·fontSize below
+    // the baseline before clipping, comfortably exceeding what any strike or
+    // COLR layer actually authors.
+    DWRITE_FONT_METRICS fontMetrics{};
+    key.fontFace->GetMetrics(&fontMetrics);
+    const float emScale = (float)key.fontSize / (float)fontMetrics.designUnitsPerEm;
+    const int   designAscent  = (int)std::ceil(fontMetrics.ascent  * emScale);
+    const int   designDescent = (int)std::ceil(fontMetrics.descent * emScale);
+    int canvasSize = std::max(4 * (int)key.fontSize,
+                              (designAscent + designDescent) * 2 + 16);
+    if (canvasSize > 512) canvasSize = 512;
+    if (canvasSize <= 0) return false;
+    const int   originX_px = canvasSize / 2;
+    const int   originY_px = canvasSize - canvasSize / 4;  // baseline at 75% from top
+
+    std::vector<uint8_t> scratch((size_t)canvasSize * canvasSize * 4, 0);
+
+    int unionLeft   = canvasSize;
+    int unionTop    = canvasSize;
+    int unionRight  = 0;
+    int unionBottom = 0;
+
+    // Walk every layer. MoveNext() advances; HasRun signals end of stream.
+    for (;;) {
+        BOOL hasRun = FALSE;
+        if (FAILED(enumerator->MoveNext(&hasRun)) || !hasRun) {
+            break;
+        }
+
+        DWRITE_COLOR_GLYPH_RUN1 const* layer = nullptr;
+        if (FAILED(enumerator->GetCurrentRun(&layer)) || !layer) {
+            continue;
+        }
+
+        // Use the per-layer colour the font authored. paletteIndex == 0xFFFF
+        // means "use the run's foreground colour"; for our offline rasterization
+        // we treat that as opaque white and let the shader apply Foreground.
+        // But we want emoji to ignore Foreground entirely (the whole point of
+        // colour emoji is that they keep their authored colours), so we still
+        // bake white here — the glyph entry's isColor flag will tell the PS
+        // to skip Foreground tinting and use the atlas RGB directly.
+        float lr, lg, lb, la;
+        if (layer->paletteIndex == 0xFFFF) {
+            lr = lg = lb = la = 1.0f;
+        } else {
+            lr = layer->runColor.r;
+            lg = layer->runColor.g;
+            lb = layer->runColor.b;
+            la = layer->runColor.a;
+        }
+        // Premultiply once up front.
+        const float pr = lr * la, pg = lg * la, pb = lb * la;
+
+        // Track unioned bounds so we trim the empty padding before
+        // pushing into the atlas. Updated by both vector and bitmap paths.
+        auto extendUnion = [&](int dx, int dy) {
+            if (dx < unionLeft)        unionLeft = dx;
+            if (dy < unionTop)         unionTop = dy;
+            if (dx + 1 > unionRight)   unionRight = dx + 1;
+            if (dy + 1 > unionBottom)  unionBottom = dy + 1;
+        };
+
+        const DWRITE_GLYPH_IMAGE_FORMATS imgFmt = layer->glyphImageFormat;
+        const DWRITE_GLYPH_IMAGE_FORMATS kVectorMask =
+            DWRITE_GLYPH_IMAGE_FORMATS_NONE |
+            DWRITE_GLYPH_IMAGE_FORMATS_TRUETYPE |
+            DWRITE_GLYPH_IMAGE_FORMATS_CFF |
+            DWRITE_GLYPH_IMAGE_FORMATS_COLR;
+        const DWRITE_GLYPH_IMAGE_FORMATS kBitmapMask =
+            DWRITE_GLYPH_IMAGE_FORMATS_PNG |
+            DWRITE_GLYPH_IMAGE_FORMATS_JPEG |
+            DWRITE_GLYPH_IMAGE_FORMATS_TIFF |
+            DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8;
+
+        const bool isVector = (imgFmt == DWRITE_GLYPH_IMAGE_FORMATS_NONE) ||
+                              ((imgFmt & kVectorMask) != 0 && (imgFmt & kBitmapMask) == 0);
+
+        if (EmojiTraceEnabled()) {
+            char buf[160];
+            sprintf_s(buf, "[jalium emoji] glyph=%u layer fmt=0x%04X color=(%.2f,%.2f,%.2f,%.2f)\n",
+                      key.glyphIndex, (unsigned)imgFmt, lr, lg, lb, la);
+            OutputDebugStringA(buf);
+        }
+        const bool isBitmap = (imgFmt & kBitmapMask) != 0;
+
+        if (isVector) {
+            // ── Vector layer (COLR sub-glyph, outline) ──
+            // Grayscale alpha-mask the layer's outline and SrcOver-composite
+            // it in the layer colour onto the scratch canvas.
+            ComPtr<IDWriteGlyphRunAnalysis> analysis;
+            if (FAILED(dwriteFactory4_->CreateGlyphRunAnalysis(
+                    &layer->glyphRun,
+                    nullptr,
+                    DWRITE_RENDERING_MODE1_NATURAL_SYMMETRIC,
+                    DWRITE_MEASURING_MODE_NATURAL,
+                    DWRITE_GRID_FIT_MODE_DEFAULT,
+                    DWRITE_TEXT_ANTIALIAS_MODE_GRAYSCALE,
+                    layer->baselineOriginX,
+                    layer->baselineOriginY,
+                    &analysis)) || !analysis) {
+                continue;
+            }
+
+            RECT bounds = {};
+            if (FAILED(analysis->GetAlphaTextureBounds(DWRITE_TEXTURE_ALIASED_1x1, &bounds))) {
+                continue;
+            }
+            int lW = bounds.right - bounds.left;
+            int lH = bounds.bottom - bounds.top;
+            if (lW <= 0 || lH <= 0) continue;
+            if (lW > canvasSize || lH > canvasSize) continue;
+
+            std::vector<uint8_t> alpha((size_t)lW * lH, 0);
+            if (FAILED(analysis->CreateAlphaTexture(DWRITE_TEXTURE_ALIASED_1x1,
+                                                    &bounds, alpha.data(), (UINT32)alpha.size()))) {
+                continue;
+            }
+
+            for (int yy = 0; yy < lH; ++yy) {
+                int dy = originY_px + bounds.top + yy;
+                if (dy < 0 || dy >= canvasSize) continue;
+                for (int xx = 0; xx < lW; ++xx) {
+                    int dx = originX_px + bounds.left + xx;
+                    if (dx < 0 || dx >= canvasSize) continue;
+
+                    const uint8_t cov = alpha[(size_t)yy * lW + xx];
+                    if (cov == 0) continue;
+                    const float a = (float)cov / 255.0f;
+
+                    uint8_t* dst = scratch.data() + ((size_t)dy * canvasSize + dx) * 4;
+                    const float invA = 1.0f - a * la;
+                    auto blend = [&](int idx, float srcVal) {
+                        float d = (float)dst[idx] / 255.0f;
+                        float o = srcVal * a + d * invA;
+                        if (o < 0) o = 0; if (o > 1) o = 1;
+                        dst[idx] = (uint8_t)std::round(o * 255.0f);
+                    };
+                    blend(0, pr);
+                    blend(1, pg);
+                    blend(2, pb);
+                    blend(3, la);
+                    extendUnion(dx, dy);
+                }
+            }
+            continue;
+        }
+
+        if (isBitmap) {
+            // ── Bitmap-strike layer (Win11 Fluent emoji is PNG strikes) ──
+            // Pull the encoded image bytes via IDWriteFontFace4::GetGlyphImageData,
+            // decode through WIC into pre-multiplied BGRA, scale to the
+            // requested em size, then SrcOver-blit into the scratch canvas.
+            ComPtr<IDWriteFontFace4> ff4;
+            if (FAILED(layer->glyphRun.fontFace->QueryInterface(IID_PPV_ARGS(&ff4))) || !ff4) {
+                continue;
+            }
+
+            // GetGlyphImageData picks the strike whose pixelsPerEm is closest
+            // to the requested ppem. fontSize here is already DPI-scaled.
+            const uint16_t glyphId = layer->glyphRun.glyphIndices
+                ? layer->glyphRun.glyphIndices[0]
+                : key.glyphIndex;
+
+            // The format we ask for must be exactly one bit of the mask
+            // GetGlyphImageData expects a singular format; use whichever the
+            // layer reports first that we know how to decode.
+            DWRITE_GLYPH_IMAGE_FORMATS reqFmt = DWRITE_GLYPH_IMAGE_FORMATS_NONE;
+            if      (imgFmt & DWRITE_GLYPH_IMAGE_FORMATS_PNG)  reqFmt = DWRITE_GLYPH_IMAGE_FORMATS_PNG;
+            else if (imgFmt & DWRITE_GLYPH_IMAGE_FORMATS_JPEG) reqFmt = DWRITE_GLYPH_IMAGE_FORMATS_JPEG;
+            else if (imgFmt & DWRITE_GLYPH_IMAGE_FORMATS_TIFF) reqFmt = DWRITE_GLYPH_IMAGE_FORMATS_TIFF;
+            else if (imgFmt & DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8)
+                reqFmt = DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8;
+            if (reqFmt == DWRITE_GLYPH_IMAGE_FORMATS_NONE) continue;
+
+            DWRITE_GLYPH_IMAGE_DATA imgData = {};
+            void* dataCtx = nullptr;
+            if (FAILED(ff4->GetGlyphImageData(
+                    glyphId, (uint32_t)key.fontSize, reqFmt,
+                    &imgData, &dataCtx)) || !dataCtx) {
+                continue;
+            }
+
+            if (imgData.pixelSize.width == 0 || imgData.pixelSize.height == 0 ||
+                imgData.pixelsPerEm == 0) {
+                ff4->ReleaseGlyphImageData(dataCtx);
+                continue;
+            }
+
+            // Decode (or directly take) BGRA pixels.
+            uint32_t srcW = 0, srcH = 0;
+            std::vector<uint8_t> bgra;
+            if (reqFmt == DWRITE_GLYPH_IMAGE_FORMATS_PREMULTIPLIED_B8G8R8A8) {
+                srcW = imgData.pixelSize.width;
+                srcH = imgData.pixelSize.height;
+                const size_t bytes = (size_t)srcW * srcH * 4;
+                if (imgData.imageDataSize < bytes) {
+                    ff4->ReleaseGlyphImageData(dataCtx);
+                    continue;
+                }
+                bgra.assign((const uint8_t*)imgData.imageData,
+                            (const uint8_t*)imgData.imageData + bytes);
+            } else {
+                if (!DecodeEmojiImageBytes(imgData.imageData, imgData.imageDataSize,
+                                           srcW, srcH, bgra)) {
+                    ff4->ReleaseGlyphImageData(dataCtx);
+                    continue;
+                }
+            }
+
+            // Scale to the requested em (the strike's ppem rarely matches the
+            // current font size exactly). Aspect-preserving by definition.
+            const float scale = (float)key.fontSize / (float)imgData.pixelsPerEm;
+            uint32_t dstW = std::max<uint32_t>(1, (uint32_t)std::round(srcW * scale));
+            uint32_t dstH = std::max<uint32_t>(1, (uint32_t)std::round(srcH * scale));
+            if ((int)dstW > canvasSize) dstW = (uint32_t)canvasSize;
+            if ((int)dstH > canvasSize) dstH = (uint32_t)canvasSize;
+
+            std::vector<uint8_t> scaled;
+            const uint8_t* srcPx;
+            if (srcW != dstW || srcH != dstH) {
+                ResampleBgraNearestBox(bgra.data(), srcW, srcH, scaled, dstW, dstH);
+                srcPx = scaled.data();
+            } else {
+                srcPx = bgra.data();
+            }
+
+            // Position the scaled bitmap. horizontalLeftOrigin is in strike
+            // pixel coordinates from the baseline; scale it down to the dst
+            // em so the bitmap sits the same way at any font size.
+            const float baseOrigX = (float)originX_px + layer->baselineOriginX;
+            const float baseOrigY = (float)originY_px + layer->baselineOriginY;
+            const int leftX = (int)std::round(baseOrigX + imgData.horizontalLeftOrigin.x * scale);
+            const int topY  = (int)std::round(baseOrigY + imgData.horizontalLeftOrigin.y * scale);
+
+            for (uint32_t yy = 0; yy < dstH; ++yy) {
+                int dy = topY + (int)yy;
+                if (dy < 0 || dy >= canvasSize) continue;
+                for (uint32_t xx = 0; xx < dstW; ++xx) {
+                    int dx = leftX + (int)xx;
+                    if (dx < 0 || dx >= canvasSize) continue;
+
+                    const uint8_t* sp = srcPx + ((size_t)yy * dstW + xx) * 4;
+                    if (sp[3] == 0) continue;
+
+                    // sp is pre-multiplied BGRA. Atlas is RGBA — swap B↔R.
+                    const float srcA = sp[3] / 255.0f;
+                    const float invA = 1.0f - srcA;
+                    uint8_t* dst = scratch.data() + ((size_t)dy * canvasSize + dx) * 4;
+                    auto blend = [&](int dstIdx, uint8_t srcByte) {
+                        float s = srcByte / 255.0f;
+                        float d = dst[dstIdx] / 255.0f;
+                        float o = s + d * invA;
+                        if (o < 0) o = 0; if (o > 1) o = 1;
+                        dst[dstIdx] = (uint8_t)std::round(o * 255.0f);
+                    };
+                    blend(0, sp[2]);  // R ← BGRA.R
+                    blend(1, sp[1]);  // G
+                    blend(2, sp[0]);  // B ← BGRA.B
+                    blend(3, sp[3]);  // A
+                    extendUnion(dx, dy);
+                }
+            }
+
+            ff4->ReleaseGlyphImageData(dataCtx);
+            continue;
+        }
+
+        // Any other format (SVG, COLR_PAINT_TREE for COLR v1 gradients, ...)
+        // is left to a future commit. Drop these layers silently rather than
+        // letting the whole glyph fall back to the black-mask path.
+    }
+
+    if (unionRight <= unionLeft || unionBottom <= unionTop) {
+        if (EmojiTraceEnabled()) {
+            char buf[160];
+            sprintf_s(buf, "[jalium emoji] glyph=%u ppem=%u union empty — every layer skipped or unsupported\n",
+                      key.glyphIndex, key.fontSize);
+            OutputDebugStringA(buf);
+        }
+        return false;  // every layer was empty
+    }
+
+    const int glyphW = unionRight - unionLeft;
+    const int glyphH = unionBottom - unionTop;
+    if (glyphW > 512 || glyphH > 512) return false;
+
+    uint16_t atlasX, atlasY;
+    if (!AllocateAtlasRect((uint16_t)glyphW, (uint16_t)glyphH, atlasX, atlasY)) {
+        needsReset_ = true;
+        entry.valid = false;
+        return true;  // reset will happen next frame; suppress fallback for this attempt
+    }
+
+    for (int y = 0; y < glyphH; ++y) {
+        if ((uint32_t)(atlasY + y) >= atlasH_) break;
+        const uint8_t* src = scratch.data() + ((size_t)(unionTop + y) * canvasSize + unionLeft) * 4;
+        uint8_t* dst = atlasBitmap_.data() + ((size_t)(atlasY + y) * atlasW_ + atlasX) * 4;
+        memcpy(dst, src, (size_t)glyphW * 4);
+    }
+
+    entry.x = atlasX;
+    entry.y = atlasY;
+    entry.w = (uint16_t)glyphW;
+    entry.h = (uint16_t)glyphH;
+    // Bearings: convert from scratch-canvas coordinates back to baseline-relative.
+    entry.bearingX = (int16_t)(unionLeft   - originX_px);
+    entry.bearingY = (int16_t)(originY_px - unionTop);
+    entry.valid    = true;
+    entry.isColor  = true;
+
+    dirty_ = true;
+    dirtyMinY_ = std::min(dirtyMinY_, atlasY);
+    dirtyMaxY_ = std::max(dirtyMaxY_, (uint16_t)(atlasY + glyphH));
+    return true;
+}
+
+// ============================================================================
 // Generate Glyph Instances
 // ============================================================================
 
@@ -672,16 +1354,37 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
 {
     if (!layout || !initialized_) return 0;
 
+    // Detect a runtime ClearType↔Grayscale swap. SyncAntialiasMode() bumps
+    // needsReset_ when it spots a mode change so the cached glyph pixels
+    // (R/G/B sub-pixel fringes from a previous ClearType pass, or vice versa)
+    // don't survive into the new mode's frame.
+    SyncAntialiasMode();
+
     // Apply this call's premultiplied colour to a colour-neutral run (cached
     // or freshly built) and append it to the caller's buffers. Decorations
     // are always built so the memo is correct even if outDecorations varies
     // between calls; they're only emitted when the caller asked for them.
+    //
+    // Colour-emoji entries are flagged in the cached run by colorR == -1 (a
+    // value the regular premultiplied path could never produce — premultiplied
+    // RGB is non-negative). We preserve the sentinel through emit and only
+    // forward the foreground alpha so the shader can do a SrcOver pass on the
+    // atlas's authored RGBA without tinting the emoji with Foreground.
     auto emitRun = [&](const CachedGlyphRun& run) -> uint32_t {
         const float pr = colorR * colorA, pg = colorG * colorA,
                     pb = colorB * colorA, pa = colorA;
         outInstances.reserve(outInstances.size() + run.instances.size());
         for (GlyphQuadInstance gi : run.instances) {
-            gi.colorR = pr; gi.colorG = pg; gi.colorB = pb; gi.colorA = pa;
+            if (gi.colorR < 0.0f) {
+                // Colour emoji: keep the sentinel and only propagate the text
+                // alpha (so opacity from Foreground still applies).
+                gi.colorR = -1.0f;
+                gi.colorG = 0.0f;
+                gi.colorB = 0.0f;
+                gi.colorA = pa;
+            } else {
+                gi.colorR = pr; gi.colorG = pg; gi.colorB = pb; gi.colorA = pa;
+            }
             outInstances.push_back(gi);
         }
         if (outDecorations) {
@@ -788,7 +1491,18 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
                 inst.uvMaxX = (entry.x + entry.w) * invW;
                 inst.uvMaxY = (entry.y + entry.h) * invH;
                 // Colour applied at emit so one cached run serves any colour.
-                inst.colorR = inst.colorG = inst.colorB = inst.colorA = 0.0f;
+                // Colour-emoji glyphs get a -1 sentinel in R so emit() and the
+                // pixel shader can keep them out of the per-channel ClearType
+                // dual-source path (which would tint the authored emoji palette
+                // with the text Foreground).
+                if (entry.isColor) {
+                    inst.colorR = -1.0f;
+                    inst.colorG = 0.0f;
+                    inst.colorB = 0.0f;
+                    inst.colorA = 0.0f;
+                } else {
+                    inst.colorR = inst.colorG = inst.colorB = inst.colorA = 0.0f;
+                }
                 built.instances.push_back(inst);
             }
 

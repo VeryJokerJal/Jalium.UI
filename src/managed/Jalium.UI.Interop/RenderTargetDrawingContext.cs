@@ -3463,6 +3463,18 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (imageSource == null) return null;
 
+        // Animated bitmaps are just a sequence of BitmapImage frames + a timer.
+        // Forward to whichever BitmapImage frame is currently displayed so each
+        // frame gets its own cache entry (and gets evicted naturally as the
+        // animation rotates through frames). The frame timer drives
+        // FrameChanged → InvalidateVisual on the host control, which re-enters
+        // this path with the new CurrentFrame on the next render pass.
+        if (imageSource is Jalium.UI.Media.AnimatedBitmap animated)
+        {
+            var current = animated.CurrentFrame;
+            return current != null ? GetNativeBitmap(current) : null;
+        }
+
         // For mutable sources we need to validate the cached upload against the
         // current content revision — a rewritten WriteableBitmap shares the
         // same instance, so reference identity alone isn't enough.

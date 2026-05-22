@@ -499,6 +499,14 @@ public class Control : FrameworkElement
                 // Set the templated parent for template bindings
                 SetTemplatedParentRecursive(_templateRoot, this);
 
+                // Mark the template root so Visual.RenderDirect paints it as a
+                // background layer (before this control's OnRender) instead of
+                // as a normal child (after OnRender). Without this flag, a
+                // template with an opaque Background would obscure the output
+                // of a self-drawing control's OnRender — that's the BarChart
+                // (and every other ChartBase-derived control) "blank box" bug.
+                _templateRoot.IsTemplatedRoot = true;
+
                 // Add to visual tree
                 AddVisualChild(_templateRoot);
 
@@ -599,6 +607,11 @@ public class Control : FrameworkElement
 
         if (_templateRoot != null)
         {
+            // Clear the templated-root marker so this visual is treated as a
+            // normal child if it's ever re-parented somewhere else after the
+            // template is rebuilt (rare, but the flag is conceptually owned
+            // by the host control, not by the visual itself).
+            _templateRoot.IsTemplatedRoot = false;
             RemoveVisualChild(_templateRoot);
             _templateRoot = null;
         }
@@ -826,6 +839,24 @@ public class Control : FrameworkElement
         }
 
         return base.ArrangeOverride(finalSize);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>
+    /// Paints the <c>ControlTemplate</c> root (background / border / corner-radius
+    /// decoration) BEFORE this control's own <see cref="Visual.OnRender"/> runs.
+    /// The template root is flagged with <see cref="Visual.IsTemplatedRoot"/> so
+    /// the regular children-render loop in <see cref="Visual.RenderDirect"/>
+    /// skips it — otherwise it would be drawn a second time on top of OnRender
+    /// and obscure the output of self-drawing controls (charts, custom
+    /// visualisations) whose templates have an opaque <c>Background</c>.
+    /// </remarks>
+    protected override void RenderTemplatedBackground(DrawingContext drawingContext)
+    {
+        if (_templateRoot != null)
+        {
+            RenderChildVisualInline(drawingContext, _templateRoot);
+        }
     }
 
     #endregion

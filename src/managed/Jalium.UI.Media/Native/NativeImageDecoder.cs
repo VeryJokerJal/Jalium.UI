@@ -81,6 +81,48 @@ public sealed class NativeImageDecoder : INativeImageDecoder
         return true;
     }
 
+    /// <inheritdoc />
+    public int ReadFrameCount(ReadOnlySpan<byte> data)
+    {
+        if (data.IsEmpty) return 0;
+        NativeMediaStatus status;
+        uint count;
+        unsafe
+        {
+            fixed (byte* ptr = data)
+            {
+                status = NativeMediaInterop.jalium_image_read_frame_count(ptr, (nuint)data.Length, out count);
+            }
+        }
+        if (status != NativeMediaStatus.Ok) return 1;
+        return Math.Max(1, (int)count);
+    }
+
+    /// <inheritdoc />
+    public DecodedImageFrame DecodeFrame(ReadOnlySpan<byte> data, int frameIndex,
+                                          NativePixelFormat requestedFormat = NativePixelFormat.Bgra8)
+    {
+        if (data.IsEmpty) throw new ArgumentException("Image data is empty.", nameof(data));
+        if (frameIndex < 0) throw new ArgumentOutOfRangeException(nameof(frameIndex));
+
+        NativeMediaInterop.NativeImage native;
+        NativeMediaStatus status;
+        uint delayMs;
+        unsafe
+        {
+            fixed (byte* ptr = data)
+            {
+                status = NativeMediaInterop.jalium_image_decode_frame(
+                    ptr, (nuint)data.Length, (uint)frameIndex,
+                    NativeMediaInterop.ToNative(requestedFormat),
+                    out native, out delayMs);
+            }
+        }
+        NativeMediaException.ThrowIfFailed(status, "jalium_image_decode_frame");
+
+        return new DecodedImageFrame(CopyAndFree(ref native), (int)delayMs);
+    }
+
     private static DecodedImage CopyAndFree(ref NativeMediaInterop.NativeImage native)
     {
         try

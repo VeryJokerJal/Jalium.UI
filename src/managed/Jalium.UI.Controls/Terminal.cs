@@ -261,7 +261,22 @@ public class Terminal : Control, IImeSupport
     [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(Terminal),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnIsReadOnlyChangedStatic));
+
+    private static void OnIsReadOnlyChangedStatic(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Terminal t && t.IsKeyboardFocused)
+        {
+            for (Visual? current = t; current != null; current = current.VisualParent)
+            {
+                if (current is Window w)
+                {
+                    w.RefreshInputMethodAssociation();
+                    break;
+                }
+            }
+        }
+    }
 
     /// <summary>
     /// Identifies the Title dependency property.
@@ -1770,6 +1785,9 @@ public class Terminal : Control, IImeSupport
     #endregion
 
     #region IME Support
+
+    /// <inheritdoc />
+    public bool IsImeAllowed => !IsReadOnly;
 
     /// <inheritdoc />
     public Point GetImeCaretPosition()

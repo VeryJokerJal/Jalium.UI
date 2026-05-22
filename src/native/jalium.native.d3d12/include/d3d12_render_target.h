@@ -189,7 +189,16 @@ public:
         const float* constants, uint32_t constantFloatCount) override;
 
 private:
+    // 编译期上限：仅用于定长数组(fenceValues_)与不变循环边界。运行期实际
+    // swapchain 后台缓冲数是 swapBufferCount_(<= FrameCount)。
     static constexpr uint32_t FrameCount = 3;
+
+    // 运行期 swapchain 后台缓冲数。默认 2(双缓冲)——相比 3 少一整张窗口
+    // 尺寸后台缓冲及其 WDDM 驱动镜像/压缩元数据，vsync UI 下基本无感知。
+    // 环境变量 JALIUM_SWAPCHAIN_BUFFERS=2|3 可覆盖(钳到 [2, FrameCount])。
+    // 在 CreateSwapChain() 里解析一次后固定。
+    static constexpr uint32_t kDefaultSwapBufferCount = 2;
+    uint32_t swapBufferCount_ = kDefaultSwapBufferCount;
 
     bool CreateSwapChain();
     void WaitForAllFrames();

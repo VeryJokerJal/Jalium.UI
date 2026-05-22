@@ -452,6 +452,17 @@ public sealed class BindingExpression : BindingExpressionBase
     /// </summary>
     private bool _deferredConverterLoadedHooked;
 
+    // ── INotifyPropertyChanged 订阅句柄 ───────────────────────────────────────
+    // 缓存为字段（构造函数初始化指向实例方法），让 WeakEventManager 注册时 delegate
+    // 实例稳定，RemoveHandler 能精确找到对应订阅；同时字段强引用让 lambda 跟着
+    // BindingExpression 一起活，target 被 GC 时 BindingExpression GC，handler 也 GC，
+    // PropertyChangedEventManager 内部的 WeakReference 失效，source 不再钉住 target。
+    // 这是 WPF 风格：source 用 weak event 持 target，避免长寿 VM 钉死短寿 UI。
+    private readonly EventHandler<PropertyChangedEventArgs> _sourcePcHandler;
+    private readonly EventHandler<PropertyChangedEventArgs> _converterPcHandler;
+    private readonly EventHandler<PropertyChangedEventArgs> _converterParamPcHandler;
+    private readonly EventHandler<PropertyChangedEventArgs> _intermediatePcHandler;
+
     /// <summary>
     /// Gets the parent binding.
     /// </summary>
@@ -469,6 +480,12 @@ public sealed class BindingExpression : BindingExpressionBase
         : base(target, targetProperty)
     {
         _binding = binding;
+        // 方法组转换为 EventHandler<PropertyChangedEventArgs> —— 缓存稳定 delegate 实例
+        // 给 WeakEventManager 用，否则每次 += 创建新 delegate，-= 无法精准移除。
+        _sourcePcHandler = OnSourcePropertyChanged;
+        _converterPcHandler = OnConverterPropertyChanged;
+        _converterParamPcHandler = OnConverterParameterPropertyChanged;
+        _intermediatePcHandler = OnIntermediatePropertyChanged;
     }
 
     /// <inheritdoc />
@@ -1152,8 +1169,10 @@ public sealed class BindingExpression : BindingExpressionBase
         if (ResolvedSource is INotifyPropertyChanged notify)
         {
             _sourceNotify = notify;
-            _sourceNotify.PropertyChanged -= OnSourcePropertyChanged;
-            _sourceNotify.PropertyChanged += OnSourcePropertyChanged;
+            // WeakEventManager：source 用弱引用持 handler，target 被 GC 时 BindingExpression
+            // 跟着 GC，handler 引用自动失效；先 Remove 防重复订阅累积。
+            PropertyChangedEventManager.RemoveHandler(_sourceNotify, _sourcePcHandler, "");
+            PropertyChangedEventManager.AddHandler(_sourceNotify, _sourcePcHandler, "");
         }
 
         // Also subscribe to DependencyObject PropertyChangedInternal for DependencyProperty changes
@@ -1199,7 +1218,7 @@ public sealed class BindingExpression : BindingExpressionBase
     {
         if (_sourceNotify != null)
         {
-            _sourceNotify.PropertyChanged -= OnSourcePropertyChanged;
+            PropertyChangedEventManager.RemoveHandler(_sourceNotify, _sourcePcHandler, "");
             _sourceNotify = null;
         }
 
@@ -1248,7 +1267,7 @@ public sealed class BindingExpression : BindingExpressionBase
             else if (converter is INotifyPropertyChanged convNpc)
             {
                 _converterNotify = convNpc;
-                convNpc.PropertyChanged += OnConverterPropertyChanged;
+                PropertyChangedEventManager.AddHandler(convNpc, _converterPcHandler, "");
             }
         }
 
@@ -1263,7 +1282,7 @@ public sealed class BindingExpression : BindingExpressionBase
             else if (parameter is INotifyPropertyChanged paramNpc)
             {
                 _converterParamNotify = paramNpc;
-                paramNpc.PropertyChanged += OnConverterParameterPropertyChanged;
+                PropertyChangedEventManager.AddHandler(paramNpc, _converterParamPcHandler, "");
             }
         }
     }
@@ -1272,7 +1291,7 @@ public sealed class BindingExpression : BindingExpressionBase
     {
         if (_converterNotify != null)
         {
-            _converterNotify.PropertyChanged -= OnConverterPropertyChanged;
+            PropertyChangedEventManager.RemoveHandler(_converterNotify, _converterPcHandler, "");
             _converterNotify = null;
         }
 
@@ -1284,7 +1303,7 @@ public sealed class BindingExpression : BindingExpressionBase
 
         if (_converterParamNotify != null)
         {
-            _converterParamNotify.PropertyChanged -= OnConverterParameterPropertyChanged;
+            PropertyChangedEventManager.RemoveHandler(_converterParamNotify, _converterParamPcHandler, "");
             _converterParamNotify = null;
         }
 
@@ -1328,7 +1347,7 @@ public sealed class BindingExpression : BindingExpressionBase
         {
             foreach (var (notify, _) in _intermediateSubscriptions)
             {
-                notify.PropertyChanged -= OnIntermediatePropertyChanged;
+                PropertyChangedEventManager.RemoveHandler(notify, _intermediatePcHandler, "");
             }
             _intermediateSubscriptions = null;
         }
@@ -1360,7 +1379,7 @@ public sealed class BindingExpression : BindingExpressionBase
             {
                 // Subscribe to this intermediate object for property changes
                 // (e.g., for path A.B.C, subscribe to A's value for "B" changes)
-                inpc.PropertyChanged += OnIntermediatePropertyChanged;
+                PropertyChangedEventManager.AddHandler(inpc, _intermediatePcHandler, "");
                 _intermediateSubscriptions.Add((inpc, segments[i + 1]));
             }
             current = intermediateObj;

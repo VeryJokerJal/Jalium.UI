@@ -71,7 +71,9 @@ float4 SampleGradient(PsInput input, float t)
 
 float4 main(PsInput input) : SV_Target
 {
-    DiscardOutsideRoundedClip(input.clipPos.xy);
+    // 不在 main 入口 discard：rounded clip 现在以 alpha coverage 形式
+    // 应用在末尾，让圆角带 1-pixel smoothstep 抗锯齿。
+    float clipCoverage = RoundedClipCoverage(input.clipPos.xy);
 
     float2 halfSize = input.rectSize * 0.5;
     float2 p = input.localPos - halfSize;
@@ -131,6 +133,7 @@ float4 main(PsInput input) : SV_Target
         color = fill * fillAlpha;
     }
 
+    color *= clipCoverage;
     if (color.a < 1.0 / 255.0) discard;
     return color;
 }

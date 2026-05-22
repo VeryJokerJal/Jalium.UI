@@ -57,6 +57,34 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_image_read_dimensions(
     return jalium::media::android::ReadImageDimensions(data, size, out_width, out_height);
 }
 
+JALIUM_MEDIA_API jalium_media_status_t jalium_image_read_frame_count(
+    const uint8_t* data,
+    size_t         size,
+    uint32_t*      out_frame_count)
+{
+    // Android AImageDecoder / BitmapFactory do not currently surface frame
+    // counts for animated formats. Report 1 (static) so callers fall through
+    // to the single-frame decode path; once we wire up a real animated GIF
+    // decoder (or ImageDecoder.decodeDrawable) replace this stub.
+    if (!data || size == 0 || !out_frame_count) return JALIUM_MEDIA_E_INVALID_ARG;
+    *out_frame_count = 1;
+    return JALIUM_MEDIA_OK;
+}
+
+JALIUM_MEDIA_API jalium_media_status_t jalium_image_decode_frame(
+    const uint8_t*        data,
+    size_t                size,
+    uint32_t              frame_index,
+    jalium_pixel_format_t requested_format,
+    jalium_image_t*       out_image,
+    uint32_t*             out_delay_ms)
+{
+    if (!data || size == 0 || !out_image) return JALIUM_MEDIA_E_INVALID_ARG;
+    if (frame_index != 0) return JALIUM_MEDIA_E_INVALID_ARG;
+    if (out_delay_ms) *out_delay_ms = 0;
+    return jalium::media::android::DecodeImageMemory(data, size, requested_format, out_image);
+}
+
 JALIUM_MEDIA_API void jalium_image_free(jalium_image_t* image)
 {
     if (!image || !image->pixels) return;

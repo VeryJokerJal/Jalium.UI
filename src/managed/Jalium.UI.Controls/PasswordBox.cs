@@ -125,7 +125,25 @@ public class PasswordBox : Control, IImeSupport
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(PasswordBox),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnIsReadOnlyChangedStatic));
+
+    private static void OnIsReadOnlyChangedStatic(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is PasswordBox pb && pb.IsKeyboardFocused)
+        {
+            pb.FindHostWindow()?.RefreshInputMethodAssociation();
+        }
+    }
+
+    private Window? FindHostWindow()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window w)
+                return w;
+        }
+        return null;
+    }
 
     /// <summary>
     /// Identifies the SelectionBrush dependency property.
@@ -1700,6 +1718,9 @@ public class PasswordBox : Control, IImeSupport
     /// Gets whether IME composition is currently active.
     /// </summary>
     public bool IsImeComposing => _isImeComposing;
+
+    /// <inheritdoc />
+    public bool IsImeAllowed => !IsReadOnly;
 
     /// <inheritdoc />
     public Point GetImeCaretPosition()

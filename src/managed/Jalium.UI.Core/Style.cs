@@ -520,8 +520,14 @@ public abstract class TriggerBase
     internal abstract bool IsActiveForElement(FrameworkElement element);
 
     /// <summary>
-    /// Applies the trigger's setters, storing pre-trigger values for later restoration.
-    /// Trigger values are written to style/template-trigger layers and do not become local values.
+    /// Applies the trigger's setters. WPF semantics: trigger order in the declaring
+    /// collection (Style.Triggers / ControlTemplate.Triggers) determines precedence —
+    /// later triggers win over earlier ones for the same target property. We honor that
+    /// here by SKIPPING setters whose (target, dp) is *already owned by a later sibling
+    /// trigger that is also active*. Otherwise an earlier-defined trigger activating
+    /// AFTER a later one (e.g. user hovers a RadioButton that's already IsChecked=true)
+    /// would clobber the later trigger's value just because the layer dictionary uses
+    /// last-write-wins — which is exactly the "hover residue on a checked button" bug.
     /// </summary>
     protected void ApplyTriggerSetters(FrameworkElement element)
     {
@@ -529,33 +535,40 @@ public abstract class TriggerBase
             ? DependencyObject.LayerValueSource.TemplateTrigger
             : DependencyObject.LayerValueSource.StyleTrigger;
 
+        // Build the set of (target, dp) keys owned by any *later* active sibling.
+        // If a key is in this set, our setter for it is suppressed — the later sibling
+        // already wrote (or will write) its own value and must remain authoritative.
+        var laterSiblingOwned = ComputeLaterSiblingOwnedKeys(element);
+
         foreach (var setter in Setters)
         {
-            // Get the target element (may be different from element if TargetName is set)
             var target = GetSetterTarget(element, setter.TargetName);
             if (target == null)
                 continue;
 
-            // Resolve the property - may need deferred resolution for TargetName setters
             var resolvedProperty = setter.Property;
             if (resolvedProperty == null && setter.PropertyName != null)
-            {
                 resolvedProperty = Setter.ResolveDependencyPropertyByName(setter.PropertyName, target.GetType());
-            }
             if (resolvedProperty == null)
                 continue;
 
-            // Resolve the actual property on the target type
-            // This is important when TargetName is set and the target is a different type
-            // (e.g., Setter targets a Border but was parsed with Style TargetType=Button)
             var actualProperty = ResolvePropertyForTarget(resolvedProperty, target);
             if (actualProperty == null)
                 continue;
 
             var key = (target, actualProperty);
 
-            // Track that this trigger has set this property
+            // Track that this trigger conceptually owns this property — even if we end up
+            // skipping the write below, we still need to remember the ownership so that
+            // RemoveTriggerSetters can later re-apply ours when the later sibling deactivates.
             _activeSetters.Add(key);
+
+            // Honor WPF precedence: defer to any active later sibling.
+            if (laterSiblingOwned.Contains(key))
+            {
+                EnsureSetterInvalidation(target, actualProperty);
+                continue;
+            }
 
             if (setter.Value is IDynamicResourceReference dynamicReference)
             {
@@ -595,6 +608,49 @@ public abstract class TriggerBase
             target.SetLayerValue(actualProperty, valueToSet, layerSource, allowAutoTransition: true);
             EnsureSetterInvalidation(target, actualProperty);
         }
+    }
+
+    /// <summary>
+    /// Returns the set of (target, dp) keys that any *later* sibling trigger (in the
+    /// declaring collection) currently owns for the given element. Used by
+    /// ApplyTriggerSetters to defer to later-defined triggers (WPF precedence).
+    /// </summary>
+    private HashSet<(FrameworkElement, DependencyProperty)> ComputeLaterSiblingOwnedKeys(FrameworkElement element)
+    {
+        var result = new HashSet<(FrameworkElement, DependencyProperty)>();
+
+        IList<TriggerBase>? siblings = ParentStyle?.Triggers as IList<TriggerBase> ?? ParentTemplateTriggers;
+        if (siblings == null)
+            return result;
+
+        var myIndex = siblings.IndexOf(this);
+        if (myIndex < 0)
+            return result;
+
+        for (int i = myIndex + 1; i < siblings.Count; i++)
+        {
+            var later = siblings[i];
+            if (!later.IsActiveForElement(element))
+                continue;
+
+            foreach (var setter in later.Setters)
+            {
+                var target = GetSetterTarget(element, setter.TargetName);
+                if (target == null) continue;
+
+                var resolvedProp = setter.Property;
+                if (resolvedProp == null && setter.PropertyName != null)
+                    resolvedProp = Setter.ResolveDependencyPropertyByName(setter.PropertyName, target.GetType());
+                if (resolvedProp == null) continue;
+
+                var actualProperty = ResolvePropertyForTarget(resolvedProp, target);
+                if (actualProperty == null) continue;
+
+                result.Add((target, actualProperty));
+            }
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -751,8 +807,17 @@ public abstract class TriggerBase
     }
 
     /// <summary>
-    /// Removes the trigger's setters, restoring pre-trigger values.
-    /// When multiple triggers affect the same property, remaining active triggers are re-applied.
+    /// Removes the trigger's setters when this trigger deactivates. Mirrors WPF precedence
+    /// (later sibling wins) by recomputing what the layer value should be for each owned
+    /// (target, dp) key:
+    ///   – If any other sibling is still active and owns the key, write the LATEST
+    ///     (declaration-order) sibling's value to the layer in one mutation. This avoids
+    ///     a Clear→Set sequence that would fire two transitions back-to-back and flash
+    ///     baseline (the visible source of "hover residue" on a still-checked button).
+    ///   – If no sibling takes over, ClearLayerValue so the property falls back to baseline.
+    /// Skips the layer write entirely when this trigger had been suppressed by a later
+    /// sibling during ApplyTriggerSetters (layer was never ours — leaving it alone is
+    /// correct, and any redundant SetLayerValue here would needlessly restart transitions).
     /// </summary>
     protected void RemoveTriggerSetters(FrameworkElement element)
     {
@@ -760,113 +825,125 @@ public abstract class TriggerBase
             ? DependencyObject.LayerValueSource.TemplateTrigger
             : DependencyObject.LayerValueSource.StyleTrigger;
 
-        // Collect the properties that need other triggers re-applied
-        var needsReapply = new HashSet<(FrameworkElement, DependencyProperty)>();
+        // (1) Resolve own setters: setter list → (target, dp, setter) entries that we previously
+        //     claimed via _activeSetters in ApplyTriggerSetters (whether we actually wrote the
+        //     layer or were suppressed by a later sibling).
+        var ownSetters = new List<(FrameworkElement Target, DependencyProperty Property, Setter Setter)>();
+        var ownKeys = new HashSet<(FrameworkElement, DependencyProperty)>();
 
         foreach (var setter in Setters)
         {
-            // Get the target element (may be different from element if TargetName is set)
             var target = GetSetterTarget(element, setter.TargetName);
-            if (target == null)
-                continue;
+            if (target == null) continue;
 
-            // Resolve the property - may need deferred resolution for TargetName setters
             var resolvedProperty = setter.Property;
             if (resolvedProperty == null && setter.PropertyName != null)
-            {
                 resolvedProperty = Setter.ResolveDependencyPropertyByName(setter.PropertyName, target.GetType());
-            }
-            if (resolvedProperty == null)
-                continue;
+            if (resolvedProperty == null) continue;
 
-            // Resolve the actual property on the target type
             var actualProperty = ResolvePropertyForTarget(resolvedProperty, target);
-            if (actualProperty == null)
-                continue;
+            if (actualProperty == null) continue;
 
             var key = (target, actualProperty);
+            if (!_activeSetters.Contains(key)) continue;
 
-            // Check if this trigger actually set this property
-            if (!_activeSetters.Contains(key))
-                continue;
-
-            if (setter.Value is IDynamicResourceReference)
-            {
-                DynamicResourceBindingOperations.ClearDynamicResource(target, actualProperty);
-            }
-            else if (setter.Value is BindingBase)
-            {
-                // ApplyTriggerSetters 用 SetBinding 建立的 binding 在 LocalValue 层占用了 DP，
-                // 触发器失活时必须显式断开，否则 trigger 已经离开了但 binding 还在源端持续推值。
-                target.ClearBinding(actualProperty);
-            }
-
-            _activeSetters.Remove(key);
-            // Trigger 失活也是动态状态切换，反向恢复同样要参与自动过渡 —
-            // 否则 hover 退出时值瞬间跳回 baseline，没有缓动。
-            target.ClearLayerValue(actualProperty, layerSource, allowAutoTransition: true);
-            EnsureSetterInvalidation(target, actualProperty);
-            needsReapply.Add(key);
-
+            ownSetters.Add((target, actualProperty, setter));
+            ownKeys.Add(key);
         }
 
-        // Re-apply any other still-active triggers that affect the same properties
-        // This ensures that if trigger A deactivates but trigger B is still active,
-        // trigger B's values are re-applied
-        if (needsReapply.Count > 0)
+        if (ownSetters.Count == 0)
+            return;
+
+        // (2) For each owned key, walk siblings in declaration order to find:
+        //     – the latest still-active sibling owning the key (takeover)
+        //     – whether any later sibling currently owns the key (we were suppressed)
+        var takeoverSetter = new Dictionary<(FrameworkElement, DependencyProperty), Setter>();
+        var suppressedByLater = new HashSet<(FrameworkElement, DependencyProperty)>();
+
+        IList<TriggerBase>? siblings = ParentStyle?.Triggers as IList<TriggerBase> ?? ParentTemplateTriggers;
+        if (siblings != null)
         {
-            // Collect triggers to check - from ParentStyle or from ParentTemplateTriggers
-            IEnumerable<TriggerBase>? triggersToCheck = ParentStyle?.Triggers ?? ParentTemplateTriggers;
-
-            if (triggersToCheck != null)
+            int myIndex = siblings.IndexOf(this);
+            for (int i = 0; i < siblings.Count; i++)
             {
-                foreach (var otherTrigger in triggersToCheck)
+                var sibling = siblings[i];
+                if (sibling == this) continue;
+                if (!sibling.IsActiveForElement(element)) continue;
+
+                foreach (var setter in sibling.Setters)
                 {
-                    if (otherTrigger == this) continue;
-                    if (!otherTrigger.IsActiveForElement(element)) continue;
+                    var target = GetSetterTarget(element, setter.TargetName);
+                    if (target == null) continue;
 
-                    foreach (var setter in otherTrigger.Setters)
-                    {
-                        var target = GetSetterTarget(element, setter.TargetName);
-                        if (target == null) continue;
+                    var resolvedProp = setter.Property;
+                    if (resolvedProp == null && setter.PropertyName != null)
+                        resolvedProp = Setter.ResolveDependencyPropertyByName(setter.PropertyName, target.GetType());
+                    if (resolvedProp == null) continue;
 
-                        // Resolve the property - may need deferred resolution
-                        var resolvedProp = setter.Property;
-                        if (resolvedProp == null && setter.PropertyName != null)
-                        {
-                            resolvedProp = Setter.ResolveDependencyPropertyByName(setter.PropertyName, target.GetType());
-                        }
-                        if (resolvedProp == null) continue;
+                    var actualProperty = ResolvePropertyForTarget(resolvedProp, target);
+                    if (actualProperty == null) continue;
 
-                        // Resolve the actual property on the target type
-                        var actualProperty = ResolvePropertyForTarget(resolvedProp, target);
-                        if (actualProperty == null) continue;
+                    var key = (target, actualProperty);
+                    if (!ownKeys.Contains(key)) continue;
 
-                        var key = (target, actualProperty);
-                        if (needsReapply.Contains(key))
-                        {
-                            if (setter.Value is IDynamicResourceReference dynamicReference)
-                            {
-                                DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey, layerSource);
-                            }
-                            else if (setter.Value is BindingBase reapplyBinding)
-                            {
-                                // 与 ApplyTriggerSetters 对齐：仍激活的兄弟触发器若用 Binding 作为 Value，
-                                // 重新激活时也要走 SetBinding,而不是把 Binding 对象塞进 layer 触发崩溃。
-                                target.SetBinding(actualProperty, reapplyBinding);
-                            }
-                            else
-                            {
-                                // This property needs another trigger's value re-applied —
-                                // 仍属于 trigger 动态切换路径，保持过渡参与。
-                                var valueToSet = ConvertValueIfNeeded(setter.Value, actualProperty.PropertyType);
-                                target.SetLayerValue(actualProperty, valueToSet, layerSource, allowAutoTransition: true);
-                            }
-                            EnsureSetterInvalidation(target, actualProperty);
-                        }
-                    }
+                    // Later-defined active sibling overwrites earlier — keep updating so the
+                    // last write wins. Also note whether this sibling is past our own index:
+                    // if any later sibling owns the key, our SetLayerValue was suppressed,
+                    // so RemoveTriggerSetters must leave the layer alone (layer is theirs).
+                    takeoverSetter[key] = setter;
+                    if (myIndex >= 0 && i > myIndex)
+                        suppressedByLater.Add(key);
                 }
             }
+        }
+
+        // (3) Per owned key: either layer is already someone else's (suppressed-by-later),
+        //     a take-over sibling needs to claim it, or we ClearLayerValue back to baseline.
+        foreach (var (target, actualProperty, setter) in ownSetters)
+        {
+            var key = (target, actualProperty);
+            _activeSetters.Remove(key);
+
+            // Tear down any binding/dynamic-resource that *we* established.
+            // ApplyTriggerSetters skips SetBinding/SetDynamicResource when suppressed by a
+            // later sibling, so there's nothing of ours to tear down in that case.
+            bool weActuallyWroteLayer = !suppressedByLater.Contains(key);
+            if (weActuallyWroteLayer)
+            {
+                if (setter.Value is IDynamicResourceReference)
+                    DynamicResourceBindingOperations.ClearDynamicResource(target, actualProperty);
+                else if (setter.Value is BindingBase)
+                    target.ClearBinding(actualProperty);
+            }
+
+            if (suppressedByLater.Contains(key))
+            {
+                // Layer belongs to a later sibling that's still active — leave it untouched.
+                continue;
+            }
+
+            if (takeoverSetter.TryGetValue(key, out var reapplySetter))
+            {
+                if (reapplySetter.Value is IDynamicResourceReference dynamicReference)
+                {
+                    DynamicResourceBindingOperations.SetDynamicResource(target, actualProperty, dynamicReference.ResourceKey, layerSource);
+                }
+                else if (reapplySetter.Value is BindingBase reapplyBinding)
+                {
+                    target.SetBinding(actualProperty, reapplyBinding);
+                }
+                else
+                {
+                    var valueToSet = ConvertValueIfNeeded(reapplySetter.Value, actualProperty.PropertyType);
+                    target.SetLayerValue(actualProperty, valueToSet, layerSource, allowAutoTransition: true);
+                }
+            }
+            else
+            {
+                target.ClearLayerValue(actualProperty, layerSource, allowAutoTransition: true);
+            }
+
+            EnsureSetterInvalidation(target, actualProperty);
         }
     }
 

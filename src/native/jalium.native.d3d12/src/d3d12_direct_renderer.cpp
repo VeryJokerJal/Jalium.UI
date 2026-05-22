@@ -266,17 +266,28 @@ bool D3D12DirectRenderer::Initialize(IDXGISwapChain3* swapChain, UINT frameCount
         }
     }
 
-    // Initialize Vello GPU path renderer
-    velloRenderer_ = std::make_unique<D3D12VelloRenderer>(device_, nullptr);
-    if (!velloRenderer_->Initialize()) {
-        OutputDebugStringA("[D3D12DirectRenderer] Vello init failed (non-fatal, falling back to CPU triangulation)\n");
-        velloRenderer_.reset();
-    } else {
-        velloRenderer_->SetGPUPipeline(true);
-        // Vello GPU pipeline enabled
-    }
+    // Vello GPU 路径渲染器改为懒创建（见 EnsureVelloRenderer）。这里不再
+    // eager 构造：默认引擎是 Impeller(velloEnabled_=false),整条 Vello 子系统
+    // (~7 计算 PSO + 每帧描述符堆 + 缓冲 + 驱动 compute 上下文)本就用不到,
+    // eager 创建纯属浪费 GPU/驱动内存与启动期 PSO 编译。active engine 真是
+    // Vello 时,首帧 BeginFrame 会按需 EnsureVelloRenderer()。
 
     initialized_ = true;
+    return true;
+}
+
+bool D3D12DirectRenderer::EnsureVelloRenderer() {
+    if (velloRenderer_) return true;          // 已创建
+    if (!velloEnabled_) return false;          // active engine 非 Vello → 不创建
+    if (!device_) return false;
+
+    auto vr = std::make_unique<D3D12VelloRenderer>(device_, nullptr);
+    if (!vr->Initialize()) {
+        OutputDebugStringA("[D3D12DirectRenderer] Vello lazy init failed (non-fatal, falling back to CPU triangulation)\n");
+        return false;                          // 保持 velloRenderer_ 为空,后续不再重试本帧
+    }
+    vr->SetGPUPipeline(true);
+    velloRenderer_ = std::move(vr);
     return true;
 }
 
@@ -921,8 +932,10 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     while (!transformStack_.empty()) transformStack_.pop();
     transformStack_.push(Transform2D::Identity());
 
-    // Begin Vello frame (skipped when Impeller is active)
-    if (velloEnabled_ && velloRenderer_) {
+    // Begin Vello frame (skipped when Impeller is active). velloEnabled_ 为真
+    // (active engine==Vello)时按需懒创建 Vello 子系统;Impeller 下整条跳过,
+    // velloRenderer_ 永远为空,零开销。
+    if (velloEnabled_ && EnsureVelloRenderer()) {
         velloRenderer_->BeginFrame(width, height);
     }
 
@@ -1448,11 +1461,21 @@ void D3D12DirectRenderer::PushScissor(float x, float y, float w, float h)
     float maxX = (std::max)({x0, x1, x2, x3});
     float maxY = (std::max)({y0, y1, y2, y3});
 
+    // Scissor must include every pixel whose center lies inside the clip rect
+    // in physical-pixel space. (LONG) truncates toward 0 — equivalent to floor
+    // for positives — which silently shrinks right/bottom by up to 1 px when
+    // the clip rect has any sub-pixel fraction (DPI scaling 150 % / 200 %,
+    // or layout snapping that lands on .5 boundaries). The pixel rows lost
+    // along the bottom and right edges are exactly the rows where the SDF
+    // rounded-rect Background fills its AA gradient, so the smoothed corner
+    // gets hard-cut into a stair-step. Expand outward: floor on min, ceil on
+    // max — D3D12 scissor is [left, right) / [top, bottom) inclusive-exclusive,
+    // so ceil on the maxima still excludes the next-out-of-bounds pixel.
     D3D12_RECT rect;
-    rect.left = (LONG)(minX * dpiScale_);
-    rect.top = (LONG)(minY * dpiScale_);
-    rect.right = (LONG)(maxX * dpiScale_);
-    rect.bottom = (LONG)(maxY * dpiScale_);
+    rect.left   = (LONG)std::floor(minX * dpiScale_);
+    rect.top    = (LONG)std::floor(minY * dpiScale_);
+    rect.right  = (LONG)std::ceil (maxX * dpiScale_);
+    rect.bottom = (LONG)std::ceil (maxY * dpiScale_);
 
     // Intersect with parent scissor if any
     if (!scissorStack_.empty()) {

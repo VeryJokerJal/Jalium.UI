@@ -142,9 +142,18 @@ inline void GenerateRoundJoin(
 // ---------------------------------------------------------------------------
 // ExpandStrokePath — the main entry point.
 //
-// flatPoints is the bezier-flattened polyline (x0,y0,x1,y1,...) in screen
-// space. brushR/G/B/A is the un-premultiplied brush color; the function
-// premultiplies internally (and applies hairline alpha fade if appropriate).
+// flatPoints is the bezier-flattened polyline (x0,y0,x1,y1,...) in the
+// coordinate space the caller wants the geometry emitted in. brushR/G/B/A is
+// the un-premultiplied brush color; the function premultiplies internally
+// (and applies hairline alpha fade if appropriate).
+//
+// featherScaleInSrc is the source-space distance that maps to ONE screen
+// pixel — used to size the 1-px AA feather skirt and the hairline-clamp
+// threshold. Pixel-space callers pass 1.0 (the default). Source-space cache
+// callers (e.g. D3D12 EncodeStrokePath) pass 1/maxScale so the feather and
+// hairline threshold stay at exactly 1 screen pixel after the cached mesh
+// is transformed at emit time. Without this, a stroke cached at maxScale=2
+// would emit a 2-px-wide feather skirt → strokes look ~2× too thick.
 //
 // When collectContours is non-null the function does NOT touch outVerts /
 // outIndices and instead packs each emitted triangle as a 3-vertex Contour.
@@ -162,9 +171,19 @@ inline bool ExpandStrokePath(
     ImpellerJoin join, float miterLimit,
     ImpellerCap cap, bool closed,
     float brushR, float brushG, float brushB, float brushA,
-    std::vector<Contour>* collectContours = nullptr)
+    std::vector<Contour>* collectContours = nullptr,
+    float featherScaleInSrc = 1.0f)
 {
     if (pointCount < 2 || flatPoints == nullptr) return false;
+
+    // featherScaleInSrc must be > 0; clamp NaN / negatives to 1 (pixel-space).
+    if (!(featherScaleInSrc > 0.0f)) featherScaleInSrc = 1.0f;
+
+    // 0.5 screen-pixel half-width, expressed in the caller's coordinate space.
+    // All the geometry below uses this for both the AA feather skirt and the
+    // hairline clamp so the on-screen feel is 1-pixel regardless of whether
+    // the caller is pre-transformed or going through a source-space cache.
+    const float halfPxInSrc = 0.5f * featherScaleInSrc;
 
     float halfWidth = strokeWidth * 0.5f;
     float r = brushR * brushA;
@@ -175,10 +194,10 @@ inline bool ExpandStrokePath(
     // Sub-pixel hairline alpha fade — only when going through the direct
     // (binary GPU) rasterization path. The analytic AA path takes the true
     // halfWidth so per-pixel coverage handles hairlines naturally.
-    if (!collectContours && halfWidth < 0.5f && halfWidth > 0.0f) {
-        float fade = halfWidth / 0.5f;
+    if (!collectContours && halfWidth < halfPxInSrc && halfWidth > 0.0f) {
+        float fade = halfWidth / halfPxInSrc;
         r *= fade; g *= fade; b *= fade; a *= fade;
-        halfWidth = 0.5f;
+        halfWidth = halfPxInSrc;
     }
 
     // Local geometry vectors — used either to fill outVerts/outIndices
@@ -222,6 +241,21 @@ inline bool ExpandStrokePath(
     //   coverage from the exact geometry — emitting an additional feather
     //   skirt here would just be union'd in by NonZero filling, fattening
     //   the stroke by 1 px.
+    // Symmetric ±0.5-px feather centred on the geometric stroke edge.
+    //   inner alpha=a half-width = halfWidth - 0.5px (clamped ≥ 0)
+    //   outer alpha=0 half-width = halfWidth + 0.5px
+    // Net effect: total geometric width = strokeWidth + 1 px; the GPU's
+    // bilinear interpolation across that 1-px feather gives 50% coverage
+    // at the geometric edge, so the on-screen visual width matches the
+    // requested strokeWidth. The previous code skipped the inward inset
+    // and only extruded outward by +1 px → strokes rendered ~2 px wider
+    // than asked, which is what made every line look "too thick".
+    //
+    // When halfWidth ≤ 0.5px (after the hairline clamp above the stroke
+    // is exactly 0.5px wide), innerHalf collapses to 0 and the inner
+    // verts on both sides degenerate to the centreline. The two feather
+    // strips meet at that centreline and still produce a 1-px-wide
+    // soft line — correct hairline behaviour.
     const bool emitFeather = (collectContours == nullptr);
     for (uint32_t i = 0; i + 1 < pointCount; ++i) {
         float nx = segNormals[i].nx * halfWidth;
@@ -240,26 +274,27 @@ inline bool ExpandStrokePath(
             continue;
         }
 
-        // Feather extension is exactly 1 pixel in stroke-pixel space.
-        // featherScale = (halfWidth + 1) / halfWidth, applied to the
-        // unit normal vector (segNormals stored without halfWidth scale).
-        float featherScale = (halfWidth + 1.0f) / halfWidth;
-        float fnx = segNormals[i].nx * halfWidth * featherScale;
-        float fny = segNormals[i].ny * halfWidth * featherScale;
+        float innerHalf = halfWidth - halfPxInSrc;
+        if (innerHalf < 0.0f) innerHalf = 0.0f;
+        float outerHalf = halfWidth + halfPxInSrc;
+        float inx = segNormals[i].nx * innerHalf;
+        float iny = segNormals[i].ny * innerHalf;
+        float onx = segNormals[i].nx * outerHalf;
+        float ony = segNormals[i].ny * outerHalf;
 
         uint32_t base = (uint32_t)verts.size();
         // 0,1: outer top feather (alpha 0)
-        verts.push_back({ x0 + fnx, y0 + fny, r, g, b, 0.0f });
-        verts.push_back({ x1 + fnx, y1 + fny, r, g, b, 0.0f });
+        verts.push_back({ x0 + onx, y0 + ony, r, g, b, 0.0f });
+        verts.push_back({ x1 + onx, y1 + ony, r, g, b, 0.0f });
         // 2,3: inner top edge (alpha a)
-        verts.push_back({ x0 + nx, y0 + ny, r, g, b, a });
-        verts.push_back({ x1 + nx, y1 + ny, r, g, b, a });
+        verts.push_back({ x0 + inx, y0 + iny, r, g, b, a });
+        verts.push_back({ x1 + inx, y1 + iny, r, g, b, a });
         // 4,5: inner bottom edge (alpha a)
-        verts.push_back({ x0 - nx, y0 - ny, r, g, b, a });
-        verts.push_back({ x1 - nx, y1 - ny, r, g, b, a });
+        verts.push_back({ x0 - inx, y0 - iny, r, g, b, a });
+        verts.push_back({ x1 - inx, y1 - iny, r, g, b, a });
         // 6,7: outer bottom feather (alpha 0)
-        verts.push_back({ x0 - fnx, y0 - fny, r, g, b, 0.0f });
-        verts.push_back({ x1 - fnx, y1 - fny, r, g, b, 0.0f });
+        verts.push_back({ x0 - onx, y0 - ony, r, g, b, 0.0f });
+        verts.push_back({ x1 - onx, y1 - ony, r, g, b, 0.0f });
 
         // Inner solid quad: (2,4,3) and (4,5,3)
         indices.push_back(base + 2); indices.push_back(base + 4); indices.push_back(base + 3);

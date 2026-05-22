@@ -403,7 +403,34 @@ public class DependencyObject : DispatcherObject
     {
         // Use per-type metadata so that shared properties (e.g. TextElement.ForegroundProperty
         // used by both Control and TextBlock via AddOwner) invoke the correct callback.
-        e.Property.GetMetadata(GetType()).PropertyChangedCallback?.Invoke(this, e);
+        var metadata = e.Property.GetMetadata(GetType());
+        metadata.PropertyChangedCallback?.Invoke(this, e);
+
+        // WPF 语义：FrameworkPropertyMetadata 上的 Affects* flag 必须自动触发对应失效。
+        // 在此之前框架只读 AffectsCompositionOnly（仅在 SetAnimatedValue 路径），
+        // AffectsMeasure / AffectsRender / AffectsArrange / AffectsParentMeasure /
+        // AffectsParentArrange 全部被忽略 —— 比如 ConnectionLine 用
+        // AffectsMeasure | AffectsRender 注册 SourceX/Y/TargetX/Y 后改坐标，元素
+        // RenderSize 不更新、OnRender 也不重跑，连线根本画不出来。
+        // 与显式 PropertyChangedCallback 共存：LayoutManager / dirty queue 自带 dedup。
+        if (this is UIElement element && metadata is FrameworkPropertyMetadata fpm)
+        {
+            if (fpm.AffectsMeasure)
+                element.InvalidateMeasure();
+            if (fpm.AffectsArrange)
+                element.InvalidateArrange();
+            if (fpm.AffectsRender)
+            {
+                if (fpm.AffectsCompositionOnly)
+                    element.InvalidateComposition();
+                else
+                    element.InvalidateVisual();
+            }
+            if (fpm.AffectsParentMeasure && element.VisualParent is UIElement parentForMeasure)
+                parentForMeasure.InvalidateMeasure();
+            if (fpm.AffectsParentArrange && element.VisualParent is UIElement parentForArrange)
+                parentForArrange.InvalidateArrange();
+        }
 
         // Notify internal listeners (triggers, etc.)
         PropertyChangedInternal?.Invoke(e.Property, e.OldValue, e.NewValue);

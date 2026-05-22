@@ -62,6 +62,74 @@ public abstract class TextBoxBase : Control
 
     #endregion
 
+    #region Surrogate-Pair Boundary Helpers
+
+    /// <summary>
+    /// Snaps <paramref name="offset"/> to the nearest legal UTF-16 code-point
+    /// boundary in <paramref name="text"/>. Prevents splitting a surrogate pair
+    /// in half — which would render emoji and other BMP-supplementary code
+    /// points as two broken halves and let the user select / delete only one
+    /// half of the glyph.
+    /// </summary>
+    /// <remarks>
+    /// When <paramref name="offset"/> falls on a low surrogate, the position is
+    /// snapped past the pair (<paramref name="snapForward"/>=true, the normal
+    /// case while extending selection or moving the caret right) or before it
+    /// (<paramref name="snapForward"/>=false, used when moving left). Out-of-
+    /// range values are clamped to <c>[0, text.Length]</c>.
+    /// </remarks>
+    protected static int SnapToCharacterBoundary(string text, int offset, bool snapForward = true)
+    {
+        if (string.IsNullOrEmpty(text) || offset <= 0)
+            return Math.Max(0, offset);
+        if (offset >= text.Length)
+            return text.Length;
+
+        // Mid-surrogate-pair: text[offset-1] is a high surrogate and
+        // text[offset] is its low surrogate counterpart. Splitting here would
+        // emit half an emoji, so jump to the neighbouring full-codepoint
+        // boundary in the requested direction.
+        if (char.IsLowSurrogate(text[offset]) && char.IsHighSurrogate(text[offset - 1]))
+        {
+            return snapForward ? Math.Min(offset + 1, text.Length) : offset - 1;
+        }
+        return offset;
+    }
+
+    /// <summary>
+    /// Computes the offset of the next code-point boundary after
+    /// <paramref name="offset"/>, stepping over a full surrogate pair when one
+    /// is present so caret motion always moves a whole emoji at a time.
+    /// </summary>
+    protected static int StepForwardCodepoint(string text, int offset)
+    {
+        if (string.IsNullOrEmpty(text) || offset >= text.Length)
+            return text?.Length ?? 0;
+        int step = (offset + 1 < text.Length
+                    && char.IsHighSurrogate(text[offset])
+                    && char.IsLowSurrogate(text[offset + 1]))
+                   ? 2 : 1;
+        return offset + step;
+    }
+
+    /// <summary>
+    /// Computes the offset of the previous code-point boundary before
+    /// <paramref name="offset"/>, stepping over a full surrogate pair so
+    /// Backspace and Left-arrow consume an entire emoji rather than half.
+    /// </summary>
+    protected static int StepBackwardCodepoint(string text, int offset)
+    {
+        if (string.IsNullOrEmpty(text) || offset <= 0)
+            return 0;
+        int step = (offset - 2 >= 0
+                    && char.IsHighSurrogate(text[offset - 2])
+                    && char.IsLowSurrogate(text[offset - 1]))
+                   ? 2 : 1;
+        return offset - step;
+    }
+
+    #endregion
+
     #region Fields
 
     /// <summary>
@@ -221,7 +289,42 @@ public abstract class TextBoxBase : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Input)]
     public static readonly DependencyProperty IsReadOnlyProperty =
         DependencyProperty.Register(nameof(IsReadOnly), typeof(bool), typeof(TextBoxBase),
-            new PropertyMetadata(false));
+            new PropertyMetadata(false, OnIsReadOnlyPropertyChanged));
+
+    private static void OnIsReadOnlyPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is TextBoxBase tb)
+        {
+            tb.OnIsReadOnlyChanged((bool)e.OldValue!, (bool)e.NewValue!);
+        }
+    }
+
+    /// <summary>
+    /// Called when <see cref="IsReadOnly"/> changes. Detaches the host window's
+    /// IME context while read-only so the candidate / composition window stays
+    /// hidden, even if the control is currently focused.
+    /// </summary>
+    protected virtual void OnIsReadOnlyChanged(bool oldValue, bool newValue)
+    {
+        if (this is IImeSupport && IsKeyboardFocused)
+        {
+            FindHostWindow()?.RefreshInputMethodAssociation();
+        }
+    }
+
+    /// <summary>
+    /// Walks the visual tree to locate the containing <see cref="Window"/>,
+    /// or <c>null</c> when the control has not been parented yet.
+    /// </summary>
+    private Window? FindHostWindow()
+    {
+        for (Visual? current = this; current != null; current = current.VisualParent)
+        {
+            if (current is Window w)
+                return w;
+        }
+        return null;
+    }
 
     /// <summary>
     /// Identifies the AcceptsReturn dependency property.
@@ -706,7 +809,9 @@ public abstract class TextBoxBase : Control
         set
         {
             var text = GetText();
-            var newValue = Math.Clamp(text.Length, 0, value);
+            // Snap forward so a caret placed inside a surrogate pair lands on
+            // the next whole code-point boundary instead of splitting an emoji.
+            var newValue = SnapToCharacterBoundary(text, Math.Clamp(value, 0, text.Length), snapForward: true);
             if (_caretIndex != newValue)
             {
                 _caretIndex = newValue;
@@ -726,7 +831,9 @@ public abstract class TextBoxBase : Control
         set
         {
             var text = GetText();
-            var newValue = Math.Clamp(text.Length, 0, value);
+            // Snap backward: a selection that starts in the middle of a
+            // surrogate pair should grow to include the whole emoji.
+            var newValue = SnapToCharacterBoundary(text, Math.Clamp(value, 0, text.Length), snapForward: false);
             if (_selectionStart != newValue)
             {
                 _selectionStart = newValue;
@@ -745,7 +852,11 @@ public abstract class TextBoxBase : Control
         {
             var text = GetText();
             var maxLength = text.Length - _selectionStart;
-            var newValue = Math.Clamp(maxLength, 0, value);
+            var raw = Math.Clamp(value, 0, maxLength);
+            // Snap selection end forward: include the trailing half of a
+            // surrogate pair so the selected text never contains a lone half-emoji.
+            var snappedEnd = SnapToCharacterBoundary(text, _selectionStart + raw, snapForward: true);
+            var newValue = snappedEnd - _selectionStart;
             if (_selectionLength != newValue)
             {
                 _selectionLength = newValue;
@@ -794,8 +905,13 @@ public abstract class TextBoxBase : Control
     public void Select(int start, int length)
     {
         var text = GetText();
-        _selectionStart = Math.Clamp(text.Length, 0, start);
-        _selectionLength = Math.Clamp(text.Length - _selectionStart, 0, length);
+        // Snap both endpoints so a programmatic Select() that lands inside a
+        // surrogate pair (emoji) widens to include the full code point.
+        var snappedStart = SnapToCharacterBoundary(text, Math.Clamp(start, 0, text.Length), snapForward: false);
+        var rawEnd = Math.Clamp(snappedStart + length, snappedStart, text.Length);
+        var snappedEnd = SnapToCharacterBoundary(text, rawEnd, snapForward: true);
+        _selectionStart = snappedStart;
+        _selectionLength = snappedEnd - snappedStart;
         _caretIndex = _selectionStart + _selectionLength;
         InvalidateVisual();
         OnSelectionChanged();
@@ -996,9 +1112,17 @@ public abstract class TextBoxBase : Control
             _selectionAnchor = _caretIndex;
         }
 
-        _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
-        _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
-        _caretIndex = newCaretIndex;
+        // Snap both endpoints to code-point boundaries so Shift+Arrow over an
+        // emoji never leaves half a surrogate pair selected (which then renders
+        // as a tofu glyph and corrupts Copy/Cut).
+        var text = GetText();
+        bool extendingRight = newCaretIndex >= _selectionAnchor;
+        int anchor = SnapToCharacterBoundary(text, _selectionAnchor, snapForward: !extendingRight);
+        int snappedCaret = SnapToCharacterBoundary(text, newCaretIndex, snapForward: extendingRight);
+
+        _selectionStart = Math.Min(anchor, snappedCaret);
+        _selectionLength = Math.Abs(snappedCaret - anchor);
+        _caretIndex = snappedCaret;
 
         OnSelectionChanged();
     }
@@ -1535,6 +1659,11 @@ public abstract class TextBoxBase : Control
                 // Single click
                 CaptureMouse();
                 var newCaretIndex = GetCaretIndexFromPosition(position);
+                // Snap a hit that fell between the two halves of a surrogate
+                // pair to the closest legal boundary so the caret never lands
+                // mid-emoji.
+                var text = GetText();
+                newCaretIndex = SnapToCharacterBoundary(text, newCaretIndex, snapForward: true);
 
                 if ((e.KeyboardModifiers & ModifierKeys.Shift) != 0)
                 {
@@ -1615,9 +1744,15 @@ public abstract class TextBoxBase : Control
         }
         else
         {
-            _selectionStart = Math.Min(_selectionAnchor, newCaretIndex);
-            _selectionLength = Math.Abs(newCaretIndex - _selectionAnchor);
-            _caretIndex = newCaretIndex;
+            // Snap both endpoints so a drag that lands inside a surrogate pair
+            // widens to include the whole emoji rather than splitting it.
+            var text = GetText();
+            bool draggingRight = newCaretIndex >= _selectionAnchor;
+            int anchor = SnapToCharacterBoundary(text, _selectionAnchor, snapForward: !draggingRight);
+            int snappedCaret = SnapToCharacterBoundary(text, newCaretIndex, snapForward: draggingRight);
+            _selectionStart = Math.Min(anchor, snappedCaret);
+            _selectionLength = Math.Abs(snappedCaret - anchor);
+            _caretIndex = snappedCaret;
         }
 
         EnsureCaretVisible();
@@ -1725,6 +1860,7 @@ public abstract class TextBoxBase : Control
 
     private void HandleLeftKey(bool shift, bool ctrl)
     {
+        var text = GetText();
         int newIndex;
 
         if (ctrl)
@@ -1733,7 +1869,9 @@ public abstract class TextBoxBase : Control
         }
         else
         {
-            newIndex = Math.Max(0, _caretIndex - 1);
+            // Step over a surrogate pair as one unit so an emoji becomes a
+            // single Left-arrow press, not two.
+            newIndex = StepBackwardCodepoint(text, _caretIndex);
         }
 
         if (shift)
@@ -1766,7 +1904,8 @@ public abstract class TextBoxBase : Control
         }
         else
         {
-            newIndex = Math.Min(text.Length, _caretIndex + 1);
+            // Step over a surrogate pair as one unit (symmetric with HandleLeftKey).
+            newIndex = StepForwardCodepoint(text, _caretIndex);
         }
 
         if (shift)
@@ -1935,20 +2074,20 @@ public abstract class TextBoxBase : Control
         {
             PushUndo();
 
-            int deleteCount;
+            var text = GetText();
+            int startIndex;
             if (ctrl)
             {
                 // Delete previous word
-                var newIndex = FindPreviousWordBoundary(_caretIndex);
-                deleteCount = _caretIndex - newIndex;
+                startIndex = FindPreviousWordBoundary(_caretIndex);
             }
             else
             {
-                deleteCount = 1;
+                // Delete a whole code-point — collapses a surrogate pair so
+                // Backspace removes the whole emoji rather than orphaning a half.
+                startIndex = StepBackwardCodepoint(text, _caretIndex);
             }
 
-            var text = GetText();
-            var startIndex = Math.Max(0, _caretIndex - deleteCount);
             SetText(text.Substring(0, startIndex) + text.Substring(_caretIndex));
             _caretIndex = startIndex;
 
@@ -1975,19 +2114,18 @@ public abstract class TextBoxBase : Control
             {
                 PushUndo();
 
-                int deleteCount;
+                int endIndex;
                 if (ctrl)
                 {
-                    // Delete next word
-                    var newIndex = FindNextWordBoundary(_caretIndex);
-                    deleteCount = newIndex - _caretIndex;
+                    endIndex = FindNextWordBoundary(_caretIndex);
                 }
                 else
                 {
-                    deleteCount = 1;
+                    // Delete a whole code-point forward (surrogate-pair aware).
+                    endIndex = StepForwardCodepoint(text, _caretIndex);
                 }
 
-                SetText(text.Substring(0, _caretIndex) + text.Substring(Math.Min(_caretIndex + deleteCount, text.Length)));
+                SetText(text.Substring(0, _caretIndex) + text.Substring(Math.Min(endIndex, text.Length)));
             }
         }
 

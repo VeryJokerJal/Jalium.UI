@@ -23,11 +23,33 @@ public abstract partial class UIElement : Visual, IInputElement
         EventManager.RegisterClassHandler(typeof(UIElement), PreviewTextInputEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTextInput(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), TextInputEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTextInput(e)));
 
-        // Mouse
+        // Mouse — Down/Up Thunk：MouseDown/Up 是真正被 dispatcher raise 的 Bubble 事件。
+        // 类处理器 OnXxxDownThunk 调虚方法 OnMouseDown/Up，然后把通用事件"裂解"成
+        // MouseLeftButton{Down/Up}Event / MouseRightButton{Down/Up}Event（Direct）在当前
+        // 元素上 RaiseEvent —— WPF 风格。下面再为这 8 个左/右键 routed event 注册类处理器，
+        // 调对应虚方法，让派生类 override OnMouseLeftButtonDown(e) 等仍能生效。
         EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseDownEvent, new MouseButtonEventHandler(OnPreviewMouseDownThunk));
         EventManager.RegisterClassHandler(typeof(UIElement), MouseDownEvent, new MouseButtonEventHandler(OnMouseDownThunk));
         EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseUpEvent, new MouseButtonEventHandler(OnPreviewMouseUpThunk));
         EventManager.RegisterClassHandler(typeof(UIElement), MouseUpEvent, new MouseButtonEventHandler(OnMouseUpThunk));
+        // 左/右键专用事件的类处理器：thunk 翻译 RaiseEvent 之后，路由系统会调到这里，
+        // 把事件派发到 element.OnXxxLeftButtonDown / OnXxxRightButtonDown 虚方法。
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseLeftButtonDownEvent,
+            new MouseButtonEventHandler((s, e) => ((UIElement)s).OnPreviewMouseLeftButtonDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseLeftButtonDownEvent,
+            new MouseButtonEventHandler((s, e) => ((UIElement)s).OnMouseLeftButtonDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseLeftButtonUpEvent,
+            new MouseButtonEventHandler((s, e) => ((UIElement)s).OnPreviewMouseLeftButtonUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseLeftButtonUpEvent,
+            new MouseButtonEventHandler((s, e) => ((UIElement)s).OnMouseLeftButtonUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseRightButtonDownEvent,
+            new MouseButtonEventHandler((s, e) => ((UIElement)s).OnPreviewMouseRightButtonDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseRightButtonDownEvent,
+            new MouseButtonEventHandler((s, e) => ((UIElement)s).OnMouseRightButtonDown(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseRightButtonUpEvent,
+            new MouseButtonEventHandler((s, e) => ((UIElement)s).OnPreviewMouseRightButtonUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), MouseRightButtonUpEvent,
+            new MouseButtonEventHandler((s, e) => ((UIElement)s).OnMouseRightButtonUp(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), PreviewMouseMoveEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnPreviewMouseMove(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), MouseMoveEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnMouseMove(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), MouseEnterEvent, new MouseEventHandler((s, e) => ((UIElement)s).OnMouseEnter(e)));
@@ -72,60 +94,84 @@ public abstract partial class UIElement : Visual, IInputElement
         EventManager.RegisterClassHandler(typeof(UIElement), DragDrop.QueryContinueDragEvent, new QueryContinueDragEventHandler((s, e) => ((UIElement)s).OnQueryContinueDrag(e)));
     }
 
+    // Thunk = WPF 风格的"原始事件 → 翻译事件"裂解：MouseDownEvent（Bubble）路由到每个
+    // 元素时，类处理器先调虚方法 OnMouseDown 让派生类有机会拦截，再把事件翻译成
+    // MouseLeftButton{Down/Up}Event / MouseRightButton{Down/Up}Event（Direct）并在当前
+    // 元素上 RaiseEvent —— 这样：
+    //   - 订阅 `element.MouseLeftButtonDown += handler` 真能收到（路径上每个元素各收一次）
+    //   - 派生类 override OnMouseLeftButtonDown(e) 仍工作（RaiseEvent 走类处理器路径
+    //     会调用 OnXxxLeftButton{Down/Up}Event 的对应虚方法 thunk —— 见 InvokeLeftButtonThunk）
+    //   - Handled 在源 args 和翻译 args 之间双向同步：派生类的 OnMouseLeftButtonDown
+    //     设 Handled 也会回传给 source，让 bubble 链上后续 ancestor 知道事件已被处理。
+
     private static void OnPreviewMouseDownThunk(object sender, MouseButtonEventArgs e)
     {
         var element = (UIElement)sender;
         element.OnPreviewMouseDown(e);
-
-        if (!e.Handled)
-        {
-            if (e.ChangedButton == MouseButton.Left)
-                element.OnPreviewMouseLeftButtonDown(e);
-            else if (e.ChangedButton == MouseButton.Right)
-                element.OnPreviewMouseRightButtonDown(e);
-        }
+        if (e.Handled) return;
+        ReRaiseButtonEvent(element, e, PreviewMouseLeftButtonDownEvent, PreviewMouseRightButtonDownEvent);
     }
 
     private static void OnMouseDownThunk(object sender, MouseButtonEventArgs e)
     {
         var element = (UIElement)sender;
         element.OnMouseDown(e);
-
-        if (!e.Handled)
-        {
-            if (e.ChangedButton == MouseButton.Left)
-                element.OnMouseLeftButtonDown(e);
-            else if (e.ChangedButton == MouseButton.Right)
-                element.OnMouseRightButtonDown(e);
-        }
+        if (e.Handled) return;
+        ReRaiseButtonEvent(element, e, MouseLeftButtonDownEvent, MouseRightButtonDownEvent);
     }
 
     private static void OnPreviewMouseUpThunk(object sender, MouseButtonEventArgs e)
     {
         var element = (UIElement)sender;
         element.OnPreviewMouseUp(e);
-
-        if (!e.Handled)
-        {
-            if (e.ChangedButton == MouseButton.Left)
-                element.OnPreviewMouseLeftButtonUp(e);
-            else if (e.ChangedButton == MouseButton.Right)
-                element.OnPreviewMouseRightButtonUp(e);
-        }
+        if (e.Handled) return;
+        ReRaiseButtonEvent(element, e, PreviewMouseLeftButtonUpEvent, PreviewMouseRightButtonUpEvent);
     }
 
     private static void OnMouseUpThunk(object sender, MouseButtonEventArgs e)
     {
         var element = (UIElement)sender;
         element.OnMouseUp(e);
+        if (e.Handled) return;
+        ReRaiseButtonEvent(element, e, MouseLeftButtonUpEvent, MouseRightButtonUpEvent);
+    }
 
-        if (!e.Handled)
+    /// <summary>把通用的 Mouse{Up/Down}Event 翻译成对应的左/右键专用 Direct routed event
+    /// 并在当前元素上 raise。Handled 双向同步：翻译事件 Handled = true 会写回原事件，
+    /// 让 bubble 链上后续 ancestor 看到已被处理；反之原事件已 Handled 不会重复翻译。
+    /// 中键 / XButton1/2 不翻译（与 WPF 行为一致 —— 它们只通过通用 MouseDown/Up 暴露）。</summary>
+    private static void ReRaiseButtonEvent(
+        UIElement element,
+        MouseButtonEventArgs source,
+        RoutedEvent leftEvent,
+        RoutedEvent rightEvent)
+    {
+        RoutedEvent? translated = source.ChangedButton switch
         {
-            if (e.ChangedButton == MouseButton.Left)
-                element.OnMouseLeftButtonUp(e);
-            else if (e.ChangedButton == MouseButton.Right)
-                element.OnMouseRightButtonUp(e);
-        }
+            MouseButton.Left => leftEvent,
+            MouseButton.Right => rightEvent,
+            _ => null,
+        };
+        if (translated is null) return;
+
+        var args = new MouseButtonEventArgs(
+            translated,
+            source.GetPosition(null),
+            source.ChangedButton,
+            source.ButtonState,
+            source.ClickCount,
+            source.LeftButton,
+            source.MiddleButton,
+            source.RightButton,
+            source.XButton1,
+            source.XButton2,
+            source.KeyboardModifiers,
+            source.Timestamp)
+        {
+            Source = source.Source,
+        };
+        element.RaiseEvent(args);
+        if (args.Handled) source.Handled = true;
     }
 
     #endregion
@@ -2029,48 +2075,64 @@ public abstract partial class UIElement : Visual, IInputElement
 
     /// <summary>
     /// Identifies the PreviewMouseLeftButtonDown routed event.
+    /// Raised by <see cref="OnPreviewMouseDownThunk"/> on every element along the tunneling
+    /// PreviewMouseDown path when <c>ChangedButton == Left</c> — WPF-compatible behavior.
     /// </summary>
     public static readonly RoutedEvent PreviewMouseLeftButtonDownEvent =
         EventManager.RegisterRoutedEvent(nameof(PreviewMouseLeftButtonDown), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseLeftButtonDown routed event.
+    /// Raised by <see cref="OnMouseDownThunk"/> on every element along the bubbling
+    /// MouseDown path when <c>ChangedButton == Left</c> — WPF-compatible behavior.
     /// </summary>
     public static readonly RoutedEvent MouseLeftButtonDownEvent =
         EventManager.RegisterRoutedEvent(nameof(MouseLeftButtonDown), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewMouseLeftButtonUp routed event.
+    /// Raised by <see cref="OnPreviewMouseUpThunk"/> on every element along the tunneling
+    /// PreviewMouseUp path when <c>ChangedButton == Left</c> — WPF-compatible behavior.
     /// </summary>
     public static readonly RoutedEvent PreviewMouseLeftButtonUpEvent =
         EventManager.RegisterRoutedEvent(nameof(PreviewMouseLeftButtonUp), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseLeftButtonUp routed event.
+    /// Raised by <see cref="OnMouseUpThunk"/> on every element along the bubbling
+    /// MouseUp path when <c>ChangedButton == Left</c> — WPF-compatible behavior.
     /// </summary>
     public static readonly RoutedEvent MouseLeftButtonUpEvent =
         EventManager.RegisterRoutedEvent(nameof(MouseLeftButtonUp), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewMouseRightButtonDown routed event.
+    /// Raised by <see cref="OnPreviewMouseDownThunk"/> on every element along the tunneling
+    /// PreviewMouseDown path when <c>ChangedButton == Right</c> — WPF-compatible behavior.
     /// </summary>
     public static readonly RoutedEvent PreviewMouseRightButtonDownEvent =
         EventManager.RegisterRoutedEvent(nameof(PreviewMouseRightButtonDown), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseRightButtonDown routed event.
+    /// Raised by <see cref="OnMouseDownThunk"/> on every element along the bubbling
+    /// MouseDown path when <c>ChangedButton == Right</c> — WPF-compatible behavior.
     /// </summary>
     public static readonly RoutedEvent MouseRightButtonDownEvent =
         EventManager.RegisterRoutedEvent(nameof(MouseRightButtonDown), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the PreviewMouseRightButtonUp routed event.
+    /// Raised by <see cref="OnPreviewMouseUpThunk"/> on every element along the tunneling
+    /// PreviewMouseUp path when <c>ChangedButton == Right</c> — WPF-compatible behavior.
     /// </summary>
     public static readonly RoutedEvent PreviewMouseRightButtonUpEvent =
         EventManager.RegisterRoutedEvent(nameof(PreviewMouseRightButtonUp), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));
 
     /// <summary>
     /// Identifies the MouseRightButtonUp routed event.
+    /// Raised by <see cref="OnMouseUpThunk"/> on every element along the bubbling
+    /// MouseUp path when <c>ChangedButton == Right</c> — WPF-compatible behavior.
     /// </summary>
     public static readonly RoutedEvent MouseRightButtonUpEvent =
         EventManager.RegisterRoutedEvent(nameof(MouseRightButtonUp), RoutingStrategy.Direct, typeof(MouseButtonEventHandler), typeof(UIElement));

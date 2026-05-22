@@ -10,6 +10,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 # ---------------------------------------------------------------------------
 option(JALIUM_BUILD_STATIC "Build native libraries as static archives for NativeAOT linking" OFF)
 
+# 排查/诊断用的 native demo 可执行文件（默认关，不影响 NuGet / AOT 产物）。
+# 打开方式: cmake -DJALIUM_BUILD_DEMOS=ON ...
+option(JALIUM_BUILD_DEMOS "Build native diagnostic demo executables (memprobe, ...)" OFF)
+
 if(JALIUM_BUILD_STATIC)
     set(JALIUM_LIB_TYPE STATIC)
     add_compile_definitions(JALIUM_STATIC)
@@ -102,4 +106,13 @@ add_subdirectory(jalium.native.software)
 # Only meaningful when JALIUM_BUILD_STATIC=ON; pulls every backend into the AOT image.
 if(JALIUM_BUILD_STATIC)
     add_subdirectory(jalium.native.aot)
+endif()
+
+# ---------------------------------------------------------------------------
+# 诊断 demo（opt-in）。只在 Windows 共享构建下有意义：memprobe 链接
+# jalium.native.core + jalium.native.d3d12 这两个 SHARED 目标，跑空白窗口
+# 排查内存暴涨。静态/AOT 构建不掺和。
+# ---------------------------------------------------------------------------
+if(JALIUM_BUILD_DEMOS AND WIN32 AND NOT JALIUM_BUILD_STATIC)
+    add_subdirectory(jalium.native.demo.memprobe)
 endif()

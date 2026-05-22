@@ -32,6 +32,13 @@ struct GlyphEntry {
     int16_t  bearingX;   // horizontal offset from pen position
     int16_t  bearingY;   // vertical offset from baseline
     bool valid;
+    // Color emoji glyphs (COLR/CPAL fonts like Segoe UI Emoji) are rasterized
+    // with their authored colours baked into the atlas RGBA. The text shader
+    // detects this flag via a negative-R sentinel on the emitted instance
+    // and routes them through a SrcOver alpha path instead of the per-channel
+    // ClearType dual-source blend, so the emoji renders in its own colours
+    // rather than being tinted by the text Foreground.
+    bool isColor = false;
 };
 
 // ============================================================================
@@ -247,8 +254,17 @@ private:
 
     // DirectWrite rasterization
     ComPtr<IDWriteFactory3> dwriteFactory3_;  // cached QI for CreateGlyphRunAnalysis
+    ComPtr<IDWriteFactory4> dwriteFactory4_;  // cached QI for TranslateColorGlyphRun (color emoji)
     ComPtr<IDWriteBitmapRenderTarget> bitmapRenderTarget_;  // fallback rasterizer
     ComPtr<IDWriteRenderingParams> renderingParams_;
+
+    // Rasterizes a single colour-emoji glyph (COLR / CPAL font) by walking
+    // every layer that TranslateColorGlyphRun reports for the run, taking the
+    // grayscale alpha mask of each layer and accumulating
+    // <c>colour × coverage</c> (pre-multiplied) into the atlas RGBA cell.
+    // Returns true when the entry was filled, false to fall back to the
+    // mono-coverage path. Sets <c>entry.isColor = true</c> on success.
+    bool RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entry);
 
     bool initialized_ = false;
     bool needsReset_ = false;  // Atlas at max dim and overflowed — reset next frame
@@ -256,6 +272,18 @@ private:
     uint32_t pendingGrowW_ = 0;  // largest reqW seen this frame (px)
     uint32_t pendingGrowH_ = 0;  // largest reqH seen this frame (px)
     float dpiScale_ = 1.0f;
+
+    // Text antialias mode (cached snapshot of jalium_text_get_global_antialias_mode).
+    // Bumped to mark the cached glyph bitmaps invalid when the application
+    // switches between ClearType and Grayscale at runtime — we re-rasterize on
+    // demand rather than rasterizing both up front.
+    uint64_t lastAntialiasGen_ = 0;
+    int32_t  currentAntialiasMode_ = 3;  // resolved (Auto → CT on Windows)
+
+    // Reads jalium_text_get_global_antialias_mode and resets the cache if the
+    // mode changed since the previous call. Returns the resolved (concrete)
+    // mode to use for this rasterization pass.
+    int32_t SyncAntialiasMode();
 };
 
 } // namespace jalium

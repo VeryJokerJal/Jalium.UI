@@ -195,6 +195,151 @@ jalium_media_status_t WicDecodeFile(
     return DecodeFromBitmapSource(factory.Get(), frame.Get(), requested_format, out_image);
 }
 
+jalium_media_status_t WicReadFrameCount(
+    const uint8_t* data,
+    size_t         size,
+    uint32_t*      out_frame_count)
+{
+    if (!IsInitialized()) return JALIUM_MEDIA_E_NOT_INITIALIZED;
+    if (!data || size == 0 || !out_frame_count) return JALIUM_MEDIA_E_INVALID_ARG;
+    if (size > static_cast<size_t>(UINT32_MAX)) return JALIUM_MEDIA_E_INVALID_ARG;
+
+    *out_frame_count = 0;
+
+    ComPtr<IWICImagingFactory> factory;
+    {
+        IWICImagingFactory* raw = nullptr;
+        auto status = EnsureFactory(&raw);
+        if (status != JALIUM_MEDIA_OK) return status;
+        factory.Attach(raw);
+    }
+
+    ComPtr<IWICStream> stream;
+    HRESULT hr = factory->CreateStream(stream.GetAddressOf());
+    if (FAILED(hr)) return JALIUM_MEDIA_E_PLATFORM;
+
+    hr = stream->InitializeFromMemory(const_cast<BYTE*>(data), static_cast<DWORD>(size));
+    if (FAILED(hr)) return JALIUM_MEDIA_E_PLATFORM;
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    hr = factory->CreateDecoderFromStream(
+        stream.Get(),
+        nullptr,
+        WICDecodeMetadataCacheOnDemand,
+        decoder.GetAddressOf());
+    if (FAILED(hr)) return JALIUM_MEDIA_E_UNSUPPORTED_FORMAT;
+
+    UINT count = 0;
+    hr = decoder->GetFrameCount(&count);
+    if (FAILED(hr)) return JALIUM_MEDIA_E_DECODE_FAILED;
+
+    *out_frame_count = count;
+    return JALIUM_MEDIA_OK;
+}
+
+// Read the per-frame delay (centiseconds) from the GIF Graphic Control
+// Extension metadata block. Returns 0 when no metadata is present (static
+// formats, APNG without a fcTL, etc.). The GIF spec stores delay in 1/100 s;
+// browsers clamp values <= 1cs to a sane 100ms default — we mirror that so
+// pathological GIFs with 0cs delays don't burn 100% CPU.
+static uint32_t ReadGifFrameDelayMs(IWICBitmapFrameDecode* frame)
+{
+    if (!frame) return 0;
+
+    ComPtr<IWICMetadataQueryReader> reader;
+    if (FAILED(frame->GetMetadataQueryReader(reader.GetAddressOf())) || !reader) {
+        return 0;
+    }
+
+    PROPVARIANT pv;
+    PropVariantInit(&pv);
+
+    // GIF GCE: "/grctlext/Delay" in centiseconds (UINT16).
+    HRESULT hr = reader->GetMetadataByName(L"/grctlext/Delay", &pv);
+    uint32_t delayMs = 0;
+    if (SUCCEEDED(hr) && pv.vt == VT_UI2) {
+        delayMs = static_cast<uint32_t>(pv.uiVal) * 10u;  // cs → ms
+    }
+    PropVariantClear(&pv);
+
+    // APNG fcTL stores delay as fraction num/den seconds.
+    if (delayMs == 0) {
+        PROPVARIANT num, den;
+        PropVariantInit(&num);
+        PropVariantInit(&den);
+        if (SUCCEEDED(reader->GetMetadataByName(L"/fcTL/DelayNum", &num)) &&
+            SUCCEEDED(reader->GetMetadataByName(L"/fcTL/DelayDen", &den)) &&
+            num.vt == VT_UI2 && den.vt == VT_UI2 && den.uiVal != 0)
+        {
+            // ms = (num / den) * 1000
+            delayMs = static_cast<uint32_t>(
+                (static_cast<uint64_t>(num.uiVal) * 1000ull) / den.uiVal);
+        }
+        PropVariantClear(&num);
+        PropVariantClear(&den);
+    }
+
+    // Mirror browser behaviour: clamp absurdly short delays so animated GIFs
+    // with a 0cs / 1cs delay don't spin the dispatcher at full speed.
+    if (delayMs > 0 && delayMs < 20) {
+        delayMs = 100;
+    }
+    return delayMs;
+}
+
+jalium_media_status_t WicDecodeFrame(
+    const uint8_t*        data,
+    size_t                size,
+    uint32_t              frame_index,
+    jalium_pixel_format_t requested_format,
+    jalium_image_t*       out_image,
+    uint32_t*             out_delay_ms)
+{
+    if (!IsInitialized()) return JALIUM_MEDIA_E_NOT_INITIALIZED;
+    if (!data || size == 0 || !out_image) return JALIUM_MEDIA_E_INVALID_ARG;
+    if (size > static_cast<size_t>(UINT32_MAX)) return JALIUM_MEDIA_E_INVALID_ARG;
+
+    *out_image = {};
+    if (out_delay_ms) *out_delay_ms = 0;
+
+    ComPtr<IWICImagingFactory> factory;
+    {
+        IWICImagingFactory* raw = nullptr;
+        auto status = EnsureFactory(&raw);
+        if (status != JALIUM_MEDIA_OK) return status;
+        factory.Attach(raw);
+    }
+
+    ComPtr<IWICStream> stream;
+    HRESULT hr = factory->CreateStream(stream.GetAddressOf());
+    if (FAILED(hr)) return JALIUM_MEDIA_E_PLATFORM;
+
+    hr = stream->InitializeFromMemory(const_cast<BYTE*>(data), static_cast<DWORD>(size));
+    if (FAILED(hr)) return JALIUM_MEDIA_E_PLATFORM;
+
+    ComPtr<IWICBitmapDecoder> decoder;
+    hr = factory->CreateDecoderFromStream(
+        stream.Get(),
+        nullptr,
+        WICDecodeMetadataCacheOnDemand,
+        decoder.GetAddressOf());
+    if (FAILED(hr)) return JALIUM_MEDIA_E_UNSUPPORTED_FORMAT;
+
+    UINT count = 0;
+    decoder->GetFrameCount(&count);
+    if (frame_index >= count) return JALIUM_MEDIA_E_INVALID_ARG;
+
+    ComPtr<IWICBitmapFrameDecode> frame;
+    hr = decoder->GetFrame(frame_index, frame.GetAddressOf());
+    if (FAILED(hr)) return JALIUM_MEDIA_E_DECODE_FAILED;
+
+    if (out_delay_ms) {
+        *out_delay_ms = ReadGifFrameDelayMs(frame.Get());
+    }
+
+    return DecodeFromBitmapSource(factory.Get(), frame.Get(), requested_format, out_image);
+}
+
 jalium_media_status_t WicReadDimensions(
     const uint8_t* data,
     size_t         size,

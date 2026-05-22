@@ -6,6 +6,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>   // _wdupenv_s / _wtoi / free —— JALIUM_SWAPCHAIN_BUFFERS 解析
 #include <limits>
 
 namespace jalium {
@@ -45,7 +46,8 @@ bool D3D12RenderTarget::Initialize() {
 
     // Create DirectRenderer
     directRenderer_ = std::make_unique<D3D12DirectRenderer>(backend_);
-    if (!directRenderer_->Initialize(swapChain_.Get(), FrameCount))
+    // swapBufferCount_ 已在上面的 CreateSwapChain() 内解析定值。
+    if (!directRenderer_->Initialize(swapChain_.Get(), swapBufferCount_))
         return false;
 
     float dpiScale = dpiX_ / 96.0f;
@@ -178,6 +180,20 @@ bool D3D12RenderTarget::CreateSwapChain() {
     auto commandQueue = backend_->GetCommandQueue();
     if (!factory || !commandQueue) return false;
 
+    // 解析后台缓冲数：默认 kDefaultSwapBufferCount(2)，JALIUM_SWAPCHAIN_BUFFERS
+    // 可覆盖并钳到 [2, FrameCount]。只在创建期定一次，后续 Resize 沿用。
+    {
+        swapBufferCount_ = kDefaultSwapBufferCount;
+        wchar_t* val = nullptr; size_t len = 0;
+        if (_wdupenv_s(&val, &len, L"JALIUM_SWAPCHAIN_BUFFERS") == 0 && val && *val) {
+            uint32_t n = (uint32_t)_wtoi(val);
+            if (n < 2) n = 2;
+            if (n > FrameCount) n = FrameCount;
+            swapBufferCount_ = n;
+        }
+        if (val) free(val);
+    }
+
     // Check tearing support
     BOOL allowTearing = FALSE;
     ComPtr<IDXGIFactory5> factory5;
@@ -192,7 +208,7 @@ bool D3D12RenderTarget::CreateSwapChain() {
     desc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
     desc.SampleDesc.Count = 1;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-    desc.BufferCount = FrameCount;
+    desc.BufferCount = swapBufferCount_;
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
 
     ComPtr<IDXGISwapChain1> swapChain1;
@@ -295,7 +311,7 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
         WaitForAllFrames();
     }
 
-    HRESULT hr = swapChain_->ResizeBuffers(FrameCount, width, height,
+    HRESULT hr = swapChain_->ResizeBuffers(swapBufferCount_, width, height,
         DXGI_FORMAT_R8G8B8A8_UNORM, swapChainCreationFlags_);
     if (FAILED(hr)) {
         auto* device = backend_ ? backend_->GetDevice() : nullptr;
