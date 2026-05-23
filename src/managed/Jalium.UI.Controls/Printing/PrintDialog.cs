@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using Jalium.UI.Media;
+
 namespace Jalium.UI.Controls.Printing;
 
 /// <summary>
@@ -163,27 +166,671 @@ public sealed class PrintDialog
     /// <summary>
     /// Shows the dialog internally.
     /// </summary>
+    /// <param name="owner">The owner window for the dialog, or <see langword="null"/>.</param>
+    /// <returns><see langword="true"/> if the user clicked Print; otherwise <see langword="false"/>.</returns>
     private bool ShowDialogInternal(Window? owner = null)
     {
-        // Platform-specific implementation
-        // Would use Windows PrintDlg or Common Print Dialog
-        return false;
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // The common print dialog is a Windows-only feature.
+            return false;
+        }
+
+        var ownerHandle = DialogOwnerResolver.Resolve(owner?.Handle ?? nint.Zero);
+        return ShowWindowsPrintDialog(ownerHandle);
     }
 
     /// <summary>
-    /// Prints a visual internally.
+    /// Prints a visual internally by rasterizing it and emitting it to the
+    /// printer device context as a single page.
     /// </summary>
+    /// <param name="visual">The visual to print.</param>
+    /// <param name="description">A description used as the print job name.</param>
     private void PrintVisualInternal(Visual visual, string description)
     {
-        // Platform-specific implementation
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            throw new PrintDialogException("Printing is only supported on Windows.");
+        }
+
+        var printerName = ResolvePrinterName();
+        if (string.IsNullOrEmpty(printerName))
+        {
+            throw new PrintDialogException("No printer is available to print to.");
+        }
+
+        var hdc = PrintingNativeMethods.CreateDC(null, printerName, null, nint.Zero);
+        if (hdc == nint.Zero)
+        {
+            throw new PrintDialogException(
+                $"Failed to create a device context for printer '{printerName}'.");
+        }
+
+        try
+        {
+            var jobName = string.IsNullOrWhiteSpace(description) ? "Jalium.UI Document" : description;
+            var docInfo = new PrintingNativeMethods.DOCINFO
+            {
+                cbSize = Marshal.SizeOf<PrintingNativeMethods.DOCINFO>(),
+                lpszDocName = jobName
+            };
+
+            if (PrintingNativeMethods.StartDoc(hdc, ref docInfo) <= 0)
+            {
+                throw new PrintDialogException($"StartDoc failed for printer '{printerName}'.");
+            }
+
+            try
+            {
+                var copies = Math.Max(1, PrintTicket?.CopyCount ?? 1);
+                for (var copy = 0; copy < copies; copy++)
+                {
+                    PrintVisualPage(hdc, visual);
+                }
+
+                PrintingNativeMethods.EndDoc(hdc);
+            }
+            catch
+            {
+                PrintingNativeMethods.AbortDoc(hdc);
+                throw;
+            }
+        }
+        finally
+        {
+            PrintingNativeMethods.DeleteDC(hdc);
+        }
     }
 
     /// <summary>
-    /// Prints a document internally.
+    /// Prints a paginated document internally, emitting each page produced by
+    /// the paginator as a separate printer page.
     /// </summary>
+    /// <param name="documentPaginator">The document paginator.</param>
+    /// <param name="description">A description used as the print job name.</param>
     private void PrintDocumentInternal(DocumentPaginator documentPaginator, string description)
     {
-        // Platform-specific implementation
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            throw new PrintDialogException("Printing is only supported on Windows.");
+        }
+
+        var printerName = ResolvePrinterName();
+        if (string.IsNullOrEmpty(printerName))
+        {
+            throw new PrintDialogException("No printer is available to print to.");
+        }
+
+        var hdc = PrintingNativeMethods.CreateDC(null, printerName, null, nint.Zero);
+        if (hdc == nint.Zero)
+        {
+            throw new PrintDialogException(
+                $"Failed to create a device context for printer '{printerName}'.");
+        }
+
+        try
+        {
+            var jobName = string.IsNullOrWhiteSpace(description) ? "Jalium.UI Document" : description;
+            var docInfo = new PrintingNativeMethods.DOCINFO
+            {
+                cbSize = Marshal.SizeOf<PrintingNativeMethods.DOCINFO>(),
+                lpszDocName = jobName
+            };
+
+            if (PrintingNativeMethods.StartDoc(hdc, ref docInfo) <= 0)
+            {
+                throw new PrintDialogException($"StartDoc failed for printer '{printerName}'.");
+            }
+
+            try
+            {
+                documentPaginator.ComputePageCount();
+                var pageCount = documentPaginator.PageCount;
+                var (first, last) = ResolveDocumentPageRange(pageCount);
+                var copies = Math.Max(1, PrintTicket?.CopyCount ?? 1);
+
+                for (var copy = 0; copy < copies; copy++)
+                {
+                    for (var pageIndex = first; pageIndex <= last; pageIndex++)
+                    {
+                        var documentPage = documentPaginator.GetPage(pageIndex);
+                        if (documentPage?.Visual == null)
+                        {
+                            continue;
+                        }
+
+                        var pageSize = documentPage.Size.IsEmpty || documentPage.Size.Width <= 0
+                            ? documentPaginator.PageSize
+                            : documentPage.Size;
+
+                        PrintVisualPage(hdc, documentPage.Visual, pageSize);
+                    }
+                }
+
+                PrintingNativeMethods.EndDoc(hdc);
+            }
+            catch
+            {
+                PrintingNativeMethods.AbortDoc(hdc);
+                throw;
+            }
+        }
+        finally
+        {
+            PrintingNativeMethods.DeleteDC(hdc);
+        }
+    }
+
+    #endregion
+
+    #region Windows Print Dialog Implementation
+
+    /// <summary>
+    /// Displays the Win32 common print dialog and writes the user's selection
+    /// back onto this dialog's properties, <see cref="PrintQueue"/> and
+    /// <see cref="PrintTicket"/>.
+    /// </summary>
+    /// <param name="ownerHandle">The owner window handle.</param>
+    /// <returns><see langword="true"/> if the user clicked Print; otherwise <see langword="false"/>.</returns>
+    private bool ShowWindowsPrintDialog(nint ownerHandle)
+    {
+        var printDialog = new PrintingNativeMethods.PRINTDLG
+        {
+            lStructSize = Marshal.SizeOf<PrintingNativeMethods.PRINTDLG>(),
+            hwndOwner = ownerHandle,
+            Flags = PrintingNativeMethods.PD_RETURNDC | PrintingNativeMethods.PD_HIDEPRINTTOFILE,
+            nFromPage = (ushort)Math.Clamp(PageRangeFrom, 1, ushort.MaxValue),
+            nToPage = (ushort)Math.Clamp(PageRangeTo, 1, ushort.MaxValue),
+            nMinPage = (ushort)Math.Clamp(MinPage, 1, ushort.MaxValue),
+            nMaxPage = (ushort)Math.Clamp(MaxPage, 1, ushort.MaxValue),
+            nCopies = (ushort)Math.Clamp(PrintTicket?.CopyCount ?? 1, 1, ushort.MaxValue)
+        };
+
+        if (!UserPageRangeEnabled)
+        {
+            printDialog.Flags |= PrintingNativeMethods.PD_NOPAGENUMS;
+        }
+
+        if (!CurrentPageEnabled)
+        {
+            printDialog.Flags |= PrintingNativeMethods.PD_NOCURRENTPAGE;
+        }
+
+        // The print dialog always disables "Selection" because the framework
+        // print path operates on visuals/documents rather than a selection.
+        printDialog.Flags |= PrintingNativeMethods.PD_NOSELECTION;
+
+        if (PageRangeSelection == PageRangeSelection.UserPages)
+        {
+            printDialog.Flags |= PrintingNativeMethods.PD_PAGENUMS;
+        }
+        else if (PageRangeSelection == PageRangeSelection.CurrentPage && CurrentPageEnabled)
+        {
+            printDialog.Flags |= PrintingNativeMethods.PD_CURRENTPAGE;
+        }
+
+        if (!PrintingNativeMethods.PrintDlg(ref printDialog))
+        {
+            var error = PrintingNativeMethods.CommDlgExtendedError();
+
+            // FreeGlobalHandles is still required: even on cancel the dialog
+            // may have allocated DEVMODE / DEVNAMES handles.
+            FreeDialogHandles(ref printDialog);
+
+            if (error != 0)
+            {
+                throw new PrintDialogException($"PrintDlg failed with common dialog error 0x{error:X8}.");
+            }
+
+            return false;
+        }
+
+        try
+        {
+            ApplyPrintDialogResult(ref printDialog);
+        }
+        finally
+        {
+            // The device context returned via PD_RETURNDC is not retained; the
+            // print path re-opens its own DC from the resolved printer name.
+            if (printDialog.hDC != nint.Zero)
+            {
+                PrintingNativeMethods.DeleteDC(printDialog.hDC);
+            }
+
+            FreeDialogHandles(ref printDialog);
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Transfers the result of a successful <c>PrintDlg</c> call onto this
+    /// dialog's properties, the selected <see cref="PrintQueue"/> and the
+    /// active <see cref="PrintTicket"/>.
+    /// </summary>
+    private void ApplyPrintDialogResult(ref PrintingNativeMethods.PRINTDLG printDialog)
+    {
+        // Copy count and page range come straight from the structure.
+        var copies = Math.Max(1, (int)printDialog.nCopies);
+        PrintTicket ??= new PrintTicket();
+        PrintTicket.CopyCount = copies;
+
+        if ((printDialog.Flags & PrintingNativeMethods.PD_PAGENUMS) != 0)
+        {
+            PageRangeSelection = PageRangeSelection.UserPages;
+            PageRangeFrom = printDialog.nFromPage;
+            PageRangeTo = printDialog.nToPage;
+        }
+        else if ((printDialog.Flags & PrintingNativeMethods.PD_CURRENTPAGE) != 0)
+        {
+            PageRangeSelection = PageRangeSelection.CurrentPage;
+        }
+        else
+        {
+            PageRangeSelection = PageRangeSelection.AllPages;
+        }
+
+        if ((printDialog.Flags & PrintingNativeMethods.PD_COLLATE) != 0)
+        {
+            PrintTicket.Collation = Collation.Collated;
+        }
+
+        // The printer name and the orientation / paper size live inside the
+        // DEVNAMES and DEVMODE global memory objects.
+        var printerName = ReadDevNamesPrinter(printDialog.hDevNames);
+        if (!string.IsNullOrEmpty(printerName))
+        {
+            var queue = new PrintQueue(printerName)
+            {
+                IsDefault = string.Equals(
+                    printerName,
+                    GetDefaultPrinterName(),
+                    StringComparison.OrdinalIgnoreCase),
+                DefaultPrintTicket = PrintTicket
+            };
+            PrintQueue = queue;
+        }
+
+        ApplyDevModeToPrintTicket(printDialog.hDevMode);
+    }
+
+    /// <summary>
+    /// Reads the device (printer) name out of a Win32 DEVNAMES global memory
+    /// object produced by the print dialog.
+    /// </summary>
+    private static string? ReadDevNamesPrinter(nint hDevNames)
+    {
+        if (hDevNames == nint.Zero)
+        {
+            return null;
+        }
+
+        var ptr = PrintingNativeMethods.GlobalLock(hDevNames);
+        if (ptr == nint.Zero)
+        {
+            return null;
+        }
+
+        try
+        {
+            // DEVNAMES layout: three WORD offsets (driver / device / output)
+            // followed by the null-terminated strings they index, measured in
+            // characters from the start of the structure.
+            var deviceOffset = (ushort)Marshal.ReadInt16(ptr, sizeof(ushort));
+            var devicePtr = ptr + (deviceOffset * sizeof(char));
+            return Marshal.PtrToStringUni(devicePtr);
+        }
+        finally
+        {
+            PrintingNativeMethods.GlobalUnlock(hDevNames);
+        }
+    }
+
+    /// <summary>
+    /// Reads paper orientation, paper size and copy count out of a Win32
+    /// DEVMODE global memory object and stores them in the active print ticket.
+    /// </summary>
+    private void ApplyDevModeToPrintTicket(nint hDevMode)
+    {
+        if (hDevMode == nint.Zero)
+        {
+            return;
+        }
+
+        var ptr = PrintingNativeMethods.GlobalLock(hDevMode);
+        if (ptr == nint.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            var devMode = Marshal.PtrToStructure<PrintingNativeMethods.DEVMODE>(ptr);
+            PrintTicket ??= new PrintTicket();
+
+            if ((devMode.dmFields & PrintingNativeMethods.DM_ORIENTATION) != 0)
+            {
+                PrintTicket.PageOrientation = devMode.dmOrientation == PrintingNativeMethods.DMORIENT_LANDSCAPE
+                    ? PageOrientation.Landscape
+                    : PageOrientation.Portrait;
+            }
+
+            if ((devMode.dmFields & PrintingNativeMethods.DM_COPIES) != 0 && devMode.dmCopies > 0)
+            {
+                PrintTicket.CopyCount = devMode.dmCopies;
+            }
+
+            if ((devMode.dmFields & PrintingNativeMethods.DM_PAPERSIZE) != 0 &&
+                devMode.dmPaperLength > 0 && devMode.dmPaperWidth > 0)
+            {
+                // dmPaperLength / dmPaperWidth are expressed in tenths of a
+                // millimeter; convert to 1/96-inch device-independent units.
+                var widthDip = devMode.dmPaperWidth / 10.0 / 25.4 * 96.0;
+                var heightDip = devMode.dmPaperLength / 10.0 / 25.4 * 96.0;
+                PrintTicket.PageMediaSize = new PageMediaSize(widthDip, heightDip);
+            }
+        }
+        finally
+        {
+            PrintingNativeMethods.GlobalUnlock(hDevMode);
+        }
+    }
+
+    /// <summary>
+    /// Releases the DEVMODE and DEVNAMES global memory objects allocated by the
+    /// print dialog.
+    /// </summary>
+    private static void FreeDialogHandles(ref PrintingNativeMethods.PRINTDLG printDialog)
+    {
+        if (printDialog.hDevMode != nint.Zero)
+        {
+            PrintingNativeMethods.GlobalFree(printDialog.hDevMode);
+            printDialog.hDevMode = nint.Zero;
+        }
+
+        if (printDialog.hDevNames != nint.Zero)
+        {
+            PrintingNativeMethods.GlobalFree(printDialog.hDevNames);
+            printDialog.hDevNames = nint.Zero;
+        }
+    }
+
+    #endregion
+
+    #region Print Output Implementation
+
+    /// <summary>
+    /// Resolves the printer name to print to, preferring the printer selected
+    /// in the dialog and falling back to the system default printer.
+    /// </summary>
+    private string? ResolvePrinterName()
+    {
+        if (!string.IsNullOrEmpty(PrintQueue?.FullName))
+        {
+            return PrintQueue!.FullName;
+        }
+
+        if (!string.IsNullOrEmpty(PrintQueue?.Name))
+        {
+            return PrintQueue!.Name;
+        }
+
+        return GetDefaultPrinterName();
+    }
+
+    /// <summary>
+    /// Resolves the inclusive zero-based page range to print for a document,
+    /// honoring the dialog's <see cref="PageRangeSelection"/>.
+    /// </summary>
+    private (int First, int Last) ResolveDocumentPageRange(int pageCount)
+    {
+        if (pageCount <= 0)
+        {
+            return (0, -1);
+        }
+
+        if (PageRangeSelection == PageRangeSelection.UserPages)
+        {
+            var first = Math.Clamp(PageRangeFrom - 1, 0, pageCount - 1);
+            var last = Math.Clamp(PageRangeTo - 1, first, pageCount - 1);
+            return (first, last);
+        }
+
+        if (PageRangeSelection == PageRangeSelection.CurrentPage)
+        {
+            var current = Math.Clamp(CurrentPage - 1, 0, pageCount - 1);
+            return (current, current);
+        }
+
+        return (0, pageCount - 1);
+    }
+
+    /// <summary>
+    /// Renders a single visual onto the supplied printer device context as one
+    /// page, scaling the rasterized output to fit the printable area.
+    /// </summary>
+    /// <param name="hdc">The printer device context.</param>
+    /// <param name="visual">The visual to render.</param>
+    /// <param name="explicitPageSize">An optional logical page size override.</param>
+    private void PrintVisualPage(nint hdc, Visual visual, Size explicitPageSize = default)
+    {
+        var sourceSize = MeasureVisualForPrint(visual, explicitPageSize);
+        var bitmapWidth = Math.Max(1, (int)Math.Ceiling(sourceSize.Width));
+        var bitmapHeight = Math.Max(1, (int)Math.Ceiling(sourceSize.Height));
+
+        // Rasterize the visual into a BGRA software bitmap.
+        var renderTarget = new RenderTargetBitmap(bitmapWidth, bitmapHeight, 96.0, 96.0, PixelFormat.Bgra32);
+        renderTarget.Clear(Color.White);
+        renderTarget.Render(visual);
+
+        var pixels = new byte[bitmapWidth * bitmapHeight * 4];
+        renderTarget.CopyPixels(new Int32Rect(0, 0, bitmapWidth, bitmapHeight), pixels, bitmapWidth * 4, 0);
+
+        // The Win32 StretchDIBits expects a bottom-up DIB. Flip the rows and
+        // composite onto white so transparent pixels do not print as black.
+        var dib = BuildBottomUpBgrDib(pixels, bitmapWidth, bitmapHeight);
+
+        if (PrintingNativeMethods.StartPage(hdc) <= 0)
+        {
+            throw new PrintDialogException("StartPage failed while printing a page.");
+        }
+
+        try
+        {
+            var printableWidth = PrintingNativeMethods.GetDeviceCaps(hdc, PrintingNativeMethods.HORZRES);
+            var printableHeight = PrintingNativeMethods.GetDeviceCaps(hdc, PrintingNativeMethods.VERTRES);
+
+            if (printableWidth <= 0 || printableHeight <= 0)
+            {
+                // Fall back to a 1:1 mapping when the device reports no metrics.
+                printableWidth = bitmapWidth;
+                printableHeight = bitmapHeight;
+            }
+
+            // Scale the bitmap proportionally so it fits inside the printable
+            // area without distortion.
+            var scale = Math.Min(
+                printableWidth / (double)bitmapWidth,
+                printableHeight / (double)bitmapHeight);
+            scale = scale > 0 ? scale : 1.0;
+
+            var destWidth = Math.Max(1, (int)Math.Round(bitmapWidth * scale));
+            var destHeight = Math.Max(1, (int)Math.Round(bitmapHeight * scale));
+            var destX = Math.Max(0, (printableWidth - destWidth) / 2);
+            var destY = Math.Max(0, (printableHeight - destHeight) / 2);
+
+            var header = new PrintingNativeMethods.BITMAPINFOHEADER
+            {
+                biSize = (uint)Marshal.SizeOf<PrintingNativeMethods.BITMAPINFOHEADER>(),
+                biWidth = bitmapWidth,
+                biHeight = bitmapHeight, // positive => bottom-up DIB
+                biPlanes = 1,
+                biBitCount = 24,
+                biCompression = PrintingNativeMethods.BI_RGB,
+                biSizeImage = (uint)dib.Length
+            };
+
+            var result = PrintingNativeMethods.StretchDIBits(
+                hdc,
+                destX, destY, destWidth, destHeight,
+                0, 0, bitmapWidth, bitmapHeight,
+                dib,
+                ref header,
+                PrintingNativeMethods.DIB_RGB_COLORS,
+                PrintingNativeMethods.SRCCOPY);
+
+            if (result == 0)
+            {
+                throw new PrintDialogException("StretchDIBits failed while printing a page.");
+            }
+        }
+        finally
+        {
+            PrintingNativeMethods.EndPage(hdc);
+        }
+    }
+
+    /// <summary>
+    /// Determines the pixel size to rasterize a visual at, performing a layout
+    /// pass when the visual is a <see cref="UIElement"/> that has not yet been
+    /// measured and arranged.
+    /// </summary>
+    private Size MeasureVisualForPrint(Visual visual, Size explicitPageSize)
+    {
+        // Prefer an explicitly supplied page size (document pagination).
+        if (!explicitPageSize.IsEmpty && explicitPageSize.Width > 0 && explicitPageSize.Height > 0)
+        {
+            EnsureLayout(visual, explicitPageSize);
+            return explicitPageSize;
+        }
+
+        if (visual is UIElement element)
+        {
+            // Use the already-arranged render size when available.
+            if (element.RenderSize.Width > 0 && element.RenderSize.Height > 0)
+            {
+                return element.RenderSize;
+            }
+
+            // Otherwise force a layout pass at the configured printable area.
+            var area = new Size(
+                Math.Max(1.0, PrintableAreaWidth),
+                Math.Max(1.0, PrintableAreaHeight));
+            EnsureLayout(visual, area);
+
+            if (element.RenderSize.Width > 0 && element.RenderSize.Height > 0)
+            {
+                return element.RenderSize;
+            }
+
+            if (element.DesiredSize.Width > 0 && element.DesiredSize.Height > 0)
+            {
+                return element.DesiredSize;
+            }
+
+            return area;
+        }
+
+        // Non-UIElement visuals: fall back to the printable page size.
+        return new Size(
+            Math.Max(1.0, PrintableAreaWidth),
+            Math.Max(1.0, PrintableAreaHeight));
+    }
+
+    /// <summary>
+    /// Ensures that a visual has a valid layout (measure + arrange) for the
+    /// supplied page size before it is rasterized for printing.
+    /// </summary>
+    private static void EnsureLayout(Visual visual, Size pageSize)
+    {
+        if (visual is not UIElement element)
+        {
+            return;
+        }
+
+        if (!element.IsMeasureValid)
+        {
+            element.Measure(pageSize);
+        }
+
+        if (!element.IsArrangeValid)
+        {
+            var width = element.DesiredSize.Width > 0 ? element.DesiredSize.Width : pageSize.Width;
+            var height = element.DesiredSize.Height > 0 ? element.DesiredSize.Height : pageSize.Height;
+            element.Arrange(new Rect(0, 0, width, height));
+        }
+    }
+
+    /// <summary>
+    /// Converts a top-down BGRA pixel buffer into a bottom-up 24-bit BGR
+    /// device-independent bitmap, compositing translucent pixels over white.
+    /// </summary>
+    private static byte[] BuildBottomUpBgrDib(byte[] bgra, int width, int height)
+    {
+        // Each scan line of a DIB must be padded to a 4-byte boundary.
+        var srcStride = width * 4;
+        var dstStride = (width * 3 + 3) & ~3;
+        var dib = new byte[dstStride * height];
+
+        for (var y = 0; y < height; y++)
+        {
+            // Bottom-up: source row y maps to destination row (height - 1 - y).
+            var srcRow = y * srcStride;
+            var dstRow = (height - 1 - y) * dstStride;
+
+            for (var x = 0; x < width; x++)
+            {
+                var srcIndex = srcRow + (x * 4);
+                var b = bgra[srcIndex];
+                var g = bgra[srcIndex + 1];
+                var r = bgra[srcIndex + 2];
+                var a = bgra[srcIndex + 3];
+
+                // Composite over white so transparent areas print as paper.
+                if (a < 255)
+                {
+                    var inverse = 255 - a;
+                    b = (byte)((b * a + 255 * inverse) / 255);
+                    g = (byte)((g * a + 255 * inverse) / 255);
+                    r = (byte)((r * a + 255 * inverse) / 255);
+                }
+
+                var dstIndex = dstRow + (x * 3);
+                dib[dstIndex] = b;
+                dib[dstIndex + 1] = g;
+                dib[dstIndex + 2] = r;
+            }
+        }
+
+        return dib;
+    }
+
+    /// <summary>
+    /// Retrieves the name of the system default printer, or <see langword="null"/>
+    /// when no default printer is configured.
+    /// </summary>
+    private static string? GetDefaultPrinterName()
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return null;
+        }
+
+        uint size = 0;
+        PrintingNativeMethods.GetDefaultPrinter(null, ref size);
+        if (size == 0)
+        {
+            return null;
+        }
+
+        var buffer = new char[size];
+        if (!PrintingNativeMethods.GetDefaultPrinter(buffer, ref size))
+        {
+            return null;
+        }
+
+        return new string(buffer, 0, (int)Math.Max(0, size - 1));
     }
 
     #endregion
@@ -308,20 +955,155 @@ public sealed class PrintQueue
     }
 
     /// <summary>
-    /// Gets the currently installed print queues.
+    /// Gets the currently installed print queues by enumerating the local and
+    /// connected printers of the machine.
     /// </summary>
+    /// <returns>A collection of print queues installed on the local machine.</returns>
     public static IEnumerable<PrintQueue> GetPrintQueues()
     {
-        // Platform-specific implementation
-        return Enumerable.Empty<PrintQueue>();
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return Array.Empty<PrintQueue>();
+        }
+
+        return EnumerateWindowsPrintQueues();
     }
 
     /// <summary>
     /// Gets the default print queue.
     /// </summary>
+    /// <returns>The default print queue, or <see langword="null"/> when none is configured.</returns>
     public static PrintQueue? GetDefaultPrintQueue()
     {
-        return GetPrintQueues().FirstOrDefault(q => q.IsDefault);
+        var queues = GetPrintQueues().ToList();
+        return queues.FirstOrDefault(q => q.IsDefault) ?? queues.FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Enumerates the installed Windows printers via <c>EnumPrinters</c> at
+    /// information level 4 and marks the system default printer.
+    /// </summary>
+    private static List<PrintQueue> EnumerateWindowsPrintQueues()
+    {
+        var result = new List<PrintQueue>();
+
+        const uint flags = PrintingNativeMethods.PRINTER_ENUM_LOCAL |
+                           PrintingNativeMethods.PRINTER_ENUM_CONNECTIONS;
+        const uint level = 4;
+
+        // First call discovers the required buffer size.
+        PrintingNativeMethods.EnumPrinters(flags, null, level, nint.Zero, 0, out var bytesNeeded, out _);
+        if (bytesNeeded == 0)
+        {
+            return result;
+        }
+
+        var buffer = Marshal.AllocHGlobal((int)bytesNeeded);
+        try
+        {
+            if (!PrintingNativeMethods.EnumPrinters(
+                    flags, null, level, buffer, bytesNeeded, out _, out var count))
+            {
+                return result;
+            }
+
+            var defaultPrinterName = GetDefaultPrinterNameStatic();
+            var entrySize = Marshal.SizeOf<PrintingNativeMethods.PRINTER_INFO_4>();
+
+            for (var i = 0; i < count; i++)
+            {
+                var entryPtr = buffer + (i * entrySize);
+                var info = Marshal.PtrToStructure<PrintingNativeMethods.PRINTER_INFO_4>(entryPtr);
+
+                if (string.IsNullOrEmpty(info.pPrinterName))
+                {
+                    continue;
+                }
+
+                var queue = new PrintQueue(info.pPrinterName, info.pPrinterName)
+                {
+                    IsDefault = string.Equals(
+                        info.pPrinterName,
+                        defaultPrinterName,
+                        StringComparison.OrdinalIgnoreCase),
+                    IsOnline = true
+                };
+
+                // Enrich the queue with the descriptive metadata exposed by
+                // PRINTER_INFO_2 (comment / location). Failure is non-fatal.
+                PopulateQueueDetails(queue);
+
+                result.Add(queue);
+            }
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(buffer);
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Populates the description and location of a print queue from the
+    /// <c>PRINTER_INFO_2</c> metadata of the underlying Windows printer.
+    /// </summary>
+    private static void PopulateQueueDetails(PrintQueue queue)
+    {
+        if (!PrintingNativeMethods.OpenPrinter(queue.FullName, out var handle, nint.Zero) ||
+            handle == nint.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            PrintingNativeMethods.GetPrinter(handle, 2, nint.Zero, 0, out var needed);
+            if (needed == 0)
+            {
+                return;
+            }
+
+            var buffer = Marshal.AllocHGlobal((int)needed);
+            try
+            {
+                if (PrintingNativeMethods.GetPrinter(handle, 2, buffer, needed, out _))
+                {
+                    var info = Marshal.PtrToStructure<PrintingNativeMethods.PRINTER_INFO_2>(buffer);
+                    queue.Description = info.pComment ?? string.Empty;
+                    queue.Location = info.pLocation ?? string.Empty;
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        finally
+        {
+            PrintingNativeMethods.ClosePrinter(handle);
+        }
+    }
+
+    /// <summary>
+    /// Retrieves the system default printer name for the local machine.
+    /// </summary>
+    private static string? GetDefaultPrinterNameStatic()
+    {
+        uint size = 0;
+        PrintingNativeMethods.GetDefaultPrinter(null, ref size);
+        if (size == 0)
+        {
+            return null;
+        }
+
+        var buffer = new char[size];
+        if (!PrintingNativeMethods.GetDefaultPrinter(buffer, ref size))
+        {
+            return null;
+        }
+
+        return new string(buffer, 0, (int)Math.Max(0, size - 1));
     }
 
     /// <summary>
@@ -387,37 +1169,176 @@ public sealed class PrintQueue
     }
 
     /// <summary>
-    /// Gets all print jobs in the queue.
+    /// Gets all print jobs currently queued for this printer.
     /// </summary>
     /// <returns>A collection of print jobs.</returns>
     public IEnumerable<PrintSystemJobInfo> GetPrintJobInfoCollection()
     {
-        // Platform-specific implementation
-        return Enumerable.Empty<PrintSystemJobInfo>();
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return Array.Empty<PrintSystemJobInfo>();
+        }
+
+        return EnumerateWindowsJobs();
     }
 
     /// <summary>
-    /// Pauses all jobs in the queue.
+    /// Pauses this printer so it stops processing queued jobs.
     /// </summary>
+    /// <exception cref="PrintDialogException">Thrown when the printer cannot be paused.</exception>
     public void Pause()
     {
-        // Platform-specific implementation
+        ControlPrinter(
+            PrintingNativeMethods.PRINTER_CONTROL_PAUSE,
+            $"Failed to pause printer '{FullName}'.");
     }
 
     /// <summary>
-    /// Resumes all jobs in the queue.
+    /// Resumes this printer after it has been paused.
     /// </summary>
+    /// <exception cref="PrintDialogException">Thrown when the printer cannot be resumed.</exception>
     public void Resume()
     {
-        // Platform-specific implementation
+        ControlPrinter(
+            PrintingNativeMethods.PRINTER_CONTROL_RESUME,
+            $"Failed to resume printer '{FullName}'.");
     }
 
     /// <summary>
-    /// Purges all jobs from the queue.
+    /// Purges all jobs currently queued for this printer.
     /// </summary>
+    /// <exception cref="PrintDialogException">Thrown when the queue cannot be purged.</exception>
     public void Purge()
     {
-        // Platform-specific implementation
+        ControlPrinter(
+            PrintingNativeMethods.PRINTER_CONTROL_PURGE,
+            $"Failed to purge printer '{FullName}'.");
+    }
+
+    /// <summary>
+    /// Opens this printer with administrative access and issues a
+    /// <c>SetPrinter</c> control command (pause / resume / purge).
+    /// </summary>
+    private void ControlPrinter(uint command, string failureMessage)
+    {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            // The spooler control API is Windows-only; treat as a no-op
+            // elsewhere so cross-platform callers are not forced to branch.
+            return;
+        }
+
+        var defaults = new PrintingNativeMethods.PRINTER_DEFAULTS
+        {
+            DesiredAccess = PrintingNativeMethods.PRINTER_ALL_ACCESS
+        };
+
+        if (!PrintingNativeMethods.OpenPrinter(FullName, out var handle, ref defaults) ||
+            handle == nint.Zero)
+        {
+            throw new PrintDialogException(
+                $"{failureMessage} The printer could not be opened with administrative access.");
+        }
+
+        try
+        {
+            // SetPrinter with level 0 and a NULL printer pointer applies the
+            // control command (pause / resume / purge) to the whole queue.
+            if (!PrintingNativeMethods.SetPrinter(handle, 0, nint.Zero, command))
+            {
+                throw new PrintDialogException(failureMessage);
+            }
+        }
+        finally
+        {
+            PrintingNativeMethods.ClosePrinter(handle);
+        }
+    }
+
+    /// <summary>
+    /// Enumerates the jobs of this printer via <c>EnumJobs</c> at level 2 and
+    /// projects them onto <see cref="PrintSystemJobInfo"/> instances.
+    /// </summary>
+    private List<PrintSystemJobInfo> EnumerateWindowsJobs()
+    {
+        var jobs = new List<PrintSystemJobInfo>();
+
+        if (!PrintingNativeMethods.OpenPrinter(FullName, out var handle, nint.Zero) ||
+            handle == nint.Zero)
+        {
+            return jobs;
+        }
+
+        try
+        {
+            const uint level = 2;
+
+            // First call discovers the buffer size; up to 256 jobs are read.
+            PrintingNativeMethods.EnumJobs(handle, 0, 256, level, nint.Zero, 0, out var needed, out _);
+            if (needed == 0)
+            {
+                return jobs;
+            }
+
+            var buffer = Marshal.AllocHGlobal((int)needed);
+            try
+            {
+                if (!PrintingNativeMethods.EnumJobs(
+                        handle, 0, 256, level, buffer, needed, out _, out var count))
+                {
+                    return jobs;
+                }
+
+                var entrySize = Marshal.SizeOf<PrintingNativeMethods.JOB_INFO_2>();
+                for (var i = 0; i < count; i++)
+                {
+                    var entryPtr = buffer + (i * entrySize);
+                    var info = Marshal.PtrToStructure<PrintingNativeMethods.JOB_INFO_2>(entryPtr);
+
+                    jobs.Add(new PrintSystemJobInfo(this, info.pDocument ?? string.Empty)
+                    {
+                        JobStatus = TranslateJobStatus(info.Status),
+                        NumberOfPages = (int)info.TotalPages,
+                        NumberOfPagesPrinted = (int)info.PagesPrinted
+                    });
+                }
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(buffer);
+            }
+        }
+        finally
+        {
+            PrintingNativeMethods.ClosePrinter(handle);
+        }
+
+        return jobs;
+    }
+
+    /// <summary>
+    /// Translates a Win32 <c>JOB_STATUS_*</c> flag set into the framework
+    /// <see cref="PrintJobStatus"/> flags enumeration.
+    /// </summary>
+    private static PrintJobStatus TranslateJobStatus(uint status)
+    {
+        var result = PrintJobStatus.None;
+
+        if ((status & PrintingNativeMethods.JOB_STATUS_PAUSED) != 0) result |= PrintJobStatus.Paused;
+        if ((status & PrintingNativeMethods.JOB_STATUS_ERROR) != 0) result |= PrintJobStatus.Error;
+        if ((status & PrintingNativeMethods.JOB_STATUS_DELETING) != 0) result |= PrintJobStatus.Deleting;
+        if ((status & PrintingNativeMethods.JOB_STATUS_SPOOLING) != 0) result |= PrintJobStatus.Spooling;
+        if ((status & PrintingNativeMethods.JOB_STATUS_PRINTING) != 0) result |= PrintJobStatus.Printing;
+        if ((status & PrintingNativeMethods.JOB_STATUS_OFFLINE) != 0) result |= PrintJobStatus.Offline;
+        if ((status & PrintingNativeMethods.JOB_STATUS_PAPEROUT) != 0) result |= PrintJobStatus.PaperOut;
+        if ((status & PrintingNativeMethods.JOB_STATUS_PRINTED) != 0) result |= PrintJobStatus.Printed;
+        if ((status & PrintingNativeMethods.JOB_STATUS_DELETED) != 0) result |= PrintJobStatus.Deleted;
+        if ((status & PrintingNativeMethods.JOB_STATUS_USER_INTERVENTION) != 0) result |= PrintJobStatus.UserIntervention;
+        if ((status & PrintingNativeMethods.JOB_STATUS_RESTART) != 0) result |= PrintJobStatus.Restarted;
+        if ((status & PrintingNativeMethods.JOB_STATUS_COMPLETE) != 0) result |= PrintJobStatus.Completed;
+        if ((status & PrintingNativeMethods.JOB_STATUS_RETAINED) != 0) result |= PrintJobStatus.Retained;
+
+        return result;
     }
 }
 
@@ -1269,18 +2190,69 @@ public sealed class XpsDocumentWriter
 
     private void WriteInternal(Visual visual, PrintTicket? printTicket)
     {
-        // Platform-specific implementation
-        OnWritingCompleted(null, false);
+        try
+        {
+            // Route the visual through the platform print path, reusing the
+            // print queue this writer was created for.
+            var dialog = new PrintDialog
+            {
+                PrintQueue = _printQueue,
+                PrintTicket = ResolvePrintTicket(printTicket)
+            };
+
+            dialog.PrintVisual(visual, _printQueue.Name);
+            OnWritingProgressChanged(1, 1);
+            OnWritingCompleted(null, false);
+        }
+        catch (Exception ex)
+        {
+            OnWritingCompleted(ex, false);
+            throw;
+        }
     }
 
     private void WriteInternal(DocumentPaginator paginator, PrintTicket? printTicket)
     {
-        // Platform-specific implementation
-        for (int i = 0; i < paginator.PageCount; i++)
+        try
         {
-            OnWritingProgressChanged(i + 1, paginator.PageCount);
+            var dialog = new PrintDialog
+            {
+                PrintQueue = _printQueue,
+                PrintTicket = ResolvePrintTicket(printTicket)
+            };
+
+            dialog.PrintDocument(paginator, _printQueue.Name);
+
+            var pageCount = paginator.IsPageCountValid ? paginator.PageCount : 0;
+            for (var i = 0; i < pageCount; i++)
+            {
+                OnWritingProgressChanged(i + 1, pageCount);
+            }
+
+            OnWritingCompleted(null, false);
         }
-        OnWritingCompleted(null, false);
+        catch (Exception ex)
+        {
+            OnWritingCompleted(ex, false);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Resolves the effective print ticket, raising the
+    /// <see cref="WritingPrintTicketRequired"/> event so a host can supply one
+    /// when none is provided explicitly.
+    /// </summary>
+    private PrintTicket? ResolvePrintTicket(PrintTicket? explicitTicket)
+    {
+        if (explicitTicket != null)
+        {
+            return explicitTicket;
+        }
+
+        var args = new WritingPrintTicketRequiredEventArgs(PrintTicketLevel.Job, 0);
+        RaiseWritingPrintTicketRequired(args);
+        return args.PrintTicket ?? _printQueue.DefaultPrintTicket;
     }
 
     /// <summary>

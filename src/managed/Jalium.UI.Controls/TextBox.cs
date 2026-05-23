@@ -169,6 +169,30 @@ public class TextBox : TextBoxBase, IImeSupport
         DependencyProperty.Register(nameof(DetectUrls), typeof(bool), typeof(TextBox),
             new PropertyMetadata(false, OnFormatDetectionChanged));
 
+    /// <summary>
+    /// Identifies the <see cref="CharacterCasing"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public static readonly DependencyProperty CharacterCasingProperty =
+        DependencyProperty.Register(nameof(CharacterCasing), typeof(CharacterCasing), typeof(TextBox),
+            new PropertyMetadata(CharacterCasing.Normal));
+
+    /// <summary>
+    /// Identifies the <see cref="MinLines"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty MinLinesProperty =
+        DependencyProperty.Register(nameof(MinLines), typeof(int), typeof(TextBox),
+            new PropertyMetadata(1, OnLayoutPropertyChanged));
+
+    /// <summary>
+    /// Identifies the <see cref="MaxLines"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty MaxLinesProperty =
+        DependencyProperty.Register(nameof(MaxLines), typeof(int), typeof(TextBox),
+            new PropertyMetadata(int.MaxValue, OnLayoutPropertyChanged));
+
     #endregion
 
     #region CLR Properties
@@ -182,6 +206,22 @@ public class TextBox : TextBoxBase, IImeSupport
         get => (string)(GetValue(TextProperty) ?? string.Empty);
         set => SetValue(TextProperty, value);
     }
+
+    /// <summary>
+    /// Replaces <see cref="Text"/> with the contents of a text file. A byte-order
+    /// mark, if present, decides the encoding; otherwise <paramref name="encoding"/>
+    /// is used — UTF-8 when it is <see langword="null"/>. Legacy code pages such as
+    /// <c>Encoding.GetEncoding(936)</c> (GBK) are supported.
+    /// </summary>
+    public void LoadFromFile(string path, System.Text.Encoding? encoding = null)
+        => Text = TextFile.ReadAllText(path, encoding);
+
+    /// <summary>
+    /// Writes <see cref="Text"/> to a file using <paramref name="encoding"/> —
+    /// UTF-8 when it is <see langword="null"/>.
+    /// </summary>
+    public void SaveToFile(string path, System.Text.Encoding? encoding = null)
+        => TextFile.WriteAllText(path, Text, encoding);
 
     /// <summary>
     /// Gets or sets the maximum number of characters (0 = unlimited).
@@ -276,6 +316,43 @@ public class TextBox : TextBoxBase, IImeSupport
     {
         get => (bool)GetValue(DetectUrlsProperty)!;
         set => SetValue(DetectUrlsProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets how characters are cased as they are entered. The casing is
+    /// applied to typed and pasted input; a programmatic <see cref="Text"/>
+    /// assignment is left exactly as supplied.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Typography)]
+    public CharacterCasing CharacterCasing
+    {
+        get => (CharacterCasing)GetValue(CharacterCasingProperty)!;
+        set => SetValue(CharacterCasingProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the minimum number of visible text lines. When no explicit
+    /// <see cref="FrameworkElement.Height"/> is set, the control is never
+    /// measured shorter than this many lines. The default is 1.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public int MinLines
+    {
+        get => (int)GetValue(MinLinesProperty)!;
+        set => SetValue(MinLinesProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the maximum number of visible text lines. When no explicit
+    /// <see cref="FrameworkElement.Height"/> is set, the control is never
+    /// measured taller than this many lines; any further content scrolls.
+    /// The default is <see cref="int.MaxValue"/> (unbounded).
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public int MaxLines
+    {
+        get => (int)GetValue(MaxLinesProperty)!;
+        set => SetValue(MaxLinesProperty, value);
     }
 
     /// <summary>
@@ -1166,7 +1243,7 @@ public class TextBox : TextBoxBase, IImeSupport
         // The TextBoxContentHost will call MeasureTextContent for the text area
         if (Template != null)
         {
-            return base.MeasureOverride(availableSize);
+            return ApplyLineLimits(base.MeasureOverride(availableSize), availableSize);
         }
 
         // Direct rendering mode - calculate size based on content
@@ -1201,9 +1278,43 @@ public class TextBox : TextBoxBase, IImeSupport
         var minHeight = lineHeight + padding.Top + padding.Bottom + border.Top + border.Bottom;
         desiredHeight = Math.Max(desiredHeight, minHeight);
 
-        return new Size(
-            availableSize.Width,
-            Math.Min(desiredHeight, availableSize.Height));
+        return ApplyLineLimits(
+            new Size(availableSize.Width, Math.Min(desiredHeight, availableSize.Height)),
+            availableSize);
+    }
+
+    /// <summary>
+    /// Constrains a measured size so the control honors <see cref="MinLines"/> and
+    /// <see cref="MaxLines"/>. The limits are expressed in whole text lines and
+    /// converted to a pixel height using the current line height plus the
+    /// control's border and padding. They are skipped when an explicit
+    /// <see cref="FrameworkElement.Height"/> is set, since that height wins
+    /// — matching WPF's <c>TextBoxBase</c> behavior.
+    /// </summary>
+    private Size ApplyLineLimits(Size measured, Size availableSize)
+    {
+        if (!double.IsNaN(Height))
+            return measured;
+
+        int minLines = Math.Max(1, MinLines);
+        int maxLines = Math.Max(minLines, MaxLines);
+
+        // Fast path: the default open-ended range imposes no constraint.
+        if (minLines == 1 && maxLines == int.MaxValue)
+            return measured;
+
+        var border = BorderThickness;
+        var padding = Padding;
+        double lineHeight = Math.Round(GetLineHeight());
+        double chrome = border.Top + border.Bottom + padding.Top + padding.Bottom;
+
+        double minHeight = minLines * lineHeight + chrome;
+        // maxLines may be int.MaxValue; promote to double before multiplying so
+        // the product never overflows the integer domain.
+        double maxHeight = (double)maxLines * lineHeight + chrome;
+
+        double height = Math.Clamp(measured.Height, minHeight, maxHeight);
+        return new Size(measured.Width, height);
     }
 
     /// <inheritdoc />
@@ -1903,6 +2014,11 @@ public class TextBox : TextBoxBase, IImeSupport
         if (IsReadOnly || string.IsNullOrEmpty(textToInsert))
             return;
 
+        // Apply CharacterCasing to every code path that funnels through
+        // InsertText — keyboard input, paste and IME commit — so the casing
+        // rule is enforced uniformly without intercepting each call site.
+        textToInsert = ApplyCharacterCasing(textToInsert);
+
         PushUndo();
 
         // Delete selection if any
@@ -1944,6 +2060,25 @@ public class TextBox : TextBoxBase, IImeSupport
     {
         var e = new RoutedEventArgs(SelectionChangedEvent, this);
         RaiseEvent(e);
+    }
+
+    /// <summary>
+    /// Applies the current <see cref="CharacterCasing"/> rule to a fragment of
+    /// text that is about to be inserted. Casing uses the current culture so
+    /// locale-sensitive mappings (e.g. Turkish dotted/dotless i) behave the
+    /// same way the platform keyboard would.
+    /// </summary>
+    private string ApplyCharacterCasing(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            return value;
+
+        return CharacterCasing switch
+        {
+            CharacterCasing.Upper => value.ToUpper(System.Globalization.CultureInfo.CurrentCulture),
+            CharacterCasing.Lower => value.ToLower(System.Globalization.CultureInfo.CurrentCulture),
+            _ => value,
+        };
     }
 
     #endregion

@@ -4867,6 +4867,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private static Cursor? ResolveCursor(UIElement? element)
     {
+        // A disabled element shows the standard arrow — neither its own Cursor
+        // nor any inherited/ancestor cursor applies. IsEnabled is the effective
+        // value (walks the parent chain); an enabled hit element guarantees the
+        // whole ancestor chain is enabled too. Returning null makes OnSetCursor
+        // fall back to CursorType.Arrow.
+        if (element is { IsEnabled: false })
+            return null;
+
         while (element != null)
         {
             if (element is FrameworkElement fe && fe.Cursor != null)

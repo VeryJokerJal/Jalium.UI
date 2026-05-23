@@ -68,6 +68,14 @@ public class ComboBox : Selector
             new PropertyMetadata(false, OnIsEditableChanged));
 
     /// <summary>
+    /// Identifies the <see cref="StaysOpenOnEdit"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty StaysOpenOnEditProperty =
+        DependencyProperty.Register(nameof(StaysOpenOnEdit), typeof(bool), typeof(ComboBox),
+            new PropertyMetadata(false));
+
+    /// <summary>
     /// Identifies the Text dependency property.
     /// </summary>
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Content)]
@@ -158,6 +166,19 @@ public class ComboBox : Selector
     {
         get => (bool)GetValue(IsEditableProperty)!;
         set => SetValue(IsEditableProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether the drop-down stays open while the user edits the
+    /// text of an editable combo box. When <see langword="false"/> (the
+    /// default), clicking into the editable text box closes the drop-down.
+    /// Has no effect unless <see cref="IsEditable"/> is <see langword="true"/>.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool StaysOpenOnEdit
+    {
+        get => (bool)GetValue(StaysOpenOnEditProperty)!;
+        set => SetValue(StaysOpenOnEditProperty, value);
     }
 
     /// <summary>
@@ -346,12 +367,24 @@ public class ComboBox : Selector
 
             if (IsEventFromEditableTextBox(e))
             {
+                // Clicking into the editable text box dismisses the drop-down
+                // unless StaysOpenOnEdit keeps it open while the user edits.
+                if (IsDropDownOpen && !StaysOpenOnEdit)
+                {
+                    IsDropDownOpen = false;
+                }
+
                 // Let the inner TextBox handle focus/caret behavior.
                 return;
             }
 
             if (TryForwardMouseButtonEventToEditableTextBox(e))
             {
+                if (IsDropDownOpen && !StaysOpenOnEdit)
+                {
+                    IsDropDownOpen = false;
+                }
+
                 e.Handled = true;
                 return;
             }

@@ -83,6 +83,21 @@ public class DataGrid : Control, IColumnHeaderHost
         DependencyProperty.Register(nameof(CanUserReorderColumns), typeof(bool), typeof(DataGrid),
             new PropertyMetadata(true));
 
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty CanUserAddRowsProperty =
+        DependencyProperty.Register(nameof(CanUserAddRows), typeof(bool), typeof(DataGrid),
+            new PropertyMetadata(true, OnCanUserModifyRowsChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public static readonly DependencyProperty CanUserDeleteRowsProperty =
+        DependencyProperty.Register(nameof(CanUserDeleteRows), typeof(bool), typeof(DataGrid),
+            new PropertyMetadata(true, OnCanUserModifyRowsChanged));
+
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public static readonly DependencyProperty FrozenColumnCountProperty =
+        DependencyProperty.Register(nameof(FrozenColumnCount), typeof(int), typeof(DataGrid),
+            new PropertyMetadata(0, OnFrozenColumnCountChanged));
+
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty EnableRowVirtualizationProperty =
         DependencyProperty.Register(nameof(EnableRowVirtualization), typeof(bool), typeof(DataGrid),
@@ -280,6 +295,43 @@ public class DataGrid : Control, IColumnHeaderHost
         set => SetValue(CanUserReorderColumnsProperty, value);
     }
 
+    /// <summary>
+    /// Gets or sets whether the user can add new rows. When enabled and the
+    /// bound source is a mutable, non-fixed-size <see cref="IList"/> whose item
+    /// type is constructible, an empty placeholder row is shown at the bottom
+    /// of the grid; interacting with it appends a new item to the source.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool CanUserAddRows
+    {
+        get => (bool)GetValue(CanUserAddRowsProperty)!;
+        set => SetValue(CanUserAddRowsProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets whether the user can delete rows. When enabled and the
+    /// bound source is a mutable, non-fixed-size <see cref="IList"/>, pressing
+    /// <c>Delete</c> removes the selected row(s) from the source.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.State)]
+    public bool CanUserDeleteRows
+    {
+        get => (bool)GetValue(CanUserDeleteRowsProperty)!;
+        set => SetValue(CanUserDeleteRowsProperty, value);
+    }
+
+    /// <summary>
+    /// Gets or sets the number of leading columns that stay pinned to the left
+    /// edge while the remaining columns scroll horizontally. The count is
+    /// measured in display order. The default is 0 (no frozen columns).
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
+    public int FrozenColumnCount
+    {
+        get => (int)GetValue(FrozenColumnCountProperty)!;
+        set => SetValue(FrozenColumnCountProperty, value);
+    }
+
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public bool EnableRowVirtualization
     {
@@ -422,6 +474,7 @@ public class DataGrid : Control, IColumnHeaderHost
     private readonly Dictionary<int, DataGridRow> _realizedRows = new();
     private Border? _topSpacer;
     private Border? _bottomSpacer;
+    private DataGridRow? _placeholderRow;
     private int _realizedStartIndex = -1;
     private int _realizedEndIndex = -1;
     private int _realizedColumnStartIndex = -1;
@@ -444,6 +497,13 @@ public class DataGrid : Control, IColumnHeaderHost
     private int _dragSourceIndex = -1;
     internal bool _isColumnDragging;
     private const double ScrollBarReservedWidth = 12.0;
+
+    // Frozen columns are lifted above the scrolling cells so they paint on top
+    // once they translate over them; a constant Z-index is enough since no
+    // other DataGrid part competes for stacking order.
+    private const int FrozenColumnZIndex = 10;
+
+    private static readonly SolidColorBrush s_frozenCellFallbackBrush = new(ThemeColors.ControlBackground);
 
     #endregion
 
@@ -503,6 +563,10 @@ public class DataGrid : Control, IColumnHeaderHost
         {
             UpdateRealizedRows();
         }
+
+        // Counter-translate the frozen columns so they stay pinned to the left
+        // edge as the rest of the grid scrolls horizontally.
+        UpdateFrozenColumnOffsets();
     }
 
     /// <summary>
@@ -570,8 +634,9 @@ public class DataGrid : Control, IColumnHeaderHost
 
         _columnHeadersHost.Children.Clear();
 
-        foreach (var column in Columns)
+        for (var columnIndex = 0; columnIndex < Columns.Count; columnIndex++)
         {
+            var column = Columns[columnIndex];
             if (!IsColumnVisible(column))
             {
                 continue;
@@ -589,6 +654,8 @@ public class DataGrid : Control, IColumnHeaderHost
 
             header.AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnColumnHeaderClick));
             header.UpdateSortIndicator(column.SortDirection);
+
+            ApplyFrozenHeaderState(header, columnIndex);
 
             _columnHeadersHost.Children.Add(header);
         }
@@ -655,6 +722,18 @@ public class DataGrid : Control, IColumnHeaderHost
             _realizedEndIndex = -1;
             _realizedColumnStartIndex = -1;
             _realizedColumnEndIndex = -1;
+
+            // An empty grid still shows the new-item placeholder so the user
+            // has somewhere to start adding rows.
+            if (ShowNewItemPlaceholder)
+            {
+                _placeholderRow = BuildPlaceholderRow(GetEffectiveRowHeight());
+                _rowsHost.Children.Add(_placeholderRow);
+            }
+            else
+            {
+                _placeholderRow = null;
+            }
             return;
         }
 
@@ -750,6 +829,19 @@ public class DataGrid : Control, IColumnHeaderHost
             _bottomSpacer.Height = bottomHeight;
             _bottomSpacer.Visibility = bottomHeight > 0 ? Visibility.Visible : Visibility.Collapsed;
             _rowsHost.Children.Add(_bottomSpacer);
+
+            // The new-item placeholder is appended after the bottom spacer so
+            // it is always pinned to the very end of the scrollable content,
+            // independent of which rows the virtualizer currently realizes.
+            if (ShowNewItemPlaceholder)
+            {
+                _placeholderRow = BuildPlaceholderRow(rowHeight);
+                _rowsHost.Children.Add(_placeholderRow);
+            }
+            else
+            {
+                _placeholderRow = null;
+            }
         }
         finally
         {
@@ -780,7 +872,10 @@ public class DataGrid : Control, IColumnHeaderHost
             return (-1, -1);
         }
 
-        if (!EnableColumnVirtualization || _dataScrollViewer == null)
+        // Frozen columns must remain realized at all horizontal offsets so they
+        // can be pinned; horizontal column virtualization would recycle them
+        // away once scrolled past, so it is disabled whenever any are frozen.
+        if (!EnableColumnVirtualization || _dataScrollViewer == null || FrozenColumnCount > 0)
         {
             return (firstVisibleColumn, lastVisibleColumn);
         }
@@ -887,6 +982,7 @@ public class DataGrid : Control, IColumnHeaderHost
 
             row.Cells.Add(cell);
             row.CellsByColumn[colIndex] = cell;
+            ApplyFrozenCellState(cell, colIndex);
         }
 
         row.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnRowMouseDown));
@@ -901,7 +997,14 @@ public class DataGrid : Control, IColumnHeaderHost
         if (sender is DataGridRow row && e.ChangedButton == MouseButton.Left)
         {
             Focus();
-            SelectRow(row.RowIndex, e.KeyboardModifiers);
+            if (row.IsNewItemPlaceholder)
+            {
+                CommitNewItem();
+            }
+            else
+            {
+                SelectRow(row.RowIndex, e.KeyboardModifiers);
+            }
             e.Handled = true;
         }
     }
@@ -1268,6 +1371,12 @@ public class DataGrid : Control, IColumnHeaderHost
             case Key.F2:
                 BeginEdit();
                 e.Handled = true;
+                break;
+            case Key.Delete:
+                if (_currentEditingCell == null && TryDeleteSelectedRows())
+                {
+                    e.Handled = true;
+                }
                 break;
             case Key.Escape:
                 if (_currentEditingCell != null)
@@ -1826,6 +1935,351 @@ public class DataGrid : Control, IColumnHeaderHost
 
     #endregion
 
+    #region Row Add / Delete and Frozen Columns
+
+    private static void OnCanUserModifyRowsChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        // CanUserAddRows toggles the placeholder row; CanUserDeleteRows only
+        // gates a key handler. A single refresh covers both — it is a no-op
+        // before the template is applied.
+        if (d is DataGrid dataGrid)
+        {
+            dataGrid.RefreshRows();
+        }
+    }
+
+    private static void OnFrozenColumnCountChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is DataGrid dataGrid)
+        {
+            dataGrid.RefreshColumnHeaders();
+            dataGrid.RefreshRows();
+        }
+    }
+
+    /// <summary>
+    /// Gets whether the empty new-item placeholder row should be shown: the
+    /// feature must be enabled, the grid editable, and the bound source a
+    /// mutable list whose item type can be constructed.
+    /// </summary>
+    private bool ShowNewItemPlaceholder => CanUserAddRows && !IsReadOnly && CanAddRowsToSource();
+
+    /// <summary>
+    /// Determines whether new items can be appended to the current
+    /// <see cref="ItemsSource"/>.
+    /// </summary>
+    private bool CanAddRowsToSource()
+    {
+        if (ItemsSource is not IList list || list.IsReadOnly || list.IsFixedSize)
+        {
+            return false;
+        }
+
+        var itemType = GetNewItemType();
+        if (itemType == null || itemType.IsAbstract || itemType.IsInterface)
+        {
+            return false;
+        }
+
+        // Value types are always constructible; reference types need a public
+        // parameterless constructor (this is why e.g. string is rejected).
+        return itemType.IsValueType || itemType.GetConstructor(Type.EmptyTypes) != null;
+    }
+
+    /// <summary>
+    /// Resolves the element type of the bound items so a new instance can be
+    /// created for the placeholder row. An existing item is the most reliable
+    /// source; otherwise the source's <see cref="IEnumerable{T}"/> argument is
+    /// used.
+    /// </summary>
+    private Type? GetNewItemType()
+    {
+        if (_items.Count > 0 && _items[0] != null)
+        {
+            return _items[0]!.GetType();
+        }
+
+        var source = ItemsSource;
+        if (source == null)
+        {
+            return null;
+        }
+
+        foreach (var iface in source.GetType().GetInterfaces())
+        {
+            if (iface.IsGenericType && iface.GetGenericTypeDefinition() == typeof(IEnumerable<>))
+            {
+                return iface.GetGenericArguments()[0];
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Builds the empty placeholder row that sits at the bottom of the grid
+    /// while <see cref="CanUserAddRows"/> is active.
+    /// </summary>
+    private DataGridRow BuildPlaceholderRow(double rowHeight)
+    {
+        var (columnStart, columnEnd) = GetVisibleColumnRange();
+
+        var row = new DataGridRow
+        {
+            DataItem = null,
+            RowIndex = -1,
+            IsNewItemPlaceholder = true,
+            Height = double.IsNaN(RowHeight) ? double.NaN : rowHeight,
+            ParentDataGrid = this,
+            VisibleColumnStart = columnStart,
+            VisibleColumnEnd = columnEnd,
+        };
+
+        if (RowBackground != null)
+        {
+            row.Background = RowBackground;
+        }
+
+        if (columnStart >= 0 && columnEnd >= 0 && Columns.Count > 0)
+        {
+            for (var colIndex = columnStart; colIndex <= columnEnd && colIndex < Columns.Count; colIndex++)
+            {
+                var column = Columns[colIndex];
+                if (!IsColumnVisible(column))
+                {
+                    continue;
+                }
+
+                var cell = new DataGridCell
+                {
+                    Width = column.ActualWidth,
+                    Column = column,
+                };
+
+                row.Cells.Add(cell);
+                row.CellsByColumn[colIndex] = cell;
+                ApplyFrozenCellState(cell, colIndex);
+            }
+        }
+
+        row.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnRowMouseDown));
+        return row;
+    }
+
+    /// <summary>
+    /// Creates a new item, appends it to the bound source, then selects and
+    /// edits the resulting row. Invoked when the user activates the placeholder.
+    /// </summary>
+    private void CommitNewItem()
+    {
+        if (!ShowNewItemPlaceholder || ItemsSource is not IList list)
+        {
+            return;
+        }
+
+        var itemType = GetNewItemType();
+        if (itemType == null)
+        {
+            return;
+        }
+
+        object? newItem;
+        try
+        {
+            newItem = Activator.CreateInstance(itemType);
+        }
+        catch (Exception)
+        {
+            // A type that looked constructible but throws from its constructor
+            // simply cannot back a new row — leave the grid unchanged.
+            return;
+        }
+
+        if (newItem == null)
+        {
+            return;
+        }
+
+        list.Add(newItem);
+
+        // An observable source has already funneled the insertion through
+        // OnSourceCollectionChanged; a plain list has not, so sync manually.
+        if (ItemsSource is not INotifyCollectionChanged)
+        {
+            _items.Add(newItem);
+            RefreshRows();
+            InvalidateMeasure();
+        }
+
+        var newIndex = _items.IndexOf(newItem);
+        if (newIndex >= 0)
+        {
+            SelectedIndex = newIndex;
+            ScrollIntoView(newItem);
+            BeginEdit();
+        }
+    }
+
+    /// <summary>
+    /// Removes every selected row from the bound source when row deletion is
+    /// permitted. Returns whether anything was deleted.
+    /// </summary>
+    private bool TryDeleteSelectedRows()
+    {
+        if (!CanUserDeleteRows || IsReadOnly)
+        {
+            return false;
+        }
+
+        if (ItemsSource is not IList list || list.IsReadOnly || list.IsFixedSize)
+        {
+            return false;
+        }
+
+        if (_selectedItems.Count == 0)
+        {
+            return false;
+        }
+
+        // Snapshot first: removing from the source mutates _selectedItems via
+        // the collection-changed handler while we iterate.
+        var toDelete = _selectedItems.ToArray();
+        var firstIndex = int.MaxValue;
+        foreach (var item in toDelete)
+        {
+            var index = _items.IndexOf(item);
+            if (index >= 0 && index < firstIndex)
+            {
+                firstIndex = index;
+            }
+        }
+
+        var observable = ItemsSource is INotifyCollectionChanged;
+        foreach (var item in toDelete)
+        {
+            list.Remove(item);
+            if (!observable)
+            {
+                _items.Remove(item);
+                RemoveFromSelection(item);
+            }
+        }
+
+        if (!observable)
+        {
+            RefreshRows();
+            InvalidateMeasure();
+        }
+
+        // Move the selection to the row that fell into the deleted slot.
+        if (_items.Count > 0)
+        {
+            SelectedIndex = Math.Clamp(firstIndex == int.MaxValue ? 0 : firstIndex, 0, _items.Count - 1);
+        }
+        else
+        {
+            SelectedIndex = -1;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Lifts a cell that belongs to a frozen column above the scrolling cells
+    /// and counter-translates it to the current horizontal offset so it stays
+    /// pinned to the left edge.
+    /// </summary>
+    private void ApplyFrozenCellState(DataGridCell cell, int columnIndex)
+    {
+        if (columnIndex >= FrozenColumnCount)
+        {
+            return;
+        }
+
+        Panel.SetZIndex(cell, FrozenColumnZIndex);
+        // Frozen cells overlap scrolling cells once translated, so they need an
+        // opaque fill to occlude what passes underneath.
+        cell.Background = ResolveFrozenCellBackground();
+        cell.RenderOffset = new Point(GetHorizontalScrollOffset(), 0);
+    }
+
+    /// <summary>
+    /// Lifts a frozen column header above the scrolling headers and pins it to
+    /// the current horizontal offset.
+    /// </summary>
+    private void ApplyFrozenHeaderState(DataGridColumnHeader header, int columnIndex)
+    {
+        if (columnIndex >= FrozenColumnCount)
+        {
+            return;
+        }
+
+        Panel.SetZIndex(header, FrozenColumnZIndex);
+        header.RenderOffset = new Point(GetHorizontalScrollOffset(), 0);
+    }
+
+    /// <summary>
+    /// Re-applies the pinning translation to every realized frozen cell and
+    /// header. Called on each horizontal scroll change.
+    /// </summary>
+    private void UpdateFrozenColumnOffsets()
+    {
+        if (FrozenColumnCount <= 0)
+        {
+            return;
+        }
+
+        var offset = new Point(GetHorizontalScrollOffset(), 0);
+
+        foreach (var row in _realizedRows.Values)
+        {
+            ApplyFrozenOffsetToRow(row, offset);
+        }
+
+        if (_placeholderRow != null)
+        {
+            ApplyFrozenOffsetToRow(_placeholderRow, offset);
+        }
+
+        if (_columnHeadersHost != null)
+        {
+            foreach (var child in _columnHeadersHost.Children)
+            {
+                if (child is DataGridColumnHeader header &&
+                    header.Column != null &&
+                    Columns.IndexOf(header.Column) < FrozenColumnCount)
+                {
+                    header.RenderOffset = offset;
+                }
+            }
+        }
+    }
+
+    private void ApplyFrozenOffsetToRow(DataGridRow row, Point offset)
+    {
+        foreach (var pair in row.CellsByColumn)
+        {
+            if (pair.Key < FrozenColumnCount)
+            {
+                pair.Value.RenderOffset = offset;
+            }
+        }
+    }
+
+    private double GetHorizontalScrollOffset() => _dataScrollViewer?.HorizontalOffset ?? 0.0;
+
+    /// <summary>
+    /// Resolves an opaque brush for frozen cells. The grid's own backgrounds are
+    /// preferred so the pinned column blends in; a theme color is the fallback.
+    /// </summary>
+    private Brush ResolveFrozenCellBackground()
+        => RowBackground
+           ?? Background
+           ?? TryFindResource("ControlBackground") as Brush
+           ?? s_frozenCellFallbackBrush;
+
+    #endregion
+
     #region Editing
 
     /// <summary>
@@ -2271,6 +2725,13 @@ public class DataGridRow : Control
     internal Brush? AlternatingBackground { get; set; }
     internal int VisibleColumnStart { get; set; } = -1;
     internal int VisibleColumnEnd { get; set; } = -1;
+
+    /// <summary>
+    /// Gets whether this row is the empty new-item placeholder shown at the
+    /// bottom of the grid when <see cref="DataGrid.CanUserAddRows"/> is enabled.
+    /// </summary>
+    internal bool IsNewItemPlaceholder { get; set; }
+
     internal List<DataGridCell> Cells { get; } = new();
     internal Dictionary<int, DataGridCell> CellsByColumn { get; } = new();
 
