@@ -8,7 +8,7 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 ## Project Status
 
-- Active development — v26.10.0-preview (APIs can still evolve between minor versions)
+- Active development — v26.10.2-preview (APIs can still evolve between minor versions)
 - Primary target: Windows 10/11 x64
 - Cross-platform: Android (arm64-v8a, x86_64), Linux (Vulkan), macOS (Metal)
 - Runtime target: .NET 10 (`net10.0-windows`, `net10.0-android`, `net10.0`)
@@ -18,11 +18,14 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 
 - GPU-native rendering pipeline with ClearType sub-pixel text rendering
 - Familiar programming model (`DependencyObject`, `UIElement`, panels, templates, resources)
-- JALXAML markup with Razor syntax extensions (`@Path`, `@(expr)`, `@{ ... }`, `@if`)
-- Rich control library: 80+ controls including Charts, Ribbon, Docking, InkCanvas, WebView, Terminal
+- JALXAML markup with Razor syntax extensions (`@Path`, `@(expr)`, `@{ ... }`, `@if/@section/@RenderSection`)
+- Rich control library: 80+ controls including Charts, Ribbon, Docking, InkCanvas, WebView, Terminal, WindowsFormsHost
 - Build-time tooling via NuGet (`Jalium.UI.Build`, `Jalium.UI.Xaml.SourceGenerator`)
 - UIA accessibility support with automation peers
-- Visual effects: liquid glass, backdrop blur, acrylic, mica, transition shaders
+- Visual effects: liquid glass, backdrop blur, acrylic, mica, transition shaders, animated bitmaps (GIF / APNG / animated WebP)
+- Grapheme-cluster aware text editing (UAX#29) — emoji, ZWJ sequences, skin-tone modifiers, country flags never split
+- Self-contained `Jalium.Extensions.*` stack (Hosting / DI / Configuration / Options / Logging / Metrics) — no `Microsoft.Extensions.Hosting` dependency
+- Native audio pipeline (miniaudio + dr_libs / minimp3) with WSOLA pitch-preserving time-stretching
 
 ## Framework Composition
 
@@ -54,6 +57,9 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 | `jalium.native.platform` | All | Platform abstraction (window, input, events) |
 | `jalium.native.text` | Linux, Android | Cross-platform text engine (FreeType + HarfBuzz) |
 | `jalium.native.browser` | Windows | WebView2 browser integration |
+| `jalium.native.media.core` | All | Cross-platform media C ABI + shared audio (miniaudio / dr_libs / minimp3 / stb_vorbis) |
+| `jalium.native.media.windows` | Windows | Media Foundation video / camera / AAC decoder + WIC imaging |
+| `jalium.native.aot` | All | NativeAOT aggregator (hard-links media, text, backends) |
 
 ### Platform Packages
 
@@ -78,14 +84,39 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - **Navigation**: `NavigationView`, `TabControl`, `Ribbon`, `CommandBar`, `MenuBar`
 - **Documents**: `FlowDocumentViewer`, `FlowDocumentReader`, `FlowDocumentScrollViewer`, `Markdown`
 - **Charts**: Category, DateTime, Logarithmic axes with chart legend
-- **Rich**: `InkCanvas`, `WebView`/`WebBrowser`, `EditControl`, `QRCode`, `TitleBar`
+- **Rich**: `InkCanvas`, `WebView`/`WebBrowser`, `EditControl`, `QRCode` (self-hosted encoder), `TitleBar`, `Terminal`
+- **Interop**: `WindowsFormsHost` (host `System.Windows.Forms` controls on `net10.0-windows`)
+- **Printing**: `PrintDialog` backed by a native Win32 platform layer
 - **Notifications**: Toast-style notification system
+
+### Text Editing
+
+- Grapheme-cluster aware caret, selection, word break and delete across `TextBox`,
+  `PasswordBox`, `EditControl`, `RichTextBox`, `TextBlock`, `Label`, `Markdown`,
+  `Terminal` and `TextEffectPresenter` — emoji (ZWJ / skin-tone / country flags /
+  combining marks) are never split mid-cluster (UAX#29 via `StringInfo.GetTextElementEnumerator`).
+- IME suppression for password / read-only fields so composing input cannot mutate
+  protected editor state.
+- Multi-encoding file IO with BOM auto-detection (`LoadFromFile` / `SaveToFile` on
+  `TextBox`, `EditControl`, `Markdown`, `RichTextBox`). `CodePagesEncodingProvider`
+  registered via a `ModuleInitializer` so GBK / Shift-JIS / any non-default code
+  page works out of the box.
+- `Terminal` adds an `Encoding` property and stateful `Decoder` so output bytes are
+  decoded in the user's terminal encoding without splitting multi-byte sequences.
+- WPF-aligned `TextBox.CharacterCasing` / `MinLines` / `MaxLines`, `ComboBox.StaysOpenOnEdit`.
 
 ### Text Rendering
 
-- ClearType sub-pixel text rendering with dual-source blending
-- CPU rasterization fallback path
-- Cross-platform text shaping via FreeType + HarfBuzz (Linux/Android)
+- ClearType sub-pixel text rendering with dual-source blending.
+- CPU rasterization fallback path.
+- Cross-platform text shaping via FreeType + HarfBuzz (Linux/Android).
+- Per-element `TextOptions.{TextRenderingMode, TextFormattingMode, TextHintingMode}`
+  inheritable attached properties — values flow through `FormattedText` → native
+  `JaliumTextFormat` and reach the rasterizer:
+  - D3D12: `GlyphKey` includes `(aaMode, hintingMode)`; `RasterizeGlyph` honours `key.mode`.
+  - Vulkan / Windows: `LOGFONT.lfQuality` flips between bilevel / smoothed / ClearType;
+    font cache + text cache + GDI font pool keys all include `fontQuality`.
+- Process-wide rendering mode override + colour-emoji rasterization.
 
 ### Input Pipeline
 
@@ -99,18 +130,50 @@ and platform-native rendering backends (DirectX 12, Vulkan, Metal, Software).
 - Backdrop effects: blur, acrylic, mica, frosted glass
 - Liquid glass with refraction, chromatic aberration
 - Transition shaders and element effects (blur, drop shadow)
+- Animated bitmaps: GIF, APNG, animated WebP
 - Custom shader support via HLSL
+- Bitmap downscale cache + virtualizing wrap panel for large image grids
+- Unified path/bitmap telemetry C ABI surfaced in DevTools Perf tab
+
+### Hosting / DI / Configuration
+
+- Self-contained `Jalium.Extensions.*` stack lives inside `Jalium.UI.Controls`
+  (no `Microsoft.Extensions.Hosting` package or any of its 18 transitive deps).
+- Covers Hosting (`HostBuilder` / `Host` / `HostApplicationBuilder`),
+  DependencyInjection (incl. keyed services + `ActivatorUtilities`),
+  Configuration (Json / Xml / Ini / Memory / CommandLine / UserSecrets),
+  Options (with `DataAnnotations` validation), Logging (`LoggerMessage`
+  source-generator inclusive), Metrics, Caching, FileProviders,
+  FileSystemGlobbing, ObjectPool, Primitives.
+- Console support is intentionally not implemented.
+
+### Audio Pipeline
+
+- Native `MiniAudioDevice` playback + `NativeAudioDecoder` covering WAV / FLAC /
+  MP3 / Vorbis (cross-platform) and AAC (Windows via Media Foundation).
+- Managed `IAudioProcessor` chain with `WsolaSpeedProcessor` for pitch-preserving
+  time-stretching.
+- Audio TUs are compiled into each per-platform `jalium.native.media.*` library
+  so symbols land in the same DLL the managed P/Invoke loads.
+
+### 3D Animation Types
+
+- `Point3DAnimation`, `Rotation3DAnimation`, `Size3DAnimation`,
+  `Vector3DAnimation` complete the WPF animation type set.
 
 ### Accessibility
 
 - UIA automation peers for core and specialized controls
 - Chart, DiffViewer, HexEditor, JsonTreeViewer, Map, PropertyGrid automation
+- `Window.ResolveCursor` returns the standard arrow for disabled elements so
+  hover state cannot be confused with enabled controls.
 
 ### Markup and Tooling
 
 - Runtime parsing: `Jalium.UI.Markup.XamlReader`
 - Build integration through packaged MSBuild targets/tasks
 - Source generator for compile-time JALXAML code-behind
+- Source generator compile-time lowering of Razor directives — see below.
 
 ## Razor Syntax in JALXAML
 
@@ -120,7 +183,8 @@ JALXAML supports Razor-style syntax as additive sugar on top of existing `{Bindi
 - `@(expr)`
 - `@{ ... }`
 - mixed text templates (for string/object targets)
-- `@if(expr){<Element />}` block directives
+- `@if(expr){<Element />}` block directives (with full `else if` / `else` chains)
+- `@section`/`@RenderSection` for templated content
 - escapes: `@@` and `\@`
 
 Binding source resolution is `DataContext` first, then code-behind fallback.
@@ -129,6 +193,22 @@ Update behavior:
 
 - Observable source (`INotifyPropertyChanged` / dependency property): real-time updates.
 - Non-observable CLR source: one-time evaluation at load.
+
+### Compile-time lowering
+
+The JALXAML source generator lowers the following at build time so there is no
+runtime parsing cost in the hot path:
+
+- `@if` / `@else if` / `@else` chains.
+- `@section` / `@RenderSection`.
+- Value expressions (`@Path`, `@(expr)`).
+- `{Binding ...}` via `SetCompiledBinding` (SG `SplitParameters` is kept
+  line-for-line consistent with the runtime parser).
+- Custom-xmlns element types — when a `.jalxaml` uses a controls library exposed
+  through `XmlnsDefinition`, the SG resolves the CLR type at compile time
+  instead of falling back to runtime reflection (helps trimming / AOT).
+
+`Setter.Value` is intentionally NOT lowered.
 
 For syntax details and rules, see [`docs/razor-syntax.md`](docs/razor-syntax.md).
 
