@@ -5,7 +5,7 @@ using System.Xml;
 using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.Themes;
-using Microsoft.Extensions.DependencyInjection;
+using Jalium.Extensions.DependencyInjection;
 
 namespace Jalium.UI.Markup;
 
@@ -539,7 +539,7 @@ public static class ThemeLoader
         Type startupType)
     {
         // WPF 原版 StartupUri 只用 Activator.CreateInstance,因为 WPF 没有 DI 集成。
-        // Jalium.UI 通过 AppBuilder 挂载 Microsoft.Extensions.DependencyInjection,允许
+        // Jalium.UI 通过 AppBuilder 挂载 Jalium.Extensions.DependencyInjection,允许
         // StartupUri 目标类型声明 DI 构造函数(如 public MainWindow(IMessageService svc))。
         // Activator.CreateInstance 要求 public parameterless ctor,遇到 DI ctor 直接抛
         // MissingMethodException — 这正是 "Jalium.UI.Gallery.*.MainWindow" 黑屏/崩溃的根因。

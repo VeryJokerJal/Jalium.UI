@@ -36,6 +36,7 @@ public class Border : FrameworkElement
     private bool _lgSpringSubscribed;
     private long _lgLastTickTime;
     private bool _lgPushedTransform;
+    private bool _lgPushedNativeTextTransform;
     private float _lgHighlightBoost;
 
     // Liquid glass fusion: screen-space rect cached from last render
@@ -54,21 +55,6 @@ public class Border : FrameworkElement
     private const double LgDragScale = 2.5;
     private const double LgPerpendicularCompress = 0.3;
     private const double LgDragAsymmetry = 0.7;
-
-    // Magnitude of the volume-preserving stretch applied to the inner
-    // content during drag, expressed as a fraction of the drag distance
-    // over the panel's axis length. Content uses an isovolumetric
-    // anisotropic deformation: the axis aligned with the drag stretches by
-    // +g·(drag/axis), and the perpendicular axis squashes by -g·(drag/axis)
-    // — so the panel reads as a piece of taffy being pulled (longer in one
-    // direction, narrower across) rather than as a uniform magnification.
-    // 0.0 = content stays rigid (the symptom that "only the content
-    // doesn't deform during drag"); 1.0 = content matches the full
-    // anisotropy of the shape SDF, so children visibly squeeze along
-    // with the glass — on a 200×200 panel dragged 100px on X, content X
-    // stretches +50 % while Y squashes ~50 %, keeping X·Y close to 1
-    // (taffy pull, not zoom-in).
-    private const double LgContentDeformationGain = 1.0;
 
     private Pen? GetOrCreateBorderPen(Brush borderBrush, double borderWidth)
     {
@@ -643,6 +629,7 @@ public class Border : FrameworkElement
         //    follows the pull of the glass but does not balloon in size.
         _lgHighlightBoost = 0f;
         _lgPushedTransform = false;
+        _lgPushedNativeTextTransform = false;
         double lgSx = 1.0, lgSy = 1.0, lgShiftX = 0, lgShiftY = 0;
         double lgContentSx = 1.0, lgContentSy = 1.0;
         bool lgHasSpring = false;
@@ -851,14 +838,10 @@ public class Border : FrameworkElement
         // Now push ScaleTransform for background, border, and children.
         // This is AFTER DrawLiquidGlass so the D2D1 snapshot/effect output is not affected.
         //
-        // Use lgContentSx / lgContentSy rather than the shape scales
-        // lgSx / lgSy: content inherits the same deformation shape but at
-        // a fraction of the magnitude (LgContentDeformationGain). That
-        // fraction is the key to the taffy-pull feel — zero would make
-        // content feel rigid inside a liquid panel, full magnitude would
-        // read as the content itself being zoomed. The lgShiftX /
-        // lgShiftY translation is applied on top so content travels with
-        // the drag.
+        // lgContentSx / lgContentSy currently match the glass SDF shape
+        // scales exactly so background, stroke, and children deform in the
+        // same local coordinate space. The shift keeps that transformed
+        // subtree travelling with the dragged glass silhouette.
         if (lgHasSpring)
         {
             double cx = rect.Width / 2.0;
@@ -868,6 +851,12 @@ public class Border : FrameworkElement
                 cx * (1.0 - lgContentSx) + lgShiftX,
                 cy * (1.0 - lgContentSy) + lgShiftY)));
             _lgPushedTransform = true;
+
+            if (dc is RenderTargetDrawingContext liveDc)
+            {
+                liveDc.PushNativeTextTransform();
+                _lgPushedNativeTextTransform = true;
+            }
         }
 
         // Draw backdrop effect (if any)
@@ -1049,6 +1038,16 @@ public class Border : FrameworkElement
             {
                 dc.Pop();
                 _lgPushedTransform = false;
+            }
+
+            if (_lgPushedNativeTextTransform)
+            {
+                if (dc is RenderTargetDrawingContext liveDc)
+                {
+                    liveDc.PopNativeTextTransform();
+                }
+
+                _lgPushedNativeTextTransform = false;
             }
         }
     }

@@ -88,50 +88,15 @@ public sealed class RenderTargetBitmap : BitmapSource
         drawingContext.Close();
     }
 
-    private void RenderVisual(Visual visual, DrawingContext drawingContext)
+    private static void RenderVisual(Visual visual, DrawingContext drawingContext)
     {
-        // Note: OnRender is protected, so we can't call it directly from here.
-        // This is a simplified implementation that just traverses the visual tree.
-        // For full rendering support, the Visual would need to expose an internal
-        // method or this class would need to be in the same assembly.
-
-        // Apply transforms if available (cast object to Transform)
-        Transform? transform = null;
-        if (visual is UIElement uiElement && uiElement.RenderTransform is Transform t)
-        {
-            var origin = uiElement.RenderTransformOrigin;
-            if (origin.X != 0 || origin.Y != 0)
-            {
-                var size = uiElement.RenderSize;
-                var originX = origin.X * size.Width;
-                var originY = origin.Y * size.Height;
-                var m = t.Value;
-                var pre = new Matrix(1, 0, 0, 1, -originX, -originY);
-                var post = new Matrix(1, 0, 0, 1, originX, originY);
-                transform = new MatrixTransform(pre * m * post);
-            }
-            else
-            {
-                transform = t;
-            }
-            drawingContext.PushTransform(transform);
-        }
-
-        // Render children
-        for (var i = 0; i < visual.VisualChildrenCount; i++)
-        {
-            var child = visual.GetVisualChild(i);
-            if (child != null)
-            {
-                RenderVisual(child, drawingContext);
-            }
-        }
-
-        // Pop transform
-        if (transform != null)
-        {
-            drawingContext.Pop();
-        }
+        // Visual.Render is the public render entry point: it invokes the
+        // element's OnRender into the supplied drawing context and then
+        // recurses into the visual subtree (children, templated content and
+        // applied transforms / clips / opacity). Driving rendering through it
+        // keeps RenderTargetBitmap consistent with the on-screen render path
+        // instead of merely walking the child collection.
+        visual.Render(drawingContext);
     }
 
     /// <summary>

@@ -6,7 +6,12 @@ namespace Jalium.UI.Controls;
 /// Provides pre-built arrow icon geometries for use in controls.
 /// All geometries are based on a 1024x1024 SVG viewBox and scaled at draw time.
 /// </summary>
-internal static class ArrowIcons
+/// <remarks>
+/// Public so external assemblies (e.g. Jalium.One.Modules.CodeEditor's minimap
+/// scroll-bar arrows) can reuse the same vector arrow geometry as the framework
+/// <c>ScrollBar</c> instead of duplicating the SVG path strings.
+/// </remarks>
+public static class ArrowIcons
 {
     /// <summary>
     /// Arrow direction.

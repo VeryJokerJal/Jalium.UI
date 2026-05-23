@@ -31,6 +31,13 @@ extern jalium_media_status_t jalium_media_initialize(void);
 extern void                  jalium_media_shutdown(void);
 extern uint32_t              jalium_media_supported_video_codecs(void);
 
+// Audio ABI lives in the same DLL (jalium_audio.h / src/audio/*.cpp). Same
+// force-link trick — a taken-address round-trip ensures the audio TUs aren't
+// stripped from the static aggregator and NativeAOT's DirectPInvoke can
+// resolve jalium_audio_* without LoadLibrary at runtime.
+extern jalium_media_status_t jalium_audio_initialize(void);
+extern void                  jalium_audio_shutdown(void);
+
 // Sole AOT aggregation entry. Managed code P/Invokes this once before any
 // jalium_context_create. JALIUM_API collapses to nothing under JALIUM_STATIC,
 // so the symbol is just an extern "C" function in the .lib that NativeAOT
@@ -54,6 +61,11 @@ JALIUM_API void jalium_aot_register_all_backends(void) {
     if (jalium_media_initialize() == 0) {
         (void)jalium_media_supported_video_codecs();
         jalium_media_shutdown();
+    }
+
+    // Same trick for the audio ABI (lives in the same library, separate TUs).
+    if (jalium_audio_initialize() == 0) {
+        jalium_audio_shutdown();
     }
 }
 

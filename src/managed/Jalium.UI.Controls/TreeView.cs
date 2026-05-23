@@ -113,6 +113,40 @@ public class TreeView : ItemsControl
         if (args.Handled) source.Handled = true;
     }
 
+    /// <summary>
+    /// Identifies the <see cref="ItemContextMenuRequested"/> routed event.
+    /// </summary>
+    public static readonly RoutedEvent ItemContextMenuRequestedEvent =
+        EventManager.RegisterRoutedEvent(nameof(ItemContextMenuRequested), RoutingStrategy.Bubble,
+            typeof(EventHandler<TreeViewItemContextMenuRequestedEventArgs>), typeof(TreeView));
+
+    /// <summary>
+    /// 当 <see cref="TreeViewItem"/> 被右键点击（请求上下文菜单）时触发。事件参数携带容器、
+    /// 数据上下文和原始鼠标参数，订阅方据此构建并弹出右键菜单。
+    /// </summary>
+    public event EventHandler<TreeViewItemContextMenuRequestedEventArgs>? ItemContextMenuRequested
+    {
+        add { if (value is not null) AddHandler(ItemContextMenuRequestedEvent, value); }
+        remove { if (value is not null) RemoveHandler(ItemContextMenuRequestedEvent, value); }
+    }
+
+    /// <summary>
+    /// 由 <see cref="TreeViewItem.OnMouseRightButtonUp"/> 调用 — 用容器和 DataContext
+    /// 构造高层事件参数并在 TreeView 上 raise <see cref="ItemContextMenuRequestedEvent"/>。<br/>
+    /// 与 <see cref="RaiseItemDoubleClicked"/> 同理：TreeViewItem 的鼠标事件冒泡在
+    /// <see cref="VirtualizingStackPanel"/> 处断裂、无法自然到达 TreeView，故采用"容器直接
+    /// 回调 ParentTreeView"的转发方式，而非依赖路由冒泡。
+    /// </summary>
+    internal void RaiseItemContextMenuRequested(TreeViewItem container, MouseButtonEventArgs source)
+    {
+        if (container == null) return;
+
+        var args = new TreeViewItemContextMenuRequestedEventArgs(
+            ItemContextMenuRequestedEvent, this, container, container.DataContext, source);
+        RaiseEvent(args);
+        if (args.Handled) source.Handled = true;
+    }
+
     #endregion
 
     public TreeView()
@@ -839,6 +873,27 @@ public class TreeViewItem : HeaderedItemsControl
         if (e.Handled) return;
 
         ParentTreeView?.RaiseItemDoubleClicked(this, e);
+        e.Handled = true;
+    }
+
+    /// <summary>
+    /// TreeViewItem 右键抬起 — 转发为 TreeView 的 <see cref="TreeView.ItemContextMenuRequested"/>
+    /// 高层事件，携带容器与数据上下文，供上层弹出右键菜单。<br/>
+    ///
+    /// 右键按下时 <see cref="OnMouseDownHandler"/> 已把本节点选中（它对所有按键都执行
+    /// SelectItem），因此菜单针对的就是当前选中项。<br/>
+    ///
+    /// 末尾设 <c>e.Handled = true</c> 的原因同 <see cref="OnMouseDoubleClick"/>：
+    /// OnMouseRightButtonUp 由 MouseUp 冒泡链上的 thunk 逐级 re-raise 触发，祖先 TreeViewItem
+    /// 也会收到；handled 经 thunk 回写 source 后，外层 thunk 的 <c>if (e.Handled) return</c>
+    /// 会跳过 re-raise，避免右键叶子节点时祖先节点重复 raise 菜单事件。
+    /// </summary>
+    protected override void OnMouseRightButtonUp(MouseButtonEventArgs e)
+    {
+        base.OnMouseRightButtonUp(e);
+        if (e.Handled) return;
+
+        ParentTreeView?.RaiseItemContextMenuRequested(this, e);
         e.Handled = true;
     }
 
@@ -1868,6 +1923,46 @@ public sealed class TreeViewItemDoubleClickedEventArgs : RoutedEventArgs
     internal override void InvokeEventHandler(Delegate handler, object target)
     {
         if (handler is EventHandler<TreeViewItemDoubleClickedEventArgs> typed)
+            typed(target, this);
+        else
+            base.InvokeEventHandler(handler, target);
+    }
+}
+
+/// <summary>
+/// 提供 <see cref="TreeView.ItemContextMenuRequested"/> 事件的数据：携带被右键点击的容器
+/// （<see cref="TreeViewItem"/>）、它对应的数据 <see cref="FrameworkElement.DataContext"/>
+/// 以及原始鼠标参数，让订阅方据此构建并弹出右键菜单。
+/// </summary>
+public sealed class TreeViewItemContextMenuRequestedEventArgs : RoutedEventArgs
+{
+    public TreeViewItemContextMenuRequestedEventArgs(
+        RoutedEvent routedEvent,
+        object? source,
+        TreeViewItem container,
+        object? item,
+        MouseButtonEventArgs sourceArgs)
+        : base(routedEvent, source)
+    {
+        Container = container;
+        Item = item;
+        SourceArgs = sourceArgs;
+    }
+
+    /// <summary>被右键点击的 <see cref="TreeViewItem"/> 容器。</summary>
+    public TreeViewItem Container { get; }
+
+    /// <summary>容器对应的数据（DataContext）；若 <see cref="ItemsControl.Items"/>
+    /// 直接放 TreeViewItem 实例则与 <see cref="Container"/> 相同。</summary>
+    public object? Item { get; }
+
+    /// <summary>原始 <see cref="MouseButtonEventArgs"/> — 提供修饰键、坐标、点击数等信息。</summary>
+    public MouseButtonEventArgs SourceArgs { get; }
+
+    /// <inheritdoc />
+    internal override void InvokeEventHandler(Delegate handler, object target)
+    {
+        if (handler is EventHandler<TreeViewItemContextMenuRequestedEventArgs> typed)
             typed(target, this);
         else
             base.InvokeEventHandler(handler, target);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "jalium_types.h"
+#include "jalium_api.h"  // JALIUM_API export/import decorator for TextFormat helpers
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -744,6 +745,64 @@ public:
         float maxWidth, float maxHeight,
         uint32_t textPosition, int32_t isTrailingHit,
         JaliumTextHitTestResult* result) = 0;
+
+    // ------------------------------------------------------------------
+    // Per-format text rendering options (WPF System.Windows.Media.TextOptions
+    // attached properties, plumbed per-call instead of process-wide so each
+    // text element can independently choose ClearType/Grayscale, Ideal/Display
+    // glyph metrics, and the hinting mode). Defaults mirror managed
+    // Jalium.UI.Media.TextOptions defaults — Auto / Ideal / Auto.
+    //
+    // The backend reads these on every DrawText call (or when it builds the
+    // glyph atlas / DWrite layout). Auto means "fall back to the process-wide
+    // jalium_text_get_global_antialias_mode value, then to the platform
+    // default" — backends call ResolveTextRenderingMode() to do that.
+    //
+    // Setters are non-virtual and live entirely on the base class because the
+    // values are pure data the backend reads back; no derived behaviour needed.
+    // ------------------------------------------------------------------
+
+    /// Sets the per-format text rendering (anti-alias) mode.
+    /// 0=Auto, 1=Aliased, 2=Grayscale, 3=ClearType. Auto delegates to
+    /// the process-wide value.
+    void SetTextRenderingMode(int32_t mode) noexcept { text_rendering_mode_ = mode; }
+
+    /// Sets the per-format text formatting mode.
+    /// 0=Ideal (resolution-independent glyph metrics, WPF default),
+    /// 1=Display (pixel-snapped metrics — sharp at small sizes, less
+    /// uniform when DPI-scaled).
+    void SetTextFormattingMode(int32_t mode) noexcept { text_formatting_mode_ = mode; }
+
+    /// Sets the per-format text hinting mode.
+    /// 0=Auto, 1=Fixed (full hinting — sharper static text),
+    /// 2=Animated (hinting suppressed — smoother subpixel animation).
+    void SetTextHintingMode(int32_t mode) noexcept { text_hinting_mode_ = mode; }
+
+    int32_t GetTextRenderingMode() const noexcept { return text_rendering_mode_; }
+    int32_t GetTextFormattingMode() const noexcept { return text_formatting_mode_; }
+    int32_t GetTextHintingMode() const noexcept { return text_hinting_mode_; }
+
+    /// Resolves the per-format TextRenderingMode against the process-wide
+    /// fallback chain and returns a concrete JALIUM_TEXT_AA_* value (never
+    /// Auto). Backends call this in their glyph-rasterization path so a
+    /// single helper owns the policy:
+    ///   - per-format mode wins when explicit (Aliased / Grayscale / ClearType)
+    ///   - Auto → fall back to process-wide jalium_text_set_global_antialias_mode
+    ///   - process-wide Auto → Grayscale on every platform (was ClearType on
+    ///     Windows before 2026-05-24; see jalium::text_options::ResolveMode
+    ///     in jalium_text_options.cpp for the rationale)
+    /// JALIUM_API-decorated so backend DLLs (jalium.native.d3d12.dll,
+    /// jalium.native.vulkan.dll, …) can call it across the core DLL boundary.
+    JALIUM_API int32_t ResolveEffectiveTextRenderingMode() const noexcept;
+
+protected:
+    // 0 (Auto) / 0 (Ideal) / 0 (Auto) match the managed-side defaults so an
+    // un-set format renders exactly like the process-wide default. Backends
+    // can also read the fields directly for cache keys without going through
+    // the public getters.
+    int32_t text_rendering_mode_  = 0;  // JALIUM_TEXT_AA_AUTO
+    int32_t text_formatting_mode_ = 0;  // Ideal
+    int32_t text_hinting_mode_    = 0;  // Auto
 };
 
 /// Abstract base class for bitmaps.

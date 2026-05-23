@@ -203,9 +203,19 @@ public:
 
     // --- Draw commands (called between BeginFrame/EndFrame) ---
     void AddSdfRect(const SdfRectInstance& inst);
+    /// Records a text draw. `aaMode` (JALIUM_TEXT_AA_*) and `hintingMode`
+    /// (0=Auto, 1=Fixed, 2=Animated) come from the source TextFormat's
+    /// per-element TextOptions; they are forwarded straight to
+    /// D3D12GlyphAtlas::GenerateGlyphs so the glyph cache stores one
+    /// rasterization per (glyph, aaMode, hintingMode) tuple. Both default
+    /// to 0 (Auto) for legacy callers that haven't been retrofitted to
+    /// plumb per-format modes yet — those fall back to the process-wide
+    /// jalium_text_set_global_antialias_mode value.
     void AddText(IDWriteTextLayout* layout, float x, float y,
                  float r, float g, float b, float a,
-                 uint64_t layoutKey = 0);
+                 uint64_t layoutKey = 0,
+                 int32_t aaMode = 0,
+                 int32_t hintingMode = 0);
     void AddBitmap(float x, float y, float w, float h, float opacity,
                    ID3D12Resource* textureResource, DXGI_FORMAT format,
                    float uvMaxX = 1.0f, float uvMaxY = 1.0f,

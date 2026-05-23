@@ -117,6 +117,27 @@ JALIUM_API void jalium_text_format_set_max_lines(JaliumTextFormat* format, uint3
     }
 }
 
+JALIUM_API void jalium_text_format_set_text_rendering_mode(JaliumTextFormat* format, int32_t mode) {
+    if (!format) return;
+    // Clamp invalid values to Auto so a corrupt managed-side cast can't make
+    // ResolveEffectiveTextRenderingMode return a garbage AA mode that backends
+    // would index off the end of their mode->rasterizer table.
+    if (mode < 0 || mode > 3) mode = 0;
+    reinterpret_cast<jalium::TextFormat*>(format)->SetTextRenderingMode(mode);
+}
+
+JALIUM_API void jalium_text_format_set_text_formatting_mode(JaliumTextFormat* format, int32_t mode) {
+    if (!format) return;
+    if (mode < 0 || mode > 1) mode = 0;  // 0=Ideal (WPF default), 1=Display
+    reinterpret_cast<jalium::TextFormat*>(format)->SetTextFormattingMode(mode);
+}
+
+JALIUM_API void jalium_text_format_set_text_hinting_mode(JaliumTextFormat* format, int32_t mode) {
+    if (!format) return;
+    if (mode < 0 || mode > 2) mode = 0;  // 0=Auto, 1=Fixed, 2=Animated
+    reinterpret_cast<jalium::TextFormat*>(format)->SetTextHintingMode(mode);
+}
+
 JALIUM_API JaliumResult jalium_text_format_hit_test_point(
     JaliumTextFormat* format,
     const wchar_t* text, uint32_t textLength,
