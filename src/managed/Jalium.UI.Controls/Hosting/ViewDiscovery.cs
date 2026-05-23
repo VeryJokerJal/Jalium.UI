@@ -1,8 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Reflection;
 using Jalium.UI.Controls;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
+using Jalium.Extensions.DependencyInjection;
 
 namespace Jalium.UI.Hosting;
 

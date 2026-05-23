@@ -1,8 +1,8 @@
 namespace Jalium.UI.Hosting;
 
 /// <summary>
-/// Root options object bound to the <c>Jalium</c> section of <see cref="Microsoft.Extensions.Configuration.IConfiguration"/>.
-/// Consumed by the framework through <see cref="Microsoft.Extensions.Options.IOptions{TOptions}"/>,
+/// Root options object bound to the <c>Jalium</c> section of <see cref="Jalium.Extensions.Configuration.IConfiguration"/>.
+/// Consumed by the framework through <see cref="Jalium.Extensions.Options.IOptions{TOptions}"/>,
 /// which means callers can update settings at build time via
 /// <c>builder.Configuration</c> / <c>appsettings.json</c> or at construction time via
 /// <c>builder.Services.Configure&lt;JaliumRuntimeOptions&gt;(opts =&gt; ...)</c>.

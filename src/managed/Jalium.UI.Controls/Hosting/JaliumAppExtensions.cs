@@ -1,5 +1,5 @@
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
+using Jalium.Extensions.DependencyInjection;
+using Jalium.Extensions.Options;
 
 namespace Jalium.UI.Hosting;
 

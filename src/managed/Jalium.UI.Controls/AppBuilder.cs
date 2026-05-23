@@ -1,11 +1,11 @@
 using System.Diagnostics.CodeAnalysis;
 using Jalium.UI.Hosting;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.DependencyInjection.Extensions;
-using Microsoft.Extensions.Diagnostics.Metrics;
-using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Logging;
+using Jalium.Extensions.Configuration;
+using Jalium.Extensions.DependencyInjection;
+using Jalium.Extensions.Diagnostics.Metrics;
+using Jalium.Extensions.Hosting;
+using Jalium.Extensions.Logging;
+using Jalium.Extensions.Options;
 
 namespace Jalium.UI;
 
@@ -13,7 +13,7 @@ namespace Jalium.UI;
 /// Optional configuration passed to <see cref="AppBuilder.CreateBuilder(AppBuilderSettings)"/>.
 /// Mirrors the fields of <see cref="HostApplicationBuilderSettings"/> so callers can
 /// customize configuration, content root, environment name, and whether default
-/// Microsoft.Extensions.Hosting setup (logging, configuration sources) is applied.
+/// Jalium.Extensions.Hosting setup (logging, configuration sources) is applied.
 /// </summary>
 public sealed class AppBuilderSettings
 {

@@ -8,8 +8,16 @@
 		<PackageId>Jalium.UI.Controls</PackageId>
 		<IsTrimmable>true</IsTrimmable>
 		<IsAotCompatible>true</IsAotCompatible>
-		<!-- Replace reflection-based ConfigurationBinder.Bind with a source-generated, trim/AOT-safe binder. -->
-		<EnableConfigurationBindingGenerator>true</EnableConfigurationBindingGenerator>
+		<!--
+		  Enable Windows Forms so WindowsFormsHost can host System.Windows.Forms controls
+		  inside Jalium.UI windows. UseWindowsForms requires a Windows-targeted TFM, so it is
+		  only switched on for the net10.0-windows build (JaliumPlatform=windows). On the
+		  cross-platform net10.0 TFM the Windows Forms reference is unavailable and the
+		  WindowsFormsHost source compiles out via the WINDOWS conditional symbol.
+		  Note: every project that references Jalium.UI.Controls on Windows therefore
+		  transitively pulls in the Windows Forms framework reference.
+		-->
+		<UseWindowsForms Condition="'$(JaliumPlatform)' == 'windows'">true</UseWindowsForms>
 	</PropertyGroup>
 
 	<ItemGroup>
@@ -18,6 +26,18 @@
 		<!-- Note: <GenerateAssemblyInfo>false</GenerateAssemblyInfo> in
 		     Directory.Build.props means these MSBuild items are decorative.
 		     The actual [InternalsVisibleTo] attributes live in Properties/AssemblyInfo.cs. -->
+	</ItemGroup>
+
+	<!--
+	  UseWindowsForms injects System.Drawing and System.Windows.Forms as implicit global
+	  usings. Those collide with Jalium.UI's own Color/Brush/FontStyle/FontFamily/Timer
+	  types (CS0104 ambiguous reference) across the whole control library. Remove the
+	  implicit usings so framework files keep resolving Jalium.UI.Media types as before;
+	  WindowsFormsHost.cs references the Windows Forms types via fully-qualified names.
+	-->
+	<ItemGroup Condition="'$(JaliumPlatform)' == 'windows'">
+		<Using Remove="System.Drawing" />
+		<Using Remove="System.Windows.Forms" />
 	</ItemGroup>
 
 	<ItemGroup>
@@ -39,7 +59,8 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
+		<!-- Hosting / DI / Configuration / Options / Logging / Metrics: 自研实现位于 Hosting/Extensions/, -->
+		<!-- 命名空间 Jalium.Extensions.* (无 console 相关支持). 不再依赖 Microsoft.Extensions.Hosting 包. -->
 		<!-- 视频解码改用平台原生技术（Windows MF / Android MediaCodec），通过 jalium.native.media 暴露 P/Invoke。 -->
 		<!-- QR 码改用 Jalium.UI.Controls.QR 自研编码器，移除 QRCoder 第三方依赖。 -->
 		<PackageReference Include="SoundFlow" Version="1.4.0" />
