@@ -102,6 +102,8 @@ public:
     void SetFullInvalidation() override;
     void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity) override;
     void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode) override;
+    void DrawVideoSurface(VideoSurface* surface, float x, float y, float w, float h,
+                          float opacity, int scalingMode) override;
 
     /// Blits the contents of <paramref name="inkBitmap"/> onto the swap
     /// chain at (dstX, dstY). Used by InkCanvas to composite its

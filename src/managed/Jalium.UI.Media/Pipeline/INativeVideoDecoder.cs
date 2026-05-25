@@ -2,6 +2,9 @@ using Jalium.UI.Media.Imaging;
 
 namespace Jalium.UI.Media.Pipeline;
 
+// NativeVideoSurface lives in the Jalium.UI.Media namespace; default-interface
+// AcquireGpuSurface() returns null so existing decoders compile unchanged.
+
 /// <summary>
 /// 平台原生视频解码器抽象。Windows 由 Media Foundation <c>IMFSourceReader</c> 实现、
 /// Android 由 <c>AMediaExtractor + AMediaCodec</c> 实现。
@@ -42,6 +45,26 @@ public interface INativeVideoDecoder : IDisposable
 
     /// <summary>当前激活的视频编解码器。</summary>
     SupportedCodec ActiveVideoCodec { get; }
+
+    /// <summary>
+    /// 尝试拿到一个 GPU-resident 的视频帧(stage 3+ Windows MF DXVA / Android
+    /// MediaCodec SurfaceTexture / Apple VTDecompressionSession 等硬件解码路径
+    /// 的产出),省去 CPU → GPU 的拷贝。
+    /// </summary>
+    /// <param name="renderContextHandle">
+    /// framework <c>JaliumContext*</c> handle(从 <c>Jalium.UI.Interop.RenderContext.Handle</c>),
+    /// 用于 <c>jalium_video_surface_wrap_external</c> 把 decoder 给的 native handle
+    /// import 成 render-backend 能采样的 GPU 资源。
+    /// </param>
+    /// <remarks>
+    /// 默认返 <see langword="null"/>(decoder 没接 GPU 路径,caller fallback 走
+    /// <see cref="TryReadFrame(out MediaFrame?)"/> + NativeVideoSurface BGRA staging
+    /// 或最终 WriteableBitmap 路径)。stage 3 真填后 Windows MF DXVA decoder 返非 null。
+    /// </remarks>
+    NativeVideoSurface? AcquireGpuSurface(nint renderContextHandle)
+    {
+        return null;
+    }
 }
 
 /// <summary>

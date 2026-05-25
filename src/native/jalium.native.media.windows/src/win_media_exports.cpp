@@ -131,6 +131,13 @@ JALIUM_MEDIA_API void jalium_video_decoder_close(jalium_video_decoder_t* decoder
     jalium::media::win::MfVideoDecoderClose(decoder);
 }
 
+JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_acquire_gpu_surface_descriptor(
+    jalium_video_decoder_t*                decoder,
+    jalium_video_decoder_gpu_descriptor_t* out_descriptor)
+{
+    return jalium::media::win::MfVideoDecoderAcquireGpuDescriptor(decoder, out_descriptor);
+}
+
 // ----- Camera capture ----------------------------------------------------
 
 JALIUM_MEDIA_API jalium_media_status_t jalium_camera_enumerate(

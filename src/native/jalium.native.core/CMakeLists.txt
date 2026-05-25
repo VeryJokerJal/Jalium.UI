@@ -13,6 +13,7 @@ set(HEADERS
     include/jalium_flatten.h
     include/jalium_bitmap_stats.h
     include/jalium_text_options.h
+    include/jalium_video_surface.h
 )
 
 set(SOURCES
@@ -26,6 +27,7 @@ set(SOURCES
     src/jalium_stencil_path.cpp
     src/jalium_bitmap_stats.cpp
     src/jalium_text_options.cpp
+    src/video_surface.cpp
 )
 
 add_library(${PROJECT_NAME} ${JALIUM_LIB_TYPE} ${HEADERS} ${SOURCES})

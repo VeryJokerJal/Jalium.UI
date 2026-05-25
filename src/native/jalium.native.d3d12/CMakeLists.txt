@@ -33,6 +33,7 @@ set(SOURCES
     src/d3d12_path_pipeline.cpp
     src/d3d12_render_target.cpp
     src/d3d12_text.cpp
+    src/d3d12_video_surface.cpp
     src/d3d12_vello.cpp
     src/d3d12_vello_engine.cpp
     src/liquid_glass_effects.cpp

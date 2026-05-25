@@ -151,6 +151,39 @@ public class NativeAudioDecoderTests : IDisposable
         }
     }
 
+    [Fact]
+    public void Open_UnicodePath_DecodesNormally()
+    {
+        // Gallery 报告:中文文件名加载后无声。根因是 dr_wav / dr_flac / minimp3 /
+        // stb_vorbis 通过 libc fopen() 打开文件,Windows 上 fopen 用 ANSI codepage
+        // 解 UTF-8 path 字节,任何非 ASCII 字符(CJK / 重音 / emoji 都算)都会让
+        // 文件名解错、找不到文件 → DecodeFailed。修复在 audio_decoder.cpp 入口
+        // 统一通过 MultiByteToWideChar + _wfopen_s 读全文件再走 OpenMemory。
+        // 这个测试用真实中文 + 空格 + 特殊符号路径确认修复成立。
+        var dir = Path.Combine(Path.GetTempPath(), $"jalium_unicode_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "团子在线混音 - Two Steps (1).wav");
+        File.WriteAllBytes(path, BuildSineWav(SampleRate, Channels, 0.5, FrequencyHz));
+        try
+        {
+            using var decoder = new NativeAudioDecoder();
+            decoder.Open(path);
+
+            Assert.Equal(SupportedAudioCodec.Wav, decoder.Codec);
+            Assert.Equal(SampleRate, decoder.SampleRate);
+            Assert.InRange(decoder.Duration.TotalSeconds, 0.49, 0.51);
+
+            // 真读出帧确认 codec 拿到的指针有效(我们 move 了源 vector,data() 必须仍可用)。
+            var buf = new float[2048 * Channels];
+            int read = decoder.ReadFrames(buf);
+            Assert.True(read > 0, "Read should not return 0 immediately after open on a non-empty WAV.");
+        }
+        finally
+        {
+            try { File.Delete(path); Directory.Delete(dir); } catch { /* best-effort */ }
+        }
+    }
+
     [Theory]
     [InlineData(".m4a")]
     [InlineData(".aac")]

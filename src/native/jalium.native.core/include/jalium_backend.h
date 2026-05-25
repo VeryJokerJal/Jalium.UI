@@ -2,6 +2,7 @@
 
 #include "jalium_types.h"
 #include "jalium_api.h"  // JALIUM_API export/import decorator for TextFormat helpers
+#include "jalium_video_surface.h"  // JaliumVideoSurfaceKind / Descriptor / DirtyRect
 #include <algorithm>
 #include <memory>
 #include <string>
@@ -13,6 +14,7 @@ class RenderTarget;
 class Brush;
 class TextFormat;
 class Bitmap;
+class VideoSurface;
 
 /// Abstract interface for rendering backends.
 /// Each rendering backend (D3D12, Vulkan, etc.) implements this interface.
@@ -103,6 +105,28 @@ public:
         (void)width;
         (void)height;
         (void)stride;
+        return nullptr;
+    }
+
+    // ────────────────────────────────────────────────────────────────────
+    //  Video surface (frame-rate updated BGRA8 / hardware-decoded GPU
+    //  texture). See jalium_video_surface.h for the public ABI. Backends
+    //  that haven't implemented video streaming yet inherit the default
+    //  no-ops — the C-ABI dispatch in video_surface.cpp returns nullptr
+    //  so the managed caller falls back to the legacy WriteableBitmap
+    //  path.
+
+    virtual VideoSurface* CreateVideoSurface(uint32_t width, uint32_t height,
+                                             uint32_t formatHint)
+    {
+        (void)width; (void)height; (void)formatHint;
+        return nullptr;
+    }
+
+    virtual VideoSurface* WrapExternalVideoSurface(
+        const JaliumVideoSurfaceDescriptor* descriptor)
+    {
+        (void)descriptor;
         return nullptr;
     }
 
@@ -402,6 +426,13 @@ public:
     {
         DrawBitmap(bitmap, x, y, w, h, opacity);
     }
+
+    /// Draws a video surface. Backends that don't implement video surfaces
+    /// yet keep the default no-op; the managed caller will have already
+    /// fallen back to a WriteableBitmap via DrawBitmap before reaching here.
+    virtual void DrawVideoSurface(VideoSurface* /*surface*/,
+                                  float /*x*/, float /*y*/, float /*w*/, float /*h*/,
+                                  float /*opacity*/, int /*scalingMode*/) {}
 
     /// Draws a backdrop filter effect.
     /// @param x X position.
@@ -819,6 +850,31 @@ public:
                                     uint32_t /*height*/, uint32_t /*stride*/) {
         return false;
     }
+};
+
+/// Abstract base class for video surfaces. See jalium_video_surface.h for
+/// the public-facing C ABI and design notes; this is the per-backend
+/// contract.
+///
+/// Lifecycle is single-threaded (owned by one decoder pump thread); concrete
+/// backends decide whether their staging upload happens on the same thread
+/// (Software) or gets shipped off to a dedicated copy queue (D3D12 /
+/// Vulkan).
+class VideoSurface {
+public:
+    virtual ~VideoSurface() = default;
+    virtual uint32_t GetWidth()  const = 0;
+    virtual uint32_t GetHeight() const = 0;
+    virtual JaliumVideoSurfaceKind GetKind() const = 0;
+
+    /// Maps the staging buffer for CPU write. Only the BGRA8 CPU path needs
+    /// to support this; external-wrap surfaces return false.
+    virtual bool Lock(uint8_t** outPtr, uint32_t* outStride) = 0;
+
+    /// Signals the staging-buffer write is complete; backends issue the
+    /// copy-to-device-texture step (D3D12 / Vulkan) or just bump a content
+    /// revision (Software). dirty may be nullptr to invalidate everything.
+    virtual bool Unlock(const JaliumVideoSurfaceDirtyRect* dirty) = 0;
 };
 
 } // namespace jalium

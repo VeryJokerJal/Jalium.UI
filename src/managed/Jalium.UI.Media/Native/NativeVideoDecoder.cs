@@ -96,6 +96,25 @@ public sealed class NativeVideoDecoder : INativeVideoDecoder
     }
 
     /// <inheritdoc />
+    public NativeVideoSurface? AcquireGpuSurface(nint renderContextHandle)
+    {
+        if (_disposed || _handle == nint.Zero || renderContextHandle == nint.Zero) return null;
+        var status = NativeMediaInterop.jalium_video_decoder_acquire_gpu_surface_descriptor(
+            _handle, out var desc);
+        if (status != NativeMediaStatus.Ok) return null;
+        if (desc.Width == 0 || desc.Height == 0 || desc.Handle0 == 0) return null;
+
+        return NativeVideoSurface.TryWrapExternal(
+            renderContextHandle,
+            (NativeVideoSurfaceKind)desc.Kind,
+            (int)desc.Width,
+            (int)desc.Height,
+            desc.Handle0,
+            desc.Handle1,
+            (NativeVideoSurfaceFormat)desc.FormatHint);
+    }
+
+    /// <inheritdoc />
     public void Dispose()
     {
         if (_disposed) return;

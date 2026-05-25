@@ -120,6 +120,7 @@
     <ClCompile Include="src\vulkan_resources.cpp" />
     <ClCompile Include="src\vulkan_runtime.cpp" />
     <ClCompile Include="src\vulkan_vello_engine.cpp" />
+    <ClCompile Include="src\vulkan_video_surface.cpp" />
     <ClCompile Include="src\win32_gdi_pool.cpp" />
   </ItemGroup>
   <ItemGroup>

@@ -2069,6 +2069,28 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed || imageSource == null) return;
 
+        // Video surface fast path: when the source is a D3DImage backed by a
+        // NativeVideoSurface, skip the bitmap-cache machinery entirely and
+        // dispatch straight to jalium_render_target_draw_video_surface so the
+        // GPU samples the staged texture in-place. Stage 1 wires this; stage 2
+        // backends (Software done, D3D12 / Vulkan pending) make it visible.
+        if (imageSource is Jalium.UI.Media.D3DImage d3dImage)
+        {
+            if (!d3dImage.IsFrontBufferAvailable || d3dImage.NativeHandle == nint.Zero) return;
+            if (d3dImage.ResourceType == Jalium.UI.Media.D3DResourceType.NativeVideoSurface)
+            {
+                var rx = (float)Math.Round(rectangle.X + Offset.X);
+                var ry = (float)Math.Round(rectangle.Y + Offset.Y);
+                _renderTarget.DrawVideoSurface(d3dImage.NativeHandle, rx, ry,
+                    (float)rectangle.Width, (float)rectangle.Height, 1.0f, scalingMode);
+                return;
+            }
+            // Other D3DResourceType kinds (IDirect3DSurface9 legacy / D3D11 / VkImage /
+            // AHardwareBuffer) are not yet implemented — silently no-op until the
+            // corresponding stages land. Callers should prefer NativeVideoSurface.
+            return;
+        }
+
         // Handle vector image sources by rendering the Drawing tree directly.
         // Source viewport is used instead of geometry bounds — for SVG, the
         // viewport is the (0, 0, width, height) rect that determines the
@@ -2449,30 +2471,55 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             var finalDx = dx + ox;
             var finalDy = dy + oy;
 
+            // --- Nested-transform fix --------------------------------------------
+            // Native PushTransform performs RIGHT-multiply: native_new = native_old * incoming.
+            // For nested visuals (outer pushed first, inner pushed second), the
+            // expected row-vector apply order is P * inner * outer (inner applied
+            // first, then outer). That requires LEFT-multiply on the stack:
+            //   stack_new = incoming * stack_old
+            // The native renderer can't be changed cheaply (4 C++ backends), so we
+            // pass it a conjugated matrix that, after native's RIGHT-multiply,
+            // produces the same final state as LEFT-multiply:
+            //   conjugate = current^-1 * incoming * current
+            //   native_new = current * conjugate = incoming * current  ✓
+            // Falls back to plain `incoming` when current is singular (e.g. zero
+            // scale) — that's harmless because a singular accumulated transform
+            // already collapses subsequent drawing anyway.
+            var incoming = new Jalium.UI.Media.Matrix(m11, m12, m21, m22, finalDx, finalDy);
+            var current = new Jalium.UI.Media.Matrix(
+                _currentNativeMatrix[0], _currentNativeMatrix[1],
+                _currentNativeMatrix[2], _currentNativeMatrix[3],
+                _currentNativeMatrix[4], _currentNativeMatrix[5]);
+            Jalium.UI.Media.Matrix toNative;
+            if (current.TryInvert(out var currentInv))
+            {
+                toNative = currentInv * incoming * current;
+            }
+            else
+            {
+                toNative = incoming;
+            }
+
             _renderTarget.PushTransform(new float[]
             {
-                (float)m11, (float)m12,
-                (float)m21, (float)m22,
-                (float)finalDx, (float)finalDy
+                (float)toNative.M11, (float)toNative.M12,
+                (float)toNative.M21, (float)toNative.M22,
+                (float)toNative.OffsetX, (float)toNative.OffsetY
             });
             _nativeTransformDepth++;
 
-            // Mirror the matrix compose that the native renderer performs
-            // (new_top = old_top * incoming, same as Transform2D::operator*).
             // Save the previous matrix so Pop can restore it.
             _nativeMatrixStack.Push((double[])_currentNativeMatrix.Clone());
-            var ocm11 = _currentNativeMatrix[0];
-            var ocm12 = _currentNativeMatrix[1];
-            var ocm21 = _currentNativeMatrix[2];
-            var ocm22 = _currentNativeMatrix[3];
-            var ocdx = _currentNativeMatrix[4];
-            var ocdy = _currentNativeMatrix[5];
-            _currentNativeMatrix[0] = ocm11 * m11 + ocm12 * m21;
-            _currentNativeMatrix[1] = ocm11 * m12 + ocm12 * m22;
-            _currentNativeMatrix[2] = ocm21 * m11 + ocm22 * m21;
-            _currentNativeMatrix[3] = ocm21 * m12 + ocm22 * m22;
-            _currentNativeMatrix[4] = ocdx * m11 + ocdy * m21 + finalDx;
-            _currentNativeMatrix[5] = ocdx * m12 + ocdy * m22 + finalDy;
+
+            // managed mirror tracks the LEFT-multiplied state (matches what
+            // native ends up with after the conjugate is RIGHT-multiplied).
+            var newState = incoming * current;
+            _currentNativeMatrix[0] = newState.M11;
+            _currentNativeMatrix[1] = newState.M12;
+            _currentNativeMatrix[2] = newState.M21;
+            _currentNativeMatrix[3] = newState.M22;
+            _currentNativeMatrix[4] = newState.OffsetX;
+            _currentNativeMatrix[5] = newState.OffsetY;
 
             _stateStack.Push(new DrawingState(DrawingStateType.NativeTransform, Point.Zero));
         }

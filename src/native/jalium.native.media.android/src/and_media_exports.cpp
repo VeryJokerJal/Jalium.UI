@@ -137,6 +137,32 @@ JALIUM_MEDIA_API void jalium_video_decoder_close(jalium_video_decoder_t* decoder
     jalium::media::android::VideoDecoderClose(decoder);
 }
 
+JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_acquire_gpu_surface_descriptor(
+    jalium_video_decoder_t*                decoder,
+    jalium_video_decoder_gpu_descriptor_t* out_descriptor)
+{
+    // Stage 4 真填占位:Android MediaCodec 通过 AMediaCodec_setOutputSurface
+    // 输出到 ANativeWindow + AHardwareBuffer (API 28+),AcquireGpuDescriptor
+    // 应返 kind=AHARDWAREBUFFER + handle0=AHardwareBuffer*。配合 Vulkan
+    // backend 的 VK_ANDROID_external_memory_android_hardware_buffer 扩展
+    // import 成 VkImage,实现端到端 GPU 视频。
+    //
+    // 当前 stub 返 NotImplemented → managed AcquireGpuSurface 返 null →
+    // MediaElement fallback 到 stage 2 NativeVideoSurface BGRA staging
+    // (and_yuv_neon/sse2/scalar.cpp 路径仍提供 SIMD YUV→BGRA 转换)。
+    (void)decoder;
+    if (out_descriptor) {
+        out_descriptor->kind        = 0;
+        out_descriptor->width       = 0;
+        out_descriptor->height      = 0;
+        out_descriptor->handle0     = 0;
+        out_descriptor->handle1     = 0;
+        out_descriptor->format_hint = 0;
+        out_descriptor->reserved    = 0;
+    }
+    return JALIUM_MEDIA_E_NOT_IMPLEMENTED;
+}
+
 // ----- Camera capture ----------------------------------------------------
 
 JALIUM_MEDIA_API jalium_media_status_t jalium_camera_enumerate(

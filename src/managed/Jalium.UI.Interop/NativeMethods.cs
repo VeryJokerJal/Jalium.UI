@@ -1185,6 +1185,15 @@ internal static partial class NativeMethods
     internal static partial void DrawBitmapEx(nint renderTarget, nint bitmap, float x, float y, float width, float height, float opacity, int scalingMode);
 
     /// <summary>
+    /// Draws a native video surface (BGRA8 staged on Unlock, or future
+    /// platform-imported D3D11 / VkImage / AHardwareBuffer / IOSurface).
+    /// Pairs with <c>jalium_video_surface_create</c> in jalium_video_surface.h.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_draw_video_surface")]
+    internal static partial void DrawVideoSurface(nint renderTarget, nint videoSurface,
+        float x, float y, float width, float height, float opacity, int scalingMode);
+
+    /// <summary>
     /// Captures the desktop area at the specified screen coordinates.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_capture_desktop_area")]

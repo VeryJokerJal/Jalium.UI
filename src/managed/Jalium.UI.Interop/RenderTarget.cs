@@ -978,6 +978,21 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Draws a <see cref="Jalium.UI.Media.NativeVideoSurface"/> at the given rectangle.
+    /// Used by the video render path in <see cref="RenderTargetDrawingContext.DrawImage"/>
+    /// when the source is a <see cref="Jalium.UI.Media.D3DImage"/> backed by a
+    /// <c>NativeVideoSurface</c>.
+    /// </summary>
+    public void DrawVideoSurface(nint videoSurfaceHandle, float x, float y, float width, float height, float opacity, Jalium.UI.Media.BitmapScalingMode scalingMode)
+    {
+        ThrowIfDisposed();
+        if (videoSurfaceHandle == nint.Zero) return;
+        long t0 = ApiStart();
+        NativeMethods.DrawVideoSurface(_handle, videoSurfaceHandle, x, y, width, height, opacity, (int)scalingMode);
+        ApiEnd("DrawVideoSurface", t0);
+    }
+
+    /// <summary>
     /// Draws a backdrop filter effect.
     /// </summary>
     /// <param name="x">The x coordinate.</param>

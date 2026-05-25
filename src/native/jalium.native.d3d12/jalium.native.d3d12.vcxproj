@@ -123,6 +123,7 @@
     <ClCompile Include="src\d3d12_path_pipeline.cpp" />
     <ClCompile Include="src\d3d12_render_target.cpp" />
     <ClCompile Include="src\d3d12_text.cpp" />
+    <ClCompile Include="src\d3d12_video_surface.cpp" />
     <ClCompile Include="src\d3d12_vello.cpp" />
     <ClCompile Include="src\d3d12_vello_engine.cpp" />
     <ClCompile Include="src\liquid_glass_effects.cpp" />

@@ -86,6 +86,32 @@ private:
     std::shared_ptr<std::vector<uint8_t>> pixelData_;
 };
 
+/// Vulkan video surface. Wraps a VulkanBitmap + an owned staging vector.
+/// Lock returns a writable pointer into the staging vector; Unlock hands
+/// staging off to the bitmap via UpdatePackedPixels so the existing COW path
+/// stays safe for in-flight GpuReplayCommand replays — the bitmap allocates
+/// a fresh shared_ptr<vector> rather than mutating the previous frame's
+/// buffer.
+///
+/// Slightly more memcpy than the D3D12 path (staging → pixelData_ extra hop)
+/// because we don't break the COW invariant, but still 1 copy fewer than
+/// the legacy WriteableBitmap fallback.
+class VulkanVideoSurface : public VideoSurface {
+public:
+    VulkanVideoSurface(uint32_t width, uint32_t height);
+
+    uint32_t GetWidth()  const override { return bitmap.GetWidth();  }
+    uint32_t GetHeight() const override { return bitmap.GetHeight(); }
+    JaliumVideoSurfaceKind GetKind() const override { return JALIUM_VS_KIND_BGRA8_CPU; }
+
+    bool Lock(uint8_t** outPtr, uint32_t* outStride) override;
+    bool Unlock(const JaliumVideoSurfaceDirtyRect* dirty) override;
+
+    /// The composable target the Vulkan render path already knows how to draw.
+    VulkanBitmap         bitmap;
+    std::vector<uint8_t> staging;
+};
+
 class VulkanTextFormat : public TextFormat {
 public:
 #ifdef _WIN32

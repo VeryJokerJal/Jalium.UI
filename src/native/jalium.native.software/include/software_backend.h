@@ -114,6 +114,39 @@ public:
     uint32_t GetHeight() const override { return height_; }
 };
 
+// Software video surface: backed by a SoftwareBitmap (the same BGRA8 vector
+// the rest of the software backend already knows how to composite). Lock
+// exposes the vector buffer directly; Unlock is a no-op because the
+// composer reads `bitmap.pixels_` on the next draw call without any staging
+// or texture-upload step. This is what removes the WriteableBitmap copy
+// hop on the software path — managed video frames land straight in the
+// vector the composer is going to read.
+class SoftwareVideoSurface : public VideoSurface {
+public:
+    SoftwareBitmap bitmap;
+
+    SoftwareVideoSurface(uint32_t w, uint32_t h)
+        : bitmap(w, h, std::vector<uint8_t>(static_cast<size_t>(w) * h * 4u, 0)) {}
+
+    uint32_t GetWidth()  const override { return bitmap.width_; }
+    uint32_t GetHeight() const override { return bitmap.height_; }
+    JaliumVideoSurfaceKind GetKind() const override { return JALIUM_VS_KIND_BGRA8_CPU; }
+
+    bool Lock(uint8_t** outPtr, uint32_t* outStride) override
+    {
+        if (!outPtr || !outStride) return false;
+        *outPtr = bitmap.pixels_.data();
+        *outStride = bitmap.width_ * 4u;
+        return true;
+    }
+
+    bool Unlock(const JaliumVideoSurfaceDirtyRect* /*dirty*/) override
+    {
+        // Software composer reads pixels_ on the next composite pass.
+        return true;
+    }
+};
+
 // ============================================================================
 // Framebuffer
 // ============================================================================
@@ -263,6 +296,8 @@ public:
     void AddDirtyRect(float x, float y, float w, float h) override;
     void SetFullInvalidation() override;
     void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity) override;
+    void DrawVideoSurface(VideoSurface* surface, float x, float y, float w, float h,
+                          float opacity, int scalingMode) override;
     void DrawBackdropFilter(
         float x, float y, float w, float h,
         const char* backdropFilter,
@@ -507,6 +542,8 @@ public:
         uint32_t width,
         uint32_t height,
         uint32_t stride) override;
+    VideoSurface* CreateVideoSurface(uint32_t width, uint32_t height,
+                                     uint32_t formatHint) override;
 
 #ifdef JALIUM_HAS_TEXT_ENGINE
     TextEngine* GetTextEngine() const { return textEngine_.get(); }

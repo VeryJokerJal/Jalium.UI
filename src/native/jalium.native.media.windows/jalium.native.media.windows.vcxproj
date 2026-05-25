@@ -63,7 +63,7 @@
       <PreprocessorDefinitions>JALIUM_MEDIA_EXPORTS;WIN32_LEAN_AND_MEAN;NOMINMAX;_DEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.media.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.media.core\include;$(ProjectDir)..\jalium.native.media.core\src\audio;$(ProjectDir)..\thirdparty\miniaudio;$(ProjectDir)..\thirdparty\dr_libs;$(ProjectDir)..\thirdparty\minimp3;$(ProjectDir)..\thirdparty\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -84,7 +84,7 @@
       <PreprocessorDefinitions>JALIUM_MEDIA_EXPORTS;WIN32_LEAN_AND_MEAN;NOMINMAX;NDEBUG;_WINDOWS;_USRDLL;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.media.core\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)..\jalium.native.media.core\include;$(ProjectDir)..\jalium.native.media.core\src\audio;$(ProjectDir)..\thirdparty\miniaudio;$(ProjectDir)..\thirdparty\dr_libs;$(ProjectDir)..\thirdparty\minimp3;$(ProjectDir)..\thirdparty\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
     </ClCompile>
     <Link>
@@ -98,6 +98,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\win_media_init.h" />
+    <ClInclude Include="include\win_mf_aac_decoder.h" />
     <ClInclude Include="include\win_mf_camera_source.h" />
     <ClInclude Include="include\win_mf_video_decoder.h" />
     <ClInclude Include="include\win_wic_decoder.h" />
@@ -105,10 +106,25 @@
   <ItemGroup>
     <ClCompile Include="src\win_media_exports.cpp" />
     <ClCompile Include="src\win_media_init.cpp" />
+    <ClCompile Include="src\win_mf_aac_decoder.cpp" />
     <ClCompile Include="src\win_mf_camera_source.cpp" />
     <ClCompile Include="src\win_mf_codec_caps.cpp" />
     <ClCompile Include="src\win_mf_video_decoder.cpp" />
     <ClCompile Include="src\win_wic_decoder.cpp" />
+    <!--
+      Audio shared TUs physically live in jalium.native.media.core/src/audio/ but
+      are compiled INTO this DLL (mirrors CMakeLists ${JALIUM_AUDIO_SOURCES}).
+      This avoids re-exporting audio symbols across DLL boundaries on Windows.
+    -->
+    <ClCompile Include="..\jalium.native.media.core\src\audio\audio_init.cpp" />
+    <ClCompile Include="..\jalium.native.media.core\src\audio\audio_stats.cpp" />
+    <ClCompile Include="..\jalium.native.media.core\src\audio\audio_device.cpp" />
+    <ClCompile Include="..\jalium.native.media.core\src\audio\audio_decoder.cpp" />
+    <ClCompile Include="..\jalium.native.media.core\src\audio\miniaudio_backend.cpp" />
+    <ClCompile Include="..\jalium.native.media.core\src\audio\decoder_wav.cpp" />
+    <ClCompile Include="..\jalium.native.media.core\src\audio\decoder_flac.cpp" />
+    <ClCompile Include="..\jalium.native.media.core\src\audio\decoder_mp3.cpp" />
+    <ClCompile Include="..\jalium.native.media.core\src\audio\decoder_vorbis.cpp" />
   </ItemGroup>
   <ItemGroup>
     <!-- jalium.native.media.windows links against the cross-platform C-ABI layer

@@ -1674,20 +1674,39 @@ bool ImpellerD3D12Engine::EncodeFillPath(
     // Interior: transform the cached local-space triangle soup to pixel space.
     // This O(N) loop is the ONLY per-frame CPU cost for an animated fill now
     // (was: full bezier flatten + AET scanline rasterization every frame).
+    // bbox is folded into the same loop and we use PushBatchWithCoverage so
+    // back-to-back fills (typical UI: multiple shapes in a row) collapse into
+    // one D3D12 DrawIndexedInstanced and avoid the second vertex walk inside
+    // ComputeBatchCoverage.
     {
         const auto& lt = geom->localTriangles;       // x,y pairs, 3 per tri
         const uint32_t vc = (uint32_t)(lt.size() / 2);
         ImpellerDrawBatch batch;
         batch.vertices.resize(vc);
         batch.indices.resize(vc);
+        const float* pp = lt.data();
+        ImpellerVertex* vp = batch.vertices.data();
+        uint32_t* ip = batch.indices.data();
+        const float tm11 = transformIn.m11, tm21 = transformIn.m21, tdx = transformIn.dx;
+        const float tm12 = transformIn.m12, tm22 = transformIn.m22, tdy = transformIn.dy;
+        float minX =  std::numeric_limits<float>::infinity();
+        float minY =  std::numeric_limits<float>::infinity();
+        float maxX = -std::numeric_limits<float>::infinity();
+        float maxY = -std::numeric_limits<float>::infinity();
         for (uint32_t i = 0; i < vc; ++i) {
-            float x = lt[i * 2], y = lt[i * 2 + 1];
-            TransformPoint(x, y, transformIn);
-            batch.vertices[i] = { x, y, r, g, b, a };
-            batch.indices[i]  = i;
+            float lx = pp[i * 2], ly = pp[i * 2 + 1];
+            float x = tm11 * lx + tm21 * ly + tdx;
+            float y = tm12 * lx + tm22 * ly + tdy;
+            vp[i].x = x; vp[i].y = y;
+            vp[i].r = r; vp[i].g = g; vp[i].b = b; vp[i].a = a;
+            ip[i] = i;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
         }
         batch.pipelineType = 0;
-        PushBatch(std::move(batch));
+        PushBatchWithCoverage(std::move(batch), minX, minY, maxX, maxY);
     }
 
     // Edge AA: constant-width feather ring around every boundary contour,
@@ -1722,6 +1741,16 @@ void ImpellerD3D12Engine::EmitContourFeather(
     ImpellerDrawBatch batch;
     batch.pipelineType = 0;
 
+    // Track screen-space bbox inline so PushBatchWithCoverage can both
+    // coalesce this batch with the interior fill emitted just before us AND
+    // skip its second vertex walk inside ComputeBatchCoverage.
+    float minX =  std::numeric_limits<float>::infinity();
+    float minY =  std::numeric_limits<float>::infinity();
+    float maxX = -std::numeric_limits<float>::infinity();
+    float maxY = -std::numeric_limits<float>::infinity();
+    const float tm11 = transform.m11, tm21 = transform.m21, tdx = transform.dx;
+    const float tm12 = transform.m12, tm22 = transform.m22, tdy = transform.dy;
+
     for (const auto& c : contours) {
         const uint32_t n = c.VertexCount();
         if (n < 3) continue;
@@ -1729,10 +1758,9 @@ void ImpellerD3D12Engine::EmitContourFeather(
         // Transform this contour's points to pixel space once.
         std::vector<float> p(n * 2);
         for (uint32_t i = 0; i < n; ++i) {
-            float x = c.X(i), y = c.Y(i);
-            TransformPoint(x, y, transform);
-            p[i * 2] = x;
-            p[i * 2 + 1] = y;
+            float lx = c.X(i), ly = c.Y(i);
+            p[i * 2]     = tm11 * lx + tm21 * ly + tdx;
+            p[i * 2 + 1] = tm12 * lx + tm22 * ly + tdy;
         }
 
         const uint32_t base = (uint32_t)batch.vertices.size();
@@ -1750,11 +1778,23 @@ void ImpellerD3D12Engine::EmitContourFeather(
             if (len > 1e-6f) { nx = -dy / len; ny = dx / len; }
             else             { nx = 0.0f;      ny = 0.0f; }
             const float px = p[i * 2], py = p[i * 2 + 1];
+            const float ix = px - nx * kHalfFeatherPx;
+            const float iy = py - ny * kHalfFeatherPx;
+            const float ox = px + nx * kHalfFeatherPx;
+            const float oy = py + ny * kHalfFeatherPx;
             // Inner (solid) then outer (transparent).
-            batch.vertices.push_back(
-                { px - nx * kHalfFeatherPx, py - ny * kHalfFeatherPx, r, g, b, a });
-            batch.vertices.push_back(
-                { px + nx * kHalfFeatherPx, py + ny * kHalfFeatherPx, 0, 0, 0, 0 });
+            batch.vertices.push_back({ ix, iy, r, g, b, a });
+            batch.vertices.push_back({ ox, oy, 0, 0, 0, 0 });
+            // Independent min/max checks on every vertex — the inner/outer
+            // pair is centred on the boundary, so neither dominates.
+            if (ix < minX) minX = ix;
+            if (iy < minY) minY = iy;
+            if (ix > maxX) maxX = ix;
+            if (iy > maxY) maxY = iy;
+            if (ox < minX) minX = ox;
+            if (oy < minY) minY = oy;
+            if (ox > maxX) maxX = ox;
+            if (oy > maxY) maxY = oy;
         }
 
         // Strip around the closed loop: (in_i,out_i,in_i+1)+(out_i,out_i+1,in_i+1)
@@ -1774,7 +1814,7 @@ void ImpellerD3D12Engine::EmitContourFeather(
     }
 
     if (!batch.vertices.empty())
-        PushBatch(std::move(batch));
+        PushBatchWithCoverage(std::move(batch), minX, minY, maxX, maxY);
 }
 
 // ============================================================================
@@ -2474,6 +2514,15 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
     // transform (O(N)) and reapply the per-vertex feather coverage. This is
     // the ONLY per-frame CPU cost now for an animated stroke (was: full
     // flatten + ExpandStroke + scanline rasterize every frame).
+    //
+    // We compute the screen-space coverage bbox inside the same loop and emit
+    // via PushBatchWithCoverage so:
+    //   1) consecutive cached strokes (typical UI: icon row, ScrollBar arrows,
+    //      Checkbox glyphs) collapse into ONE D3D12 DrawIndexedInstanced;
+    //   2) PushBatch's ComputeBatchCoverage second walk over vertices is
+    //      skipped — saves ~N float compares per call.
+    // Coverage vector is always populated by StrokeCacheInsert (one byte per
+    // vertex), so the hot loop reads it unconditionally — no branch.
     auto emitLocalMesh = [&](const CachedStrokeRects& m) {
         const size_t vc = m.positions.size() / 2;
         if (vc == 0 || m.indices.empty()) return;
@@ -2481,14 +2530,30 @@ bool ImpellerD3D12Engine::EncodeStrokePath(
         batch.vertices.resize(vc);
         batch.indices = m.indices;
         const float kInv255 = 1.0f / 255.0f;
+        const float* pp = m.positions.data();
+        const uint8_t* cp = m.coverage.data();
+        ImpellerVertex* vp = batch.vertices.data();
+        const float tm11 = transformIn.m11, tm21 = transformIn.m21, tdx = transformIn.dx;
+        const float tm12 = transformIn.m12, tm22 = transformIn.m22, tdy = transformIn.dy;
+        float minX =  std::numeric_limits<float>::infinity();
+        float minY =  std::numeric_limits<float>::infinity();
+        float maxX = -std::numeric_limits<float>::infinity();
+        float maxY = -std::numeric_limits<float>::infinity();
         for (size_t i = 0; i < vc; ++i) {
-            float x = m.positions[i * 2], y = m.positions[i * 2 + 1];
-            TransformPoint(x, y, transformIn);
-            float cov = m.coverage.empty() ? 1.0f : (float)m.coverage[i] * kInv255;
-            batch.vertices[i] = { x, y, br * cov, bg * cov, bb * cov, ba * cov };
+            float lx = pp[i * 2], ly = pp[i * 2 + 1];
+            float x = tm11 * lx + tm21 * ly + tdx;
+            float y = tm12 * lx + tm22 * ly + tdy;
+            float cov = (float)cp[i] * kInv255;
+            vp[i].x = x; vp[i].y = y;
+            vp[i].r = br * cov; vp[i].g = bg * cov;
+            vp[i].b = bb * cov; vp[i].a = ba * cov;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
         }
         batch.pipelineType = 0;
-        PushBatch(std::move(batch));
+        PushBatchWithCoverage(std::move(batch), minX, minY, maxX, maxY);
         encodedPathCount_++;
     };
 
@@ -3227,14 +3292,29 @@ bool ImpellerD3D12Engine::EncodeFillPolygon(
         ImpellerDrawBatch batch;
         batch.vertices.resize(vc);
         batch.indices.resize(vc);
+        const float* pp = lt.data();
+        ImpellerVertex* vp = batch.vertices.data();
+        uint32_t* ip = batch.indices.data();
+        const float tm11 = transform.m11, tm21 = transform.m21, tdx = transform.dx;
+        const float tm12 = transform.m12, tm22 = transform.m22, tdy = transform.dy;
+        float minX =  std::numeric_limits<float>::infinity();
+        float minY =  std::numeric_limits<float>::infinity();
+        float maxX = -std::numeric_limits<float>::infinity();
+        float maxY = -std::numeric_limits<float>::infinity();
         for (uint32_t i = 0; i < vc; ++i) {
-            float x = lt[i * 2], y = lt[i * 2 + 1];
-            TransformPoint(x, y, transform);
-            batch.vertices[i] = { x, y, r, g, b, a };
-            batch.indices[i]  = i;
+            float lx = pp[i * 2], ly = pp[i * 2 + 1];
+            float x = tm11 * lx + tm21 * ly + tdx;
+            float y = tm12 * lx + tm22 * ly + tdy;
+            vp[i].x = x; vp[i].y = y;
+            vp[i].r = r; vp[i].g = g; vp[i].b = b; vp[i].a = a;
+            ip[i] = i;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
         }
         batch.pipelineType = 0;
-        PushBatch(std::move(batch));
+        PushBatchWithCoverage(std::move(batch), minX, minY, maxX, maxY);
     }
     EmitContourFeather(geom->contours, transform, r, g, b, a);
 
@@ -3339,7 +3419,29 @@ bool ImpellerD3D12Engine::EncodeFillEllipse(
         return false;
     }
     batch.pipelineType = 0;
-    PushBatch(std::move(batch));
+    // Conservative screen-space AABB from the 4 transformed corners of the
+    // ellipse's local bbox. This is at most a √2 over-approximation for
+    // rotated ellipses but lets PushBatchWithCoverage skip its own vertex
+    // walk and coalesce consecutive FillEllipse calls (46 calls/frame in the
+    // gallery sample → 1 D3D12 draw).
+    float minX, minY, maxX, maxY;
+    {
+        const float lx[4] = { cx - rx, cx + rx, cx + rx, cx - rx };
+        const float ly[4] = { cy - ry, cy - ry, cy + ry, cy + ry };
+        minX =  std::numeric_limits<float>::infinity();
+        minY =  std::numeric_limits<float>::infinity();
+        maxX = -std::numeric_limits<float>::infinity();
+        maxY = -std::numeric_limits<float>::infinity();
+        for (int i = 0; i < 4; ++i) {
+            float x = transform.m11 * lx[i] + transform.m21 * ly[i] + transform.dx;
+            float y = transform.m12 * lx[i] + transform.m22 * ly[i] + transform.dy;
+            if (x < minX) minX = x;
+            if (y < minY) minY = y;
+            if (x > maxX) maxX = x;
+            if (y > maxY) maxY = y;
+        }
+    }
+    PushBatchWithCoverage(std::move(batch), minX, minY, maxX, maxY);
     encodedPathCount_++;
     return true;
 }

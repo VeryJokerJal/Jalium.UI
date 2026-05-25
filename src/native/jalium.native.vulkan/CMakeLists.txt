@@ -32,6 +32,7 @@ set(SOURCES
     src/vulkan_render_target.cpp
     src/vulkan_resources.cpp
     src/vulkan_runtime.cpp
+    src/vulkan_video_surface.cpp
     src/vulkan_vello_engine.cpp
 )
 

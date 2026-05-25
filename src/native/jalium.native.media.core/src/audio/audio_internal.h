@@ -21,6 +21,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 namespace jalium::audio {
 
@@ -70,6 +71,17 @@ struct audio_decoder_impl {
     uint32_t             sample_rate  = 0;
     uint32_t             channels     = 0;
     int64_t              duration_us  = 0;
+
+    /// File-via-memory path: when the decoder was opened from a file path on
+    /// a platform whose libc fopen() does not understand UTF-8 (notably
+    /// Windows, which uses the active ANSI codepage), audio_decoder.cpp
+    /// pre-reads the file with a wide-char-safe call and parks the bytes
+    /// here so the codec's "open from memory" path can hand a stable pointer
+    /// to the underlying single-header library. The vector must outlive the
+    /// codec's internal pointer; std::vector's move constructor keeps the
+    /// same data() pointer, so transferring ownership here is safe even
+    /// after the codec already captured the address.
+    std::vector<uint8_t> owned_bytes;
 
     virtual ~audio_decoder_impl() = default;
 

@@ -111,6 +111,7 @@
     <ClCompile Include="src\d3d12_text.cpp" />
     <ClCompile Include="src\d3d12_vello.cpp" />
     <ClCompile Include="src\d3d12_vello_engine.cpp" />
+    <ClCompile Include="src\d3d12_video_surface.cpp" />
     <ClCompile Include="src\liquid_glass_effects.cpp" />
     <ClCompile Include="src\transition_shader_effect.cpp" />
   </ItemGroup>

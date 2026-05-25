@@ -1,10 +1,10 @@
-﻿using Jalium.UI.Media;
+﻿using Jalium.UI.Interop;
+using Jalium.UI.Media;
 using Jalium.UI.Media.Animation;
 using Jalium.UI.Media.Imaging;
 using Jalium.UI.Media.Native;
 using Jalium.UI.Media.Pipeline;
 using Jalium.UI.Threading;
-using SoundFlow.Enums;
 using System;
 using System.Buffers;
 using System.Collections;
@@ -122,51 +122,76 @@ public sealed class MediaInfo
 #region 视频帧缓冲队列
 
 /// <summary>
-/// 池化的解码视频帧。<see cref="Pixels"/> 是从 <see cref="ArrayPool{Byte}.Shared"/> 租用的 BGRA8
-/// 缓冲，调用方必须 <see cref="Dispose"/> 归还，否则会让池被逐渐抽空。
+/// 一帧解码后的视频。<see cref="Pixels"/> 来自底层 <see cref="MediaFrame"/> 的池化 BGRA8 缓冲,
+/// 调用方必须 <see cref="Dispose"/> 归还。
 /// </summary>
+/// <remarks>
+/// <para>
+/// Stage 0 优化:此前 VideoFrame 自己 <see cref="System.Buffers.ArrayPool{T}"/> 租一份 byte[] 然后
+/// 把 MediaFrame.Pixels 拷过来,1080p@30fps 等于无意义地烧 ~240 MB/s 内存带宽。现在 VideoFrame
+/// 直接接管 MediaFrame 的所有权,Pixels 转发到底层 buffer,Dispose 时把 MediaFrame 一并归还池。
+/// </para>
+/// <para>
+/// 跨线程生命周期没变 —— 解码线程 new VideoFrame、render 线程 Dispose,中间 MediaFrame 一直活着,
+/// 池 buffer 不会被复用,Span 一直安全。
+/// </para>
+/// </remarks>
 public sealed class VideoFrame : IDisposable
 {
-    private byte[]? _buffer;
-    private readonly int _length;
+    private MediaFrame? _mediaFrame;
+    private NativeVideoSurface? _gpuSurface;
 
     public ReadOnlySpan<byte> Pixels =>
-        _buffer is null
-            ? ReadOnlySpan<byte>.Empty
-            : _buffer.AsSpan(0, _length);
+        _mediaFrame is null ? ReadOnlySpan<byte>.Empty : _mediaFrame.Pixels.Span;
 
-    public int Width { get; }
-    public int Height { get; }
-    public int Stride { get; }
+    public int Width  => _gpuSurface?.PixelWidth  ?? _mediaFrame?.Width  ?? 0;
+    public int Height => _gpuSurface?.PixelHeight ?? _mediaFrame?.Height ?? 0;
+    public int Stride => _mediaFrame?.Stride ?? 0;
     public long TimestampMs { get; }
     public int FrameIndex { get; }
 
-    public VideoFrame(int width, int height, int stride, long timestampMs, int frameIndex)
+    /// <summary>
+    /// Stage 3+ 路径:DXVA / MediaCodec / VTDecompressionSession 等硬件解码器直接给一个
+    /// GPU-resident surface。非 null 时 MediaElement 跳过 BGRA staging 路径,
+    /// 直接 bind <see cref="D3DImage"/> 让 framework 走 jalium_render_target_draw_video_surface。
+    /// 当前 stage 1+2 decoder 全部返 null,所以这个字段长期为 null;stage 3 真填后自动生效。
+    /// </summary>
+    public NativeVideoSurface? GpuSurface => _gpuSurface;
+
+    /// <summary>
+    /// CPU 路径:VideoFrame 接管 <paramref name="mediaFrame"/> 的生命周期。
+    /// </summary>
+    public VideoFrame(MediaFrame mediaFrame, long timestampMs, int frameIndex)
     {
-        Width = width;
-        Height = height;
-        Stride = stride;
+        _mediaFrame = mediaFrame ?? throw new ArgumentNullException(nameof(mediaFrame));
         TimestampMs = timestampMs;
         FrameIndex = frameIndex;
-        _length = checked(stride * height);
-        _buffer = ArrayPool<byte>.Shared.Rent(_length);
     }
 
-    /// <summary>把源像素拷贝到内部缓冲。源 stride 必须 == <see cref="Stride"/>。</summary>
-    internal void CopyFrom(ReadOnlySpan<byte> source)
+    /// <summary>
+    /// GPU 路径:VideoFrame 接管 <paramref name="gpuSurface"/> 的生命周期(Dispose 时归还 decoder 或 release native handle)。
+    /// </summary>
+    public VideoFrame(NativeVideoSurface gpuSurface, long timestampMs, int frameIndex)
     {
-        if (_buffer is null) throw new ObjectDisposedException(nameof(VideoFrame));
-        if (source.Length < _length)
-            throw new ArgumentException("Source span is smaller than the frame buffer.", nameof(source));
-        source.Slice(0, _length).CopyTo(_buffer);
+        _gpuSurface = gpuSurface ?? throw new ArgumentNullException(nameof(gpuSurface));
+        TimestampMs = timestampMs;
+        FrameIndex = frameIndex;
     }
 
     public void Dispose()
     {
-        var buffer = _buffer;
-        if (buffer is null) return;
-        _buffer = null;
-        ArrayPool<byte>.Shared.Return(buffer, clearArray: false);
+        var mf = _mediaFrame;
+        if (mf is not null)
+        {
+            _mediaFrame = null;
+            mf.Dispose();
+        }
+        var gs = _gpuSurface;
+        if (gs is not null)
+        {
+            _gpuSurface = null;
+            gs.Dispose();
+        }
     }
 }
 
@@ -428,6 +453,14 @@ public class MediaElement : FrameworkElement, IDisposable
     private readonly object _lock = new();
 
     private WriteableBitmap? _frameBitmap;
+    // Stage 1+2 video pipeline:when the active backend supports video surfaces
+    // (Software done; D3D12 / Vulkan land in stage 2+), MediaElement uploads frames
+    // directly into _videoSurface and renders via _d3dImage, bypassing the
+    // WriteableBitmap.BackBuffer copy hop. Falls back to _frameBitmap when
+    // CreateVideoSurface returns null / throws (e.g. backend stub).
+    private NativeVideoSurface? _videoSurface;
+    private D3DImage? _d3dImage;
+    private bool _videoSurfacePathUnsupported;  // sticky:once create fails, don't keep retrying
     private readonly SolidColorBrush _backgroundBrush = new(Color.FromRgb(0, 0, 0));
     private int _videoWidth;
     private int _videoHeight;
@@ -676,6 +709,10 @@ public class MediaElement : FrameworkElement, IDisposable
         _videoDecoder?.Dispose();
         _frameBuffer?.Dispose();
         _audioManager?.Dispose();
+        _d3dImage?.Dispose();
+        _videoSurface?.Dispose();
+        _d3dImage = null;
+        _videoSurface = null;
     }
 
     private void OnUnloaded(object sender, RoutedEventArgs e)
@@ -836,6 +873,24 @@ public class MediaElement : FrameworkElement, IDisposable
         }
 
         dc.DrawRectangle(_backgroundBrush, null, rect);
+
+        // Stage 1+2 fast path:D3DImage wraps a NativeVideoSurface and the
+        // framework dispatches DrawImage(D3DImage) straight to
+        // jalium_render_target_draw_video_surface — no WriteableBitmap, no
+        // managed back buffer copy.
+        var surfaceImage = _d3dImage;
+        if (surfaceImage != null && surfaceImage.IsFrontBufferAvailable && _hasVideo)
+        {
+            var frameSize = new Size(surfaceImage.PixelWidth, surfaceImage.PixelHeight);
+            var scaledSize = ComputeScaledSize(rect.Size, frameSize);
+            if (scaledSize.Width > 0 && scaledSize.Height > 0)
+            {
+                var x = (rect.Width - scaledSize.Width) / 2;
+                var y = (rect.Height - scaledSize.Height) / 2;
+                dc.DrawImage(surfaceImage, new Rect(x, y, scaledSize.Width, scaledSize.Height), BitmapScalingMode.Linear);
+            }
+            return;
+        }
 
         var bitmap = _frameBitmap;
         if (bitmap != null && _hasVideo)
@@ -1108,9 +1163,19 @@ public class MediaElement : FrameworkElement, IDisposable
         if (string.IsNullOrEmpty(_mediaPath))
             return;
 
-        if (!_isArranged || _arrangedSize.Width <= 0 || _arrangedSize.Height <= 0)
+        // arrange-size 只在需要渲染视频帧时是硬要求。Audio-only 媒体(Gallery
+        // Audio Player demo 把 <MediaElement Width="0" Height="0"/> 当后台播放器
+        // 用)永远等不到非零 arrange size,过去会卡在 _pendingPlay = true 上播
+        // 不出声。这里把检查收紧到"有视频内容时才要求 size"。
+        if (_hasVideo && (!_isArranged || _arrangedSize.Width <= 0 || _arrangedSize.Height <= 0))
         {
             _pendingPlay = true;
+            return;
+        }
+
+        // probe 完成后既无 video 也无 audio:没有可启动的播放路径,直接返回。
+        if (!_hasVideo && !_hasAudio)
+        {
             return;
         }
 
@@ -1416,38 +1481,55 @@ public class MediaElement : FrameworkElement, IDisposable
 
                 if (!hasFrame || mediaFrame is null) break;
 
-                using (mediaFrame)
+                var pts = mediaFrame.PresentationTime.TotalMilliseconds;
+                if (pts <= 0)
                 {
-                    var pts = mediaFrame.PresentationTime.TotalMilliseconds;
-                    if (pts <= 0)
-                    {
-                        // 容器没给 PTS — 退化为按 fps 推算
-                        pts = startTimeMs + frameIndex * _frameDelayMs;
-                    }
-
-                    var frame = new VideoFrame(
-                        mediaFrame.Width,
-                        mediaFrame.Height,
-                        mediaFrame.Stride,
-                        (long)pts,
-                        (int)frameIndex);
-                    frame.CopyFrom(mediaFrame.Pixels.Span);
-
-                    if (!_frameBuffer!.TryAdd(frame, 50))
-                    {
-                        if (_frameBuffer.TryTake(out var oldFrame))
-                        {
-                            oldFrame?.Dispose();
-                        }
-                        if (!_frameBuffer.TryAdd(frame))
-                        {
-                            // 缓冲在我们丢弃旧帧后被关闭 — 归还当前帧避免泄漏。
-                            frame.Dispose();
-                        }
-                    }
-
-                    frameIndex++;
+                    // 容器没给 PTS — 退化为按 fps 推算
+                    pts = startTimeMs + frameIndex * _frameDelayMs;
                 }
+
+                // Stage 3 优先路径:if decoder gives us a GPU-resident surface(DXVA / MediaCodec /
+                // VTDecompressionSession 等硬件解码),走 0-copy 路径,完全跳过 BGRA staging。
+                // stage 1+2 期间所有 decoder 实现都返 null;真填 DXVA 后这条路径自动生效。
+                NativeVideoSurface? gpuSurface = null;
+                try
+                {
+                    // RenderContext 是 process-wide singleton,UI thread 已经初始化
+                    // (window 创建时);在 decode 线程拿到的就是同一个 handle。
+                    var ctx = RenderContext.GetOrCreateCurrent().Handle;
+                    gpuSurface = _videoDecoder.AcquireGpuSurface(ctx);
+                }
+                catch { gpuSurface = null; }
+
+                VideoFrame frame;
+                if (gpuSurface is not null)
+                {
+                    // GPU 路径:抛弃 mediaFrame buffer(decoder 在 GPU 上做了同样的工作);
+                    // VideoFrame 接管 gpuSurface 的生命周期。
+                    mediaFrame.Dispose();
+                    frame = new VideoFrame(gpuSurface, (long)pts, (int)frameIndex);
+                }
+                else
+                {
+                    // CPU 路径:VideoFrame 接管 mediaFrame 所有权,后续 UpdateFrameBitmap 走
+                    // NativeVideoSurface BGRA staging 或最终 WriteableBitmap fallback。
+                    frame = new VideoFrame(mediaFrame, (long)pts, (int)frameIndex);
+                }
+
+                if (!_frameBuffer!.TryAdd(frame, 50))
+                {
+                    if (_frameBuffer.TryTake(out var oldFrame))
+                    {
+                        oldFrame?.Dispose();
+                    }
+                    if (!_frameBuffer.TryAdd(frame))
+                    {
+                        // 缓冲在我们丢弃旧帧后被关闭 — 归还当前帧避免泄漏。
+                        frame.Dispose();
+                    }
+                }
+
+                frameIndex++;
             }
         }
         catch (OperationCanceledException) { }
@@ -1645,9 +1727,42 @@ public class MediaElement : FrameworkElement, IDisposable
         if (width <= 0 || height <= 0) return;
         if (width > 8192 || height > 8192) return;
 
+        // ── Stage 3 fast path:decoder 已给 GPU-resident surface(DXVA / MediaCodec /
+        //   AVAssetReader 等硬件解码)。绕开所有 CPU staging,直接把 surface bind 到
+        //   D3DImage 让 framework 走 jalium_render_target_draw_video_surface。
+        //   VideoFrame.Dispose 时 surface 会被还给 decoder ring(stage 3 真填后)或
+        //   release native handle(stage 3 骨架期)。
+        if (frame.GpuSurface is { } gpu)
+        {
+            // 旧 NativeVideoSurface 退出 D3DImage 引用(下一次 dispose 时归还 decoder)。
+            _d3dImage ??= new D3DImage();
+            _d3dImage.SetBackBuffer(gpu);
+            // 旧 BGRA staging surface 在 GPU 路径下用不上,释放 GPU 内存。
+            if (_videoSurface is not null && !ReferenceEquals(_videoSurface, gpu))
+            {
+                _videoSurface.Dispose();
+                _videoSurface = null;
+            }
+            InvalidateVisual();
+            return;
+        }
+
         var pixels = frame.Pixels;
         if (pixels.IsEmpty) return;
 
+        // ── Stage 1+2 path:NativeVideoSurface direct GPU staging ──
+        // Software backend already supports this end-to-end as of stage 2;
+        // D3D12 / Vulkan implementations land in subsequent PRs. While
+        // CreateBgra8 throws (backend stub), _videoSurfacePathUnsupported
+        // sticks so we don't keep retrying every frame.
+        if (!_videoSurfacePathUnsupported &&
+            TryUpdateVideoSurface(pixels, width, height, frame.Stride))
+        {
+            InvalidateVisual();
+            return;
+        }
+
+        // ── Fallback:legacy WriteableBitmap path ──
         var needsNewBitmap = _frameBitmap is null ||
                              _frameBitmap.PixelWidth != width ||
                              _frameBitmap.PixelHeight != height;
@@ -1671,6 +1786,81 @@ public class MediaElement : FrameworkElement, IDisposable
             InvalidateVisual();
         }
         catch { }
+    }
+
+    /// <summary>
+    /// Stage 1+2 path. Returns true when the frame was successfully uploaded
+    /// into <see cref="_videoSurface"/>;false signals the caller to fall back
+    /// to the WriteableBitmap path. On a thrown <see cref="NativeMediaException"/>
+    /// (typically <see cref="NativeMediaStatus.NotImplemented"/> from a backend
+    /// without video surfaces wired yet) the path is permanently disabled for
+    /// this MediaElement instance to avoid retrying every frame.
+    /// </summary>
+    private bool TryUpdateVideoSurface(ReadOnlySpan<byte> pixels, int width, int height, int srcStride)
+    {
+        bool needsRebuild = _videoSurface is null ||
+                            _videoSurface.IsDisposed ||
+                            _videoSurface.PixelWidth != width ||
+                            _videoSurface.PixelHeight != height;
+
+        if (needsRebuild)
+        {
+            _videoSurface?.Dispose();
+            _videoSurface = null;
+            _d3dImage?.SetBackBuffer((NativeVideoSurface?)null);
+            try
+            {
+                var ctx = RenderContext.GetOrCreateCurrent();
+                _videoSurface = NativeVideoSurface.CreateBgra8(ctx.Handle, width, height);
+                _d3dImage ??= new D3DImage();
+                _d3dImage.SetBackBuffer(_videoSurface);
+            }
+            catch (NativeMediaException)
+            {
+                _videoSurfacePathUnsupported = true;
+                _videoSurface = null;
+                _d3dImage = null;
+                return false;
+            }
+            catch
+            {
+                // Any other failure (OOM, context unavailable) — fall through.
+                _videoSurface = null;
+                _d3dImage = null;
+                return false;
+            }
+        }
+
+        try
+        {
+            using var locked = _videoSurface!.Lock();
+            int dstStride = locked.Stride;
+            int rowBytes = width * 4;
+            if (srcStride == dstStride && srcStride == rowBytes)
+            {
+                // Tightly packed source — single contiguous copy.
+                pixels.Slice(0, rowBytes * height).CopyTo(locked.Pixels);
+            }
+            else
+            {
+                // Row-by-row copy to honor differing strides.
+                for (int y = 0; y < height; y++)
+                {
+                    pixels.Slice(y * srcStride, rowBytes)
+                          .CopyTo(locked.Pixels.Slice(y * dstStride, rowBytes));
+                }
+            }
+            return true;
+        }
+        catch
+        {
+            // Lock failed mid-stream — invalidate this surface and try again
+            // next frame (rebuild path).
+            _videoSurface?.Dispose();
+            _videoSurface = null;
+            _d3dImage?.SetBackBuffer((NativeVideoSurface?)null);
+            return false;
+        }
     }
 
     private void UpdateDisplayScale(Size availableSize)

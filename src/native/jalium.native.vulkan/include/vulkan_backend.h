@@ -48,6 +48,8 @@ public:
         int32_t fontStyle) override;
     Bitmap* CreateBitmapFromMemory(const uint8_t* data, uint32_t dataSize) override;
     Bitmap* CreateBitmapFromPixels(const uint8_t* pixels, uint32_t width, uint32_t height, uint32_t stride) override;
+    VideoSurface* CreateVideoSurface(uint32_t width, uint32_t height, uint32_t formatHint) override;
+    VideoSurface* WrapExternalVideoSurface(const JaliumVideoSurfaceDescriptor* descriptor) override;
 
 #ifndef _WIN32
     TextEngine* GetTextEngine() const { return textEngine_.get(); }

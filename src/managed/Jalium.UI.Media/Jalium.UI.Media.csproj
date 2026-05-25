@@ -18,11 +18,9 @@
     <InternalsVisibleTo Include="Jalium.UI.Interop" />
   </ItemGroup>
 
-  <ItemGroup>
-    <!-- 视频解码改用平台原生技术（Windows MF / Android MediaCodec），通过 jalium.native.media 暴露 P/Invoke。 -->
-    <!-- 音频继续走 SoundFlow + FFmpeg。 -->
-    <PackageReference Include="SoundFlow" Version="1.4.0" />
-    <PackageReference Include="SoundFlow.Codecs.FFMpeg" Version="1.4.0" />
-  </ItemGroup>
+  <!-- 音频与视频统一走 jalium.native.media:WAV/FLAC/MP3/OGG 由 vendored 单头库
+       (miniaudio/dr_wav/dr_flac/minimp3/stb_vorbis)在 native 层解码,AAC 走平台原生
+       (Windows MF / Android MediaCodec / Apple AudioToolbox / Linux GStreamer)。
+       2026-05 起完全自研,删除 SoundFlow + SoundFlow.Codecs.FFMpeg 包引用。 -->
 
 </Project>

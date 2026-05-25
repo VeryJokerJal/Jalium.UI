@@ -14,8 +14,15 @@
 #include <algorithm>
 #include <atomic>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
+#include <string>
 #include <string_view>
+#include <vector>
+
+#if defined(_WIN32)
+    #include <Windows.h>
+#endif
 
 namespace jalium::audio {
 
@@ -58,6 +65,69 @@ bool ExtEquals(std::string_view path, std::string_view extLower) noexcept
         char a = tail[i];
         if (a >= 'A' && a <= 'Z') a = static_cast<char>(a + 32);
         if (a != extLower[i]) return false;
+    }
+    return true;
+}
+
+/// Reads the whole file at `utf8Path` into `out`. On Windows this routes
+/// through MultiByteToWideChar + _wfopen_s so that UTF-8 paths containing
+/// non-ASCII characters (CJK, accented Latin, etc.) work — plain fopen()
+/// interprets bytes as the active ANSI codepage and would fail on those.
+/// On Unix-like platforms the libc fopen() already accepts UTF-8 paths so
+/// we use it directly.
+bool ReadFileToBytes(const char* utf8Path,
+                     std::vector<uint8_t>& out,
+                     jalium_media_status_t& outStatus) noexcept
+{
+    out.clear();
+    if (!utf8Path) {
+        outStatus = JALIUM_MEDIA_E_INVALID_ARG;
+        return false;
+    }
+
+    FILE* fp = nullptr;
+
+#if defined(_WIN32)
+    const int wlen = MultiByteToWideChar(CP_UTF8, 0, utf8Path, -1, nullptr, 0);
+    if (wlen <= 0) {
+        outStatus = JALIUM_MEDIA_E_INVALID_ARG;
+        return false;
+    }
+    std::wstring wpath(static_cast<size_t>(wlen), L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8Path, -1, wpath.data(), wlen);
+    if (!wpath.empty() && wpath.back() == L'\0') wpath.pop_back();
+    if (_wfopen_s(&fp, wpath.c_str(), L"rb") != 0 || !fp) {
+        outStatus = JALIUM_MEDIA_E_IO;
+        return false;
+    }
+#else
+    fp = std::fopen(utf8Path, "rb");
+    if (!fp) {
+        outStatus = JALIUM_MEDIA_E_IO;
+        return false;
+    }
+#endif
+
+    if (std::fseek(fp, 0, SEEK_END) != 0) {
+        std::fclose(fp);
+        outStatus = JALIUM_MEDIA_E_IO;
+        return false;
+    }
+    const long size = std::ftell(fp);
+    if (size < 0) {
+        std::fclose(fp);
+        outStatus = JALIUM_MEDIA_E_IO;
+        return false;
+    }
+    std::fseek(fp, 0, SEEK_SET);
+
+    out.resize(static_cast<size_t>(size));
+    const size_t got = (size == 0) ? 0 : std::fread(out.data(), 1, out.size(), fp);
+    std::fclose(fp);
+    if (got != out.size()) {
+        out.clear();
+        outStatus = JALIUM_MEDIA_E_IO;
+        return false;
     }
     return true;
 }
@@ -161,10 +231,39 @@ audio_decoder_impl* DecoderOpenFile(const char* utf8Path,
         outStatus = JALIUM_MEDIA_E_UNSUPPORTED_CODEC;
         return nullptr;
     }
-    auto* impl = DispatchOpenFile(utf8Path, codec, outStatus);
-    if (!impl && outStatus == JALIUM_MEDIA_OK) {
-        outStatus = JALIUM_MEDIA_E_DECODE_FAILED;
+
+    // AAC dispatches into the platform-native bridge (Windows MF / Android
+    // MediaCodec / Apple AudioToolbox / Linux GStreamer), each of which owns
+    // its own Unicode-safe path handling — keep it on the file path so we
+    // don't gratuitously buffer huge files in memory.
+    if (codec == JALIUM_ACODEC_AAC) {
+        auto* impl = DispatchOpenFile(utf8Path, codec, outStatus);
+        if (!impl && outStatus == JALIUM_MEDIA_OK) outStatus = JALIUM_MEDIA_E_DECODE_FAILED;
+        return impl;
     }
+
+    // For every other codec (WAV / FLAC / MP3 / Vorbis) the single-header
+    // libs go through libc fopen() under the hood. On Windows that uses the
+    // ANSI codepage and silently fails on any UTF-8 path with CJK / accented
+    // characters. Side-step the whole problem by pre-reading the file with a
+    // wide-char-safe call and feeding the codec from memory — the bytes are
+    // parked on the impl so they outlive the codec's internal pointer.
+    std::vector<uint8_t> bytes;
+    jalium_media_status_t readStatus = JALIUM_MEDIA_OK;
+    if (!ReadFileToBytes(utf8Path, bytes, readStatus)) {
+        outStatus = readStatus;
+        return nullptr;
+    }
+
+    auto* impl = DispatchOpenMemory(bytes.data(), bytes.size(), codec, outStatus);
+    if (!impl) {
+        if (outStatus == JALIUM_MEDIA_OK) outStatus = JALIUM_MEDIA_E_DECODE_FAILED;
+        return nullptr;
+    }
+    // Transfer ownership of the file bytes onto the impl. std::vector's move
+    // constructor keeps data() stable so the pointer already handed to the
+    // codec remains valid after this assignment.
+    impl->owned_bytes = std::move(bytes);
     return impl;
 }
 

@@ -110,6 +110,83 @@ private:
     // bitmap_stats::gpuResidentBytes counter. Destructor subtracts the same
     // amount so reload / release accounting stays balanced.
     uint64_t pinnedGpuBytes_ = 0;
+
+    // D3D12VideoSurface flips isDynamic_ / d3d12TextureValid_ after Lock/Unlock
+    // writes a fresh BGRA8 frame into pixelData_ — kept as a friend grant
+    // rather than exposing the two flags publicly.
+    friend class D3D12VideoSurface;
+    // ImportedD3D12VideoSurface bypasses the upload path entirely: it sets
+    // d3d12Texture_ directly to a texture imported via OpenSharedHandle and
+    // marks d3d12TextureValid_ so GetOrCreateD3D12Texture's fast path returns
+    // it immediately without trying to upload pixelData_.
+    friend class ImportedD3D12VideoSurface;
+};
+
+/// Stage 3b.2: a video surface wrapping a D3D12 texture imported from a
+/// D3D11 NT shared handle (typically the latest MF DXVA decode output mirrored
+/// into a SHARED_NTHANDLE texture, see win_mf_video_decoder's stage 3b.1).
+///
+/// Embeds a D3D12Bitmap so DrawVideoSurface can route through the existing
+/// DrawBitmap path. The bitmap's d3d12Texture_ slot is set directly to the
+/// imported resource and d3d12TextureValid_ is true so GetOrCreateD3D12Texture
+/// hits its fast path and never tries to upload from pixelData_ (which stays
+/// empty — there is no CPU staging on this path).
+///
+/// Cross-device synchronization (keyed mutex acquire/release between D3D12
+/// reader and D3D11 MF writer) is left to a later iteration; the current
+/// implementation relies on the MF side's Flush + ReleaseSync to ensure the
+/// shared texture's pixels are coherent at the moment Wrap returns.
+class ImportedD3D12VideoSurface : public VideoSurface {
+public:
+    ImportedD3D12VideoSurface(D3D12Backend* backend,
+                              ComPtr<ID3D12Resource> importedTexture,
+                              uint32_t width, uint32_t height);
+    ~ImportedD3D12VideoSurface() override;
+
+    uint32_t GetWidth()  const override { return bitmap.width_;  }
+    uint32_t GetHeight() const override { return bitmap.height_; }
+    JaliumVideoSurfaceKind GetKind() const override { return JALIUM_VS_KIND_D3D11_SHARED; }
+
+    bool Lock(uint8_t** outPtr, uint32_t* outStride) override;
+    bool Unlock(const JaliumVideoSurfaceDirtyRect* dirty) override;
+
+    /// Stage 3b.3 reader-side sync. Called by D3D12RenderTarget::DrawVideoSurface
+    /// before/after sampling. Acquires reader key (1), then releases writer key
+    /// (0) to let MF write the next frame. When the imported resource doesn't
+    /// surface IDXGIKeyedMutex (driver / SHARED_KEYEDMUTEX flag absent), both
+    /// calls are no-ops and we fall back to the in-order-execution assumption
+    /// stage 3b.2 relied on.
+    void AcquireReaderLock();
+    void ReleaseReaderLock();
+
+    ComPtr<ID3D12Resource>  importedTexture;
+    ComPtr<IDXGIKeyedMutex> keyedMutex;     // null if driver doesn't expose it
+    D3D12Bitmap             bitmap;
+    bool                    holdsReaderLock = false;
+};
+
+/// Video surface implementation: a thin wrapper around a D3D12Bitmap that
+/// exposes the bitmap's CPU staging vector to managed callers via Lock/Unlock.
+/// The decoder pump writes BGRA8 frames straight into pixelData_;
+/// Unlock invalidates d3d12TextureValid_ so the next render pass copies the
+/// fresh CPU buffer into the default-heap texture in one shot. Reuses the
+/// existing D3D12Bitmap retire / SRV / draw path, so the only thing this
+/// class adds is the writable-vector + dirty-flag plumbing.
+class D3D12VideoSurface : public VideoSurface {
+public:
+    D3D12VideoSurface(D3D12Backend* backend, uint32_t width, uint32_t height);
+    ~D3D12VideoSurface() override = default;
+
+    uint32_t GetWidth()  const override { return bitmap.width_;  }
+    uint32_t GetHeight() const override { return bitmap.height_; }
+    JaliumVideoSurfaceKind GetKind() const override { return JALIUM_VS_KIND_BGRA8_CPU; }
+
+    bool Lock(uint8_t** outPtr, uint32_t* outStride) override;
+    bool Unlock(const JaliumVideoSurfaceDirtyRect* dirty) override;
+
+    /// Composable target the D3D12 render path already knows how to draw.
+    /// D3D12RenderTarget::DrawVideoSurface routes through this.
+    D3D12Bitmap bitmap;
 };
 
 /// DirectWrite text format wrapper.

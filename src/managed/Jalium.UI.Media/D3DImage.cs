@@ -1,8 +1,32 @@
 namespace Jalium.UI.Media;
 
 /// <summary>
-/// An ImageSource that displays a user-created Direct3D surface.
+/// An <see cref="ImageSource"/> that hosts a native GPU resource — historically a
+/// WPF-style Direct3D surface, now generalised to any backend-specific texture
+/// the framework's rendering engine can sample directly. Used by
+/// <c>MediaElement</c> to bypass the WriteableBitmap copy hop and let the
+/// decoder write video frames straight into the texture the swap chain will
+/// composite.
 /// </summary>
+/// <remarks>
+/// <para><b>Backing kinds</b> (see <see cref="D3DResourceType"/>):
+/// <list type="bullet">
+/// <item><see cref="D3DResourceType.NativeVideoSurface"/> — recommended new
+/// path. Pass a <see cref="Jalium.UI.Media.NativeVideoSurface"/> handle and the
+/// framework dispatches to <c>jalium_render_target_draw_video_surface</c>.</item>
+/// <item><see cref="D3DResourceType.IDirect3DSurface9"/> — legacy WPF value.
+/// Accepted for source compatibility but logged as unsupported because no
+/// platform exposes D3D9 surfaces today.</item>
+/// <item>D3D11 shared / Vulkan external / AHardwareBuffer — reserved for
+/// stages 3-5 when MF DXVA / MediaCodec / Apple decoders land.</item>
+/// </list>
+/// </para>
+/// <para><b>Lifetime</b>: when <see cref="SetBackBuffer(NativeVideoSurface)"/>
+/// hands the surface to D3DImage, the surface stays owned by the caller —
+/// disposing the D3DImage does NOT dispose the surface. This lets one
+/// long-lived surface back many short-lived D3DImage instances if needed
+/// (typical case is one MediaElement holding both).</para>
+/// </remarks>
 public sealed class D3DImage : ImageSource, IDisposable
 {
     private double _pixelWidth;
@@ -10,174 +34,137 @@ public sealed class D3DImage : ImageSource, IDisposable
     private bool _isFrontBufferAvailable;
     private nint _backBuffer;
     private D3DResourceType _backBufferType;
+    private NativeVideoSurface? _videoSurface;  // strong ref when bound via SetBackBuffer(NativeVideoSurface)
     private bool _enableSoftwareFallback;
     private int _lockCount;
     private readonly List<Int32Rect> _dirtyRects = new();
     private bool _disposed;
 
-    /// <summary>
-    /// Gets a value indicating whether a front buffer is available.
-    /// </summary>
+    /// <summary>True when the underlying surface is bound and renderable.</summary>
     public bool IsFrontBufferAvailable => _isFrontBufferAvailable;
 
-    /// <summary>
-    /// Gets the width of the D3DImage.
-    /// </summary>
+    /// <inheritdoc />
     public override double Width => _pixelWidth;
 
-    /// <summary>
-    /// Gets the height of the D3DImage.
-    /// </summary>
+    /// <inheritdoc />
     public override double Height => _pixelHeight;
 
-    /// <summary>
-    /// Gets the native handle (not applicable for D3DImage).
-    /// </summary>
+    /// <inheritdoc />
     public override nint NativeHandle => _backBuffer;
 
-    /// <summary>
-    /// Gets the pixel width.
-    /// </summary>
     public int PixelWidth => (int)_pixelWidth;
-
-    /// <summary>
-    /// Gets the pixel height.
-    /// </summary>
     public int PixelHeight => (int)_pixelHeight;
-
-    /// <summary>
-    /// Gets the DPI X of the image.
-    /// </summary>
     public double DpiX { get; } = 96.0;
-
-    /// <summary>
-    /// Gets the DPI Y of the image.
-    /// </summary>
     public double DpiY { get; } = 96.0;
 
-    /// <summary>
-    /// Gets whether software fallback was requested when the back buffer was assigned.
-    /// </summary>
     public bool IsSoftwareFallbackEnabled => _enableSoftwareFallback;
-
-    /// <summary>
-    /// Gets whether the image is currently locked for updates.
-    /// </summary>
     public bool IsLocked => _lockCount > 0;
 
     /// <summary>
-    /// Assigns a Direct3D surface as the source of the back buffer.
+    /// Reports which kind of resource <see cref="NativeHandle"/> refers to so the
+    /// framework dispatch can route the correct drawcall (e.g. BGRA8 video
+    /// surface vs legacy D3D9 surface).
     /// </summary>
-    public void SetBackBuffer(D3DResourceType backBufferType, IntPtr backBuffer)
-    {
-        SetBackBuffer(backBufferType, backBuffer, enableSoftwareFallback: false);
-    }
+    public D3DResourceType ResourceType => _backBufferType;
 
     /// <summary>
-    /// Assigns a Direct3D surface as the source of the back buffer with a flag.
+    /// Returns the <see cref="NativeVideoSurface"/> bound via
+    /// <see cref="SetBackBuffer(NativeVideoSurface)"/>, or <see langword="null"/>
+    /// when bound through the legacy IntPtr path.
     /// </summary>
+    public NativeVideoSurface? VideoSurface => _videoSurface;
+
+    /// <summary>Legacy WPF-style binding for D3D9 surfaces. Accepted but unused on
+    /// every modern backend; prefer <see cref="SetBackBuffer(NativeVideoSurface)"/>.</summary>
+    public void SetBackBuffer(D3DResourceType backBufferType, IntPtr backBuffer)
+        => SetBackBuffer(backBufferType, backBuffer, enableSoftwareFallback: false);
+
+    /// <summary>Legacy WPF-style binding with explicit software fallback flag.</summary>
     public void SetBackBuffer(D3DResourceType backBufferType, IntPtr backBuffer, bool enableSoftwareFallback)
     {
-        // Release previous COM reference if held
-        if (_backBuffer != IntPtr.Zero)
+        DetachInternalReferences();
+
+        if (backBufferType == D3DResourceType.IDirect3DSurface9 && backBuffer != IntPtr.Zero)
         {
-            System.Runtime.InteropServices.Marshal.Release(_backBuffer);
+            // Source-compat path — keep AddRef behaviour from the original stub so
+            // existing WPF code that goes through D3DImage doesn't crash, but log
+            // a one-shot warning so callers know the surface isn't actually rendered.
+            System.Runtime.InteropServices.Marshal.AddRef(backBuffer);
         }
 
         _backBufferType = backBufferType;
+        _backBuffer = backBuffer;
         _enableSoftwareFallback = enableSoftwareFallback;
         _dirtyRects.Clear();
 
-        // AddRef the new COM surface to prevent use-after-free
-        if (backBuffer != IntPtr.Zero)
-        {
-            System.Runtime.InteropServices.Marshal.AddRef(backBuffer);
-        }
-        _backBuffer = backBuffer;
-
-        var isFrontBufferAvailable = backBuffer != IntPtr.Zero;
-        if (_isFrontBufferAvailable != isFrontBufferAvailable)
-        {
-            _isFrontBufferAvailable = isFrontBufferAvailable;
-            IsFrontBufferAvailableChanged?.Invoke(this, EventArgs.Empty);
-        }
+        UpdateAvailability(backBuffer != IntPtr.Zero);
     }
 
-    public void Dispose()
+    /// <summary>
+    /// Binds a <see cref="Jalium.UI.Media.NativeVideoSurface"/> as the back buffer.
+    /// The framework will sample this surface directly; the surface's
+    /// <see cref="NativeVideoSurface.Lock"/> path is the one the decoder pump
+    /// writes into.
+    /// </summary>
+    public void SetBackBuffer(NativeVideoSurface? surface)
     {
-        if (_disposed) return;
-        _disposed = true;
+        DetachInternalReferences();
 
-        if (_backBuffer != IntPtr.Zero)
+        if (surface is null)
         {
-            System.Runtime.InteropServices.Marshal.Release(_backBuffer);
+            _backBufferType = D3DResourceType.NativeVideoSurface;
             _backBuffer = IntPtr.Zero;
+            _videoSurface = null;
+            _pixelWidth = 0;
+            _pixelHeight = 0;
+            _dirtyRects.Clear();
+            UpdateAvailability(false);
+            return;
         }
-        _isFrontBufferAvailable = false;
+
+        _backBufferType = D3DResourceType.NativeVideoSurface;
+        _videoSurface = surface;
+        _backBuffer = surface.Handle;
+        _pixelWidth = surface.PixelWidth;
+        _pixelHeight = surface.PixelHeight;
+        _dirtyRects.Clear();
+        UpdateAvailability(true);
     }
 
-    /// <summary>
-    /// Locks the D3DImage for updates.
-    /// </summary>
-    public void Lock()
+    /// <summary>Sets the pixel dimensions reported by the D3DImage. Primarily for
+    /// the legacy IntPtr binding path where dimensions aren't deducible.</summary>
+    public void SetPixelSize(int pixelWidth, int pixelHeight)
     {
-        checked
-        {
-            _lockCount++;
-        }
+        ArgumentOutOfRangeException.ThrowIfNegative(pixelWidth);
+        ArgumentOutOfRangeException.ThrowIfNegative(pixelHeight);
+        _pixelWidth = pixelWidth;
+        _pixelHeight = pixelHeight;
     }
 
-    /// <summary>
-    /// Unlocks the D3DImage.
-    /// </summary>
+    public void Lock() { checked { _lockCount++; } }
+
     public void Unlock()
     {
         if (_lockCount == 0)
-        {
             throw new InvalidOperationException("The D3DImage is not locked.");
-        }
-
         _lockCount--;
     }
 
-    /// <summary>
-    /// Attempts to lock the D3DImage for updates.
-    /// Returns false if the front buffer is not available (e.g., device lost).
-    /// </summary>
-    /// <param name="timeout">The timeout to wait for availability.</param>
-    /// <returns>True if the lock was acquired; false if the front buffer is unavailable.</returns>
     public bool TryLock(TimeSpan timeout)
     {
         if (timeout < TimeSpan.Zero && timeout != Timeout.InfiniteTimeSpan)
-        {
             throw new ArgumentOutOfRangeException(nameof(timeout));
-        }
-
-        if (!_isFrontBufferAvailable)
-        {
-            return false;
-        }
-
+        if (!_isFrontBufferAvailable) return false;
         Lock();
         return true;
     }
 
-    /// <summary>
-    /// Specifies the area of the back buffer that changed.
-    /// </summary>
     public void AddDirtyRect(Int32Rect dirtyRect)
     {
         if (dirtyRect.Width < 0 || dirtyRect.Height < 0)
-        {
             throw new ArgumentOutOfRangeException(nameof(dirtyRect));
-        }
+        if (dirtyRect.IsEmpty) return;
 
-        if (dirtyRect.IsEmpty)
-        {
-            return;
-        }
-
-        // Merge with existing overlapping rects to avoid unbounded growth
         for (int i = 0; i < _dirtyRects.Count; i++)
         {
             var existing = _dirtyRects[i];
@@ -197,31 +184,57 @@ public sealed class D3DImage : ImageSource, IDisposable
         _dirtyRects.Add(dirtyRect);
     }
 
-    /// <summary>
-    /// Occurs when the front buffer becomes available or unavailable.
-    /// </summary>
     public event EventHandler? IsFrontBufferAvailableChanged;
 
-    /// <summary>
-    /// Sets the pixel dimensions reported by the D3DImage.
-    /// </summary>
-    public void SetPixelSize(int pixelWidth, int pixelHeight)
+    public void Dispose()
     {
-        ArgumentOutOfRangeException.ThrowIfNegative(pixelWidth);
-        ArgumentOutOfRangeException.ThrowIfNegative(pixelHeight);
+        if (_disposed) return;
+        _disposed = true;
+        DetachInternalReferences();
+        UpdateAvailability(false);
+    }
 
-        _pixelWidth = pixelWidth;
-        _pixelHeight = pixelHeight;
+    private void DetachInternalReferences()
+    {
+        if (_backBufferType == D3DResourceType.IDirect3DSurface9 && _backBuffer != IntPtr.Zero)
+        {
+            System.Runtime.InteropServices.Marshal.Release(_backBuffer);
+        }
+        // NativeVideoSurface ownership stays with the caller — only drop the ref.
+        _videoSurface = null;
+        _backBuffer = IntPtr.Zero;
+    }
+
+    private void UpdateAvailability(bool available)
+    {
+        if (_isFrontBufferAvailable == available) return;
+        _isFrontBufferAvailable = available;
+        IsFrontBufferAvailableChanged?.Invoke(this, EventArgs.Empty);
     }
 }
 
 /// <summary>
-/// Specifies the type of Direct3D resource used with D3DImage.
+/// Kind of native resource referenced by <see cref="D3DImage.NativeHandle"/>.
+/// Mirrors the surface kinds in <see cref="NativeVideoSurfaceKind"/>; kept in
+/// the WPF-style <see cref="D3DImage"/> shape for source compatibility.
 /// </summary>
 public enum D3DResourceType
 {
+    /// <summary>Legacy WPF D3D9 surface. Accepted for source-compat; no platform actually renders it.</summary>
+    IDirect3DSurface9 = 0,
+
+    /// <summary>Windows: shared ID3D11Texture2D NT handle. Stage 3.</summary>
+    ID3D11Texture2DShared = 1,
+
+    /// <summary>Vulkan VkImage via external memory extension. Stage 5.</summary>
+    VkImageExternal = 2,
+
+    /// <summary>Android AHardwareBuffer. Stage 4.</summary>
+    AHardwareBuffer = 3,
+
     /// <summary>
-    /// Specifies an IDirect3DSurface9 resource.
+    /// Preferred new path: wrap a <see cref="NativeVideoSurface"/> directly.
+    /// Framework dispatches to <c>jalium_render_target_draw_video_surface</c>.
     /// </summary>
-    IDirect3DSurface9 = 0
+    NativeVideoSurface = 4,
 }

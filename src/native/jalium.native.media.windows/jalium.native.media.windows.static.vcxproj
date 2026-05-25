@@ -80,6 +80,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClInclude Include="include\win_media_init.h" />
+    <ClInclude Include="include\win_mf_aac_decoder.h" />
     <ClInclude Include="include\win_mf_camera_source.h" />
     <ClInclude Include="include\win_mf_video_decoder.h" />
     <ClInclude Include="include\win_wic_decoder.h" />
@@ -87,6 +88,7 @@
   <ItemGroup>
     <ClCompile Include="src\win_media_exports.cpp" />
     <ClCompile Include="src\win_media_init.cpp" />
+    <ClCompile Include="src\win_mf_aac_decoder.cpp" />
     <ClCompile Include="src\win_mf_camera_source.cpp" />
     <ClCompile Include="src\win_mf_codec_caps.cpp" />
     <ClCompile Include="src\win_mf_video_decoder.cpp" />

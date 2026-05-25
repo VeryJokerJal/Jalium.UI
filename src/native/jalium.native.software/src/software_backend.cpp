@@ -2257,6 +2257,19 @@ void SoftwareRenderTarget::SetFullInvalidation()
     fullInvalidation_ = true;
 }
 
+void SoftwareRenderTarget::DrawVideoSurface(VideoSurface* surface,
+                                            float x, float y, float w, float h,
+                                            float opacity, int /*scalingMode*/)
+{
+    // Software backend treats a video surface as its embedded SoftwareBitmap.
+    // The same composite path the still-image DrawBitmap uses already reads
+    // pixels_ directly from the surface's vector — no extra copy.
+    if (!surface) return;
+    auto* sv = dynamic_cast<SoftwareVideoSurface*>(surface);
+    if (!sv) return;
+    DrawBitmap(&sv->bitmap, x, y, w, h, opacity);
+}
+
 void SoftwareRenderTarget::DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity)
 {
     if (!bitmap) return;
@@ -3327,6 +3340,13 @@ Bitmap* SoftwareBackend::CreateBitmapFromPixels(
     }
 
     return new SoftwareBitmap(width, height, std::move(pixelData));
+}
+
+VideoSurface* SoftwareBackend::CreateVideoSurface(uint32_t width, uint32_t height,
+                                                  uint32_t /*formatHint*/)
+{
+    if (width == 0 || height == 0) return nullptr;
+    return new SoftwareVideoSurface(width, height);
 }
 
 IRenderBackend* CreateSoftwareBackend()

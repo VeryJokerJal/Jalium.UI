@@ -51,6 +51,19 @@ internal static partial class NativeMediaInterop
         public int   IsKeyframe;
     }
 
+    /// <summary>对应 <c>jalium_video_decoder_gpu_descriptor_t</c>。</summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NativeVideoDecoderGpuDescriptor
+    {
+        public int   Kind;            // JaliumVideoSurfaceKind
+        public uint  Width;
+        public uint  Height;
+        public ulong Handle0;
+        public ulong Handle1;
+        public uint  FormatHint;
+        public uint  Reserved;
+    }
+
     [StructLayout(LayoutKind.Sequential)]
     internal struct NativeCameraFormat
     {
@@ -150,6 +163,16 @@ internal static partial class NativeMediaInterop
 
     [LibraryImport(MediaLib, EntryPoint = "jalium_video_decoder_close")]
     internal static partial void jalium_video_decoder_close(nint decoder);
+
+    /// <summary>
+    /// Stage 3 GPU 直出路径:从 decoder 拿当前帧的 GPU surface descriptor
+    /// (D3D11 shared handle / AHardwareBuffer / IOSurface / dma-buf)。
+    /// 返 NotImplemented 表示该 decoder 没接 GPU 路径,caller 跌到 BGRA 路径。
+    /// </summary>
+    [LibraryImport(MediaLib, EntryPoint = "jalium_video_decoder_acquire_gpu_surface_descriptor")]
+    internal static partial NativeMediaStatus jalium_video_decoder_acquire_gpu_surface_descriptor(
+        nint decoder,
+        out NativeVideoDecoderGpuDescriptor outDescriptor);
 
     // ----- 摄像头 -----------------------------------------------------------
 

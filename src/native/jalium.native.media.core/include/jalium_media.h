@@ -192,6 +192,36 @@ JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_seek_microseconds(
 
 JALIUM_MEDIA_API void jalium_video_decoder_close(jalium_video_decoder_t* decoder);
 
+// ----------------------------------------------------------------------------
+// GPU surface acquisition (stage 3 path — hardware decoder direct GPU output).
+//
+// When the decoder backend supports hardware decode + GPU-resident output
+// (Windows MF DXVA -> ID3D11Texture2D shared via NT handle; Android MediaCodec
+// -> AHardwareBuffer; Apple VTDecompressionSession -> CVPixelBuffer / IOSurface;
+// Linux VAAPI -> dma-buf), this entry point returns the current frame as a
+// platform handle the render backend can import via
+// jalium_video_surface_wrap_external.
+//
+// Returns JALIUM_MEDIA_OK + filled descriptor on success;
+// JALIUM_MEDIA_E_NOT_IMPLEMENTED when the active decoder hasn't implemented
+// the GPU path (caller falls back to read_frame BGRA path).
+//
+// `out_descriptor->kind` matches JaliumVideoSurfaceKind in jalium_video_surface.h.
+// `handle0` / `handle1` interpretation depends on `kind`.
+typedef struct jalium_video_decoder_gpu_descriptor {
+    int32_t   kind;          // JaliumVideoSurfaceKind (D3D11_SHARED / AHARDWAREBUFFER / ...)
+    uint32_t  width;
+    uint32_t  height;
+    uint64_t  handle0;       // Primary OS handle (NT HANDLE / AHardwareBuffer* / IOSurfaceID).
+    uint64_t  handle1;       // Secondary handle (NT-handle owner PID / VkDeviceMemory).
+    uint32_t  format_hint;   // JaliumVideoSurfaceFormat (0 = BGRA8).
+    uint32_t  reserved;
+} jalium_video_decoder_gpu_descriptor_t;
+
+JALIUM_MEDIA_API jalium_media_status_t jalium_video_decoder_acquire_gpu_surface_descriptor(
+    jalium_video_decoder_t*                  decoder,
+    jalium_video_decoder_gpu_descriptor_t*   out_descriptor);
+
 // ============================================================================
 // Camera capture (opaque handle, source-owned frame buffer)
 // ============================================================================

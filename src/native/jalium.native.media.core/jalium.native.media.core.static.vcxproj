@@ -60,7 +60,7 @@
       <PreprocessorDefinitions>JALIUM_STATIC;WIN32_LEAN_AND_MEAN;NOMINMAX;_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src\audio;$(ProjectDir)..\thirdparty\miniaudio;$(ProjectDir)..\thirdparty\dr_libs;$(ProjectDir)..\thirdparty\minimp3;$(ProjectDir)..\thirdparty\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
@@ -72,7 +72,7 @@
       <PreprocessorDefinitions>JALIUM_STATIC;WIN32_LEAN_AND_MEAN;NOMINMAX;NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>$(ProjectDir)include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(ProjectDir)include;$(ProjectDir)src\audio;$(ProjectDir)..\thirdparty\miniaudio;$(ProjectDir)..\thirdparty\dr_libs;$(ProjectDir)..\thirdparty\minimp3;$(ProjectDir)..\thirdparty\stb;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <RuntimeTypeInfo>true</RuntimeTypeInfo>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
     </ClCompile>
@@ -80,9 +80,20 @@
   <ItemGroup>
     <ClInclude Include="include\jalium_media.h" />
     <ClInclude Include="include\jalium_media_internal.h" />
+    <ClInclude Include="include\jalium_audio.h" />
+    <ClInclude Include="src\audio\audio_internal.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\jalium_media_common.cpp" />
+    <ClCompile Include="src\audio\audio_init.cpp" />
+    <ClCompile Include="src\audio\audio_device.cpp" />
+    <ClCompile Include="src\audio\audio_decoder.cpp" />
+    <ClCompile Include="src\audio\audio_stats.cpp" />
+    <ClCompile Include="src\audio\miniaudio_backend.cpp" />
+    <ClCompile Include="src\audio\decoder_wav.cpp" />
+    <ClCompile Include="src\audio\decoder_mp3.cpp" />
+    <ClCompile Include="src\audio\decoder_flac.cpp" />
+    <ClCompile Include="src\audio\decoder_vorbis.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />
