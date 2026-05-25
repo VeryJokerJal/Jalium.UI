@@ -153,6 +153,13 @@ public class Thumb : Control
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
         AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
+
+        // Register touch event handlers — per-contact capture so multi-finger
+        // simultaneous drag on neighbouring thumbs (e.g. RangeSlider) works.
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
+        AddHandler(TouchMoveEvent, new RoutedEventHandler(OnTouchMoveHandler));
+        AddHandler(TouchUpEvent, new RoutedEventHandler(OnTouchUpHandler));
+        AddHandler(LostTouchCaptureEvent, new RoutedEventHandler(OnLostTouchCaptureHandler));
     }
 
     private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
@@ -218,10 +225,56 @@ public class Thumb : Control
     protected override void OnLostMouseCapture()
     {
         base.OnLostMouseCapture();
-        if (IsDragging)
+        if (IsDragging && _activeTouchId == -1)
         {
             FinishDrag(true);
         }
+    }
+
+    // ── Touch handlers ──
+    // Touch drag mirrors mouse drag but captures the specific TouchDevice
+    // rather than the global mouse, so multi-finger drag (e.g. RangeSlider's
+    // two thumbs in parallel) works.
+    private int _activeTouchId = -1;
+
+    private void OnTouchDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
+        if (!TouchHelper.GetIsTouchInteractive(this)) return;
+        _activeTouchId = touchArgs.TouchDevice.Id;
+        CaptureTouch(touchArgs.TouchDevice);
+        Focus();
+        Point localPos = touchArgs.GetTouchPoint(this).Position;
+        Point windowPos = touchArgs.GetTouchPoint(null).Position;
+        StartTouchDrag(localPos, windowPos);
+        e.Handled = true;
+    }
+
+    private void OnTouchMoveHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsDragging || e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        Point windowPos = touchArgs.GetTouchPoint(null).Position;
+        UpdateDrag(windowPos);
+        e.Handled = true;
+    }
+
+    private void OnTouchUpHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        ReleaseTouchCapture(touchArgs.TouchDevice);
+        _activeTouchId = -1;
+        if (IsDragging) FinishDrag(false);
+        e.Handled = true;
+    }
+
+    private void OnLostTouchCaptureHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        _activeTouchId = -1;
+        if (IsDragging) FinishDrag(true);
     }
 
     #endregion
@@ -231,6 +284,11 @@ public class Thumb : Control
     private void StartDrag(Point position, Point windowPosition)
     {
         CaptureMouse();
+        StartTouchDrag(position, windowPosition);
+    }
+
+    private void StartTouchDrag(Point position, Point windowPosition)
+    {
         SetValue(IsDraggingPropertyKey.DependencyProperty, true);
 
         _dragStartPosition = position;

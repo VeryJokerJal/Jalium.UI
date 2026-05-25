@@ -14,4 +14,9 @@
     <ProjectReference Include="..\Jalium.UI.Core\Jalium.UI.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="Jalium.UI.Controls" />
+    <InternalsVisibleTo Include="Jalium.UI.Tests" />
+  </ItemGroup>
+
 </Project>

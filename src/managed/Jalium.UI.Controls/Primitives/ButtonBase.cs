@@ -138,6 +138,10 @@ public abstract class ButtonBase : ContentControl
         SetCurrentValue(UIElement.TransitionPropertyProperty, "None");
         Focusable = true;
 
+        // Touch ripple is on by default for buttons — apps can opt out via
+        // TouchHelper.SetIsRippleEnabled(button, false).
+        TouchHelper.SetIsRippleEnabled(this, true);
+
         // Register mouse event handlers
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
@@ -145,6 +149,16 @@ public abstract class ButtonBase : ContentControl
         AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
         AddHandler(KeyUpEvent, new KeyEventHandler(OnKeyUpHandler));
+
+        // Register touch event handlers. Touch is captured per-contact so a
+        // second simultaneous finger on another button still activates that
+        // button; mouse capture is single-slot and would have blocked it.
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
+        AddHandler(TouchMoveEvent, new RoutedEventHandler(OnTouchMoveHandler));
+        AddHandler(TouchUpEvent, new RoutedEventHandler(OnTouchUpHandler));
+        AddHandler(TouchEnterEvent, new RoutedEventHandler(OnTouchEnterHandler));
+        AddHandler(TouchLeaveEvent, new RoutedEventHandler(OnTouchLeaveHandler));
+        AddHandler(LostTouchCaptureEvent, new RoutedEventHandler(OnLostTouchCaptureHandler));
     }
 
     #endregion
@@ -213,6 +227,127 @@ public abstract class ButtonBase : ContentControl
     {
         base.OnLostMouseCapture();
         // If we lose capture unexpectedly, reset pressed state
+        if (IsPressed)
+        {
+            SetIsPressed(false);
+        }
+    }
+
+    // ── Touch handlers ─────────────────────────────────────────────
+    // The active touch contact (if any) that drove the press, plus the
+    // down-position used by the panning gate. If the finger drifts more
+    // than PanCancelThresholdDips before lifting, we treat the gesture as
+    // a scroll candidate and silently bail out so an ancestor ScrollViewer
+    // (which gets PointerMove via routing) can take over.
+    private const double PanCancelThresholdDips = 8.0;
+    private int _activeTouchId = -1;
+    private Point _activeTouchDownPosition;
+    private bool _touchClickCandidate;
+
+    private void OnTouchDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
+        if (!TouchHelper.GetIsTouchInteractive(this)) return;
+
+        _activeTouchId = touchArgs.TouchDevice.Id;
+        _activeTouchDownPosition = touchArgs.GetTouchPoint(this).Position;
+        _touchClickCandidate = true;
+        // Do NOT CaptureTouch — leaving the contact uncaptured lets PointerMove
+        // bubble up to ancestor ScrollViewer / manipulation hosts, so a finger
+        // that drifts off the button hands control to the scroller.
+        SetIsPressed(true);
+        Focus();
+        if (ClickMode == ClickMode.Press)
+        {
+            OnClick();
+        }
+
+        // Mark handled so the mouse synthesis layer in WindowInputDispatcher
+        // (`sourceHandled |= bubbleArgs.Handled` then guards SynthesizeMouseFromTouch)
+        // does not fire a duplicate MouseDown on this button. PointerDown is
+        // raised unconditionally by the dispatcher so ancestor ScrollViewers
+        // still see it.
+        e.Handled = true;
+    }
+
+    private void OnTouchMoveHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        if (!_touchClickCandidate) return;
+
+        var current = touchArgs.GetTouchPoint(this).Position;
+        double dx = current.X - _activeTouchDownPosition.X;
+        double dy = current.Y - _activeTouchDownPosition.Y;
+        double dist = Math.Sqrt(dx * dx + dy * dy);
+        if (dist > PanCancelThresholdDips)
+        {
+            // Pan / drag gesture detected. Drop the press visual and stop
+            // marking events as handled so an ancestor ScrollViewer can
+            // proceed with panning via PointerMove.
+            _touchClickCandidate = false;
+            SetIsPressed(false);
+        }
+    }
+
+    private void OnTouchUpHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId)
+        {
+            return;
+        }
+
+        bool wasCandidate = _touchClickCandidate;
+        _activeTouchId = -1;
+        _touchClickCandidate = false;
+        SetIsPressed(false);
+
+        // ClickMode.Release: fire Click only when the contact lifts on the
+        // button AND we still considered it a click (no pan-drift cancellation).
+        if (wasCandidate && ClickMode == ClickMode.Release)
+        {
+            OnClick();
+        }
+        else
+        {
+        }
+
+        // If we never committed to a click (pan-cancelled) let the touch-up
+        // bubble freely so the ancestor ScrollViewer can finish its
+        // PointerUp inertia path. Otherwise eat the event to prevent mouse
+        // synthesis from firing a phantom click.
+        if (wasCandidate)
+        {
+            e.Handled = true;
+        }
+    }
+
+    private void OnTouchEnterHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id == _activeTouchId)
+        {
+            // Re-pressed visual when the finger returns to the button.
+            SetIsPressed(true);
+        }
+    }
+
+    private void OnTouchLeaveHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id == _activeTouchId)
+        {
+            // Drop pressed-visual while the finger is outside the button bounds.
+            SetIsPressed(false);
+        }
+    }
+
+    private void OnLostTouchCaptureHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        _activeTouchId = -1;
         if (IsPressed)
         {
             SetIsPressed(false);

@@ -63,10 +63,44 @@ public sealed class ManipulationDeltaEventArgs : InputEventArgs
     public ManipulationVelocities? Velocities { get; init; }
     public bool IsInertial { get; init; }
 
-    public void Complete() { }
-    public void Cancel() { }
-    public void StartInertia() { }
-    public void ReportBoundaryFeedback(ManipulationDelta unusedManipulation) { }
+    /// <summary>
+    /// Portion of <see cref="DeltaManipulation"/> the handler did not consume.
+    /// Populated by <see cref="ReportBoundaryFeedback"/>; consumed by the inertia
+    /// processor to raise a paired ManipulationBoundaryFeedback event.
+    /// </summary>
+    internal ManipulationDelta? UnusedManipulation { get; private set; }
+
+    /// <summary>
+    /// True when the handler asked to short-circuit the rest of the manipulation pipeline
+    /// (transition into inertia immediately, or terminate without inertia).
+    /// </summary>
+    internal bool CompleteRequested { get; private set; }
+    internal bool CancelRequested { get; private set; }
+    internal bool StartInertiaRequested { get; private set; }
+
+    /// <summary>
+    /// Terminates the active manipulation. No inertia is generated.
+    /// </summary>
+    public void Complete() => CompleteRequested = true;
+
+    /// <summary>
+    /// Cancels the active manipulation. Any subsequent input is treated as fresh pointer input.
+    /// </summary>
+    public void Cancel() => CancelRequested = true;
+
+    /// <summary>
+    /// Hints the engine that inertia should begin immediately, even while contacts remain.
+    /// </summary>
+    public void StartInertia() => StartInertiaRequested = true;
+
+    /// <summary>
+    /// Reports the portion of the delta the handler could not apply (e.g. clamped to a scrollable boundary).
+    /// The engine raises a <c>ManipulationBoundaryFeedback</c> event so containers can show overscroll feedback.
+    /// </summary>
+    public void ReportBoundaryFeedback(ManipulationDelta unusedManipulation)
+    {
+        UnusedManipulation = unusedManipulation;
+    }
 
     /// <inheritdoc />
     internal override void InvokeEventHandler(Delegate handler, object target)
@@ -119,9 +153,12 @@ public sealed class ManipulationInertiaStartingEventArgs : InputEventArgs
     public InertiaRotationBehavior? RotationBehavior { get; set; }
     public InertiaExpansionBehavior? ExpansionBehavior { get; set; }
 
+    internal bool CancelRequested { get; private set; }
+    internal bool CompleteRequested { get; private set; }
+
     public void SetInertiaParameter(InertiaParameters2D parameter) { }
-    public void Complete() { }
-    public void Cancel() { }
+    public void Complete() => CompleteRequested = true;
+    public void Cancel() => CancelRequested = true;
 
     /// <inheritdoc />
     internal override void InvokeEventHandler(Delegate handler, object target)

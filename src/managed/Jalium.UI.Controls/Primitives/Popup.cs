@@ -170,6 +170,14 @@ public partial class Popup : FrameworkElement
         DependencyProperty.Register(nameof(ShouldConstrainToRootBounds), typeof(bool), typeof(Popup),
             new PropertyMetadata(false));
 
+    /// <summary>
+    /// Identifies the <see cref="PreferExternalWindow"/> dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public static readonly DependencyProperty PreferExternalWindowProperty =
+        DependencyProperty.Register(nameof(PreferExternalWindow), typeof(bool), typeof(Popup),
+            new PropertyMetadata(false));
+
     #endregion
 
     #region Properties
@@ -279,6 +287,26 @@ public partial class Popup : FrameworkElement
         set => SetValue(ShouldConstrainToRootBoundsProperty, value);
     }
 
+    /// <summary>
+    /// 偏好用独立的原生窗口（PopupWindow）渲染，而不是等"装不下"时才升级。
+    /// <para>
+    /// 默认行为是先按 overlay 走，只有溢出父窗口/屏幕工作区才切外飞窗口；这对真正的右键菜单
+    /// （ContextMenu / MenuFlyout）不合适 —— context menu 按 Win32/WPF/WinUI 惯例总是独立顶层窗口，
+    /// 才能正确处理"菜单贴到任意位置 / 不受父窗口裁切 / 自身 light dismiss"。设为 <c>true</c> 后
+    /// <see cref="OpenPopup"/> 会跳过 overflow 检查直接走外飞窗口（仅 Windows 平台；其它平台仍回退
+    /// 到 overlay）。
+    /// </para>
+    /// <para>
+    /// 与 <see cref="ShouldConstrainToRootBounds"/> 互斥：constrain=true 时不允许外飞，本属性被忽略。
+    /// </para>
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    public bool PreferExternalWindow
+    {
+        get => (bool)GetValue(PreferExternalWindowProperty)!;
+        set => SetValue(PreferExternalWindowProperty, value);
+    }
+
     #endregion
 
     #region Events
@@ -366,8 +394,11 @@ public partial class Popup : FrameworkElement
         var windowLocalPos = CalculateWindowLocalPosition(popupSize);
         var windowSize = new Size(_parentWindow.ActualWidth, _parentWindow.ActualHeight);
 
-        // Apply AutoFlip if enabled (based on window bounds)
-        var adjustedPos = ApplyAutoFlip(windowLocalPos, popupSize, windowSize);
+        // 窗口级 AutoFlip 把 popup 夹回父窗口内（line 658-669 generic X clamp）；对 PreferExternalWindow
+        // 的 context-menu 类 popup，这会破坏"贴鼠标 / 飞出窗口"的目标，所以跳过 —— 屏幕级 flip 由
+        // OpenAsExternalWindow → ApplyScreenAutoFlip 兜底，保证不会跑到屏幕外或被任务栏遮住。
+        var skipWindowAutoFlip = PreferExternalWindow && !ShouldConstrainToRootBounds && Platform.PlatformFactory.IsWindows;
+        var adjustedPos = skipWindowAutoFlip ? windowLocalPos : ApplyAutoFlip(windowLocalPos, popupSize, windowSize);
 
         // Detach child from any existing visual parent before wrapping in PopupRoot.
         // This handles cases where the child was previously attached to another tree
@@ -383,7 +414,18 @@ public partial class Popup : FrameworkElement
         _popupRoot.Height = popupSize.Height;
 
         // Decide: overlay or external window?
-        if (!ShouldConstrainToRootBounds)
+        //   ShouldConstrainToRootBounds=true  → 永远 overlay（强约束）
+        //   PreferExternalWindow=true         → 直接外飞（context menu 语义；前提是 Windows）
+        //   否则                              → 看是否溢出父窗口/屏幕工作区，溢出才升级到外飞
+        if (ShouldConstrainToRootBounds)
+        {
+            OpenAsOverlay(adjustedPos, popupSize, windowSize);
+        }
+        else if (PreferExternalWindow && Platform.PlatformFactory.IsWindows)
+        {
+            OpenAsExternalWindow(adjustedPos, popupSize);
+        }
+        else
         {
             // Check if popup would overflow the window bounds
             bool overflowsWindow = WouldOverflowWindow(adjustedPos, popupSize, windowSize);
@@ -413,10 +455,6 @@ public partial class Popup : FrameworkElement
             {
                 OpenAsOverlay(adjustedPos, popupSize, windowSize);
             }
-        }
-        else
-        {
-            OpenAsOverlay(adjustedPos, popupSize, windowSize);
         }
 
         // Subscribe to parent window moves for repositioning
@@ -516,7 +554,9 @@ public partial class Popup : FrameworkElement
         var popupSize = new Size(_popupRoot.Width, _popupRoot.Height);
         var windowLocalPos = CalculateWindowLocalPosition(popupSize);
         var windowSize = new Size(_parentWindow.ActualWidth, _parentWindow.ActualHeight);
-        var adjustedPos = ApplyAutoFlip(windowLocalPos, popupSize, windowSize);
+        // 与 OpenPopup 保持一致：外飞窗口的 popup 不做窗口级 AutoFlip，避免被夹回父窗口内。
+        var skipWindowAutoFlip = PreferExternalWindow && !ShouldConstrainToRootBounds && Platform.PlatformFactory.IsWindows;
+        var adjustedPos = skipWindowAutoFlip ? windowLocalPos : ApplyAutoFlip(windowLocalPos, popupSize, windowSize);
 
         if (_isUsingExternalWindow && _popupWindow != null)
         {

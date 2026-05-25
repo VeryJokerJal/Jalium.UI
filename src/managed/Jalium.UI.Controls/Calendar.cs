@@ -250,7 +250,31 @@ public class Calendar : Control
         AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
         AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
 
+        // Swipe horizontally to switch month on touch surfaces.
+        IsManipulationEnabled = true;
+        AddHandler(ManipulationCompletedEvent, new RoutedEventHandler(OnSwipeCompleted));
+
         CalculateDayGrid();
+    }
+
+    private const double CalendarSwipeThresholdDips = 80.0;
+
+    private void OnSwipeCompleted(object sender, RoutedEventArgs e)
+    {
+        if (e.Handled || e is not Input.ManipulationCompletedEventArgs args) return;
+        var totalX = args.TotalManipulation?.Translation.X ?? 0;
+        if (Math.Abs(totalX) < CalendarSwipeThresholdDips) return;
+
+        int monthDelta = totalX < 0 ? +1 : -1; // swipe left ⇒ next month
+        try
+        {
+            DisplayDate = DisplayDate.AddMonths(monthDelta);
+            e.Handled = true;
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            // DateTime out of range — ignore.
+        }
     }
 
     #endregion

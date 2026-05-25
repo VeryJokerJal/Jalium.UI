@@ -123,6 +123,12 @@ public sealed class PointerPoint
     public uint FrameId { get; }
 
     /// <summary>
+    /// Gets or sets the element whose client coordinate space contains <see cref="Position"/>.
+    /// Set by the input dispatcher when the point is dispatched to a target.
+    /// </summary>
+    public UIElement? SourceElement { get; set; }
+
+    /// <summary>
     /// Initializes a new instance of the PointerPoint class.
     /// </summary>
     public PointerPoint(
@@ -148,8 +154,12 @@ public sealed class PointerPoint
     /// </summary>
     public Point GetPosition(UIElement? relativeTo)
     {
-        // In a real implementation, this would transform coordinates
-        return Position;
+        if (relativeTo == null || SourceElement == null || ReferenceEquals(relativeTo, SourceElement))
+        {
+            return Position;
+        }
+        var transform = SourceElement.TransformToVisual(relativeTo);
+        return transform?.Transform(Position) ?? Position;
     }
 }
 
@@ -275,6 +285,12 @@ public class PointerEventArgs : InputEventArgs
     public bool Cancel { get; set; }
 
     /// <summary>
+    /// High-frequency packet samples captured by the platform between this report and the previous one.
+    /// Stored in chronological order (oldest first). Populated by the input dispatcher; may be null.
+    /// </summary>
+    internal StylusPointCollection? StylusPoints { get; set; }
+
+    /// <summary>
     /// Initializes a new instance of the PointerEventArgs class.
     /// </summary>
     public PointerEventArgs(PointerPoint pointer, ModifierKeys modifiers, int timestamp)
@@ -294,23 +310,83 @@ public class PointerEventArgs : InputEventArgs
 
         // Transform position to relative coordinates
         var relativePosition = Pointer.GetPosition(relativeTo);
-        return new PointerPoint(
+        var transformed = new PointerPoint(
             Pointer.PointerId,
             relativePosition,
             Pointer.PointerDeviceType,
             Pointer.IsInContact,
             Pointer.Properties,
             Pointer.Timestamp,
-            Pointer.FrameId);
+            Pointer.FrameId)
+        {
+            SourceElement = relativeTo
+        };
+        return transformed;
     }
 
     /// <summary>
-    /// Gets intermediate points since the last event.
+    /// Gets intermediate points captured by the platform between the previous report and this one.
     /// </summary>
     public IList<PointerPoint> GetIntermediatePoints(UIElement? relativeTo)
     {
-        // In a real implementation, this would return all intermediate points
-        return new List<PointerPoint> { GetCurrentPoint(relativeTo) };
+        if (StylusPoints == null || StylusPoints.Count == 0)
+        {
+            return new List<PointerPoint> { GetCurrentPoint(relativeTo) };
+        }
+
+        var list = new List<PointerPoint>(StylusPoints.Count);
+        UIElement? source = Pointer.SourceElement;
+        for (int i = 0; i < StylusPoints.Count; i++)
+        {
+            StylusPoint sp = StylusPoints[i];
+            Point raw = new(sp.X, sp.Y);
+            Point position;
+            if (relativeTo == null || source == null || ReferenceEquals(relativeTo, source))
+            {
+                position = raw;
+            }
+            else
+            {
+                var transform = source.TransformToVisual(relativeTo);
+                position = transform?.Transform(raw) ?? raw;
+            }
+
+            PointerPointProperties props = sp.PressureFactor == Pointer.Properties.Pressure
+                ? Pointer.Properties
+                : new PointerPointProperties
+                {
+                    Pressure = sp.PressureFactor,
+                    IsLeftButtonPressed = Pointer.Properties.IsLeftButtonPressed,
+                    IsRightButtonPressed = Pointer.Properties.IsRightButtonPressed,
+                    IsMiddleButtonPressed = Pointer.Properties.IsMiddleButtonPressed,
+                    IsXButton1Pressed = Pointer.Properties.IsXButton1Pressed,
+                    IsXButton2Pressed = Pointer.Properties.IsXButton2Pressed,
+                    IsBarrelButtonPressed = Pointer.Properties.IsBarrelButtonPressed,
+                    IsEraser = Pointer.Properties.IsEraser,
+                    IsPrimary = Pointer.Properties.IsPrimary,
+                    IsInverted = Pointer.Properties.IsInverted,
+                    ContactRect = Pointer.Properties.ContactRect,
+                    ContactRectRaw = Pointer.Properties.ContactRectRaw,
+                    XTilt = Pointer.Properties.XTilt,
+                    YTilt = Pointer.Properties.YTilt,
+                    Twist = Pointer.Properties.Twist,
+                    MouseWheelDelta = Pointer.Properties.MouseWheelDelta,
+                    PointerUpdateKind = Pointer.Properties.PointerUpdateKind
+                };
+
+            list.Add(new PointerPoint(
+                Pointer.PointerId,
+                position,
+                Pointer.PointerDeviceType,
+                Pointer.IsInContact,
+                props,
+                Pointer.Timestamp,
+                Pointer.FrameId)
+            {
+                SourceElement = relativeTo ?? source
+            });
+        }
+        return list;
     }
 
     /// <inheritdoc />

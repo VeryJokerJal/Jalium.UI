@@ -84,7 +84,25 @@ public partial class ScrollViewer : Control
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
     public static readonly DependencyProperty PanningModeProperty =
         DependencyProperty.Register(nameof(PanningMode), typeof(PanningMode), typeof(ScrollViewer),
-            new PropertyMetadata(PanningMode.None));
+            // Default to VerticalFirst (WinUI parity): a touch contact that
+            // drifts > threshold along the y-axis locks vertical scrolling;
+            // crossing the horizontal threshold first lets the gesture pan
+            // sideways. Apps that ship desktop-only (mouse) UX can opt out
+            // with `<ScrollViewer PanningMode="None"/>`.
+            new PropertyMetadata(PanningMode.VerticalFirst, OnPanningModeChanged));
+
+    private static void OnPanningModeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        // Mirror PanningMode != None into IsManipulationEnabled so user
+        // ManipulationDelta handlers attached to the ScrollViewer fire as
+        // expected even though the built-in pan path consumes pointer events
+        // directly. Only auto-set; never auto-clear, to avoid clobbering an
+        // app-level opt-in to IsManipulationEnabled.
+        if (d is ScrollViewer sv && e.NewValue is PanningMode mode && mode != PanningMode.None)
+        {
+            sv.IsManipulationEnabled = true;
+        }
+    }
 
     /// <summary>
     /// Identifies the PanningDeceleration dependency property.
@@ -433,8 +451,16 @@ public partial class ScrollViewer : Control
     private const double SmoothScrollMinSpeedPixelsPerSecond = 60.0;
     private const double SmoothScrollMaxDeltaTimeSeconds = 0.1;
     private static int SmoothScrollIntervalMs => CompositionTarget.FrameIntervalMs;
-    private const double DefaultPanningDeceleration = 0.001;
+    // WPF's default of 0.001 inch/ms² translated to DIPs is roughly 0.0001 —
+    // far too "slippery" on modern touch hardware where finger flicks routinely
+    // hit 2–5 DIP/ms (which under v²/(2a) maps to 2000+ DIP of inertia → the
+    // viewport flies to the bottom on the lightest flick). 0.006 DIP/ms² gives
+    // an iOS-like feel: a 1 DIP/ms swipe travels ~85 DIP, 3 DIP/ms travels
+    // ~750 DIP, 5 DIP/ms travels ~2 k DIP (enough to "fling to bottom" only
+    // for explicit fast flicks).
+    private const double DefaultPanningDeceleration = 0.006;
     private const double DefaultPanningRatio = 1.0;
+    private const double MaxPanningVelocityDipsPerMs = 4.0;
     private const double PointerPanningLockThreshold = 8.0;
 
     // Deferred scrolling fields
@@ -458,6 +484,18 @@ public partial class ScrollViewer : Control
     private long _pointerPanningLastTimestamp;
     private double _pointerPanningVelocityX;
     private double _pointerPanningVelocityY;
+
+    // iOS-style over-scroll: when a finger drags past the scroll bounds the
+    // content rubber-bands beyond the viewport and springs back on release.
+    // Values are content-space pixel offsets, positive == content drifted
+    // toward the +x/+y direction beyond the edge.
+    private double _overscrollX;
+    private double _overscrollY;
+    private const double MaxOverscrollDips = 120.0;
+    private Threading.DispatcherTimer? _bounceTimer;
+    private long _bounceStartTicks;
+    private double _bounceFromX, _bounceFromY;
+    private const double BounceDurationMs = 320.0;
     private bool _pointerPanningAxisResolved;
     private bool _pointerPanningAllowHorizontal;
     private bool _pointerPanningAllowVertical;
@@ -472,6 +510,13 @@ public partial class ScrollViewer : Control
         _horizontalScrollBar = CreateScrollBar(Orientation.Horizontal);
         AddVisualChild(_verticalScrollBar);
         AddVisualChild(_horizontalScrollBar);
+
+        // Mirror the DP default — touch panning is on by default so finger
+        // drags inside the viewport scroll without needing to drag the thumb.
+        // Manipulation must be enabled for ScrollViewer to host the panning
+        // pipeline; OnPanningModeChanged only fires on explicit SetValue,
+        // so default-value initialisation is wired up here in the ctor.
+        IsManipulationEnabled = true;
 
         // ScrollViewer clips content by default
         ClipToBounds = true;
@@ -639,6 +684,7 @@ public partial class ScrollViewer : Control
             return;
 
         CancelSmoothScroll();
+        CancelBounceAnimation();
 
         _isPointerPanningActive = true;
         _hasPointerPanningMoved = false;
@@ -696,8 +742,12 @@ public partial class ScrollViewer : Control
         {
             _hasPointerPanningMoved = true;
             double blend = 0.35;
-            double instantVelocityX = deltaX / dt;
-            double instantVelocityY = deltaY / dt;
+            // Clamp the instantaneous velocity: jittery WM_POINTER packets
+            // can occasionally report a 0.1 ms dt with a 5 DIP delta, blowing
+            // the velocity to absurd values that the inertia integrator then
+            // turns into a multi-screen fling.
+            double instantVelocityX = Math.Clamp(deltaX / dt, -MaxPanningVelocityDipsPerMs, MaxPanningVelocityDipsPerMs);
+            double instantVelocityY = Math.Clamp(deltaY / dt, -MaxPanningVelocityDipsPerMs, MaxPanningVelocityDipsPerMs);
             _pointerPanningVelocityX = (_pointerPanningVelocityX * (1 - blend)) + (instantVelocityX * blend);
             _pointerPanningVelocityY = (_pointerPanningVelocityY * (1 - blend)) + (instantVelocityY * blend);
             e.Handled = true;
@@ -714,11 +764,66 @@ public partial class ScrollViewer : Control
 
         if (_hasPointerPanningMoved)
         {
-            StartPointerPanningInertia();
+            // iOS behaviour: rubber-band overscroll trumps inertia — when the
+            // finger lifts past the edge, spring back first and skip the fling.
+            if (Math.Abs(_overscrollX) > 0.5 || Math.Abs(_overscrollY) > 0.5)
+            {
+                StartBounceAnimation();
+            }
+            else
+            {
+                StartPointerPanningInertia();
+            }
             e.Handled = true;
         }
 
         ResetPointerPanningState();
+    }
+
+    // ── Bounce-back animation ──────────────────────────────────────
+
+    private void StartBounceAnimation()
+    {
+        _bounceFromX = _overscrollX;
+        _bounceFromY = _overscrollY;
+        _bounceStartTicks = Environment.TickCount64;
+        if (_bounceTimer == null)
+        {
+            _bounceTimer = new Threading.DispatcherTimer(
+                TimeSpan.FromMilliseconds(16),
+                DispatcherPriority.Render,
+                OnBounceTick,
+                Dispatcher);
+        }
+        _bounceTimer.IsEnabled = true;
+    }
+
+    private void OnBounceTick(object? sender, EventArgs e)
+    {
+        double elapsed = Environment.TickCount64 - _bounceStartTicks;
+        double t = Math.Clamp(elapsed / BounceDurationMs, 0, 1);
+        // Ease-out cubic: 1 - (1-t)^3 — fast spring back, gentle settle.
+        double eased = 1.0 - Math.Pow(1.0 - t, 3.0);
+        _overscrollX = _bounceFromX * (1.0 - eased);
+        _overscrollY = _bounceFromY * (1.0 - eased);
+        InvalidateArrange();
+        UpdateScrollBarMetrics();
+        if (t >= 1.0)
+        {
+            _overscrollX = 0;
+            _overscrollY = 0;
+            _bounceTimer!.IsEnabled = false;
+            InvalidateArrange();
+            UpdateScrollBarMetrics();
+        }
+    }
+
+    private void CancelBounceAnimation()
+    {
+        if (_bounceTimer is { IsEnabled: true } t)
+        {
+            t.IsEnabled = false;
+        }
     }
 
     private void OnPointerCancel(PointerCancelEventArgs e)
@@ -829,24 +934,58 @@ public partial class ScrollViewer : Control
         if (_pointerPanningAllowHorizontal && CanScrollHorizontally && Math.Abs(horizontalDelta) > double.Epsilon)
         {
             double newOffset = Math.Clamp(_horizontalOffset + horizontalDelta, 0, ScrollableWidth);
+            double consumed = newOffset - _horizontalOffset;
             if (!AreClose(newOffset, _horizontalOffset))
             {
                 ScrollToHorizontalOffset(newOffset);
                 moved = true;
+            }
+            // Any movement not absorbed by the scroll offset feeds the rubber-
+            // band overscroll. We negate here because horizontalDelta is the
+            // scroll-offset delta (opposite the finger direction); overscroll
+            // is rendered as a content translation that follows the finger.
+            double remaining = horizontalDelta - consumed;
+            if (Math.Abs(remaining) > double.Epsilon)
+            {
+                ApplyOverscrollDelta(ref _overscrollX, -remaining);
+                moved = true;
+                InvalidateArrange();
+                UpdateScrollBarMetrics();
             }
         }
 
         if (_pointerPanningAllowVertical && CanScrollVertically && Math.Abs(verticalDelta) > double.Epsilon)
         {
             double newOffset = Math.Clamp(_verticalOffset + verticalDelta, 0, ScrollableHeight);
+            double consumed = newOffset - _verticalOffset;
             if (!AreClose(newOffset, _verticalOffset))
             {
                 ScrollToVerticalOffset(newOffset);
                 moved = true;
             }
+            double remaining = verticalDelta - consumed;
+            if (Math.Abs(remaining) > double.Epsilon)
+            {
+                ApplyOverscrollDelta(ref _overscrollY, -remaining);
+                moved = true;
+                InvalidateArrange();
+                UpdateScrollBarMetrics();
+            }
         }
 
         return moved;
+    }
+
+    /// <summary>
+    /// Adds <paramref name="delta"/> to the overscroll accumulator with rubber-band damping.
+    /// Closer to the cap, smaller fraction of each additional delta is admitted, so the
+    /// content asymptotes toward MaxOverscrollDips and never escapes it.
+    /// </summary>
+    private static void ApplyOverscrollDelta(ref double overscroll, double delta)
+    {
+        double magnitude = Math.Abs(overscroll);
+        double resistance = 1.0 - Math.Min(0.95, magnitude / MaxOverscrollDips);
+        overscroll = Math.Clamp(overscroll + delta * resistance, -MaxOverscrollDips, MaxOverscrollDips);
     }
 
     private void StartPointerPanningInertia()
@@ -1705,8 +1844,10 @@ public partial class ScrollViewer : Control
         {
             if (_scrollInfo != null)
             {
-                // IScrollInfo manages its own scrolling; arrange at full viewport size
-                var arrangeRect = new Rect(0, 0, _viewportWidth, _viewportHeight);
+                // IScrollInfo manages its own scrolling; arrange at full viewport size.
+                // Overscroll is added as a layout offset so the content visually drifts
+                // past the edge during a rubber-band gesture.
+                var arrangeRect = new Rect(_overscrollX, _overscrollY, _viewportWidth, _viewportHeight);
                 _content.Arrange(arrangeRect);
             }
             else
@@ -1716,8 +1857,8 @@ public partial class ScrollViewer : Control
                 var contentHeight = Math.Max(_extentHeight, _viewportHeight);
 
                 var arrangeRect = new Rect(
-                    -_horizontalOffset,
-                    -_verticalOffset,
+                    -_horizontalOffset + _overscrollX,
+                    -_verticalOffset + _overscrollY,
                     contentWidth,
                     contentHeight);
 
@@ -2164,19 +2305,26 @@ public partial class ScrollViewer : Control
         _isUpdatingScrollBars = true;
         try
         {
+            // Overscroll grows the *effective extent* so the thumb shrinks
+            // to visually reflect "there's content beyond the edge"
+            // (iOS / WinUI rubber-band feedback). The thumb stays pinned to
+            // the edge that's being pulled past.
+            double vOver = Math.Abs(_overscrollY);
+            double hOver = Math.Abs(_overscrollX);
+
             ConfigureScrollBar(
                 _verticalScrollBar,
-                ScrollableHeight,
+                ScrollableHeight + vOver,
                 _viewportHeight,
-                _verticalOffset,
+                _verticalOffset + Math.Max(0, -_overscrollY),
                 VerticalScrollBarVisibility,
                 canScroll: CanScrollVertically);
 
             ConfigureScrollBar(
                 _horizontalScrollBar,
-                ScrollableWidth,
+                ScrollableWidth + hOver,
                 _viewportWidth,
-                _horizontalOffset,
+                _horizontalOffset + Math.Max(0, -_overscrollX),
                 HorizontalScrollBarVisibility,
                 canScroll: CanScrollHorizontally);
         }

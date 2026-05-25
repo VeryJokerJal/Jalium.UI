@@ -17,6 +17,12 @@ public sealed class DynamicRenderer : StylusPlugIn
     private Stroke? _previewStroke;
     private InkPresenter? _inkPresenter;
 
+    // NOTE: DynamicRenderer intentionally stays UI-thread (IsRealTimeCapable=false).
+    // Its input hooks touch the visual tree (InkPresenter.AttachVisuals,
+    // DrawingVisual.RenderOpen) which are not thread-safe. A future split could
+    // collect points on the RTS thread and only render on the UI thread, but
+    // that needs a non-trivial rewrite of the preview-stroke pipeline.
+
     /// <summary>
     /// Gets or sets the drawing attributes used for preview rendering.
     /// </summary>

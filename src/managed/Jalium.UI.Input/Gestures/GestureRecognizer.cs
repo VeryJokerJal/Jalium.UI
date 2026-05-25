@@ -1,3 +1,6 @@
+using System.Diagnostics;
+using Jalium.UI.Threading;
+
 namespace Jalium.UI.Input.Gestures;
 
 /// <summary>
@@ -6,94 +9,23 @@ namespace Jalium.UI.Input.Gestures;
 [Flags]
 public enum GestureSettings
 {
-    /// <summary>
-    /// No gestures.
-    /// </summary>
     None = 0,
-
-    /// <summary>
-    /// Tap gesture.
-    /// </summary>
     Tap = 1 << 0,
-
-    /// <summary>
-    /// Double tap gesture.
-    /// </summary>
     DoubleTap = 1 << 1,
-
-    /// <summary>
-    /// Hold gesture.
-    /// </summary>
     Hold = 1 << 2,
-
-    /// <summary>
-    /// Hold with mouse gesture.
-    /// </summary>
     HoldWithMouse = 1 << 3,
-
-    /// <summary>
-    /// Right tap gesture (context menu).
-    /// </summary>
     RightTap = 1 << 4,
-
-    /// <summary>
-    /// Drag gesture.
-    /// </summary>
     Drag = 1 << 5,
-
-    /// <summary>
-    /// Cross slide gesture.
-    /// </summary>
     CrossSlide = 1 << 6,
-
-    /// <summary>
-    /// Manipulation translate X.
-    /// </summary>
     ManipulationTranslateX = 1 << 7,
-
-    /// <summary>
-    /// Manipulation translate Y.
-    /// </summary>
     ManipulationTranslateY = 1 << 8,
-
-    /// <summary>
-    /// Manipulation translate with rails.
-    /// </summary>
     ManipulationTranslateRailsX = 1 << 9,
-
-    /// <summary>
-    /// Manipulation translate with rails.
-    /// </summary>
     ManipulationTranslateRailsY = 1 << 10,
-
-    /// <summary>
-    /// Manipulation rotate.
-    /// </summary>
     ManipulationRotate = 1 << 11,
-
-    /// <summary>
-    /// Manipulation scale.
-    /// </summary>
     ManipulationScale = 1 << 12,
-
-    /// <summary>
-    /// Manipulation with inertia.
-    /// </summary>
     ManipulationTranslateInertia = 1 << 13,
-
-    /// <summary>
-    /// Manipulation rotate with inertia.
-    /// </summary>
     ManipulationRotateInertia = 1 << 14,
-
-    /// <summary>
-    /// Manipulation scale with inertia.
-    /// </summary>
     ManipulationScaleInertia = 1 << 15,
-
-    /// <summary>
-    /// All manipulation gestures.
-    /// </summary>
     ManipulationAll = ManipulationTranslateX | ManipulationTranslateY |
                       ManipulationRotate | ManipulationScale |
                       ManipulationTranslateInertia | ManipulationRotateInertia |
@@ -101,149 +33,185 @@ public enum GestureSettings
 }
 
 /// <summary>
-/// Provides gesture and manipulation recognition.
+/// Recognises tap/double-tap/hold/right-tap/drag and multi-finger manipulation
+/// gestures from a stream of pointer events. Hold and double-tap timing rely on
+/// a <see cref="DispatcherTimer"/> on the dispatcher passed to the constructor
+/// (defaults to the current thread's dispatcher). Tests can drive timing with
+/// <see cref="AdvanceClockForTesting"/>.
 /// </summary>
 public sealed class GestureRecognizer
 {
-    private GestureSettings _gestureSettings = GestureSettings.None;
-    private readonly List<PointerPoint> _activePointers = new();
+    // Public-tunable thresholds. WPF / WinUI defaults.
+    public static int TapTimeoutMs { get; set; } = 300;
+    public static int DoubleTapTimeoutMs { get; set; } = 500;
+    public static int HoldThresholdMs { get; set; } = 500;
+    public static double TapDistanceThresholdDips { get; set; } = 8.0;
+    public static double DoubleTapDistanceThresholdDips { get; set; } = 16.0;
+    public static double DragThresholdDips { get; set; } = 8.0;
+
+    // Per-pointer state.
+    private sealed class PointerState
+    {
+        public PointerPoint Down { get; }
+        public Point DownPosition => Down.Position;
+        public Point LastPosition { get; set; }
+        public long DownTicks { get; }
+        public bool HoldFired { get; set; }
+        public bool DragFired { get; set; }
+        public bool Moved { get; set; }
+        public PointerState(PointerPoint down, long nowTicks)
+        {
+            Down = down;
+            LastPosition = down.Position;
+            DownTicks = nowTicks;
+        }
+    }
+
+    private readonly Dictionary<uint, PointerState> _active = new();
+    private readonly Dispatcher _dispatcher;
+    private readonly DispatcherTimer _holdTimer;
+
+    // Double-tap tracking: timestamp + position of the most recent Tap that was fired.
+    private long _lastTapTicks;
+    private Point _lastTapPosition;
+    private PointerDeviceType _lastTapDeviceType;
+
     private Point _manipulationOrigin;
+    private Point _lastCentroid;
+    private double _lastSpread;
+    private double _lastAngle;
     private bool _isManipulating;
+
+    // Test injection — overrides Environment.TickCount64 for deterministic timing.
+    private long _testClockOffsetTicks;
+
+    private GestureSettings _gestureSettings = GestureSettings.None;
 
     #region Events
 
-#pragma warning disable CS0067
-    /// <summary>
-    /// Occurs when a tap gesture is recognized.
-    /// </summary>
     public event EventHandler<TappedEventArgs>? Tapped;
-
-    /// <summary>
-    /// Occurs when a double tap gesture is recognized.
-    /// </summary>
     public event EventHandler<TappedEventArgs>? DoubleTapped;
-
-    /// <summary>
-    /// Occurs when a hold gesture is recognized.
-    /// </summary>
     public event EventHandler<HoldingEventArgs>? Holding;
-
-    /// <summary>
-    /// Occurs when a right tap gesture is recognized.
-    /// </summary>
     public event EventHandler<RightTappedEventArgs>? RightTapped;
-
-    /// <summary>
-    /// Occurs when dragging starts.
-    /// </summary>
     public event EventHandler<DraggingEventArgs>? Dragging;
-#pragma warning restore CS0067
-
-    /// <summary>
-    /// Occurs when manipulation starts.
-    /// </summary>
     public event EventHandler<ManipulationStartedEventArgs>? ManipulationStarted;
-
-    /// <summary>
-    /// Occurs during manipulation.
-    /// </summary>
     public event EventHandler<ManipulationDeltaEventArgs>? ManipulationDelta;
-
-    /// <summary>
-    /// Occurs when manipulation completes.
-    /// </summary>
     public event EventHandler<ManipulationCompletedEventArgs>? ManipulationCompleted;
-
-#pragma warning disable CS0067
-    /// <summary>
-    /// Occurs during inertia.
-    /// </summary>
     public event EventHandler<ManipulationInertiaStartingEventArgs>? ManipulationInertiaStarting;
-#pragma warning restore CS0067
 
     #endregion
 
     #region Properties
 
-    /// <summary>
-    /// Gets or sets the gesture settings.
-    /// </summary>
     public GestureSettings GestureSettings
     {
         get => _gestureSettings;
         set => _gestureSettings = value;
     }
 
-    /// <summary>
-    /// Gets or sets a value indicating whether inertia is enabled.
-    /// </summary>
     public bool InertiaTranslationDisplacement { get; set; }
-
-    /// <summary>
-    /// Gets or sets the inertia rotation angle.
-    /// </summary>
     public float InertiaRotationAngle { get; set; }
-
-    /// <summary>
-    /// Gets or sets the inertia expansion.
-    /// </summary>
     public float InertiaExpansion { get; set; }
-
-    /// <summary>
-    /// Gets a value indicating whether a manipulation is in progress.
-    /// </summary>
     public bool IsActive => _isManipulating;
-
-    /// <summary>
-    /// Gets a value indicating whether inertia is in progress.
-    /// </summary>
     public bool IsInertial { get; private set; }
-
-    /// <summary>
-    /// Gets or sets the pivot center for rotation.
-    /// </summary>
     public Point? PivotCenter { get; set; }
-
-    /// <summary>
-    /// Gets or sets the pivot radius.
-    /// </summary>
     public float PivotRadius { get; set; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether auto-processing is enabled.
-    /// </summary>
     public bool AutoProcessInertia { get; set; } = true;
 
     #endregion
 
-    #region Methods
+    public GestureRecognizer()
+        : this(Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread()) { }
+
+    public GestureRecognizer(Dispatcher dispatcher)
+    {
+        _dispatcher = dispatcher ?? throw new ArgumentNullException(nameof(dispatcher));
+        _holdTimer = new DispatcherTimer(TimeSpan.FromMilliseconds(HoldThresholdMs), DispatcherPriority.Input, OnHoldTimerTick, _dispatcher)
+        {
+            IsEnabled = false
+        };
+    }
+
+    private long Now() => Environment.TickCount64 + _testClockOffsetTicks;
 
     /// <summary>
-    /// Processes pointer down events.
+    /// Test-only: advances the recogniser's internal clock by <paramref name="ms"/> and
+    /// fires the hold timer once if its threshold has elapsed.
     /// </summary>
+    internal void AdvanceClockForTesting(long ms)
+    {
+        _testClockOffsetTicks += ms;
+        OnHoldTimerTick(this, EventArgs.Empty);
+    }
+
+    #region Methods
+
     public void ProcessDownEvent(PointerPoint value)
     {
-        _activePointers.Add(value);
+        ArgumentNullException.ThrowIfNull(value);
+        long now = Now();
+        var state = new PointerState(value, now);
+        _active[value.PointerId] = state;
 
-        if (_activePointers.Count == 1)
+        // Mouse/pen right-button down: synthesize RightTapped on up. We track via state.
+        // We don't fire RightTapped here — wait for up to be classified as Tap not Drag.
+
+        if (_active.Count == 1)
         {
             _manipulationOrigin = value.Position;
         }
 
+        // Re-arm the hold timer for the first contact only (single-finger hold).
+        if ((_gestureSettings & GestureSettings.Hold) != 0 && _active.Count == 1)
+        {
+            _holdTimer.Interval = TimeSpan.FromMilliseconds(HoldThresholdMs);
+            _holdTimer.IsEnabled = false;
+            _holdTimer.IsEnabled = true;
+        }
+
         if (CanStartManipulation())
         {
-            StartManipulation(value.Position);
+            UpdateManipulationBaseline();
+            if (!_isManipulating)
+            {
+                StartManipulation(value.Position);
+            }
         }
     }
 
-    /// <summary>
-    /// Processes pointer move events.
-    /// </summary>
     public void ProcessMoveEvents(IList<PointerPoint> values)
     {
+        ArgumentNullException.ThrowIfNull(values);
         foreach (var point in values)
         {
-            UpdatePointer(point);
+            if (!_active.TryGetValue(point.PointerId, out var state)) continue;
+            state.LastPosition = point.Position;
+            double dx = point.Position.X - state.DownPosition.X;
+            double dy = point.Position.Y - state.DownPosition.Y;
+            double distance = Math.Sqrt(dx * dx + dy * dy);
+            if (distance > TapDistanceThresholdDips)
+            {
+                state.Moved = true;
+            }
+
+            // Once movement exceeds the drag threshold, the Drag gesture takes over
+            // and Hold is cancelled.
+            if (!state.DragFired && distance > DragThresholdDips && (_gestureSettings & GestureSettings.Drag) != 0)
+            {
+                state.DragFired = true;
+                Dragging?.Invoke(this, new DraggingEventArgs(point.PointerDeviceType, point.Position, DraggingState.Started));
+                if (state.HoldFired)
+                {
+                    // Hold turned into a drag — cancel Hold.
+                    Holding?.Invoke(this, new HoldingEventArgs(point.PointerDeviceType, point.Position, HoldingState.Canceled));
+                    state.HoldFired = false;
+                }
+                _holdTimer.IsEnabled = false;
+            }
+            else if (state.DragFired)
+            {
+                Dragging?.Invoke(this, new DraggingEventArgs(point.PointerDeviceType, point.Position, DraggingState.Continuing));
+            }
         }
 
         if (_isManipulating)
@@ -252,48 +220,93 @@ public sealed class GestureRecognizer
         }
     }
 
-    /// <summary>
-    /// Processes pointer up events.
-    /// </summary>
     public void ProcessUpEvent(PointerPoint value)
     {
-        RemovePointer(value.PointerId);
-
-        if (_activePointers.Count == 0 && _isManipulating)
+        ArgumentNullException.ThrowIfNull(value);
+        if (!_active.TryGetValue(value.PointerId, out var state))
         {
-            CompleteManipulation();
+            return;
+        }
+        _active.Remove(value.PointerId);
+
+        long now = Now();
+        long elapsed = now - state.DownTicks;
+        bool wasShortTap = !state.Moved && elapsed <= TapTimeoutMs;
+
+        // Drag completion takes priority — no Tap/RightTap fires after drag.
+        if (state.DragFired)
+        {
+            Dragging?.Invoke(this, new DraggingEventArgs(value.PointerDeviceType, value.Position, DraggingState.Completed));
+        }
+        else if (state.HoldFired)
+        {
+            Holding?.Invoke(this, new HoldingEventArgs(value.PointerDeviceType, value.Position, HoldingState.Completed));
+            // A completed hold with touch is equivalent to a right-tap (touch context-menu trigger).
+            if ((_gestureSettings & GestureSettings.RightTap) != 0 && value.PointerDeviceType == PointerDeviceType.Touch)
+            {
+                RightTapped?.Invoke(this, new RightTappedEventArgs(value.PointerDeviceType, value.Position));
+            }
+        }
+        else if (wasShortTap)
+        {
+            // Distinguish right-tap (pen barrel / mouse right button) from regular tap.
+            bool isRight = value.Properties.IsRightButtonPressed
+                           || value.Properties.IsBarrelButtonPressed
+                           || (value.PointerDeviceType == PointerDeviceType.Mouse &&
+                               value.Properties.PointerUpdateKind == PointerUpdateKind.RightButtonReleased);
+            if (isRight && (_gestureSettings & GestureSettings.RightTap) != 0)
+            {
+                RightTapped?.Invoke(this, new RightTappedEventArgs(value.PointerDeviceType, value.Position));
+            }
+            else if ((_gestureSettings & GestureSettings.Tap) != 0)
+            {
+                // Double-tap?
+                double ddx = value.Position.X - _lastTapPosition.X;
+                double ddy = value.Position.Y - _lastTapPosition.Y;
+                double doubleDist = Math.Sqrt(ddx * ddx + ddy * ddy);
+                bool isDouble = (_gestureSettings & GestureSettings.DoubleTap) != 0
+                                && _lastTapTicks > 0
+                                && now - _lastTapTicks <= DoubleTapTimeoutMs
+                                && doubleDist <= DoubleTapDistanceThresholdDips
+                                && _lastTapDeviceType == value.PointerDeviceType;
+                if (isDouble)
+                {
+                    DoubleTapped?.Invoke(this, new TappedEventArgs(value.PointerDeviceType, value.Position, tapCount: 2));
+                    _lastTapTicks = 0; // consume the previous tap
+                }
+                else
+                {
+                    Tapped?.Invoke(this, new TappedEventArgs(value.PointerDeviceType, value.Position));
+                    _lastTapTicks = now;
+                    _lastTapPosition = value.Position;
+                    _lastTapDeviceType = value.PointerDeviceType;
+                }
+            }
+        }
+
+        if (_active.Count == 0)
+        {
+            _holdTimer.IsEnabled = false;
+            if (_isManipulating)
+            {
+                CompleteManipulation();
+            }
         }
     }
 
-    /// <summary>
-    /// Processes mouse wheel events.
-    /// </summary>
     public void ProcessMouseWheelEvent(PointerPoint value, bool isShiftKeyDown, bool isControlKeyDown)
     {
-        // Handle zoom or scroll based on modifiers
+        ArgumentNullException.ThrowIfNull(value);
         if (isControlKeyDown && (_gestureSettings & GestureSettings.ManipulationScale) != 0)
         {
-            // Zoom
-            var delta = value.Properties.MouseWheelDelta / 120.0f;
-            var scale = delta > 0 ? 1.1f : 0.9f;
+            float delta = value.Properties.MouseWheelDelta / 120.0f;
+            float scale = delta > 0 ? 1.1f : 0.9f;
             RaiseManipulationDelta(new ManipulationDelta(Point.Zero, 0, scale));
         }
     }
 
     /// <summary>
-    /// Processes inertia.
-    /// </summary>
-    public void ProcessInertia()
-    {
-        // Process inertia physics
-        if (IsInertial)
-        {
-            // Calculate decay and update position/rotation/scale
-        }
-    }
-
-    /// <summary>
-    /// Completes the current gesture or manipulation.
+    /// Cancels any active gesture (e.g. window deactivation, focus loss).
     /// </summary>
     public void CompleteGesture()
     {
@@ -301,18 +314,42 @@ public sealed class GestureRecognizer
         {
             CompleteManipulation();
         }
+        _active.Clear();
+        _holdTimer.IsEnabled = false;
+    }
 
-        _activePointers.Clear();
+    /// <summary>
+    /// Drives the inertia phase. The recogniser does not own its own inertia loop —
+    /// host code should drive the manipulation events; this method is preserved for
+    /// API surface compatibility and currently exposes a no-op (real inertia is in
+    /// <c>ManipulationInertiaProcessor</c> in Jalium.UI.Controls).
+    /// </summary>
+    public void ProcessInertia()
+    {
+        // The shared exponential-decay inertia engine lives in Jalium.UI.Controls /
+        // ManipulationInertiaProcessor. The recogniser surfaces the InertiaStarting
+        // event; consumers wire the InertiaProcessor themselves.
     }
 
     #endregion
 
     #region Private Methods
 
-    private bool CanStartManipulation()
+    private void OnHoldTimerTick(object? sender, EventArgs e)
     {
-        return (_gestureSettings & GestureSettings.ManipulationAll) != 0;
+        _holdTimer.IsEnabled = false;
+        if (_active.Count != 1) return;
+        long now = Now();
+        var first = _active.Values.First();
+        if (first.HoldFired || first.DragFired || first.Moved) return;
+        if (now - first.DownTicks < HoldThresholdMs) return;
+        if ((_gestureSettings & GestureSettings.Hold) == 0) return;
+        first.HoldFired = true;
+        Holding?.Invoke(this, new HoldingEventArgs(first.Down.PointerDeviceType, first.LastPosition, HoldingState.Started));
     }
+
+    private bool CanStartManipulation()
+        => (_gestureSettings & GestureSettings.ManipulationAll) != 0;
 
     private void StartManipulation(Point position)
     {
@@ -321,28 +358,80 @@ public sealed class GestureRecognizer
         ManipulationStarted?.Invoke(this, new ManipulationStartedEventArgs(position));
     }
 
+    private void UpdateManipulationBaseline()
+    {
+        _lastCentroid = ComputeCentroid();
+        _lastSpread = ComputeSpread(_lastCentroid);
+        _lastAngle = ComputeAngle(_lastCentroid);
+    }
+
     private void ProcessManipulationDelta()
     {
-        if (_activePointers.Count == 0) return;
+        if (_active.Count == 0) return;
+        Point centroid = ComputeCentroid();
+        var translation = new Point(centroid.X - _lastCentroid.X, centroid.Y - _lastCentroid.Y);
 
-        var currentPosition = _activePointers[0].Position;
-        var translation = new Point(
-            currentPosition.X - _manipulationOrigin.X,
-            currentPosition.Y - _manipulationOrigin.Y);
-
-        var scale = 1.0f;
-        var rotation = 0.0f;
-
-        // Calculate pinch-to-zoom and rotation for multi-touch
-        if (_activePointers.Count >= 2)
+        float scale = 1.0f;
+        float rotation = 0.0f;
+        if (_active.Count >= 2)
         {
-            var p1 = _activePointers[0].Position;
-            var p2 = _activePointers[1].Position;
-            // Calculate scale and rotation from two-point gestures
+            double spread = ComputeSpread(centroid);
+            if (_lastSpread > 0.0001)
+            {
+                if ((_gestureSettings & GestureSettings.ManipulationScale) != 0)
+                {
+                    scale = (float)(spread / _lastSpread);
+                }
+            }
+            double angle = ComputeAngle(centroid);
+            if ((_gestureSettings & GestureSettings.ManipulationRotate) != 0)
+            {
+                rotation = (float)WrapAngle(angle - _lastAngle);
+            }
+            _lastSpread = spread;
+            _lastAngle = angle;
         }
 
+        _lastCentroid = centroid;
         var delta = new ManipulationDelta(translation, rotation, scale);
         RaiseManipulationDelta(delta);
+    }
+
+    private Point ComputeCentroid()
+    {
+        if (_active.Count == 0) return _manipulationOrigin;
+        double sx = 0, sy = 0;
+        foreach (var s in _active.Values) { sx += s.LastPosition.X; sy += s.LastPosition.Y; }
+        return new Point(sx / _active.Count, sy / _active.Count);
+    }
+
+    private double ComputeSpread(Point centroid)
+    {
+        if (_active.Count == 0) return 0;
+        double sum = 0;
+        foreach (var s in _active.Values)
+        {
+            double dx = s.LastPosition.X - centroid.X;
+            double dy = s.LastPosition.Y - centroid.Y;
+            sum += Math.Sqrt(dx * dx + dy * dy);
+        }
+        return sum / _active.Count;
+    }
+
+    private double ComputeAngle(Point centroid)
+    {
+        foreach (var s in _active.Values)
+        {
+            return Math.Atan2(s.LastPosition.Y - centroid.Y, s.LastPosition.X - centroid.X) * (180.0 / Math.PI);
+        }
+        return 0;
+    }
+
+    private static double WrapAngle(double deg)
+    {
+        while (deg > 180) deg -= 360;
+        while (deg <= -180) deg += 360;
+        return deg;
     }
 
     private void RaiseManipulationDelta(ManipulationDelta delta)
@@ -350,7 +439,7 @@ public sealed class GestureRecognizer
         var args = new ManipulationDeltaEventArgs(
             _manipulationOrigin,
             delta,
-            new ManipulationDelta(Point.Zero, 0, 1), // Cumulative
+            new ManipulationDelta(Point.Zero, 0, 1),
             new ManipulationVelocities(Point.Zero, 0, 0),
             false);
         ManipulationDelta?.Invoke(this, args);
@@ -365,56 +454,24 @@ public sealed class GestureRecognizer
             new ManipulationVelocities(Point.Zero, 0, 0),
             false);
         ManipulationCompleted?.Invoke(this, args);
-    }
 
-    private void UpdatePointer(PointerPoint point)
-    {
-        for (int i = 0; i < _activePointers.Count; i++)
-        {
-            if (_activePointers[i].PointerId == point.PointerId)
-            {
-                _activePointers[i] = point;
-                return;
-            }
-        }
-    }
-
-    private void RemovePointer(uint pointerId)
-    {
-        _activePointers.RemoveAll(p => p.PointerId == pointerId);
+        // Surface the InertiaStarting hook so subscribers can attach an InertiaProcessor.
+        ManipulationInertiaStarting?.Invoke(this, new ManipulationInertiaStartingEventArgs(
+            _manipulationOrigin,
+            new ManipulationDelta(Point.Zero, 0, 1),
+            new ManipulationVelocities(Point.Zero, 0, 0)));
     }
 
     #endregion
 }
 
-/// <summary>
-/// Represents changes in manipulation.
-/// </summary>
+/// <summary>Represents changes in manipulation.</summary>
 public struct ManipulationDelta
 {
-    /// <summary>
-    /// Gets the translation delta.
-    /// </summary>
     public Point Translation { get; }
-
-    /// <summary>
-    /// Gets the rotation delta in degrees.
-    /// </summary>
     public float Rotation { get; }
-
-    /// <summary>
-    /// Gets the scale delta.
-    /// </summary>
     public float Scale { get; }
-
-    /// <summary>
-    /// Gets the expansion delta.
-    /// </summary>
     public float Expansion { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the ManipulationDelta struct.
-    /// </summary>
     public ManipulationDelta(Point translation, float rotation, float scale, float expansion = 0)
     {
         Translation = translation;
@@ -424,29 +481,12 @@ public struct ManipulationDelta
     }
 }
 
-/// <summary>
-/// Represents manipulation velocities.
-/// </summary>
+/// <summary>Represents manipulation velocities.</summary>
 public struct ManipulationVelocities
 {
-    /// <summary>
-    /// Gets the linear velocity.
-    /// </summary>
     public Point Linear { get; }
-
-    /// <summary>
-    /// Gets the angular velocity in degrees per millisecond.
-    /// </summary>
     public float Angular { get; }
-
-    /// <summary>
-    /// Gets the expansion velocity.
-    /// </summary>
     public float Expansion { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the ManipulationVelocities struct.
-    /// </summary>
     public ManipulationVelocities(Point linear, float angular, float expansion)
     {
         Linear = linear;
@@ -457,29 +497,11 @@ public struct ManipulationVelocities
 
 #region Event Args
 
-/// <summary>
-/// Event arguments for tap events.
-/// </summary>
 public sealed class TappedEventArgs : EventArgs
 {
-    /// <summary>
-    /// Gets the pointer device type.
-    /// </summary>
     public PointerDeviceType PointerDeviceType { get; }
-
-    /// <summary>
-    /// Gets the position.
-    /// </summary>
     public Point Position { get; }
-
-    /// <summary>
-    /// Gets the tap count.
-    /// </summary>
     public uint TapCount { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the TappedEventArgs class.
-    /// </summary>
     public TappedEventArgs(PointerDeviceType deviceType, Point position, uint tapCount = 1)
     {
         PointerDeviceType = deviceType;
@@ -488,24 +510,10 @@ public sealed class TappedEventArgs : EventArgs
     }
 }
 
-/// <summary>
-/// Event arguments for right tap events.
-/// </summary>
 public sealed class RightTappedEventArgs : EventArgs
 {
-    /// <summary>
-    /// Gets the pointer device type.
-    /// </summary>
     public PointerDeviceType PointerDeviceType { get; }
-
-    /// <summary>
-    /// Gets the position.
-    /// </summary>
     public Point Position { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the RightTappedEventArgs class.
-    /// </summary>
     public RightTappedEventArgs(PointerDeviceType deviceType, Point position)
     {
         PointerDeviceType = deviceType;
@@ -513,50 +521,13 @@ public sealed class RightTappedEventArgs : EventArgs
     }
 }
 
-/// <summary>
-/// Specifies the holding state.
-/// </summary>
-public enum HoldingState
-{
-    /// <summary>
-    /// Holding started.
-    /// </summary>
-    Started,
+public enum HoldingState { Started, Completed, Canceled }
 
-    /// <summary>
-    /// Holding completed.
-    /// </summary>
-    Completed,
-
-    /// <summary>
-    /// Holding cancelled.
-    /// </summary>
-    Canceled
-}
-
-/// <summary>
-/// Event arguments for holding events.
-/// </summary>
 public sealed class HoldingEventArgs : EventArgs
 {
-    /// <summary>
-    /// Gets the pointer device type.
-    /// </summary>
     public PointerDeviceType PointerDeviceType { get; }
-
-    /// <summary>
-    /// Gets the position.
-    /// </summary>
     public Point Position { get; }
-
-    /// <summary>
-    /// Gets the holding state.
-    /// </summary>
     public HoldingState HoldingState { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the HoldingEventArgs class.
-    /// </summary>
     public HoldingEventArgs(PointerDeviceType deviceType, Point position, HoldingState state)
     {
         PointerDeviceType = deviceType;
@@ -565,50 +536,13 @@ public sealed class HoldingEventArgs : EventArgs
     }
 }
 
-/// <summary>
-/// Specifies the dragging state.
-/// </summary>
-public enum DraggingState
-{
-    /// <summary>
-    /// Dragging started.
-    /// </summary>
-    Started,
+public enum DraggingState { Started, Continuing, Completed }
 
-    /// <summary>
-    /// Dragging in progress.
-    /// </summary>
-    Continuing,
-
-    /// <summary>
-    /// Dragging completed.
-    /// </summary>
-    Completed
-}
-
-/// <summary>
-/// Event arguments for dragging events.
-/// </summary>
 public sealed class DraggingEventArgs : EventArgs
 {
-    /// <summary>
-    /// Gets the pointer device type.
-    /// </summary>
     public PointerDeviceType PointerDeviceType { get; }
-
-    /// <summary>
-    /// Gets the position.
-    /// </summary>
     public Point Position { get; }
-
-    /// <summary>
-    /// Gets the dragging state.
-    /// </summary>
     public DraggingState DraggingState { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the DraggingEventArgs class.
-    /// </summary>
     public DraggingEventArgs(PointerDeviceType deviceType, Point position, DraggingState state)
     {
         PointerDeviceType = deviceType;
@@ -617,213 +551,67 @@ public sealed class DraggingEventArgs : EventArgs
     }
 }
 
-/// <summary>
-/// Event arguments for manipulation started events.
-/// </summary>
 public sealed class ManipulationStartedEventArgs : EventArgs
 {
-    /// <summary>
-    /// Gets the origin point.
-    /// </summary>
     public Point Position { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the ManipulationStartedEventArgs class.
-    /// </summary>
-    public ManipulationStartedEventArgs(Point position)
-    {
-        Position = position;
-    }
+    public ManipulationStartedEventArgs(Point position) { Position = position; }
 }
 
-/// <summary>
-/// Event arguments for manipulation delta events.
-/// </summary>
 public sealed class ManipulationDeltaEventArgs : EventArgs
 {
-    /// <summary>
-    /// Gets the origin point.
-    /// </summary>
     public Point Position { get; }
-
-    /// <summary>
-    /// Gets the delta since the last event.
-    /// </summary>
     public ManipulationDelta Delta { get; }
-
-    /// <summary>
-    /// Gets the cumulative delta since manipulation started.
-    /// </summary>
     public ManipulationDelta Cumulative { get; }
-
-    /// <summary>
-    /// Gets the current velocities.
-    /// </summary>
     public ManipulationVelocities Velocities { get; }
-
-    /// <summary>
-    /// Gets a value indicating whether this is an inertia event.
-    /// </summary>
     public bool IsInertial { get; }
-
-    /// <summary>
-    /// Gets or sets a value indicating whether to complete the manipulation.
-    /// </summary>
     public bool Complete { get; set; }
-
-    /// <summary>
-    /// Initializes a new instance of the ManipulationDeltaEventArgs class.
-    /// </summary>
-    public ManipulationDeltaEventArgs(
-        Point position,
-        ManipulationDelta delta,
-        ManipulationDelta cumulative,
-        ManipulationVelocities velocities,
-        bool isInertial)
+    public ManipulationDeltaEventArgs(Point position, ManipulationDelta delta, ManipulationDelta cumulative, ManipulationVelocities velocities, bool isInertial)
     {
-        Position = position;
-        Delta = delta;
-        Cumulative = cumulative;
-        Velocities = velocities;
-        IsInertial = isInertial;
+        Position = position; Delta = delta; Cumulative = cumulative; Velocities = velocities; IsInertial = isInertial;
     }
 }
 
-/// <summary>
-/// Event arguments for manipulation completed events.
-/// </summary>
 public sealed class ManipulationCompletedEventArgs : EventArgs
 {
-    /// <summary>
-    /// Gets the origin point.
-    /// </summary>
     public Point Position { get; }
-
-    /// <summary>
-    /// Gets the cumulative delta.
-    /// </summary>
     public ManipulationDelta Cumulative { get; }
-
-    /// <summary>
-    /// Gets the final velocities.
-    /// </summary>
     public ManipulationVelocities Velocities { get; }
-
-    /// <summary>
-    /// Gets a value indicating whether inertia occurred.
-    /// </summary>
     public bool IsInertial { get; }
-
-    /// <summary>
-    /// Initializes a new instance of the ManipulationCompletedEventArgs class.
-    /// </summary>
-    public ManipulationCompletedEventArgs(
-        Point position,
-        ManipulationDelta cumulative,
-        ManipulationVelocities velocities,
-        bool isInertial)
+    public ManipulationCompletedEventArgs(Point position, ManipulationDelta cumulative, ManipulationVelocities velocities, bool isInertial)
     {
-        Position = position;
-        Cumulative = cumulative;
-        Velocities = velocities;
-        IsInertial = isInertial;
+        Position = position; Cumulative = cumulative; Velocities = velocities; IsInertial = isInertial;
     }
 }
 
-/// <summary>
-/// Event arguments for manipulation inertia starting events.
-/// </summary>
 public sealed class ManipulationInertiaStartingEventArgs : EventArgs
 {
-    /// <summary>
-    /// Gets the origin point.
-    /// </summary>
     public Point Position { get; }
-
-    /// <summary>
-    /// Gets the cumulative delta.
-    /// </summary>
     public ManipulationDelta Cumulative { get; }
-
-    /// <summary>
-    /// Gets the initial velocities.
-    /// </summary>
     public ManipulationVelocities Velocities { get; }
-
-    /// <summary>
-    /// Gets or sets the translation behavior during inertia.
-    /// </summary>
     public InertiaTranslationBehavior? TranslationBehavior { get; set; }
-
-    /// <summary>
-    /// Gets or sets the rotation behavior during inertia.
-    /// </summary>
     public InertiaRotationBehavior? RotationBehavior { get; set; }
-
-    /// <summary>
-    /// Gets or sets the expansion behavior during inertia.
-    /// </summary>
     public InertiaExpansionBehavior? ExpansionBehavior { get; set; }
-
-    /// <summary>
-    /// Initializes a new instance of the ManipulationInertiaStartingEventArgs class.
-    /// </summary>
-    public ManipulationInertiaStartingEventArgs(
-        Point position,
-        ManipulationDelta cumulative,
-        ManipulationVelocities velocities)
+    public ManipulationInertiaStartingEventArgs(Point position, ManipulationDelta cumulative, ManipulationVelocities velocities)
     {
-        Position = position;
-        Cumulative = cumulative;
-        Velocities = velocities;
+        Position = position; Cumulative = cumulative; Velocities = velocities;
     }
 }
 
-/// <summary>
-/// Specifies translation inertia behavior.
-/// </summary>
 public sealed class InertiaTranslationBehavior
 {
-    /// <summary>
-    /// Gets or sets the desired displacement.
-    /// </summary>
     public double DesiredDisplacement { get; set; }
-
-    /// <summary>
-    /// Gets or sets the desired deceleration.
-    /// </summary>
     public double DesiredDeceleration { get; set; }
 }
 
-/// <summary>
-/// Specifies rotation inertia behavior.
-/// </summary>
 public sealed class InertiaRotationBehavior
 {
-    /// <summary>
-    /// Gets or sets the desired rotation.
-    /// </summary>
     public double DesiredRotation { get; set; }
-
-    /// <summary>
-    /// Gets or sets the desired deceleration.
-    /// </summary>
     public double DesiredDeceleration { get; set; }
 }
 
-/// <summary>
-/// Specifies expansion inertia behavior.
-/// </summary>
 public sealed class InertiaExpansionBehavior
 {
-    /// <summary>
-    /// Gets or sets the desired expansion.
-    /// </summary>
     public double DesiredExpansion { get; set; }
-
-    /// <summary>
-    /// Gets or sets the desired deceleration.
-    /// </summary>
     public double DesiredDeceleration { get; set; }
 }
 

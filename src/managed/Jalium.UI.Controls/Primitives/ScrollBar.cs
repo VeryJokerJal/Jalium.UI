@@ -193,6 +193,7 @@ public class ScrollBar : RangeBase
         // lag behind content-area scrolling when the user scrolled the wheel rapidly,
         // because the Scroll-event path assigned the smooth target instead of accumulating it.
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
         ResourcesChanged += OnResourcesChangedHandler;
 
         _autoHideCollapseProgress = IsThumbSlim ? 1.0 : 0.0;
@@ -797,6 +798,18 @@ public class ScrollBar : RangeBase
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Left)
+        {
+            Focus();
+        }
+    }
+
+    private void OnTouchDownHandler(object sender, RoutedEventArgs e)
+    {
+        // Touch on the scroll bar background — give it focus. Inner Thumb and
+        // page RepeatButtons consume their own TouchDown via ButtonBase /
+        // Thumb's per-contact handlers, so this only fires for the surrounding
+        // chrome.
+        if (e is TouchEventArgs)
         {
             Focus();
         }

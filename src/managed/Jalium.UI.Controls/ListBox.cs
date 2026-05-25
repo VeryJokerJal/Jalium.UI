@@ -919,6 +919,62 @@ public class ListBoxItem : ContentControl
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
         AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
         AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
+        AddHandler(TouchMoveEvent, new RoutedEventHandler(OnTouchMoveHandler));
+        AddHandler(TouchUpEvent, new RoutedEventHandler(OnTouchUpHandler));
+
+        // Touch ripple by default for list items so taps get visual feedback.
+        TouchHelper.SetIsRippleEnabled(this, true);
+    }
+
+    // Panning gate — same pattern as ButtonBase: defer the selection to TouchUp,
+    // cancel if the contact drags more than the threshold so the ancestor
+    // ScrollViewer can take over panning.
+    private const double TouchPanCancelThresholdDips = 8.0;
+    private int _activeTouchId = -1;
+    private Point _activeTouchDownPos;
+    private bool _touchClickCandidate;
+
+    private void OnTouchDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
+        if (!TouchHelper.GetIsTouchInteractive(this)) return;
+        _activeTouchId = touchArgs.TouchDevice.Id;
+        _activeTouchDownPos = touchArgs.GetTouchPoint(this).Position;
+        _touchClickCandidate = true;
+        // Set Handled to suppress mouse synthesis (which would otherwise call
+        // OnMouseDown → SelectItem instantly, bypassing the panning gate).
+        // PointerDown is raised unconditionally by the dispatcher and still
+        // reaches an ancestor ScrollViewer.
+        e.Handled = true;
+    }
+
+    private void OnTouchMoveHandler(object sender, RoutedEventArgs e)
+    {
+        if (!_touchClickCandidate || e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        var current = touchArgs.GetTouchPoint(this).Position;
+        double dx = current.X - _activeTouchDownPos.X;
+        double dy = current.Y - _activeTouchDownPos.Y;
+        if (dx * dx + dy * dy > TouchPanCancelThresholdDips * TouchPanCancelThresholdDips)
+        {
+            _touchClickCandidate = false;
+        }
+    }
+
+    private void OnTouchUpHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        bool wasCandidate = _touchClickCandidate;
+        _activeTouchId = -1;
+        _touchClickCandidate = false;
+        if (wasCandidate)
+        {
+            Focus();
+            ParentListBox?.SelectItem(this, isCtrlPressed: false, isShiftPressed: false);
+            e.Handled = true;
+        }
     }
 
     #endregion

@@ -143,12 +143,21 @@ public abstract class FlyoutBase : DependencyObject
         if (_popup == null) return;
 
         _popup.PlacementTarget = placementTarget;
-        _popup.Placement = MapPlacement(options.Placement != FlyoutPlacementMode.Auto ? options.Placement : Placement);
 
         if (options.Position.HasValue)
         {
+            // WinUI 3 语义：Position 是相对 PlacementTarget 左上角的明确落点（context-menu / 右键菜单
+            // 这种场景就该精确贴鼠标，而不是再叠到 Bottom/Top 锚点上）。用 Relative 让 Popup 把偏移
+            // 从 target 左上角起算；忽略 Placement，由调用方通过 Position 完全决定位置。
+            _popup.Placement = PlacementMode.Relative;
             _popup.HorizontalOffset = options.Position.Value.X;
             _popup.VerticalOffset = options.Position.Value.Y;
+        }
+        else
+        {
+            _popup.Placement = MapPlacement(options.Placement != FlyoutPlacementMode.Auto ? options.Placement : Placement);
+            _popup.HorizontalOffset = 0;
+            _popup.VerticalOffset = 0;
         }
 
         _popup.IsOpen = true;
@@ -208,23 +217,24 @@ public abstract class FlyoutBase : DependencyObject
         _presenter = CreatePresenter();
         if (_presenter == null) return;
 
-        // Menu flyouts already provide their own overflow scrolling and behave
-        // more reliably when they stay inside the owner window's overlay layer.
-        // Avoid routing them through an external PopupWindow, which can interfere
-        // with hover/input handling under custom window chrome.
-        var constrainMenuFlyoutToRootBounds = _presenter is global::Jalium.UI.Controls.MenuFlyoutPresenter;
+        // MenuFlyoutPresenter 自带 chrome（边框/圆角/背景由 OnRender 画），不要再外包 Border，
+        // 否则会出现双重边框；其它 Flyout 没自带 chrome，需要 Border 提供视觉容器。
+        var isMenuFlyout = _presenter is global::Jalium.UI.Controls.MenuFlyoutPresenter;
+        var presenterPaintsOwnChrome = isMenuFlyout;
 
         _popup = new Popup
         {
             StaysOpen = false,
             IsLightDismissEnabled = true,
-            ShouldConstrainToRootBounds = constrainMenuFlyoutToRootBounds
+            ShouldConstrainToRootBounds = false,
+            // MenuFlyout 是右键/上下文菜单语义：按 Win32/WPF/WinUI 惯例总是独立顶层窗口，
+            // 这样才能贴鼠标任意位置、不受父窗口裁切、独立 light dismiss。其它 Flyout（按钮下拉等）
+            // 仍走"溢出才升级"的默认策略，避免引入不必要的窗口创建开销。
+            PreferExternalWindow = isMenuFlyout
         };
 
-        if (constrainMenuFlyoutToRootBounds)
+        if (presenterPaintsOwnChrome)
         {
-            // MenuFlyoutPresenter already paints its own popup chrome.
-            // Avoid wrapping it with another Border, which creates double-border visuals.
             _popup.Child = _presenter;
         }
         else

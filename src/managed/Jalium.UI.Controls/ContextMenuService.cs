@@ -24,6 +24,32 @@ public static class ContextMenuService
             UIElement.KeyDownEvent,
             new KeyEventHandler(OnKeyDownClassHandler),
             handledEventsToo: true);
+
+        // Touch press-and-hold opens the context menu, mirroring mouse right-click.
+        // WindowInputDispatcher emits SystemGesture.HoldEnter ~500 ms after a
+        // stationary touch contact begins; we consume it here at class-handler
+        // scope so every UIElement that has a ContextMenu attached gets it.
+        EventManager.RegisterClassHandler(
+            typeof(UIElement),
+            UIElement.StylusSystemGestureEvent,
+            new RoutedEventHandler(OnStylusSystemGestureClassHandler),
+            handledEventsToo: false);
+    }
+
+    private static void OnStylusSystemGestureClassHandler(object sender, RoutedEventArgs e)
+    {
+        if (e.Handled || sender is not UIElement owner) return;
+        if (e is not Input.StylusSystemGestureEventArgs gestureArgs) return;
+        if (gestureArgs.SystemGesture != Input.SystemGesture.HoldEnter) return;
+        // Only touch-driven holds should open the context menu; pen / mouse have
+        // explicit right-click paths.
+        if (gestureArgs.StylusDevice is not Input.PointerStylusDevice ps) return;
+        // Open at the device position relative to the window root.
+        var position = ps.GetPosition(null);
+        if (TryOpen(owner, position))
+        {
+            e.Handled = true;
+        }
     }
 
     #region Attached Properties

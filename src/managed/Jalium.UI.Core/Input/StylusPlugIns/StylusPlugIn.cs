@@ -9,6 +9,20 @@ public abstract class StylusPlugIn
 
     public bool Enabled { get; set; } = true;
 
+    /// <summary>
+    /// When <see langword="true"/>, this plug-in's <c>OnStylusXxx</c> input
+    /// hooks execute on the <see cref="RealTimeStylus"/> background thread —
+    /// giving real-time, low-latency packet handling at the cost of being
+    /// unable to touch UI-thread state directly (use
+    /// <c>NotifyWhenProcessed</c> + <c>AddCustomData</c> to hand a result
+    /// back to the UI thread).
+    /// Default: <see langword="false"/> (UI-thread execution, identical to
+    /// the previous behaviour). Set to <see langword="true"/> on rendering
+    /// plug-ins such as <c>DynamicRenderer</c> where ink-stroke preview
+    /// latency is visible.
+    /// </summary>
+    public bool IsRealTimeCapable { get; protected set; }
+
     public UIElement? Element => _element;
 
     public Rect ElementBounds =>

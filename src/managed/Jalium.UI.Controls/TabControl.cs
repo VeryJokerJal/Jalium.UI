@@ -141,6 +141,53 @@ public class TabControl : Selector
 
         // Register keyboard handler
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+
+        // Swipe-to-switch-tab on touch.
+        IsManipulationEnabled = true;
+        AddHandler(ManipulationCompletedEvent, new RoutedEventHandler(OnManipulationCompletedHandler));
+        AddHandler(UIElement.StylusSystemGestureEvent, new RoutedEventHandler(OnSystemGestureHandler));
+    }
+
+    /// <summary>
+    /// Identifies the IsSwipeEnabled dependency property.
+    /// </summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty IsSwipeEnabledProperty =
+        DependencyProperty.Register(nameof(IsSwipeEnabled), typeof(bool), typeof(TabControl),
+            new PropertyMetadata(true));
+
+    /// <summary>
+    /// True (default) to allow horizontal swipe gestures to switch between tabs on touch surfaces.
+    /// </summary>
+    public bool IsSwipeEnabled
+    {
+        get => (bool)(GetValue(IsSwipeEnabledProperty) ?? true);
+        set => SetValue(IsSwipeEnabledProperty, value);
+    }
+
+    private const double SwipeSwitchThresholdDips = 50.0;
+
+    private void OnManipulationCompletedHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsSwipeEnabled || e.Handled) return;
+        if (e is not ManipulationCompletedEventArgs args) return;
+        var totalX = args.TotalManipulation?.Translation.X ?? 0;
+        if (Math.Abs(totalX) < SwipeSwitchThresholdDips) return;
+
+        int direction = totalX < 0 ? +1 : -1; // swipe left ⇒ next tab; swipe right ⇒ previous
+        SelectAdjacentTab(direction);
+        e.Handled = true;
+    }
+
+    private void OnSystemGestureHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsSwipeEnabled || e.Handled) return;
+        if (e is not Input.StylusSystemGestureEventArgs gesture) return;
+        if (gesture.SystemGesture != Input.SystemGesture.Flick) return;
+        // Direction is not known from SystemGesture alone — the recent
+        // ManipulationCompleted (if any) already handled the swipe direction.
+        // Here we just consume the flick so it does not cascade further.
+        e.Handled = true;
     }
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)
@@ -695,6 +742,16 @@ public class TabItem : HeaderedContentControl
     public TabItem()
     {
         AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
+        TouchHelper.SetIsRippleEnabled(this, true);
+    }
+
+    private void OnTouchDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
+        if (!TouchHelper.GetIsTouchInteractive(this)) return;
+        TabControl?.SelectTab(this);
+        e.Handled = true;
     }
 
     /// <summary>

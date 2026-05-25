@@ -314,6 +314,34 @@ public static class ToolTipService
     private static ToolTip? _currentToolTip;
     private static UIElement? _currentOwner;
 
+    static ToolTipService()
+    {
+        // Press-and-hold on touch surfaces the tooltip, just as mouse hover does.
+        // WindowInputDispatcher emits SystemGesture.HoldEnter ~500 ms after a
+        // stationary touch contact; we handle it at class-handler scope so
+        // every element with a ToolTip attached picks it up.
+        EventManager.RegisterClassHandler(
+            typeof(UIElement),
+            UIElement.StylusSystemGestureEvent,
+            new RoutedEventHandler(OnStylusSystemGestureClassHandler),
+            handledEventsToo: false);
+    }
+
+    private static void OnStylusSystemGestureClassHandler(object sender, RoutedEventArgs e)
+    {
+        if (e.Handled || sender is not UIElement owner) return;
+        if (e is not Input.StylusSystemGestureEventArgs gestureArgs) return;
+        if (gestureArgs.SystemGesture != Input.SystemGesture.HoldEnter) return;
+        // Only touch-initiated holds reveal the tooltip; pen and mouse use existing paths.
+        if (gestureArgs.StylusDevice is not Input.PointerStylusDevice ps) return;
+
+        object? toolTip = GetToolTip(owner);
+        if (toolTip == null) return;
+        var position = ps.GetPosition(null);
+        ShowToolTip(owner, toolTip, position);
+        e.Handled = true;
+    }
+
     #region Attached Properties
 
     /// <summary>Identifies the ToolTip attached dependency property.</summary>

@@ -104,6 +104,7 @@ public enum SystemGesture
 {
     None = 0,
     Tap = 16,
+    DoubleTap = 17,
     RightTap = 18,
     Drag = 19,
     RightDrag = 20,

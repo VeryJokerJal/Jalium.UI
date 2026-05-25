@@ -42,7 +42,12 @@ internal static class Win32PointerInterop
     private const uint POINTER_FLAG_FOURTHBUTTON = 0x00000080;
     private const uint POINTER_FLAG_FIFTHBUTTON = 0x00000100;
     private const uint POINTER_FLAG_PRIMARY = 0x00002000;
-    private const uint POINTER_FLAG_CANCELED = 0x00004000;
+    // Win32 SDK winuser.h: 0x00004000 is POINTER_FLAG_CONFIDENCE (high-confidence
+    // hint that the contact is intentional, set by Windows on nearly every touch
+    // packet). The real POINTER_FLAG_CANCELED is 0x00008000. The earlier value
+    // mis-fired IsCanceled on every contact, which made the dispatcher tear down
+    // the touch session before any TouchUp handler could fire (buttons never clicked).
+    private const uint POINTER_FLAG_CANCELED = 0x00008000;
 
     private const uint TOUCH_MASK_CONTACTAREA = 0x00000001;
     private const uint TOUCH_MASK_PRESSURE = 0x00000004;

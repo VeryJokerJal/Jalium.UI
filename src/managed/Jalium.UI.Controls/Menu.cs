@@ -405,9 +405,37 @@ public class MenuItem : HeaderedItemsControl
         AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
         AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
+        TouchHelper.SetIsRippleEnabled(this, true);
 
         UpdateRole();
         UpdateIsSelected();
+    }
+
+    private void OnTouchDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
+        if (!TouchHelper.GetIsTouchInteractive(this)) return;
+        // Reuse the same submenu-open / click logic as the mouse path by
+        // synthesising a left-button MouseButtonEventArgs on this element.
+        var synthetic = new MouseButtonEventArgs(
+            UIElement.MouseDownEvent,
+            touchArgs.GetTouchPoint(this).Position,
+            MouseButton.Left,
+            MouseButtonState.Pressed,
+            clickCount: 1,
+            leftButton: MouseButtonState.Pressed,
+            middleButton: MouseButtonState.Released,
+            rightButton: MouseButtonState.Released,
+            xButton1: MouseButtonState.Released,
+            xButton2: MouseButtonState.Released,
+            modifiers: ModifierKeys.None,
+            timestamp: Environment.TickCount)
+        {
+            Source = this
+        };
+        OnMouseDownHandler(this, synthetic);
+        e.Handled = true;
     }
 
     #endregion

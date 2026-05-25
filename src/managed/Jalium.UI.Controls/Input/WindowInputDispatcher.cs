@@ -31,7 +31,35 @@ internal sealed class WindowInputDispatcher
     private readonly Dictionary<uint, PointerPoint> _lastPointerPoints = [];
     private readonly Dictionary<uint, PointerStylusDevice> _activeStylusDevices = [];
     private readonly Dictionary<uint, PointerManipulationSession> _activeManipulationSessions = [];
+    private readonly Dictionary<uint, UIElement> _lastTouchOverDirect = [];
     private uint? _primaryTouchPointerId;
+
+    // ── Gesture (Tap/DoubleTap/Flick/TwoFingerTap) tracking ──
+    // System-gesture (Tap/Drag/HoldEnter/HoldLeave) is already produced by
+    // RaiseStylusExtendedEvents; this state extends recognition with:
+    //   • Flick: emitted on Up when |velocity| at lift exceeds threshold.
+    //   • DoubleTap: emitted on Down when two short taps land close in time + space.
+    //   • TwoFingerTap: emitted on Up when a second touch lifts shortly after the first.
+    private sealed class PointerGestureTracker
+    {
+        public long DownTimestampMs;
+        public Point DownPosition;
+        public Point LastPosition;
+        public long LastSampleTimestampMs;
+        public double LastSpeedDipsPerMs;
+        public PointerDeviceType DeviceType;
+    }
+    private readonly Dictionary<uint, PointerGestureTracker> _gestureTrackers = [];
+    private readonly Dictionary<PointerDeviceType, (long ticks, Point pos)> _lastTapByDevice = [];
+    private long _firstTouchUpTicks;
+    private Point _firstTouchUpPosition;
+
+    private const double FlickVelocityThresholdDipsPerMs = 0.5;
+    private const double DoubleTapDistanceThresholdDips = 16.0;
+    private const long DoubleTapTimeoutMs = 500;
+    private const long TwoFingerTapTimeoutMs = 300;
+    private const double TwoFingerTapDistanceDips = 60.0;
+    private const long ShortTapMaxDurationMs = 250;
 
     /// <summary>
     /// When true, mouse event handlers skip the mouse→pointer promotion step.
@@ -588,28 +616,6 @@ internal sealed class WindowInputDispatcher
     }
 
     // ══════════════════════════════════════════════════════════════
-    //  Pointer/Touch Events
-    // ══════════════════════════════════════════════════════════════
-
-    /// <summary>Handles Win32 WM_POINTER messages for touch/pen.</summary>
-    public void HandlePointerMessage(uint msg, nint wParam, nint lParam)
-    {
-        // TODO: Phase 6
-    }
-
-    /// <summary>Handles pointer wheel (touch/pen).</summary>
-    public void HandlePointerWheel(nint wParam, nint lParam)
-    {
-        // TODO: Phase 6
-    }
-
-    /// <summary>Handles pointer capture changed.</summary>
-    public void HandlePointerCaptureChanged(uint pointerId)
-    {
-        // TODO: Phase 6
-    }
-
-    // ══════════════════════════════════════════════════════════════
     //  Window Lifecycle (affecting input state)
     // ══════════════════════════════════════════════════════════════
 
@@ -871,9 +877,10 @@ internal sealed class WindowInputDispatcher
     //  Pointer Pipeline Methods
     // ══════════════════════════════════════════════════════════════
 
-    internal void RaisePointerMovePipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
+    internal void RaisePointerMovePipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp, StylusPointCollection? stylusPoints = null)
     {
-        PointerMoveEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerMoveEvent };
+        point.SourceElement = target;
+        PointerMoveEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerMoveEvent, StylusPoints = stylusPoints };
         target.RaiseEvent(previewArgs);
         if (previewArgs.Cancel)
         {
@@ -884,7 +891,7 @@ internal sealed class WindowInputDispatcher
         bool handled = previewArgs.Handled;
         if (!previewArgs.Handled)
         {
-            PointerMoveEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerMoveEvent };
+            PointerMoveEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerMoveEvent, StylusPoints = stylusPoints };
             target.RaiseEvent(bubbleArgs);
             handled = handled || bubbleArgs.Handled || bubbleArgs.Cancel;
             if (bubbleArgs.Cancel)
@@ -896,7 +903,7 @@ internal sealed class WindowInputDispatcher
 
         if (!handled)
         {
-            PointerMovedEventArgs legacyArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerMovedEvent };
+            PointerMovedEventArgs legacyArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerMovedEvent, StylusPoints = stylusPoints };
             target.RaiseEvent(legacyArgs);
             if (legacyArgs.Cancel)
                 RaisePointerCancelPipeline(target, point, modifiers, timestamp);
@@ -905,6 +912,7 @@ internal sealed class WindowInputDispatcher
 
     internal void RaisePointerCancelPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
     {
+        point.SourceElement = target;
         PointerCancelEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerCancelEvent };
         target.RaiseEvent(previewArgs);
         if (!previewArgs.Handled)
@@ -914,9 +922,10 @@ internal sealed class WindowInputDispatcher
         }
     }
 
-    internal void RaisePointerDownPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
+    internal void RaisePointerDownPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp, StylusPointCollection? stylusPoints = null)
     {
-        PointerDownEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerDownEvent };
+        point.SourceElement = target;
+        PointerDownEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerDownEvent, StylusPoints = stylusPoints };
         target.RaiseEvent(previewArgs);
         if (previewArgs.Cancel)
         {
@@ -927,7 +936,7 @@ internal sealed class WindowInputDispatcher
         bool handled = previewArgs.Handled;
         if (!previewArgs.Handled)
         {
-            PointerDownEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerDownEvent };
+            PointerDownEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerDownEvent, StylusPoints = stylusPoints };
             target.RaiseEvent(bubbleArgs);
             handled = handled || bubbleArgs.Handled || bubbleArgs.Cancel;
             if (bubbleArgs.Cancel)
@@ -939,16 +948,17 @@ internal sealed class WindowInputDispatcher
 
         if (!handled)
         {
-            PointerPressedEventArgs legacyArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerPressedEvent };
+            PointerPressedEventArgs legacyArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerPressedEvent, StylusPoints = stylusPoints };
             target.RaiseEvent(legacyArgs);
             if (legacyArgs.Cancel)
                 RaisePointerCancelPipeline(target, point, modifiers, timestamp);
         }
     }
 
-    internal void RaisePointerUpPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp)
+    internal void RaisePointerUpPipeline(UIElement target, PointerPoint point, ModifierKeys modifiers, int timestamp, StylusPointCollection? stylusPoints = null)
     {
-        PointerUpEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerUpEvent };
+        point.SourceElement = target;
+        PointerUpEventArgs previewArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PreviewPointerUpEvent, StylusPoints = stylusPoints };
         target.RaiseEvent(previewArgs);
         if (previewArgs.Cancel)
         {
@@ -959,7 +969,7 @@ internal sealed class WindowInputDispatcher
         bool handled = previewArgs.Handled;
         if (!previewArgs.Handled)
         {
-            PointerUpEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerUpEvent };
+            PointerUpEventArgs bubbleArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerUpEvent, StylusPoints = stylusPoints };
             target.RaiseEvent(bubbleArgs);
             handled = handled || bubbleArgs.Handled || bubbleArgs.Cancel;
             if (bubbleArgs.Cancel)
@@ -971,7 +981,7 @@ internal sealed class WindowInputDispatcher
 
         if (!handled)
         {
-            PointerReleasedEventArgs legacyArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerReleasedEvent };
+            PointerReleasedEventArgs legacyArgs = new(point, modifiers, timestamp) { RoutedEvent = UIElement.PointerReleasedEvent, StylusPoints = stylusPoints };
             target.RaiseEvent(legacyArgs);
             if (legacyArgs.Cancel)
                 RaisePointerCancelPipeline(target, point, modifiers, timestamp);
@@ -1084,16 +1094,24 @@ internal sealed class WindowInputDispatcher
         // Track primary touch pointer for mouse synthesis
         if (isTouch && isDown && _primaryTouchPointerId == null)
             _primaryTouchPointerId = pointerData.PointerId;
-
         // Hit test and target resolution
         var captured = UIElement.MouseCapturedElement;
         var hitTarget = _host.HitTestElement(pointerData.Position, "pointer-route");
+        // Touch-mode fallback: when the strict hit landed on the window itself
+        // (i.e. nothing precise was hit), widen the hit-test region for touch
+        // and pen contacts and retry. Mouse never gets the expanded hit area —
+        // it has a pixel-accurate cursor.
+        if (hitTarget == _host.Self
+            && Jalium.UI.Hosting.TouchModeOptions.Current.Enabled
+            && pointerData.Kind != PointerInputKind.Mouse)
+        {
+            hitTarget = HitTestWithTouchMargin(pointerData.Position) ?? hitTarget;
+        }
         var fallbackTarget = captured ?? hitTarget ?? _host.Self;
         var target = isDown
             ? fallbackTarget
             : (_activePointerTargets.TryGetValue(pointerData.PointerId, out var existingTarget)
                 ? existingTarget ?? fallbackTarget : fallbackTarget);
-
         _activePointerTargets[pointerData.PointerId] = target;
         _lastPointerPoints[pointerData.PointerId] = pointerData.Point;
 
@@ -1105,7 +1123,6 @@ internal sealed class WindowInputDispatcher
             DispatchTouchSourcePipeline(target, pointerData, isDown, isUp, timestamp, ref sourceHandled, ref sourceCanceled);
         else if (pointerData.Kind == PointerInputKind.Pen)
             DispatchStylusSourcePipeline(target, pointerData, isDown, isUp, timestamp, ref sourceHandled, ref sourceCanceled);
-
         if (sourceCanceled)
         {
             CancelManipulationSession(pointerData.PointerId, timestamp);
@@ -1119,19 +1136,20 @@ internal sealed class WindowInputDispatcher
         // Manipulation pipeline
         DispatchManipulationPipeline(target, pointerData, isDown, isUp, sourceHandled, timestamp);
 
-        // Pointer events
-        if (!sourceHandled)
-        {
-            if (isDown)
-                RaisePointerDownPipeline(target, pointerData.Point, pointerData.Modifiers, timestamp);
-            else if (isUp)
-                RaisePointerUpPipeline(target, pointerData.Point, pointerData.Modifiers, timestamp);
-            else
-                RaisePointerMovePipeline(target, pointerData.Point, pointerData.Modifiers, timestamp);
-        }
+        // Pointer events — always raise so ancestors like ScrollViewer can run
+        // their PointerDown/Move/Up panning gate even when a descendant Button
+        // marked the TouchDown handled. Per-element Handled on the pointer
+        // routed events still suppresses duplicate handlers naturally.
+        if (isDown)
+            RaisePointerDownPipeline(target, pointerData.Point, pointerData.Modifiers, timestamp, pointerData.StylusPoints);
+        else if (isUp)
+            RaisePointerUpPipeline(target, pointerData.Point, pointerData.Modifiers, timestamp, pointerData.StylusPoints);
+        else
+            RaisePointerMovePipeline(target, pointerData.Point, pointerData.Modifiers, timestamp, pointerData.StylusPoints);
 
         // Synthesize mouse events for the primary touch pointer
-        if (isTouch && _primaryTouchPointerId == pointerData.PointerId && !sourceHandled)
+        bool willSynthesize = isTouch && _primaryTouchPointerId == pointerData.PointerId && !sourceHandled;
+        if (willSynthesize)
             SynthesizeMouseFromTouch(pointerData.Position, pointerData.Modifiers, isDown, isUp, timestamp);
 
         if (isUp)
@@ -1220,16 +1238,39 @@ internal sealed class WindowInputDispatcher
         bool isDown, bool isUp, int timestamp,
         ref bool sourceHandled, ref bool sourceCanceled)
     {
+        int touchId = (int)pointerData.PointerId;
+        TouchAction action = sourceCanceled ? TouchAction.Cancel
+            : (isDown ? TouchAction.Down : (isUp ? TouchAction.Up : TouchAction.Move));
+        // The visual target captured for this contact, if any. Capture wins over hit-test.
+        UIElement? captured = UIElement.GetTouchCapture(touchId);
+        UIElement effectiveTarget = captured ?? target;
+
+        // Acquire or create the TouchDevice keyed on this pointer.
         TouchDevice touchDevice = isDown
-            ? Touch.RegisterTouchPoint((int)pointerData.PointerId, pointerData.Position, target)
-            : Touch.GetDevice((int)pointerData.PointerId)
-              ?? Touch.RegisterTouchPoint((int)pointerData.PointerId, pointerData.Position, target);
+            ? Touch.RegisterTouchPoint(touchId, pointerData.Position, effectiveTarget)
+            : Touch.GetDevice(touchId) ?? Touch.RegisterTouchPoint(touchId, pointerData.Position, effectiveTarget);
 
+        touchDevice.RetargetTo(effectiveTarget);
         touchDevice.UpdatePosition(pointerData.Position);
-        touchDevice.DirectlyOver = target;
+        touchDevice.DirectlyOver = target; // raw hit, ignoring capture
+        touchDevice.RecordFrame(pointerData.StylusPoints, pointerData.Point.Properties.ContactRect, action, timestamp);
 
-        // Touch → Stylus promotion
-        PromoteTouchToStylus(target, pointerData, isDown, isUp, timestamp);
+        // ── TouchEnter / TouchLeave routing (Direct, walking ancestor chains) ──
+        _lastTouchOverDirect.TryGetValue(pointerData.PointerId, out UIElement? previousOver);
+        if (!ReferenceEquals(previousOver, target))
+        {
+            if (previousOver != null)
+                RaiseTouchLeaveChain(previousOver, target, touchDevice, timestamp);
+            if (target != null)
+                RaiseTouchEnterChain(target, previousOver, touchDevice, timestamp);
+            if (target == null)
+                _lastTouchOverDirect.Remove(pointerData.PointerId);
+            else
+                _lastTouchOverDirect[pointerData.PointerId] = target;
+        }
+
+        // Touch → Stylus promotion (InkCanvas, RealTimeStylus).
+        PromoteTouchToStylus(effectiveTarget, pointerData, isDown, isUp, timestamp);
 
         RoutedEvent previewEvent = isDown ? UIElement.PreviewTouchDownEvent
             : (isUp ? UIElement.PreviewTouchUpEvent : UIElement.PreviewTouchMoveEvent);
@@ -1237,24 +1278,103 @@ internal sealed class WindowInputDispatcher
             : (isUp ? UIElement.TouchUpEvent : UIElement.TouchMoveEvent);
 
         TouchEventArgs previewArgs = new(touchDevice, timestamp) { RoutedEvent = previewEvent };
-        target.RaiseEvent(previewArgs);
-
+        effectiveTarget.RaiseEvent(previewArgs);
         sourceHandled |= previewArgs.Handled;
         sourceCanceled |= previewArgs.Cancel;
 
         if (!previewArgs.Handled)
         {
             TouchEventArgs bubbleArgs = new(touchDevice, timestamp) { RoutedEvent = bubbleEvent };
-            target.RaiseEvent(bubbleArgs);
+            effectiveTarget.RaiseEvent(bubbleArgs);
             sourceHandled |= bubbleArgs.Handled;
             sourceCanceled |= bubbleArgs.Cancel;
         }
 
         if (isUp || sourceCanceled)
         {
+            // Force-release any captured contact so handlers see LostTouchCapture
+            // before the device is torn down.
+            UIElement? captureOwner = UIElement.GetTouchCapture(touchId);
+            captureOwner?.ReleaseTouchCapture(touchDevice);
+
+            // Mirror the leave chain for any remaining over-elements.
+            if (_lastTouchOverDirect.TryGetValue(pointerData.PointerId, out var residual))
+            {
+                RaiseTouchLeaveChain(residual, null, touchDevice, timestamp);
+                _lastTouchOverDirect.Remove(pointerData.PointerId);
+            }
+
             touchDevice.Deactivate();
-            Touch.UnregisterTouchPoint((int)pointerData.PointerId);
+            Touch.UnregisterTouchPoint(touchId);
             _activeStylusDevices.Remove(pointerData.PointerId);
+        }
+    }
+
+    private static void RaiseTouchLeaveChain(UIElement oldElement, UIElement? newElement, TouchDevice device, int timestamp)
+    {
+        HashSet<UIElement> newAncestors = [];
+        Visual? current = newElement;
+        while (current != null)
+        {
+            if (current is UIElement uiElement)
+                _ = newAncestors.Add(uiElement);
+            current = current.VisualParent;
+        }
+
+        bool isDirect = true;
+        current = oldElement;
+        while (current != null)
+        {
+            if (current is UIElement uiElement)
+            {
+                if (newAncestors.Contains(uiElement))
+                    break;
+                uiElement.RemoveOverTouchInternal(device);
+                if (isDirect)
+                {
+                    uiElement.RemoveDirectlyOverTouchInternal(device);
+                    isDirect = false;
+                }
+                TouchEventArgs args = new(device, timestamp) { RoutedEvent = UIElement.TouchLeaveEvent, Source = uiElement };
+                uiElement.RaiseEvent(args);
+            }
+            current = current.VisualParent;
+        }
+    }
+
+    private static void RaiseTouchEnterChain(UIElement newElement, UIElement? oldElement, TouchDevice device, int timestamp)
+    {
+        HashSet<UIElement> oldAncestors = [];
+        Visual? current = oldElement;
+        while (current != null)
+        {
+            if (current is UIElement uiElement)
+                _ = oldAncestors.Add(uiElement);
+            current = current.VisualParent;
+        }
+
+        List<UIElement> enterElements = [];
+        current = newElement;
+        while (current != null)
+        {
+            if (current is UIElement uiElement)
+            {
+                if (oldAncestors.Contains(uiElement))
+                    break;
+                enterElements.Add(uiElement);
+            }
+            current = current.VisualParent;
+        }
+
+        // Walk root → leaf so parent enter fires before child enter (matching MouseEnter semantics).
+        for (int i = enterElements.Count - 1; i >= 0; i--)
+        {
+            UIElement uiElement = enterElements[i];
+            uiElement.AddOverTouchInternal(device);
+            if (i == 0)
+                uiElement.AddDirectlyOverTouchInternal(device);
+            TouchEventArgs args = new(device, timestamp) { RoutedEvent = UIElement.TouchEnterEvent, Source = uiElement };
+            uiElement.RaiseEvent(args);
         }
     }
 
@@ -1276,36 +1396,72 @@ internal sealed class WindowInputDispatcher
             directlyOver: target);
 
         StylusInputAction inputAction = ResolveStylusInputAction(isDown, isUp, pointerData.Point.IsInContact);
-        RealTimeStylusProcessResult processResult = _host.RealTimeStylus.Process(
+
+        // Gesture tracking + DoubleTap detection on the UI thread (synchronous):
+        // these need to observe the live packet timing before the RTS thread
+        // potentially mutates / delays anything. Touch handlers see the same
+        // sequence they always have; only the Stylus* routed events are
+        // marshalled to fire after the RTS-thread plug-ins complete.
+        if (isDown)
+        {
+            TrackGestureDown(pointerData, timestamp);
+            TryEmitDoubleTap(target, stylusDevice, pointerData, timestamp);
+        }
+        else if (!isUp)
+        {
+            TrackGestureMove(pointerData, timestamp);
+        }
+
+        // Snapshot locals so the continuation does not depend on dispatcher
+        // mutation that may have happened between enqueueing and the UI
+        // dispatcher picking up the callback.
+        var deviceCopy = stylusDevice;
+        var targetCopy = target;
+        var pointerDataCopy = pointerData;
+        bool isDownCopy = isDown, isUpCopy = isUp;
+        int timestampCopy = timestamp;
+
+        _host.RealTimeStylus.BeginProcess(
             pointerData.PointerId, target, inputAction,
             stylusDevice.GetStylusPoints(target), timestamp,
             inAir: !pointerData.Point.IsInContact,
             inRange: pointerData.IsInRange,
             barrelButtonPressed: false, eraserPressed: false,
-            inverted: false, pointerCanceled: pointerData.IsCanceled);
+            inverted: false, pointerCanceled: pointerData.IsCanceled,
+            onCompleted: processResult =>
+            {
+                // Re-apply mutated points + raise StylusXxx routed events on the UI thread.
+                deviceCopy.UpdateState(
+                    pointerDataCopy.Position, processResult.RawStylusInput.GetStylusPoints(),
+                    inAir: !pointerDataCopy.Point.IsInContact,
+                    inverted: false, inRange: pointerDataCopy.IsInRange,
+                    barrelPressed: false, eraserPressed: false,
+                    directlyOver: targetCopy);
 
-        stylusDevice.UpdateState(
-            pointerData.Position, processResult.RawStylusInput.GetStylusPoints(),
-            inAir: !pointerData.Point.IsInContact,
-            inverted: false, inRange: pointerData.IsInRange,
-            barrelPressed: false, eraserPressed: false,
-            directlyOver: target);
+                RaiseStylusExtendedEvents(targetCopy, deviceCopy, timestampCopy,
+                    ResolveStylusInputAction(isDownCopy, isUpCopy, pointerDataCopy.Point.IsInContact),
+                    processResult);
+                if (isUpCopy)
+                {
+                    TrackGestureUpAndEmit(targetCopy, deviceCopy, pointerDataCopy, timestampCopy);
+                }
 
-        RoutedEvent previewEvent = isDown ? UIElement.PreviewStylusDownEvent
-            : (isUp ? UIElement.PreviewStylusUpEvent : UIElement.PreviewStylusMoveEvent);
-        RoutedEvent bubbleEvent = isDown ? UIElement.StylusDownEvent
-            : (isUp ? UIElement.StylusUpEvent : UIElement.StylusMoveEvent);
+                RoutedEvent previewEvent = isDownCopy ? UIElement.PreviewStylusDownEvent
+                    : (isUpCopy ? UIElement.PreviewStylusUpEvent : UIElement.PreviewStylusMoveEvent);
+                RoutedEvent bubbleEvent = isDownCopy ? UIElement.StylusDownEvent
+                    : (isUpCopy ? UIElement.StylusUpEvent : UIElement.StylusMoveEvent);
 
-        StylusEventArgs previewArgs = CreateStylusEventArgs(stylusDevice, timestamp, previewEvent, isDown);
-        target.RaiseEvent(previewArgs);
+                StylusEventArgs previewArgs = CreateStylusEventArgs(deviceCopy, timestampCopy, previewEvent, isDownCopy);
+                targetCopy.RaiseEvent(previewArgs);
 
-        if (!previewArgs.Handled && !processResult.Canceled)
-        {
-            StylusEventArgs bubbleArgs = CreateStylusEventArgs(stylusDevice, timestamp, bubbleEvent, isDown);
-            target.RaiseEvent(bubbleArgs);
-        }
+                if (!previewArgs.Handled && !processResult.Canceled)
+                {
+                    StylusEventArgs bubbleArgs = CreateStylusEventArgs(deviceCopy, timestampCopy, bubbleEvent, isDownCopy);
+                    targetCopy.RaiseEvent(bubbleArgs);
+                }
 
-        _host.RealTimeStylus.QueueProcessedCallbacks(processResult);
+                _host.RealTimeStylus.QueueProcessedCallbacks(processResult);
+            });
     }
 
     // ── Stylus (Pen) Source Pipeline ──
@@ -1334,7 +1490,28 @@ internal sealed class WindowInputDispatcher
             directlyOver: target);
 
         StylusInputAction inputAction = ResolveStylusInputAction(isDown, isUp, pointerData.Point.IsInContact);
-        RealTimeStylusProcessResult processResult = _host.RealTimeStylus.Process(
+
+        // UI-thread synchronous bookkeeping: gesture tracker + double-tap.
+        if (isDown)
+        {
+            TrackGestureDown(pointerData, timestamp);
+            TryEmitDoubleTap(target, stylusDevice, pointerData, timestamp);
+        }
+        else if (!isUp)
+        {
+            TrackGestureMove(pointerData, timestamp);
+        }
+
+        // Snapshot locals — see PromoteTouchToStylus for rationale.
+        var deviceCopy = stylusDevice;
+        var targetCopy = target;
+        var pointerDataCopy = pointerData;
+        var propertiesCopy = properties;
+        bool isDownCopy = isDown, isUpCopy = isUp;
+        int timestampCopy = timestamp;
+        StylusInputAction actionCopy = inputAction;
+
+        _host.RealTimeStylus.BeginProcess(
             pointerData.PointerId, target, inputAction,
             stylusDevice.GetStylusPoints(target), timestamp,
             inAir: !pointerData.Point.IsInContact,
@@ -1342,46 +1519,50 @@ internal sealed class WindowInputDispatcher
             barrelButtonPressed: properties.IsBarrelButtonPressed,
             eraserPressed: properties.IsEraser,
             inverted: properties.IsInverted,
-            pointerCanceled: pointerData.IsCanceled);
+            pointerCanceled: pointerData.IsCanceled,
+            onCompleted: processResult =>
+            {
+                deviceCopy.UpdateState(
+                    pointerDataCopy.Position, processResult.RawStylusInput.GetStylusPoints(),
+                    inAir: !pointerDataCopy.Point.IsInContact,
+                    inverted: propertiesCopy.IsInverted,
+                    inRange: pointerDataCopy.IsInRange,
+                    barrelPressed: propertiesCopy.IsBarrelButtonPressed,
+                    eraserPressed: propertiesCopy.IsEraser,
+                    directlyOver: targetCopy);
 
-        stylusDevice.UpdateState(
-            pointerData.Position, processResult.RawStylusInput.GetStylusPoints(),
-            inAir: !pointerData.Point.IsInContact,
-            inverted: properties.IsInverted,
-            inRange: pointerData.IsInRange,
-            barrelPressed: properties.IsBarrelButtonPressed,
-            eraserPressed: properties.IsEraser,
-            directlyOver: target);
+                RaiseStylusExtendedEvents(targetCopy, deviceCopy, timestampCopy, actionCopy, processResult);
+                if (isUpCopy)
+                {
+                    TrackGestureUpAndEmit(targetCopy, deviceCopy, pointerDataCopy, timestampCopy);
+                }
 
-        RaiseStylusExtendedEvents(target, stylusDevice, timestamp, inputAction, processResult);
+                RoutedEvent previewEvent = isDownCopy ? UIElement.PreviewStylusDownEvent
+                    : (isUpCopy ? UIElement.PreviewStylusUpEvent : UIElement.PreviewStylusMoveEvent);
+                RoutedEvent bubbleEvent = isDownCopy ? UIElement.StylusDownEvent
+                    : (isUpCopy ? UIElement.StylusUpEvent : UIElement.StylusMoveEvent);
 
-        RoutedEvent previewEvent = isDown ? UIElement.PreviewStylusDownEvent
-            : (isUp ? UIElement.PreviewStylusUpEvent : UIElement.PreviewStylusMoveEvent);
-        RoutedEvent bubbleEvent = isDown ? UIElement.StylusDownEvent
-            : (isUp ? UIElement.StylusUpEvent : UIElement.StylusMoveEvent);
+                StylusEventArgs previewArgs = CreateStylusEventArgs(deviceCopy, timestampCopy, previewEvent, isDownCopy);
+                targetCopy.RaiseEvent(previewArgs);
+                if (!previewArgs.Handled && !processResult.Canceled)
+                {
+                    StylusEventArgs bubbleArgs = CreateStylusEventArgs(deviceCopy, timestampCopy, bubbleEvent, isDownCopy);
+                    targetCopy.RaiseEvent(bubbleArgs);
+                }
+                _host.RealTimeStylus.QueueProcessedCallbacks(processResult);
 
-        StylusEventArgs previewArgs = CreateStylusEventArgs(stylusDevice, timestamp, previewEvent, isDown);
-        target.RaiseEvent(previewArgs);
+                if (isUpCopy || processResult.Canceled || processResult.SessionEnded)
+                {
+                    _activeStylusDevices.Remove(pointerDataCopy.PointerId);
+                    if (ReferenceEquals(Tablet.CurrentStylusDevice, deviceCopy))
+                        Tablet.CurrentStylusDevice = null;
+                }
+            });
 
-        sourceHandled |= previewArgs.Handled;
-        sourceCanceled |= previewArgs.Cancel || processResult.Canceled;
-
-        if (!previewArgs.Handled && !processResult.Canceled)
-        {
-            StylusEventArgs bubbleArgs = CreateStylusEventArgs(stylusDevice, timestamp, bubbleEvent, isDown);
-            target.RaiseEvent(bubbleArgs);
-            sourceHandled |= bubbleArgs.Handled;
-            sourceCanceled |= bubbleArgs.Cancel;
-        }
-
-        _host.RealTimeStylus.QueueProcessedCallbacks(processResult);
-
-        if (isUp || sourceCanceled || processResult.SessionEnded)
-        {
-            _activeStylusDevices.Remove(pointerData.PointerId);
-            if (ReferenceEquals(Tablet.CurrentStylusDevice, stylusDevice))
-                Tablet.CurrentStylusDevice = null;
-        }
+        // sourceHandled / sourceCanceled stay as the caller set them — the
+        // Stylus* routed events fire asynchronously and intentionally do not
+        // gate the main-thread Pointer / mouse-synthesis pipeline (matches
+        // WPF, where stylus and pointer pipelines are independent).
     }
 
     // ── Stylus Helper Methods ──
@@ -1425,6 +1606,128 @@ internal sealed class WindowInputDispatcher
             RoutedEvent = UIElement.StylusSystemGestureEvent
         };
         target.RaiseEvent(args);
+    }
+
+    // ── Touch-mode hit-test fallback ──
+
+    /// <summary>
+    /// When strict hit-test misses, scan 8 cardinal/diagonal probes inside the
+    /// configured touch-target radius and return the first non-window element.
+    /// Honours Z-order naturally because each probe runs through the same hit-
+    /// test stack.
+    /// </summary>
+    private UIElement? HitTestWithTouchMargin(Point center)
+    {
+        double radius = Jalium.UI.Hosting.TouchModeOptions.Current.MinHitTargetSize / 2.0;
+        if (radius <= 0) return null;
+        // Inner ring first (75% of radius) so we prefer near-hits; then the outer ring.
+        double r1 = radius * 0.5;
+        ReadOnlySpan<(double dx, double dy)> directions = stackalloc (double, double)[]
+        {
+            (1, 0), (-1, 0), (0, 1), (0, -1),
+            (0.707, 0.707), (-0.707, 0.707), (0.707, -0.707), (-0.707, -0.707)
+        };
+        for (int ring = 0; ring < 2; ring++)
+        {
+            double r = ring == 0 ? r1 : radius;
+            for (int i = 0; i < directions.Length; i++)
+            {
+                var (dx, dy) = directions[i];
+                var probe = new Point(center.X + dx * r, center.Y + dy * r);
+                var hit = _host.HitTestElement(probe, "touch-margin");
+                if (hit != null && !ReferenceEquals(hit, _host.Self))
+                {
+                    return hit;
+                }
+            }
+        }
+        return null;
+    }
+
+    // ── Gesture tracker entry points (Tap/Flick/DoubleTap/TwoFingerTap) ──
+
+    private void TrackGestureDown(PointerInputData data, int timestamp)
+    {
+        _gestureTrackers[data.PointerId] = new PointerGestureTracker
+        {
+            DownTimestampMs = timestamp,
+            DownPosition = data.Position,
+            LastPosition = data.Position,
+            LastSampleTimestampMs = timestamp,
+            LastSpeedDipsPerMs = 0,
+            DeviceType = data.Point.PointerDeviceType
+        };
+    }
+
+    private void TrackGestureMove(PointerInputData data, int timestamp)
+    {
+        if (!_gestureTrackers.TryGetValue(data.PointerId, out var tracker)) return;
+        long dt = Math.Max(1, timestamp - tracker.LastSampleTimestampMs);
+        Vector delta = data.Position - tracker.LastPosition;
+        tracker.LastSpeedDipsPerMs = delta.Length / dt;
+        tracker.LastPosition = data.Position;
+        tracker.LastSampleTimestampMs = timestamp;
+    }
+
+    /// <summary>
+    /// Returns the additional system gestures to fire on Up (Flick, TwoFingerTap).
+    /// Always clears the per-pointer tracker.
+    /// </summary>
+    private void TrackGestureUpAndEmit(UIElement target, StylusDevice stylusDevice, PointerInputData data, int timestamp)
+    {
+        if (!_gestureTrackers.TryGetValue(data.PointerId, out var tracker)) return;
+        _gestureTrackers.Remove(data.PointerId);
+
+        long duration = timestamp - tracker.DownTimestampMs;
+        bool isShortTap = duration <= ShortTapMaxDurationMs
+                          && (tracker.LastPosition - tracker.DownPosition).Length <= DoubleTapDistanceThresholdDips;
+
+        // Flick: lift velocity exceeds threshold, regardless of tap classification.
+        if (tracker.LastSpeedDipsPerMs > FlickVelocityThresholdDipsPerMs)
+        {
+            RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.Flick);
+        }
+
+        // TwoFingerTap: two touch contacts that lifted within TwoFingerTapTimeoutMs of one another.
+        if (isShortTap && tracker.DeviceType == PointerDeviceType.Touch)
+        {
+            if (_firstTouchUpTicks > 0
+                && (timestamp - _firstTouchUpTicks) <= TwoFingerTapTimeoutMs
+                && (tracker.LastPosition - _firstTouchUpPosition).Length <= TwoFingerTapDistanceDips)
+            {
+                RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.TwoFingerTap);
+                _firstTouchUpTicks = 0;
+            }
+            else
+            {
+                _firstTouchUpTicks = timestamp;
+                _firstTouchUpPosition = tracker.LastPosition;
+            }
+        }
+
+        // DoubleTap: short tap whose down was within DoubleTapTimeoutMs of the previous tap's up.
+        // We record the *up* timestamp here so the *next* Down can detect a double-tap.
+        if (isShortTap)
+        {
+            _lastTapByDevice[tracker.DeviceType] = (timestamp, tracker.LastPosition);
+        }
+        else
+        {
+            _lastTapByDevice.Remove(tracker.DeviceType);
+        }
+    }
+
+    /// <summary>
+    /// Called from Down handlers to detect a paired tap → emit DoubleTap and clear the previous-tap latch.
+    /// </summary>
+    private bool TryEmitDoubleTap(UIElement target, StylusDevice stylusDevice, PointerInputData data, int timestamp)
+    {
+        if (!_lastTapByDevice.TryGetValue(data.Point.PointerDeviceType, out var prev)) return false;
+        if (timestamp - prev.ticks > DoubleTapTimeoutMs) { _lastTapByDevice.Remove(data.Point.PointerDeviceType); return false; }
+        if ((prev.pos - data.Position).Length > DoubleTapDistanceThresholdDips) return false;
+        _lastTapByDevice.Remove(data.Point.PointerDeviceType);
+        RaiseStylusSystemGestureEvent(target, stylusDevice, timestamp, SystemGesture.DoubleTap);
+        return true;
     }
 
     private static void RaiseStylusButtonEvent(UIElement target, StylusDevice stylusDevice, int timestamp, RoutedEvent routedEvent)
@@ -1487,44 +1790,95 @@ internal sealed class WindowInputDispatcher
     }
 
     // ── Manipulation Pipeline ──
+    //
+    //  A session is per-target. Multiple pointer contacts hitting the same
+    //  manipulation-enabled target join the same session and contribute to a
+    //  multi-finger transform: translation (centroid motion), scale (spread
+    //  ratio relative to centroid) and rotation (mean angle of pointers
+    //  about the centroid). _activeManipulationSessions keys by pointer id
+    //  for fast cleanup, but every pointer entry that belongs to one target
+    //  points to the same PointerManipulationSession instance.
 
     private void DispatchManipulationPipeline(
         UIElement target, PointerInputData pointerData,
         bool isDown, bool isUp, bool sourceHandled, int timestamp)
     {
-        PointerManipulationSession? existingSession = null;
-        if (!isDown && !_activeManipulationSessions.TryGetValue(pointerData.PointerId, out existingSession))
-            return;
-
         if (isDown)
         {
             if (sourceHandled || !target.IsManipulationEnabled)
                 return;
-            if (!RaiseManipulationStartingPipeline(target))
+
+            // Try joining an existing session anchored on this target (or one of its
+            // ancestors / descendants for nested manipulations — WPF anchors on the
+            // first manipulation-enabled target; we keep it simple by anchoring on
+            // `target` itself for new sessions and joining only when target matches).
+            PointerManipulationSession? existing = FindActiveSessionFor(target);
+            if (existing != null)
+            {
+                if (existing.IsSingleTouchEnabled)
+                    return; // don't admit additional contacts in single-touch mode
+                existing.AddPointer(pointerData.PointerId, pointerData.Point.Position, timestamp);
+                _activeManipulationSessions[pointerData.PointerId] = existing;
                 return;
-            RaiseManipulationStartedPipeline(target, pointerData.Point.Position, timestamp);
-            _activeManipulationSessions[pointerData.PointerId] = new PointerManipulationSession(target, pointerData.Point.Position, timestamp);
+            }
+
+            ManipulationStartingEventArgs? startingArgs = RaiseManipulationStartingPipeline(target);
+            if (startingArgs == null) return;
+
+            UIElement container = startingArgs.ManipulationContainer ?? target;
+            var session = new PointerManipulationSession(
+                container,
+                pointerData.Point.Position,
+                timestamp,
+                startingArgs.Mode,
+                startingArgs.IsSingleTouchEnabled,
+                startingArgs.Pivot);
+            session.AddPointer(pointerData.PointerId, pointerData.Point.Position, timestamp);
+            _activeManipulationSessions[pointerData.PointerId] = session;
+
+            RaiseManipulationStartedPipeline(container, pointerData.Point.Position, timestamp);
             return;
         }
 
-        if (existingSession == null)
+        if (!_activeManipulationSessions.TryGetValue(pointerData.PointerId, out var activeSession))
             return;
 
         if (isUp)
         {
-            RaiseManipulationInertiaStartingPipeline(existingSession, timestamp);
-            RaiseManipulationCompletedPipeline(existingSession, isInertial: false, timestamp);
             _activeManipulationSessions.Remove(pointerData.PointerId);
+            activeSession.RemovePointer(pointerData.PointerId);
+            if (activeSession.PointerCount == 0)
+            {
+                // All contacts have lifted: hand off to inertia (or terminate).
+                StartManipulationInertiaOrComplete(activeSession, timestamp);
+            }
+            else
+            {
+                // Re-baseline so the next move doesn't see a jump from the removed pointer.
+                activeSession.Rebaseline(timestamp);
+            }
             return;
         }
 
         if (sourceHandled)
             return;
 
-        RaiseManipulationDeltaPipeline(existingSession, pointerData.Point.Position, timestamp);
+        activeSession.UpdatePointer(pointerData.PointerId, pointerData.Point.Position);
+        RaiseManipulationDeltaPipeline(activeSession, timestamp);
     }
 
-    private static bool RaiseManipulationStartingPipeline(UIElement target)
+    private PointerManipulationSession? FindActiveSessionFor(UIElement target)
+    {
+        foreach (var session in _activeManipulationSessions.Values)
+        {
+            if (ReferenceEquals(session.Target, target))
+                return session;
+        }
+        return null;
+    }
+
+    /// <returns>The (possibly bubble-mutated) starting args if the manipulation should proceed; null when cancelled.</returns>
+    private static ManipulationStartingEventArgs? RaiseManipulationStartingPipeline(UIElement target)
     {
         ManipulationStartingEventArgs previewArgs = new()
         {
@@ -1534,24 +1888,23 @@ internal sealed class WindowInputDispatcher
             Cancel = false
         };
         target.RaiseEvent(previewArgs);
-        if (previewArgs.Cancel) return false;
+        if (previewArgs.Cancel) return null;
 
-        if (!previewArgs.Handled)
+        if (previewArgs.Handled)
+            return previewArgs;
+
+        ManipulationStartingEventArgs bubbleArgs = new()
         {
-            ManipulationStartingEventArgs bubbleArgs = new()
-            {
-                RoutedEvent = UIElement.ManipulationStartingEvent,
-                ManipulationContainer = previewArgs.ManipulationContainer ?? target,
-                Mode = previewArgs.Mode,
-                Pivot = previewArgs.Pivot,
-                IsSingleTouchEnabled = previewArgs.IsSingleTouchEnabled,
-                Cancel = false
-            };
-            target.RaiseEvent(bubbleArgs);
-            if (bubbleArgs.Cancel) return false;
-        }
-
-        return true;
+            RoutedEvent = UIElement.ManipulationStartingEvent,
+            ManipulationContainer = previewArgs.ManipulationContainer ?? target,
+            Mode = previewArgs.Mode,
+            Pivot = previewArgs.Pivot,
+            IsSingleTouchEnabled = previewArgs.IsSingleTouchEnabled,
+            Cancel = false
+        };
+        target.RaiseEvent(bubbleArgs);
+        if (bubbleArgs.Cancel) return null;
+        return bubbleArgs;
     }
 
     private static void RaiseManipulationStartedPipeline(UIElement target, Point origin, int timestamp)
@@ -1576,20 +1929,34 @@ internal sealed class WindowInputDispatcher
         }
     }
 
-    private static void RaiseManipulationDeltaPipeline(PointerManipulationSession session, Point currentPoint, int timestamp)
+    private void RaiseManipulationDeltaPipeline(PointerManipulationSession session, int timestamp)
     {
-        Vector deltaTranslation = currentPoint - session.LastPoint;
-        int dt = Math.Max(1, timestamp - session.LastTimestamp);
-        Vector velocity = new(deltaTranslation.X / dt, deltaTranslation.Y / dt);
-        Vector cumulative = session.CumulativeTranslation + deltaTranslation;
+        ManipulationFrameDelta frame = session.ComputeFrameDelta(timestamp);
+        if (frame.Trivial && frame.DtMs > 0)
+        {
+            // Still emit something so handlers see live updates; but skip zero-delta frames entirely.
+            return;
+        }
 
-        ManipulationDelta delta = CreateManipulationDelta(deltaTranslation);
-        ManipulationDelta cumulativeDelta = CreateManipulationDelta(cumulative);
+        ManipulationDelta deltaThisFrame = new()
+        {
+            Translation = frame.DeltaTranslation,
+            Rotation = frame.DeltaRotation,
+            Expansion = frame.DeltaExpansion,
+            Scale = frame.FrameScale
+        };
+        ManipulationDelta cumulative = new()
+        {
+            Translation = session.CumulativeTranslation,
+            Rotation = session.CumulativeRotation,
+            Expansion = session.CumulativeExpansion,
+            Scale = session.CumulativeScale
+        };
         ManipulationVelocities velocities = new()
         {
-            LinearVelocity = velocity,
-            AngularVelocity = 0,
-            ExpansionVelocity = Vector.Zero
+            LinearVelocity = session.LastLinearVelocity,
+            AngularVelocity = session.LastAngularVelocity,
+            ExpansionVelocity = session.LastExpansionVelocity
         };
 
         ManipulationDeltaEventArgs previewArgs = new()
@@ -1597,43 +1964,58 @@ internal sealed class WindowInputDispatcher
             RoutedEvent = UIElement.PreviewManipulationDeltaEvent,
             ManipulationContainer = session.Target,
             ManipulationOrigin = session.Origin,
-            DeltaManipulation = delta,
-            CumulativeManipulation = cumulativeDelta,
+            DeltaManipulation = deltaThisFrame,
+            CumulativeManipulation = cumulative,
             Velocities = velocities,
             IsInertial = false
         };
         session.Target.RaiseEvent(previewArgs);
 
+        ManipulationDeltaEventArgs bubbleArgs = previewArgs;
         if (!previewArgs.Handled)
         {
-            ManipulationDeltaEventArgs bubbleArgs = new()
+            bubbleArgs = new()
             {
                 RoutedEvent = UIElement.ManipulationDeltaEvent,
                 ManipulationContainer = session.Target,
                 ManipulationOrigin = session.Origin,
-                DeltaManipulation = delta,
-                CumulativeManipulation = cumulativeDelta,
+                DeltaManipulation = deltaThisFrame,
+                CumulativeManipulation = cumulative,
                 Velocities = velocities,
                 IsInertial = false
             };
             session.Target.RaiseEvent(bubbleArgs);
         }
 
-        session.LastPoint = currentPoint;
-        session.LastTimestamp = timestamp;
-        session.CumulativeTranslation = cumulative;
-        session.LastVelocity = velocity;
+        // Boundary feedback surfaced from handler.
+        ManipulationDelta? unused = previewArgs.UnusedManipulation ?? bubbleArgs.UnusedManipulation;
+        if (unused != null && DeltaHasContent(unused))
+            RaiseBoundaryFeedback(session.Target, unused);
+
+        // Honour Complete/Cancel/StartInertia requests.
+        if (previewArgs.CancelRequested || bubbleArgs.CancelRequested)
+        {
+            CancelManipulationSessionByInstance(session, raiseBoundary: false, timestamp);
+        }
+        else if (previewArgs.CompleteRequested || bubbleArgs.CompleteRequested)
+        {
+            TerminateManipulationSession(session, isInertial: false, timestamp);
+        }
+        else if (previewArgs.StartInertiaRequested || bubbleArgs.StartInertiaRequested)
+        {
+            // Force an immediate inertia phase even while contacts remain.
+            StartManipulationInertiaOrComplete(session, timestamp);
+        }
     }
 
-    private static void RaiseManipulationInertiaStartingPipeline(PointerManipulationSession session, int timestamp)
+    private void StartManipulationInertiaOrComplete(PointerManipulationSession session, int timestamp)
     {
-        if (session.LastVelocity.Length <= 0.01) return;
-
+        // First raise the InertiaStarting event so handlers can supply behaviors.
         ManipulationVelocities velocities = new()
         {
-            LinearVelocity = session.LastVelocity,
-            AngularVelocity = 0,
-            ExpansionVelocity = Vector.Zero
+            LinearVelocity = session.LastLinearVelocity,
+            AngularVelocity = session.LastAngularVelocity,
+            ExpansionVelocity = session.LastExpansionVelocity
         };
 
         ManipulationInertiaStartingEventArgs previewArgs = new()
@@ -1645,9 +2027,10 @@ internal sealed class WindowInputDispatcher
         };
         session.Target.RaiseEvent(previewArgs);
 
+        ManipulationInertiaStartingEventArgs bubbleArgs = previewArgs;
         if (!previewArgs.Handled)
         {
-            ManipulationInertiaStartingEventArgs bubbleArgs = new()
+            bubbleArgs = new()
             {
                 RoutedEvent = UIElement.ManipulationInertiaStartingEvent,
                 ManipulationContainer = session.Target,
@@ -1659,16 +2042,71 @@ internal sealed class WindowInputDispatcher
             };
             session.Target.RaiseEvent(bubbleArgs);
         }
+
+        if (previewArgs.CancelRequested || bubbleArgs.CancelRequested
+            || previewArgs.CompleteRequested || bubbleArgs.CompleteRequested)
+        {
+            TerminateManipulationSession(session, isInertial: false, timestamp);
+            return;
+        }
+
+        // Build the integrator and start.
+        ManipulationDelta cumulative = new()
+        {
+            Translation = session.CumulativeTranslation,
+            Rotation = session.CumulativeRotation,
+            Expansion = session.CumulativeExpansion,
+            Scale = session.CumulativeScale
+        };
+
+        Dispatcher dispatcher = Dispatcher.CurrentDispatcher ?? Dispatcher.GetForCurrentThread();
+        var processor = new ManipulationInertiaProcessor(session.Target, session.Origin, cumulative, dispatcher);
+        if (!processor.Start(
+            session.LastLinearVelocity,
+            session.LastAngularVelocity,
+            session.LastExpansionVelocity,
+            bubbleArgs.TranslationBehavior,
+            bubbleArgs.RotationBehavior,
+            bubbleArgs.ExpansionBehavior))
+        {
+            // Velocity below stop threshold — go straight to Completed (non-inertial).
+            TerminateManipulationSession(session, isInertial: false, timestamp);
+            return;
+        }
+
+        session.InertiaProcessor = processor;
+    }
+
+    private void TerminateManipulationSession(PointerManipulationSession session, bool isInertial, int timestamp)
+    {
+        // Remove all pointers that point to this session.
+        var keys = _activeManipulationSessions
+            .Where(kv => ReferenceEquals(kv.Value, session))
+            .Select(kv => kv.Key)
+            .ToArray();
+        foreach (var key in keys)
+            _activeManipulationSessions.Remove(key);
+
+        session.InertiaProcessor?.Cancel();
+        session.InertiaProcessor = null;
+
+        RaiseManipulationCompletedPipeline(session, isInertial, timestamp);
     }
 
     private static void RaiseManipulationCompletedPipeline(PointerManipulationSession session, bool isInertial, int timestamp)
     {
-        ManipulationDelta total = CreateManipulationDelta(session.CumulativeTranslation);
+        ManipulationDelta total = new()
+        {
+            Translation = session.CumulativeTranslation,
+            Rotation = session.CumulativeRotation,
+            Expansion = session.CumulativeExpansion,
+            Scale = session.CumulativeScale
+        };
         ManipulationVelocities velocities = new()
         {
-            LinearVelocity = session.LastVelocity,
-            AngularVelocity = 0,
-            ExpansionVelocity = Vector.Zero
+            LinearVelocity = session.LastLinearVelocity,
+            AngularVelocity = session.LastAngularVelocity,
+            ExpansionVelocity = session.LastExpansionVelocity
         };
 
         ManipulationCompletedEventArgs previewArgs = new()
@@ -1701,37 +2139,44 @@ internal sealed class WindowInputDispatcher
     {
         if (!_activeManipulationSessions.TryGetValue(pointerId, out var session))
             return;
-
-        ManipulationBoundaryFeedbackEventArgs previewBoundary = new()
-        {
-            RoutedEvent = UIElement.PreviewManipulationBoundaryFeedbackEvent,
-            ManipulationContainer = session.Target,
-            BoundaryFeedback = CreateManipulationDelta(Vector.Zero)
-        };
-        session.Target.RaiseEvent(previewBoundary);
-
-        if (!previewBoundary.Handled)
-        {
-            ManipulationBoundaryFeedbackEventArgs bubbleBoundary = new()
-            {
-                RoutedEvent = UIElement.ManipulationBoundaryFeedbackEvent,
-                ManipulationContainer = session.Target,
-                BoundaryFeedback = previewBoundary.BoundaryFeedback
-            };
-            session.Target.RaiseEvent(bubbleBoundary);
-        }
-
-        RaiseManipulationCompletedPipeline(session, isInertial: false, timestamp);
-        _activeManipulationSessions.Remove(pointerId);
+        CancelManipulationSessionByInstance(session, raiseBoundary: true, timestamp);
     }
 
-    private static ManipulationDelta CreateManipulationDelta(Vector translation) => new()
+    private void CancelManipulationSessionByInstance(PointerManipulationSession session, bool raiseBoundary, int timestamp)
     {
-        Translation = translation,
-        Rotation = 0,
-        Scale = new Vector(1, 1),
-        Expansion = Vector.Zero
-    };
+        if (raiseBoundary)
+        {
+            RaiseBoundaryFeedback(session.Target, new ManipulationDelta { Scale = new Vector(1, 1) });
+        }
+        TerminateManipulationSession(session, isInertial: false, timestamp);
+    }
+
+    private static void RaiseBoundaryFeedback(UIElement target, ManipulationDelta unused)
+    {
+        ManipulationBoundaryFeedbackEventArgs previewArgs = new()
+        {
+            RoutedEvent = UIElement.PreviewManipulationBoundaryFeedbackEvent,
+            ManipulationContainer = target,
+            BoundaryFeedback = unused
+        };
+        target.RaiseEvent(previewArgs);
+        if (!previewArgs.Handled)
+        {
+            ManipulationBoundaryFeedbackEventArgs bubbleArgs = new()
+            {
+                RoutedEvent = UIElement.ManipulationBoundaryFeedbackEvent,
+                ManipulationContainer = target,
+                BoundaryFeedback = unused
+            };
+            target.RaiseEvent(bubbleArgs);
+        }
+    }
+
+    private static bool DeltaHasContent(ManipulationDelta delta) =>
+        delta.Translation.Length > 0.0001
+        || Math.Abs(delta.Rotation) > 0.0001
+        || delta.Expansion.Length > 0.0001
+        || delta.Scale.X != 1.0 || delta.Scale.Y != 1.0;
 
     // ── Session Cleanup ──
 
@@ -1786,23 +2231,203 @@ internal sealed class WindowInputDispatcher
 
     // ── PointerManipulationSession ──
 
+    /// <summary>
+    /// Aggregated per-frame motion computed from the current multi-touch pointer set.
+    /// </summary>
+    private readonly struct ManipulationFrameDelta
+    {
+        public ManipulationFrameDelta(Vector translation, double rotation, Vector expansion, Vector frameScale, double dtMs, bool trivial)
+        {
+            DeltaTranslation = translation;
+            DeltaRotation = rotation;
+            DeltaExpansion = expansion;
+            FrameScale = frameScale;
+            DtMs = dtMs;
+            Trivial = trivial;
+        }
+        public Vector DeltaTranslation { get; }
+        public double DeltaRotation { get; }   // degrees
+        public Vector DeltaExpansion { get; }
+        public Vector FrameScale { get; }      // multiplicative scale this frame
+        public double DtMs { get; }
+        public bool Trivial { get; }
+    }
+
     private sealed class PointerManipulationSession
     {
-        public PointerManipulationSession(UIElement target, Point origin, int timestamp)
+        // current and initial pointer positions, keyed by pointer id
+        private readonly Dictionary<uint, Point> _current = new();
+        private readonly Dictionary<uint, Point> _initial = new();
+
+        // last-frame centroid metrics; baselined whenever the pointer set changes
+        private Point _baseCentroid;
+        private double _baseSpread;          // avg distance from centroid to pointers
+        private double _baseAngle;           // angle of first pointer to centroid (deg)
+        private int _baseTimestamp;
+
+        public PointerManipulationSession(
+            UIElement target, Point origin, int timestamp,
+            ManipulationModes mode, bool isSingleTouchEnabled, ManipulationPivot? pivot)
         {
             Target = target;
             Origin = origin;
-            LastPoint = origin;
-            LastTimestamp = timestamp;
-            CumulativeTranslation = Vector.Zero;
-            LastVelocity = Vector.Zero;
+            Mode = mode;
+            IsSingleTouchEnabled = isSingleTouchEnabled;
+            Pivot = pivot;
+            _baseCentroid = origin;
+            _baseTimestamp = timestamp;
+            CumulativeScale = new Vector(1, 1);
         }
 
         public UIElement Target { get; }
         public Point Origin { get; }
-        public Point LastPoint { get; set; }
-        public int LastTimestamp { get; set; }
-        public Vector CumulativeTranslation { get; set; }
-        public Vector LastVelocity { get; set; }
+        public ManipulationModes Mode { get; }
+        public bool IsSingleTouchEnabled { get; }
+        public ManipulationPivot? Pivot { get; }
+        public int PointerCount => _current.Count;
+
+        public Vector CumulativeTranslation { get; private set; } = Vector.Zero;
+        public double CumulativeRotation { get; private set; }                   // degrees
+        public Vector CumulativeExpansion { get; private set; } = Vector.Zero;   // DIPs
+        public Vector CumulativeScale { get; private set; }                      // multiplicative
+
+        public Vector LastLinearVelocity { get; private set; } = Vector.Zero;    // DIP / ms
+        public double LastAngularVelocity { get; private set; }                  // deg / ms
+        public Vector LastExpansionVelocity { get; private set; } = Vector.Zero; // DIP / ms
+
+        public ManipulationInertiaProcessor? InertiaProcessor { get; set; }
+
+        public void AddPointer(uint id, Point position, int timestamp)
+        {
+            _current[id] = position;
+            _initial[id] = position;
+            Rebaseline(timestamp);
+        }
+
+        public void RemovePointer(uint id)
+        {
+            _current.Remove(id);
+            _initial.Remove(id);
+            // Caller may invoke Rebaseline if any pointers remain.
+        }
+
+        public void UpdatePointer(uint id, Point position)
+        {
+            if (_current.ContainsKey(id))
+                _current[id] = position;
+        }
+
+        public void Rebaseline(int timestamp)
+        {
+            if (_current.Count == 0)
+            {
+                _baseSpread = 0;
+                _baseAngle = 0;
+                _baseTimestamp = timestamp;
+                return;
+            }
+            _baseCentroid = ComputeCentroid(_current.Values);
+            _baseSpread = ComputeSpread(_current.Values, _baseCentroid);
+            _baseAngle = ComputeAngle(_current.Values, _baseCentroid);
+            _baseTimestamp = timestamp;
+            LastLinearVelocity = Vector.Zero;
+            LastAngularVelocity = 0;
+            LastExpansionVelocity = Vector.Zero;
+        }
+
+        public ManipulationFrameDelta ComputeFrameDelta(int timestamp)
+        {
+            if (_current.Count == 0)
+                return new ManipulationFrameDelta(Vector.Zero, 0, Vector.Zero, new Vector(1, 1), 0, trivial: true);
+
+            Point centroidNow = ComputeCentroid(_current.Values);
+            double spreadNow = ComputeSpread(_current.Values, centroidNow);
+            double angleNow = ComputeAngle(_current.Values, centroidNow);
+
+            // Translation: centroid delta — gated by Mode.
+            Vector deltaT = centroidNow - _baseCentroid;
+            if ((Mode & ManipulationModes.TranslateX) == 0) deltaT = new Vector(0, deltaT.Y);
+            if ((Mode & ManipulationModes.TranslateY) == 0) deltaT = new Vector(deltaT.X, 0);
+
+            // Scale + Expansion: derived from spread ratio. Need ≥ 2 pointers.
+            Vector frameScale = new(1, 1);
+            Vector deltaExpansion = Vector.Zero;
+            if (_current.Count >= 2 && _baseSpread > 0.0001 && (Mode & ManipulationModes.Scale) != 0)
+            {
+                double ratio = spreadNow / _baseSpread;
+                frameScale = new Vector(ratio, ratio);
+                deltaExpansion = new Vector(spreadNow - _baseSpread, spreadNow - _baseSpread);
+            }
+
+            // Rotation: angle delta (degrees), wrapped to (-180, 180]. Need ≥ 2 pointers.
+            double deltaR = 0;
+            if (_current.Count >= 2 && (Mode & ManipulationModes.Rotate) != 0)
+            {
+                deltaR = WrapAngle(angleNow - _baseAngle);
+            }
+
+            double dt = Math.Max(1.0, timestamp - _baseTimestamp);
+
+            // Accumulate.
+            CumulativeTranslation += deltaT;
+            CumulativeRotation += deltaR;
+            CumulativeExpansion += deltaExpansion;
+            CumulativeScale = new Vector(CumulativeScale.X * frameScale.X, CumulativeScale.Y * frameScale.Y);
+
+            // Velocities.
+            LastLinearVelocity = new Vector(deltaT.X / dt, deltaT.Y / dt);
+            LastAngularVelocity = deltaR / dt;
+            LastExpansionVelocity = new Vector(deltaExpansion.X / dt, deltaExpansion.Y / dt);
+
+            // Re-baseline for next frame.
+            _baseCentroid = centroidNow;
+            _baseSpread = spreadNow;
+            _baseAngle = angleNow;
+            _baseTimestamp = timestamp;
+
+            bool trivial = deltaT.Length < 0.001 && Math.Abs(deltaR) < 0.001 && deltaExpansion.Length < 0.001;
+            return new ManipulationFrameDelta(deltaT, deltaR, deltaExpansion, frameScale, dt, trivial);
+        }
+
+        private static Point ComputeCentroid(IEnumerable<Point> points)
+        {
+            double sx = 0, sy = 0;
+            int n = 0;
+            foreach (var p in points) { sx += p.X; sy += p.Y; n++; }
+            return n == 0 ? new Point(0, 0) : new Point(sx / n, sy / n);
+        }
+
+        private static double ComputeSpread(IEnumerable<Point> points, Point centroid)
+        {
+            double sum = 0;
+            int n = 0;
+            foreach (var p in points)
+            {
+                double dx = p.X - centroid.X;
+                double dy = p.Y - centroid.Y;
+                sum += Math.Sqrt(dx * dx + dy * dy);
+                n++;
+            }
+            return n == 0 ? 0 : sum / n;
+        }
+
+        private static double ComputeAngle(IEnumerable<Point> points, Point centroid)
+        {
+            // Use the first pointer's angle relative to centroid as the reference.
+            // For 2+ pointers this captures pinch rotation; for 1 pointer it's
+            // arbitrary and unused (caller guards on count).
+            foreach (var p in points)
+            {
+                return Math.Atan2(p.Y - centroid.Y, p.X - centroid.X) * (180.0 / Math.PI);
+            }
+            return 0;
+        }
+
+        private static double WrapAngle(double deg)
+        {
+            while (deg > 180) deg -= 360;
+            while (deg <= -180) deg += 360;
+            return deg;
+        }
     }
 }

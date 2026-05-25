@@ -958,6 +958,10 @@ public class DataGrid : Control, IColumnHeaderHost
         if (columnStart < 0 || columnEnd < 0 || Columns.Count == 0)
         {
             row.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnRowMouseDown));
+        row.AddHandler(TouchDownEvent, new RoutedEventHandler(OnRowTouchDown));
+        row.AddHandler(TouchMoveEvent, new RoutedEventHandler(OnRowTouchMove));
+        row.AddHandler(TouchUpEvent, new RoutedEventHandler(OnRowTouchUp));
+        TouchHelper.SetIsRippleEnabled(row, true);
             return row;
         }
 
@@ -986,6 +990,10 @@ public class DataGrid : Control, IColumnHeaderHost
         }
 
         row.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnRowMouseDown));
+        row.AddHandler(TouchDownEvent, new RoutedEventHandler(OnRowTouchDown));
+        row.AddHandler(TouchMoveEvent, new RoutedEventHandler(OnRowTouchMove));
+        row.AddHandler(TouchUpEvent, new RoutedEventHandler(OnRowTouchUp));
+        TouchHelper.SetIsRippleEnabled(row, true);
 
         return row;
     }
@@ -1007,6 +1015,55 @@ public class DataGrid : Control, IColumnHeaderHost
             }
             e.Handled = true;
         }
+    }
+
+    private const double RowTouchPanCancelThresholdDips = 8.0;
+
+    private void OnRowTouchDown(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || sender is not DataGridRow row || e is not TouchEventArgs touchArgs) return;
+        if (!TouchHelper.GetIsTouchInteractive(row)) return;
+        row.TouchActiveId = touchArgs.TouchDevice.Id;
+        row.TouchDownPos = touchArgs.GetTouchPoint(row).Position;
+        row.TouchClickCandidate = true;
+        // Suppress mouse synthesis so OnRowMouseDown does not select the row
+        // immediately. PointerDown still bubbles to ancestor ScrollViewer.
+        e.Handled = true;
+    }
+
+    private void OnRowTouchMove(object sender, RoutedEventArgs e)
+    {
+        if (sender is not DataGridRow row || !row.TouchClickCandidate || e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != row.TouchActiveId) return;
+        var current = touchArgs.GetTouchPoint(row).Position;
+        double dx = current.X - row.TouchDownPos.X;
+        double dy = current.Y - row.TouchDownPos.Y;
+        if (dx * dx + dy * dy > RowTouchPanCancelThresholdDips * RowTouchPanCancelThresholdDips)
+        {
+            row.TouchClickCandidate = false;
+            row.TouchActiveId = -1;
+        }
+    }
+
+    private void OnRowTouchUp(object sender, RoutedEventArgs e)
+    {
+        if (sender is not DataGridRow row || e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != row.TouchActiveId) return;
+        bool wasCandidate = row.TouchClickCandidate;
+        row.TouchClickCandidate = false;
+        row.TouchActiveId = -1;
+        if (!wasCandidate) return;
+
+        Focus();
+        if (row.IsNewItemPlaceholder)
+        {
+            CommitNewItem();
+        }
+        else
+        {
+            SelectRow(row.RowIndex, ModifierKeys.None);
+        }
+        e.Handled = true;
     }
 
     #endregion
@@ -2063,6 +2120,10 @@ public class DataGrid : Control, IColumnHeaderHost
         }
 
         row.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnRowMouseDown));
+        row.AddHandler(TouchDownEvent, new RoutedEventHandler(OnRowTouchDown));
+        row.AddHandler(TouchMoveEvent, new RoutedEventHandler(OnRowTouchMove));
+        row.AddHandler(TouchUpEvent, new RoutedEventHandler(OnRowTouchUp));
+        TouchHelper.SetIsRippleEnabled(row, true);
         return row;
     }
 
@@ -2725,6 +2786,13 @@ public class DataGridRow : Control
     internal Brush? AlternatingBackground { get; set; }
     internal int VisibleColumnStart { get; set; } = -1;
     internal int VisibleColumnEnd { get; set; } = -1;
+
+    // Per-row touch-panning gate state. DataGrid is almost always inside a
+    // ScrollViewer; deferring the row select to TouchUp + cancelling on drag
+    // lets the scroller take over panning.
+    internal int TouchActiveId { get; set; } = -1;
+    internal Point TouchDownPos { get; set; }
+    internal bool TouchClickCandidate { get; set; }
 
     /// <summary>
     /// Gets whether this row is the empty new-item placeholder shown at the

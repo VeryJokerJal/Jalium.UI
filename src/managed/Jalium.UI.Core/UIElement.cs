@@ -64,6 +64,10 @@ public abstract partial class UIElement : Visual, IInputElement
         EventManager.RegisterClassHandler(typeof(UIElement), TouchMoveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchMove(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), PreviewTouchUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewTouchUp(e)));
         EventManager.RegisterClassHandler(typeof(UIElement), TouchUpEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchUp(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchEnterEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchEnter(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), TouchLeaveEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnTouchLeave(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), GotTouchCaptureEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnGotTouchCapture(e)));
+        EventManager.RegisterClassHandler(typeof(UIElement), LostTouchCaptureEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnLostTouchCapture(e)));
 
         // Stylus
         EventManager.RegisterClassHandler(typeof(UIElement), PreviewStylusDownEvent, new RoutedEventHandler((s, e) => ((UIElement)s).OnPreviewStylusDown(e)));
@@ -2198,6 +2202,30 @@ public abstract partial class UIElement : Visual, IInputElement
         EventManager.RegisterRoutedEvent(nameof(TouchUp), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
 
     /// <summary>
+    /// Identifies the TouchEnter routed event.
+    /// </summary>
+    public static readonly RoutedEvent TouchEnterEvent =
+        EventManager.RegisterRoutedEvent(nameof(TouchEnter), RoutingStrategy.Direct, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the TouchLeave routed event.
+    /// </summary>
+    public static readonly RoutedEvent TouchLeaveEvent =
+        EventManager.RegisterRoutedEvent(nameof(TouchLeave), RoutingStrategy.Direct, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the GotTouchCapture routed event.
+    /// </summary>
+    public static readonly RoutedEvent GotTouchCaptureEvent =
+        EventManager.RegisterRoutedEvent(nameof(GotTouchCapture), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
+    /// Identifies the LostTouchCapture routed event.
+    /// </summary>
+    public static readonly RoutedEvent LostTouchCaptureEvent =
+        EventManager.RegisterRoutedEvent(nameof(LostTouchCapture), RoutingStrategy.Bubble, typeof(RoutedEventHandler), typeof(UIElement));
+
+    /// <summary>
     /// Identifies the PreviewStylusDown routed event.
     /// </summary>
     public static readonly RoutedEvent PreviewStylusDownEvent =
@@ -3239,6 +3267,34 @@ public abstract partial class UIElement : Visual, IInputElement
     /// Invoked when an unhandled TouchUp attached event reaches this element. Override to handle this event.
     /// </summary>
     protected virtual void OnTouchUp(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when a touch contact enters the bounds of this element.
+    /// </summary>
+    protected virtual void OnTouchEnter(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when a touch contact leaves the bounds of this element.
+    /// </summary>
+    protected virtual void OnTouchLeave(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when this element captures a touch contact.
+    /// </summary>
+    protected virtual void OnGotTouchCapture(RoutedEventArgs e)
+    {
+    }
+
+    /// <summary>
+    /// Invoked when this element loses a captured touch contact.
+    /// </summary>
+    protected virtual void OnLostTouchCapture(RoutedEventArgs e)
     {
     }
 

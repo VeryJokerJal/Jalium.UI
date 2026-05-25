@@ -1,4 +1,5 @@
-﻿using Jalium.UI.Media;
+﻿using Jalium.UI.Input;
+using Jalium.UI.Media;
 
 namespace Jalium.UI.Controls;
 
@@ -96,6 +97,84 @@ public class Image : Control, IReclaimableResource
 
     public Image()
     {
+        AddHandler(ManipulationDeltaEvent, new RoutedEventHandler(OnManipulationDeltaHandler));
+        AddHandler(ManipulationCompletedEvent, new RoutedEventHandler(OnManipulationCompletedHandler));
+    }
+
+    // ── Pinch-to-zoom / pan ─────────────────────────────────────────────
+
+    /// <summary>Identifies the IsZoomEnabled dependency property.</summary>
+    [DevToolsPropertyCategory(DevToolsPropertyCategory.Behavior)]
+    public static readonly DependencyProperty IsZoomEnabledProperty =
+        DependencyProperty.Register(nameof(IsZoomEnabled), typeof(bool), typeof(Image),
+            new PropertyMetadata(false, OnIsZoomEnabledChanged));
+
+    /// <summary>True to allow pinch-to-zoom and single-finger pan via touch.</summary>
+    public bool IsZoomEnabled
+    {
+        get => (bool)(GetValue(IsZoomEnabledProperty) ?? false);
+        set => SetValue(IsZoomEnabledProperty, value);
+    }
+
+    /// <summary>Identifies the MinZoom dependency property.</summary>
+    public static readonly DependencyProperty MinZoomProperty =
+        DependencyProperty.Register(nameof(MinZoom), typeof(double), typeof(Image), new PropertyMetadata(1.0));
+    public double MinZoom { get => (double)GetValue(MinZoomProperty)!; set => SetValue(MinZoomProperty, value); }
+
+    /// <summary>Identifies the MaxZoom dependency property.</summary>
+    public static readonly DependencyProperty MaxZoomProperty =
+        DependencyProperty.Register(nameof(MaxZoom), typeof(double), typeof(Image), new PropertyMetadata(10.0));
+    public double MaxZoom { get => (double)GetValue(MaxZoomProperty)!; set => SetValue(MaxZoomProperty, value); }
+
+    private static readonly DependencyPropertyKey CurrentZoomPropertyKey =
+        DependencyProperty.RegisterReadOnly(nameof(CurrentZoom), typeof(double), typeof(Image),
+            new PropertyMetadata(1.0));
+
+    /// <summary>Identifies the CurrentZoom read-only dependency property.</summary>
+    public static readonly DependencyProperty CurrentZoomProperty = CurrentZoomPropertyKey.DependencyProperty;
+
+    /// <summary>The current cumulative zoom factor (read-only).</summary>
+    public double CurrentZoom => (double)GetValue(CurrentZoomProperty)!;
+
+    private static void OnIsZoomEnabledChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is Image img && e.NewValue is bool enabled)
+        {
+            img.IsManipulationEnabled = enabled;
+        }
+    }
+
+    private void OnManipulationDeltaHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsZoomEnabled || e is not ManipulationDeltaEventArgs args || args.DeltaManipulation == null) return;
+
+        double newZoom = CurrentZoom * args.DeltaManipulation.Scale.X;
+        double clamped = Math.Clamp(newZoom, Math.Max(0.0001, MinZoom), Math.Max(MinZoom, MaxZoom));
+        if (Math.Abs(clamped - CurrentZoom) > 0.0001)
+        {
+            SetValue(CurrentZoomPropertyKey.DependencyProperty, clamped);
+        }
+
+        // Boundary feedback if the user is trying to zoom past Min/Max.
+        if (Math.Abs(clamped - newZoom) > 0.0001)
+        {
+            args.ReportBoundaryFeedback(new Jalium.UI.Input.ManipulationDelta
+            {
+                Scale = new Vector(newZoom - clamped, newZoom - clamped)
+            });
+        }
+
+        // Apply via RenderTransform — a CompositeTransform combining scale+translate.
+        var rt = (RenderTransform as ScaleTransform) ?? new ScaleTransform();
+        rt.ScaleX = CurrentZoom;
+        rt.ScaleY = CurrentZoom;
+        RenderTransform = rt;
+        e.Handled = true;
+    }
+
+    private void OnManipulationCompletedHandler(object sender, RoutedEventArgs e)
+    {
+        // Inertia for image pan handled automatically by ManipulationInertiaProcessor.
     }
 
     /// <inheritdoc />

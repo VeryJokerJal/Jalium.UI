@@ -38,11 +38,24 @@ public class Viewbox : FrameworkElement
     }
 
     private FrameworkElement? _child;
-    private ScaleTransform? _scaleTransform;
+    private ScaleTransform _scaleTransform = null!;
+    // 内部 wrapper：Viewbox 的唯一 visual child 始终是它。
+    // ScaleTransform 设在 wrapper 上而不是用户的 Child 上 —— 否则会覆盖 Child 自己声明的
+    // RenderTransform（如 jalxaml 中给 Grid 设的 RotateTransform）。
+    // wrapper.RenderTransformOrigin=(0,0) 让 ScaleTransform 绕左上角缩放，配合 Viewbox.ArrangeOverride
+    // 把 wrapper Arrange 在 (0,0)，让缩放后的内容从 Viewbox 左上角铺开。
+    private Border _wrapper = null!;
 
     public Viewbox()
     {
         ClipToBounds = true;
+        _scaleTransform = new ScaleTransform();
+        _wrapper = new Border
+        {
+            RenderTransformOrigin = new Point(0, 0),
+            RenderTransform = _scaleTransform,
+        };
+        AddVisualChild(_wrapper);
     }
 
     #region Dependency Properties
@@ -121,20 +134,15 @@ public class Viewbox : FrameworkElement
     {
         if (d is Viewbox viewbox)
         {
-            if (e.OldValue is FrameworkElement oldChild)
+            // wrapper 始终是 Viewbox 的 visual child；用户的 Child 放进 wrapper.Child。
+            // 这样 Child.RenderTransform 是用户自己的，Viewbox 的 ScaleTransform 不会覆盖它。
+            if (e.OldValue is FrameworkElement)
             {
-                viewbox.RemoveVisualChild(oldChild);
-                oldChild.RenderTransform = null;
+                viewbox._wrapper.Child = null;
             }
 
             viewbox._child = e.NewValue as FrameworkElement;
-
-            if (viewbox._child != null)
-            {
-                viewbox._scaleTransform = new ScaleTransform();
-                viewbox._child.RenderTransform = viewbox._scaleTransform;
-                viewbox.AddVisualChild(viewbox._child);
-            }
+            viewbox._wrapper.Child = viewbox._child;
 
             viewbox.InvalidateMeasure();
         }
@@ -145,14 +153,14 @@ public class Viewbox : FrameworkElement
     #region Layout
 
     /// <inheritdoc />
-    public override int VisualChildrenCount => _child != null ? 1 : 0;
+    public override int VisualChildrenCount => 1;
 
     /// <inheritdoc />
     public override Visual? GetVisualChild(int index)
     {
-        if (index != 0 || _child == null)
+        if (index != 0)
             throw new ArgumentOutOfRangeException(nameof(index));
-        return _child;
+        return _wrapper;
     }
 
     /// <inheritdoc />
@@ -161,17 +169,15 @@ public class Viewbox : FrameworkElement
         if (_child == null)
             return Size.Empty;
 
-        // Measure child at infinite size to get its desired size
-        _child.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-        var childSize = _child.DesiredSize;
+        // 用 infinite 测 wrapper（→ 内层 Child）获取自然尺寸，再算 scale
+        _wrapper.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        var childSize = _wrapper.DesiredSize;
 
         if (childSize.Width == 0 || childSize.Height == 0)
             return Size.Empty;
 
-        // Calculate scale
         var scale = ComputeScaleFactor(availableSize, childSize, Stretch, StretchDirection);
 
-        // Return the scaled size
         return new Size(childSize.Width * scale.Width, childSize.Height * scale.Height);
     }
 
@@ -181,22 +187,17 @@ public class Viewbox : FrameworkElement
         if (_child == null)
             return finalSize;
 
-        var childSize = _child.DesiredSize;
+        var childSize = _wrapper.DesiredSize;
         if (childSize.Width == 0 || childSize.Height == 0)
             return finalSize;
 
-        // Calculate scale
         var scale = ComputeScaleFactor(finalSize, childSize, Stretch, StretchDirection);
 
-        // Update the scale transform
-        if (_scaleTransform != null)
-        {
-            _scaleTransform.ScaleX = scale.Width;
-            _scaleTransform.ScaleY = scale.Height;
-        }
+        _scaleTransform.ScaleX = scale.Width;
+        _scaleTransform.ScaleY = scale.Height;
 
-        // Arrange child at its natural size
-        _child.Arrange(new Rect(0, 0, childSize.Width, childSize.Height));
+        // wrapper 以自然尺寸 Arrange 在 (0,0)；ScaleTransform 绕 (0,0) 缩放后铺满 finalSize
+        _wrapper.Arrange(new Rect(0, 0, childSize.Width, childSize.Height));
 
         return finalSize;
     }

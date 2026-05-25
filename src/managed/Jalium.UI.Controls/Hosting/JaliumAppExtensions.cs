@@ -121,4 +121,20 @@ public static class JaliumAppExtensions
         reclaimer.Start();
         return app;
     }
+
+    /// <summary>
+    /// Opts in to touch-friendly mode. Once enabled, every touch / pen hit-test
+    /// expands its candidate radius to <paramref name="minHitTargetSize"/> DIPs
+    /// so finger-sized contacts still land on the intended control even when
+    /// the visual hit zone is smaller.
+    /// </summary>
+    /// <param name="app">The host application.</param>
+    /// <param name="minHitTargetSize">Minimum hit-target diameter in DIPs (default 40 — matches Material / WinUI guidelines).</param>
+    public static JaliumApp UseTouchMode(this JaliumApp app, double minHitTargetSize = 40.0)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+        TouchModeOptions.Current.Enabled = true;
+        TouchModeOptions.Current.MinHitTargetSize = Math.Max(0, minHitTargetSize);
+        return app;
+    }
 }

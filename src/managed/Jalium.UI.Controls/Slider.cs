@@ -265,6 +265,69 @@ public class Slider : Control
         AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
         AddHandler(MouseMoveEvent, new MouseEventHandler(OnMouseMoveHandler));
         AddHandler(KeyDownEvent, new KeyEventHandler(OnKeyDownHandler));
+
+        // Touch parallels mouse but with per-contact capture so a touch slide
+        // is not interrupted by a second simultaneous contact elsewhere.
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
+        AddHandler(TouchMoveEvent, new RoutedEventHandler(OnTouchMoveHandler));
+        AddHandler(TouchUpEvent, new RoutedEventHandler(OnTouchUpHandler));
+        AddHandler(LostTouchCaptureEvent, new RoutedEventHandler(OnLostTouchCaptureHandler));
+    }
+
+    private int _activeTouchId = -1;
+
+    private void OnTouchDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
+        if (!TouchHelper.GetIsTouchInteractive(this)) return;
+
+        _activeTouchId = touchArgs.TouchDevice.Id;
+        CaptureTouch(touchArgs.TouchDevice);
+        Focus();
+
+        var position = touchArgs.GetTouchPoint(this).Position;
+        _isDragging = true;
+        SetValueFromPosition(position);
+        _dragStartValue = Value;
+        _dragStartPoint = position;
+        InvalidateVisual();
+
+        e.Handled = true;
+    }
+
+    private void OnTouchMoveHandler(object sender, RoutedEventArgs e)
+    {
+        if (!_isDragging || e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        var position = touchArgs.GetTouchPoint(this).Position;
+        SetValueFromPosition(position);
+        e.Handled = true;
+    }
+
+    private void OnTouchUpHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        ReleaseTouchCapture(touchArgs.TouchDevice);
+        _activeTouchId = -1;
+        if (_isDragging)
+        {
+            _isDragging = false;
+            InvalidateVisual();
+        }
+        e.Handled = true;
+    }
+
+    private void OnLostTouchCaptureHandler(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        _activeTouchId = -1;
+        if (_isDragging)
+        {
+            _isDragging = false;
+            InvalidateVisual();
+        }
     }
 
     #endregion

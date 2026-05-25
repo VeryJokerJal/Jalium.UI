@@ -1130,6 +1130,55 @@ public class ComboBoxItem : ContentControl
         AddHandler(MouseUpEvent, new MouseButtonEventHandler(OnMouseUpHandler));
         AddHandler(MouseEnterEvent, new MouseEventHandler(OnMouseEnterHandler));
         AddHandler(MouseLeaveEvent, new MouseEventHandler(OnMouseLeaveHandler));
+        AddHandler(TouchDownEvent, new RoutedEventHandler(OnTouchDownHandler));
+        AddHandler(TouchMoveEvent, new RoutedEventHandler(OnTouchMoveHandler));
+        AddHandler(TouchUpEvent, new RoutedEventHandler(OnTouchUpHandler));
+        TouchHelper.SetIsRippleEnabled(this, true);
+    }
+
+    private const double TouchPanCancelThresholdDips = 8.0;
+    private int _activeTouchId = -1;
+    private Point _activeTouchDownPos;
+
+    private void OnTouchDownHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
+        if (!TouchHelper.GetIsTouchInteractive(this)) return;
+        _activeTouchId = touchArgs.TouchDevice.Id;
+        _activeTouchDownPos = touchArgs.GetTouchPoint(this).Position;
+        _isPressed = true;
+        // Suppress mouse synthesis so OnMouseDown does not trigger the item
+        // immediately. PointerDown still bubbles to an ancestor ScrollViewer
+        // because the dispatcher raises pointer events unconditionally.
+        e.Handled = true;
+    }
+
+    private void OnTouchMoveHandler(object sender, RoutedEventArgs e)
+    {
+        if (!_isPressed || e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        var current = touchArgs.GetTouchPoint(this).Position;
+        double dx = current.X - _activeTouchDownPos.X;
+        double dy = current.Y - _activeTouchDownPos.Y;
+        if (dx * dx + dy * dy > TouchPanCancelThresholdDips * TouchPanCancelThresholdDips)
+        {
+            _isPressed = false; // cancel selection candidate, let ScrollViewer pan
+            _activeTouchId = -1;
+        }
+    }
+
+    private void OnTouchUpHandler(object sender, RoutedEventArgs e)
+    {
+        if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _activeTouchId) return;
+        bool wasCandidate = _isPressed;
+        _isPressed = false;
+        _activeTouchId = -1;
+        if (wasCandidate)
+        {
+            ItemClicked?.Invoke(this, EventArgs.Empty);
+            e.Handled = true;
+        }
     }
 
     /// <inheritdoc />

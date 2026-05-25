@@ -2931,6 +2931,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         OnClosed(EventArgs.Empty);
         OnUnloaded(new RoutedEventArgs());
+
+        // Tear down the RTS background thread so it doesn't outlive the window.
+        try { _realTimeStylus?.Dispose(); }
+        catch { /* never let teardown failures escape Close */ }
     }
 
     private void ApplyLayeredWindowOpacity(double opacity)

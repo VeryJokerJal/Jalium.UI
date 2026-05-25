@@ -700,6 +700,9 @@ public class TreeViewItem : HeaderedItemsControl
             _headerBorder.RemoveHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler));
             _headerBorder.RemoveHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter));
             _headerBorder.RemoveHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave));
+            _headerBorder.RemoveHandler(TouchDownEvent, new RoutedEventHandler(OnHeaderTouchDown));
+            _headerBorder.RemoveHandler(TouchMoveEvent, new RoutedEventHandler(OnHeaderTouchMove));
+            _headerBorder.RemoveHandler(TouchUpEvent, new RoutedEventHandler(OnHeaderTouchUp));
         }
 
         _headerBorder = GetTemplateChild("PART_HeaderBorder") as Border;
@@ -715,6 +718,10 @@ public class TreeViewItem : HeaderedItemsControl
             _headerBorder.AddHandler(MouseDownEvent, new MouseButtonEventHandler(OnMouseDownHandler), true);
             _headerBorder.AddHandler(MouseEnterEvent, new MouseEventHandler(OnHeaderMouseEnter), true);
             _headerBorder.AddHandler(MouseLeaveEvent, new MouseEventHandler(OnHeaderMouseLeave), true);
+            _headerBorder.AddHandler(TouchDownEvent, new RoutedEventHandler(OnHeaderTouchDown), true);
+            _headerBorder.AddHandler(TouchMoveEvent, new RoutedEventHandler(OnHeaderTouchMove), true);
+            _headerBorder.AddHandler(TouchUpEvent, new RoutedEventHandler(OnHeaderTouchUp), true);
+            TouchHelper.SetIsRippleEnabled(_headerBorder, true);
         }
 
         // Sync initial state
@@ -894,6 +901,89 @@ public class TreeViewItem : HeaderedItemsControl
         if (e.Handled) return;
 
         ParentTreeView?.RaiseItemContextMenuRequested(this, e);
+        e.Handled = true;
+    }
+
+    // Panning gate state — TreeView usually lives inside a ScrollViewer, so
+    // we defer selection to TouchUp and bail out if the contact drifts past
+    // the threshold (handing pan control to the ancestor ScrollViewer).
+    private const double HeaderTouchPanCancelThresholdDips = 8.0;
+    private int _headerActiveTouchId = -1;
+    private Point _headerActiveTouchDownPos;
+    private bool _headerTouchClickCandidate;
+    private bool _headerTouchExpanderHit;
+
+    /// <summary>
+    /// Touch tap on the header. Differs from mouse on purpose: touch taps
+    /// also toggle expansion when the item has children, because a separate
+    /// expander-arrow target is too small for finger interaction. Mouse
+    /// still requires the user to click the arrow.
+    /// </summary>
+    private void OnHeaderTouchDown(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (!TouchHelper.GetIsTouchInteractive(this)) return;
+
+        // Pass-through if the touch hit a focusable child (text box, button)
+        // inside the header — they get to consume the event themselves.
+        if (touchArgs.OriginalSource is DependencyObject source && IsInsideInteractiveHeaderElement(source))
+        {
+            return;
+        }
+
+        _headerActiveTouchId = touchArgs.TouchDevice.Id;
+        _headerActiveTouchDownPos = touchArgs.GetTouchPoint(this).Position;
+        _headerTouchClickCandidate = true;
+        _headerTouchExpanderHit = HasItems
+            && _expanderBorder is { Visibility: Visibility.Visible } expander
+            && touchArgs.OriginalSource is DependencyObject originalSrc
+            && IsVisualDescendantOf(originalSrc, expander);
+        // Suppress mouse synthesis so OnMouseDownHandler does not select the
+        // item instantly. PointerDown is still raised by the dispatcher
+        // unconditionally and bubbles to an ancestor ScrollViewer.
+        e.Handled = true;
+    }
+
+    private void OnHeaderTouchMove(object sender, RoutedEventArgs e)
+    {
+        if (!_headerTouchClickCandidate || e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _headerActiveTouchId) return;
+        var current = touchArgs.GetTouchPoint(this).Position;
+        double dx = current.X - _headerActiveTouchDownPos.X;
+        double dy = current.Y - _headerActiveTouchDownPos.Y;
+        if (dx * dx + dy * dy > HeaderTouchPanCancelThresholdDips * HeaderTouchPanCancelThresholdDips)
+        {
+            _headerTouchClickCandidate = false;
+            _headerActiveTouchId = -1;
+        }
+    }
+
+    private void OnHeaderTouchUp(object sender, RoutedEventArgs e)
+    {
+        if (e is not TouchEventArgs touchArgs) return;
+        if (touchArgs.TouchDevice.Id != _headerActiveTouchId) return;
+        bool wasCandidate = _headerTouchClickCandidate;
+        bool wasExpanderHit = _headerTouchExpanderHit;
+        _headerActiveTouchId = -1;
+        _headerTouchClickCandidate = false;
+        _headerTouchExpanderHit = false;
+        if (!wasCandidate) return;
+
+        if (wasExpanderHit)
+        {
+            IsExpanded = !IsExpanded;
+            e.Handled = true;
+            return;
+        }
+
+        Focus();
+        ParentTreeView?.SelectItem(this);
+        // Tap-to-expand: on touch, single tap on the header expands/collapses an item
+        // that has children. Matches the WinUI / mobile convention.
+        if (HasItems)
+        {
+            IsExpanded = !IsExpanded;
+        }
         e.Handled = true;
     }
 
