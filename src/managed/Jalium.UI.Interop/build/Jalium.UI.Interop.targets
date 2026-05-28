@@ -1,34 +1,57 @@
 <?xml version="1.0" encoding="utf-8"?>
 <Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
-  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true'">
-    <None Include="$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.core.dll"
+  <PropertyGroup>
+    <_JaliumInteropNativeDir Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\win-arm64\native')">$(MSBuildThisFileDirectory)..\runtimes\win-arm64\native</_JaliumInteropNativeDir>
+    <_JaliumInteropNativeDir Condition="'$(_JaliumInteropNativeDir)' == '' and Exists('$(MSBuildThisFileDirectory)..\runtimes\win-x64\native')">$(MSBuildThisFileDirectory)..\runtimes\win-x64\native</_JaliumInteropNativeDir>
+  </PropertyGroup>
+  <ItemGroup Condition="'$(UseJaliumNativeAot)' != 'true' and '$(_JaliumInteropNativeDir)' != ''">
+    <None Include="$(_JaliumInteropNativeDir)\jalium.native.core.dll"
           Link="jalium.native.core.dll"
           CopyToOutputDirectory="PreserveNewest"
-          Visible="false" />
-    <None Include="$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.d3d12.dll"
+          Visible="false"
+          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.core.dll')" />
+    <None Include="$(_JaliumInteropNativeDir)\jalium.native.d3d12.dll"
           Link="jalium.native.d3d12.dll"
           CopyToOutputDirectory="PreserveNewest"
-          Visible="false" />
-    <None Include="$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.vulkan.dll"
+          Visible="false"
+          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.d3d12.dll')" />
+    <None Include="$(_JaliumInteropNativeDir)\jalium.native.vulkan.dll"
           Link="jalium.native.vulkan.dll"
           CopyToOutputDirectory="PreserveNewest"
           Visible="false"
-          Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.vulkan.dll')" />
-    <None Include="$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.software.dll"
+          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.vulkan.dll')" />
+    <None Include="$(_JaliumInteropNativeDir)\jalium.native.software.dll"
           Link="jalium.native.software.dll"
           CopyToOutputDirectory="PreserveNewest"
           Visible="false"
-          Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.software.dll')" />
-    <None Include="$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\jalium.native.browser.dll"
+          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.software.dll')" />
+    <None Include="$(_JaliumInteropNativeDir)\jalium.native.platform.dll"
+          Link="jalium.native.platform.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.platform.dll')" />
+    <None Include="$(_JaliumInteropNativeDir)\jalium.native.browser.dll"
           Link="jalium.native.browser.dll"
           CopyToOutputDirectory="PreserveNewest"
-          Visible="false" />
+          Visible="false"
+          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.browser.dll')" />
+    <None Include="$(_JaliumInteropNativeDir)\jalium.native.media.dll"
+          Link="jalium.native.media.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.media.dll')" />
+    <None Include="$(_JaliumInteropNativeDir)\jalium.native.media.core.dll"
+          Link="jalium.native.media.core.dll"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(_JaliumInteropNativeDir)\jalium.native.media.core.dll')" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="$(MSBuildThisFileDirectory)..\runtimes\win-x64\native\WebView2Loader.dll"
+  <ItemGroup Condition="'$(_JaliumInteropNativeDir)' != ''">
+    <None Include="$(_JaliumInteropNativeDir)\WebView2Loader.dll"
           Link="WebView2Loader.dll"
           CopyToOutputDirectory="PreserveNewest"
-          Visible="false" />
+          Visible="false"
+          Condition="Exists('$(_JaliumInteropNativeDir)\WebView2Loader.dll')" />
   </ItemGroup>
 </Project>
