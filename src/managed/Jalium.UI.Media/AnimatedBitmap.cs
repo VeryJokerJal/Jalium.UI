@@ -1,5 +1,4 @@
 using Jalium.UI.Media.Imaging;
-using Jalium.UI.Media.Native;
 using Jalium.UI.Threading;
 
 namespace Jalium.UI.Media;
@@ -257,9 +256,10 @@ public sealed class AnimatedBitmap : ImageSource, IDisposable
 
     private static INativeImageDecoder GetDecoder()
     {
-        // BitmapImage already provisions a lazy singleton; reuse it through the
-        // public factory rather than duplicating the lock pattern here.
-        return new NativeImageDecoder();
+        // Reuse the exact decoder BitmapImage uses (honoring any SetDecoder
+        // injection) so frame-count probing and per-frame decoding never
+        // disagree about whether a payload is animated.
+        return BitmapImage.ResolveDecoder();
     }
 
     /// <inheritdoc />

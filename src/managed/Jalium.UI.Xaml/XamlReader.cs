@@ -4626,7 +4626,7 @@ public static class XamlTypeRegistry
             if (!string.IsNullOrWhiteSpace(texture.Path) &&
                 Uri.TryCreate(texture.Path, UriKind.RelativeOrAbsolute, out var uri))
             {
-                element.Source = new BitmapImage(uri);
+                element.Source = Jalium.UI.Media.ImageSourceLoader.FromUri(uri);
             }
         }
 
