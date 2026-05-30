@@ -50,7 +50,7 @@
          "or one of its dependencies" before reaching the real entry points. -->
     <Content Include="..\..\native\bin\native\Debug\jalium.native.media.dll" Link="jalium.native.media.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.media.dll')" />
     <Content Include="..\..\native\bin\native\Debug\jalium.native.media.core.dll" Link="jalium.native.media.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.media.core.dll')" />
-    <Content Include="..\..\native\jalium.native.browser\redist\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
+    <Content Include="..\..\native\jalium.native.browser\redist\$(JaliumNativePackRid)\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\jalium.native.browser\redist\$(JaliumNativePackRid)\WebView2Loader.dll')" />
   </ItemGroup>
 
   <ItemGroup Condition="'$(Configuration)' == 'Release' and '$(UseJaliumNativeAot)' != 'true'">
@@ -62,7 +62,7 @@
     <Content Include="..\..\native\bin\native\Release\jalium.native.browser.dll" Link="jalium.native.browser.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
     <Content Include="..\..\native\bin\native\Release\jalium.native.media.dll" Link="jalium.native.media.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.media.dll')" />
     <Content Include="..\..\native\bin\native\Release\jalium.native.media.core.dll" Link="jalium.native.media.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Release\jalium.native.media.core.dll')" />
-    <Content Include="..\..\native\jalium.native.browser\redist\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
+    <Content Include="..\..\native\jalium.native.browser\redist\$(JaliumNativePackRid)\WebView2Loader.dll" Link="WebView2Loader.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\jalium.native.browser\redist\$(JaliumNativePackRid)\WebView2Loader.dll')" />
   </ItemGroup>
 
   <!-- Ensure native DLLs are copied to output on package restore -->
