@@ -5676,6 +5676,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     // or handle specially if needed
                     break;
 
+                case WM_IME_SETCONTEXT:
+                    // When the focused element disallows IME (read-only text controls),
+                    // swallow the activation so DefWindowProc does not show the IME
+                    // composition / candidate window. The IME context itself is detached
+                    // in UpdateInputMethodAssociation; intercepting this message stops the
+                    // candidate list that Microsoft Pinyin (and other IMEs) would otherwise
+                    // pop up despite the detached context. Editable targets fall through so
+                    // the IME UI keeps working normally.
+                    if (!window.CanHandleImeMessages())
+                    {
+                        return nint.Zero;
+                    }
+
+                    break;
+
                 // Cursor
                 case WM_SETCURSOR:
                     if (window.OnSetCursor(lParam))
