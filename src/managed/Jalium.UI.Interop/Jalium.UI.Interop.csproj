@@ -32,7 +32,7 @@
        (PublishAot=true without UseJaliumNativeAot) — they would get neither the
        static-link wiring nor the dynamic DLLs and trip DllNotFoundException at
        runtime. -->
-  <ItemGroup Condition="'$(Configuration)' == 'Debug' and '$(UseJaliumNativeAot)' != 'true'">
+  <ItemGroup Condition="'$(OS)' == 'Windows' and '$(Configuration)' == 'Debug' and '$(UseJaliumNativeAot)' != 'true'">
     <Content Include="..\..\native\bin\native\Debug\jalium.native.core.dll" Link="jalium.native.core.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
     <Content Include="..\..\native\bin\native\Debug\jalium.native.d3d12.dll" Link="jalium.native.d3d12.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" />
     <Content Include="..\..\native\bin\native\Debug\jalium.native.vulkan.dll" Link="jalium.native.vulkan.dll" CopyToOutputDirectory="PreserveNewest" Visible="false" Pack="true" PackagePath="runtimes/$(JaliumNativePackRid)/native" Condition="Exists('..\..\native\bin\native\Debug\jalium.native.vulkan.dll')" />

@@ -500,6 +500,8 @@ public sealed class BundleRenderer
         else
         {
             // 无法重建几何体，回退到矩形边界
+            ReportPathFallback(node.PathCacheIndex,
+                "unable to reconstruct geometry from path cache; rendering bounds fallback.");
             var bounds = ConvertRect(node.Bounds);
             dc.DrawRectangle(fill, stroke, bounds);
         }
@@ -653,7 +655,7 @@ public sealed class BundleRenderer
             {
                 loaded = ImageSourceLoader.FromFile(path);
             }
-            else if (Uri.TryCreate(path, UriKind.RelativeOrAbsolute, out var uri))
+            else if (Uri.TryCreate(path, UriKind.Absolute, out var uri))
             {
                 loaded = ImageSourceLoader.FromUri(uri);
             }
