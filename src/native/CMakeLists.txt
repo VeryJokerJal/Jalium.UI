@@ -124,6 +124,7 @@ if(WIN32)
     add_subdirectory(jalium.native.browser)
     add_subdirectory(jalium.native.media.windows)
 elseif(APPLE)
+    add_subdirectory(jalium.native.media.apple)
     add_subdirectory(jalium.native.metal)
 else()
     # Linux / Android — Vulkan is the primary backend
