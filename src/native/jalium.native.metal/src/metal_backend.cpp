@@ -248,6 +248,106 @@ JaliumResult MetalTextFormat::GetFontMetrics(JaliumTextMetrics* metrics)
 
     return JALIUM_OK;
 }
+
+// Builds a single-line CTLine from the given UTF-16 text using this format's font.
+// Caller owns the returned CTLineRef (must CFRelease). Returns nullptr on failure.
+// NOTE: characters are appended as UniChar (UTF-16 code units), mirroring
+// MetalTextFormat::MeasureText so string indices align with the managed layer's
+// UTF-16 column offsets. Non-BMP code points are not handled here (matching the
+// existing measurement path); the editor hit-testing tests operate on BMP text.
+static CTLineRef CreateCTLineForText(CTFontRef font, const wchar_t* text, uint32_t textLength)
+{
+    if (!font || !text || textLength == 0)
+        return nullptr;
+
+    CFMutableStringRef cfStr = CFStringCreateMutable(kCFAllocatorDefault, 0);
+    for (uint32_t i = 0; i < textLength; i++) {
+        UniChar ch = (UniChar)text[i];
+        CFStringAppendCharacters(cfStr, &ch, 1);
+    }
+
+    CFMutableDictionaryRef attrs = CFDictionaryCreateMutable(
+        kCFAllocatorDefault, 1, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(attrs, kCTFontAttributeName, font);
+
+    CFAttributedStringRef attrStr = CFAttributedStringCreate(kCFAllocatorDefault, cfStr, attrs);
+    CTLineRef line = CTLineCreateWithAttributedString(attrStr);
+
+    CFRelease(attrStr);
+    CFRelease(attrs);
+    CFRelease(cfStr);
+    return line;
+}
+
+JaliumResult MetalTextFormat::HitTestPoint(
+    const wchar_t* text, uint32_t textLength,
+    float /*maxWidth*/, float /*maxHeight*/, float pointX, float /*pointY*/,
+    JaliumTextHitTestResult* result)
+{
+    if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
+    memset(result, 0, sizeof(*result));
+    if (!text || textLength == 0)
+        return JALIUM_OK;
+
+    CTLineRef line = CreateCTLineForText(font, text, textLength);
+    if (!line)
+        return JALIUM_OK;
+
+    // CTLineGetStringIndexForPosition snaps to the nearest character boundary,
+    // returning the insertion index for the click — exactly the caret column the
+    // managed layer expects (so isTrailingHit stays 0).
+    CFIndex index = CTLineGetStringIndexForPosition(line, CGPointMake(pointX, 0));
+    if (index == kCFNotFound)
+        index = 0;
+    if (index < 0) index = 0;
+    if (index > (CFIndex)textLength) index = (CFIndex)textLength;
+
+    CGFloat caretX = CTLineGetOffsetForStringIndex(line, index, nullptr);
+    CGFloat width = (CGFloat)CTLineGetTypographicBounds(line, nullptr, nullptr, nullptr);
+
+    result->textPosition = (uint32_t)index;
+    result->isTrailingHit = 0;
+    result->isInside = (pointX >= 0 && pointX <= width) ? 1 : 0;
+    result->caretX = (float)caretX;
+    result->caretY = 0;
+    result->caretHeight = (float)(CTFontGetAscent(font) + CTFontGetDescent(font));
+
+    CFRelease(line);
+    return JALIUM_OK;
+}
+
+JaliumResult MetalTextFormat::HitTestTextPosition(
+    const wchar_t* text, uint32_t textLength,
+    float /*maxWidth*/, float /*maxHeight*/, uint32_t textPosition, int32_t isTrailingHit,
+    JaliumTextHitTestResult* result)
+{
+    if (!result) return JALIUM_ERROR_INVALID_ARGUMENT;
+    memset(result, 0, sizeof(*result));
+    if (!text || textLength == 0)
+        return JALIUM_OK;
+
+    CTLineRef line = CreateCTLineForText(font, text, textLength);
+    if (!line)
+        return JALIUM_OK;
+
+    // Resolve to the caret's string index: a trailing hit asks for the edge after
+    // the character at textPosition.
+    CFIndex index = (CFIndex)textPosition + (isTrailingHit ? 1 : 0);
+    if (index < 0) index = 0;
+    if (index > (CFIndex)textLength) index = (CFIndex)textLength;
+
+    CGFloat caretX = CTLineGetOffsetForStringIndex(line, index, nullptr);
+
+    result->textPosition = (uint32_t)index;
+    result->isTrailingHit = isTrailingHit ? 1 : 0;
+    result->isInside = 1;
+    result->caretX = (float)caretX;
+    result->caretY = 0;
+    result->caretHeight = (float)(CTFontGetAscent(font) + CTFontGetDescent(font));
+
+    CFRelease(line);
+    return JALIUM_OK;
+}
 #else
 JaliumResult MetalTextFormat::MeasureText(
     const wchar_t*, uint32_t, float, float, JaliumTextMetrics* metrics)
@@ -533,7 +633,9 @@ void MetalRenderTarget::DrawShaderEffect(float x, float y, float w, float h,
         // Fallback: draw captured content unchanged.
         int32_t ix = (int32_t)(effectCaptureX_ + 0.5f);
         int32_t iy = (int32_t)(effectCaptureY_ + 0.5f);
-        BlendRegion(effectCaptureFb_, framebuffer_, width_, height_, ix, iy, currentOpacity_);
+        int32_t iw = (int32_t)(effectCaptureW_ + 0.5f);
+        int32_t ih = (int32_t)(effectCaptureH_ + 0.5f);
+        BlendRegion(effectCaptureFb_, iw, ih, framebuffer_, width_, height_, ix, iy, currentOpacity_);
         return;
     }
 
@@ -554,7 +656,7 @@ void MetalRenderTarget::DrawShaderEffect(float x, float y, float w, float h,
 
     int32_t ix = (int32_t)(effectCaptureX_ + 0.5f);
     int32_t iy = (int32_t)(effectCaptureY_ + 0.5f);
-    BlendRegion(effectCaptureFb_, framebuffer_, width_, height_, ix, iy, currentOpacity_);
+    BlendRegion(effectCaptureFb_, iw, ih, framebuffer_, width_, height_, ix, iy, currentOpacity_);
 }
 
 void MetalRenderTarget::Clear(float r, float g, float b, float a)
