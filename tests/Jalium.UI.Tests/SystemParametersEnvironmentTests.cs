@@ -7,6 +7,9 @@ public class SystemParametersEnvironmentTests
     [Fact]
     public void CurrentEnvironment_OnWindowsTarget_ShouldIncludeWindows()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         Assert.True(SystemParameters.IsWindows);
         Assert.True((SystemParameters.CurrentEnvironment & SystemEnvironmentKind.Windows) != 0);
         Assert.False(SystemParameters.IsBrowser);
