@@ -511,7 +511,32 @@ public class TextBlock : FrameworkElement
         {
             var ft = _cachedFormattedLines[i];
             if (ft == null) continue;
-            dc.DrawText(ft, new Point(GetLineOriginX(_layoutLines[i], renderWidth), verticalOffset + i * lineHeight));
+
+            var originX = GetLineOriginX(_layoutLines[i], renderWidth);
+            var originY = verticalOffset + i * lineHeight;
+
+            if (dc is IClipBoundsDrawingContext { CurrentClipBounds: Rect clipBounds })
+            {
+                var dcOffset = (dc as IOffsetDrawingContext)?.Offset ?? default;
+                var lineBounds = new Rect(
+                    dcOffset.X + originX,
+                    dcOffset.Y + originY,
+                    Math.Max(_layoutLines[i].Width, 1),
+                    Math.Max(lineHeight, 1));
+
+                var fullyVisible =
+                    lineBounds.Top >= clipBounds.Top &&
+                    lineBounds.Bottom <= clipBounds.Bottom &&
+                    lineBounds.Left >= clipBounds.Left &&
+                    lineBounds.Right <= clipBounds.Right;
+
+                if (!fullyVisible)
+                {
+                    continue;
+                }
+            }
+
+            dc.DrawText(ft, new Point(originX, originY));
         }
     }
 
@@ -536,6 +561,13 @@ public class TextBlock : FrameworkElement
     private double GetVerticalContentOffset(double lineHeight)
     {
         if (lineHeight <= 0 || _layoutLines.Count == 0)
+        {
+            return 0;
+        }
+
+        // Multi-line content should stay top-aligned so per-line clipping remains
+        // deterministic across platforms with different font metric implementations.
+        if (_layoutLines.Count > 1)
         {
             return 0;
         }
