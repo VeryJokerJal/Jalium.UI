@@ -1283,6 +1283,24 @@ internal static partial class NativeMethods
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_get_surface")]
     internal static partial NativeSurfaceDescriptor WindowGetSurface(nint window);
 
+    [LibraryImport(PlatformLib, EntryPoint = "macos_ime_create")]
+    internal static partial nint MacOsImeCreate(
+        nint windowHandle,
+        nint managedContext,
+        nint insertTextCallback,
+        nint setMarkedTextCallback,
+        nint unmarkTextCallback,
+        nint commandCallback);
+
+    [LibraryImport(PlatformLib, EntryPoint = "macos_ime_destroy")]
+    internal static partial void MacOsImeDestroy(nint bridgeHandle);
+
+    [LibraryImport(PlatformLib, EntryPoint = "macos_ime_focus")]
+    internal static partial void MacOsImeFocus(nint bridgeHandle, [MarshalAs(UnmanagedType.I1)] bool focus);
+
+    [LibraryImport(PlatformLib, EntryPoint = "macos_ime_update_caret_rect")]
+    internal static partial void MacOsImeUpdateCaretRect(nint bridgeHandle, ulong eventId, double x, double y, double width, double height);
+
     [LibraryImport(PlatformLib, EntryPoint = "jalium_window_invalidate")]
     internal static partial void WindowInvalidate(nint window);
 

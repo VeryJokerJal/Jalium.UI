@@ -53,4 +53,36 @@
           Visible="false"
           Condition="Exists('$(_JaliumInteropNativeDir)\WebView2Loader.dll')" />
   </ItemGroup>
+  <ItemGroup Condition="'$(OS)' == 'Unix'">
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.platform.dylib"
+          Link="libjalium.native.platform.dylib"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.platform.dylib')" />
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.core.dylib"
+          Link="libjalium.native.core.dylib"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.core.dylib')" />
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.metal.dylib"
+          Link="libjalium.native.metal.dylib"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.metal.dylib')" />
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.software.dylib"
+          Link="libjalium.native.software.dylib"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.software.dylib')" />
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.media.dylib"
+          Link="libjalium.native.media.dylib"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.media.dylib')" />
+    <None Include="$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.media.core.dylib"
+          Link="libjalium.native.media.core.dylib"
+          CopyToOutputDirectory="PreserveNewest"
+          Visible="false"
+          Condition="Exists('$(MSBuildThisFileDirectory)..\runtimes\osx\native\libjalium.native.media.core.dylib')" />
+  </ItemGroup>
 </Project>

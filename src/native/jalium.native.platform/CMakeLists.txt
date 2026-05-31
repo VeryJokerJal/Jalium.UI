@@ -21,6 +21,7 @@ elseif(UNIX AND NOT APPLE)
 elseif(APPLE)
     set(PLATFORM_SOURCES
         src/platform_macos.mm
+        src/macos_ime.mm
     )
 endif()
 
@@ -88,10 +89,12 @@ elseif(UNIX AND NOT APPLE)
 elseif(APPLE)
     find_library(COCOA_FRAMEWORK Cocoa REQUIRED)
     find_library(QUARTZCORE_FRAMEWORK QuartzCore REQUIRED)
+    find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
     target_link_libraries(${PROJECT_NAME}
         PRIVATE
             ${COCOA_FRAMEWORK}
             ${QUARTZCORE_FRAMEWORK}
+            ${COREGRAPHICS_FRAMEWORK}
     )
 endif()
 

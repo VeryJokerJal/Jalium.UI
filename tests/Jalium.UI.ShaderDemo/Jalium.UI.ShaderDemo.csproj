@@ -1,7 +1,9 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Exe</OutputType>
+    <RuntimeIdentifiers>osx-arm64;osx-x64</RuntimeIdentifiers>
     <RootNamespace>Jalium.UI.ShaderDemo</RootNamespace>
     <AssemblyName>Jalium.UI.ShaderDemo</AssemblyName>
     <IsPackable>false</IsPackable>
@@ -13,6 +15,11 @@
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Gpu\Jalium.UI.Gpu.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Media\Jalium.UI.Media.csproj" />
     <ProjectReference Include="..\..\src\managed\Jalium.UI.Interop\Jalium.UI.Interop.csproj" />
+    <ProjectReference Include="..\..\..\..\uno-tools\wpf-labs\src\DevFlow\LeXtudio.DevFlow.Agent.Core\LeXtudio.DevFlow.Agent.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(OS)' == 'Unix'">
+    <None Include="..\..\src\native\bin\native\$(Configuration)\libjalium.native.*.dylib" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

@@ -52,13 +52,36 @@ internal static class ShaderHelper
         if (_sepiaVignetteShader != null)
             return _sepiaVignetteShader;
 
-        var bytecode = CompileHlsl(SepiaVignetteHlsl, "main", "ps_5_1");
-
         var ps = new PixelShader();
-        ps.SetStreamSource(new MemoryStream(bytecode));
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            var bytecode = CompileHlsl(SepiaVignetteHlsl, "main", "ps_5_1");
+            ps.SetStreamSource(new MemoryStream(bytecode));
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            var bytecode = CreateMetalShaderMarker();
+            ps.SetStreamSource(new MemoryStream(bytecode));
+        }
+        else
+        {
+            // Other non-Windows platforms: no runtime shader support available.
+            // Leave the PixelShader empty to avoid a hard failure.
+        }
 
         _sepiaVignetteShader = ps;
         return ps;
+    }
+
+    private static byte[] CreateMetalShaderMarker()
+    {
+        const string marker = "JALIUM_METAL_SHADER_SEPIA_VIGNETTE";
+        var bytes = Encoding.UTF8.GetBytes(marker);
+        var padding = (4 - (bytes.Length % 4)) % 4;
+        var buffer = new byte[bytes.Length + padding];
+        Array.Copy(bytes, buffer, bytes.Length);
+        return buffer;
     }
 
     #region D3DCompiler P/Invoke

@@ -657,6 +657,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// </summary>
     private IPlatformWindow? _platformWindow;
 
+    private Platform.MacOsImeInputAdapter? _macOsImeAdapter;
+
     /// <summary>
     /// Gets the render target for this window.
     /// </summary>
@@ -2914,6 +2916,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 _ = DestroyWindow(handle);
             }
 
+            _macOsImeAdapter?.Dispose();
+            _macOsImeAdapter = null;
+
             // Let Application decide whether to shut down based on ShutdownMode
             if (Jalium.UI.Application.Current is { } app)
             {
@@ -3253,6 +3258,12 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         // Connect platform event handler for input/resize/paint routing
         _platformWindow.SetEventHandler(OnPlatformEvent);
+
+        if (OperatingSystem.IsMacOS())
+        {
+            _macOsImeAdapter = new Platform.MacOsImeInputAdapter(this);
+            _ = _macOsImeAdapter.Attach(Handle);
+        }
 
         // On Android/Linux the native window (OS surface) determines the actual size.
         // Always use the native surface dimensions on these platforms — any default
@@ -7654,6 +7665,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
     private bool OnImeComposition(nint lParam)
     {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
+
         var hImc = ImmNativeMethods.ImmGetContext(Handle);
         if (hImc == nint.Zero)
         {
@@ -7792,6 +7808,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             InputMethod.CancelComposition();
         }
 
+        if (OperatingSystem.IsMacOS())
+        {
+            if (shouldEnableIme)
+            {
+                _macOsImeAdapter?.NotifyFocusEnter();
+            }
+            else
+            {
+                _macOsImeAdapter?.NotifyFocusLeave();
+            }
+            return;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         if (shouldEnableIme)
         {
             if (!_imeContextDetached)
@@ -7833,6 +7867,24 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        var caretPosDip = imeSupport.GetImeCaretPosition();
+        if (target is FrameworkElement frameworkElement)
+        {
+            var targetOriginDip = frameworkElement.TransformToAncestor(null);
+            caretPosDip = new Point(targetOriginDip.X + caretPosDip.X, targetOriginDip.Y + caretPosDip.Y);
+        }
+
+        if (OperatingSystem.IsMacOS())
+        {
+            _macOsImeAdapter?.NotifyCaretRectChanged(caretPosDip.X, caretPosDip.Y, 1.0, 18.0, _dpiScale);
+            return;
+        }
+
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
         var hImc = ImmNativeMethods.ImmGetContext(Handle);
         if (hImc == nint.Zero)
         {
@@ -7842,13 +7894,6 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         try
         {
             // Convert focused element local caret position (DIPs) to client-area physical pixels.
-            Point caretPosDip = imeSupport.GetImeCaretPosition();
-            if (target is FrameworkElement frameworkElement)
-            {
-                var targetOriginDip = frameworkElement.TransformToAncestor(null);
-                caretPosDip = new Point(targetOriginDip.X + caretPosDip.X, targetOriginDip.Y + caretPosDip.Y);
-            }
-
             int caretX = (int)Math.Round(caretPosDip.X * _dpiScale);
             int caretY = (int)Math.Round(caretPosDip.Y * _dpiScale);
 
@@ -7874,6 +7919,50 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         {
             _ = ImmNativeMethods.ImmReleaseContext(Handle, hImc);
         }
+    }
+
+    internal void MacOsImeStartComposition()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        OnImeStartComposition();
+    }
+
+    internal void MacOsImeEndComposition()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        OnImeEndComposition();
+    }
+
+    internal void MacOsImeCancelComposition()
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        InputMethod.CancelComposition();
+        _macOsImeAdapter?.NotifyFocusLeave();
+    }
+
+    internal void MacOsImeCommitText(string text)
+    {
+        if (!OperatingSystem.IsMacOS())
+            return;
+
+        if (!string.IsNullOrEmpty(text))
+        {
+            var target = GetTextInputTarget();
+            if (target != null)
+            {
+                TextCompositionEventArgs args = new(TextInputEvent, text, Environment.TickCount);
+                target.RaiseEvent(args);
+            }
+        }
+
+        InputMethod.EndComposition(text);
+        UpdateInputMethodAssociation();
     }
 
     #endregion

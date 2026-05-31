@@ -13,6 +13,155 @@
 
 namespace jalium {
 
+static int32_t ClampInt(int32_t value, int32_t minValue, int32_t maxValue)
+{
+    return value < minValue ? minValue : (value > maxValue ? maxValue : value);
+}
+
+static void CopyRegion(
+    const std::vector<uint8_t>& src,
+    std::vector<uint8_t>& dst,
+    int32_t width,
+    int32_t height,
+    int32_t srcX,
+    int32_t srcY,
+    int32_t dstX,
+    int32_t dstY,
+    int32_t regionW,
+    int32_t regionH)
+{
+    if (regionW <= 0 || regionH <= 0) return;
+    const int32_t stride = width * 4;
+    for (int32_t row = 0; row < regionH; ++row) {
+        int32_t sy = srcY + row;
+        int32_t dy = dstY + row;
+        if (sy < 0 || sy >= height || dy < 0 || dy >= height) continue;
+        int32_t copyW = regionW;
+        int32_t sx = srcX;
+        int32_t dx = dstX;
+        if (sx < 0) { copyW += sx; dx -= sx; sx = 0; }
+        if (dx < 0) { copyW += dx; sx -= dx; dx = 0; }
+        if (sx + copyW > width) copyW = width - sx;
+        if (dx + copyW > width) copyW = width - dx;
+        if (copyW <= 0) continue;
+        std::memcpy(
+            dst.data() + (size_t)dy * stride + dx * 4,
+            src.data() + (size_t)sy * stride + sx * 4,
+            (size_t)copyW * 4);
+    }
+}
+
+static void BlendRegion(
+    const std::vector<uint8_t>& src,
+    int32_t srcWidth,
+    int32_t srcHeight,
+    std::vector<uint8_t>& dst,
+    int32_t dstWidth,
+    int32_t dstHeight,
+    int32_t dstX,
+    int32_t dstY,
+    float opacity)
+{
+    if (opacity <= 0.0f || srcWidth <= 0 || srcHeight <= 0) return;
+    const int32_t srcStride = srcWidth * 4;
+    const int32_t dstStride = dstWidth * 4;
+
+    for (int32_t row = 0; row < srcHeight; ++row) {
+        int32_t dy = dstY + row;
+        if (dy < 0 || dy >= dstHeight) continue;
+        for (int32_t col = 0; col < srcWidth; ++col) {
+            int32_t dx = dstX + col;
+            if (dx < 0 || dx >= dstWidth) continue;
+            size_t srcIdx = (size_t)row * srcStride + col * 4;
+            size_t dstIdx = (size_t)dy * dstStride + dx * 4;
+
+            float srcB = src[srcIdx + 0] / 255.0f;
+            float srcG = src[srcIdx + 1] / 255.0f;
+            float srcR = src[srcIdx + 2] / 255.0f;
+            float srcA = src[srcIdx + 3] / 255.0f * opacity;
+            float dstB = dst[dstIdx + 0] / 255.0f;
+            float dstG = dst[dstIdx + 1] / 255.0f;
+            float dstR = dst[dstIdx + 2] / 255.0f;
+            float dstA = dst[dstIdx + 3] / 255.0f;
+
+            float outA = srcA + dstA * (1.0f - srcA);
+            float outR = srcR * srcA + dstR * dstA * (1.0f - srcA);
+            float outG = srcG * srcA + dstG * dstA * (1.0f - srcA);
+            float outB = srcB * srcA + dstB * dstA * (1.0f - srcA);
+
+            if (outA > 0.0f) {
+                outR /= outA;
+                outG /= outA;
+                outB /= outA;
+            }
+
+            dst[dstIdx + 0] = (uint8_t)(std::clamp(outB, 0.0f, 1.0f) * 255.0f);
+            dst[dstIdx + 1] = (uint8_t)(std::clamp(outG, 0.0f, 1.0f) * 255.0f);
+            dst[dstIdx + 2] = (uint8_t)(std::clamp(outR, 0.0f, 1.0f) * 255.0f);
+            dst[dstIdx + 3] = (uint8_t)(std::clamp(outA, 0.0f, 1.0f) * 255.0f);
+        }
+    }
+}
+
+static void ApplySepiaVignette(
+    std::vector<uint8_t>& pixels,
+    int32_t width,
+    int32_t height,
+    float intensity,
+    float radius,
+    float softness)
+{
+    if (width <= 0 || height <= 0) return;
+    const float invW = 1.0f / width;
+    const float invH = 1.0f / height;
+    radius = std::clamp(radius, 0.0f, 1.0f);
+    softness = std::clamp(softness, 0.0f, 1.0f);
+    float edge0 = radius - softness;
+    if (edge0 < 0.0f) edge0 = 0.0f;
+
+    for (int32_t y = 0; y < height; ++y) {
+        for (int32_t x = 0; x < width; ++x) {
+            size_t idx = (size_t)y * width * 4 + x * 4;
+            float alpha = pixels[idx + 3] / 255.0f;
+            if (alpha <= 0.0f) continue;
+
+            float b = pixels[idx + 0] / 255.0f;
+            float g = pixels[idx + 1] / 255.0f;
+            float r = pixels[idx + 2] / 255.0f;
+            float gray = r * 0.299f + g * 0.587f + b * 0.114f;
+            float sr = gray * 1.2f;
+            float sg = gray * 1.0f;
+            float sb = gray * 0.8f;
+            float outR = r + (sr - r) * intensity;
+            float outG = g + (sg - g) * intensity;
+            float outB = b + (sb - b) * intensity;
+
+            float uvx = (x + 0.5f) * invW;
+            float uvy = (y + 0.5f) * invH;
+            float dx = uvx - 0.5f;
+            float dy = uvy - 0.5f;
+            float dist = std::sqrt(dx * dx + dy * dy);
+            float vignette = 0.0f;
+            if (dist <= edge0) {
+                vignette = 1.0f;
+            } else if (dist >= radius) {
+                vignette = 0.0f;
+            } else {
+                float t = (dist - edge0) / (radius - edge0);
+                vignette = 1.0f - t * t * (3.0f - 2.0f * t);
+            }
+
+            outR = std::clamp(outR * vignette, 0.0f, 1.0f);
+            outG = std::clamp(outG * vignette, 0.0f, 1.0f);
+            outB = std::clamp(outB * vignette, 0.0f, 1.0f);
+
+            pixels[idx + 0] = (uint8_t)(outB * 255.0f);
+            pixels[idx + 1] = (uint8_t)(outG * 255.0f);
+            pixels[idx + 2] = (uint8_t)(outR * 255.0f);
+        }
+    }
+}
+
 // ============================================================================
 // MetalTextFormat
 // ============================================================================
@@ -274,6 +423,138 @@ JaliumResult MetalRenderTarget::EndDraw()
     }
 #endif
     return JALIUM_OK;
+}
+
+void MetalRenderTarget::BeginEffectCapture(float x, float y, float w, float h)
+{
+    if (effectCaptureActive_ || w <= 0 || h <= 0) return;
+
+    effectCaptureX_ = x;
+    effectCaptureY_ = y;
+    effectCaptureW_ = w;
+    effectCaptureH_ = h;
+    savedFramebuffer_ = framebuffer_;
+    effectCaptureFb_.clear();
+    effectCaptureActive_ = true;
+
+#ifdef __APPLE__
+    if (cgContext_) {
+        CGPoint pt = CGPointApplyAffineTransform(CGPointMake(x, y), CGContextGetCTM(cgContext_));
+        int32_t ix = (int32_t)std::floor(pt.x + 0.5f);
+        int32_t iy = (int32_t)std::floor(pt.y + 0.5f);
+        int32_t iw = (int32_t)(w + 0.5f);
+        int32_t ih = (int32_t)(h + 0.5f);
+        int32_t maxX = width_;
+        int32_t maxY = height_;
+        const int32_t stride = width_ * 4;
+        ix = ClampInt(ix, 0, maxX);
+        iy = ClampInt(iy, 0, maxY);
+        iw = ClampInt(iw, 0, maxX - ix);
+        ih = ClampInt(ih, 0, maxY - iy);
+        for (int32_t row = 0; row < ih; ++row) {
+            size_t base = (size_t)(iy + row) * stride + ix * 4;
+            std::memset(framebuffer_.data() + base, 0, (size_t)iw * 4);
+        }
+    }
+#else
+    int32_t ix = (int32_t)(x + 0.5f);
+    int32_t iy = (int32_t)(y + 0.5f);
+    int32_t iw = (int32_t)(w + 0.5f);
+    int32_t ih = (int32_t)(h + 0.5f);
+    ix = ClampInt(ix, 0, width_);
+    iy = ClampInt(iy, 0, height_);
+    iw = ClampInt(iw, 0, width_ - ix);
+    ih = ClampInt(ih, 0, height_ - iy);
+    const int32_t stride = width_ * 4;
+    for (int32_t row = 0; row < ih; ++row) {
+        size_t base = (size_t)(iy + row) * stride + ix * 4;
+        std::memset(framebuffer_.data() + base, 0, (size_t)iw * 4);
+    }
+#endif
+}
+
+void MetalRenderTarget::EndEffectCapture()
+{
+    if (!effectCaptureActive_) return;
+
+#ifdef __APPLE__
+    if (cgContext_) {
+        CGPoint pt = CGPointApplyAffineTransform(CGPointMake(effectCaptureX_, effectCaptureY_), CGContextGetCTM(cgContext_));
+        int32_t ix = (int32_t)std::floor(pt.x + 0.5f);
+        int32_t iy = (int32_t)std::floor(pt.y + 0.5f);
+        int32_t iw = (int32_t)(effectCaptureW_ + 0.5f);
+        int32_t ih = (int32_t)(effectCaptureH_ + 0.5f);
+        ix = ClampInt(ix, 0, width_);
+        iy = ClampInt(iy, 0, height_);
+        iw = ClampInt(iw, 0, width_ - ix);
+        ih = ClampInt(ih, 0, height_ - iy);
+        effectCaptureFb_.resize((size_t)iw * ih * 4);
+        for (int32_t row = 0; row < ih; ++row) {
+            size_t srcBase = (size_t)(iy + row) * width_ * 4 + ix * 4;
+            size_t dstBase = (size_t)row * iw * 4;
+            std::memcpy(effectCaptureFb_.data() + dstBase, framebuffer_.data() + srcBase, (size_t)iw * 4);
+        }
+    }
+#else
+    int32_t ix = (int32_t)(effectCaptureX_ + 0.5f);
+    int32_t iy = (int32_t)(effectCaptureY_ + 0.5f);
+    int32_t iw = (int32_t)(effectCaptureW_ + 0.5f);
+    int32_t ih = (int32_t)(effectCaptureH_ + 0.5f);
+    ix = ClampInt(ix, 0, width_);
+    iy = ClampInt(iy, 0, height_);
+    iw = ClampInt(iw, 0, width_ - ix);
+    ih = ClampInt(ih, 0, height_ - iy);
+    effectCaptureFb_.resize((size_t)iw * ih * 4);
+    for (int32_t row = 0; row < ih; ++row) {
+        size_t srcBase = (size_t)(iy + row) * width_ * 4 + ix * 4;
+        size_t dstBase = (size_t)row * iw * 4;
+        std::memcpy(effectCaptureFb_.data() + dstBase, framebuffer_.data() + srcBase, (size_t)iw * 4);
+    }
+#endif
+
+    framebuffer_.swap(savedFramebuffer_);
+    effectCaptureActive_ = false;
+}
+
+void MetalRenderTarget::DrawShaderEffect(float x, float y, float w, float h,
+    const uint8_t* shaderBytecode,
+    uint32_t shaderBytecodeSize,
+    const float* constants,
+    uint32_t constantFloatCount)
+{
+    if (effectCaptureFb_.empty()) return;
+
+    // Detect the demo-specific Metal shader marker.
+    const char marker[] = "JALIUM_METAL_SHADER_SEPIA_VIGNETTE";
+    bool isDemoMetalShader = shaderBytecodeSize >= sizeof(marker) &&
+        std::memcmp(shaderBytecode, marker, sizeof(marker)) == 0;
+
+    if (!isDemoMetalShader) {
+        // Fallback: draw captured content unchanged.
+        int32_t ix = (int32_t)(effectCaptureX_ + 0.5f);
+        int32_t iy = (int32_t)(effectCaptureY_ + 0.5f);
+        BlendRegion(effectCaptureFb_, framebuffer_, width_, height_, ix, iy, currentOpacity_);
+        return;
+    }
+
+    float intensity = 0.0f;
+    float radius = 0.75f;
+    float softness = 0.45f;
+    if (constants && constantFloatCount >= 1) {
+        intensity = constants[0];
+    }
+    if (constants && constantFloatCount >= 6) {
+        radius = constants[4];
+        softness = constants[5];
+    }
+
+    int32_t iw = (int32_t)(effectCaptureW_ + 0.5f);
+    int32_t ih = (int32_t)(effectCaptureH_ + 0.5f);
+    ApplySepiaVignette(effectCaptureFb_, iw, ih, intensity, radius, softness);
+
+    int32_t ix = (int32_t)(effectCaptureX_ + 0.5f);
+    int32_t iy = (int32_t)(effectCaptureY_ + 0.5f);
+    BlendRegion(effectCaptureFb_, framebuffer_, width_, height_, ix, iy, currentOpacity_);
 }
 
 void MetalRenderTarget::Clear(float r, float g, float b, float a)
@@ -769,6 +1050,14 @@ void MetalRenderTarget::RenderText(
     if (auto* solid = dynamic_cast<MetalSolidBrush*>(brush)) {
         CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
         CGFloat components[] = { solid->r, solid->g, solid->b, solid->a * currentOpacity_ };
+        CGColorRef color = CGColorCreate(cs, components);
+        CFDictionarySetValue(attrs, kCTForegroundColorAttributeName, color);
+        CGColorRelease(color);
+        CGColorSpaceRelease(cs);
+    } else {
+        // Fallback text color for non-solid brushes or missing brush state.
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGFloat components[] = { 0.0f, 0.0f, 0.0f, currentOpacity_ };
         CGColorRef color = CGColorCreate(cs, components);
         CFDictionarySetValue(attrs, kCTForegroundColorAttributeName, color);
         CGColorRelease(color);
