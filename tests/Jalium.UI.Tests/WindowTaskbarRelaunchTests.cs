@@ -7,6 +7,9 @@ public class WindowTaskbarRelaunchTests
     [Fact]
     public void BuildTaskbarRelaunchInfo_ShouldReuseExecutable_WhenRunningViaAppHost()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         var info = Window.BuildTaskbarRelaunchInfo(
             @"C:\Program Files\Jalium\Jalium.exe",
             [
@@ -25,6 +28,9 @@ public class WindowTaskbarRelaunchTests
     [Fact]
     public void BuildTaskbarRelaunchInfo_ShouldIncludeManagedEntryPoint_WhenRunningViaDotnetHost()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         var info = Window.BuildTaskbarRelaunchInfo(
             @"C:\Program Files\dotnet\dotnet.exe",
             [

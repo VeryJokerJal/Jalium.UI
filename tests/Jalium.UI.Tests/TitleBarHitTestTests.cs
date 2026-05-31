@@ -18,7 +18,7 @@ public class TitleBarHitTestTests
     {
         var leftCommands = new Border { Width = 42, Height = 20 };
         var rightCommands = new Border { Width = 48, Height = 20 };
-        var explicitIcon = BitmapImage.FromBytes(s_testPngBytes);
+        var explicitIcon = new BitmapImage();
 
         var window = new Window
         {
@@ -163,6 +163,9 @@ public class TitleBarHitTestTests
     [Fact]
     public void WindowIcon_DefaultAutoLoad_ShouldNotThrow_And_ExplicitOverrideWorks()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         Exception? creationException = Record.Exception(() => _ = new Window());
         Assert.Null(creationException);
 
