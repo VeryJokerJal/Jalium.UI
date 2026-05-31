@@ -82,6 +82,12 @@ internal static class GridDefinitionParser
     /// </summary>
     private static void SetProperty(DefinitionBase instance, string propertyName, string value)
     {
+        if (propertyName.Equals(nameof(DefinitionBase.Name), StringComparison.OrdinalIgnoreCase))
+        {
+            instance.Name = value;
+            return;
+        }
+
         var dp = DependencyProperty.FromName(instance.GetType(), propertyName);
         if (dp == null)
         {
