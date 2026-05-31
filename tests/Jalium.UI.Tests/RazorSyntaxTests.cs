@@ -762,9 +762,8 @@ public class RazorSyntaxTests
     [Fact]
     public void RazorAwaitForeach_ShouldExpandAsyncEnumerable()
     {
-        // await foreach is compiled by Roslyn scripting — needs the helper method in scope.
-        // Since the preprocessor uses CSharpScript which supports top-level await,
-        // we test with a simple async enumerable via inline code.
+                // Regression: setup code blocks that declare async local helpers must contribute
+                // to subsequent @await foreach expansion on all platforms.
         const string xamlWithHelper = """
             <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
               @{
@@ -783,6 +782,37 @@ public class RazorSyntaxTests
         Assert.Equal(2, panel.Children.Count);
         Assert.Equal("X", ((TextBlock)panel.Children[0]).Text);
         Assert.Equal("Y", ((TextBlock)panel.Children[1]).Text);
+    }
+
+    [Fact]
+    public void JalxamlReader_AwaitForeachAfterSetupBlock_ShouldEmitExpandedElements()
+    {
+        const string xamlWithHelper = """
+            <StackPanel xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation">
+              @{
+                async System.Collections.Generic.IAsyncEnumerable<string> Produce() {
+                  yield return "X";
+                  yield return "Y";
+                }
+              }
+              @await foreach(var item in Produce()) {
+              <TextBlock Text="@item" />
+              }
+            </StackPanel>
+            """;
+
+        using var reader = JalxamlParser.CreateReader(xamlWithHelper);
+        var count = 0;
+        while (reader.Read())
+        {
+            if (reader.NodeType == System.Xml.XmlNodeType.Element &&
+                reader.LocalName == nameof(TextBlock))
+            {
+                count++;
+            }
+        }
+
+        Assert.Equal(2, count);
     }
 
     private static void LoadComponent(object component, string resourceName)
