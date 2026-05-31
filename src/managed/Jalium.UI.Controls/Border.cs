@@ -1276,6 +1276,27 @@ public class Border : FrameworkElement
     private void OnLgWindowMouseMove(object sender, Input.MouseEventArgs e)
     {
         var pos = e.GetPosition(this);
+
+        // Keep a soft hover influence zone around the glass so nearby movement
+        // still drives highlights, but stop tracking once the pointer is far away.
+        var influencePadding = Math.Max(24.0, LiquidGlassBlurRadius * 3.0);
+        var influenceBounds = new Rect(
+            -influencePadding,
+            -influencePadding,
+            RenderSize.Width + influencePadding * 2,
+            RenderSize.Height + influencePadding * 2);
+
+        if (!_lgPressed && !influenceBounds.Contains(pos))
+        {
+            if (_lgMouseOver)
+            {
+                _lgMouseOver = false;
+                InvalidateVisual();
+            }
+
+            return;
+        }
+
         _lgLightLocal = pos;
         _lgMouseOver = true;
 
