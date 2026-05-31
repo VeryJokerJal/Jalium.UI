@@ -1031,6 +1031,10 @@ public sealed class Trigger : TriggerBase
     /// Gets or sets the property that activates the trigger.
     /// </summary>
     public DependencyProperty? Property { get; set; }
+    /// <summary>
+    /// Gets or sets the unresolved property name captured during XAML parse.
+    /// </summary>
+    public string? PropertyName { get; set; }
 
     /// <summary>
     /// Gets or sets the value that activates the trigger.
@@ -1145,6 +1149,10 @@ public sealed class Condition
     /// Gets or sets the property to evaluate.
     /// </summary>
     public DependencyProperty? Property { get; set; }
+    /// <summary>
+    /// Gets or sets the unresolved property name captured during XAML parse.
+    /// </summary>
+    public string? PropertyName { get; set; }
 
     /// <summary>
     /// Gets or sets the value that the property must equal for the condition to be true.

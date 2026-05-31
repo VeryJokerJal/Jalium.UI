@@ -2298,15 +2298,15 @@ public static class XamlReader
                     return instance;
                 }
 
-                if (instance is Trigger || instance is Condition)
+                if (instance is Trigger trigger)
                 {
-                    // The enclosing Style's TargetType may not yet be known at the moment this
-                    // child element is being parsed (for example when the Style is declared inside
-                    // a ResourceDictionary whose parent chain hasn't been fully established). In
-                    // that case the trigger/condition would be rejected here even though the XAML
-                    // is well-formed. Leave Property unset — the trigger/condition Attach path
-                    // performs an early-return when Property is null, so the trigger simply does
-                    // not fire rather than aborting the whole dictionary parse.
+                    trigger.PropertyName = stringValue;
+                    return instance;
+                }
+
+                if (instance is Condition condition)
+                {
+                    condition.PropertyName = stringValue;
                     return instance;
                 }
 
@@ -2714,11 +2714,11 @@ public static class XamlReader
     {
         if (trigger.Property == null)
         {
-            // Property could not be resolved during parse (typically because the enclosing
-            // Style's TargetType was not yet available). Leave the trigger dormant — Attach
-            // performs an early-return when Property is null, so the dictionary continues
-            // to load and the surrounding theme/resources remain usable.
-            return;
+            throw CreateTriggerValidationException(
+                $"Trigger.Property '{trigger.PropertyName ?? "<unknown>"}' cannot be resolved for the style target type.",
+                context,
+                lineNumber,
+                linePosition);
         }
 
         // If Value is a string and Property is set, convert Value to the correct type
@@ -2794,11 +2794,11 @@ public static class XamlReader
 
             if (condition.Property == null)
             {
-                // Same rationale as PostProcessTrigger — tolerate unresolved
-                // Property so the enclosing dictionary can finish loading. The MultiTrigger
-                // evaluates conditions conjunctively and a null Property keeps the
-                // condition in a never-true state, which is the safe default.
-                continue;
+                throw CreateTriggerValidationException(
+                    $"MultiTrigger condition Property '{condition.PropertyName ?? "<unknown>"}' cannot be resolved for the style target type.",
+                    context,
+                    lineNumber,
+                    linePosition);
             }
 
             if (condition.Value is not string stringValue)
@@ -4703,4 +4703,3 @@ public sealed class XamlParseException : Exception
     public XamlParseException(string message) : base(message) { }
     public XamlParseException(string message, Exception innerException) : base(message, innerException) { }
 }
-
