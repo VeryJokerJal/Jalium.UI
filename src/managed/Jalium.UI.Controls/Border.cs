@@ -456,42 +456,9 @@ public class Border : FrameworkElement
         if (!ClipToBounds)
             return null;
 
-        // Clip to the Border's *inner* shape — the same rect + per-corner radii
-        // that OnRender uses for the Background fill, NOT the outer RenderSize box.
-        //
-        // Why inner instead of outer:
-        //   The stroke ring sits between the outer shape and the inner shape,
-        //   `BorderThickness` pixels wide. If the layout clip were the outer
-        //   shape, child fragments along the corner arc would smoothstep-fade
-        //   past the visible Background and bleed 1–2 px into the stroke ring —
-        //   exactly the "red leaks past the grey stroke" artefact observed on
-        //   nested rounded panels. Clipping at the inner shape stops child
-        //   content cleanly at the stroke's inner edge.
-        //
-        // Why this doesn't truncate the stroke:
-        //   Visual.RenderDirect now pops the layout clip BEFORE invoking
-        //   OnPostRender (where Border paints its stroke). So the stroke is
-        //   rendered outside the inner clip, on the outer/centred ring as
-        //   intended; only children and the Border's own Background pass
-        //   through the inner clip, and both already conform to the inner
-        //   shape exactly. Result: stroke draws full width; child fragments
-        //   stop at the stroke's inner edge; nothing leaks into or past the
-        //   BorderThickness ring.
-        var rawBorder = BorderThickness;
-        var snappedLeft = SnapLayoutValue(rawBorder.Left);
-        var snappedTop = SnapLayoutValue(rawBorder.Top);
-        var snappedRight = SnapLayoutValue(rawBorder.Right);
-        var snappedBottom = SnapLayoutValue(rawBorder.Bottom);
-
-        var innerLeft = snappedLeft;
-        var innerTop = snappedTop;
-        var innerRight = _renderSize.Width - snappedRight;
-        var innerBottom = _renderSize.Height - snappedBottom;
-        var clipRect = new Rect(
-            innerLeft,
-            innerTop,
-            Math.Max(0, innerRight - innerLeft),
-            Math.Max(0, innerBottom - innerTop));
+        // Clip to the full render bounds. Border's layout clip should represent
+        // the control's own clipping shape, not the inner content box.
+        var clipRect = new Rect(0, 0, Math.Max(0, _renderSize.Width), Math.Max(0, _renderSize.Height));
 
         if (Shape == BorderShape.SuperEllipse)
         {
@@ -499,21 +466,14 @@ public class Border : FrameworkElement
         }
 
         var cornerRadius = CornerRadius;
-        // Per-corner inner radius — same WPF formula OnRender uses for the
-        // Background fill, so the layout clip matches the Background outline.
-        var innerRadius = new CornerRadius(
-            Math.Max(0, cornerRadius.TopLeft - Math.Max(snappedLeft, snappedTop)),
-            Math.Max(0, cornerRadius.TopRight - Math.Max(snappedTop, snappedRight)),
-            Math.Max(0, cornerRadius.BottomRight - Math.Max(snappedRight, snappedBottom)),
-            Math.Max(0, cornerRadius.BottomLeft - Math.Max(snappedBottom, snappedLeft)));
 
         var maxRadius = Math.Max(
-            Math.Max(innerRadius.TopLeft, innerRadius.TopRight),
-            Math.Max(innerRadius.BottomRight, innerRadius.BottomLeft));
+            Math.Max(cornerRadius.TopLeft, cornerRadius.TopRight),
+            Math.Max(cornerRadius.BottomRight, cornerRadius.BottomLeft));
 
         if (maxRadius > 0)
         {
-            return new RectangleGeometry(clipRect, innerRadius);
+            return new RectangleGeometry(clipRect, cornerRadius);
         }
 
         return new RectangleGeometry(clipRect);
