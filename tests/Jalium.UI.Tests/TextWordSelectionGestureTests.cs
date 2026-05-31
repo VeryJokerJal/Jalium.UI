@@ -12,6 +12,7 @@ public class TextWordSelectionGestureTests
         var textBox = new TextBox
         {
             Text = "one two three",
+            FontFamily = "Open Sans",
             Width = 240,
             Height = 32
         };
@@ -36,6 +37,7 @@ public class TextWordSelectionGestureTests
         {
             Text = "one two three",
             IsTextSelectionEnabled = true,
+            FontFamily = "Open Sans",
             Width = 240,
             Height = 32
         };
@@ -58,6 +60,7 @@ public class TextWordSelectionGestureTests
         {
             Content = "one two three",
             IsTextSelectionEnabled = true,
+            FontFamily = "Open Sans",
             Template = new ControlTemplate(typeof(Label)),
             Width = 240,
             Height = 28

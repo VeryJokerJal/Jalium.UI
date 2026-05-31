@@ -38,6 +38,9 @@
 
   <ItemGroup>
     <EmbeddedResource Include="TestAssets\**\*.jalxaml" />
+    <Content Include="TestAssets\Fonts\**\*.ttf">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>
