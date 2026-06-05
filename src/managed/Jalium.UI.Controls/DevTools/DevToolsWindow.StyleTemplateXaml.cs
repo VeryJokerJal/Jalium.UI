@@ -20,17 +20,18 @@ public partial class DevToolsWindow
     {
         var btn = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(60, 130, 180, 255)),
-            BorderBrush = new SolidColorBrush(Color.FromArgb(180, 130, 180, 255)),
+            Background = DevToolsTheme.AccentSoft,
+            BorderBrush = new SolidColorBrush(Color.FromArgb(0xB4, DevToolsTheme.AccentColor.R, DevToolsTheme.AccentColor.G, DevToolsTheme.AccentColor.B)),
             BorderThickness = new Thickness(1),
             CornerRadius = new CornerRadius(3),
             Padding = new Thickness(8, 3, 8, 3),
             Margin = new Thickness(8, 4, 8, 4),
             Child = new TextBlock
             {
-                Text = label,
+                Text = label.ToUpperInvariant(),
                 FontSize = 11,
-                Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220)),
+                FontFamily = DevToolsTheme.DisplayFont,
+                Foreground = DevToolsTheme.Accent,
             },
             HorizontalAlignment = HorizontalAlignment.Left,
         };
@@ -57,7 +58,7 @@ public partial class DevToolsWindow
             Width = 640,
             Height = 520,
             SystemBackdrop = WindowBackdropType.Mica,
-            Background = new SolidColorBrush(Color.FromArgb(255, 32, 32, 32)),
+            Background = DevToolsTheme.Chrome,
         };
 
         var tb = new TextBox
@@ -65,10 +66,10 @@ public partial class DevToolsWindow
             Text = xaml,
             AcceptsReturn = true,
             FontSize = 12,
-            FontFamily = new FontFamily("Consolas"),
-            Foreground = new SolidColorBrush(Color.FromRgb(230, 230, 230)),
-            Background = new SolidColorBrush(Color.FromRgb(28, 28, 30)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(60, 60, 70)),
+            FontFamily = DevToolsTheme.MonoFont,
+            Foreground = DevToolsTheme.TextPrimary,
+            Background = DevToolsTheme.Surface,
+            BorderBrush = DevToolsTheme.Border,
             BorderThickness = new Thickness(1),
             Padding = new Thickness(8),
             Margin = new Thickness(6),

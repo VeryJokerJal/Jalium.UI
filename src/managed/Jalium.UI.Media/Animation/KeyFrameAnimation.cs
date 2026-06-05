@@ -512,90 +512,244 @@ public sealed class DiscreteObjectKeyFrame : KeyFrame<object>
 /// <summary>
 /// Represents a cubic Bezier curve used for spline keyframes.
 /// </summary>
-public sealed class KeySpline
+/// <summary>
+/// Defines the two Bézier control points of an animation's spline, used by the
+/// <c>*UsingKeyFrames</c> spline key-frame types. Mirrors WPF's
+/// <c>System.Windows.Media.Animation.KeySpline</c>: a <see cref="Freezable"/> whose control-point
+/// X coordinates are constrained to [0,1] (so X(t) is monotonic), with the exact same
+/// Newton-Raphson-plus-bisection parameter solver so spline easing matches WPF bit-for-bit.
+/// </summary>
+public sealed class KeySpline : Freezable
 {
-    /// <summary>
-    /// Gets or sets the first control point of the spline.
-    /// </summary>
-    public Point ControlPoint1 { get; set; }
+    // 1/3 of the desired X accuracy, and a computational zero, matching WPF exactly.
+    private const double Accuracy = 0.001;
+    private const double Fuzz = 0.000001;
 
-    /// <summary>
-    /// Gets or sets the second control point of the spline.
-    /// </summary>
-    public Point ControlPoint2 { get; set; }
+    private Point _controlPoint1 = new(0.0, 0.0);
+    private Point _controlPoint2 = new(1.0, 1.0);
 
-    /// <summary>
-    /// Creates a new KeySpline with default control points (linear).
-    /// </summary>
+    // Cached Bézier power-basis coefficients (rebuilt lazily when control points change).
+    private bool _isDirty = true;
+    private bool _isSpecified;
+    private double _parameter;
+    private double _Bx, _Cx, _Cx_Bx, _three_Cx, _By, _Cy;
+
+    /// <summary>Creates a new KeySpline with default control points (0,0)–(1,1) (linear).</summary>
     public KeySpline()
     {
-        ControlPoint1 = new Point(0, 0);
-        ControlPoint2 = new Point(1, 1);
     }
 
-    /// <summary>
-    /// Creates a new KeySpline with the specified control points.
-    /// </summary>
+    /// <summary>Creates a new KeySpline with the specified control-point coordinates.</summary>
     public KeySpline(double x1, double y1, double x2, double y2)
+        : this(new Point(x1, y1), new Point(x2, y2))
     {
-        ControlPoint1 = new Point(x1, y1);
-        ControlPoint2 = new Point(x2, y2);
     }
 
-    /// <summary>
-    /// Creates a new KeySpline with the specified control points.
-    /// </summary>
+    /// <summary>Creates a new KeySpline with the specified control points.</summary>
     public KeySpline(Point controlPoint1, Point controlPoint2)
     {
-        ControlPoint1 = controlPoint1;
-        ControlPoint2 = controlPoint2;
+        if (!IsValidControlPoint(controlPoint1))
+            throw new ArgumentException("KeySpline control point X must be between 0 and 1.", nameof(controlPoint1));
+        if (!IsValidControlPoint(controlPoint2))
+            throw new ArgumentException("KeySpline control point X must be between 0 and 1.", nameof(controlPoint2));
+
+        _controlPoint1 = controlPoint1;
+        _controlPoint2 = controlPoint2;
     }
 
     /// <summary>
-    /// Gets the spline progress for the given linear progress.
+    /// Gets or sets the first control point. Its X coordinate must be in [0,1].
+    /// </summary>
+    public Point ControlPoint1
+    {
+        get => _controlPoint1;
+        set
+        {
+            WritePreamble();
+            if (!IsValidControlPoint(value))
+                throw new ArgumentException("KeySpline control point X must be between 0 and 1.", nameof(value));
+            _controlPoint1 = value;
+            _isDirty = true;
+            WritePostscript();
+        }
+    }
+
+    /// <summary>
+    /// Gets or sets the second control point. Its X coordinate must be in [0,1].
+    /// </summary>
+    public Point ControlPoint2
+    {
+        get => _controlPoint2;
+        set
+        {
+            WritePreamble();
+            if (!IsValidControlPoint(value))
+                throw new ArgumentException("KeySpline control point X must be between 0 and 1.", nameof(value));
+            _controlPoint2 = value;
+            _isDirty = true;
+            WritePostscript();
+        }
+    }
+
+    /// <summary>
+    /// Maps a linear progress value (0..1) through the spline, returning the eased Y progress.
     /// </summary>
     public double GetSplineProgress(double linearProgress)
     {
-        if (linearProgress <= 0) return 0;
-        if (linearProgress >= 1) return 1;
+        if (_isDirty)
+            Build();
 
-        // Solve for t where x(t) = linearProgress using Newton-Raphson
-        var t = linearProgress;
-        for (var i = 0; i < 5; i++)
+        // (0,0)-(1,1) control points are the identity; skip the solve.
+        if (!_isSpecified)
+            return linearProgress;
+
+        SetParameterFromX(linearProgress);
+        return GetBezierValue(_By, _Cy, _parameter);
+    }
+
+    #region Freezable
+
+    /// <summary>Creates a modifiable clone of this KeySpline.</summary>
+    public new KeySpline Clone() => (KeySpline)base.Clone();
+
+    /// <inheritdoc />
+    protected override Freezable CreateInstanceCore() => new KeySpline();
+
+    /// <inheritdoc />
+    protected override void CloneCore(Freezable sourceFreezable)
+    {
+        base.CloneCore(sourceFreezable);
+        CopyControlPoints((KeySpline)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void CloneCurrentValueCore(Freezable sourceFreezable)
+    {
+        base.CloneCurrentValueCore(sourceFreezable);
+        CopyControlPoints((KeySpline)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void GetAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetAsFrozenCore(sourceFreezable);
+        CopyControlPoints((KeySpline)sourceFreezable);
+    }
+
+    /// <inheritdoc />
+    protected override void GetCurrentValueAsFrozenCore(Freezable sourceFreezable)
+    {
+        base.GetCurrentValueAsFrozenCore(sourceFreezable);
+        CopyControlPoints((KeySpline)sourceFreezable);
+    }
+
+    private void CopyControlPoints(KeySpline source)
+    {
+        // Control points are plain fields (not DPs), so the base Freezable clone won't carry them.
+        _controlPoint1 = source._controlPoint1;
+        _controlPoint2 = source._controlPoint2;
+        _isDirty = true;
+    }
+
+    #endregion
+
+    private static bool IsValidControlPoint(Point point) => point.X >= 0.0 && point.X <= 1.0;
+
+    // Precompute the power-basis coefficients of the cubic Bézier with endpoints (0,0)-(1,1).
+    private void Build()
+    {
+        if (_controlPoint1 == new Point(0, 0) && _controlPoint2 == new Point(1, 1))
         {
-            var x = GetBezierX(t) - linearProgress;
-            if (Math.Abs(x) < 0.0001) break;
-            var dx = GetBezierXDerivative(t);
-            if (Math.Abs(dx) < 0.0001) break;
-            t -= x / dx;
-            t = Math.Clamp(t, 0, 1);
+            // Identity spline: GetSplineProgress returns its input unchanged.
+            _isSpecified = false;
+        }
+        else
+        {
+            _isSpecified = true;
+            _parameter = 0;
+
+            // X coefficients
+            _Bx = 3 * _controlPoint1.X;
+            _Cx = 3 * _controlPoint2.X;
+            _Cx_Bx = 2 * (_Cx - _Bx);
+            _three_Cx = 3 - _Cx;
+
+            // Y coefficients
+            _By = 3 * _controlPoint1.Y;
+            _Cy = 3 * _controlPoint2.Y;
         }
 
-        return GetBezierY(t);
+        _isDirty = false;
     }
 
-    private double GetBezierX(double t)
+    // b·t·(1-t)² + c·t²·(1-t) + t³  — cubic Bézier component with endpoints 0 and 1.
+    private static double GetBezierValue(double b, double c, double t)
     {
-        var oneMinusT = 1 - t;
-        return 3 * oneMinusT * oneMinusT * t * ControlPoint1.X +
-               3 * oneMinusT * t * t * ControlPoint2.X +
-               t * t * t;
+        double s = 1.0 - t;
+        double t2 = t * t;
+        return b * t * s * s + c * t2 * s + t2 * t;
     }
 
-    private double GetBezierY(double t)
+    private void GetXAndDx(double t, out double x, out double dx)
     {
-        var oneMinusT = 1 - t;
-        return 3 * oneMinusT * oneMinusT * t * ControlPoint1.Y +
-               3 * oneMinusT * t * t * ControlPoint2.Y +
-               t * t * t;
+        double s = 1.0 - t;
+        double t2 = t * t;
+        double s2 = s * s;
+
+        x = _Bx * t * s2 + _Cx * t2 * s + t2 * t;
+        dx = _Bx * s2 + _Cx_Bx * s * t + _three_Cx * t2;
     }
 
-    private double GetBezierXDerivative(double t)
+    // Solve X(t) = time for t, using Newton-Raphson clamped to a shrinking bisection interval.
+    private void SetParameterFromX(double time)
     {
-        var oneMinusT = 1 - t;
-        return 3 * oneMinusT * oneMinusT * ControlPoint1.X +
-               6 * oneMinusT * t * (ControlPoint2.X - ControlPoint1.X) +
-               3 * t * t * (1 - ControlPoint2.X);
+        double bottom = 0;
+        double top = 1;
+
+        if (time == 0)
+        {
+            _parameter = 0;
+        }
+        else if (time == 1)
+        {
+            _parameter = 1;
+        }
+        else
+        {
+            while (top - bottom > Fuzz)
+            {
+                GetXAndDx(_parameter, out double x, out double dx);
+                double absdx = Math.Abs(dx);
+
+                // Rely on monotonicity of X(t) to clamp the interval.
+                if (x > time)
+                    top = _parameter;
+                else
+                    bottom = _parameter;
+
+                // Desired accuracy is ultimately in Y; scale by dx (dy/dt ≤ 3 is omitted).
+                if (Math.Abs(x - time) < Accuracy * absdx)
+                    break;
+
+                if (absdx > Fuzz)
+                {
+                    // Newton-Raphson guess.
+                    double next = _parameter - (x - time) / dx;
+
+                    if (next >= top)
+                        _parameter = (_parameter + top) / 2;
+                    else if (next <= bottom)
+                        _parameter = (_parameter + bottom) / 2;
+                    else
+                        _parameter = next;
+                }
+                else
+                {
+                    // Zero derivative: fall back to bisection.
+                    _parameter = (bottom + top) / 2;
+                }
+            }
+        }
     }
 }
 

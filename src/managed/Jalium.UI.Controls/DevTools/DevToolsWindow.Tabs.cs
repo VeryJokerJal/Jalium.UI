@@ -41,7 +41,7 @@ public partial class DevToolsWindow
             Background = DevToolsTheme.Surface,
             TabStripBackground = DevToolsTheme.Chrome,
             TabStripBorderBrush = DevToolsTheme.BorderSubtle,
-            TabStripHeight = 34,
+            TabStripHeight = 38,
         };
 
         _rootTabs.Items.Add(_inspectorTab);
@@ -61,17 +61,20 @@ public partial class DevToolsWindow
 
     private static TabItem MakeTab(string header, UIElement content)
     {
+        // Instrument front-panel "channel select": uppercase Bahnschrift labels with
+        // a thin signal-amber indicator under the active channel.
         return new TabItem
         {
-            Header = header,
+            Header = DevToolsUi.Tracked(header.ToUpperInvariant()),
             Content = content,
             IndicatorBrush = DevToolsTheme.Accent,
             IndicatorHeight = 2,
             SelectedBackground = DevToolsTheme.Surface,
             HoverBackground = DevToolsTheme.ControlHover,
             Foreground = DevToolsTheme.TextPrimary,
-            FontSize = DevToolsTheme.FontBase,
-            FontFamily = DevToolsTheme.UiFont,
+            FontSize = DevToolsTheme.FontSm,
+            FontFamily = DevToolsTheme.DisplayFont,
+            FontWeight = FontWeights.SemiBold,
         };
     }
 

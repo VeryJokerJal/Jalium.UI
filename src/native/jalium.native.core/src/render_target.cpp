@@ -148,6 +148,12 @@ JALIUM_API void jalium_render_target_set_vsync(JaliumRenderTarget* rt, int32_t e
     }
 }
 
+JALIUM_API void jalium_render_target_set_path_msaa(JaliumRenderTarget* rt, uint32_t sampleCount) {
+    if (rt) {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->SetPathMsaaSampleCount(sampleCount);
+    }
+}
+
 JALIUM_API void jalium_render_target_set_dpi(JaliumRenderTarget* rt, float dpiX, float dpiY) {
     if (rt) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->SetDpi(dpiX, dpiY);
@@ -523,6 +529,45 @@ JALIUM_API void jalium_render_target_blit_ink_layer(
     reinterpret_cast<jalium::RenderTarget*>(rt)->BlitInkLayer(h->native, dstX, dstY, opacity);
 }
 
+// ─── Retained GPU layer C API ───────────────────────────────────────────────
+// Damage-driven composited-animation fast path: a content-clean subtree is
+// rendered ONCE into a persistent offscreen texture (realize) and then drawn as
+// a transformed/opacity quad each frame (composite) instead of re-emitting the
+// whole subtree. Thin forwarders over RenderTarget virtuals; backends without
+// offscreen-RT capture return unsupported (managed falls back, no regression).
+
+JALIUM_API int jalium_render_target_supports_retained_layers(JaliumRenderTarget* rt)
+{
+    if (!rt) return 0;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->SupportsRetainedLayers() ? 1 : 0;
+}
+
+JALIUM_API void* jalium_render_target_realize_layer_begin(
+    JaliumRenderTarget* rt, void* existingLayer, float x, float y, float w, float h)
+{
+    if (!rt) return nullptr;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->RealizeLayerBegin(existingLayer, x, y, w, h);
+}
+
+JALIUM_API void jalium_render_target_realize_layer_end(JaliumRenderTarget* rt, void* layer)
+{
+    if (!rt || !layer) return;
+    reinterpret_cast<jalium::RenderTarget*>(rt)->RealizeLayerEnd(layer);
+}
+
+JALIUM_API void jalium_render_target_composite_layer(
+    JaliumRenderTarget* rt, void* layer, float x, float y, float w, float h, float opacity)
+{
+    if (!rt || !layer) return;
+    reinterpret_cast<jalium::RenderTarget*>(rt)->CompositeLayer(layer, x, y, w, h, opacity);
+}
+
+JALIUM_API void jalium_render_target_destroy_retained_layer(JaliumRenderTarget* rt, void* layer)
+{
+    if (!rt || !layer) return;
+    reinterpret_cast<jalium::RenderTarget*>(rt)->DestroyRetainedLayer(layer);
+}
+
 // ─── Ink-layer bitmap + brush-shader C API ──────────────────────────────
 //
 // Thin forwarders over IRenderBackend virtuals. Each handle wraps the
@@ -671,6 +716,52 @@ JALIUM_API void jalium_draw_text(
             reinterpret_cast<jalium::Brush*>(brush));
 #endif
     }
+}
+
+// jalium_draw_text_with_inverse_transform — single P/Invoke that bundles
+// PushTransform(inverse) + RenderText + PopTransform.
+//
+// Managed DrawText under a non-identity matrix (ScaleTransform, etc.) needs
+// to pre-rasterize glyphs at screen resolution and then cancel the active
+// CPU-side transform so the native renderer emits glyphs at the screen
+// coords we computed.  The cancelling matrix is the inverse of the current
+// matrix and is purely transient — it has no semantic value outside of this
+// one DrawText call.  Sending it through three separate P/Invokes (push,
+// text, pop) wastes ~600 ns per text run and shows up in 800+ DrawText
+// runs/frame.  This entry point does the same work in one transition.
+//
+// `inverseMatrix` is a 6-float row of (m11, m12, m21, m22, dx, dy) matching
+// the wire format of jalium_push_transform.
+JALIUM_API void jalium_draw_text_with_inverse_transform(
+    JaliumRenderTarget* rt,
+    const wchar_t* text,
+    uint32_t textLength,
+    JaliumTextFormat* format,
+    float x, float y, float width, float height,
+    JaliumBrush* brush,
+    const float* inverseMatrix)
+{
+    if (!rt || !text || !format || !brush || !inverseMatrix) return;
+
+    auto* target = reinterpret_cast<jalium::RenderTarget*>(rt);
+    target->PushTransform(inverseMatrix);
+
+#if defined(_WIN32)
+    target->RenderText(
+        text, textLength,
+        reinterpret_cast<jalium::TextFormat*>(format),
+        x, y, width, height,
+        reinterpret_cast<jalium::Brush*>(brush));
+#else
+    auto wstr = jalium::ManagedToWString(text, textLength);
+    target->RenderText(
+        wstr.c_str(), static_cast<uint32_t>(wstr.size()),
+        reinterpret_cast<jalium::TextFormat*>(format),
+        x, y, width, height,
+        reinterpret_cast<jalium::Brush*>(brush));
+#endif
+
+    target->PopTransform();
 }
 
 JALIUM_API void jalium_push_transform(JaliumRenderTarget* rt, const float* matrix) {
@@ -972,11 +1063,13 @@ JALIUM_API void jalium_draw_outer_glow_effect(
     JaliumRenderTarget* rt,
     float x, float y, float w, float h,
     float glowSize, float r, float g, float b, float a, float intensity,
+    float uvOffsetX, float uvOffsetY,
     float cornerTL, float cornerTR, float cornerBR, float cornerBL)
 {
     if (rt && w > 0 && h > 0) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->DrawOuterGlowEffect(
             x, y, w, h, glowSize, r, g, b, a, intensity,
+            uvOffsetX, uvOffsetY,
             cornerTL, cornerTR, cornerBR, cornerBL);
     }
 }
@@ -1028,6 +1121,27 @@ JALIUM_API void jalium_draw_shader_effect(
     if (rt && w > 0 && h > 0 && shaderBytecode && shaderBytecodeSize > 0) {
         reinterpret_cast<jalium::RenderTarget*>(rt)->DrawShaderEffect(
             x, y, w, h, shaderBytecode, shaderBytecodeSize, constants, constantFloatCount);
+    }
+}
+
+// HLSL-source custom shader effect — the cross-backend path. Both backends
+// compile the supplied SM6 HLSL at runtime (D3D12 via D3DCompile, Vulkan via
+// DXC→SPIR-V), so a single authored shader drives both. Lets the Vulkan backend
+// run custom pixel-shader effects (the DXBC path above is D3D12-only because
+// Vulkan can't consume DirectX bytecode). The user PS convention matches the
+// DXBC path: float4 main(float2 uv : TEXCOORD0) : SV_Target sampling the
+// captured content (Texture2D@t0 / SamplerState@s0) with user constants in
+// cbuffer@b0.
+JALIUM_API void jalium_draw_shader_effect_hlsl(
+    JaliumRenderTarget* rt,
+    float x, float y, float w, float h,
+    const char* hlslSource,
+    const float* constants,
+    uint32_t constantFloatCount)
+{
+    if (rt && w > 0 && h > 0 && hlslSource && hlslSource[0] != '\0') {
+        reinterpret_cast<jalium::RenderTarget*>(rt)->DrawShaderEffectFromSource(
+            x, y, w, h, hlslSource, constants, constantFloatCount);
     }
 }
 

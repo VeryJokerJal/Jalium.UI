@@ -12,7 +12,6 @@
 // caller's frame buffer, and stash the leftover into `pending` for the next
 // ReadFramesImpl call. EOS is sticky and only cleared by SeekImpl.
 
-#define JALIUM_MEDIA_EXPORTS
 #include "win_mf_aac_decoder.h"
 #include "win_media_init.h"
 

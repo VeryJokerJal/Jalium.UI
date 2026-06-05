@@ -332,6 +332,93 @@ public static class RenderDiagnostics
         s_latestBitmapUploadStats = s;
     }
 
+    /// <summary>
+    /// Per-frame native text-cache telemetry, sourced from the unified core
+    /// API (jalium_query_text_stats — D3D12 + Vulkan + software all feed the
+    /// same atomic state in core.dll). Covers the three caches on the
+    /// DrawText hot path:
+    ///
+    ///  • Layout cache — text+maxLines key memoises the IDWriteTextLayout so
+    ///    width/height fluctuations don't re-run DirectWrite shaping.
+    ///  • Instance cache — resolved-glyph quads + decorations for a (layout,
+    ///    origin, dpi, aa, hinting) tuple. Hit skips layout->Draw + per-glyph
+    ///    atlas walk; emit just copies the prepared instances and applies the
+    ///    caller's premultiplied colour.
+    ///  • Glyph raster cache — per-(fontFace, glyphIndex, fontSize, subpixel,
+    ///    aa, hinting) atlas slot. Hit reuses the already-rasterized bitmap;
+    ///    miss runs DirectWrite glyph rasterization and packs a new atlas
+    ///    rectangle.
+    ///
+    /// AtlasResets fires whenever the atlas was wiped (overflow, AA mode
+    /// swap, generation bump) — a nonzero value here while instance hit-rate
+    /// is also low explains why the cache "looks broken": every entry built
+    /// in the previous frame got invalidated.
+    ///
+    /// DrawTextCalls is the raw RenderText entry-point count — this should
+    /// match the managed DrawText API counter on the Perf tab; a divergence
+    /// points at a non-managed text path (e.g. the inverse-transform fast
+    /// path going through DrawTextWithInverseTransform).
+    /// </summary>
+    public sealed class TextCacheFrameStats
+    {
+        public DateTime Timestamp { get; init; }
+        public long LayoutHits { get; init; }
+        public long LayoutMisses { get; init; }
+        public long LayoutEvictions { get; init; }
+        public long InstanceHits { get; init; }
+        public long InstanceMisses { get; init; }
+        public long InstanceEvictions { get; init; }
+        public long GlyphRasterHits { get; init; }
+        public long GlyphRasterMisses { get; init; }
+        public long AtlasResets { get; init; }
+        public long DrawTextCalls { get; init; }
+        public long EmittedGlyphs { get; init; }
+        public long EmittedDecorations { get; init; }
+    }
+
+    public static TextCacheFrameStats? LatestTextCacheStats => s_latestTextCacheStats;
+    private static TextCacheFrameStats? s_latestTextCacheStats;
+
+    public static void PublishTextCacheStats(TextCacheFrameStats s)
+    {
+        s_latestTextCacheStats = s;
+    }
+
+    /// <summary>
+    /// Per-frame layout pass breakdown sourced from <c>LayoutManager.UpdateLayout</c>.
+    /// Lets DevTools tell apart "measure is heavy", "arrange is heavy", and the
+    /// red-flag "tree is fighting itself" case where Iterations &gt; 1 means the
+    /// measure / arrange of one element queued another for re-measure within the
+    /// same UpdateLayout call.
+    ///
+    /// MeasureMs / ArrangeMs together don't include the sort / depth-precompute /
+    /// queue-drain overhead — those sit in (TotalMs − MeasureMs − ArrangeMs) and
+    /// usually round to zero. When the gap is large, the next-step investigation
+    /// is layout-internal bookkeeping, not user MeasureOverride code.
+    /// </summary>
+    public sealed class LayoutPassFrameStats
+    {
+        public DateTime Timestamp { get; init; }
+        public long TotalNs { get; init; }
+        public long MeasureNs { get; init; }
+        public long ArrangeNs { get; init; }
+        public int MeasureCount { get; init; }
+        public int ArrangeCount { get; init; }
+        public int Iterations { get; init; }
+
+        public double TotalMs => TotalNs / 1_000_000.0;
+        public double MeasureMs => MeasureNs / 1_000_000.0;
+        public double ArrangeMs => ArrangeNs / 1_000_000.0;
+    }
+
+    public static LayoutPassFrameStats? LatestLayoutPassStats => s_latestLayoutPassStats;
+    private static LayoutPassFrameStats? s_latestLayoutPassStats;
+
+    public static void PublishLayoutPassStats(LayoutPassFrameStats s)
+    {
+        s_latestLayoutPassStats = s;
+    }
+
     // Managed-side bitmap downscale cache eviction counter. Producer is
     // BitmapDownscaleCache; consumer is Window.cs's per-frame publish which
     // folds it into BitmapUploadFrameStats.CacheEvictions so DevTools shows a
@@ -372,6 +459,119 @@ public static class RenderDiagnostics
     public static void PublishRetainedCacheStats(RetainedCacheFrameStats s)
     {
         s_latestRetainedCacheStats = s;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Frame-pacing diagnostics — answer "why does BeginDraw look slow?"
+    //
+    // BeginAttempts / BeginFailures: counted on the managed side because
+    // only the Window render loop knows how many TryBeginDraw attempts a
+    // single logical frame produced (the 50 ms native fence-wait timeout
+    // returns InvalidState and the loop retries via ScheduleDeferredRender).
+    // A "frame" here = one successful BeginDraw + EndDraw pair; the
+    // counters accumulate failures across the retries that preceded it.
+    //
+    // FrameGpuWaitNs / SwapBufferCount / LastFrameGpuWorkNs: pulled from
+    // the backend through TryQueryGpuStats; semantics described on
+    // GpuResourceStats. The publish call rolls them up together with the
+    // managed counters so DevTools renders a single "Frame pacing" block.
+    // ─────────────────────────────────────────────────────────────────────
+    public sealed class FramePacingSnapshot
+    {
+        public DateTime Timestamp { get; init; }
+        public int BeginAttempts { get; init; }
+        public int BeginFailures { get; init; }
+        public long FrameGpuWaitNs { get; init; }
+        public int SwapBufferCount { get; init; }
+        public long LastFramePresentToReadyNs { get; init; }
+        public long FrameWaitableWaitNs { get; init; }
+        public double FrameGpuWaitMs => FrameGpuWaitNs / 1_000_000.0;
+        public double LastFramePresentToReadyMs => LastFramePresentToReadyNs / 1_000_000.0;
+        public double FrameWaitableWaitMs => FrameWaitableWaitNs / 1_000_000.0;
+    }
+
+    public static FramePacingSnapshot? LatestFramePacing => s_latestFramePacing;
+    private static FramePacingSnapshot? s_latestFramePacing;
+    private static int s_frameBeginAttempts;
+    private static int s_frameBeginFailures;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void OnBeginDrawAttempt(bool success)
+    {
+        if (!ApiStatsEnabled) return;
+        Interlocked.Increment(ref s_frameBeginAttempts);
+        if (!success) Interlocked.Increment(ref s_frameBeginFailures);
+    }
+
+    public static void PublishFramePacing(
+        long frameGpuWaitNs,
+        int swapBufferCount,
+        long lastFramePresentToReadyNs,
+        long frameWaitableWaitNs)
+    {
+        if (!ApiStatsEnabled) return;
+        int attempts = Interlocked.Exchange(ref s_frameBeginAttempts, 0);
+        int failures = Interlocked.Exchange(ref s_frameBeginFailures, 0);
+        s_latestFramePacing = new FramePacingSnapshot
+        {
+            Timestamp = DateTime.Now,
+            BeginAttempts = attempts,
+            BeginFailures = failures,
+            FrameGpuWaitNs = frameGpuWaitNs,
+            SwapBufferCount = swapBufferCount,
+            LastFramePresentToReadyNs = lastFramePresentToReadyNs,
+            FrameWaitableWaitNs = frameWaitableWaitNs,
+        };
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    // Per-category GPU timing — sourced from hardware timestamp queries on
+    // the graphics queue. Pairs with FramePacingSnapshot for the full
+    // story: pacing tells *whether* the UI thread is GPU-bound; timing
+    // tells *which categories* of GPU work are the cause. The breakdown
+    // is for the *previous* frame, since timestamp readback is fence-gated.
+    // ─────────────────────────────────────────────────────────────────────
+    public sealed class GpuTimingSnapshot
+    {
+        public DateTime Timestamp { get; init; }
+        public bool Valid { get; init; }
+        public long TotalGpuNs { get; init; }
+        public long SdfRectNs { get; init; }
+        public long TextNs { get; init; }
+        public long BitmapNs { get; init; }
+        public long PathNs { get; init; }
+        public long BackdropNs { get; init; }
+        public long LiquidGlassNs { get; init; }
+        public long OtherNs { get; init; }
+        public int BatchCount { get; init; }
+        public double TotalGpuMs => TotalGpuNs / 1_000_000.0;
+    }
+
+    public static GpuTimingSnapshot? LatestGpuTiming => s_latestGpuTiming;
+    private static GpuTimingSnapshot? s_latestGpuTiming;
+
+    public static void PublishGpuTiming(
+        bool valid,
+        long totalGpuNs,
+        long sdfRectNs, long textNs, long bitmapNs, long pathNs,
+        long backdropNs, long liquidGlassNs, long otherNs,
+        int batchCount)
+    {
+        if (!ApiStatsEnabled) return;
+        s_latestGpuTiming = new GpuTimingSnapshot
+        {
+            Timestamp = DateTime.Now,
+            Valid = valid,
+            TotalGpuNs = totalGpuNs,
+            SdfRectNs = sdfRectNs,
+            TextNs = textNs,
+            BitmapNs = bitmapNs,
+            PathNs = pathNs,
+            BackdropNs = backdropNs,
+            LiquidGlassNs = liquidGlassNs,
+            OtherNs = otherNs,
+            BatchCount = batchCount,
+        };
     }
 
     // Map name → (count, ticks). Plain dictionary because all access is on UI thread.

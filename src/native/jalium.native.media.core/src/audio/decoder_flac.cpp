@@ -7,7 +7,6 @@
 #define DR_FLAC_IMPLEMENTATION
 #include "dr_flac.h"
 
-#define JALIUM_MEDIA_EXPORTS
 #include "jalium_audio.h"
 #include "audio_internal.h"
 

@@ -13,7 +13,6 @@
 #define DR_WAV_NO_STDIO_STRINGSTREAM
 #include "dr_wav.h"
 
-#define JALIUM_MEDIA_EXPORTS
 #include "jalium_audio.h"
 #include "audio_internal.h"
 

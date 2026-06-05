@@ -3,14 +3,35 @@ using System.Globalization;
 namespace Jalium.UI.Media;
 
 /// <summary>
-/// Parses path markup mini-language strings (e.g., "M 0,0 L 100,100 Z") into PathGeometry.
-/// Supports: M/m, L/l, H/h, V/v, C/c, S/s, Q/q, T/t, A/a, Z/z, F0/F1
+/// Parses path markup mini-language strings (e.g., "M 0,0 L 100,100 Z") into a
+/// <see cref="PathGeometry"/>. Implements the full SVG / XAML path data grammar:
+/// <list type="bullet">
+///   <item>Move: <c>M</c>/<c>m</c></item>
+///   <item>Line: <c>L</c>/<c>l</c>, <c>H</c>/<c>h</c>, <c>V</c>/<c>v</c></item>
+///   <item>Cubic Bézier: <c>C</c>/<c>c</c>, smooth <c>S</c>/<c>s</c></item>
+///   <item>Quadratic Bézier: <c>Q</c>/<c>q</c>, smooth <c>T</c>/<c>t</c></item>
+///   <item>Elliptical arc: <c>A</c>/<c>a</c></item>
+///   <item>Close: <c>Z</c>/<c>z</c></item>
+///   <item>Fill rule (XAML extension): <c>F0</c> (EvenOdd) / <c>F1</c> (Nonzero)</item>
+/// </list>
+/// Uppercase commands are absolute, lowercase relative. A command may be followed by
+/// multiple coordinate sets (implicit repeat); an implicit repeat after <c>M</c>/<c>m</c>
+/// is treated as <c>L</c>/<c>l</c> per the spec. Numbers may be packed without separators
+/// ("1-2", "1.5.3", "1e2"); commas and whitespace are interchangeable separators.
+///
+/// <para>
+/// Robustness contract: every loop iteration either consumes input or throws — malformed
+/// input (an unknown command, a coordinate before any command, or a missing/invalid arc
+/// flag) raises <see cref="FormatException"/> rather than silently skipping or looping
+/// forever. Callers (e.g. <c>Path.OnDataChanged</c>) catch this and render nothing.
+/// </para>
 /// </summary>
 public static class PathMarkupParser
 {
     /// <summary>
-    /// Parses a path markup string into a PathGeometry.
+    /// Parses a path markup string into a <see cref="PathGeometry"/>.
     /// </summary>
+    /// <exception cref="FormatException">The string is not valid path markup.</exception>
     public static PathGeometry Parse(string pathData)
     {
         ArgumentNullException.ThrowIfNull(pathData);
@@ -21,22 +42,24 @@ public static class PathMarkupParser
 
         var ctx = new ParseContext(pathData);
         PathFigure? currentFigure = null;
-        Point currentPoint = default;
+        Point currentPoint = default;   // current pen position
+        Point subpathStart = default;   // start point of the active subpath (target of Z)
         Point lastControlPoint = default;
         char lastCommand = '\0';
 
         while (ctx.HasMore)
         {
-            ctx.SkipWhitespace();
+            ctx.SkipSeparators();
             if (!ctx.HasMore) break;
 
             char c = ctx.Peek();
 
-            // Handle fill rule
-            if (c == 'F')
+            // Fill rule (XAML extension): F0 = EvenOdd, F1 = Nonzero. Not a drawing command,
+            // so it does not affect implicit-repeat tracking.
+            if (c == 'F' || c == 'f')
             {
                 ctx.Advance();
-                ctx.SkipWhitespace();
+                ctx.SkipSeparators();
                 if (ctx.HasMore && ctx.Peek() == '0')
                 {
                     geometry.FillRule = FillRule.EvenOdd;
@@ -47,10 +70,15 @@ public static class PathMarkupParser
                     geometry.FillRule = FillRule.Nonzero;
                     ctx.Advance();
                 }
+                else
+                {
+                    throw new FormatException($"Expected '0' or '1' after fill-rule command 'F' at position {ctx.Position}.");
+                }
                 continue;
             }
 
-            // Determine command
+            // Determine the command for this iteration. 'e'/'E' are excluded so an exponent
+            // inside a number is never mistaken for a command at this position.
             char command;
             if (char.IsLetter(c) && c != 'e' && c != 'E')
             {
@@ -59,11 +87,15 @@ public static class PathMarkupParser
             }
             else
             {
-                // Implicit repeat of last command
+                // No explicit command letter — this must be an implicit repeat of the
+                // previous command applied to a fresh coordinate set.
+                if (lastCommand == '\0')
+                    throw new FormatException($"Path data must begin with a command; found '{c}' at position {ctx.Position}.");
+
                 command = lastCommand;
-                // After M, implicit repeats are treated as L
+                // After a MoveTo, additional coordinate sets are implicit LineTo's.
                 if (command == 'M') command = 'L';
-                if (command == 'm') command = 'l';
+                else if (command == 'm') command = 'l';
             }
 
             bool isRelative = char.IsLower(command);
@@ -71,20 +103,21 @@ public static class PathMarkupParser
 
             switch (upperCmd)
             {
-                case 'M': // MoveTo
+                case 'M': // MoveTo — opens a new subpath
                 {
                     var pt = ctx.ReadPoint();
                     if (isRelative) pt = new Point(currentPoint.X + pt.X, currentPoint.Y + pt.Y);
                     currentFigure = new PathFigure { StartPoint = pt };
                     geometry.Figures.Add(currentFigure);
                     currentPoint = pt;
+                    subpathStart = pt;
                     break;
                 }
                 case 'L': // LineTo
                 {
                     var pt = ctx.ReadPoint();
                     if (isRelative) pt = new Point(currentPoint.X + pt.X, currentPoint.Y + pt.Y);
-                    EnsureFigure(ref currentFigure, geometry, currentPoint);
+                    EnsureOpenFigure(ref currentFigure, ref subpathStart, geometry, currentPoint);
                     currentFigure!.Segments.Add(new LineSegment { Point = pt });
                     currentPoint = pt;
                     break;
@@ -93,7 +126,7 @@ public static class PathMarkupParser
                 {
                     double x = ctx.ReadDouble();
                     if (isRelative) x += currentPoint.X;
-                    EnsureFigure(ref currentFigure, geometry, currentPoint);
+                    EnsureOpenFigure(ref currentFigure, ref subpathStart, geometry, currentPoint);
                     currentPoint = new Point(x, currentPoint.Y);
                     currentFigure!.Segments.Add(new LineSegment { Point = currentPoint });
                     break;
@@ -102,12 +135,12 @@ public static class PathMarkupParser
                 {
                     double y = ctx.ReadDouble();
                     if (isRelative) y += currentPoint.Y;
-                    EnsureFigure(ref currentFigure, geometry, currentPoint);
+                    EnsureOpenFigure(ref currentFigure, ref subpathStart, geometry, currentPoint);
                     currentPoint = new Point(currentPoint.X, y);
                     currentFigure!.Segments.Add(new LineSegment { Point = currentPoint });
                     break;
                 }
-                case 'C': // Cubic Bezier
+                case 'C': // Cubic Bézier
                 {
                     var cp1 = ctx.ReadPoint();
                     var cp2 = ctx.ReadPoint();
@@ -118,13 +151,13 @@ public static class PathMarkupParser
                         cp2 = new Point(currentPoint.X + cp2.X, currentPoint.Y + cp2.Y);
                         pt = new Point(currentPoint.X + pt.X, currentPoint.Y + pt.Y);
                     }
-                    EnsureFigure(ref currentFigure, geometry, currentPoint);
+                    EnsureOpenFigure(ref currentFigure, ref subpathStart, geometry, currentPoint);
                     currentFigure!.Segments.Add(new BezierSegment { Point1 = cp1, Point2 = cp2, Point3 = pt });
                     lastControlPoint = cp2;
                     currentPoint = pt;
                     break;
                 }
-                case 'S': // Smooth Cubic Bezier
+                case 'S': // Smooth Cubic Bézier — first control is the reflection of the previous one
                 {
                     var cp2 = ctx.ReadPoint();
                     var pt = ctx.ReadPoint();
@@ -136,13 +169,13 @@ public static class PathMarkupParser
                     var cp1 = (lastCommand is 'C' or 'c' or 'S' or 's')
                         ? Reflect(lastControlPoint, currentPoint)
                         : currentPoint;
-                    EnsureFigure(ref currentFigure, geometry, currentPoint);
+                    EnsureOpenFigure(ref currentFigure, ref subpathStart, geometry, currentPoint);
                     currentFigure!.Segments.Add(new BezierSegment { Point1 = cp1, Point2 = cp2, Point3 = pt });
                     lastControlPoint = cp2;
                     currentPoint = pt;
                     break;
                 }
-                case 'Q': // Quadratic Bezier
+                case 'Q': // Quadratic Bézier
                 {
                     var cp = ctx.ReadPoint();
                     var pt = ctx.ReadPoint();
@@ -151,41 +184,41 @@ public static class PathMarkupParser
                         cp = new Point(currentPoint.X + cp.X, currentPoint.Y + cp.Y);
                         pt = new Point(currentPoint.X + pt.X, currentPoint.Y + pt.Y);
                     }
-                    EnsureFigure(ref currentFigure, geometry, currentPoint);
+                    EnsureOpenFigure(ref currentFigure, ref subpathStart, geometry, currentPoint);
                     currentFigure!.Segments.Add(new QuadraticBezierSegment { Point1 = cp, Point2 = pt });
                     lastControlPoint = cp;
                     currentPoint = pt;
                     break;
                 }
-                case 'T': // Smooth Quadratic Bezier
+                case 'T': // Smooth Quadratic Bézier — control is the reflection of the previous one
                 {
                     var pt = ctx.ReadPoint();
                     if (isRelative) pt = new Point(currentPoint.X + pt.X, currentPoint.Y + pt.Y);
                     var cp = (lastCommand is 'Q' or 'q' or 'T' or 't')
                         ? Reflect(lastControlPoint, currentPoint)
                         : currentPoint;
-                    EnsureFigure(ref currentFigure, geometry, currentPoint);
+                    EnsureOpenFigure(ref currentFigure, ref subpathStart, geometry, currentPoint);
                     currentFigure!.Segments.Add(new QuadraticBezierSegment { Point1 = cp, Point2 = pt });
                     lastControlPoint = cp;
                     currentPoint = pt;
                     break;
                 }
-                case 'A': // Arc
+                case 'A': // Elliptical Arc
                 {
                     double rx = ctx.ReadDouble();
                     double ry = ctx.ReadDouble();
                     double rotationAngle = ctx.ReadDouble();
-                    bool isLargeArc = ctx.ReadBool();
-                    bool sweepDirection = ctx.ReadBool();
+                    bool isLargeArc = ctx.ReadFlag();
+                    bool sweepClockwise = ctx.ReadFlag();
                     var pt = ctx.ReadPoint();
                     if (isRelative) pt = new Point(currentPoint.X + pt.X, currentPoint.Y + pt.Y);
-                    EnsureFigure(ref currentFigure, geometry, currentPoint);
+                    EnsureOpenFigure(ref currentFigure, ref subpathStart, geometry, currentPoint);
                     currentFigure!.Segments.Add(new ArcSegment
                     {
                         Size = new Size(rx, ry),
                         RotationAngle = rotationAngle,
                         IsLargeArc = isLargeArc,
-                        SweepDirection = sweepDirection ? SweepDirection.Clockwise : SweepDirection.Counterclockwise,
+                        SweepDirection = sweepClockwise ? SweepDirection.Clockwise : SweepDirection.Counterclockwise,
                         Point = pt
                     });
                     currentPoint = pt;
@@ -196,23 +229,36 @@ public static class PathMarkupParser
                     if (currentFigure != null)
                     {
                         currentFigure.IsClosed = true;
-                        currentPoint = currentFigure.StartPoint;
+                        // Per the spec the pen returns to the subpath's start point; a
+                        // subsequent drawing command opens a NEW subpath there (handled by
+                        // EnsureOpenFigure, which sees the closed figure).
+                        currentPoint = subpathStart;
                     }
                     break;
                 }
+                default:
+                    throw new FormatException($"Unknown path command '{command}' at position {ctx.Position}.");
             }
 
+            // Track the actual command applied this iteration so the next smooth curve can
+            // decide whether to reflect, and so implicit repeats know what to repeat.
             lastCommand = command;
         }
 
         return geometry;
     }
 
-    private static void EnsureFigure(ref PathFigure? figure, PathGeometry geometry, Point currentPoint)
+    /// <summary>
+    /// Ensures there is an open figure to append a segment to. Opens a new subpath (rooted
+    /// at <paramref name="currentPoint"/>) when there is no figure yet or the active one was
+    /// just closed by a <c>Z</c>.
+    /// </summary>
+    private static void EnsureOpenFigure(ref PathFigure? figure, ref Point subpathStart, PathGeometry geometry, Point currentPoint)
     {
-        if (figure != null) return;
+        if (figure != null && !figure.IsClosed) return;
         figure = new PathFigure { StartPoint = currentPoint };
         geometry.Figures.Add(figure);
+        subpathStart = currentPoint;
     }
 
     private static Point Reflect(Point controlPoint, Point currentPoint)
@@ -235,25 +281,31 @@ public static class PathMarkupParser
 
         public bool HasMore => _pos < _data.Length;
 
+        public int Position => _pos;
+
         public char Peek() => _data[_pos];
 
         public void Advance() => _pos++;
 
-        public void SkipWhitespace()
+        /// <summary>Skips whitespace and commas (interchangeable separators in path data).</summary>
+        public void SkipSeparators()
         {
-            while (_pos < _data.Length && (_data[_pos] == ' ' || _data[_pos] == '\t' ||
-                   _data[_pos] == '\r' || _data[_pos] == '\n' || _data[_pos] == ','))
+            while (_pos < _data.Length)
             {
-                _pos++;
+                char ch = _data[_pos];
+                if (ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' || ch == ',')
+                    _pos++;
+                else
+                    break;
             }
         }
 
         public double ReadDouble()
         {
-            SkipWhitespace();
+            SkipSeparators();
             int start = _pos;
 
-            // Handle sign
+            // Sign
             if (_pos < _data.Length && (_data[_pos] == '-' || _data[_pos] == '+'))
                 _pos++;
 
@@ -261,7 +313,7 @@ public static class PathMarkupParser
             while (_pos < _data.Length && char.IsDigit(_data[_pos]))
                 _pos++;
 
-            // Decimal part
+            // Fractional part
             if (_pos < _data.Length && _data[_pos] == '.')
             {
                 _pos++;
@@ -269,7 +321,7 @@ public static class PathMarkupParser
                     _pos++;
             }
 
-            // Exponent part
+            // Exponent
             if (_pos < _data.Length && (_data[_pos] == 'e' || _data[_pos] == 'E'))
             {
                 _pos++;
@@ -280,32 +332,37 @@ public static class PathMarkupParser
             }
 
             if (_pos == start)
-                throw new FormatException($"Expected number at position {_pos}");
+                throw new FormatException($"Expected a number at position {_pos}.");
 
-            return double.Parse(_data[start.._pos], CultureInfo.InvariantCulture);
+            var slice = _data[start.._pos];
+            if (!double.TryParse(slice, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+                throw new FormatException($"'{slice.ToString()}' is not a valid number at position {start}.");
+
+            return value;
         }
 
         public Point ReadPoint()
         {
             double x = ReadDouble();
-            SkipWhitespace();
             double y = ReadDouble();
             return new Point(x, y);
         }
 
-        public bool ReadBool()
+        /// <summary>
+        /// Reads a single arc flag. Flags are exactly one character ('0' or '1') and may be
+        /// packed against the following number (e.g. "011" → 0, 1, then 1). Anything else is
+        /// a malformed arc.
+        /// </summary>
+        public bool ReadFlag()
         {
-            SkipWhitespace();
+            SkipSeparators();
             if (_pos < _data.Length)
             {
-                char c = _data[_pos];
-                if (c == '0' || c == '1')
-                {
-                    _pos++;
-                    return c == '1';
-                }
+                char ch = _data[_pos];
+                if (ch == '0') { _pos++; return false; }
+                if (ch == '1') { _pos++; return true; }
             }
-            return false;
+            throw new FormatException($"Expected an arc flag (0 or 1) at position {_pos}.");
         }
     }
 }

@@ -94,15 +94,8 @@ public partial class DevToolsWindow
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
-        var statsCard = new Border
-        {
-            Background = DevToolsTheme.SurfaceAlt,
-            BorderBrush = DevToolsTheme.BorderSubtle,
-            BorderThickness = DevToolsTheme.ThicknessHairline,
-            Margin = new Thickness(DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterSm),
-            Child = statsScroll,
-            ClipToBounds = true,
-        };
+        var statsCard = DevToolsUi.Panel("TOP ELEMENTS BY LAYOUT COST", statsScroll, DevToolsTheme.Info);
+        statsCard.Margin = new Thickness(DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterSm);
         Grid.SetRow(statsCard, 1);
         root.Children.Add(statsCard);
 
@@ -116,15 +109,40 @@ public partial class DevToolsWindow
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
-        var invCard = new Border
+
+        // Panel has no pill slot, so the title + live count pill are built by
+        // hand here and pinned above the scroll inside a Card. The pill object
+        // (_invCountPill) is the same instance RefreshInvalidations updates.
+        var invHeaderRow = new Grid { Margin = new Thickness(0, 0, 0, DevToolsTheme.GutterSm) };
+        invHeaderRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        invHeaderRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        var invEyebrow = DevToolsUi.Eyebrow("INVALIDATION TIMELINE", DevToolsTheme.TextSecondary);
+        Grid.SetColumn(invEyebrow, 0);
+        invHeaderRow.Children.Add(invEyebrow);
+        Grid.SetColumn(_invCountPill!, 1);
+        invHeaderRow.Children.Add(_invCountPill!);
+
+        var invHeader = new StackPanel { Orientation = Orientation.Vertical };
+        invHeader.Children.Add(invHeaderRow);
+        invHeader.Children.Add(new Border
         {
-            Background = DevToolsTheme.Chrome,
-            BorderBrush = DevToolsTheme.BorderSubtle,
-            BorderThickness = DevToolsTheme.ThicknessHairline,
-            Margin = new Thickness(DevToolsTheme.GutterBase, 0, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase),
-            Child = invScroll,
-            ClipToBounds = true,
-        };
+            Height = 1,
+            Background = DevToolsTheme.BorderSubtle,
+            Margin = new Thickness(0, 0, 0, DevToolsTheme.GutterSm),
+        });
+
+        // Header in an Auto row, scroll in a Star row so the timeline list is
+        // height-bounded and actually scrolls (shows its scrollbar).
+        var invStack = new Grid();
+        invStack.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        invStack.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(invHeader, 0);
+        Grid.SetRow(invScroll, 1);
+        invStack.Children.Add(invHeader);
+        invStack.Children.Add(invScroll);
+
+        var invCard = DevToolsUi.Card(invStack);
+        invCard.Margin = new Thickness(DevToolsTheme.GutterBase, 0, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase);
         Grid.SetRow(invCard, 2);
         root.Children.Add(invCard);
 
@@ -138,18 +156,42 @@ public partial class DevToolsWindow
 
     private void BuildStatsHeader(StackPanel panel)
     {
-        panel.Children.Add(new TextBlock
+        // The section title now lives in the enclosing Panel header. Here we add
+        // a hairline-underlined column-caption strip naming the per-row metrics,
+        // then the empty / footer placeholders the refresh path toggles.
+        // Inset = a stat row's outer GutterLg margin + inner GutterLg card padding
+        // so the "#" caption sits over the rank chip.
+        double statInset = DevToolsTheme.GutterLg + DevToolsTheme.GutterLg;
+        var captions = new Grid
         {
-            Text = "TOP ELEMENTS BY LAYOUT COST",
-            FontSize = DevToolsTheme.FontXS,
-            FontFamily = DevToolsTheme.UiFont,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = DevToolsTheme.TextMuted,
-            Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
+            Margin = new Thickness(statInset, 0, statInset, DevToolsTheme.GutterXS),
+        };
+        captions.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        captions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var rankCap = DevToolsUi.Eyebrow("#");
+        rankCap.Width = 28;
+        rankCap.TextAlignment = TextAlignment.Center;
+        Grid.SetColumn(rankCap, 0);
+        captions.Children.Add(rankCap);
+
+        var elemCap = DevToolsUi.Eyebrow("ELEMENT · MEASURE / ARRANGE / INVALIDATIONS");
+        elemCap.Margin = new Thickness(DevToolsTheme.GutterBase, 0, 0, 0);
+        Grid.SetColumn(elemCap, 1);
+        captions.Children.Add(elemCap);
+
+        panel.Children.Add(captions);
+        panel.Children.Add(new Border
+        {
+            Height = 1,
+            Background = DevToolsTheme.BorderSubtle,
+            Margin = new Thickness(DevToolsTheme.GutterLg, 0, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
         });
 
         _statsEmptyText = DevToolsUi.Muted("No layout activity captured yet.");
-        _statsEmptyText.Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterSm, DevToolsTheme.GutterLg, DevToolsTheme.GutterLg);
+        _statsEmptyText.HorizontalAlignment = HorizontalAlignment.Center;
+        _statsEmptyText.TextAlignment = TextAlignment.Center;
+        _statsEmptyText.Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterLg, DevToolsTheme.GutterLg, DevToolsTheme.GutterLg);
         panel.Children.Add(_statsEmptyText);
 
         _statsFooterText = DevToolsUi.Muted("", DevToolsTheme.FontXS);
@@ -160,26 +202,50 @@ public partial class DevToolsWindow
 
     private void BuildInvalidationHeader(StackPanel panel)
     {
-        var header = new StackPanel
-        {
-            Orientation = Orientation.Horizontal,
-            Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
-        };
-        header.Children.Add(new TextBlock
-        {
-            Text = "INVALIDATION TIMELINE",
-            FontSize = DevToolsTheme.FontXS,
-            FontFamily = DevToolsTheme.UiFont,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = DevToolsTheme.TextMuted,
-            VerticalAlignment = VerticalAlignment.Center,
-        });
+        // The title + live count pill are now hosted by the enclosing Card header
+        // (built in BuildLayoutTab). We only create the pill instance here so the
+        // refresh path keeps the same object reference; it is parented there.
         _invCountPill = DevToolsUi.Pill("0", DevToolsTheme.Info);
-        header.Children.Add(_invCountPill);
-        panel.Children.Add(header);
+
+        // Column captions aligned to the InvalidationRowSkin grid (TIME / KIND /
+        // ELEMENT / SOURCE), with a hairline beneath. Left/right margin mirrors a
+        // row's outer GutterLg margin + inner GutterLg padding so the captions
+        // sit over their columns.
+        double rowInset = DevToolsTheme.GutterLg + DevToolsTheme.GutterLg;
+        var captions = new Grid
+        {
+            Margin = new Thickness(rowInset, 0, rowInset, DevToolsTheme.GutterXS),
+        };
+        captions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });
+        captions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(80) });
+        captions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        captions.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(2, GridUnitType.Star) });
+
+        var timeCap = DevToolsUi.Eyebrow("TIME");
+        Grid.SetColumn(timeCap, 0);
+        captions.Children.Add(timeCap);
+        var kindCap = DevToolsUi.Eyebrow("KIND");
+        Grid.SetColumn(kindCap, 1);
+        captions.Children.Add(kindCap);
+        var elemCap = DevToolsUi.Eyebrow("ELEMENT");
+        Grid.SetColumn(elemCap, 2);
+        captions.Children.Add(elemCap);
+        var srcCap = DevToolsUi.Eyebrow("SOURCE");
+        Grid.SetColumn(srcCap, 3);
+        captions.Children.Add(srcCap);
+
+        panel.Children.Add(captions);
+        panel.Children.Add(new Border
+        {
+            Height = 1,
+            Background = DevToolsTheme.BorderSubtle,
+            Margin = new Thickness(DevToolsTheme.GutterLg, 0, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
+        });
 
         _invEmptyText = DevToolsUi.Muted("No invalidations recorded.");
-        _invEmptyText.Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterSm, DevToolsTheme.GutterLg, DevToolsTheme.GutterLg);
+        _invEmptyText.HorizontalAlignment = HorizontalAlignment.Center;
+        _invEmptyText.TextAlignment = TextAlignment.Center;
+        _invEmptyText.Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterLg, DevToolsTheme.GutterLg, DevToolsTheme.GutterLg);
         panel.Children.Add(_invEmptyText);
     }
 
@@ -702,7 +768,7 @@ public partial class DevToolsWindow
 
         var trackRest = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(0x30, 0x80, 0x80, 0x80)),
+            Background = new SolidColorBrush(Color.FromArgb(0x55, DevToolsTheme.BorderStrongColor.R, DevToolsTheme.BorderStrongColor.G, DevToolsTheme.BorderStrongColor.B)),
             CornerRadius = new CornerRadius(2),
         };
         Grid.SetColumn(trackRest, 1);
@@ -775,7 +841,7 @@ public partial class DevToolsWindow
 
         var trailCell = new Border
         {
-            Background = new SolidColorBrush(Color.FromArgb(0x30, 0x80, 0x80, 0x80)),
+            Background = new SolidColorBrush(Color.FromArgb(0x55, DevToolsTheme.BorderStrongColor.R, DevToolsTheme.BorderStrongColor.G, DevToolsTheme.BorderStrongColor.B)),
             CornerRadius = new CornerRadius(2),
         };
         Grid.SetColumn(trailCell, 3);

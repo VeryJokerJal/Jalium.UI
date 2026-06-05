@@ -522,18 +522,26 @@ public class NumberBox : TextBoxBase, IImeSupport
             _partContentHost.CornerRadius = new CornerRadius(radius.TopLeft, 0, 0, radius.BottomLeft);
         }
 
-        // PART_UpSpinButton: top-right corner only (0, TopRight, 0, 0)
+        // Both spin buttons carry the SAME left border so the divider between the
+        // text area and the spin column is a single continuous vertical line over
+        // the full height. They differ only in which right corner is rounded so the
+        // column's outer corners follow the NumberBox's CornerRadius. Giving the two
+        // buttons different border edges (e.g. a left edge on one and a right edge on
+        // the other) insets only one half's background, leaving a 1px step on the
+        // column's left edge — the "spin border misaligned" defect.
+
+        // PART_UpSpinButton: top-right corner rounded + left divider.
         if (_upSpinButton != null)
         {
             _upSpinButton.CornerRadius = new CornerRadius(0, radius.TopRight, 0, 0);
             _upSpinButton.BorderThickness = new Thickness(BorderThickness.Left, 0, 0, 0);
         }
 
-        // PART_DownSpinButton: bottom-right corner only (0, 0, BottomRight, 0)
+        // PART_DownSpinButton: bottom-right corner rounded + the same left divider.
         if (_downSpinButton != null)
         {
             _downSpinButton.CornerRadius = new CornerRadius(0, 0, radius.BottomRight, 0);
-            _downSpinButton.BorderThickness = new Thickness(0, 0, BorderThickness.Right, 0);
+            _downSpinButton.BorderThickness = new Thickness(BorderThickness.Left, 0, 0, 0);
         }
     }
 

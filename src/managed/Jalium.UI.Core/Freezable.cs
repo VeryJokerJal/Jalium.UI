@@ -32,8 +32,10 @@ public abstract class Freezable : DependencyObject
     /// <returns>A modifiable clone of the current object.</returns>
     public Freezable Clone()
     {
+        // WPF: clone.CloneCore(this) —— 拷贝动作发生在新实例上，源对象只读。
+        // 旧实现写成 CloneCore(this)（在 this 上调用），克隆体永远是空对象。
         var clone = CreateInstance();
-        CloneCore(this);
+        clone.CloneCore(this);
         return clone;
     }
 
@@ -44,7 +46,7 @@ public abstract class Freezable : DependencyObject
     public Freezable CloneCurrentValue()
     {
         var clone = CreateInstance();
-        CloneCurrentValueCore(this);
+        clone.CloneCurrentValueCore(this);
         return clone;
     }
 
@@ -56,9 +58,13 @@ public abstract class Freezable : DependencyObject
         if (_isFrozen)
             return;
 
-        if (!FreezeCore(false))
+        // WPF 语义：先用 CanFreeze(FreezeCore isChecking=true) 整图校验能否冻结，
+        // 通过后再 FreezeCore(false) 真正递归冻结子 Freezable —— 避免半路失败时
+        // 已经把一部分子对象冻住造成不一致状态。
+        if (!CanFreeze)
             throw new InvalidOperationException("This Freezable cannot be frozen.");
 
+        FreezeCore(false);
         _isFrozen = true;
     }
 
@@ -68,8 +74,12 @@ public abstract class Freezable : DependencyObject
     /// <returns>A frozen copy of the Freezable.</returns>
     public Freezable GetAsFrozen()
     {
+        // 已冻结则直接共享自身（WPF：避免拷贝图中已冻结的部分）。
+        if (_isFrozen)
+            return this;
+
         var clone = CreateInstance();
-        GetAsFrozenCore(this);
+        clone.GetAsFrozenCore(this);
         clone.Freeze();
         return clone;
     }
@@ -80,8 +90,11 @@ public abstract class Freezable : DependencyObject
     /// <returns>A frozen copy of the Freezable.</returns>
     public Freezable GetCurrentValueAsFrozen()
     {
+        if (_isFrozen)
+            return this;
+
         var clone = CreateInstance();
-        GetCurrentValueAsFrozenCore(this);
+        clone.GetCurrentValueAsFrozenCore(this);
         clone.Freeze();
         return clone;
     }
@@ -99,6 +112,31 @@ public abstract class Freezable : DependencyObject
     /// <returns>If isChecking is true, this method returns true if the Freezable can be made unmodifiable, or false if it cannot. If isChecking is false, this method returns true if the specified Freezable is now unmodifiable, or throws an exception if it cannot be made unmodifiable.</returns>
     protected virtual bool FreezeCore(bool isChecking)
     {
+        // WPF 默认实现：遍历所有有效值，任一属性带表达式(绑定)或带活动动画则不可冻结；
+        // 子 Freezable 必须可冻结(isChecking) / 被递归冻结(!isChecking)。
+        foreach (var dp in GetEffectiveSetPropertiesInternal())
+        {
+            if (HasBindingInternal(dp))
+                return false;       // 表达式不可冻结
+
+            if (HasAnimatedValue(dp))
+                return false;       // 活动动画不可冻结
+
+            var (baseValue, _) = GetUncoercedBaseValueInternal(dp);
+            if (baseValue is Freezable child)
+            {
+                if (isChecking)
+                {
+                    if (!child.CanFreeze)
+                        return false;
+                }
+                else
+                {
+                    child.Freeze();
+                }
+            }
+        }
+
         return true;
     }
 
@@ -108,7 +146,7 @@ public abstract class Freezable : DependencyObject
     /// <param name="sourceFreezable">The Freezable to clone.</param>
     protected virtual void CloneCore(Freezable sourceFreezable)
     {
-        CopyCommonValues(sourceFreezable);
+        CloneCoreCommon(sourceFreezable, useCurrentValue: false, cloneFrozenValues: true);
     }
 
     /// <summary>
@@ -117,7 +155,7 @@ public abstract class Freezable : DependencyObject
     /// <param name="sourceFreezable">The Freezable to copy.</param>
     protected virtual void CloneCurrentValueCore(Freezable sourceFreezable)
     {
-        CopyCommonValues(sourceFreezable);
+        CloneCoreCommon(sourceFreezable, useCurrentValue: true, cloneFrozenValues: true);
     }
 
     /// <summary>
@@ -126,7 +164,7 @@ public abstract class Freezable : DependencyObject
     /// <param name="sourceFreezable">The Freezable to copy.</param>
     protected virtual void GetAsFrozenCore(Freezable sourceFreezable)
     {
-        CopyCommonValues(sourceFreezable);
+        CloneCoreCommon(sourceFreezable, useCurrentValue: false, cloneFrozenValues: false);
     }
 
     /// <summary>
@@ -135,7 +173,7 @@ public abstract class Freezable : DependencyObject
     /// <param name="sourceFreezable">The Freezable to copy.</param>
     protected virtual void GetCurrentValueAsFrozenCore(Freezable sourceFreezable)
     {
-        CopyCommonValues(sourceFreezable);
+        CloneCoreCommon(sourceFreezable, useCurrentValue: true, cloneFrozenValues: false);
     }
 
     /// <summary>
@@ -176,6 +214,17 @@ public abstract class Freezable : DependencyObject
     }
 
     /// <summary>
+    /// 属性系统写入守卫：冻结后任何 SetValue/SetCurrentValue/ClearValue/SetBinding 都抛异常。
+    /// 这使 CLR 属性包装器（<c>set =&gt; SetValue(...)</c>）即便不显式调用 <see cref="WritePreamble"/>
+    /// 也能在冻结后正确拒绝写入，对齐 WPF 行为。
+    /// </summary>
+    private protected override void CheckSealedAccess()
+    {
+        if (_isFrozen)
+            throw new InvalidOperationException("Cannot modify a frozen Freezable.");
+    }
+
+    /// <summary>
     /// Raises the Changed event for the Freezable and invokes its OnChanged method.
     /// </summary>
     protected void WritePostscript()
@@ -191,10 +240,82 @@ public abstract class Freezable : DependencyObject
         return CreateInstanceCore();
     }
 
-    private void CopyCommonValues(Freezable source)
+    /// <summary>
+    /// 对齐 WPF Freezable.CloneCoreCommon：把 source 的有效属性深拷贝到当前(克隆)实例。
+    /// </summary>
+    /// <param name="source">被克隆的源 Freezable。</param>
+    /// <param name="useCurrentValue">true 拷贝当前(已解析/动画后)值；false 拷贝 base(本地)值。</param>
+    /// <param name="cloneFrozenValues">true 始终深拷贝子 Freezable(Clone/CloneCurrentValue)；
+    /// false 仅拷贝未冻结的子 Freezable、已冻结的直接共享(GetAsFrozen/GetCurrentValueAsFrozen)。</param>
+    private void CloneCoreCommon(Freezable source, bool useCurrentValue, bool cloneFrozenValues)
     {
-        // Copy dependency property values
-        // This is a simplified implementation
+        ArgumentNullException.ThrowIfNull(source);
+
+        if (useCurrentValue)
+        {
+            // 遍历所有高于默认值的有效属性，拷贝其当前解析值（含动画快照与 modified-default）。
+            foreach (var dp in source.GetEffectiveSetPropertiesInternal())
+            {
+                if (dp.ReadOnly)
+                    continue; // 只读 DP：SetValue 会抛，跳过（WPF 同样跳过）
+
+                var value = CloneValueIfFreezable(source.GetValue(dp), useCurrentValue: true, cloneFrozenValues);
+                SetValue(dp, value);
+            }
+        }
+        else
+        {
+            // base 克隆：只拷贝本地设置(local)的基值，对齐 WPF ReadLocalValue 语义。
+            foreach (var entry in source.GetLocalValueEntriesInternal())
+            {
+                var dp = entry.Key;
+                if (dp.ReadOnly)
+                    continue;
+
+                // 纯绑定属性的表达式复制需要 Expression.Copy 机制，Jalium 绑定模型与 WPF
+                // 不同（绑定单独存放、非 local 值），且 Freezable 上挂绑定极罕见 —— base
+                // 克隆此处跳过，避免共享同一个表达式状态造成串扰；其当前解析值仍会被
+                // CloneCurrentValue 路径捕获。
+                if (source.HasBindingInternal(dp))
+                    continue;
+
+                var value = CloneValueIfFreezable(entry.Value, useCurrentValue: false, cloneFrozenValues);
+                SetValue(dp, value);
+            }
+        }
+    }
+
+    /// <summary>
+    /// 若值是 Freezable 则按四种克隆语义递归深拷贝，否则原样返回（值类型/字符串/普通引用）。
+    /// </summary>
+    private static object? CloneValueIfFreezable(object? value, bool useCurrentValue, bool cloneFrozenValues)
+    {
+        if (value is not Freezable freezable)
+            return value;
+
+        if (cloneFrozenValues)
+        {
+            // Clone / CloneCurrentValue：即使子值已冻结也产生可变深拷贝。
+            var clone = freezable.CreateInstanceCore();
+            if (useCurrentValue)
+                clone.CloneCurrentValueCore(freezable);
+            else
+                clone.CloneCore(freezable);
+            return clone;
+        }
+
+        // GetAsFrozen / GetCurrentValueAsFrozen：已冻结的子值直接共享，未冻结才拷贝。
+        if (!freezable.IsFrozen)
+        {
+            var clone = freezable.CreateInstanceCore();
+            if (useCurrentValue)
+                clone.GetCurrentValueAsFrozenCore(freezable);
+            else
+                clone.GetAsFrozenCore(freezable);
+            return clone;
+        }
+
+        return freezable;
     }
 
     private void OnSubPropertyChanged(object? sender, EventArgs e)

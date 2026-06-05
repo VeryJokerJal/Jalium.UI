@@ -372,6 +372,12 @@ public static class JalxamlLoader
                 }
                 catch (Exception ex)
                 {
+                    // Assembly.Load by name can legitimately fail (assembly not yet
+                    // loaded, or the name does not resolve); fall back to the
+                    // component's own assembly. Trace the cause so the fallback is
+                    // diagnosable during development rather than silently swallowed.
+                    System.Diagnostics.Debug.WriteLine(
+                        $"[JalxamlLoader] Assembly.Load('{assemblyName}') failed; falling back to component assembly. {ex.Message}");
                     assembly = componentAssembly;
                 }
             }

@@ -28,6 +28,10 @@ internal enum DrawCommandKind : byte
     DrawPoints,
     DrawLines,
     DrawLiquidGlass,
+    SetOffset,                   // whole-frame recorder: absolute IOffsetDrawingContext.Offset
+    BeginEffectCapture,          // IEffectDrawingContext (element BlurEffect/DropShadow)
+    EndEffectCapture,
+    ApplyElementEffect,
 }
 
 /// <summary>
@@ -170,4 +174,38 @@ internal readonly struct DrawCommand
         new(DrawCommandKind.DrawLiquidGlass, parameters, null, null,
             0, 0, 0, 0, 0, 0, 0, 0);
 
+    /// <summary>
+    /// Whole-frame recorder only: records an absolute set of
+    /// <see cref="IOffsetDrawingContext.Offset"/> (the per-child translation that
+    /// <c>Visual.RenderChildVisualInline</c> applies via save/set/restore). Replay
+    /// re-applies it to the target context's Offset so raw-local draw coords land
+    /// in the same place the live render put them. <c>V0/V1</c> carry X/Y.
+    /// </summary>
+    public static DrawCommand SetOffsetCmd(Point offset) =>
+        new(DrawCommandKind.SetOffset, null, null, null,
+            offset.X, offset.Y, 0, 0, 0, 0, 0, 0);
+
+    // ── IEffectDrawingContext (element effects: BlurEffect / DropShadowEffect) ──
+    // Captured by the whole-frame recorder so the offscreen-capture + apply
+    // sequence RenderDirect emits replays identically on the render thread.
+
+    public static DrawCommand BeginEffectCaptureCmd(float x, float y, float w, float h) =>
+        new(DrawCommandKind.BeginEffectCapture, null, null, null,
+            x, y, w, h, 0, 0, 0, 0);
+
+    public static DrawCommand EndEffectCaptureCmd() =>
+        new(DrawCommandKind.EndEffectCapture, null, null, null,
+            0, 0, 0, 0, 0, 0, 0, 0);
+
+    /// <summary>
+    /// <c>A</c> = the <see cref="IEffect"/>; V0-V7 carry x,y,w,h,captureOriginX,
+    /// captureOriginY,cornerTL,cornerTR; <c>C</c> = double[2] { cornerBR, cornerBL }
+    /// (10 floats don't fit the 8 V-slots).
+    /// </summary>
+    public static DrawCommand ApplyElementEffectCmd(IEffect effect,
+        float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) =>
+        new(DrawCommandKind.ApplyElementEffect, effect, null, new double[] { cornerBR, cornerBL },
+            x, y, w, h, captureOriginX, captureOriginY, cornerTL, cornerTR);
 }

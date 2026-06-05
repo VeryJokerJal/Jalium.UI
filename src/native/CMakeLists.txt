@@ -5,6 +5,17 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# MSVC reads source files using the host ANSI code page (e.g. 936/GBK on a
+# Chinese Windows install) unless told otherwise. Every source/header here is
+# stored as UTF-8 (Chinese comments included), so without this flag any file
+# with non-ASCII bytes trips C4819 ("cannot be represented in the current code
+# page"). /utf-8 declares the real source AND execution charset as UTF-8 — the
+# canonical Microsoft-recommended fix. Applied globally so it also covers the
+# vendored single-header thirdparty TUs. Must precede every add_subdirectory().
+if(MSVC)
+    add_compile_options(/utf-8)
+endif()
+
 # ---------------------------------------------------------------------------
 # Build flavor: shared (default, NuGet) or static (NativeAOT single-exe)
 # ---------------------------------------------------------------------------
@@ -13,6 +24,12 @@ option(JALIUM_BUILD_STATIC "Build native libraries as static archives for Native
 # 排查/诊断用的 native demo 可执行文件（默认关，不影响 NuGet / AOT 产物）。
 # 打开方式: cmake -DJALIUM_BUILD_DEMOS=ON ...
 option(JALIUM_BUILD_DEMOS "Build native diagnostic demo executables (memprobe, ...)" OFF)
+
+# Also build the Vulkan backend on Windows (it is the primary backend only on
+# Linux/Android). Off by default so the normal Windows/NuGet build is unchanged;
+# turn on with -DJALIUM_BUILD_VULKAN=ON to compile/link/test the Vulkan backend
+# DLL alongside D3D12 (e.g. to validate the InkCanvas GPU pipeline / effects).
+option(JALIUM_BUILD_VULKAN "Also build the Vulkan backend on Windows (dev/test)" OFF)
 
 if(JALIUM_BUILD_STATIC)
     set(JALIUM_LIB_TYPE STATIC)
@@ -119,6 +136,12 @@ if(WIN32)
     add_subdirectory(jalium.native.d3d12)
     add_subdirectory(jalium.native.browser)
     add_subdirectory(jalium.native.media.windows)
+    if(JALIUM_BUILD_VULKAN)
+        # Dev/test: build the Vulkan backend DLL on Windows too. The Vulkan
+        # backend is normally the Linux/Android primary; this lets us validate
+        # it (InkCanvas GPU pipeline, effects) without leaving Windows.
+        add_subdirectory(jalium.native.vulkan)
+    endif()
 elseif(APPLE)
     add_subdirectory(jalium.native.metal)
 else()

@@ -119,22 +119,25 @@ public partial class DevToolsWindow : Window
     private static readonly SolidColorBrush BrushToolbarBorder = DevToolsTheme.BorderSubtle;
     private static readonly SolidColorBrush BrushAccent       = DevToolsTheme.Accent;
     private static readonly SolidColorBrush BrushBreadcrumbSep = DevToolsTheme.TextMuted;
-    private static readonly SolidColorBrush BrushBoxMargin = new(Color.FromArgb(180, 255, 180, 100));
-    private static readonly SolidColorBrush BrushBoxBorder = new(Color.FromArgb(180, 255, 220, 100));
-    private static readonly SolidColorBrush BrushBoxPadding = new(Color.FromArgb(180, 140, 200, 140));
-    private static readonly SolidColorBrush BrushBoxContent = new(Color.FromArgb(180, 100, 160, 220));
-    private static readonly SolidColorBrush BrushBoxLabel = new(Color.FromRgb(200, 200, 200));
-    private static readonly SolidColorBrush BrushCategoryFramework = new(Color.FromRgb(94, 196, 255));
-    private static readonly SolidColorBrush BrushCategoryLayout = new(Color.FromRgb(152, 195, 121));
-    private static readonly SolidColorBrush BrushCategoryAppearance = new(Color.FromRgb(255, 178, 102));
-    private static readonly SolidColorBrush BrushCategoryTypography = new(Color.FromRgb(244, 166, 232));
-    private static readonly SolidColorBrush BrushCategoryContent = new(Color.FromRgb(97, 175, 239));
-    private static readonly SolidColorBrush BrushCategoryItems = new(Color.FromRgb(86, 182, 194));
-    private static readonly SolidColorBrush BrushCategoryData = new(Color.FromRgb(229, 192, 123));
-    private static readonly SolidColorBrush BrushCategoryInput = new(Color.FromRgb(224, 108, 117));
-    private static readonly SolidColorBrush BrushCategoryBehavior = new(Color.FromRgb(198, 120, 221));
-    private static readonly SolidColorBrush BrushCategoryState = new(Color.FromRgb(163, 190, 140));
-    private static readonly SolidColorBrush BrushCategoryOther = new(Color.FromRgb(171, 178, 191));
+    private static readonly SolidColorBrush BrushBoxMargin = new(Color.FromArgb(0xB4, DevToolsTheme.WarningColor.R, DevToolsTheme.WarningColor.G, DevToolsTheme.WarningColor.B));
+    private static readonly SolidColorBrush BrushBoxBorder = new(Color.FromArgb(0xB4, DevToolsTheme.AccentColor.R, DevToolsTheme.AccentColor.G, DevToolsTheme.AccentColor.B));
+    private static readonly SolidColorBrush BrushBoxPadding = new(Color.FromArgb(0xB4, DevToolsTheme.SuccessColor.R, DevToolsTheme.SuccessColor.G, DevToolsTheme.SuccessColor.B));
+    private static readonly SolidColorBrush BrushBoxContent = new(Color.FromArgb(0xB4, DevToolsTheme.InfoColor.R, DevToolsTheme.InfoColor.G, DevToolsTheme.InfoColor.B));
+    private static readonly SolidColorBrush BrushBoxLabel = new(DevToolsTheme.TextSecondaryColor);
+    // Property-category legend — a muted, graphite-friendly categorical palette
+    // (mapped onto the instrument tokens where one fits) so category bullets stay
+    // distinguishable without reintroducing neon devtools-blue.
+    private static readonly SolidColorBrush BrushCategoryFramework = DevToolsTheme.Info;
+    private static readonly SolidColorBrush BrushCategoryLayout = DevToolsTheme.Success;
+    private static readonly SolidColorBrush BrushCategoryAppearance = DevToolsTheme.Warning;
+    private static readonly SolidColorBrush BrushCategoryTypography = DevToolsTheme.TokenKeyword;
+    private static readonly SolidColorBrush BrushCategoryContent = new(Color.FromRgb(0x6F, 0xA8, 0xC7));
+    private static readonly SolidColorBrush BrushCategoryItems = DevToolsTheme.TokenType;
+    private static readonly SolidColorBrush BrushCategoryData = DevToolsTheme.TokenEnum;
+    private static readonly SolidColorBrush BrushCategoryInput = new(Color.FromRgb(0xE0, 0x81, 0x7C));
+    private static readonly SolidColorBrush BrushCategoryBehavior = new(Color.FromRgb(0x9D, 0x8B, 0xD6));
+    private static readonly SolidColorBrush BrushCategoryState = new(Color.FromRgb(0x9E, 0xC0, 0x7A));
+    private static readonly SolidColorBrush BrushCategoryOther = DevToolsTheme.TextSecondary;
     private const double NameWidth = 145;
     private static readonly ConcurrentDictionary<Type, IReadOnlyList<DependencyPropertyInspectorEntry>> s_dependencyPropertyCache = new();
 
@@ -193,7 +196,7 @@ public partial class DevToolsWindow : Window
         _searchTextBox = new TextBox
         {
             FontSize = DevToolsTheme.FontSm,
-            FontFamily = DevToolsTheme.UiFont,
+            FontFamily = DevToolsTheme.MonoFont,
             Foreground = DevToolsTheme.TextPrimary,
             Background = DevToolsTheme.Control,
             BorderBrush = DevToolsTheme.BorderSubtle,
@@ -283,8 +286,9 @@ public partial class DevToolsWindow : Window
         _propertiesPanel.Children.Add(new TextBlock
         {
             Text = "Select an element to inspect",
-            Foreground = new SolidColorBrush(Color.FromRgb(128, 128, 128)),
-            FontSize = 12,
+            Foreground = DevToolsTheme.TextMuted,
+            FontFamily = DevToolsTheme.UiFont,
+            FontSize = DevToolsTheme.FontBase,
             Margin = new Thickness(8, 16, 8, 8)
         });
 
@@ -859,6 +863,15 @@ public partial class DevToolsWindow : Window
 
         if (_isPickerActive)
             DeactivatePicker();
+
+        // Stop the overlay's per-frame highlight animation BEFORE dropping the
+        // references. That animation runs on a DispatcherTimer whose 1ms interval
+        // makes it piggyback on the static CompositionTarget.Rendering event.
+        // Without RemoveOverlay() (-> StopAnimation -> DispatcherTimer.Stop) the
+        // orphaned overlay stays rooted by that static event and keeps forcing a
+        // full-window repaint of the target window every frame after DevTools is
+        // closed (drops to ~11 FPS on iGPU, and leaks the window + element subtree).
+        _overlay?.RemoveOverlay();
         _targetWindow.DevToolsOverlay = null;
         _overlay = null;
 
@@ -1181,8 +1194,9 @@ public partial class DevToolsWindow : Window
         _propertiesPanel.Children.Add(new TextBlock
         {
             Text = $"[{visual.GetType().Name}]",
-            Foreground = new SolidColorBrush(Color.FromRgb(255, 200, 0)),
-            FontSize = 13,
+            Foreground = DevToolsTheme.Accent,
+            FontFamily = DevToolsTheme.DisplayFont,
+            FontSize = DevToolsTheme.FontLg,
             FontWeight = FontWeights.Bold,
             Margin = new Thickness(8, 4, 4, 4)
         });
@@ -1196,7 +1210,7 @@ public partial class DevToolsWindow : Window
             _propertiesPanel.Children.Add(new TextBlock
             {
                 Text = $"Error: {ex.GetType().Name}: {ex.Message}",
-                Foreground = new SolidColorBrush(Color.FromRgb(255, 100, 100)),
+                Foreground = DevToolsTheme.Error,
                 FontSize = 11,
                 Margin = new Thickness(8, 4, 4, 4)
             });
@@ -1207,6 +1221,8 @@ public partial class DevToolsWindow : Window
         InvalidateWindow();
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "AddBindingInspector 'enumerates static DependencyProperty fields on FrameworkElement subtypes via reflection.' DevTools is an opt-in developer inspector control (UseDevTools()); consumers that inspect their own FrameworkElement subtypes under trimming/AOT must keep those types' static DependencyProperty fields preserved. That preservation is the documented consumer responsibility, not a defect of this site.")]
     private void UpdatePropertiesPanelCore(Visual visual)
     {
         var type = visual.GetType();
@@ -1497,6 +1513,8 @@ public partial class DevToolsWindow : Window
     //  Element Statistics
     // 鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲鈺愨晲
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "GetCategorizedDependencyProperties 'enumerates static DependencyProperty fields on the target runtime type via reflection.' DevTools is an opt-in developer inspector control (UseDevTools()); consumers that inspect their own runtime types under trimming/AOT must keep those types' static DependencyProperty fields preserved. That preservation is the documented consumer responsibility, not a defect of this site.")]
     private void AddCategorizedDependencyPropertyInspector(DependencyObject dependencyObject)
     {
         var entries = GetCategorizedDependencyProperties(dependencyObject.GetType());
@@ -1675,16 +1693,36 @@ public partial class DevToolsWindow : Window
 
     private void AddCategoryHeader(DevToolsPropertyCategory category, int count)
     {
-        _propertiesPanel.Children.Add(new TextBlock
+        var header = new StackPanel
         {
-            Text = $"\u25cf {category} ({count})",
-            Foreground = GetCategoryBrush(category),
-            FontSize = 10,
-            FontWeight = FontWeights.SemiBold,
+            Orientation = Orientation.Horizontal,
             Margin = new Thickness(8, 8, 4, 1)
+        };
+
+        header.Children.Add(new TextBlock
+        {
+            Text = "\u25cf",
+            Foreground = GetCategoryBrush(category),
+            FontSize = DevToolsTheme.FontXS,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 6, 0)
         });
+
+        header.Children.Add(new TextBlock
+        {
+            Text = DevToolsUi.Tracked($"{category} ({count})".ToUpperInvariant()),
+            Foreground = DevToolsTheme.TextSecondary,
+            FontFamily = DevToolsTheme.DisplayFont,
+            FontSize = DevToolsTheme.FontXS,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+
+        _propertiesPanel.Children.Add(header);
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "GetInspectablePropertyValue is a 'DevTools diagnostic that reflects on the runtime DependencyObject type to read CLR property values.' DevTools is an opt-in developer inspector control (UseDevTools()); consumers that inspect their own runtime types under trimming/AOT must keep those types' property accessors preserved. That preservation is the documented consumer responsibility, not a defect of this site.")]
     private void AddCategorizedDependencyProperty(DependencyObject target, DependencyPropertyInspectorEntry entry)
     {
         var property = entry.Property;
@@ -1915,8 +1953,9 @@ public partial class DevToolsWindow : Window
         return new TextBlock
         {
             Text = text,
-            FontSize = 10,
-            Foreground = new SolidColorBrush(Color.FromRgb(140, 140, 140)),
+            FontSize = DevToolsTheme.FontXS,
+            FontFamily = DevToolsTheme.UiFont,
+            Foreground = DevToolsTheme.TextMuted,
             Margin = new Thickness(0, 0, 12, 0)
         };
     }
@@ -1963,9 +2002,10 @@ public partial class DevToolsWindow : Window
             {
                 row.Children.Add(new TextBlock
                 {
-                    Text = " > ",
+                    Text = " / ",
                     Foreground = BrushBreadcrumbSep,
-                    FontSize = 10
+                    FontFamily = DevToolsTheme.MonoFont,
+                    FontSize = DevToolsTheme.FontXS
                 });
             }
 
@@ -1974,10 +2014,11 @@ public partial class DevToolsWindow : Window
             var crumb = new TextBlock
             {
                 Text = ancestor.GetType().Name,
-                FontSize = 10,
+                FontFamily = DevToolsTheme.MonoFont,
+                FontSize = DevToolsTheme.FontXS,
                 Foreground = isLast
                     ? BrushAccent
-                    : new SolidColorBrush(Color.FromRgb(160, 160, 160))
+                    : new SolidColorBrush(DevToolsTheme.TextSecondaryColor)
             };
 
             if (!isLast)
@@ -2191,17 +2232,22 @@ public partial class DevToolsWindow : Window
         var inner = new StackPanel { Orientation = Orientation.Horizontal };
         inner.Children.Add(new Border
         {
-            Width = 10,
-            Height = 10,
+            Width = 9,
+            Height = 9,
             Background = color,
-            Margin = new Thickness(0, 0, 4, 0),
-            CornerRadius = new CornerRadius(2)
+            BorderBrush = DevToolsTheme.BorderSubtle,
+            BorderThickness = DevToolsTheme.ThicknessHairline,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0, 0, 5, 0)
         });
         inner.Children.Add(new TextBlock
         {
-            Text = text,
-            FontSize = 9,
-            Foreground = new SolidColorBrush(Color.FromRgb(160, 160, 160))
+            Text = DevToolsUi.Tracked(text.ToUpperInvariant()),
+            FontFamily = DevToolsTheme.DisplayFont,
+            FontSize = DevToolsTheme.FontXS,
+            FontWeight = FontWeights.SemiBold,
+            VerticalAlignment = VerticalAlignment.Center,
+            Foreground = DevToolsTheme.TextSecondary
         });
 
         return new Border
@@ -2546,9 +2592,10 @@ public partial class DevToolsWindow : Window
     {
         _propertiesPanel.Children.Add(new TextBlock
         {
-            Text = $"\u25b8 {name}",
+            Text = "\u25b8 " + DevToolsUi.Tracked(name.ToUpperInvariant()),
             Foreground = BrushSection,
-            FontSize = 11,
+            FontFamily = DevToolsTheme.DisplayFont,
+            FontSize = DevToolsTheme.FontSm,
             FontWeight = FontWeights.SemiBold,
             Margin = new Thickness(4, 10, 4, 2)
         });
@@ -2754,9 +2801,20 @@ public partial class DevToolsWindow : Window
             {
                 try
                 {
-                    var values = Enum.GetValues(value.GetType());
+                    // Enumerate the underlying values (AOT-safe; no array of the enum type is
+                    // constructed at runtime) then box each raw value back to the enum type via
+                    // Enum.ToObject, which has no AOT cost on an already-loaded enum Type. The
+                    // resulting boxed values compare/cycle identically to Enum.GetValues output.
+                    var type = value.GetType();
+                    var rawValues = Enum.GetValuesAsUnderlyingType(type);
+                    var values = new object[rawValues.Length];
+                    for (int i = 0; i < rawValues.Length; i++)
+                    {
+                        values[i] = Enum.ToObject(type, rawValues.GetValue(i)!);
+                    }
+
                     int index = Array.IndexOf(values, value);
-                    setter(values.GetValue((index + 1) % values.Length)!);
+                    setter(values[(index + 1) % values.Length]);
                     if (_selectedVisual != null) UpdatePropertiesPanel(_selectedVisual);
                 }
                 catch { }
@@ -2862,7 +2920,7 @@ public partial class DevToolsWindow : Window
                 };
                 var popupBorder = new Border
                 {
-                    Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                    Background = new SolidColorBrush(DevToolsTheme.SurfaceRaisedColor),
                     BorderBrush = BrushAccent,
                     BorderThickness = new Thickness(1),
                     CornerRadius = new CornerRadius(4),
@@ -2929,7 +2987,7 @@ public partial class DevToolsWindow : Window
                     };
                     var popupBorder = new Border
                     {
-                        Background = new SolidColorBrush(Color.FromRgb(45, 45, 48)),
+                        Background = new SolidColorBrush(DevToolsTheme.SurfaceRaisedColor),
                         BorderBrush = BrushAccent,
                         BorderThickness = new Thickness(1),
                         CornerRadius = new CornerRadius(4),
@@ -3164,6 +3222,12 @@ public partial class DevToolsWindow : Window
         if (_isPickerActive)
             DeactivatePicker();
 
+        // Tear down the highlight overlay's frame animation before nulling the
+        // references. RemoveOverlay() -> StopAnimation() -> DispatcherTimer.Stop()
+        // unsubscribes from CompositionTarget.Rendering, releasing the GC root and
+        // stopping the perpetual full-window repaint. Idempotent: Close() below
+        // fires OnDevToolsClosing where _overlay is already null (the ?. is a no-op).
+        _overlay?.RemoveOverlay();
         _targetWindow.DevToolsOverlay = null;
         _overlay = null;
 
@@ -3183,7 +3247,7 @@ internal sealed class DevToolsTreeViewItem : TreeViewItem
     {
         Visual = visual;
         Header = GetVisualDisplayName(visual);
-        Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220));
+        Foreground = new SolidColorBrush(DevToolsTheme.TextPrimaryColor);
     }
 
     private static string GetVisualDisplayName(Visual visual)

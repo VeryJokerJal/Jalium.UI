@@ -117,6 +117,8 @@ public class PropertyItem : INotifyPropertyChanged
                 return _propertyInfo.GetValue(_sourceObject);
             return _propertyDescriptor?.GetValue(_sourceObject);
         }
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2072:RequiresUnreferencedCode",
+            Justification = "ConvertValue requires DynamicallyAccessedMemberTypes.All on its targetType. The Type flows here from PropertyInfo.PropertyType / PropertyDescriptor.PropertyType, framework members that cannot carry DAM annotations, so the flow cannot be satisfied statically. PropertyGrid is a developer/inspector control; consumers binding it to user-defined types are responsible for preserving those property types' converters (e.g. via DynamicDependency or a linker descriptor) — the same documented AOT prerequisite already declared on ConvertValue.")]
         set
         {
             if (IsReadOnly)
@@ -183,6 +185,8 @@ public class PropertyItem : INotifyPropertyChanged
     /// <summary>
     /// Populates <see cref="SubProperties"/> by reflecting on the current value.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:RequiresUnreferencedCode",
+        Justification = "GetProperties is called on currentValue.GetType(); the runtime Type from object.GetType() cannot carry DynamicallyAccessedMembers, so the PublicProperties requirement cannot be satisfied statically. PropertyGrid is a developer/inspector control: consumers that bind it to user-defined types must keep those types' public properties preserved (e.g. via DynamicDependency or a linker descriptor) — a documented prerequisite for using PropertyGrid under AOT, not a defect of this site.")]
     public void BuildSubProperties()
     {
         SubProperties.Clear();

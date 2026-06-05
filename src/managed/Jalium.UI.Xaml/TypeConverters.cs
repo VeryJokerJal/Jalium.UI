@@ -127,6 +127,13 @@ public sealed class BrushConverter : TypeConverter
             return new SolidColorBrush(color);
         }
 
+        // Fall back to the full standard named-color set (every name defined on Colors)
+        // so bare names beyond the common fast-path list still resolve instead of throwing.
+        if (NamedColorTable.TryGet(str, out var standardColor))
+        {
+            return new SolidColorBrush(standardColor);
+        }
+
         throw new FormatException($"Invalid brush format: {str}");
     }
 
@@ -207,6 +214,13 @@ public sealed class ColorConverter : TypeConverter
         if (str.StartsWith('#'))
         {
             return ParseHexColor(str);
+        }
+
+        // Fall back to the full standard named-color set (every name defined on Colors)
+        // so bare names beyond the common fast-path list still resolve instead of throwing.
+        if (NamedColorTable.TryGet(str, out var standardColor))
+        {
+            return standardColor;
         }
 
         throw new FormatException($"Invalid color format: {str}");

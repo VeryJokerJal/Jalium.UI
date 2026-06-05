@@ -960,22 +960,28 @@ public class Border : FrameworkElement
             // shortcut shows; non-uniform per-side stroke would need a
             // path-fill ring which the native compound-fill pipeline doesn't
             // exactly match the SDF stroke renderer for sub-pixel AA yet.)
-            // Snap the inner rect to physical pixels using the same rule as
-            // ArrangeOverride (and FrameworkElement.ArrangeCore). This keeps
-            // the Background fill flush with the child's _visualBounds even
-            // when BorderThickness is fractional (mid-transition values like
-            // 2.5), eliminating the 0.5 px seam where the border colour
-            // would otherwise leak into the content area.
-            var snappedInnerLeft = SnapLayoutValue(rect.X + border.Left);
-            var snappedInnerTop = SnapLayoutValue(rect.Y + border.Top);
-            var snappedInnerRight = SnapLayoutValue(rect.X + rect.Width - border.Right);
-            var snappedInnerBottom = SnapLayoutValue(rect.Y + rect.Height - border.Bottom);
+            // Inner rect for Background fill / inner-radius compute. Originally
+            // this snapped all four sides to physical pixels via SnapLayoutValue,
+            // paired with ArrangeCore also snapping _visualBounds origin so that
+            // the fill and the child landed on the same integer rows/columns.
+            //
+            // Now that ArrangeCore lets origins stay as continuous floats (to
+            // unblock smooth spring/transition animations), this snap MUST also
+            // go: rounding `rect.Width - border.Right` quantises animated widths
+            // like 14.967 → 15 each frame, producing the very 1px jitter the
+            // float-origin change was meant to eliminate. BorderThickness itself
+            // is still snapped per-side (see line ~606) so static borders stay
+            // pixel-aligned; only the *fractional remainder* now passes through.
+            var innerLeft = rect.X + border.Left;
+            var innerTop = rect.Y + border.Top;
+            var innerRight = rect.X + rect.Width - border.Right;
+            var innerBottom = rect.Y + rect.Height - border.Bottom;
 
             var innerRect = new Rect(
-                snappedInnerLeft,
-                snappedInnerTop,
-                Math.Max(0, snappedInnerRight - snappedInnerLeft),
-                Math.Max(0, snappedInnerBottom - snappedInnerTop));
+                innerLeft,
+                innerTop,
+                Math.Max(0, innerRight - innerLeft),
+                Math.Max(0, innerBottom - innerTop));
 
             if (Background != null && !LiquidGlass)
             {

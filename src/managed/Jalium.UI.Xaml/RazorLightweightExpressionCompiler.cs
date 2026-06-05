@@ -13,6 +13,8 @@ internal static class RazorLightweightExpressionCompiler
     /// Drop-in replacement for <c>RazorRoslynScriptCompiler.CompileExpression()</c>.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Compiled expression wrapper invokes the lightweight evaluator, which reflects on user types.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Runtime Razor expression evaluation is an opt-in reflective feature whose preservation is the documented consumer responsibility. RazorLightweightExpressionEvaluator.Evaluate carries RequiresDynamicCode (\"Razor expression evaluator dispatches to RazorExpressionParser, which may construct generic types/methods at runtime.\"); this site is reached only through that runtime-compilation surface, so the dynamic-code contract is already declared upstream rather than introduced here.")]
     public static RazorExpressionRuntimeCompiler.CompiledExpressionWrapper CompileExpression(RazorExpressionPlan plan)
     {
         var expression = plan.Expression;
@@ -36,6 +38,8 @@ internal static class RazorLightweightExpressionCompiler
     /// Drop-in replacement for <c>RazorRoslynScriptCompiler.CompileTemplate()</c>.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Compiled template wrapper invokes the lightweight expression/code-block evaluators, which reflect on user types.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Runtime Razor template evaluation is an opt-in reflective feature whose preservation is the documented consumer responsibility. The evaluators invoked here both declare RequiresDynamicCode upstream — RazorLightweightExpressionEvaluator.Evaluate (\"Razor expression evaluator dispatches to RazorExpressionParser, which may construct generic types/methods at runtime.\") and RazorLightweightCodeBlockInterpreter.ExpandWithScope (\"Razor code-block interpreter may construct generic types/methods at runtime via the expression evaluator.\"). This site is reached only through that runtime-compilation surface, so the dynamic-code contract is already declared upstream rather than introduced here.")]
     public static RazorTemplateRuntimeCompiler.CompiledTemplateWrapper CompileTemplate(RazorTemplate template)
     {
         return new RazorTemplateRuntimeCompiler.CompiledTemplateWrapper

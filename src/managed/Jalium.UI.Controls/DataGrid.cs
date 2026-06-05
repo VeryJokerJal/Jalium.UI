@@ -1298,6 +1298,8 @@ public class DataGrid : Control, IColumnHeaderHost
 
     private static readonly Dictionary<(Type, string), PropertyInfo?> s_propertyCache = new();
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2070:UnrecognizedReflectionPattern",
+        Justification = "DataGrid is a data-bound control that resolves cell values by reflecting over user-defined item types. Every caller passes a runtime Type obtained from object.GetType() (the bound row item), which cannot carry DynamicallyAccessedMembers, so the property metadata cannot be flowed statically. Preserving the public properties of types bound to a DataGrid is the documented consumer responsibility under trimming/AOT (the same binding-reflection-fallback contract used across the framework).")]
     internal static PropertyInfo? GetCachedProperty(Type type, string name)
     {
         var key = (type, name);
@@ -1325,6 +1327,8 @@ public class DataGrid : Control, IColumnHeaderHost
 
     #region Auto-Generate Columns
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+        Justification = "Auto-generated columns are derived by reflecting over the public instance properties of the bound item type, obtained from firstItem.GetType(). object.GetType() cannot carry DynamicallyAccessedMembers, so the metadata cannot be flowed statically. AutoGenerateColumns is an opt-in convenience; consumers relying on it must preserve their item type's public properties under trimming/AOT, the documented binding-reflection contract for data-bound controls.")]
     private void AutoGenerateColumnsFromSource()
     {
         if (!AutoGenerateColumns || _items.Count == 0) return;
@@ -2025,6 +2029,8 @@ public class DataGrid : Control, IColumnHeaderHost
     /// Determines whether new items can be appended to the current
     /// <see cref="ItemsSource"/>.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+        Justification = "Constructibility of the bound item type is probed for the optional new-item placeholder. The Type comes from GetNewItemType(), which ultimately derives from object.GetType() on a bound row item (or a generic argument of the source's IEnumerable<T>), neither of which can carry DynamicallyAccessedMembers. CanUserAddRows is opt-in; a consumer enabling it must preserve the item type's parameterless constructor under trimming/AOT. The result is also defensively guarded: a missing/trimmed constructor returns false here and Activator.CreateInstance is wrapped in try/catch at CommitNewItem.")]
     private bool CanAddRowsToSource()
     {
         if (ItemsSource is not IList list || list.IsReadOnly || list.IsFixedSize)
@@ -2049,6 +2055,8 @@ public class DataGrid : Control, IColumnHeaderHost
     /// source; otherwise the source's <see cref="IEnumerable{T}"/> argument is
     /// used.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+        Justification = "The element type of the bound source is recovered by walking source.GetType().GetInterfaces() for IEnumerable<T>. object.GetType() cannot carry DynamicallyAccessedMembers, so the interface list cannot be flowed statically. This only resolves an open generic shape (IEnumerable<T>) so the placeholder row can construct a new item; it is part of the opt-in CanUserAddRows feature whose item type preservation is the documented consumer responsibility under trimming/AOT.")]
     private Type? GetNewItemType()
     {
         if (_items.Count > 0 && _items[0] != null)
@@ -2131,6 +2139,8 @@ public class DataGrid : Control, IColumnHeaderHost
     /// Creates a new item, appends it to the bound source, then selects and
     /// edits the resulting row. Invoked when the user activates the placeholder.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2072:UnrecognizedReflectionPattern",
+        Justification = "The new placeholder item is created via Activator.CreateInstance over the bound item type from GetNewItemType(), whose value derives from object.GetType() (or an IEnumerable<T> generic argument) and cannot carry DynamicallyAccessedMembers(PublicParameterlessConstructor). CanUserAddRows is opt-in and the item type's constructor preservation is the documented consumer responsibility under trimming/AOT; the call is additionally guarded by CanAddRowsToSource() and wrapped in try/catch so a trimmed/throwing constructor leaves the grid unchanged.")]
     private void CommitNewItem()
     {
         if (!ShowNewItemPlaceholder || ItemsSource is not IList list)

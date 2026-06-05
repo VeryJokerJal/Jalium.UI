@@ -746,6 +746,18 @@ void ImpellerD3D12Engine::ClearScissorRect() {
     hasScissor_ = false;
 }
 
+void ImpellerD3D12Engine::SetRoundedClip(const float rect[4], const float radii[4]) {
+    roundedClipRect_[0] = rect[0]; roundedClipRect_[1] = rect[1];
+    roundedClipRect_[2] = rect[2]; roundedClipRect_[3] = rect[3];
+    roundedClipCornerRadii_[0] = radii[0]; roundedClipCornerRadii_[1] = radii[1];
+    roundedClipCornerRadii_[2] = radii[2]; roundedClipCornerRadii_[3] = radii[3];
+    hasRoundedClip_ = true;
+}
+
+void ImpellerD3D12Engine::ClearRoundedClip() {
+    hasRoundedClip_ = false;
+}
+
 // ============================================================================
 // Path Flattening (CPU) — Bezier → Line Segments
 // ============================================================================
@@ -1911,7 +1923,13 @@ bool ImpellerD3D12Engine::EncodeFillPathScanline(
                 last.hasScissor == hasScissor_ &&
                 (!hasScissor_ ||
                  (last.scissorL == scissorLeft_ && last.scissorT == scissorTop_ &&
-                  last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)))
+                  last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)) &&
+                last.hasRoundedClip == hasRoundedClip_ &&
+                (!hasRoundedClip_ ||
+                 (last.roundedClipRect[0] == roundedClipRect_[0] && last.roundedClipRect[1] == roundedClipRect_[1] &&
+                  last.roundedClipRect[2] == roundedClipRect_[2] && last.roundedClipRect[3] == roundedClipRect_[3] &&
+                  last.roundedClipCornerRadii[0] == roundedClipCornerRadii_[0] && last.roundedClipCornerRadii[1] == roundedClipCornerRadii_[1] &&
+                  last.roundedClipCornerRadii[2] == roundedClipCornerRadii_[2] && last.roundedClipCornerRadii[3] == roundedClipCornerRadii_[3])))
             {
                 target = &last;
             }
@@ -1926,6 +1944,13 @@ bool ImpellerD3D12Engine::EncodeFillPathScanline(
                 target->scissorT = scissorTop_;
                 target->scissorR = scissorRight_;
                 target->scissorB = scissorBottom_;
+            }
+            target->hasRoundedClip = hasRoundedClip_;
+            if (hasRoundedClip_) {
+                target->roundedClipRect[0] = roundedClipRect_[0]; target->roundedClipRect[1] = roundedClipRect_[1];
+                target->roundedClipRect[2] = roundedClipRect_[2]; target->roundedClipRect[3] = roundedClipRect_[3];
+                target->roundedClipCornerRadii[0] = roundedClipCornerRadii_[0]; target->roundedClipCornerRadii[1] = roundedClipCornerRadii_[1];
+                target->roundedClipCornerRadii[2] = roundedClipCornerRadii_[2]; target->roundedClipCornerRadii[3] = roundedClipCornerRadii_[3];
             }
         }
 
@@ -2714,7 +2739,13 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
                 last.hasScissor == hasScissor_ &&
                 (!hasScissor_ ||
                  (last.scissorL == scissorLeft_ && last.scissorT == scissorTop_ &&
-                  last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)))
+                  last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)) &&
+                last.hasRoundedClip == hasRoundedClip_ &&
+                (!hasRoundedClip_ ||
+                 (last.roundedClipRect[0] == roundedClipRect_[0] && last.roundedClipRect[1] == roundedClipRect_[1] &&
+                  last.roundedClipRect[2] == roundedClipRect_[2] && last.roundedClipRect[3] == roundedClipRect_[3] &&
+                  last.roundedClipCornerRadii[0] == roundedClipCornerRadii_[0] && last.roundedClipCornerRadii[1] == roundedClipCornerRadii_[1] &&
+                  last.roundedClipCornerRadii[2] == roundedClipCornerRadii_[2] && last.roundedClipCornerRadii[3] == roundedClipCornerRadii_[3])))
             {
                 target = &last;
             }
@@ -2729,6 +2760,13 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
                 target->scissorT = scissorTop_;
                 target->scissorR = scissorRight_;
                 target->scissorB = scissorBottom_;
+            }
+            target->hasRoundedClip = hasRoundedClip_;
+            if (hasRoundedClip_) {
+                target->roundedClipRect[0] = roundedClipRect_[0]; target->roundedClipRect[1] = roundedClipRect_[1];
+                target->roundedClipRect[2] = roundedClipRect_[2]; target->roundedClipRect[3] = roundedClipRect_[3];
+                target->roundedClipCornerRadii[0] = roundedClipCornerRadii_[0]; target->roundedClipCornerRadii[1] = roundedClipCornerRadii_[1];
+                target->roundedClipCornerRadii[2] = roundedClipCornerRadii_[2]; target->roundedClipCornerRadii[3] = roundedClipCornerRadii_[3];
             }
         }
 
@@ -2814,7 +2852,13 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
                 last.hasScissor == hasScissor_ &&
                 (!hasScissor_ ||
                  (last.scissorL == scissorLeft_ && last.scissorT == scissorTop_ &&
-                  last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)))
+                  last.scissorR == scissorRight_ && last.scissorB == scissorBottom_)) &&
+                last.hasRoundedClip == hasRoundedClip_ &&
+                (!hasRoundedClip_ ||
+                 (last.roundedClipRect[0] == roundedClipRect_[0] && last.roundedClipRect[1] == roundedClipRect_[1] &&
+                  last.roundedClipRect[2] == roundedClipRect_[2] && last.roundedClipRect[3] == roundedClipRect_[3] &&
+                  last.roundedClipCornerRadii[0] == roundedClipCornerRadii_[0] && last.roundedClipCornerRadii[1] == roundedClipCornerRadii_[1] &&
+                  last.roundedClipCornerRadii[2] == roundedClipCornerRadii_[2] && last.roundedClipCornerRadii[3] == roundedClipCornerRadii_[3])))
             {
                 target = &last;
             }
@@ -2829,6 +2873,13 @@ bool ImpellerD3D12Engine::EncodeStrokePathPixelCached(
                 target->scissorT = scissorTop_;
                 target->scissorR = scissorRight_;
                 target->scissorB = scissorBottom_;
+            }
+            target->hasRoundedClip = hasRoundedClip_;
+            if (hasRoundedClip_) {
+                target->roundedClipRect[0] = roundedClipRect_[0]; target->roundedClipRect[1] = roundedClipRect_[1];
+                target->roundedClipRect[2] = roundedClipRect_[2]; target->roundedClipRect[3] = roundedClipRect_[3];
+                target->roundedClipCornerRadii[0] = roundedClipCornerRadii_[0]; target->roundedClipCornerRadii[1] = roundedClipCornerRadii_[1];
+                target->roundedClipCornerRadii[2] = roundedClipCornerRadii_[2]; target->roundedClipCornerRadii[3] = roundedClipCornerRadii_[3];
             }
         }
 

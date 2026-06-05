@@ -234,9 +234,53 @@ typedef struct JaliumAdapterInfo {
     uint32_t deviceId;              ///< PCI device ID
 } JaliumAdapterInfo;
 
+/// Per-render-target swap chain / present configuration.<br/>
+/// Surfaces 后端实际采用的 present 路径（FLIP vs BLT、是否走 tearing / frame-latency
+/// waitable / composition）给宿主，让"为什么这帧慢"在 UI 上可见。<br/>
+/// 通过 jalium_render_target_get_present_info 查询。
+///
+/// **Cross-backend semantics**:
+///   - `swapEffect` uses the native enum of whichever backend filled the
+///     struct (D3D12 → DXGI_SWAP_EFFECT, Vulkan → VkPresentModeKHR).
+///     Integer values do NOT share a namespace — callers must branch on
+///     the active backend type before mapping to a display string.
+///   - `waitableEnabled` / `maxFrameLatency` are D3D12-only concepts (the
+///     swap-chain frame-latency waitable HANDLE + SetMaximumFrameLatency);
+///     Vulkan WSI has no equivalent and always reports 0 for both.
+///   - `tearingEnabled` maps to D3D12 ALLOW_TEARING flag OR Vulkan
+///     VK_PRESENT_MODE_IMMEDIATE_KHR — both describe "vsync may be skipped".
+typedef struct JaliumPresentInfo {
+    /// Raw enum value with backend-specific meaning:
+    ///   - D3D12 → DXGI_SWAP_EFFECT: 0=Discard, 1=Sequential, 3=FlipSequential, 4=FlipDiscard
+    ///   - Vulkan → VkPresentModeKHR: 0=IMMEDIATE, 1=MAILBOX, 2=FIFO, 3=FIFO_RELAXED
+    int32_t swapEffect;
+    /// 后台缓冲数量（通常 2 或 3）。Cross-backend consistent.
+    int32_t bufferCount;
+    /// 1 = "tearing path" 启用. D3D12: DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING.
+    /// Vulkan: present mode == VK_PRESENT_MODE_IMMEDIATE_KHR.
+    int32_t tearingEnabled;
+    /// 1 = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT 启用 (D3D12 only),
+    /// 配合 SetMaximumFrameLatency(1) 是当前框架的低延迟主路径。
+    /// Always 0 on Vulkan — WSI has no equivalent OS HANDLE.
+    int32_t waitableEnabled;
+    /// 当前 SetMaximumFrameLatency 值；waitableEnabled == 0 时无意义。
+    /// Always 0 on Vulkan.
+    int32_t maxFrameLatency;
+    /// 1 = composition path (D3D12 DirectComposition / Vulkan premultiplied
+    /// composite alpha), 0 = 普通 HWND / opaque surface.
+    int32_t composition;
+} JaliumPresentInfo;
+
 /// Per-frame GPU resource snapshot used by DevTools Perf tab.
 /// All fields are point-in-time values at call site — not accumulators.
 /// Missing / not-applicable categories should be zero-filled by the backend.
+///
+/// Frame-pacing fields (frameGpuWaitNs / swapBufferCount / lastFrameGpuWorkNs)
+/// answer "why is BeginDraw slow?" by separating UI-thread fence-wait time
+/// from actual GPU work time. On a slow GPU (e.g. iGPU under heavy effect
+/// load) BeginDraw can appear to take 45+ ms; the diagnostics tell whether
+/// that is a 50 ms fence-wait timeout retry loop versus a single long
+/// recording pass. Required reading: Frame pacing block in DevTools PerfTab.
 typedef struct JaliumGpuStats {
     int32_t glyphSlotsUsed;    ///< Glyph cache entries currently resident
     int32_t glyphSlotsTotal;   ///< Estimated slot capacity at current avg glyph size
@@ -245,7 +289,38 @@ typedef struct JaliumGpuStats {
     int64_t pathBytes;         ///< Path / tessellation cache bytes in flight
     int32_t textureCount;      ///< Backend-owned GPU textures (atlas + swap + effects)
     int64_t textureBytes;      ///< Combined texture bytes
+
+    // ── Frame-pacing diagnostics ─────────────────────────────────────────
+    // Backends that do not yet wire these up leave them as zero (the struct
+    // is zero-initialised by D3D12RenderTarget::QueryGpuStats before fill).
+    int64_t frameGpuWaitNs;          ///< UI-thread wall time spent inside fence waits across BeginFrame attempts for the most recently completed frame (sum across retried attempts). On D3D12 this is close to 0 when the swap-chain waitable handle is doing the actual blocking instead.
+    int32_t swapBufferCount;         ///< Back-buffer count of the swap chain (2 / 3).
+    int32_t reserved0;               ///< Padding for 8-byte alignment of the next int64_t.
+    int64_t lastFramePresentToReadyNs; ///< Wall time between previous EndFrame's queue Signal and this frame's first observed fence completion. **Not** pure GPU work — includes DWM composition, DXGI runtime queue latency, swap-chain back-pressure. The hardware-timestamp GPU breakdown (see JaliumGpuTimingStats.totalGpuNs) is the canonical "what did the GPU actually do" number.
+    int64_t frameWaitableWaitNs;     ///< UI-thread wall time spent waiting on the swap-chain frame-latency waitable across BeginFrame attempts. Captures the OS / DWM portion of present-to-ready latency that fence waits miss.
 } JaliumGpuStats;
+
+/// Per-frame GPU work breakdown by draw-call category, sourced from
+/// hardware timestamp queries on the graphics queue. Reports the previous
+/// frame's numbers (read back after fence sync). All values in nanoseconds.
+///
+/// timingValid: 1 when readback succeeded for the previous frame, 0 when
+/// the backend hasn't yet collected a frame's worth of data (first frame
+/// after startup or after a reset). Categories sum to roughly totalGpuNs
+/// minus driver overhead; "otherNs" captures everything outside the
+/// classified categories (barriers, MSAA resolves, idle gaps).
+typedef struct JaliumGpuTimingStats {
+    int64_t totalGpuNs;          ///< Wall time between first and last frame-scoped timestamp.
+    int64_t sdfRectNs;           ///< SDF rect / ellipse / line / punch-rect batches.
+    int64_t textNs;              ///< Text batches.
+    int64_t bitmapNs;            ///< Bitmap + snapshot-blit batches.
+    int64_t pathNs;              ///< Stencil-then-cover paths + triangle fill batches.
+    int64_t backdropNs;          ///< DrawBackdropFilter (CaptureSnapshot + blur passes + composite).
+    int64_t liquidGlassNs;       ///< DrawLiquidGlass effect (SDF refraction + highlight + shadow).
+    int64_t otherNs;             ///< Frame boundary / barriers / unclassified GPU work.
+    int32_t batchCount;          ///< Total draw batches recorded in the previous frame.
+    int32_t timingValid;         ///< 1 = data is valid, 0 = backend has not produced any frame yet.
+} JaliumGpuTimingStats;
 
 /// Platform-neutral native surface descriptor.
 /// handle0/1/2 are backend/platform-specific payload slots (for example HWND,

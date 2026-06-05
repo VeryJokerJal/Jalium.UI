@@ -300,6 +300,8 @@ public partial class Application
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:RequiresUnreferencedCode",
+        Justification = "The reflected 'InitializeComponent' is the private method emitted by the JALXAML source generator onto the Application subclass codebehind. The generator pins it via [DynamicDependency(DynamicallyAccessedMemberTypes.PublicMethods | DynamicallyAccessedMemberTypes.NonPublicMethods, typeof(<className>))] on that class's [ModuleInitializer] (JalxamlSourceGenerator emits this so the trimmer keeps all instance method metadata of the codebehind). Since the registration ModuleInitializer is always reachable, the target method survives trimming. The runtime Type here comes from object.GetType() and cannot carry the matching DynamicallyAccessedMembers annotation, so the preservation is guaranteed by that named DynamicDependency rather than by flow analysis at this site.")]
     private void CallInitializeComponent()
     {
         var initMethod = GetType().GetMethod("InitializeComponent",

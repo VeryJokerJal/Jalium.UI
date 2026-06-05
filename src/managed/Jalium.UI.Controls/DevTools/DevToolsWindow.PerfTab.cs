@@ -9,9 +9,14 @@ public partial class DevToolsWindow
 {
     private TextBlock? _perfBackendText;
     private TextBlock? _perfEngineText;
+    private TextBlock? _perfAdapterText;
     private TextBlock? _perfFpsText;
-    private TextBlock? _perfGpuText;
-    private TextBlock? _perfApiStatsText;
+    private TextBlock? _perfFpsHero;
+    private TextBlock? _perfFpsSub;
+    private StackPanel? _perfGpuPanel;
+    private ScrollViewer? _perfGpuScroll;
+    private StackPanel? _perfApiPanel;
+    private ScrollViewer? _perfApiScroll;
     private Border? _perfGraphHost;
     private DispatcherTimer? _perfRefreshTimer;
     private Image? _perfGraphImage;
@@ -38,7 +43,19 @@ public partial class DevToolsWindow
         _perfEngineText.Margin = new Thickness(0, 0, DevToolsTheme.GutterLg, 0);
         toolbar.Children.Add(_perfEngineText);
 
+        // Adapter: the GPU DXGI actually picked. When iGPU on a hybrid laptop
+        // looks slow, the usual culprit isn't iGPU performance — it's that
+        // DXGI fell back to WARP (Microsoft Basic Render Driver, CPU
+        // software GPU) because the discrete GPU was disabled in Device
+        // Manager and the iGPU wasn't visible to DXGI from the active
+        // session. This line surfaces the truth: if AdapterType reads
+        // "Software", that explains the 30 FPS + input-lag pattern entirely.
+        _perfAdapterText = DevToolsUi.Text("Adapter: ?", DevToolsTheme.FontSm, DevToolsTheme.TextPrimary);
+        _perfAdapterText.Margin = new Thickness(0, 0, DevToolsTheme.GutterLg, 0);
+        toolbar.Children.Add(_perfAdapterText);
+
         _perfFpsText = DevToolsUi.Text("FPS —", DevToolsTheme.FontSm, DevToolsTheme.Accent, weight: FontWeights.SemiBold);
+        _perfFpsText.FontFamily = DevToolsTheme.MonoFont;
         _perfFpsText.Margin = new Thickness(0, 0, DevToolsTheme.GutterLg, 0);
         toolbar.Children.Add(_perfFpsText);
 
@@ -62,6 +79,48 @@ public partial class DevToolsWindow
             HorizontalAlignment = HorizontalAlignment.Stretch,
             VerticalAlignment = VerticalAlignment.Stretch,
         };
+        // Hero readout floated over the "scope screen": a large amber FPS figure
+        // with a small unit + average sub-line, like an instrument's primary gauge.
+        _perfFpsHero = new TextBlock
+        {
+            Text = "—",
+            FontFamily = DevToolsTheme.DisplayFontLight,
+            FontSize = DevToolsTheme.FontHero,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = DevToolsTheme.Accent,
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        var heroMeta = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(DevToolsTheme.GutterSm + 2, 0, 0, 0),
+        };
+        heroMeta.Children.Add(DevToolsUi.Eyebrow("FPS"));
+        _perfFpsSub = DevToolsUi.Mono("— ms", DevToolsTheme.FontXS, DevToolsTheme.TextMuted);
+        heroMeta.Children.Add(_perfFpsSub);
+        var heroRow = new StackPanel { Orientation = Orientation.Horizontal };
+        heroRow.Children.Add(_perfFpsHero);
+        heroRow.Children.Add(heroMeta);
+        var heroBadge = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0xCC, DevToolsTheme.ChromeColor.R, DevToolsTheme.ChromeColor.G, DevToolsTheme.ChromeColor.B)),
+            BorderBrush = DevToolsTheme.BorderSubtle,
+            BorderThickness = DevToolsTheme.ThicknessHairline,
+            CornerRadius = DevToolsTheme.RadiusBase,
+            Padding = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterSm, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            Margin = new Thickness(DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, 0, 0),
+            Child = heroRow,
+        };
+
+        var scope = new Grid();
+        scope.Children.Add(_perfGraphImage);
+        scope.Children.Add(heroBadge);
+        var scopeFramed = DevToolsUi.CornerTicks(scope);
+        scopeFramed.Margin = new Thickness(DevToolsTheme.GutterXS + 1);
+
         _perfGraphHost = new Border
         {
             Background = DevToolsTheme.Chrome,
@@ -69,7 +128,7 @@ public partial class DevToolsWindow
             BorderThickness = DevToolsTheme.ThicknessHairline,
             CornerRadius = DevToolsTheme.RadiusBase,
             Margin = new Thickness(DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterSm),
-            Child = _perfGraphImage,
+            Child = scopeFramed,
             ClipToBounds = true,
         };
         Grid.SetRow(_perfGraphHost, 1);
@@ -91,49 +150,34 @@ public partial class DevToolsWindow
         // ── Bottom panel: GPU snapshot (left, fixed-ish) +
         //     per-API call counters / timing (right, fills remainder) ──
         var bottomGrid = new Grid();
-        bottomGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(280) });
-        bottomGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        bottomGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(280), MinWidth = 220 });
+        bottomGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        bottomGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star), MinWidth = 260 });
 
-        _perfGpuText = new TextBlock
-        {
-            Text = "GPU: (no snapshot published)",
-            FontSize = DevToolsTheme.FontSm,
-            FontFamily = DevToolsTheme.MonoFont,
-            Foreground = DevToolsTheme.TextPrimary,
-        };
-        var gpuCard = new Border
-        {
-            Background = DevToolsTheme.SurfaceAlt,
-            BorderBrush = DevToolsTheme.BorderSubtle,
-            BorderThickness = DevToolsTheme.ThicknessHairline,
-            CornerRadius = DevToolsTheme.RadiusBase,
-            Padding = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterBase),
-            Margin = new Thickness(DevToolsTheme.GutterBase, 0, DevToolsTheme.GutterSm, DevToolsTheme.GutterBase),
-            Child = new ScrollViewer { Content = _perfGpuText, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
-            ClipToBounds = true,
-        };
+        _perfGpuPanel = new StackPanel();
+        _perfGpuPanel.Children.Add(DevToolsUi.Muted("(no snapshot published)"));
+        _perfGpuScroll = new ScrollViewer { Content = _perfGpuPanel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var gpuCard = DevToolsUi.Panel("GPU Snapshot", _perfGpuScroll, DevToolsTheme.Success);
+        gpuCard.Margin = new Thickness(DevToolsTheme.GutterBase, 0, 0, DevToolsTheme.GutterBase);
         Grid.SetColumn(gpuCard, 0);
         bottomGrid.Children.Add(gpuCard);
 
-        _perfApiStatsText = new TextBlock
+        // Draggable divider so the GPU meters can be widened past the default 280px.
+        var perfSplitter = new GridSplitter
         {
-            Text = "Draw API stats: (waiting for first frame)",
-            FontSize = DevToolsTheme.FontSm,
-            FontFamily = DevToolsTheme.MonoFont,
-            Foreground = DevToolsTheme.TextPrimary,
+            Width = 6,
+            Background = DevToolsTheme.BorderSubtle,
+            ResizeDirection = GridResizeDirection.Columns,
         };
-        var apiCard = new Border
-        {
-            Background = DevToolsTheme.SurfaceAlt,
-            BorderBrush = DevToolsTheme.BorderSubtle,
-            BorderThickness = DevToolsTheme.ThicknessHairline,
-            CornerRadius = DevToolsTheme.RadiusBase,
-            Padding = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterBase),
-            Margin = new Thickness(DevToolsTheme.GutterSm, 0, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase),
-            Child = new ScrollViewer { Content = _perfApiStatsText, VerticalScrollBarVisibility = ScrollBarVisibility.Auto },
-            ClipToBounds = true,
-        };
-        Grid.SetColumn(apiCard, 1);
+        Grid.SetColumn(perfSplitter, 1);
+        bottomGrid.Children.Add(perfSplitter);
+
+        _perfApiPanel = new StackPanel();
+        _perfApiPanel.Children.Add(DevToolsUi.Muted("(waiting for first frame)"));
+        _perfApiScroll = new ScrollViewer { Content = _perfApiPanel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
+        var apiCard = DevToolsUi.Panel("Draw API", _perfApiScroll, DevToolsTheme.Accent);
+        apiCard.Margin = new Thickness(0, 0, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase);
+        Grid.SetColumn(apiCard, 2);
         bottomGrid.Children.Add(apiCard);
 
         Grid.SetRow(bottomGrid, 3);
@@ -216,6 +260,37 @@ public partial class DevToolsWindow
             _perfEngineText.Text = $"Engine  {_targetWindow.CurrentRenderingEngine}";
             _perfEngineText.Foreground = DevToolsTheme.TextPrimary;
         }
+        if (_perfAdapterText != null)
+        {
+            // Cheap to call once per perf refresh — context caches the adapter
+            // description struct, no DXGI re-enumeration. If the host context
+            // is gone or the backend lacks adapter info, leave the placeholder.
+            var ctx = Jalium.UI.Interop.RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
+            var adapter = ctx?.GetAdapterInfo();
+            if (adapter is { } info)
+            {
+                string typeTag = info.AdapterType switch
+                {
+                    Jalium.UI.Interop.GpuAdapterType.Discrete => "Discrete",
+                    Jalium.UI.Interop.GpuAdapterType.Integrated => "iGPU",
+                    Jalium.UI.Interop.GpuAdapterType.Software => "Software/WARP",
+                    _ => "?",
+                };
+                _perfAdapterText.Text = $"Adapter  {typeTag}: {info.Name}";
+                // Red-flag the WARP fallback: this is the "iGPU feels slow"
+                // pattern that turns out to be a CPU software renderer.
+                // Discrete GPU disabled in Device Manager → DXGI walks to
+                // Microsoft Basic Render Driver → 30 FPS + input lag.
+                _perfAdapterText.Foreground = info.AdapterType == Jalium.UI.Interop.GpuAdapterType.Software
+                    ? DevToolsTheme.Error
+                    : DevToolsTheme.TextPrimary;
+            }
+            else
+            {
+                _perfAdapterText.Text = "Adapter  —";
+                _perfAdapterText.Foreground = DevToolsTheme.TextMuted;
+            }
+        }
 
         var currentEngine = _targetWindow.CurrentRenderingEngine;
         if (_perfEngineAuto != null)     _perfEngineAuto.IsActive     = currentEngine == RenderingEngine.Auto;
@@ -240,161 +315,357 @@ public partial class DevToolsWindow
             _perfFpsText.Foreground = worst > 16
                 ? DevToolsTheme.Warning
                 : fps >= 55 ? DevToolsTheme.Success : DevToolsTheme.Accent;
+
+            if (_perfFpsHero != null)
+            {
+                _perfFpsHero.Text = fps > 0 ? fps.ToString("F0") : "—";
+                _perfFpsHero.Foreground = worst > 16
+                    ? DevToolsTheme.Warning
+                    : fps >= 55 ? DevToolsTheme.Success : DevToolsTheme.Accent;
+            }
+            if (_perfFpsSub != null) _perfFpsSub.Text = $"avg {avg:F1} ms";
         }
         else if (_perfFpsText != null)
         {
             _perfFpsText.Text = "FPS — (enable F3 HUD to collect samples)";
             _perfFpsText.Foreground = DevToolsTheme.TextMuted;
+            if (_perfFpsHero != null) { _perfFpsHero.Text = "—"; _perfFpsHero.Foreground = DevToolsTheme.TextDisabled; }
+            if (_perfFpsSub != null) _perfFpsSub.Text = "no samples";
         }
 
         if (_perfGraphImage != null)
             _perfGraphImage.Source = RenderPerfGraph(buffer.AsSpan(0, count));
 
-        var snap = RenderDiagnostics.LatestGpuSnapshot;
-        if (_perfGpuText != null)
-        {
-            if (snap == null)
-            {
-                _perfGpuText.Text = "GPU  no snapshot published\n"
-                                  + "Ask the native backend to call RenderDiagnostics.PublishGpuSnapshot(...) once per frame.";
-                _perfGpuText.Foreground = DevToolsTheme.TextMuted;
-            }
-            else
-            {
-                var cache = RenderDiagnostics.LatestPathCacheStats;
-                var lines = new List<string>();
-
-                // Last-frame breakdown — Layout / Render / Present from FrameHistory
-                // versus Draw API total time. The gap between RenderMs and the
-                // Draw-API sum is "render-but-not-Draw-API" cost: command recording
-                // in RenderTargetDrawingContext, ImageBrush tile placement, brush
-                // marshaling, retained-mode cache lookups, etc. — anything between
-                // BeginDraw and EndDraw that's NOT a single P/Invoke wrapped in
-                // ApiStart/ApiEnd. A large gap means the bottleneck is on the
-                // managed command-recording side, not the native draw calls.
-                if (count > 0)
-                {
-                    var last = buffer[count - 1];
-                    var apiSnapForGap = RenderDiagnostics.LatestDrawApiStats;
-                    double apiMs = apiSnapForGap?.TotalMs ?? 0;
-                    double renderGap = last.RenderMs - apiMs;
-                    lines.Add($"Last frame  L {last.LayoutMs,5:F1}  R {last.RenderMs,5:F1}  P {last.PresentMs,5:F1}  total {last.TotalMs,5:F1} ms");
-                    lines.Add($"            Draw API total  {apiMs,5:F1} ms    gap {renderGap,5:F1} ms (managed recording / brush marshaling)");
-                    lines.Add("");
-                }
-
-                lines.Add($"GPU snapshot  {snap.Timestamp:HH:mm:ss.fff}");
-                lines.Add($"  Glyph atlas   {snap.GlyphAtlasSlotsUsed}/{snap.GlyphAtlasSlotsTotal} slots    {(snap.GlyphAtlasBytes / (1024.0 * 1024.0)):F2} MB");
-                lines.Add($"  Path cache    {snap.PathCacheEntries} entries           {(snap.PathCacheBytes / (1024.0 * 1024.0)):F2} MB");
-                lines.Add($"  Textures      {snap.TextureCount}                        {(snap.TextureBytes / (1024.0 * 1024.0)):F2} MB");
-                if (cache != null)
-                {
-                    long strokeTotal = cache.StrokeHits + cache.StrokeMisses;
-                    long fillTotal   = cache.FillHits + cache.FillMisses;
-                    long geomTotal   = cache.GeometryHits + cache.GeometryMisses;
-                    double strokeHitPct = strokeTotal == 0 ? 0 : (double)cache.StrokeHits / strokeTotal * 100;
-                    double fillHitPct   = fillTotal == 0 ? 0 : (double)cache.FillHits / fillTotal * 100;
-                    double geomHitPct   = geomTotal == 0 ? 0 : (double)cache.GeometryHits / geomTotal * 100;
-                    lines.Add("");
-                    lines.Add("Path raster cache (per frame)");
-                    lines.Add($"  Stroke   hit {cache.StrokeHits,4}  miss {cache.StrokeMisses,4}  ({strokeHitPct:F0}%)");
-                    lines.Add($"  Fill     hit {cache.FillHits,4}  miss {cache.FillMisses,4}  ({fillHitPct:F0}%)");
-                    if (geomTotal > 0)
-                        lines.Add($"  Geometry hit {cache.GeometryHits,4}  miss {cache.GeometryMisses,4}  ({geomHitPct:F0}%)  evict {cache.CacheEvictions}");
-                    if (cache.StrokeHits > 0)
-                        lines.Add($"  Stroke rects/hit avg  {(cache.StrokeRectsTotal / (double)cache.StrokeHits):F0}");
-                    if (cache.FillHits > 0)
-                        lines.Add($"  Fill   rects/hit avg  {(cache.FillRectsTotal / (double)cache.FillHits):F0}");
-
-                    long flattenCalls = strokeTotal - cache.StrokeHits + fillTotal - cache.FillHits + cache.GeometryMisses;
-                    if (cache.FlattenNs > 0 || cache.TriangulateNs > 0)
-                    {
-                        lines.Add("");
-                        lines.Add("Path CPU work (per frame)");
-                        double flattenMs  = cache.FlattenNs    / 1_000_000.0;
-                        double triangMs   = cache.TriangulateNs / 1_000_000.0;
-                        double flattenAvgUs = flattenCalls > 0 ? cache.FlattenNs / 1000.0 / flattenCalls : 0;
-                        long triangCalls = cache.TriangulateOk + cache.TriangulateFail;
-                        double triangAvgUs = triangCalls > 0 ? cache.TriangulateNs / 1000.0 / triangCalls : 0;
-                        lines.Add($"  Flatten     {flattenMs,6:F2} ms  avg {flattenAvgUs,5:F0} µs  verts {cache.FlattenOutputVerts}");
-                        lines.Add($"  Triangulate {triangMs,6:F2} ms  avg {triangAvgUs,5:F0} µs  ok {cache.TriangulateOk}  fail {cache.TriangulateFail}");
-                    }
-                }
-                var bmpStats = RenderDiagnostics.LatestBitmapUploadStats;
-                if (bmpStats != null)
-                {
-                    long total = bmpStats.UploadCount + bmpStats.FastPathHits;
-                    double fastPct = total == 0 ? 0 : (double)bmpStats.FastPathHits / total * 100;
-                    lines.Add("");
-                    lines.Add("Bitmap upload (per frame)");
-                    lines.Add($"  Uploads  {bmpStats.UploadCount,4}  ({(bmpStats.UploadBytes / (1024.0 * 1024.0)):F2} MB,  {bmpStats.DynamicReuses} reuses)");
-                    lines.Add($"  FastPath {bmpStats.FastPathHits,4}  ({fastPct:F0}% of DrawBitmap calls)");
-                    lines.Add($"  Memcmp   {bmpStats.MemcmpShortCircuits,4}  short-circuits (Set/Update with same content)");
-                    string residentSign = bmpStats.GpuResidentBytes >= 0 ? "+" : "";
-                    lines.Add($"  GpuRes   {residentSign}{(bmpStats.GpuResidentBytes / (1024.0 * 1024.0)):F2} MB  net delta this frame");
-                    if (bmpStats.CacheEvictions != 0)
-                        lines.Add($"  Cache    {bmpStats.CacheEvictions,4} evictions");
-                }
-                var retCache = RenderDiagnostics.LatestRetainedCacheStats;
-                if (retCache != null)
-                {
-                    long retTotal = retCache.Records + retCache.Replays + retCache.Bypasses;
-                    double replayPct = retTotal == 0 ? 0 : (double)retCache.Replays / retTotal * 100;
-                    lines.Add("");
-                    lines.Add("Retained-mode cache (per frame)");
-                    lines.Add($"  Records  {retCache.Records,5}  (cache miss / dirty / first time)");
-                    lines.Add($"  Replays  {retCache.Replays,5}  ({replayPct:F0}% — the win)");
-                    lines.Add($"  Bypass   {retCache.Bypasses,5}  (host off / opted out / non-cacheable DC)");
-                }
-                _perfGpuText.Text = string.Join('\n', lines);
-                _perfGpuText.Foreground = DevToolsTheme.TextPrimary;
-            }
-        }
-
-        // ── Draw-API per-frame counters ──
-        var apiSnap = RenderDiagnostics.LatestDrawApiStats;
-        if (_perfApiStatsText != null)
-        {
-            if (apiSnap == null || apiSnap.Entries.Count == 0)
-            {
-                _perfApiStatsText.Text = "Draw API stats: (waiting for next frame…)";
-                _perfApiStatsText.Foreground = DevToolsTheme.TextMuted;
-            }
-            else
-            {
-                // Header + sorted entries (hot-first). One row per native draw API,
-                // showing call count and total wall-clock time spent inside the
-                // managed wrapper + native call. Column widths chosen so the
-                // values line up under a fixed-width font in the bottom panel.
-                var sb = new System.Text.StringBuilder(256 + apiSnap.Entries.Count * 80);
-                sb.Append("Draw APIs  ").Append(apiSnap.Timestamp.ToString("HH:mm:ss.fff"))
-                  .Append("    last frame total ")
-                  .AppendFormat(System.Globalization.CultureInfo.InvariantCulture, "{0:F2}", apiSnap.TotalMs)
-                  .Append(" ms\n");
-                sb.Append("  ").Append("API".PadRight(28))
-                  .Append("calls".PadLeft(8))
-                  .Append("total ms".PadLeft(12))
-                  .Append("avg µs".PadLeft(10))
-                  .Append('\n');
-                sb.Append("  ").Append(new string('-', 58)).Append('\n');
-                foreach (var e in apiSnap.Entries)
-                {
-                    sb.Append("  ").Append(e.Name.PadRight(28))
-                      .Append(e.Count.ToString().PadLeft(8))
-                      .AppendFormat(System.Globalization.CultureInfo.InvariantCulture, "{0,12:F2}", e.TotalMs)
-                      .AppendFormat(System.Globalization.CultureInfo.InvariantCulture, "{0,10:F1}", e.AvgUs)
-                      .Append('\n');
-                }
-                _perfApiStatsText.Text = sb.ToString();
-                _perfApiStatsText.Foreground = DevToolsTheme.TextPrimary;
-            }
-        }
+        // GPU snapshot + Draw-API panels are rebuilt as real visualisations
+        // (stacked bars + hit-rate meters + a data-bar table), not text blobs.
+        RebuildGpuPanel(buffer, count);
+        RebuildApiPanel();
     }
 
-    private static readonly Color PerfColorLayout  = Color.FromRgb(0x5A, 0xB0, 0xFF);
-    private static readonly Color PerfColorRender  = Color.FromRgb(0xE5, 0xB0, 0x5A);
-    private static readonly Color PerfColorPresent = Color.FromRgb(0x6C, 0xC3, 0x78);
-    private static readonly Color PerfColorBudget  = Color.FromArgb(0xA0, 0xF0, 0x6C, 0x6C);
+    // ── GPU snapshot panel (visualised) ──────────────────────────────────
+
+    private static void GpuSection(StackPanel p, string title)
+    {
+        var e = DevToolsUi.Eyebrow(title);
+        e.Margin = new Thickness(0, DevToolsTheme.GutterBase, 0, DevToolsTheme.GutterSm);
+        p.Children.Add(e);
+    }
+
+    // Colour a hit-rate meter by health: green good, amber so-so, red poor,
+    // greyed when there is no traffic yet.
+    private static void AddHitMeter(StackPanel p, string label, long hits, long total)
+    {
+        double frac = total > 0 ? (double)hits / total : 0;
+        Brush fill = total == 0 ? DevToolsTheme.TextDisabled
+            : frac >= 0.8 ? DevToolsTheme.Success
+            : frac >= 0.4 ? DevToolsTheme.Warning
+            : DevToolsTheme.Error;
+        string val = total == 0 ? "—" : $"{hits}/{total} · {frac * 100:F0}%";
+        p.Children.Add(DevToolsUi.MeterBar(label, frac, val, fill));
+    }
+
+    private static Brush BreakdownColor(string name) => name switch
+    {
+        "Path" => DevToolsTheme.Accent,
+        "Text" => DevToolsTheme.Info,
+        "SdfRect" => DevToolsTheme.Success,
+        "Bitmap" => DevToolsTheme.TokenEnum,
+        "Backdrop" => DevToolsTheme.TokenKeyword,
+        "LiquidGlass" => DevToolsTheme.TokenType,
+        _ => DevToolsTheme.TextMuted,
+    };
+
+    private void RebuildGpuPanel(FrameHistory.Sample[] buffer, int count)
+    {
+        if (_perfGpuPanel == null) return;
+        var snap = RenderDiagnostics.LatestGpuSnapshot;
+        double saved = _perfGpuScroll?.VerticalOffset ?? 0;
+        var p = _perfGpuPanel;
+        p.Children.Clear();
+
+        if (snap == null)
+        {
+            p.Children.Add(DevToolsUi.Muted("(no snapshot — backend must call RenderDiagnostics.PublishGpuSnapshot once per frame)"));
+            return;
+        }
+
+        // 1. Last-frame breakdown — Layout / Render / Present as a stacked bar.
+        if (count > 0)
+        {
+            var last = buffer[count - 1];
+            double apiMs = RenderDiagnostics.LatestDrawApiStats?.TotalMs ?? 0;
+            double gap = last.RenderMs - apiMs;
+            GpuSection(p, "LAST FRAME");
+            p.Children.Add(DevToolsUi.StackedBar(new (double Value, Brush Color)[]
+            {
+                (last.LayoutMs,  new SolidColorBrush(PerfColorLayout)),
+                (last.RenderMs,  new SolidColorBrush(PerfColorRender)),
+                (last.PresentMs, new SolidColorBrush(PerfColorPresent)),
+            }));
+            p.Children.Add(new Border { Height = DevToolsTheme.GutterSm });
+            p.Children.Add(DevToolsUi.KeyValueRow("L / R / P", $"{last.LayoutMs:F1} / {last.RenderMs:F1} / {last.PresentMs:F1} ms"));
+            p.Children.Add(DevToolsUi.KeyValueRow("Total frame", $"{last.TotalMs:F1} ms"));
+            p.Children.Add(DevToolsUi.KeyValueRow("API / gap", $"{apiMs:F1} / {gap:F1} ms"));
+        }
+
+        // 2. GPU breakdown — the hero: hardware-timestamped split by category.
+        var timing = RenderDiagnostics.LatestGpuTiming;
+        if (timing != null && timing.Valid)
+        {
+            GpuSection(p, "GPU BREAKDOWN");
+            p.Children.Add(DevToolsUi.KeyValueRow("Total GPU", $"{timing.TotalGpuMs:F1} ms · {timing.BatchCount} batches"));
+            var cats = new (string Name, long Ns)[]
+            {
+                ("Path",        timing.PathNs),
+                ("Text",        timing.TextNs),
+                ("SdfRect",     timing.SdfRectNs),
+                ("Bitmap",      timing.BitmapNs),
+                ("Backdrop",    timing.BackdropNs),
+                ("LiquidGlass", timing.LiquidGlassNs),
+                ("Other",       timing.OtherNs),
+            };
+            Array.Sort(cats, (a, b) => b.Ns.CompareTo(a.Ns));
+            double totMs = timing.TotalGpuMs > 0 ? timing.TotalGpuMs : 1.0;
+
+            var segs = new List<(double Value, Brush Color)>();
+            foreach (var c in cats)
+                if (c.Ns > 0) segs.Add((c.Ns / 1_000_000.0, BreakdownColor(c.Name)));
+            p.Children.Add(DevToolsUi.StackedBar(segs, 12));
+            p.Children.Add(new Border { Height = DevToolsTheme.GutterSm });
+
+            foreach (var c in cats)
+            {
+                if (c.Ns <= 0) continue;
+                double ms = c.Ns / 1_000_000.0;
+                double frac = ms / totMs;
+                p.Children.Add(DevToolsUi.MeterBar(c.Name, frac, $"{ms:F1} ms · {frac * 100:F0}%", BreakdownColor(c.Name)));
+            }
+        }
+        else if (timing != null)
+        {
+            GpuSection(p, "GPU BREAKDOWN");
+            p.Children.Add(DevToolsUi.Muted("(waiting for first timestamped frame)"));
+        }
+
+        // 3. Text caches — hit-rate meters (instant red/amber/green health).
+        var tc = RenderDiagnostics.LatestTextCacheStats;
+        if (tc != null && (tc.DrawTextCalls > 0 || tc.LayoutHits + tc.LayoutMisses > 0))
+        {
+            GpuSection(p, "TEXT CACHES");
+            AddHitMeter(p, "Layout", tc.LayoutHits, tc.LayoutHits + tc.LayoutMisses);
+            AddHitMeter(p, "Instance", tc.InstanceHits, tc.InstanceHits + tc.InstanceMisses);
+            AddHitMeter(p, "Glyph", tc.GlyphRasterHits, tc.GlyphRasterHits + tc.GlyphRasterMisses);
+            p.Children.Add(DevToolsUi.KeyValueRow("DrawText / glyphs", $"{tc.DrawTextCalls} / {tc.EmittedGlyphs}"));
+            if (tc.AtlasResets > 0)
+                p.Children.Add(DevToolsUi.KeyValueRow("Atlas resets", tc.AtlasResets.ToString(), DevToolsTheme.Warning));
+        }
+
+        // 4. Path raster cache — hit-rate meters + CPU work.
+        var pc = RenderDiagnostics.LatestPathCacheStats;
+        if (pc != null)
+        {
+            long st = pc.StrokeHits + pc.StrokeMisses;
+            long ft = pc.FillHits + pc.FillMisses;
+            long gt = pc.GeometryHits + pc.GeometryMisses;
+            if (st + ft + gt > 0)
+            {
+                GpuSection(p, "PATH RASTER CACHE");
+                if (st > 0) AddHitMeter(p, "Stroke", pc.StrokeHits, st);
+                if (ft > 0) AddHitMeter(p, "Fill", pc.FillHits, ft);
+                if (gt > 0) AddHitMeter(p, "Geometry", pc.GeometryHits, gt);
+                if (pc.FlattenNs > 0 || pc.TriangulateNs > 0)
+                {
+                    p.Children.Add(DevToolsUi.KeyValueRow("Flatten", $"{pc.FlattenNs / 1_000_000.0:F2} ms"));
+                    p.Children.Add(DevToolsUi.KeyValueRow("Triangulate", $"{pc.TriangulateNs / 1_000_000.0:F2} ms"));
+                }
+            }
+        }
+
+        // 5. Retained-mode cache — replay% is the win.
+        var rc = RenderDiagnostics.LatestRetainedCacheStats;
+        if (rc != null && rc.Records + rc.Replays + rc.Bypasses > 0)
+        {
+            GpuSection(p, "RETAINED-MODE CACHE");
+            AddHitMeter(p, "Replays", rc.Replays, rc.Records + rc.Replays + rc.Bypasses);
+            p.Children.Add(DevToolsUi.KeyValueRow("Records / Bypass", $"{rc.Records} / {rc.Bypasses}"));
+        }
+
+        // 6. Memory — atlas fill meter + cache/texture sizes.
+        GpuSection(p, "MEMORY");
+        double atlasFrac = snap.GlyphAtlasSlotsTotal > 0 ? (double)snap.GlyphAtlasSlotsUsed / snap.GlyphAtlasSlotsTotal : 0;
+        p.Children.Add(DevToolsUi.MeterBar("Glyph atlas", atlasFrac,
+            $"{snap.GlyphAtlasSlotsUsed}/{snap.GlyphAtlasSlotsTotal} · {snap.GlyphAtlasBytes / (1024.0 * 1024.0):F1} MB",
+            DevToolsTheme.Info));
+        p.Children.Add(DevToolsUi.KeyValueRow("Path cache", $"{snap.PathCacheEntries} · {snap.PathCacheBytes / (1024.0 * 1024.0):F2} MB"));
+        p.Children.Add(DevToolsUi.KeyValueRow("Textures", $"{snap.TextureCount} · {snap.TextureBytes / (1024.0 * 1024.0):F2} MB"));
+
+        // 7. Frame pacing — scalar readouts.
+        var pacing = RenderDiagnostics.LatestFramePacing;
+        if (pacing != null)
+        {
+            GpuSection(p, "FRAME PACING");
+            p.Children.Add(DevToolsUi.KeyValueRow("Begin attempts",
+                pacing.BeginFailures == 0 ? $"{pacing.BeginAttempts} clean" : $"{pacing.BeginAttempts} +{pacing.BeginFailures} retries",
+                pacing.BeginFailures == 0 ? DevToolsTheme.TextPrimary : DevToolsTheme.Warning));
+            if (pacing.SwapBufferCount > 0)
+            {
+                p.Children.Add(DevToolsUi.KeyValueRow("Swap buffers", pacing.SwapBufferCount.ToString()));
+                p.Children.Add(DevToolsUi.KeyValueRow("Waitable wait", $"{pacing.FrameWaitableWaitMs:F1} ms"));
+                p.Children.Add(DevToolsUi.KeyValueRow("Fence wait", $"{pacing.FrameGpuWaitMs:F1} ms"));
+            }
+            if (pacing.LastFramePresentToReadyNs > 0)
+                p.Children.Add(DevToolsUi.KeyValueRow("Present to ready", $"{pacing.LastFramePresentToReadyMs:F1} ms"));
+        }
+
+        // 8. Bitmap upload.
+        var bmp = RenderDiagnostics.LatestBitmapUploadStats;
+        if (bmp != null && (bmp.UploadCount > 0 || bmp.FastPathHits > 0))
+        {
+            GpuSection(p, "BITMAP UPLOAD");
+            p.Children.Add(DevToolsUi.KeyValueRow("Uploads", $"{bmp.UploadCount} · {bmp.UploadBytes / (1024.0 * 1024.0):F2} MB"));
+            AddHitMeter(p, "FastPath", bmp.FastPathHits, bmp.UploadCount + bmp.FastPathHits);
+        }
+
+        // 9. Layout pass.
+        var lay = RenderDiagnostics.LatestLayoutPassStats;
+        if (lay != null && (lay.MeasureCount > 0 || lay.ArrangeCount > 0))
+        {
+            GpuSection(p, "LAYOUT");
+            p.Children.Add(DevToolsUi.KeyValueRow("Measure", $"{lay.MeasureCount} · {lay.MeasureMs:F1} ms"));
+            p.Children.Add(DevToolsUi.KeyValueRow("Arrange", $"{lay.ArrangeCount} · {lay.ArrangeMs:F1} ms"));
+            if (lay.Iterations > 1)
+                p.Children.Add(DevToolsUi.KeyValueRow("Iterations", $"{lay.Iterations} (thrash)", DevToolsTheme.Warning));
+        }
+
+        if (_perfGpuScroll != null) _perfGpuScroll.ScrollToVerticalOffset(saved);
+    }
+
+    // ── Draw-API panel (visualised data-bar table) ───────────────────────
+
+    private void RebuildApiPanel()
+    {
+        if (_perfApiPanel == null) return;
+        var apiSnap = RenderDiagnostics.LatestDrawApiStats;
+        double saved = _perfApiScroll?.VerticalOffset ?? 0;
+        var p = _perfApiPanel;
+        p.Children.Clear();
+
+        if (apiSnap == null || apiSnap.Entries.Count == 0)
+        {
+            p.Children.Add(DevToolsUi.Muted("(waiting for next frame)"));
+            return;
+        }
+
+        p.Children.Add(DevToolsUi.KeyValueRow($"frame {apiSnap.Timestamp:HH:mm:ss.fff}", $"{apiSnap.TotalMs:F2} ms total", DevToolsTheme.Accent));
+        p.Children.Add(new Border { Height = DevToolsTheme.GutterSm });
+        p.Children.Add(MakeApiHeaderRow());
+        p.Children.Add(new Border { Height = 1, Background = DevToolsTheme.BorderSubtle, Margin = new Thickness(0, 2, 0, 3) });
+
+        var entries = apiSnap.Entries.OrderByDescending(e => e.TotalMs).ToList();
+        double maxMs = 0;
+        foreach (var e in entries) if (e.TotalMs > maxMs) maxMs = e.TotalMs;
+        if (maxMs <= 0) maxMs = 1;
+
+        foreach (var e in entries)
+        {
+            double frac = e.TotalMs / maxMs;
+            Brush msColor = frac >= 0.5 ? DevToolsTheme.Accent : frac >= 0.2 ? DevToolsTheme.Warning : DevToolsTheme.TextPrimary;
+            p.Children.Add(MakeApiRow(e.Name, e.Count, e.TotalMs, e.AvgUs, frac, msColor));
+        }
+
+        if (_perfApiScroll != null) _perfApiScroll.ScrollToVerticalOffset(saved);
+    }
+
+    private static Grid ApiRowGrid()
+    {
+        var g = new Grid();
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(54) });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(66) });
+        g.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(60) });
+        return g;
+    }
+
+    private static UIElement MakeApiHeaderRow()
+    {
+        var g = ApiRowGrid();
+        g.Children.Add(ColCaption("API", false, 0));
+        g.Children.Add(ColCaption("CALLS", true, 1));
+        g.Children.Add(ColCaption("MS", true, 2));
+        g.Children.Add(ColCaption("AVG µS", true, 3));
+        return g;
+    }
+
+    // Column caption — uppercase Bahnschrift but NOT letter-tracked, so it stays
+    // inside the fixed numeric columns.
+    private static TextBlock ColCaption(string text, bool right, int col)
+    {
+        var t = new TextBlock
+        {
+            Text = text,
+            FontSize = DevToolsTheme.FontXS,
+            FontFamily = DevToolsTheme.DisplayFont,
+            FontWeight = FontWeights.SemiBold,
+            Foreground = DevToolsTheme.TextMuted,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = right ? TextAlignment.Right : TextAlignment.Left,
+            HorizontalAlignment = right ? HorizontalAlignment.Right : HorizontalAlignment.Left,
+            Margin = new Thickness(right ? 0 : 4, 0, right ? 6 : 0, 0),
+        };
+        Grid.SetColumn(t, col);
+        return t;
+    }
+
+    private static UIElement MakeApiRow(string name, long calls, double ms, double avgUs, double frac, Brush msColor)
+    {
+        frac = Math.Clamp(double.IsNaN(frac) ? 0 : frac, 0, 1);
+
+        // Background "data bar": proportional amber fill behind the row showing
+        // relative total-ms cost, so the hottest API reads at a glance.
+        var bg = new Grid();
+        bg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(0.0001, frac), GridUnitType.Star) });
+        bg.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(Math.Max(0.0001, 1 - frac), GridUnitType.Star) });
+        var fill = new Border
+        {
+            Background = new SolidColorBrush(Color.FromArgb(0x24, DevToolsTheme.AccentColor.R, DevToolsTheme.AccentColor.G, DevToolsTheme.AccentColor.B)),
+            CornerRadius = DevToolsTheme.RadiusSm,
+        };
+        Grid.SetColumn(fill, 0);
+        bg.Children.Add(fill);
+
+        var content = ApiRowGrid();
+        content.Children.Add(ApiText(name, false, DevToolsTheme.TextPrimary, 0));
+        content.Children.Add(ApiText(calls.ToString(), true, DevToolsTheme.TextSecondary, 1));
+        content.Children.Add(ApiText(ms.ToString("F2"), true, msColor, 2));
+        content.Children.Add(ApiText(avgUs.ToString("F1"), true, DevToolsTheme.TextMuted, 3));
+
+        var row = new Grid { Margin = new Thickness(0, 1, 0, 1) };
+        row.Children.Add(bg);
+        row.Children.Add(content);
+        return row;
+    }
+
+    private static TextBlock ApiText(string text, bool right, Brush color, int col)
+    {
+        var tb = new TextBlock
+        {
+            Text = text,
+            FontSize = DevToolsTheme.FontSm,
+            FontFamily = DevToolsTheme.MonoFont,
+            Foreground = color,
+            VerticalAlignment = VerticalAlignment.Center,
+            TextAlignment = right ? TextAlignment.Right : TextAlignment.Left,
+            TextTrimming = TextTrimming.CharacterEllipsis,
+            Margin = new Thickness(right ? 0 : 4, 1, right ? 6 : 4, 1),
+        };
+        Grid.SetColumn(tb, col);
+        return tb;
+    }
+
+    private static readonly Color PerfColorLayout  = DevToolsTheme.InfoColor;
+    private static readonly Color PerfColorRender  = DevToolsTheme.AccentColor;
+    private static readonly Color PerfColorPresent = DevToolsTheme.SuccessColor;
+    private static readonly Color PerfColorBudget  = Color.FromArgb(0xA0, DevToolsTheme.ErrorColor.R, DevToolsTheme.ErrorColor.G, DevToolsTheme.ErrorColor.B);
 
     // Reused across refreshes — ContentRevision bookkeeping (WriteableBitmap.cs)
     // triggers a native re-upload whenever we write, so we don't need to throw

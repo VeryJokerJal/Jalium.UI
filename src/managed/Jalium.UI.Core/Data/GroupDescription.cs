@@ -202,6 +202,8 @@ public sealed class PropertyGroupDescription : GroupDescription
         return base.NamesMatch(groupName, itemName);
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+        Justification = "PropertyGroupDescription computes a group key by reflecting the property named in PropertyName on the runtime type of each user-defined data item (item.GetType()). The runtime type is supplied by the consumer's grouped source collection and cannot carry DynamicallyAccessedMembers. Keeping the grouped properties of bound model types reflectable is the documented consumer responsibility when using PropertyGroupDescription under trimming/AOT, mirroring the data-binding reflection fallback; it is not a defect of this site.")]
     private static object? GetPropertyValue(object item, string propertyName)
     {
         var type = item.GetType();

@@ -264,23 +264,7 @@ public partial class DevToolsWindow
             object? impl = null;
             try { impl = peer.GetPattern(pat); } catch { }
             if (impl == null) continue;
-            patternsRow.Children.Add(new Border
-            {
-                Background = new SolidColorBrush(Color.FromArgb(0x30, DevToolsTheme.SuccessColor.R, DevToolsTheme.SuccessColor.G, DevToolsTheme.SuccessColor.B)),
-                BorderBrush = DevToolsTheme.Success,
-                BorderThickness = DevToolsTheme.ThicknessHairline,
-                CornerRadius = new CornerRadius(3),
-                Padding = new Thickness(DevToolsTheme.GutterBase, 2, DevToolsTheme.GutterBase, 2),
-                Margin = new Thickness(0, 0, DevToolsTheme.GutterSm, DevToolsTheme.GutterSm),
-                Child = new TextBlock
-                {
-                    Text = pat.ToString(),
-                    FontSize = DevToolsTheme.FontXS,
-                    FontFamily = DevToolsTheme.UiFont,
-                    FontWeight = FontWeights.SemiBold,
-                    Foreground = DevToolsTheme.Success,
-                },
-            });
+            patternsRow.Children.Add(DevToolsUi.Pill(pat.ToString(), DevToolsTheme.Success));
             patternCount++;
         }
         if (patternCount == 0)

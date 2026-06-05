@@ -545,6 +545,8 @@ public class ScatterPlot : AxisChartBase
 
     #region Size Value Resolution
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:RequiresUnreferencedCode",
+        Justification = "This is the SizeBindingPath data-binding reflection fallback: 'item' is an arbitrary element of the user-supplied ItemsSource (its runtime Type comes from object.GetType() and cannot carry DynamicallyAccessedMembers), and 'bindingPath' is a binding-path string the consumer sets via the SizeBindingPath property. Consumers that opt in to SizeBindingPath against user-defined item types must keep those public properties preserved (e.g. via DynamicDependency or a linker descriptor) — a documented prerequisite for using SizeBindingPath under trimming/AOT, not a defect of this site.")]
     private double[]? ResolveSizeValues(ScatterSeries s)
     {
         // Check series-level SizeBindingPath first, then chart-level

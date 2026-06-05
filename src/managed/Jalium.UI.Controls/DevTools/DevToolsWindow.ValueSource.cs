@@ -4,12 +4,12 @@ namespace Jalium.UI.Controls.DevTools;
 
 public partial class DevToolsWindow
 {
-    private static readonly SolidColorBrush BrushSourceLocal = new(Color.FromRgb(150, 220, 255));
-    private static readonly SolidColorBrush BrushSourceStyle = new(Color.FromRgb(255, 200, 120));
-    private static readonly SolidColorBrush BrushSourceTemplate = new(Color.FromRgb(180, 220, 160));
-    private static readonly SolidColorBrush BrushSourceInherited = new(Color.FromRgb(200, 180, 240));
-    private static readonly SolidColorBrush BrushSourceDefault = new(Color.FromRgb(130, 130, 140));
-    private static readonly SolidColorBrush BrushSourceAnimated = new(Color.FromRgb(255, 140, 200));
+    private static readonly SolidColorBrush BrushSourceLocal = new(DevToolsTheme.AccentColor);
+    private static readonly SolidColorBrush BrushSourceStyle = new(DevToolsTheme.WarningColor);
+    private static readonly SolidColorBrush BrushSourceTemplate = new(DevToolsTheme.InfoColor);
+    private static readonly SolidColorBrush BrushSourceInherited = new(DevToolsTheme.TokenKeywordColor);
+    private static readonly SolidColorBrush BrushSourceDefault = new(DevToolsTheme.TextMutedColor);
+    private static readonly SolidColorBrush BrushSourceAnimated = new(DevToolsTheme.SuccessColor);
 
     private void AppendValueSourceBadge(DependencyObject target, DependencyProperty property)
     {
@@ -47,7 +47,7 @@ public partial class DevToolsWindow
             var badge = new TextBlock
             {
                 Text = sb.ToString(),
-                FontSize = 9,
+                FontSize = DevToolsTheme.FontXS,
                 Foreground = source.IsAnimated ? BrushSourceAnimated : brush,
                 Margin = new Thickness(4, 2, 0, 0),
             };

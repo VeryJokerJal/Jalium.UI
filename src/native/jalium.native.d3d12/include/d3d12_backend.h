@@ -14,6 +14,11 @@ namespace jalium {
 
 using Microsoft::WRL::ComPtr;
 
+/// Diagnostic init logger: writes msg to OutputDebugStringA AND, if the env var
+/// JALIUM_INIT_LOG points to a file, appends msg there. Surfaces GPU device /
+/// swap-chain creation + any fallback/degradation without needing a debugger.
+void JaliumD3D12InitLog(const char* msg);
+
 /// D3D12 rendering backend implementation.
 class D3D12Backend : public IRenderBackend {
 public:
@@ -27,6 +32,7 @@ public:
     JaliumBackend GetType() const override { return JALIUM_BACKEND_D3D12; }
     const wchar_t* GetName() const override { return L"Direct3D 12"; }
     JaliumResult CheckDeviceStatus() override;
+    JaliumResult GetAdapterInfo(JaliumAdapterInfo* out) const override;
 
     RenderTarget* CreateRenderTarget(void* hwnd, int32_t width, int32_t height) override;
     RenderTarget* CreateRenderTargetForComposition(void* hwnd, int32_t width, int32_t height) override;
@@ -111,6 +117,13 @@ private:
 
     JaliumGpuPreference gpuPrefFromEnv_ = JALIUM_GPU_PREFERENCE_AUTO;
     bool initialized_ = false;
+
+    /// Cached description of the adapter currently backing <see cref="device_"/>.<br/>
+    /// Captured at the end of <see cref="CreateD3D12Device"/> so <see cref="GetAdapterInfo"/>
+    /// doesn't need to re-enumerate or query DXGI on every call. Set to a zero-initialized
+    /// desc + has_ = false when no device has been created yet.
+    bool adapterDescValid_ = false;
+    DXGI_ADAPTER_DESC1 adapterDesc_{};
 
     // Graveyard storage. resource_ holds the live ref, fenceValue is the
     // largest renderer fence value submitted at retirement time — when

@@ -1,4 +1,3 @@
-#define JALIUM_MEDIA_EXPORTS
 #include "and_camera_source.h"
 #include "and_media_init.h"
 #include "and_yuv_simd.h"

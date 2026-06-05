@@ -1,4 +1,3 @@
-#define JALIUM_MEDIA_EXPORTS
 #include "and_yuv_simd.h"
 
 // arm64-v8a NEON kernels for NV12 / NV21 / I420 -> BGRA8 / RGBA8.

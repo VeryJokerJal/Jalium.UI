@@ -115,6 +115,9 @@ internal sealed class WindowInputDispatcher
                 hitElement = topLevelMenuItem;
             }
         }
+        // InputBlocked subtree (designer host etc.): redirect hit to the blocked ancestor itself,
+        // so descendant controls never receive routed input events.
+        hitElement = RedirectInputBlocked(hitElement);
         var target = captured ?? hitElement ?? _host.Self;
 
         // Track mouse over state and raise MouseEnter/MouseLeave events
@@ -224,6 +227,7 @@ internal sealed class WindowInputDispatcher
         // Otherwise, find the target element via hit testing
         var captured = UIElement.MouseCapturedElement;
         var hitElement = topLevelMenuItemBehindOverlay ?? _host.HitTestElement(position, "mouse-down");
+        hitElement = RedirectInputBlocked(hitElement);
         UpdateMouseOverState(hitElement, timestamp);
         var target = captured ?? hitElement ?? _host.Self;
 
@@ -329,6 +333,7 @@ internal sealed class WindowInputDispatcher
 
         var captured = UIElement.MouseCapturedElement;
         var hitElement = _host.HitTestElement(position, "mouse-up");
+        hitElement = RedirectInputBlocked(hitElement);
         UpdateMouseOverState(hitElement, timestamp);
         var target = captured ?? hitElement ?? _host.Self;
 
@@ -382,7 +387,7 @@ internal sealed class WindowInputDispatcher
             return;
 
         var captured = UIElement.MouseCapturedElement;
-        var target = captured ?? _host.HitTestElement(position, "mouse-wheel") ?? _host.Self;
+        var target = captured ?? RedirectInputBlocked(_host.HitTestElement(position, "mouse-wheel")) ?? _host.Self;
 
         // Raise tunnel event (PreviewMouseWheel)
         MouseWheelEventArgs tunnelArgs = new(
@@ -848,6 +853,23 @@ internal sealed class WindowInputDispatcher
     }
 
     // ══════════════════════════════════════════════════════════════
+    //  InputBlocked subtree redirect
+    // ══════════════════════════════════════════════════════════════
+    //
+    //  If hit test lands inside a subtree marked with InputManager.InputBlocked,
+    //  rewrite the input target to that blocked element itself — descendant
+    //  controls never receive routed input events. This is the framework-level
+    //  hook designer / preview hosts use to make their content "look real but
+    //  inert" without disabling individual controls.
+
+    private static UIElement? RedirectInputBlocked(UIElement? hit)
+    {
+        if (hit == null) return null;
+        var blocked = InputManager.FindInputBlockedAncestor(hit);
+        return blocked ?? hit;
+    }
+
+    // ══════════════════════════════════════════════════════════════
     //  Menu Mode Hit Testing
     // ══════════════════════════════════════════════════════════════
 
@@ -1107,6 +1129,7 @@ internal sealed class WindowInputDispatcher
         {
             hitTarget = HitTestWithTouchMargin(pointerData.Position) ?? hitTarget;
         }
+        hitTarget = RedirectInputBlocked(hitTarget);
         var fallbackTarget = captured ?? hitTarget ?? _host.Self;
         var target = isDown
             ? fallbackTarget
@@ -1168,7 +1191,7 @@ internal sealed class WindowInputDispatcher
 
         var target = _activePointerTargets.TryGetValue(pointerData.PointerId, out var existingTarget)
             ? existingTarget ?? _host.Self
-            : (_host.HitTestElement(pointerData.Position, "pointer-wheel") ?? _host.Self);
+            : (RedirectInputBlocked(_host.HitTestElement(pointerData.Position, "pointer-wheel")) ?? _host.Self);
 
         if (pointerData.IsCanceled)
         {

@@ -1,4 +1,5 @@
 #include "d3d12_direct_renderer.h"
+#include "d3d12_retained_layer.h"
 #include "d3d12_vello.h"
 #include "d3d12_shader_source.h"
 #include "d3d12_shader_bytecode.h"
@@ -7,11 +8,39 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
-#include <cstdio>
 #include <vector>
 #pragma comment(lib, "d3dcompiler.lib")
 
 namespace jalium {
+
+// ── QPC helpers for frame-pacing instrumentation ──────────────────────────
+// Cached on first use. QueryPerformanceFrequency is documented as fixed for
+// the lifetime of the system, so a single read is sufficient.
+namespace {
+inline LARGE_INTEGER QpcNow() {
+    LARGE_INTEGER t;
+    QueryPerformanceCounter(&t);
+    return t;
+}
+inline int64_t QpcFrequencyHz() {
+    static int64_t s_freq = []() {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return f.QuadPart;
+    }();
+    return s_freq;
+}
+inline uint64_t QpcDiffNs(const LARGE_INTEGER& t0, const LARGE_INTEGER& t1) {
+    int64_t delta = t1.QuadPart - t0.QuadPart;
+    if (delta <= 0) return 0;
+    // (delta * 1e9) / freq  — split to avoid overflow on long sessions.
+    int64_t freq = QpcFrequencyHz();
+    if (freq <= 0) return 0;
+    int64_t whole = (delta / freq) * 1'000'000'000LL;
+    int64_t frac  = ((delta % freq) * 1'000'000'000LL) / freq;
+    return static_cast<uint64_t>(whole + frac);
+}
+} // namespace
 
 // ── Inline helpers replacing CD3DX12_* (d3dx12.h is a minimal subset) ──
 
@@ -271,6 +300,36 @@ bool D3D12DirectRenderer::Initialize(IDXGISwapChain3* swapChain, UINT frameCount
     // (~7 计算 PSO + 每帧描述符堆 + 缓冲 + 驱动 compute 上下文)本就用不到,
     // eager 创建纯属浪费 GPU/驱动内存与启动期 PSO 编译。active engine 真是
     // Vello 时,首帧 BeginFrame 会按需 EnsureVelloRenderer()。
+
+    // ── GPU timestamp infrastructure ────────────────────────────────────
+    // One TIMESTAMP query heap across all frames (frameCount × slots-per-
+    // frame) plus per-frame readback buffer (uint64_t × slots-per-frame).
+    // Failure here is non-fatal: timingSupported_ stays false and the
+    // breakdown remains zero-valued; the renderer continues working.
+    if (auto* cmdQueue = backend_->GetCommandQueue()) {
+        if (SUCCEEDED(cmdQueue->GetTimestampFrequency(&timestampFrequency_)) && timestampFrequency_ > 0) {
+            D3D12_QUERY_HEAP_DESC qhDesc = {};
+            qhDesc.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            qhDesc.Count = kMaxTimingSlotsPerFrame * frameCount_;
+            HRESULT hr = device_->CreateQueryHeap(&qhDesc, IID_PPV_ARGS(&timingQueryHeap_));
+            if (SUCCEEDED(hr)) {
+                bool allReadbackOk = true;
+                for (UINT i = 0; i < frameCount_; ++i) {
+                    auto rbHeapProps = MakeHeapProps(D3D12_HEAP_TYPE_READBACK);
+                    auto rbBufDesc = MakeBufferDesc(sizeof(uint64_t) * kMaxTimingSlotsPerFrame);
+                    if (FAILED(device_->CreateCommittedResource(
+                            &rbHeapProps, D3D12_HEAP_FLAG_NONE, &rbBufDesc,
+                            D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+                            IID_PPV_ARGS(&timing_[i].readback)))) {
+                        allReadbackOk = false;
+                        break;
+                    }
+                    timing_[i].spanCategories.reserve(kMaxTimingSlotsPerFrame);
+                }
+                timingSupported_ = allReadbackOk;
+            }
+        }
+    }
 
     initialized_ = true;
     return true;
@@ -786,25 +845,51 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     auto& fr = frames_[currentFrame_];
 
     // Wait for the GPU to finish this buffer's previous work.
-    // Use a longer timeout to avoid busy-spinning on integrated GPUs where
-    // frame times are inherently longer (~10-16ms).  The UI thread blocks
-    // here, which is fine because there is no useful work to do until the
-    // GPU frees this buffer.  A short timeout (1ms) caused excessive
-    // TryBeginDraw failures on iGPUs, wasting CPU cycles on retry loops.
+    // Short 50 ms timeout is deliberate: when the wait exceeds it, the
+    // managed Window's retry loop releases the UI thread back to the
+    // dispatcher so input / animation / WM_PAINT can still get a turn
+    // between BeginDraw attempts. A long single wait here (e.g. 1000 ms)
+    // would freeze the UI for the full Present→ready cycle, which on
+    // iGPU is 100-130 ms and feels far worse than the FPS counter would
+    // suggest. The retry path's per-attempt cost is accumulated below so
+    // DevTools still reports the total wait honestly.
     //
-    // IMPORTANT: ResetEvent before SetEventOnCompletion to clear any stale signal
-    // from a previous timed-out wait.  Without this, a previous timeout leaves the
-    // event signaled when the old fence eventually completes, causing the NEXT
-    // WaitForSingleObject to return immediately even though the new fence value
-    // hasn't been reached — leading to command allocator reuse while the GPU is
-    // still executing, which corrupts rendering (flickering, stray lines).
+    // IMPORTANT: ResetEvent before SetEventOnCompletion to clear any stale
+    // signal from a previous timed-out wait. Without this, a previous
+    // timeout leaves the event signaled when the old fence eventually
+    // completes, causing the NEXT WaitForSingleObject to return immediately
+    // even though the new fence value hasn't been reached — leading to
+    // command allocator reuse while the GPU is still executing, which
+    // corrupts rendering (flickering, stray lines).
+    //
+    // Frame-pacing instrumentation: every wait (success or timeout)
+    // accumulates into accumulatingFrameWaitNs_, so a managed BeginDraw
+    // retry loop on iGPU shows the full pile-up.
     if (fr.fenceValue > 0 && fence_->GetCompletedValue() < fr.fenceValue) {
         ResetEvent(fenceEvent_);
         fence_->SetEventOnCompletion(fr.fenceValue, fenceEvent_);
+        LARGE_INTEGER waitStart = QpcNow();
         WaitForSingleObject(fenceEvent_, 50);
+        LARGE_INTEGER waitEnd = QpcNow();
+        accumulatingFrameWaitNs_ += QpcDiffNs(waitStart, waitEnd);
         if (fence_->GetCompletedValue() < fr.fenceValue) {
-            return false;  // Still not ready after 50ms — something is very wrong
+            // Timed-out path: surface partial wait + return false to let
+            // the managed Window's retry mechanism release the dispatcher
+            // queue for other work before trying again. accumulator stays
+            // nonzero so the next attempt keeps appending.
+            lastFrameGpuWaitNs_ = accumulatingFrameWaitNs_;
+            return false;
         }
+    }
+
+    // BeginFrame proceeded past the wait: flush the accumulator and stamp
+    // the present-to-ready wall clock for the previously presented frame.
+    lastFrameGpuWaitNs_ = accumulatingFrameWaitNs_;
+    accumulatingFrameWaitNs_ = 0;
+    if (lastPresentSignalQpc_ != 0) {
+        LARGE_INTEGER readyTick = QpcNow();
+        LARGE_INTEGER prev; prev.QuadPart = static_cast<LONGLONG>(lastPresentSignalQpc_);
+        lastFramePresentToReadyNs_ = QpcDiffNs(prev, readyTick);
     }
 
     // The previous use of this slot is GPU-complete: any instance upload buffers
@@ -913,6 +998,16 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
         glyphAtlas_->ApplyPendingGrowthOrReset();
     }
 
+    // Apply a pending path-MSAA sample-count change at the same frame boundary.
+    // BeginFrame has already waited this slot's previous fence, so the old
+    // stencil/cover PSOs and the MSAA scratch RT/depth are idle and safe to
+    // rebuild. ApplyPendingPathMsaaSampleCount also zeroes pathMsaaWidth_/Height_
+    // so the scratch resources recreate at the new sample count on this frame's
+    // first path batch.
+    if (pendingPathMsaaSampleCount_ != pathMsaaSampleCount_) {
+        ApplyPendingPathMsaaSampleCount();
+    }
+
     // Reset scissor stack
     while (!scissorStack_.empty()) scissorStack_.pop();
     roundedClipStack_.clear();
@@ -921,6 +1016,9 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     preGlassSnapshotCaptured_ = false;
     snapshotValid_ = false;
     snapshotUsedThisFrame_ = false;
+    // Sentinel so the first CaptureSnapshot in this frame can never short-
+    // circuit against a stale watermark left from the previous frame.
+    snapshotCaptureDrawOrder_ = -1.0f;
     offscreenCaptureValid_[0] = false;
     offscreenCaptureValid_[1] = false;
     offscreenResourcesUsedThisFrame_ = false;
@@ -937,6 +1035,23 @@ bool D3D12DirectRenderer::BeginFrame(UINT frameIndex, UINT width, UINT height,
     // velloRenderer_ 永远为空,零开销。
     if (velloEnabled_ && EnsureVelloRenderer()) {
         velloRenderer_->BeginFrame(width, height);
+    }
+
+    // ── GPU timing: decode previous frame, start this frame ─────────────
+    // Decode runs *after* fence wait above guaranteed the GPU finished
+    // resolving this slot's previous queries → the readback buffer holds
+    // valid data. We then reset the per-frame timing state and emit the
+    // initial timestamp tagged with "Other" so any work before the first
+    // explicit MarkGpuTimingPoint gets a category.
+    if (timingSupported_) {
+        DecodeGpuTimingForCompletedFrame(currentFrame_);
+        auto& tf = timing_[currentFrame_];
+        tf.nextSlot = 0;
+        tf.spanCategories.clear();
+        tf.batchCountAtFinalize = 0;
+        tf.hasResolvedData = false;
+        // First timestamp opens an "Other" span; subsequent marks override.
+        MarkGpuTimingPoint(GpuTimingCategory::Other);
     }
 
     inFrame_ = true;
@@ -995,6 +1110,28 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
         D3D12_RESOURCE_STATE_PRESENT);
     commandList_->ResourceBarrier(1, &barrier);
 
+    // GPU timing: emit the terminal timestamp + resolve the entire frame's
+    // queries into the readback buffer. ResolveQueryData has to happen on
+    // the same command list and *before* Close(); the result is GPU-side
+    // available only after the frame's fence completes, which is exactly
+    // what the next BeginFrame waits on before calling
+    // DecodeGpuTimingForCompletedFrame.
+    if (timingSupported_) {
+        MarkGpuTimingPoint(GpuTimingCategory::kFrameEnd);
+        auto& tf = timing_[currentFrame_];
+        if (tf.nextSlot > 0 && timingQueryHeap_ && tf.readback) {
+            UINT base = currentFrame_ * kMaxTimingSlotsPerFrame;
+            commandList_->ResolveQueryData(
+                timingQueryHeap_.Get(),
+                D3D12_QUERY_TYPE_TIMESTAMP,
+                base, tf.nextSlot,
+                tf.readback.Get(),
+                0);
+            tf.batchCountAtFinalize = static_cast<uint32_t>(batches_.size());
+            tf.hasResolvedData = true;
+        }
+    }
+
     // Close and execute
     HRESULT closeHr = commandList_->Close();
     if (FAILED(closeHr)) {
@@ -1052,6 +1189,11 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
     frames_[currentFrame_].fenceValue = nextFenceValue_++;
     backend_->GetCommandQueue()->Signal(fence_.Get(), frames_[currentFrame_].fenceValue);
 
+    // Frame-pacing: stamp the QPC tick at the moment Signal is issued. The
+    // next BeginFrame's "wait completed" tick minus this gives ≈ GPU work
+    // time for the frame we are presenting now.
+    lastPresentSignalQpc_ = static_cast<uint64_t>(QpcNow().QuadPart);
+
     // Tell the backend graveyard that anything retired from now on must
     // outlive at least this fence value. Resources retired *before* this
     // call are tagged with an older value and may already be reclaimable;
@@ -1072,6 +1214,73 @@ JaliumResult D3D12DirectRenderer::EndFrame(bool useDirtyRects, const std::vector
     // Transient Present failure (e.g. DXGI_ERROR_INVALID_CALL during resize,
     // mode change, etc.).  Treat as a dropped frame — the next frame will retry.
     return JALIUM_OK;
+}
+
+// ============================================================================
+// GPU timing
+// ============================================================================
+
+void D3D12DirectRenderer::MarkGpuTimingPoint(GpuTimingCategory category)
+{
+    if (!timingSupported_ || !timingQueryHeap_) return;
+    auto& tf = timing_[currentFrame_];
+    if (tf.nextSlot >= kMaxTimingSlotsPerFrame) return;  // budget exhausted, drop
+    UINT slot = currentFrame_ * kMaxTimingSlotsPerFrame + tf.nextSlot;
+    commandList_->EndQuery(timingQueryHeap_.Get(), D3D12_QUERY_TYPE_TIMESTAMP, slot);
+    tf.spanCategories.push_back(category);
+    tf.nextSlot += 1;
+}
+
+void D3D12DirectRenderer::DecodeGpuTimingForCompletedFrame(UINT frameIndex)
+{
+    if (!timingSupported_ || frameIndex >= frameCount_) return;
+    auto& tf = timing_[frameIndex];
+    if (!tf.hasResolvedData || tf.nextSlot < 2 || !tf.readback || timestampFrequency_ == 0) {
+        // No fully-formed frame to decode (e.g. very first frame after init).
+        return;
+    }
+
+    // Map readback. The CPU read-only range is sized to the slots we actually
+    // resolved; passing nullptr to Unmap is the documented "no-write" path.
+    void* mapped = nullptr;
+    D3D12_RANGE readRange = { 0, sizeof(uint64_t) * tf.nextSlot };
+    if (FAILED(tf.readback->Map(0, &readRange, &mapped)) || !mapped) {
+        tf.hasResolvedData = false;
+        return;
+    }
+    const uint64_t* timestamps = static_cast<const uint64_t*>(mapped);
+
+    GpuTimingSnapshot snap;
+    snap.batchCount = tf.batchCountAtFinalize;
+    // Each consecutive pair (i, i+1) is a span; the span's category is the
+    // one we tagged at the timestamp that *opened* the span (slot i).
+    for (UINT i = 0; i + 1 < tf.nextSlot; ++i) {
+        GpuTimingCategory cat = tf.spanCategories[i];
+        if (cat == GpuTimingCategory::kFrameEnd) continue;  // safety
+        uint64_t a = timestamps[i];
+        uint64_t b = timestamps[i + 1];
+        if (b <= a) continue;  // ignore clock anomalies / wrap
+        uint64_t deltaTicks = b - a;
+        // Convert ticks → ns using the queue's reported frequency.
+        uint64_t ns = (deltaTicks / timestampFrequency_) * 1'000'000'000ull
+                    + ((deltaTicks % timestampFrequency_) * 1'000'000'000ull) / timestampFrequency_;
+        size_t catIdx = static_cast<size_t>(cat);
+        if (catIdx < static_cast<size_t>(GpuTimingCategory::kCount)) {
+            snap.categoryNs[catIdx] += ns;
+        }
+    }
+    // Total span = first→last timestamp difference, computed independently
+    // so it includes intervals where the span category was unclassified.
+    if (tf.nextSlot >= 2) {
+        uint64_t total = timestamps[tf.nextSlot - 1] - timestamps[0];
+        snap.totalNs = (total / timestampFrequency_) * 1'000'000'000ull
+                     + ((total % timestampFrequency_) * 1'000'000'000ull) / timestampFrequency_;
+    }
+    snap.valid = true;
+
+    tf.readback->Unmap(0, nullptr);
+    tf.hasResolvedData = false;  // consume — next BeginFrame won't re-decode same data
+    lastGpuTimingSnapshot_ = snap;
 }
 
 // ============================================================================
@@ -1097,6 +1306,34 @@ void D3D12DirectRenderer::SetDpiScale(float dpiScale)
 // Draw Commands
 // ============================================================================
 
+// Batch state compatibility check used by all per-instance emit paths
+// (AddSdfRect / AddText / AddTriangles*).  When the previous batch is the
+// same type and shares scissor + rounded-clip state with the candidate,
+// the new instance can be appended to that batch instead of producing a
+// fresh DrawBatch + extra DrawIndexedInstanced call at record time.
+//
+// Texture identity (bitmap path) is checked at the call site since it
+// requires looking at bitmapTextures_ alongside the batch.
+static inline bool BatchStateCompatibleForMerge(const DrawBatch& prev, const DrawBatch& cand)
+{
+    if (prev.type != cand.type) return false;
+    if (prev.hasScissor != cand.hasScissor) return false;
+    if (cand.hasScissor) {
+        if (prev.scissor.left   != cand.scissor.left  ||
+            prev.scissor.top    != cand.scissor.top   ||
+            prev.scissor.right  != cand.scissor.right ||
+            prev.scissor.bottom != cand.scissor.bottom)
+            return false;
+    }
+    if (prev.hasRoundedClip != cand.hasRoundedClip) return false;
+    if (cand.hasRoundedClip) {
+        if (prev.roundedClipInverse != cand.roundedClipInverse) return false;
+        if (memcmp(prev.roundedClipRect,        cand.roundedClipRect,        sizeof(float) * 4) != 0) return false;
+        if (memcmp(prev.roundedClipCornerRadii, cand.roundedClipCornerRadii, sizeof(float) * 4) != 0) return false;
+    }
+    return true;
+}
+
 void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
 {
     if (rectInstances_.size() >= kMaxInstancesPerFrame) {
@@ -1105,19 +1342,9 @@ void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
         FlushGraphicsForCompute();
     }
 
-    DrawBatch batch;
-    batch.type = DrawBatchType::SdfRect;
-    batch.instanceOffset = (uint32_t)rectInstances_.size();
-    batch.instanceCount = 1;
-    batch.sortOrder = drawOrder_++;
-    batch.hasScissor = !scissorStack_.empty();
-    if (batch.hasScissor) {
-        batch.scissor = scissorStack_.top();
-    }
-    ResolveRoundedClipForBatch(batch);
-    batches_.push_back(batch);
-
-    // Premultiply fill/border alpha (SDF rect shader expects premultiplied RGBA).
+    // Build the fully-resolved instance first.  Transform/opacity/shape are
+    // baked into SdfRectInstance per-vertex, so they do NOT affect batch
+    // coalescing — only scissor + rounded clip + batch type do.
     SdfRectInstance adjusted = inst;
     adjusted.fillR *= adjusted.fillA;
     adjusted.fillG *= adjusted.fillA;
@@ -1126,23 +1353,19 @@ void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
     adjusted.borderG *= adjusted.borderA;
     adjusted.borderB *= adjusted.borderA;
 
-    // Apply current opacity
     adjusted.opacity *= currentOpacity_;
 
-    // Apply current transform (CPU-side)
     const auto& t = transformStack_.top();
     float newX = adjusted.posX * t.m11 + adjusted.posY * t.m21 + t.dx;
     float newY = adjusted.posX * t.m12 + adjusted.posY * t.m22 + t.dy;
     adjusted.posX = newX;
     adjusted.posY = newY;
 
-    // Scale the size by the transform's scale components
     float scaleX = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
     float scaleY = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
     adjusted.sizeX *= scaleX;
     adjusted.sizeY *= scaleY;
 
-    // Scale corner radii and border width
     float avgScale = (scaleX + scaleY) * 0.5f;
     adjusted.cornerTL *= avgScale;
     adjusted.cornerTR *= avgScale;
@@ -1150,15 +1373,36 @@ void D3D12DirectRenderer::AddSdfRect(const SdfRectInstance& inst)
     adjusted.cornerBL *= avgScale;
     adjusted.borderWidth *= avgScale;
 
-    // Apply current shape type (0 = RoundedRect, 1 = SuperEllipse).
-    // If the caller pre-set inst.shapeType > 0 (e.g. FillEllipse uses
-    // SuperEllipse n=2 for a real ellipse SDF), keep that and don't let the
-    // current global shape type override it.
     if (adjusted.shapeType <= 0.0f) {
         adjusted.shapeType = currentShapeType_;
         adjusted.shapeN = currentShapeN_;
     }
 
+    // Prepare the candidate batch state (scissor + rounded clip).
+    DrawBatch candidate;
+    candidate.type = DrawBatchType::SdfRect;
+    candidate.instanceOffset = (uint32_t)rectInstances_.size();
+    candidate.instanceCount = 1;
+    candidate.hasScissor = !scissorStack_.empty();
+    if (candidate.hasScissor) candidate.scissor = scissorStack_.top();
+    ResolveRoundedClipForBatch(candidate);
+
+    // Coalesce with the previous batch when state matches and the new
+    // instance lands directly after it in rectInstances_ — N back-to-back
+    // FillRectangle / FillRoundedRectangle / FillPerCornerRoundedRectangle
+    // calls collapse into 1 DrawIndexedInstanced(N) at record time.
+    if (!batches_.empty()) {
+        DrawBatch& prev = batches_.back();
+        if (BatchStateCompatibleForMerge(prev, candidate) &&
+            prev.instanceOffset + prev.instanceCount == (uint32_t)rectInstances_.size()) {
+            prev.instanceCount++;
+            rectInstances_.push_back(adjusted);
+            return;
+        }
+    }
+
+    candidate.sortOrder = drawOrder_++;
+    batches_.push_back(candidate);
     rectInstances_.push_back(adjusted);
 }
 
@@ -1212,15 +1456,31 @@ void D3D12DirectRenderer::AddText(IDWriteTextLayout* layout, float x, float y,
     }
 
     if (count > 0) {
-        DrawBatch batch;
-        batch.type = DrawBatchType::Text;
-        batch.instanceOffset = startIdx;
-        batch.instanceCount = count;
-        batch.sortOrder = drawOrder_++;
-        batch.hasScissor = !scissorStack_.empty();
-        if (batch.hasScissor) batch.scissor = scissorStack_.top();
-        ResolveRoundedClipForBatch(batch);
-        batches_.push_back(batch);
+        DrawBatch candidate;
+        candidate.type = DrawBatchType::Text;
+        candidate.instanceOffset = startIdx;
+        candidate.instanceCount = count;
+        candidate.hasScissor = !scissorStack_.empty();
+        if (candidate.hasScissor) candidate.scissor = scissorStack_.top();
+        ResolveRoundedClipForBatch(candidate);
+
+        // Coalesce consecutive DrawText calls when state matches and the
+        // new glyph run lands directly after the previous batch in
+        // textInstances_ — 800+ per-control labels collapse to a handful
+        // of Text DrawIndexedInstanced calls.
+        bool merged = false;
+        if (!batches_.empty()) {
+            DrawBatch& prev = batches_.back();
+            if (BatchStateCompatibleForMerge(prev, candidate) &&
+                prev.instanceOffset + prev.instanceCount == startIdx) {
+                prev.instanceCount += count;
+                merged = true;
+            }
+        }
+        if (!merged) {
+            candidate.sortOrder = drawOrder_++;
+            batches_.push_back(candidate);
+        }
     }
 
     // Render text decorations (underline/strikethrough) as SDF rect instances
@@ -1284,55 +1544,33 @@ void D3D12DirectRenderer::AddBitmap(float x, float y, float w, float h, float op
     inst.sizeX *= scaleX;
     inst.sizeY *= scaleY;
 
-    DrawBatch batch;
-    batch.type = DrawBatchType::Bitmap;
-    batch.instanceOffset = (uint32_t)bitmapInstances_.size();
-    batch.instanceCount = 1;
-    batch.sortOrder = drawOrder_++;
-    batch.hasScissor = !scissorStack_.empty();
-    if (batch.hasScissor) batch.scissor = scissorStack_.top();
-    ResolveRoundedClipForBatch(batch);
+    DrawBatch candidate;
+    candidate.type = DrawBatchType::Bitmap;
+    candidate.instanceOffset = (uint32_t)bitmapInstances_.size();
+    candidate.instanceCount = 1;
+    candidate.hasScissor = !scissorStack_.empty();
+    if (candidate.hasScissor) candidate.scissor = scissorStack_.top();
+    ResolveRoundedClipForBatch(candidate);
 
-    // Batch coalescing: when the previous batch is also a bitmap that uses the
-    // SAME texture + SAME state (scissor + rounded clip), append this instance
-    // to it instead of creating a new batch. This is the bitmap analogue of
-    // stroke/fill batch coalescing in ImpellerEngine — N back-to-back DrawBitmap
-    // calls (e.g. ImageBrush.TileMode tiling, sprite sheets, glyph runs through
-    // the bitmap path) collapse to 1 SRV-descriptor-pair creation + 1
-    // SetGraphicsRootDescriptorTable + 1 DrawIndexedInstanced(N) on EndFrame
-    // instead of N of each.
+    // Coalesce with previous Bitmap batch when state matches (scissor +
+    // rounded clip via BatchStateCompatibleForMerge), the texture identity
+    // matches (textureResource + format), and the new instance lands
+    // directly after the previous batch's slice in bitmapInstances_.
+    // N back-to-back DrawBitmap calls (ImageBrush.TileMode, sprite sheets,
+    // glyph runs via bitmap path) collapse to one SRV-descriptor-pair +
+    // one DrawIndexedInstanced(N) at record time.
     //
-    // Coalescing requires:
-    //   1. previous batch is also Bitmap type
-    //   2. previous batch's texture matches (textureResource + format)
-    //   3. scissor state matches (presence + rect)
-    //   4. rounded-clip state matches (presence + rect + corner radii)
-    //   5. instance contiguity: prevBatch.instanceOffset + instanceCount must
-    //      equal bitmapInstances_.size() — guarantees the new instance lands
-    //      directly after the batch's existing slice in the shared buffer.
-    //
-    // samplerIdx + opacity + transform are per-instance (baked into BitmapQuadInstance),
+    // samplerIdx / opacity / transform are baked into BitmapQuadInstance,
     // so they do NOT block coalescing.
     if (!batches_.empty() && !bitmapTextures_.empty()) {
         DrawBatch& prev = batches_.back();
         const BitmapBatchTexture& prevTex = bitmapTextures_.back();
-        const bool sameType    = prev.type == DrawBatchType::Bitmap;
-        const bool sameTex     = prevTex.batchIndex == (uint32_t)(batches_.size() - 1) &&
-                                 prevTex.textureResource.Get() == textureResource &&
-                                 prevTex.format == format;
-        const bool sameScissor = prev.hasScissor == batch.hasScissor &&
-                                 (!batch.hasScissor ||
-                                  (prev.scissor.left   == batch.scissor.left   &&
-                                   prev.scissor.top    == batch.scissor.top    &&
-                                   prev.scissor.right  == batch.scissor.right  &&
-                                   prev.scissor.bottom == batch.scissor.bottom));
-        const bool sameRClip   = prev.hasRoundedClip == batch.hasRoundedClip &&
-                                 (!batch.hasRoundedClip ||
-                                  (memcmp(prev.roundedClipRect,        batch.roundedClipRect,        sizeof(float) * 4) == 0 &&
-                                   memcmp(prev.roundedClipCornerRadii, batch.roundedClipCornerRadii, sizeof(float) * 4) == 0));
-        const bool contiguous  = prev.instanceOffset + prev.instanceCount == bitmapInstances_.size();
-
-        if (sameType && sameTex && sameScissor && sameRClip && contiguous) {
+        const bool sameTex = prevTex.batchIndex == (uint32_t)(batches_.size() - 1) &&
+                             prevTex.textureResource.Get() == textureResource &&
+                             prevTex.format == format;
+        if (sameTex &&
+            BatchStateCompatibleForMerge(prev, candidate) &&
+            prev.instanceOffset + prev.instanceCount == bitmapInstances_.size()) {
             prev.instanceCount++;
             bitmapInstances_.push_back(inst);
             return;
@@ -1346,7 +1584,8 @@ void D3D12DirectRenderer::AddBitmap(float x, float y, float w, float h, float op
     tex.format = format;
     bitmapTextures_.push_back(tex);
 
-    batches_.push_back(batch);
+    candidate.sortOrder = drawOrder_++;
+    batches_.push_back(candidate);
     bitmapInstances_.push_back(inst);
 }
 
@@ -1386,15 +1625,25 @@ void D3D12DirectRenderer::AddTriangles(const TriangleVertex* vertices, uint32_t 
         triangleVertices_.push_back(v);
     }
 
-    DrawBatch batch;
-    batch.type = DrawBatchType::Triangle;
-    batch.instanceOffset = startVertex;         // repurposed: vertex offset
-    batch.instanceCount = vertexCount;           // repurposed: vertex count
-    batch.sortOrder = drawOrder_++;
-    batch.hasScissor = !scissorStack_.empty();
-    if (batch.hasScissor) batch.scissor = scissorStack_.top();
-    ResolveRoundedClipForBatch(batch);
-    batches_.push_back(batch);
+    DrawBatch candidate;
+    candidate.type = DrawBatchType::Triangle;
+    candidate.instanceOffset = startVertex;         // repurposed: vertex offset
+    candidate.instanceCount = vertexCount;          // repurposed: vertex count
+    candidate.hasScissor = !scissorStack_.empty();
+    if (candidate.hasScissor) candidate.scissor = scissorStack_.top();
+    ResolveRoundedClipForBatch(candidate);
+
+    if (!batches_.empty()) {
+        DrawBatch& prev = batches_.back();
+        if (BatchStateCompatibleForMerge(prev, candidate) &&
+            prev.instanceOffset + prev.instanceCount == startVertex) {
+            prev.instanceCount += vertexCount;
+            return;
+        }
+    }
+
+    candidate.sortOrder = drawOrder_++;
+    batches_.push_back(candidate);
 }
 
 void D3D12DirectRenderer::AddTrianglesPreTransformed(const TriangleVertex* vertices, uint32_t vertexCount)
@@ -1409,15 +1658,25 @@ void D3D12DirectRenderer::AddTrianglesPreTransformed(const TriangleVertex* verti
     uint32_t startVertex = (uint32_t)triangleVertices_.size();
     triangleVertices_.insert(triangleVertices_.end(), vertices, vertices + vertexCount);
 
-    DrawBatch batch;
-    batch.type = DrawBatchType::Triangle;
-    batch.instanceOffset = startVertex;
-    batch.instanceCount = vertexCount;
-    batch.sortOrder = drawOrder_++;
-    batch.hasScissor = !scissorStack_.empty();
-    if (batch.hasScissor) batch.scissor = scissorStack_.top();
-    ResolveRoundedClipForBatch(batch);
-    batches_.push_back(batch);
+    DrawBatch candidate;
+    candidate.type = DrawBatchType::Triangle;
+    candidate.instanceOffset = startVertex;
+    candidate.instanceCount = vertexCount;
+    candidate.hasScissor = !scissorStack_.empty();
+    if (candidate.hasScissor) candidate.scissor = scissorStack_.top();
+    ResolveRoundedClipForBatch(candidate);
+
+    if (!batches_.empty()) {
+        DrawBatch& prev = batches_.back();
+        if (BatchStateCompatibleForMerge(prev, candidate) &&
+            prev.instanceOffset + prev.instanceCount == startVertex) {
+            prev.instanceCount += vertexCount;
+            return;
+        }
+    }
+
+    candidate.sortOrder = drawOrder_++;
+    batches_.push_back(candidate);
 }
 
 // ============================================================================
@@ -1519,6 +1778,21 @@ void D3D12DirectRenderer::PushPerCornerRoundedClip(float x, float y, float w, fl
     roundedClipStack_.push_back(s);
 }
 
+void D3D12DirectRenderer::PushRoundedClipExclude(float x, float y, float w, float h, float rx, float ry)
+{
+    // Symmetric rounded clip, but flagged inverse so the pixel-shader SDF mask
+    // keeps the area OUTSIDE the rect (masks the interior). Deliberately pushes
+    // NO scissor: an inverse clip must remain free to paint just beyond the
+    // bounds, whereas a scissor would re-confine drawing back inside the rect.
+    float r = std::min(rx, ry);
+    RoundedClipState s {};
+    s.x = x; s.y = y; s.w = w; s.h = h;
+    s.radiusTL = r; s.radiusTR = r; s.radiusBR = r; s.radiusBL = r;
+    s.inverse = true;
+    s.transform = transformStack_.empty() ? Transform2D::Identity() : transformStack_.top();
+    roundedClipStack_.push_back(s);
+}
+
 void D3D12DirectRenderer::PopRoundedClip()
 {
     if (!roundedClipStack_.empty())
@@ -1526,6 +1800,54 @@ void D3D12DirectRenderer::PopRoundedClip()
 }
 
 bool D3D12DirectRenderer::ResolveRoundedClipForBatch(DrawBatch& batch) const
+{
+    // Forced override: when replaying snapshotted Impeller batches, each batch
+    // already carries the rounded-clip state it was captured under (already in
+    // physical px, identical units to what this function would compute).  Use
+    // that instead of the live stack, whose top may have advanced since the
+    // batch was recorded — we no longer flush at every clip boundary.
+    if (forcedRoundedClipActive_) {
+        if (!forcedRoundedClipPresent_) {
+            batch.hasRoundedClip = false;
+            return false;
+        }
+        batch.hasRoundedClip = true;
+        batch.roundedClipInverse = false; // Impeller-replay forced clips are never inverse
+        batch.roundedClipRect[0] = forcedRoundedClipRect_[0];
+        batch.roundedClipRect[1] = forcedRoundedClipRect_[1];
+        batch.roundedClipRect[2] = forcedRoundedClipRect_[2];
+        batch.roundedClipRect[3] = forcedRoundedClipRect_[3];
+        batch.roundedClipCornerRadii[0] = forcedRoundedClipRadii_[0];
+        batch.roundedClipCornerRadii[1] = forcedRoundedClipRadii_[1];
+        batch.roundedClipCornerRadii[2] = forcedRoundedClipRadii_[2];
+        batch.roundedClipCornerRadii[3] = forcedRoundedClipRadii_[3];
+        return true;
+    }
+
+    float rect[4], radii[4];
+    bool inverse = false;
+    if (!ResolveLiveRoundedClip(rect, radii, &inverse)) {
+        batch.hasRoundedClip = false;
+        return false;
+    }
+    batch.hasRoundedClip = true;
+    batch.roundedClipInverse = inverse;
+    batch.roundedClipRect[0] = rect[0];
+    batch.roundedClipRect[1] = rect[1];
+    batch.roundedClipRect[2] = rect[2];
+    batch.roundedClipRect[3] = rect[3];
+    batch.roundedClipCornerRadii[0] = radii[0];
+    batch.roundedClipCornerRadii[1] = radii[1];
+    batch.roundedClipCornerRadii[2] = radii[2];
+    batch.roundedClipCornerRadii[3] = radii[3];
+    return true;
+}
+
+// Resolves the innermost live rounded clip into physical-pixel rect/radii.
+// Shared by ResolveRoundedClipForBatch (DirectRenderer's own batches) and
+// ResolveCurrentRoundedClip (mirrored into the Impeller engine so its batches
+// snapshot the same clip).  Returns false when the stack is empty.
+bool D3D12DirectRenderer::ResolveLiveRoundedClip(float outRect[4], float outRadii[4], bool* outInverse) const
 {
     if (roundedClipStack_.empty())
         return false;
@@ -1535,6 +1857,7 @@ bool D3D12DirectRenderer::ResolveRoundedClipForBatch(DrawBatch& batch) const
     // region to the intersection.  The pixel-shader SDF only needs to mask
     // the corners of that innermost rounded rect.
     const auto& clip = roundedClipStack_.back();
+    if (outInverse) *outInverse = clip.inverse;
 
     // Project the DIP-space rect through the captured transform, then through
     // dpiScale_ so the coordinates match SV_Position (physical pixels).
@@ -1566,16 +1889,20 @@ bool D3D12DirectRenderer::ResolveRoundedClipForBatch(DrawBatch& batch) const
     if (scaleY <= 0.0f) scaleY = 1.0f;
     float scale = std::min(scaleX, scaleY);
 
-    batch.hasRoundedClip = true;
-    batch.roundedClipRect[0] = minX * dpiScale_;
-    batch.roundedClipRect[1] = minY * dpiScale_;
-    batch.roundedClipRect[2] = maxX * dpiScale_;
-    batch.roundedClipRect[3] = maxY * dpiScale_;
-    batch.roundedClipCornerRadii[0] = clip.radiusTL * scale * dpiScale_;
-    batch.roundedClipCornerRadii[1] = clip.radiusTR * scale * dpiScale_;
-    batch.roundedClipCornerRadii[2] = clip.radiusBR * scale * dpiScale_;
-    batch.roundedClipCornerRadii[3] = clip.radiusBL * scale * dpiScale_;
+    outRect[0] = minX * dpiScale_;
+    outRect[1] = minY * dpiScale_;
+    outRect[2] = maxX * dpiScale_;
+    outRect[3] = maxY * dpiScale_;
+    outRadii[0] = clip.radiusTL * scale * dpiScale_;
+    outRadii[1] = clip.radiusTR * scale * dpiScale_;
+    outRadii[2] = clip.radiusBR * scale * dpiScale_;
+    outRadii[3] = clip.radiusBL * scale * dpiScale_;
     return true;
+}
+
+bool D3D12DirectRenderer::ResolveCurrentRoundedClip(float outRect[4], float outRadii[4]) const
+{
+    return ResolveLiveRoundedClip(outRect, outRadii);
 }
 
 void D3D12DirectRenderer::ApplyScissorToVello()
@@ -1979,6 +2306,11 @@ void D3D12DirectRenderer::RecordDrawCommands()
         if (pathActiveOnMsaa) return;
         if (!EnsureStencilDepthBuffer(viewportWidth_, viewportHeight_)) return;
 
+        // Stencil-then-cover paths run in their own MSAA scratch RT and don't
+        // go through the PSO-switch arm below, so tag the timing category
+        // here on the path-mode entry.
+        MarkGpuTimingPoint(GpuTimingCategory::Path);
+
         // Transition MSAA color to RENDER_TARGET if it isn't already.
         if (pathMsaaColorState_ != D3D12_RESOURCE_STATE_RENDER_TARGET) {
             auto b = MakeTransitionBarrier(pathMsaaColor_.Get(),
@@ -2167,6 +2499,31 @@ void D3D12DirectRenderer::RecordDrawCommands()
         // Switch PSO if needed
         if (batch.type != currentPSO) {
             currentPSO = batch.type;
+            // Tag the GPU work that's about to be issued so DevTools can
+            // attribute time to the right category. Map DrawBatchType → the
+            // coarser timing category bucket.
+            GpuTimingCategory cat;
+            switch (batch.type) {
+            case DrawBatchType::SdfRect:
+            case DrawBatchType::Ellipse:
+            case DrawBatchType::Line:
+            case DrawBatchType::PunchRect:
+                cat = GpuTimingCategory::SdfRect;
+                break;
+            case DrawBatchType::Text:        cat = GpuTimingCategory::Text;    break;
+            case DrawBatchType::Bitmap:
+            case DrawBatchType::SnapshotBlit:
+                cat = GpuTimingCategory::Bitmap;
+                break;
+            case DrawBatchType::Triangle:
+            case DrawBatchType::StencilPath:
+                cat = GpuTimingCategory::Path;
+                break;
+            case DrawBatchType::LiquidGlass: cat = GpuTimingCategory::LiquidGlass; break;
+            default:                          cat = GpuTimingCategory::Other;       break;
+            }
+            MarkGpuTimingPoint(cat);
+
             switch (batch.type) {
             case DrawBatchType::SdfRect:
             case DrawBatchType::Ellipse:
@@ -2283,11 +2640,13 @@ void D3D12DirectRenderer::RecordDrawCommands()
         // Per-corner radii are TL, TR, BR, BL in physical pixels.
         struct RoundedClipB2 {
             uint32_t hasRoundedClip;
-            uint32_t _pad[3];
+            uint32_t inverse;
+            uint32_t _pad[2];
             float    rect[4];
             float    cornerRadii[4]; // TL, TR, BR, BL
         } clipB2 = {};
         clipB2.hasRoundedClip = batch.hasRoundedClip ? 1u : 0u;
+        clipB2.inverse = batch.roundedClipInverse ? 1u : 0u;
         if (batch.hasRoundedClip) {
             clipB2.rect[0] = batch.roundedClipRect[0];
             clipB2.rect[1] = batch.roundedClipRect[1];
@@ -3026,6 +3385,13 @@ void D3D12DirectRenderer::PunchTransparentRect(float x, float y, float w, float 
 
     float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
     cl->ClearRenderTargetView(rtvHandle, clearColor, 1, &clearRect);
+
+    // This writes the swap-chain back buffer directly (bypassing AddXxx), so it
+    // must advance drawOrder_ to keep CaptureSnapshot's fast-skip invariant
+    // intact: equality of drawOrder_ means "back buffer unchanged since". A
+    // following backdrop/glass snapshot would otherwise reuse the stale
+    // pre-punch copy and miss this transparent hole.
+    drawOrder_++;
 }
 
 // ============================================================================
@@ -3039,6 +3405,18 @@ bool D3D12DirectRenderer::CaptureSnapshot()
     UINT w = viewportWidth_;
     UINT h = viewportHeight_;
     if (w == 0 || h == 0) return false;
+
+    // Fast skip: a previous CaptureSnapshot in this frame already produced an
+    // intact copy AND nothing has been emitted since. Two sibling
+    // DrawBackdropFilter / DrawLiquidGlass calls in the same frame use this
+    // path to share one full-screen CopyResource instead of paying for one
+    // per call (~2.8 ms saved per duplicate at 1080p, scales with viewport).
+    // drawOrder_ is monotonically increasing for every AddSdfRect / AddText
+    // / AddBitmap / AddTriangles*, so equality means "no draw fired since".
+    if (snapshotValid_ && snapshotCaptureDrawOrder_ == drawOrder_) {
+        snapshotUsedThisFrame_ = true;
+        return true;
+    }
 
     if (!EnsureSnapshotTexture()) {
         snapshotValid_ = false;
@@ -3078,6 +3456,10 @@ bool D3D12DirectRenderer::CaptureSnapshot()
 
     snapshotValid_ = true;
     snapshotUsedThisFrame_ = true;
+    // Watermark for the reuse fast-path: any subsequent AddXxx will bump
+    // drawOrder_, making the equality check above fail and forcing a
+    // genuine re-capture for the next backdrop user.
+    snapshotCaptureDrawOrder_ = drawOrder_;
     return true;
 }
 
@@ -3295,7 +3677,45 @@ void D3D12DirectRenderer::DrawDesktopBackdrop(float x, float y, float w, float h
 }
 
 // ============================================================================
-// DrawGlowingBorderHighlight — approximated with SDF rects
+// EmitSoftGlowDot — one radial soft-glow stamp (bright centre → clear edge)
+// ============================================================================
+
+void D3D12DirectRenderer::EmitSoftGlowDot(
+    float cx, float cy, float diameter, float r, float g, float b, float peakAlpha)
+{
+    if (diameter < 1.0f || peakAlpha <= 0.003f) return;
+
+    float rad = diameter * 0.5f;
+
+    SdfRectInstance dot = {};
+    dot.posX = cx - rad;
+    dot.posY = cy - rad;
+    dot.sizeX = diameter;
+    dot.sizeY = diameter;
+    // Full corner radius → the SDF shape is a circle with a soft AA edge.
+    dot.cornerTL = rad; dot.cornerTR = rad; dot.cornerBR = rad; dot.cornerBL = rad;
+
+    // Radial gradient: the centre is supplied in absolute pixels (the vertex
+    // shader subtracts the instance position to localise it); radius is absolute.
+    dot.gradientType = 2;
+    dot.stopCount = 3;
+    dot.gradGeom0 = cx;
+    dot.gradGeom1 = cy;
+    dot.gradGeom2 = rad;
+    dot.gradGeom3 = rad;
+
+    // Straight-alpha stops (the pixel shader premultiplies). A solid core, a
+    // fast shoulder, then a transparent rim → a soft, glow-like falloff.
+    dot.stop0Pos = 0.0f; dot.stop0R = r; dot.stop0G = g; dot.stop0B = b; dot.stop0A = peakAlpha;
+    dot.stop1Pos = 0.5f; dot.stop1R = r; dot.stop1G = g; dot.stop1B = b; dot.stop1A = peakAlpha * 0.32f;
+    dot.stop2Pos = 1.0f; dot.stop2R = r; dot.stop2G = g; dot.stop2B = b; dot.stop2A = 0.0f;
+
+    dot.opacity = 1.0f;
+    AddSdfRect(dot);
+}
+
+// ============================================================================
+// DrawGlowingBorderHighlight — continuous tapered soft-glow ribbon
 // ============================================================================
 
 void D3D12DirectRenderer::DrawGlowingBorderHighlight(
@@ -3349,65 +3769,76 @@ void D3D12DirectRenderer::DrawGlowingBorderHighlight(
         }
     }
 
-    // Step 2: Animated glow spindle around the border
+    // Step 2: A continuous, tapered ribbon of soft glow whose dots are anchored
+    // directly ON the boundary line. The inverse rounded clip pushed below masks
+    // away the inner half of every dot, so the light reads as an outer glow that
+    // hugs the edge — bright at the line, fading outward, with nothing spilling
+    // into the element interior. Thin at both ends, thickest in the middle.
     float perimeter = 2.0f * (w + h);
-    float trailLengthPx = perimeter * trailLength;
+    if (perimeter < 2.0f) return;
+
+    // Keep the glow strictly OUTSIDE the element. No scissor — an inverse clip
+    // must stay free to paint in the thin band just beyond the bounds.
+    PushRoundedClipExclude(x, y, w, h, 0.0f, 0.0f);
+
+    float trail = std::max(0.05f, std::min(1.0f, trailLength));
+    float trailPx = perimeter * trail;
     float headPos = animationPhase * perimeter;
 
-    // Draw the spindle as a series of glowing segments along the perimeter
-    const int numSegments = 32;
-    float maxWidth = strokeWidth * 2.5f;
+    // One dot every ~2px so neighbouring dots fuse into a continuous ribbon.
+    int numSamples = std::max(48, std::min(900, (int)(trailPx * 0.5f)));
 
-    for (int i = 0; i < numSegments; ++i) {
-        float t = (float)i / numSegments;
-        float pos = headPos - t * trailLengthPx;
-        if (pos < 0) pos += perimeter;
+    float coreMax = std::max(strokeWidth * 2.0f, 2.5f);   // bright core on the line
+    float haloMax = std::max(strokeWidth * 5.0f, 9.0f);   // tight outer glow, kept close
+
+    for (int i = 0; i <= numSamples; ++i) {
+        float u = (float)i / (float)numSamples;   // 0 = head, 1 = tail
+        // Symmetric spindle taper: thin at both ends, fattest in the middle.
+        float taper = sinf(3.14159265f * u);
+        if (taper <= 0.02f) continue;
+
+        float pos = headPos - u * trailPx;
         pos = fmodf(pos, perimeter);
+        if (pos < 0.0f) pos += perimeter;
 
-        // Convert perimeter position to (px, py)
+        // Anchor each dot ON the perimeter (TL → TR → BR → BL). The inverse clip
+        // trims off whichever half falls inside the element.
         float px, py;
         if (pos < w) {
-            px = x + pos; py = y;
+            px = x + pos;                  py = y;
         } else if (pos < w + h) {
-            px = x + w; py = y + (pos - w);
-        } else if (pos < 2 * w + h) {
-            px = x + w - (pos - w - h); py = y + h;
+            px = x + w;                    py = y + (pos - w);
+        } else if (pos < 2.0f * w + h) {
+            px = x + w - (pos - w - h);    py = y + h;
         } else {
-            px = x; py = y + h - (pos - 2 * w - h);
+            px = x;                        py = y + h - (pos - 2.0f * w - h);
         }
 
-        // Spindle width: sine taper
-        float spindleFactor = sinf(3.14159f * t);
-        float segWidth = maxWidth * spindleFactor;
-        if (segWidth < 1.0f) continue;
-
-        // Opacity decreases towards tail
-        float segOpacity = 0.9f * (1.0f - t);
-
-        SdfRectInstance seg = {};
-        seg.posX = px - segWidth * 0.5f;
-        seg.posY = py - segWidth * 0.5f;
-        seg.sizeX = segWidth;
-        seg.sizeY = segWidth;
-        seg.fillR = glowR * segOpacity;
-        seg.fillG = glowG * segOpacity;
-        seg.fillB = glowB * segOpacity;
-        seg.fillA = segOpacity;
-        float cr = segWidth * 0.5f;
-        seg.cornerTL = cr; seg.cornerTR = cr; seg.cornerBR = cr; seg.cornerBL = cr;
-        seg.opacity = 1.0f;
-        AddSdfRect(seg);
+        EmitSoftGlowDot(px, py, haloMax * taper, glowR, glowG, glowB, 0.30f * taper);
+        EmitSoftGlowDot(px, py, coreMax * taper, glowR, glowG, glowB, 0.95f * taper);
     }
 
-    // Step 3: Static border outline
-    SdfRectInstance border = {};
-    border.posX = x; border.posY = y;
-    border.sizeX = w; border.sizeY = h;
-    border.borderR = glowR * 0.3f; border.borderG = glowG * 0.3f;
-    border.borderB = glowB * 0.3f; border.borderA = 0.3f;
-    border.borderWidth = 1.0f;
-    border.opacity = 1.0f;
-    AddSdfRect(border);
+    // Step 3: a faint static outer halo so the whole edge keeps a soft glow while
+    // the bright ribbon sweeps. Each layer is the border of an outward-grown
+    // rect, so it sits in the band [bounds edge, bounds + ext] — outside the
+    // element. The inverse clip leaves it untouched.
+    {
+        const float exts[3]   = { strokeWidth * 1.0f, strokeWidth * 2.5f, strokeWidth * 4.0f };
+        const float alphas[3] = { 0.26f, 0.14f, 0.06f };
+        for (int k = 0; k < 3; ++k) {
+            float e = std::max(exts[k], 1.0f);
+            SdfRectInstance ring = {};
+            ring.posX = x - e; ring.posY = y - e;
+            ring.sizeX = w + e * 2.0f; ring.sizeY = h + e * 2.0f;
+            ring.borderR = glowR; ring.borderG = glowG; ring.borderB = glowB; ring.borderA = alphas[k];
+            ring.borderWidth = e;
+            ring.cornerTL = e; ring.cornerTR = e; ring.cornerBR = e; ring.cornerBL = e;
+            ring.opacity = 1.0f;
+            AddSdfRect(ring);
+        }
+    }
+
+    PopRoundedClip();
 }
 
 // ============================================================================
@@ -3451,7 +3882,8 @@ void D3D12DirectRenderer::DrawGlowingBorderTransition(
         }
     }
 
-    // Spindle between from/to centers
+    // Soft glowing comet between the from/to centres, using the same tapered
+    // soft-glow dots as the highlight ribbon so the two effects match visually.
     float fromCX = fromX + fromW * 0.5f, fromCY = fromY + fromH * 0.5f;
     float toCX = toX + toW * 0.5f, toCY = toY + toH * 0.5f;
     float headX = lerp(fromCX, toCX, headProgress);
@@ -3459,26 +3891,17 @@ void D3D12DirectRenderer::DrawGlowingBorderTransition(
     float tailX = lerp(fromCX, toCX, tailProgress);
     float tailY = lerp(fromCY, toCY, tailProgress);
 
-    const int numPoints = 16;
-    float maxWidth = strokeWidth * 2.5f;
+    const int numPoints = 48;
+    float coreMax = std::max(strokeWidth * 2.2f, 2.5f);
+    float haloMax = std::max(strokeWidth * 11.0f, 16.0f);
     for (int i = 0; i <= numPoints; ++i) {
-        float t = (float)i / numPoints;
+        float t = (float)i / (float)numPoints;     // 0 = tail, 1 = head
+        float taper = sinf(3.14159265f * t);
+        if (taper <= 0.02f) continue;
         float px = lerp(tailX, headX, t);
         float py = lerp(tailY, headY, t);
-        float spindleFactor = sinf(3.14159f * t);
-        float sw = maxWidth * spindleFactor;
-        if (sw < 1.0f) continue;
-        float opacity = 0.9f * spindleFactor;
-
-        SdfRectInstance seg = {};
-        seg.posX = px - sw * 0.5f; seg.posY = py - sw * 0.5f;
-        seg.sizeX = sw; seg.sizeY = sw;
-        seg.fillR = glowR * opacity; seg.fillG = glowG * opacity;
-        seg.fillB = glowB * opacity; seg.fillA = opacity;
-        float cr = sw * 0.5f;
-        seg.cornerTL = cr; seg.cornerTR = cr; seg.cornerBR = cr; seg.cornerBL = cr;
-        seg.opacity = 1.0f;
-        AddSdfRect(seg);
+        EmitSoftGlowDot(px, py, haloMax * taper, glowR, glowG, glowB, 0.20f * taper);
+        EmitSoftGlowDot(px, py, coreMax * taper, glowR, glowG, glowB, 0.95f * taper);
     }
 
     // Target border (fades in)
@@ -3580,7 +4003,7 @@ bool D3D12DirectRenderer::BeginOffscreenCapture(int slot, float x, float y, floa
     if (!inFrame_ || slot < 0 || slot > 1 || w <= 0 || h <= 0) {
         return false;
     }
-    if (inOffscreenCapture_) {
+    if (inOffscreenCapture_ || inRetainedCapture_) {
         return false;
     }
 
@@ -3594,7 +4017,8 @@ bool D3D12DirectRenderer::BeginOffscreenCapture(int slot, float x, float y, floa
     // Flush pending draws
     FlushGraphicsForCompute();
 
-    if (!EnsureOffscreenTargets(pw, ph)) {
+    bool eotOk = EnsureOffscreenTargets(pw, ph);
+    if (!eotOk) {
         offscreenCaptureValid_[slot] = false;
         return false;
     }
@@ -3694,6 +4118,148 @@ void D3D12DirectRenderer::EndOffscreenCapture(int slot)
     savedScissorStack_ = {};
 
     offscreenCaptureValid_[slot] = true;
+}
+
+// ─── Retained GPU layers ────────────────────────────────────────────────────
+// Mirror the BeginOffscreenCapture / EndOffscreenCapture RT-redirect dance but
+// target a PERSISTENT per-layer texture+RTV, and realize on the MAIN command
+// list (no separate synchronous submit). Translate/scale/opacity composite
+// reuses AddBitmap (which bakes scale+translate from the live transform stack);
+// rotation/skew is a documented follow-on (AddBitmap drops it).
+D3D12RetainedLayer* D3D12DirectRenderer::BeginRetainedLayerCapture(
+    D3D12RetainedLayer* layer, float x, float y, float w, float h)
+{
+    if (!inFrame_ || inOffscreenCapture_ || inRetainedCapture_ || w <= 0 || h <= 0) {
+        return nullptr;
+    }
+
+    // Allocate physical pixels at the current DPI so the layer renders sharp.
+    UINT pw = (UINT)std::ceil(w * dpiScale_);
+    UINT ph = (UINT)std::ceil(h * dpiScale_);
+    if (pw == 0) pw = 1;
+    if (ph == 0) ph = 1;
+
+    const bool created = (layer == nullptr);
+    if (created) {
+        layer = new (std::nothrow) D3D12RetainedLayer(device_, backend_);
+        if (!layer) return nullptr;
+    }
+    if (!layer->EnsureSize(pw, ph, swapChainFormat_)) {
+        if (created) delete layer;
+        return nullptr;
+    }
+
+    FlushGraphicsForCompute();
+    auto* cl = commandList_.Get();
+
+    // Transition the layer texture to RENDER_TARGET.
+    auto barrier = MakeTransitionBarrier(layer->Texture(),
+        layer->State(), D3D12_RESOURCE_STATE_RENDER_TARGET);
+    cl->ResourceBarrier(1, &barrier);
+    layer->SetState(D3D12_RESOURCE_STATE_RENDER_TARGET);
+
+    D3D12_CPU_DESCRIPTOR_HANDLE rtv = layer->Rtv();
+    cl->OMSetRenderTargets(1, &rtv, FALSE, nullptr);
+
+    float clearColor[4] = { 0, 0, 0, 0 };
+    cl->ClearRenderTargetView(rtv, clearColor, 0, nullptr);
+
+    D3D12_VIEWPORT vp = { 0, 0, (float)pw, (float)ph, 0, 1 };
+    D3D12_RECT scissor = { 0, 0, (LONG)pw, (LONG)ph };
+    cl->RSSetViewports(1, &vp);
+    cl->RSSetScissorRects(1, &scissor);
+
+    // Parent screen-space scissor rects would clip away layer-local content that
+    // starts at (0,0); save and clear, exactly like BeginOffscreenCapture.
+    savedScissorStack_ = std::move(scissorStack_);
+    scissorStack_ = {};
+
+    // Shift screen coords → layer-local coords (content drawn at world (x,y)
+    // lands at the texture origin).
+    PushTransform(1, 0, 0, 1, -x, -y);
+
+    // Frame constants map the DIP capture area to [-1,+1] NDC (viewport → pixels).
+    currentFrameConstants_.screenWidth = w;
+    currentFrameConstants_.screenHeight = h;
+    currentFrameConstants_.invScreenWidth = 1.0f / w;
+    currentFrameConstants_.invScreenHeight = 1.0f / h;
+
+    inRetainedCapture_ = true;
+    activeRealizeLayer_ = layer;
+    return layer;
+}
+
+void D3D12DirectRenderer::EndRetainedLayerCapture(D3D12RetainedLayer* layer)
+{
+    if (!inFrame_ || !inRetainedCapture_) return;
+
+    // Pop the layer-local offset transform.
+    PopTransform();
+
+    // Flush pending draws into the layer.
+    FlushGraphicsForCompute();
+
+    auto* cl = commandList_.Get();
+
+    if (layer && layer->Texture() && layer->State() == D3D12_RESOURCE_STATE_RENDER_TARGET) {
+        auto barrier = MakeTransitionBarrier(layer->Texture(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        cl->ResourceBarrier(1, &barrier);
+        layer->SetState(D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+    }
+
+    // Restore the main render target + viewport.
+    auto rtvHandle = GetSwapChainRtvHandle();
+    cl->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+
+    D3D12_VIEWPORT vp = { 0, 0, (float)viewportWidth_, (float)viewportHeight_, 0, 1 };
+    D3D12_RECT scissor = { 0, 0, (LONG)viewportWidth_, (LONG)viewportHeight_ };
+    cl->RSSetViewports(1, &vp);
+    cl->RSSetScissorRects(1, &scissor);
+
+    // Restore frame constants (DIP dimensions, matching BeginFrame).
+    float dipW = (float)viewportWidth_ / dpiScale_;
+    float dipH = (float)viewportHeight_ / dpiScale_;
+    currentFrameConstants_.screenWidth = dipW;
+    currentFrameConstants_.screenHeight = dipH;
+    currentFrameConstants_.invScreenWidth = 1.0f / dipW;
+    currentFrameConstants_.invScreenHeight = 1.0f / dipH;
+
+    inRetainedCapture_ = false;
+    activeRealizeLayer_ = nullptr;
+
+    // Restore the scissor stack saved during BeginRetainedLayerCapture.
+    scissorStack_ = std::move(savedScissorStack_);
+    savedScissorStack_ = {};
+}
+
+void D3D12DirectRenderer::CompositeRetainedLayer(
+    D3D12RetainedLayer* layer, float x, float y, float w, float h, float opacity)
+{
+    if (!inFrame_ || !layer || !layer->Texture() || w <= 0 || h <= 0) return;
+    // Only composite a realized (sampleable) layer.
+    if (layer->State() != D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) return;
+
+    // The texture was sized to ceil(w*dpi) × ceil(h*dpi) at realize; if the
+    // composite size matches, uvMax ≈ 1. Clamp so we never sample past the edge.
+    UINT pw = (UINT)std::ceil(w * dpiScale_);
+    UINT ph = (UINT)std::ceil(h * dpiScale_);
+    if (pw == 0) pw = 1;
+    if (ph == 0) ph = 1;
+    float uvMaxX = (layer->PixelWidth()  > 0) ? std::min(1.0f, (float)pw / (float)layer->PixelWidth())  : 1.0f;
+    float uvMaxY = (layer->PixelHeight() > 0) ? std::min(1.0f, (float)ph / (float)layer->PixelHeight()) : 1.0f;
+
+    // AddBitmap applies the live transform stack (scale+translate) and ambient
+    // opacity; the layer texture carries no upload buffer (RT-sourced).
+    AddBitmap(x, y, w, h, opacity, layer->Texture(), swapChainFormat_, uvMaxX, uvMaxY);
+}
+
+void D3D12DirectRenderer::DestroyRetainedLayer(D3D12RetainedLayer* layer)
+{
+    if (!layer) return;
+    // Texture retire is fence-gated inside Release(); deleting the object is then
+    // safe even if a composite quad referencing the texture is still in flight.
+    delete layer;
 }
 
 void D3D12DirectRenderer::DrawOffscreenBitmap(int slot, float x, float y, float w, float h, float opacity)
@@ -3950,8 +4516,9 @@ void D3D12DirectRenderer::DrawCustomShaderEffect(int slot,
 bool D3D12DirectRenderer::BlurOffscreenSlot(int slot, float radius)
 {
     if (!inFrame_ || !blurResourcesReady_ || slot < 0 || slot > 1 ||
-        !offscreenRT_[slot] || !offscreenCaptureValid_[slot])
+        !offscreenRT_[slot] || !offscreenCaptureValid_[slot]) {
         return false;
+    }
     if (radius <= 0) return true; // nothing to blur
 
     // Scale DIP radius to physical pixels for the compute shader
@@ -3963,7 +4530,9 @@ bool D3D12DirectRenderer::BlurOffscreenSlot(int slot, float radius)
     if (regionW == 0 || regionH == 0) return false;
 
     DXGI_FORMAT fmt = swapChainFormat_;
-    if (!EnsureBlurTemps(regionW, regionH)) return false;
+    if (!EnsureBlurTemps(regionW, regionH)) {
+        return false;
+    }
     blurTempsUsedThisFrame_ = true;
 
     // Flush pending graphics before compute operations
@@ -4638,6 +5207,13 @@ void D3D12DirectRenderer::DrawLiquidGlass(
 
     // Draw 6 vertices (2 triangles forming a quad)
     cl->DrawInstanced(6, 1, 0, 0);
+
+    // This renders straight to the swap-chain back buffer (bypassing AddXxx),
+    // so it must advance drawOrder_ to keep CaptureSnapshot's fast-skip
+    // invariant intact. Without it, a second non-fused glass/backdrop in the
+    // same frame would reuse the snapshot captured before this panel was drawn,
+    // rendering its refraction as if this panel never existed.
+    drawOrder_++;
 
     // Transition blurTempA_ back to COMMON for future reuse
     {

@@ -14,6 +14,16 @@ public abstract class Visual : DependencyObject
     private bool _isRenderDirty;
     private bool _isSubtreeDirty;
 
+    // Composition-only dirtiness, propagated UP the ancestor chain SEPARATELY from
+    // the content flag _isSubtreeDirty. Set by MarkSubtreeDirtyForComposition (an
+    // Opacity / RenderTransform / RenderTransformOrigin change) which deliberately
+    // does NOT touch content. The distinction lets the damage-driven walk tell
+    // "a descendant changed only how it composites (re-composite a cached layer)"
+    // from "a descendant changed its CONTENT (must re-record / re-realize)". A
+    // subtree is layer-eligible (Phase 4 GPU retained layer) precisely when it is
+    // content-clean (!_isRenderDirty && !_isSubtreeDirty) even if composition-dirty.
+    private bool _isSubtreeCompositionDirty;
+
     // Retained-mode drawing cache. When RenderCacheHost is installed, the
     // render loop records OnRender output into an opaque Drawing handle on
     // the first dirty frame and replays it from this slot on subsequent
@@ -21,6 +31,28 @@ public abstract class Visual : DependencyObject
     // RenderDirect re-records whenever _isRenderDirty is true. Kept as object
     // so Core doesn't leak the Media.Rendering.Drawing concrete type.
     private object? _cachedDrawing;
+
+    // Retained GPU layer handle (opaque native pointer; 0 = none). Holds this
+    // visual's subtree CONTENT rasterized once into a persistent offscreen
+    // texture for the damage-driven composited-animation fast path: while the
+    // subtree is content-clean and animating Opacity/RenderTransform, the parent
+    // composites this layer as a transformed quad instead of re-walking the
+    // subtree (see RenderChildVisualInline / TryCompositeChildLayer).
+    private nint _cachedLayer;
+
+    // True when the layer's baked content can no longer be trusted (this visual
+    // or a descendant changed CONTENT) and must be re-realized before compositing.
+    private bool _layerContentDirty = true;
+
+    // Layers whose owning visual was evicted / detached / GC'd WITHOUT a live
+    // render context (no render target handle to call destroy on). Drained and
+    // destroyed (fence-gated, native side) once per frame by the drawing context.
+    private static readonly System.Collections.Concurrent.ConcurrentQueue<nint> s_pendingLayerDestroy = new();
+
+    /// <summary>Dequeues a retained-layer handle pending native destruction.
+    /// Called by the drawing context once per frame (it owns the render target).</summary>
+    internal static bool TryDequeuePendingLayerDestroy(out nint handle) =>
+        s_pendingLayerDestroy.TryDequeue(out handle);
 
     // Wall-clock tick (Environment.TickCount64) of the last time this visual
     // entered RenderDirect with Visibility.Visible. The idle-resource reclaimer
@@ -89,6 +121,16 @@ public abstract class Visual : DependencyObject
     /// </remarks>
     internal void EvictRetainedDrawingCache()
     {
+        // Also release any retained GPU layer — its texture is much larger than
+        // the command list and there is no render context here, so defer the
+        // native destroy to the next frame via the pending-destroy queue.
+        if (_cachedLayer != 0)
+        {
+            s_pendingLayerDestroy.Enqueue(_cachedLayer);
+            _cachedLayer = 0;
+            _layerContentDirty = true;
+        }
+
         if (_cachedDrawing == null) return;
         _cachedDrawing = null;
         // Force RenderDirect's record-or-replay branch to re-record next time.
@@ -327,9 +369,19 @@ public abstract class Visual : DependencyObject
     internal bool IsRenderDirty => _isRenderDirty;
 
     /// <summary>
-    /// Gets whether this element or any descendant needs re-rendering.
+    /// Gets whether this element or any descendant needs re-rendering (CONTENT
+    /// dirtiness — set via <see cref="SetRenderDirty"/>). Composition-only changes
+    /// (Opacity / RenderTransform) do NOT set this; see
+    /// <see cref="IsSubtreeCompositionDirty"/>.
     /// </summary>
     internal bool IsSubtreeDirty => _isSubtreeDirty;
+
+    /// <summary>
+    /// Gets whether this element or any descendant has a pending composition-only
+    /// change (Opacity / RenderTransform / RenderTransformOrigin) with no content
+    /// change. Propagated by <see cref="MarkSubtreeDirtyForComposition"/>.
+    /// </summary>
+    internal bool IsSubtreeCompositionDirty => _isSubtreeCompositionDirty;
 
     /// <summary>
     /// Marks this element as needing re-rendering and propagates subtree dirty flag up.
@@ -337,6 +389,9 @@ public abstract class Visual : DependencyObject
     internal void SetRenderDirty()
     {
         _isRenderDirty = true;
+        // Content changed → any cached GPU layer for this visual is stale and must
+        // be re-realized (the texture is reused; only its pixels are re-rendered).
+        _layerContentDirty = true;
         MarkSubtreeDirtyUp();
     }
 
@@ -350,11 +405,11 @@ public abstract class Visual : DependencyObject
     /// </summary>
     internal void MarkSubtreeDirtyForComposition()
     {
-        MarkSubtreeDirtyUp();
+        MarkSubtreeCompositionDirtyUp();
     }
 
     /// <summary>
-    /// Propagates the subtree dirty flag to all ancestors.
+    /// Propagates the CONTENT subtree dirty flag to all ancestors.
     /// </summary>
     private void MarkSubtreeDirtyUp()
     {
@@ -371,12 +426,34 @@ public abstract class Visual : DependencyObject
     }
 
     /// <summary>
+    /// Propagates the COMPOSITION-ONLY subtree dirty flag to all ancestors without
+    /// touching the content flag, so a clean-content subtree under a composited
+    /// animation stays layer-eligible (its cached GPU layer is re-composited at the
+    /// new transform/opacity rather than re-recorded). Short-circuits once an
+    /// ancestor is already marked, exactly like <see cref="MarkSubtreeDirtyUp"/>.
+    /// </summary>
+    private void MarkSubtreeCompositionDirtyUp()
+    {
+        var current = this;
+        while (current != null)
+        {
+            if (current._isSubtreeCompositionDirty)
+            {
+                break;
+            }
+            current._isSubtreeCompositionDirty = true;
+            current = current._parent;
+        }
+    }
+
+    /// <summary>
     /// Clears dirty flags after rendering.
     /// </summary>
     internal void ClearRenderDirty()
     {
         _isRenderDirty = false;
         _isSubtreeDirty = false;
+        _isSubtreeCompositionDirty = false;
     }
 
     /// <summary>
@@ -433,6 +510,7 @@ public abstract class Visual : DependencyObject
         {
             _isRenderDirty = false;
             _isSubtreeDirty = false;
+            _isSubtreeCompositionDirty = false;
             return;
         }
 
@@ -611,8 +689,16 @@ public abstract class Visual : DependencyObject
                 (float)cr.TopLeft, (float)cr.TopRight,
                 (float)cr.BottomRight, (float)cr.BottomLeft);
         }
+        // Clearing here is correct for the damage-driven gate (Phase 4) because a
+        // subtree is only ever SKIPPED (not walked) when it is content-clean
+        // (!IsRenderDirty && !IsSubtreeDirty) — a skipped child therefore has
+        // nothing pending to lose. A composition-dirty child is re-marked every
+        // frame the animation actually moves (Part A gates invalidation on real
+        // value change), so clearing the composition flag here cannot strand a
+        // pending composite.
         _isRenderDirty = false;
         _isSubtreeDirty = false;
+        _isSubtreeCompositionDirty = false;
     }
 
     /// <summary>
@@ -658,6 +744,123 @@ public abstract class Visual : DependencyObject
     }
 
     /// <summary>
+    /// Returns true if <paramref name="transform"/> carries rotation or skew (off-
+    /// diagonal terms). The first-cut layer composite (via the bitmap quad path)
+    /// bakes only scale+translate, so rotated/skewed subtrees fall back.
+    /// </summary>
+    private static bool TransformHasRotationOrSkew(Transform transform)
+    {
+        var m = transform.Value;
+        return Math.Abs(m.M12) > 1e-6 || Math.Abs(m.M21) > 1e-6;
+    }
+
+    /// <summary>Queues this visual's retained layer (if any) for fence-gated
+    /// destruction and marks it for re-realization.</summary>
+    private static void ReleaseLayerIfAny(Visual v)
+    {
+        if (v._cachedLayer != 0)
+        {
+            s_pendingLayerDestroy.Enqueue(v._cachedLayer);
+            v._cachedLayer = 0;
+            v._layerContentDirty = true;
+        }
+    }
+
+    /// <summary>
+    /// Attempts the retained-GPU-layer fast path for <paramref name="child"/>:
+    /// realize its content-clean subtree into a persistent texture once, then
+    /// composite that texture with the live opacity/transform instead of
+    /// re-walking + re-emitting the subtree. Returns true if the child was
+    /// composited via a layer (caller must NOT render it normally); false to fall
+    /// back to the regular push+recurse path.
+    /// </summary>
+    private bool TryCompositeChildLayer(DrawingContext drawingContext, UIElement child, Point childOffset)
+    {
+        if (drawingContext is not ILayerCompositingDrawingContext layerCtx || !layerCtx.SupportsRetainedLayers)
+            return false;
+        if (drawingContext is not IOffsetDrawingContext offsetContext)
+            return false;
+
+        // Effects use the offscreen-capture machinery the layer path also uses, and
+        // non-cacheable visuals opt out of retained-mode entirely.
+        if (!child.ParticipatesInRenderCache || (child.Effect is IEffect ce && ce.HasEffect))
+        {
+            ReleaseLayerIfAny(child);
+            return false;
+        }
+
+        // CONTENT dirty (this visual or any descendant) → must re-record this
+        // frame; keep the layer but mark it for re-realization once clean.
+        if (child._isRenderDirty || child._isSubtreeDirty)
+        {
+            child._layerContentDirty = true;
+            return false;
+        }
+
+        var transform = child.RenderTransform;
+        double opacity = child.Opacity;
+
+        // Only worth a layer when there is a composited animation to apply cheaply
+        // (a live transform or sub-1 opacity). First cut excludes rotation/skew
+        // (the quad path bakes only scale+translate) and trivial / leaf subtrees.
+        bool hasComposite = transform != null || opacity < 1.0;
+        bool rotation = transform != null && TransformHasRotationOrSkew(transform);
+        var size = child.RenderSize;
+        bool eligible = hasComposite && !rotation
+            && size.Width >= 1.0 && size.Height >= 1.0
+            && child.VisualChildrenCount > 0;
+
+        if (!eligible)
+        {
+            ReleaseLayerIfAny(child);
+            return false;
+        }
+
+        var worldBounds = new Rect(childOffset.X, childOffset.Y, size.Width, size.Height);
+
+        nint layer = child._cachedLayer;
+        if (layer == 0 || child._layerContentDirty)
+        {
+            nint realized = layerCtx.BeginLayerCapture(layer, worldBounds);
+            if (realized == 0)
+                return false; // ancestor transform/opacity, nested capture, or unsupported → fall back
+
+            var savedOffset = offsetContext.Offset;
+            offsetContext.Offset = childOffset;
+            child.Render(drawingContext); // CONTENT only — no transform/opacity pushed
+            offsetContext.Offset = savedOffset;
+
+            layerCtx.EndLayerCapture(realized);
+            child._cachedLayer = realized;
+            child._layerContentDirty = false;
+            layer = realized;
+        }
+
+        // Composite the cached layer with the live transform + opacity at the
+        // child's exact z-order slot. Offset = childOffset so the transform is
+        // composed around (childOffset + origin) in screen space, matching the
+        // normal child path.
+        var saved = offsetContext.Offset;
+        offsetContext.Offset = childOffset;
+        double originX = 0, originY = 0;
+        if (transform != null)
+        {
+            var origin = child.RenderTransformOrigin;
+            originX = origin.X * size.Width;
+            originY = origin.Y * size.Height;
+        }
+        layerCtx.CompositeLayer(layer, worldBounds, opacity, transform, originX, originY);
+        offsetContext.Offset = saved;
+
+        // The composite path skips child.Render, so stamp idle-tracking directly
+        // (and notify the reclaimer observer) — otherwise a child composited every
+        // frame would look "idle" and get its layer/cache evicted mid-animation.
+        child._lastRenderedTickMs = Environment.TickCount64;
+        VisualRenderedObserver?.Invoke(child);
+        return true;
+    }
+
+    /// <summary>
     /// Renders a single child visual inline, applying the same offset, clip,
     /// opacity and render-transform handling that <see cref="RenderDirect"/>
     /// uses for the normal children loop.
@@ -696,6 +899,16 @@ public abstract class Visual : DependencyObject
             if (!ShouldRenderChild(drawingContext, uiChild, childOffset))
             {
                 return false;
+            }
+
+            // Damage-driven composited-animation fast path: if this child's CONTENT
+            // is clean and it is animating Opacity/RenderTransform, composite its
+            // cached GPU layer (one transformed quad) instead of re-walking and
+            // re-emitting the whole subtree. Transparently falls back when not
+            // eligible or unsupported by the backend.
+            if (TryCompositeChildLayer(drawingContext, uiChild, childOffset))
+            {
+                return true;
             }
 
             offsetContext.Offset = new Point(
@@ -766,6 +979,8 @@ public abstract class Visual : DependencyObject
     /// template root would be painted on top of OnRender and obscure its
     /// output entirely. This hook inverts that ordering for template roots
     /// specifically without affecting normal visual children.
+    /// </item>
+    /// </list>
     /// </remarks>
     /// <param name="drawingContext">The drawing context.</param>
     protected virtual void RenderTemplatedBackground(DrawingContext drawingContext)

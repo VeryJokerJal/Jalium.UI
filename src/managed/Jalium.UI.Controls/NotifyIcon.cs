@@ -10,7 +10,6 @@ public class NotifyIcon : FrameworkElement, IDisposable
 {
     private bool _disposed;
     private bool _isVisible;
-    private ContextMenu? _contextMenu;
 
     #region Dependency Properties
 
@@ -180,12 +179,15 @@ public class NotifyIcon : FrameworkElement, IDisposable
     }
 
     /// <summary>
-    /// Gets or sets the context menu for the icon.
+    /// Gets or sets the context menu for the icon. This is a strongly-typed view over the
+    /// inherited <see cref="FrameworkElement.ContextMenuProperty"/> dependency property (which is
+    /// declared as <see cref="object"/> in Core), so the value participates in the dependency
+    /// property / data-binding system instead of living in a parallel field.
     /// </summary>
-    public ContextMenu? ContextMenu
+    public new ContextMenu? ContextMenu
     {
-        get => _contextMenu;
-        set => _contextMenu = value;
+        get => GetValue(ContextMenuProperty) as ContextMenu;
+        set => SetValue(ContextMenuProperty, value);
     }
 
     #endregion

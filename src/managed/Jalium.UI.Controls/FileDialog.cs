@@ -460,6 +460,8 @@ public sealed class OpenFileDialog : FileDialog
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
+        Justification = "SHCreateItemFromParsingName marshals an out parameter as UnmanagedType.Interface into IShellItem. The IShellItem COM interface is preserved by its [ComImport] declaration on the nested IShellItem type, and its vtable members (GetDisplayName, etc.) are exercised through the IFileOpenDialog calls in ShowWindowsDialog, so the trimmer cannot remove them. This native Shell interop is required to bridge a path string to the shell-item the IFileDialog APIs consume.")]
     private static IShellItem CreateShellItemFromPath(string path)
     {
         SHCreateItemFromParsingName(path, IntPtr.Zero, typeof(IShellItem).GUID, out var shellItemObject);
@@ -501,7 +503,11 @@ public sealed class OpenFileDialog : FileDialog
 
     private static void ReleaseComObject(object? comObject)
     {
-        if (comObject != null && Marshal.IsComObject(comObject))
+        // Marshal.ReleaseComObject is [SupportedOSPlatform("windows")]. The dialog COM
+        // path only runs under the OperatingSystem.IsWindows() guard at the ShowDialog
+        // entry, but the platform-compatibility analyzer recognizes OperatingSystem.IsWindows()
+        // (not RuntimeInformation.IsOSPlatform) — restate it here so the guard is honored.
+        if (OperatingSystem.IsWindows() && comObject != null && Marshal.IsComObject(comObject))
         {
             Marshal.ReleaseComObject(comObject);
         }
@@ -887,6 +893,8 @@ public sealed class SaveFileDialog : FileDialog
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
+        Justification = "SHCreateItemFromParsingName marshals an out parameter as UnmanagedType.Interface into IShellItem. The IShellItem COM interface is preserved by its [ComImport] declaration on the nested IShellItem type, and its vtable members (GetDisplayName, etc.) are exercised through the IFileSaveDialog calls in ShowWindowsDialog, so the trimmer cannot remove them. This native Shell interop is required to bridge a path string to the shell-item the IFileDialog APIs consume.")]
     private static IShellItem CreateShellItemFromPath(string path)
     {
         SHCreateItemFromParsingName(path, IntPtr.Zero, typeof(IShellItem).GUID, out var shellItemObject);
@@ -928,7 +936,11 @@ public sealed class SaveFileDialog : FileDialog
 
     private static void ReleaseComObject(object? comObject)
     {
-        if (comObject != null && Marshal.IsComObject(comObject))
+        // Marshal.ReleaseComObject is [SupportedOSPlatform("windows")]. The dialog COM
+        // path only runs under the OperatingSystem.IsWindows() guard at the ShowDialog
+        // entry, but the platform-compatibility analyzer recognizes OperatingSystem.IsWindows()
+        // (not RuntimeInformation.IsOSPlatform) — restate it here so the guard is honored.
+        if (OperatingSystem.IsWindows() && comObject != null && Marshal.IsComObject(comObject))
         {
             Marshal.ReleaseComObject(comObject);
         }

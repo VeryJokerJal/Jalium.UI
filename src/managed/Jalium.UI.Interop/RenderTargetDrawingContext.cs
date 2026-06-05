@@ -10,16 +10,18 @@ namespace Jalium.UI.Interop;
 /// <summary>
 /// A DrawingContext implementation that renders to a RenderTarget.
 /// </summary>
-public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext, ITransformDrawingContext, ICacheableDrawingContext
+public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingContext, IClipBoundsDrawingContext, IOpacityDrawingContext, IEffectDrawingContext, ITransformDrawingContext, ICacheableDrawingContext, ILayerCompositingDrawingContext
 {
     private const int MaxBrushCacheSize = 256;
     private const int MaxTextFormatCacheSize = 64;
     private const int MaxBitmapCacheSize = 64;
-    private const long MaxBitmapCacheBytes = 128L * 1024 * 1024;
-    private const long MediumMemoryPressureWorkingSetBytes = 400L * 1024 * 1024;
-    private const long HighMemoryPressureWorkingSetBytes = 550L * 1024 * 1024;
-    private const long MediumPressureBitmapCacheBytes = 64L * 1024 * 1024;
-    private const long HighPressureBitmapCacheBytes = 32L * 1024 * 1024;
+    // GPU texture-cache byte budget (hard ceiling). This is VRAM usage and must NOT
+    // be throttled by the managed process WorkingSet: doing so collapsed the budget
+    // to 32MB under any real IDE memory footprint, forcing currently-visible card
+    // textures to be LRU-evicted and re-uploaded every single frame (~42MB/frame on
+    // the New-Solution wizard). With adaptive downscaling the live working set is
+    // tiny; this ceiling only backstops pages that draw many full-resolution images.
+    private const long MaxBitmapCacheBytes = 256L * 1024 * 1024;
 
     private readonly RenderTarget _renderTarget;
     private readonly RenderContext _context;
@@ -50,6 +52,23 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     private readonly double[] _currentNativeMatrix = new double[6] { 1, 0, 0, 1, 0, 0 };
     private readonly Stack<double[]> _nativeMatrixStack = new();
 
+    // ── Retained GPU layer state (damage-driven composited-animation fast path) ──
+    // Cached native capability (queried once); env kill-switch.
+    private bool? _supportsRetainedLayers;
+    private static readonly bool s_retainedLayersDisabled =
+        Environment.GetEnvironmentVariable("JALIUM_DISABLE_RETAINED_LAYERS") == "1";
+    // True between BeginLayerCapture / EndLayerCapture (the RT is redirected into a
+    // layer texture). Prevents nested layer capture.
+    private bool _inLayerCapture;
+    // Count of ambient PushOpacity scopes currently active. A subtree is only
+    // layer-eligible when this is 0, so the realize does not bake an ancestor's
+    // opacity into the cached texture (the composite would re-apply it).
+    private int _opacityDepth;
+    // While capturing a layer, ShouldRenderChild must cull against the LAYER bounds
+    // (so the whole subtree is captured), not the window dirty-region clip. When
+    // set, CurrentClipBounds returns this verbatim.
+    private Rect? _layerCaptureClipBounds;
+
     // Scoped opt-out for effects that deliberately deform their content with
     // the active matrix. Liquid glass drag uses this so text follows the same
     // transform as child borders and bitmaps instead of becoming a font-size
@@ -57,6 +76,13 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     private int _nativeTextTransformDepth;
     private long _bitmapCacheBytes;
     private long _bitmapCacheSequence;
+    // Monotonic per-frame id, advanced once per render at the end of
+    // TrimBitmapCacheIfNeeded (which every drawing context reaches via
+    // TrimCacheIfNeeded). Cache entries touched in the current frame are never evicted
+    // — this is what stops the per-frame upload thrash of currently-visible textures.
+    // volatile for cross-thread visibility on the opt-in render-thread path (exact on
+    // the default inline path where draw + trim are sequential on the UI thread).
+    private volatile int _currentFrameId;
     private long _brushCacheSequence;
     private long _textFormatCacheSequence;
     private bool _closed;
@@ -82,6 +108,14 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         /// or re-upload via destroy+recreate.
         /// </summary>
         public uint ContentRevision { get; set; }
+
+        /// <summary>
+        /// Per-frame id at which this entry was last drawn. When it equals the current
+        /// frame id the texture is in active use this frame and must never be evicted —
+        /// the render thread may still be sampling it, and evicting + re-uploading
+        /// visible bitmaps every frame is exactly the thrash this prevents.
+        /// </summary>
+        public int LastFrameUsed { get; set; }
     }
 
     /// <summary>
@@ -185,19 +219,198 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     /// <inheritdoc />
     /// <remarks>
-    /// Returns null while a non-translate transform (scale/rotate/skew/matrix) is
-    /// active on the transform stack. The managed clip stack stores bounds in the
-    /// (accumulated-translate + design) coordinate space that existed when PushClip
-    /// was called; once a subsequent non-translate transform is applied, that space
-    /// no longer matches the on-screen rendering, so consumers (e.g. Visual.ShouldRenderChild
-    /// culling) could wrongly discard visible children. Native D2D clipping still
-    /// runs because D2D applies the transform matrix to its own clip stack, so
-    /// correctness is preserved by the renderer itself.
+    /// The clip-bounds stack is maintained in SURFACE space (post-transform) by
+    /// <see cref="PushClipBounds"/>: a clip pushed under a non-translate transform is
+    /// mapped through the accumulated native matrix before it is intersected and
+    /// stored, so every entry is in one consistent absolute space regardless of the
+    /// transform depth at which it was pushed. This getter maps the top entry BACK
+    /// into the current drawing (offset/screen) space via the inverse of the
+    /// accumulated native matrix, so the value stays directly comparable to a child's
+    /// offset-space bounds in <see cref="Visual.ShouldRenderChild"/> at ANY transform
+    /// depth — restoring viewport culling for scaled/rotated subtrees (a composited
+    /// RenderTransform animation no longer forces the whole subtree to re-emit every
+    /// frame).
+    ///
+    /// This value is ONLY a managed culling hint — the native renderer (D2D/D3D12)
+    /// owns the real per-transform clip — so the result is deliberately CONSERVATIVE:
+    /// AABBs of transformed corners can only grow the rectangle (less culling, never
+    /// wrong pixels), and a singular/non-invertible matrix falls back to <c>null</c>
+    /// (no culling), so a visible child can never be discarded.
     /// </remarks>
-    public Rect? CurrentClipBounds =>
-        _nativeTransformDepth > 0
-            ? null
-            : (_clipBoundsStack.Count > 0 ? _clipBoundsStack.Peek() : null);
+    public Rect? CurrentClipBounds
+    {
+        get
+        {
+            // While realizing a retained layer, cull only against the layer's own
+            // bounds so the whole subtree is captured (the window dirty-region clip
+            // would wrongly drop in-layer content outside the current dirty rect).
+            if (_layerCaptureClipBounds.HasValue)
+                return _layerCaptureClipBounds;
+
+            if (_clipBoundsStack.Count == 0)
+                return null;
+
+            var top = _clipBoundsStack.Peek();
+
+            // Depth 0: the native matrix is identity, surface space == screen space,
+            // so the stored value is already in the comparison space — return as-is
+            // (bit-for-bit identical to the historical fast path).
+            if (_nativeTransformDepth <= 0 || !top.HasValue)
+                return top;
+
+            var m = new Jalium.UI.Media.Matrix(
+                _currentNativeMatrix[0], _currentNativeMatrix[1],
+                _currentNativeMatrix[2], _currentNativeMatrix[3],
+                _currentNativeMatrix[4], _currentNativeMatrix[5]);
+            if (!m.TryInvert(out var inv))
+                return null; // non-invertible (e.g. zero scale) → no cull, never under-cull
+
+            return TransformRectAabb(top.Value,
+                inv.M11, inv.M12, inv.M21, inv.M22, inv.OffsetX, inv.OffsetY);
+        }
+    }
+
+    /// <summary>
+    /// Intersects an offset/screen-space clip rectangle with the current clip-bounds
+    /// stack and pushes the result, keeping every entry in one consistent SURFACE
+    /// space. Under a non-translate transform the incoming rect is first mapped
+    /// through the accumulated native matrix (so it is comparable to entries pushed
+    /// at other transform depths); at depth 0 the matrix is identity and this is a
+    /// no-op. See <see cref="CurrentClipBounds"/> for why an over-large result is
+    /// always safe (the value is only a managed culling hint).
+    /// </summary>
+    private void PushClipBounds(Rect offsetScreenClip)
+    {
+        Rect surfaceClip = _nativeTransformDepth > 0
+            ? TransformRectAabb(offsetScreenClip,
+                _currentNativeMatrix[0], _currentNativeMatrix[1],
+                _currentNativeMatrix[2], _currentNativeMatrix[3],
+                _currentNativeMatrix[4], _currentNativeMatrix[5])
+            : offsetScreenClip;
+
+        Rect? effectiveClip = surfaceClip;
+        if (_clipBoundsStack.Count > 0)
+        {
+            var parentClip = _clipBoundsStack.Peek();
+            effectiveClip = parentClip.HasValue ? parentClip.Value.Intersect(surfaceClip) : surfaceClip;
+        }
+        _clipBoundsStack.Push(effectiveClip);
+    }
+
+    /// <summary>
+    /// Returns the axis-aligned bounding box of <paramref name="r"/> transformed by
+    /// the affine matrix [m11 m12 / m21 m22 / dx dy] (WPF row-vector convention:
+    /// x' = x·m11 + y·m21 + dx, y' = x·m12 + y·m22 + dy). Used to map clip bounds
+    /// in/out of surface space conservatively (the AABB never shrinks the region).
+    /// </summary>
+    private static Rect TransformRectAabb(Rect r,
+        double m11, double m12, double m21, double m22, double dx, double dy)
+    {
+        double x0 = r.X, y0 = r.Y, x1 = r.X + r.Width, y1 = r.Y + r.Height;
+
+        double ax = x0 * m11 + y0 * m21 + dx, ay = x0 * m12 + y0 * m22 + dy;
+        double bx = x1 * m11 + y0 * m21 + dx, by = x1 * m12 + y0 * m22 + dy;
+        double cx = x1 * m11 + y1 * m21 + dx, cy = x1 * m12 + y1 * m22 + dy;
+        double ex = x0 * m11 + y1 * m21 + dx, ey = x0 * m12 + y1 * m22 + dy;
+
+        double minX = Math.Min(Math.Min(ax, bx), Math.Min(cx, ex));
+        double minY = Math.Min(Math.Min(ay, by), Math.Min(cy, ey));
+        double maxX = Math.Max(Math.Max(ax, bx), Math.Max(cx, ex));
+        double maxY = Math.Max(Math.Max(ay, by), Math.Max(cy, ey));
+
+        return new Rect(minX, minY, Math.Max(0, maxX - minX), Math.Max(0, maxY - minY));
+    }
+
+    // ── ILayerCompositingDrawingContext (retained GPU layer fast path) ──
+
+    /// <inheritdoc />
+    public bool SupportsRetainedLayers
+    {
+        get
+        {
+            if (s_retainedLayersDisabled) return false;
+            if (_supportsRetainedLayers is bool cached) return cached;
+            bool ok = _renderTarget != null && _renderTarget.Handle != nint.Zero
+                && NativeMethods.RenderTargetSupportsRetainedLayers(_renderTarget.Handle) != 0;
+            _supportsRetainedLayers = ok;
+            return ok;
+        }
+    }
+
+    /// <inheritdoc />
+    public nint BeginLayerCapture(nint existingLayer, Rect worldBounds)
+    {
+        if (_closed || _inLayerCapture) return 0;
+        if (!SupportsRetainedLayers) return 0;
+        // An ancestor non-translate transform or opacity would bake into the
+        // captured content (the composite re-applies them) — fall back instead.
+        if (_nativeTransformDepth > 0 || _opacityDepth > 0) return 0;
+        if (worldBounds.Width <= 0 || worldBounds.Height <= 0) return 0;
+        if (_renderTarget == null || _renderTarget.Handle == nint.Zero) return 0;
+
+        nint layer = NativeMethods.RenderTargetRealizeLayerBegin(
+            _renderTarget.Handle, existingLayer,
+            (float)worldBounds.X, (float)worldBounds.Y,
+            (float)worldBounds.Width, (float)worldBounds.Height);
+        if (layer == 0) return 0;
+
+        _inLayerCapture = true;
+        _layerCaptureClipBounds = worldBounds;
+        return layer;
+    }
+
+    /// <inheritdoc />
+    public void EndLayerCapture(nint layer)
+    {
+        if (_closed || !_inLayerCapture) return;
+        if (_renderTarget != null && _renderTarget.Handle != nint.Zero)
+            NativeMethods.RenderTargetRealizeLayerEnd(_renderTarget.Handle, layer);
+        _inLayerCapture = false;
+        _layerCaptureClipBounds = null;
+    }
+
+    /// <inheritdoc />
+    public void CompositeLayer(nint layer, Rect worldBounds, double opacity,
+        Transform? transform, double originX, double originY)
+    {
+        if (_closed || layer == 0) return;
+        if (_renderTarget == null || _renderTarget.Handle == nint.Zero) return;
+
+        // Apply the live RenderTransform exactly as the normal child path would
+        // (the caller has already set Offset = childOffset). Opacity is passed to
+        // the composite directly (AddBitmap folds in ambient opacity), so it is
+        // NOT pushed here.
+        bool pushed = false;
+        if (transform != null)
+        {
+            ((ITransformDrawingContext)this).PushTransform(transform, originX, originY);
+            pushed = true;
+        }
+
+        NativeMethods.RenderTargetCompositeLayer(
+            _renderTarget.Handle, layer,
+            (float)worldBounds.X, (float)worldBounds.Y,
+            (float)worldBounds.Width, (float)worldBounds.Height,
+            (float)opacity);
+
+        if (pushed)
+            ((ITransformDrawingContext)this).PopTransform();
+    }
+
+    /// <summary>
+    /// Destroys retained layers queued by <see cref="Visual"/> (idle-eviction /
+    /// detach happen without a render context). Called once per frame by the
+    /// window so the GPU textures are released promptly through the fence-gated
+    /// native graveyard.
+    /// </summary>
+    internal void DrainPendingRetainedLayers()
+    {
+        if (_renderTarget == null || _renderTarget.Handle == nint.Zero) return;
+        while (Visual.TryDequeuePendingLayerDestroy(out nint h))
+        {
+            if (h != 0) NativeMethods.RenderTargetDestroyRetainedLayer(_renderTarget.Handle, h);
+        }
+    }
 
     /// <summary>
     /// When true, temporarily replaces GPU-expensive effects with cheap overlays.
@@ -366,6 +579,14 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             return 0f;
         }
 
+        // Only snap when the caller already lined up with a device-pixel boundary
+        // (integer for even-width strokes, half-pixel for odd-width). For any
+        // genuinely fractional value — e.g. a spring animation passing through
+        // 2.49 → 2.50 → 2.51 — we MUST let the float through unchanged. The
+        // previous "fallback return rounded" path collapsed those three values
+        // into {2, 2.5, 3}, which is exactly the 1px hop the user sees as jitter.
+        // The native renderer does sub-pixel AA, so fractional positions render
+        // cleanly without any layout-side rounding.
         var rounded = Math.Round(value);
         if (Math.Abs(value - rounded) < SnapEpsilon)
         {
@@ -378,7 +599,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             return (float)halfPixel;
         }
 
-        return (float)rounded;
+        return (float)value; // pass fractional values through; AA handles them
     }
 
     /// <inheritdoc />
@@ -662,9 +883,14 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
     {
         if (_closed) return;
 
-        // Round to pixel boundaries to prevent sub-pixel jittering
-        var cx = (float)Math.Round(center.X + Offset.X);
-        var cy = (float)Math.Round(center.Y + Offset.Y);
+        // Pass center through SnapCoordinate so it follows the same rule as all
+        // other shapes: snap only when the value already sits on a device-pixel
+        // boundary, otherwise let the fractional float through for AA. The old
+        // unconditional Math.Round here claimed to "prevent sub-pixel jittering"
+        // but actually CAUSED it — spring animations sweeping continuous values
+        // through .5 got collapsed to neighbouring integers each frame.
+        var cx = SnapCoordinate(center.X + Offset.X);
+        var cy = SnapCoordinate(center.Y + Offset.Y);
         var rx = (float)radiusX;
         var ry = (float)radiusY;
 
@@ -848,24 +1074,23 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var invDy = -(invA12 * ndx + invA22 * ndy);
 
         // Native's compose is new_top = old_top * incoming. We pick incoming so that
-        // old_top * incoming = Identity, i.e. incoming = old_top^{-1}. After the push,
-        // the native CPU-side transform does nothing, so the screen-space coords we
-        // pass through go directly onto the atlas.
-        _renderTarget.PushTransform(new float[]
+        // old_top * incoming = Identity, i.e. incoming = old_top^{-1}. After this
+        // transient push, the native CPU-side transform does nothing, so the
+        // screen-space coords below go directly onto the glyph atlas.
+        //
+        // The push + DrawText + pop is bundled into a single P/Invoke through
+        // DrawTextWithInverseTransform so this fast-path costs one boundary
+        // crossing instead of three — material at 800+ DrawText calls/frame.
+        Span<float> inverse = stackalloc float[6]
         {
             (float)invA11, (float)invA12,
             (float)invA21, (float)invA22,
-            (float)invDx, (float)invDy
-        });
-
-        try
-        {
-            _renderTarget.DrawText(formattedText.Text, scaledFormat, screenX, screenY, scaledWidth, scaledHeight, brush);
-        }
-        finally
-        {
-            _renderTarget.PopTransform();
-        }
+            (float)invDx,  (float)invDy
+        };
+        _renderTarget.DrawTextWithInverseTransform(
+            formattedText.Text, scaledFormat,
+            screenX, screenY, scaledWidth, scaledHeight, brush,
+            inverse);
     }
 
     private static bool ShouldPreserveNativeTextScaleDeformation(
@@ -2217,7 +2442,43 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             return;
         }
 
-        var bitmap = GetNativeBitmap(imageSource);
+        // ── Adaptive bitmap downscaling ──────────────────────────────────────
+        // A large BitmapImage drawn into a small target (e.g. a 1855×848 PNG shown
+        // as a 168×72 card thumbnail) would otherwise upload the full-resolution
+        // texture and re-sample it on the GPU. Route static BitmapImages through the
+        // downscale cache so the realized GPU texture matches the display size;
+        // misses fall back to the full-res source for this frame and the thumbnail
+        // is synthesized asynchronously for the next one. Drawn-larger / at-size /
+        // small sources return false (no downscale → full-res), giving the adaptive
+        // "display-size by default, full-res on demand" behaviour. WriteableBitmap
+        // (video), AnimatedBitmap and vector sources are excluded by the is-check and
+        // the earlier branches, so their fast paths are untouched.
+        ImageSource drawSource = imageSource;
+        if (imageSource is BitmapImage downscaleCandidate && downscaleCandidate.RawPixelData != null)
+        {
+            // Target size must approximate device pixels. rectangle.Width/Height is in
+            // this context's drawing space; an ancestor scale/rotate transform is
+            // mirrored in _currentNativeMatrix (m11,m12,m21,m22,dx,dy), so fold its
+            // effective scale in. With no in-tree transform sx=sy=1 and this is
+            // identical to a bare ceil(); a genuine minify (sx<1) is honoured as-is to
+            // avoid over-large buckets.
+            double sx = Math.Sqrt(_currentNativeMatrix[0] * _currentNativeMatrix[0]
+                                + _currentNativeMatrix[1] * _currentNativeMatrix[1]);
+            double sy = Math.Sqrt(_currentNativeMatrix[2] * _currentNativeMatrix[2]
+                                + _currentNativeMatrix[3] * _currentNativeMatrix[3]);
+            if (sx <= 0) sx = 1;
+            if (sy <= 0) sy = 1;
+            int targetW = (int)Math.Ceiling(rectangle.Width * sx);
+            int targetH = (int)Math.Ceiling(rectangle.Height * sy);
+            if (targetW > 0 && targetH > 0 &&
+                Jalium.UI.Media.Imaging.BitmapDownscaleCache.TryGetOrCreate(
+                    downscaleCandidate, targetW, targetH, out var thumb))
+            {
+                drawSource = thumb;
+            }
+        }
+
+        var bitmap = GetNativeBitmap(drawSource);
         if (bitmap == null) return;
 
         // Round to pixel boundaries to prevent sub-pixel jittering
@@ -2577,13 +2838,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var h = (float)Math.Ceiling(exactBottom) - y;
 
         var clipRect = new Rect(exactLeft, exactTop, Math.Max(0, exactRight - exactLeft), Math.Max(0, exactBottom - exactTop));
-        Rect? effectiveClip = clipRect;
-        if (_clipBoundsStack.Count > 0)
-        {
-            var parentClip = _clipBoundsStack.Peek();
-            effectiveClip = parentClip.HasValue ? parentClip.Value.Intersect(clipRect) : clipRect;
-        }
-        _clipBoundsStack.Push(effectiveClip);
+        PushClipBounds(clipRect);
 
         if (clipGeometry is RectangleGeometry rectGeom)
         {
@@ -2627,13 +2882,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var h = (float)bounds.Height;
 
         var clipRect = new Rect(x, y, w, h);
-        Rect? effectiveClip = clipRect;
-        if (_clipBoundsStack.Count > 0)
-        {
-            var parentClip = _clipBoundsStack.Peek();
-            effectiveClip = parentClip.HasValue ? parentClip.Value.Intersect(clipRect) : clipRect;
-        }
-        _clipBoundsStack.Push(effectiveClip);
+        PushClipBounds(clipRect);
 
         bool perCorner =
             cornerRadius.TopLeft != cornerRadius.TopRight ||
@@ -2665,13 +2914,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var h = (float)bounds.Height;
 
         var clipRect = new Rect(x, y, w, h);
-        Rect? effectiveClip = clipRect;
-        if (_clipBoundsStack.Count > 0)
-        {
-            var parentClip = _clipBoundsStack.Peek();
-            effectiveClip = parentClip.HasValue ? parentClip.Value.Intersect(clipRect) : clipRect;
-        }
-        _clipBoundsStack.Push(effectiveClip);
+        PushClipBounds(clipRect);
 
         var (tl, tr, br, bl) = NormalizePerCornerRadii(w, h,
             cornerRadius.TopLeft, cornerRadius.TopRight,
@@ -2687,6 +2930,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
         _renderTarget.PushOpacity((float)opacity);
         _stateStack.Push(new DrawingState(DrawingStateType.Opacity, Point.Zero));
+        _opacityDepth++;
     }
 
     /// <summary>
@@ -2730,6 +2974,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         if (_stateStack.Count > 0 && _stateStack.Peek().Type == DrawingStateType.Opacity)
         {
             _stateStack.Pop();
+            if (_opacityDepth > 0) _opacityDepth--;
         }
         _renderTarget.PopOpacity();
     }
@@ -2765,6 +3010,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 _renderTarget.PopClip();
                 break;
             case DrawingStateType.Opacity:
+                if (_opacityDepth > 0) _opacityDepth--;
                 _renderTarget.PopOpacity();
                 break;
             case DrawingStateType.ViewportOnly:
@@ -2792,13 +3038,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         var w = (float)Math.Ceiling(dirtyRegion.X + dirtyRegion.Width) - x;
         var h = (float)Math.Ceiling(dirtyRegion.Y + dirtyRegion.Height) - y;
 
-        Rect? effectiveClip = dirtyRegion;
-        if (_clipBoundsStack.Count > 0)
-        {
-            var parentClip = _clipBoundsStack.Peek();
-            effectiveClip = parentClip.HasValue ? parentClip.Value.Intersect(dirtyRegion) : dirtyRegion;
-        }
-        _clipBoundsStack.Push(effectiveClip);
+        PushClipBounds(dirtyRegion);
 
         // Push D2D clip with ALIASED mode — hard pixel boundary, no semi-transparent
         // edge artifacts. PER_PRIMITIVE mode creates anti-aliased clip edges that
@@ -2997,16 +3237,30 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
         }
         else if (effect is Media.Effects.ShaderEffect shaderEffect)
         {
-            var shaderBytecode = shaderEffect.PixelShader?.ShaderBytecode;
-            if (shaderBytecode is { Length: > 0 })
+            var pixelShader = shaderEffect.PixelShader;
+            var sourceHlsl = pixelShader?.SourceHlsl;
+            if (!string.IsNullOrEmpty(sourceHlsl))
             {
-                _renderTarget.DrawShaderEffect(x, y, w, h,
-                    shaderBytecode,
+                // Cross-backend path: HLSL source compiled at runtime. Required
+                // for custom shaders to run on the Vulkan backend (it can't use
+                // the DXBC bytecode path); D3D12 also honours it via D3DCompile.
+                _renderTarget.DrawShaderEffectFromSource(x, y, w, h,
+                    sourceHlsl,
                     shaderEffect.BuildConstantBuffer());
             }
             else
             {
-                _renderTarget.DrawBlurEffect(x, y, w, h, 0);
+                var shaderBytecode = pixelShader?.ShaderBytecode;
+                if (shaderBytecode is { Length: > 0 })
+                {
+                    _renderTarget.DrawShaderEffect(x, y, w, h,
+                        shaderBytecode,
+                        shaderEffect.BuildConstantBuffer());
+                }
+                else
+                {
+                    _renderTarget.DrawBlurEffect(x, y, w, h, 0);
+                }
             }
         }
         else if (effect is Media.Effects.EffectGroup group)
@@ -3491,7 +3745,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                Math.Abs(a.Height - b.Height) < Eps;
     }
 
-    private static float[] MarshalGradientStops(List<GradientStop> stops)
+    private static float[] MarshalGradientStops(IReadOnlyList<GradientStop> stops)
     {
         var arr = new float[stops.Count * 5];
         for (int i = 0; i < stops.Count; i++)
@@ -3677,6 +3931,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             if (!stale && cached.Bitmap.IsValid)
             {
                 cached.LastAccessSequence = ++_bitmapCacheSequence;
+                cached.LastFrameUsed = _currentFrameId;
                 return cached.Bitmap;
             }
 
@@ -3697,6 +3952,7 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
             {
                 cached.ContentRevision = currentRevision;
                 cached.LastAccessSequence = ++_bitmapCacheSequence;
+                cached.LastFrameUsed = _currentFrameId;
                 return cached.Bitmap;
             }
 
@@ -3755,7 +4011,10 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
                 nativeBitmap,
                 estimatedBytes,
                 ++_bitmapCacheSequence,
-                currentRevision);
+                currentRevision)
+            {
+                LastFrameUsed = _currentFrameId,
+            };
             _bitmapCacheBytes += estimatedBytes;
         }
 
@@ -3764,47 +4023,58 @@ public sealed class RenderTargetDrawingContext : DrawingContext, IOffsetDrawingC
 
     private void TrimBitmapCacheIfNeeded()
     {
-        if (_bitmapCache.Count == 0)
+        // This runs once per render for EVERY drawing context (main window, popups,
+        // dock indicators, …) via TrimCacheIfNeeded(), so it is the natural per-frame
+        // boundary for the bitmap cache. Entries drawn this frame were stamped with
+        // the current _currentFrameId and are protected from eviction below; the id
+        // is advanced AFTER trimming so they survive this frame and become evictable
+        // next frame. Driving the advance here — rather than from a per-context
+        // BeginFrame() call — is what keeps the protection correct for every context
+        // without one being forgotten: a context that never advanced the id would
+        // match every entry below and silently disable the cache budget forever.
+        if (_bitmapCache.Count != 0)
         {
-            return;
-        }
-
-        var bitmapCacheByteBudget = GetBitmapCacheByteBudget();
-        while (_bitmapCache.Count > MaxBitmapCacheSize || _bitmapCacheBytes > bitmapCacheByteBudget)
-        {
-            KeyValuePair<ImageSource, BitmapCacheEntry>? oldest = null;
-            foreach (var kvp in _bitmapCache)
+            var bitmapCacheByteBudget = GetBitmapCacheByteBudget();
+            while (_bitmapCache.Count > MaxBitmapCacheSize || _bitmapCacheBytes > bitmapCacheByteBudget)
             {
-                if (oldest == null || kvp.Value.LastAccessSequence < oldest.Value.Value.LastAccessSequence)
+                KeyValuePair<ImageSource, BitmapCacheEntry>? oldest = null;
+                foreach (var kvp in _bitmapCache)
                 {
-                    oldest = kvp;
+                    // Never evict a texture used in the current frame: the render
+                    // thread may still be sampling it, and evicting + re-uploading
+                    // currently visible bitmaps every frame is exactly the thrash
+                    // this guards against.
+                    if (kvp.Value.LastFrameUsed == _currentFrameId)
+                    {
+                        continue;
+                    }
+
+                    if (oldest == null || kvp.Value.LastAccessSequence < oldest.Value.Value.LastAccessSequence)
+                    {
+                        oldest = kvp;
+                    }
                 }
-            }
 
-            if (oldest == null)
-            {
-                break;
-            }
+                if (oldest == null)
+                {
+                    break;
+                }
 
-            RemoveBitmapCacheEntry(oldest.Value.Key, oldest.Value.Value);
+                RemoveBitmapCacheEntry(oldest.Value.Key, oldest.Value.Value);
+            }
         }
+
+        // Advance the per-frame id for the next render. unchecked so the ~2^31-frame
+        // wrap is a defined wraparound (worst case: one bitmap redundantly re-uploaded
+        // on the wrap frame — no correctness impact).
+        unchecked { _currentFrameId++; }
     }
 
-    private static long GetBitmapCacheByteBudget()
-    {
-        var workingSetBytes = Environment.WorkingSet;
-        if (workingSetBytes >= HighMemoryPressureWorkingSetBytes)
-        {
-            return HighPressureBitmapCacheBytes;
-        }
-
-        if (workingSetBytes >= MediumMemoryPressureWorkingSetBytes)
-        {
-            return MediumPressureBitmapCacheBytes;
-        }
-
-        return MaxBitmapCacheBytes;
-    }
+    // Single hard ceiling. The previous WorkingSet-pressure tiers throttled a GPU
+    // (VRAM) cache by managed process memory — a category error that collapsed the
+    // budget to 32MB and drove per-frame texture re-upload. Evicting idle entries
+    // alone keeps this bounded; current-frame entries are protected in the trim loop.
+    private static long GetBitmapCacheByteBudget() => MaxBitmapCacheBytes;
 
     private void RemoveBitmapCacheEntry(ImageSource key, BitmapCacheEntry entry)
     {

@@ -36,13 +36,23 @@ namespace Jalium.UI.Media.Rendering;
 /// returned to the pool.
 /// </para>
 /// </remarks>
-internal sealed class DrawingRecorder : DrawingContext, IOffsetDrawingContext, IClipBoundsDrawingContext
+internal sealed class DrawingRecorder : DrawingContext,
+    IOffsetDrawingContext, IClipBoundsDrawingContext,
+    IClipDrawingContext, IOpacityDrawingContext, ITransformDrawingContext, IEffectDrawingContext
 {
     private readonly List<DrawCommand> _commands = new(32);
     private readonly BoundsAccumulator _bounds = new();
 
     private IOffsetDrawingContext? _offsetProxy;
     private IClipBoundsDrawingContext? _clipBoundsProxy;
+
+    // Whole-frame mode (BindWholeFrame): capture the ENTIRE visual tree as a
+    // self-contained command list with NO live target — Offset sets are RECORDED
+    // as SetOffset commands (so Visual.RenderChildVisualInline's per-child offsets
+    // are captured) instead of proxied, and bounds/clip culling is disabled.
+    // Used by the render-thread path (record on UI thread, replay on render thread).
+    private bool _wholeFrame;
+    private Point _recordedOffset;
 
     /// <summary>
     /// Prepares the recorder for a fresh recording scope. Clears any
@@ -56,6 +66,24 @@ internal sealed class DrawingRecorder : DrawingContext, IOffsetDrawingContext, I
         _bounds.Reset();
         _offsetProxy = target as IOffsetDrawingContext;
         _clipBoundsProxy = target as IClipBoundsDrawingContext;
+        _wholeFrame = false;
+    }
+
+    /// <summary>
+    /// Prepares the recorder to capture an ENTIRE frame (the whole visual tree)
+    /// as a self-contained command list with NO live target. Offset sets are
+    /// recorded as <c>SetOffset</c> commands (not proxied to a live context), and
+    /// bounds/clip culling is disabled (the recorded bounds would be meaningless
+    /// once per-child offsets vary across the frame). Consumed via <see cref="Commit"/>.
+    /// </summary>
+    public void BindWholeFrame()
+    {
+        _commands.Clear();
+        _bounds.Reset();
+        _offsetProxy = null;
+        _clipBoundsProxy = null;
+        _wholeFrame = true;
+        _recordedOffset = default;
     }
 
     /// <summary>
@@ -70,16 +98,21 @@ internal sealed class DrawingRecorder : DrawingContext, IOffsetDrawingContext, I
             _offsetProxy = null;
             _clipBoundsProxy = null;
             _bounds.Reset();
+            _wholeFrame = false;
             return Drawing.Empty;
         }
 
         var arr = _commands.ToArray();
-        var drawingBounds = _bounds.GetBounds();
+        // Whole-frame captures span many per-child offsets, so the accumulator's
+        // single bounds rect is meaningless (it ignores SetOffset) — null it to
+        // disable the replay-time AABB short-circuit and replay everything.
+        var drawingBounds = _wholeFrame ? (Rect?)null : _bounds.GetBounds();
 
         _commands.Clear();
         _bounds.Reset();
         _offsetProxy = null;
         _clipBoundsProxy = null;
+        _wholeFrame = false;
 
         return new Drawing(arr, arr.Length, drawingBounds);
     }
@@ -94,23 +127,33 @@ internal sealed class DrawingRecorder : DrawingContext, IOffsetDrawingContext, I
         _bounds.Reset();
         _offsetProxy = null;
         _clipBoundsProxy = null;
+        _wholeFrame = false;
     }
 
     // ── Ambient-state proxies ────────────────────────────────────────────
 
     Point IOffsetDrawingContext.Offset
     {
-        get => _offsetProxy?.Offset ?? default;
+        get => _wholeFrame ? _recordedOffset : (_offsetProxy?.Offset ?? default);
         set
         {
-            if (_offsetProxy != null)
+            if (_wholeFrame)
+            {
+                // Record the absolute per-child offset so replay re-applies it.
+                _recordedOffset = value;
+                _commands.Add(DrawCommand.SetOffsetCmd(value));
+            }
+            else if (_offsetProxy != null)
             {
                 _offsetProxy.Offset = value;
             }
         }
     }
 
-    Rect? IClipBoundsDrawingContext.CurrentClipBounds => _clipBoundsProxy?.CurrentClipBounds;
+    // Whole-frame mode has no live clip to read; returning null disables OnRender
+    // clip-cull reads (slight over-record, always correct).
+    Rect? IClipBoundsDrawingContext.CurrentClipBounds =>
+        _wholeFrame ? null : _clipBoundsProxy?.CurrentClipBounds;
 
     // ── Draw calls ──────────────────────────────────────────────────────
     //
@@ -363,6 +406,47 @@ internal sealed class DrawingRecorder : DrawingContext, IOffsetDrawingContext, I
         // / PushClip / PushOpacity — they don't go through Pop(), so no
         // bounds-stack pop is needed here.
     }
+
+    // ── Ambient typed-interface impls (whole-frame recording) ───────────
+    // RenderDirect / RenderChildVisualInline apply per-element opacity, render
+    // transform (around an origin), and element effects through these typed
+    // interfaces (guarded by `is IXxxDrawingContext`). A recorder lacking them
+    // would silently DROP those operations. PushOpacity(double) / PushClip(Geometry)
+    // / Pop() are already provided by the base DrawingContext overrides above;
+    // only the members below are new. Harmless in per-visual mode (never called).
+
+    void IOpacityDrawingContext.PopOpacity() => Pop();
+
+    void ITransformDrawingContext.PushTransform(Transform transform, double originX, double originY)
+    {
+        if (originX != 0 || originY != 0)
+        {
+            // Compose T(-origin) * transform * T(+origin) — identical to
+            // RenderTargetDrawingContext so replay reproduces it exactly.
+            var m = transform.Value;
+            var pre = new Matrix(1, 0, 0, 1, -originX, -originY);
+            var post = new Matrix(1, 0, 0, 1, originX, originY);
+            PushTransform(new MatrixTransform(Matrix.Multiply(Matrix.Multiply(pre, m), post)));
+        }
+        else
+        {
+            PushTransform(transform);
+        }
+    }
+
+    void ITransformDrawingContext.PopTransform() => Pop();
+
+    void IEffectDrawingContext.BeginEffectCapture(float x, float y, float w, float h) =>
+        _commands.Add(DrawCommand.BeginEffectCaptureCmd(x, y, w, h));
+
+    void IEffectDrawingContext.EndEffectCapture() =>
+        _commands.Add(DrawCommand.EndEffectCaptureCmd());
+
+    void IEffectDrawingContext.ApplyElementEffect(IEffect effect, float x, float y, float w, float h,
+        float captureOriginX, float captureOriginY,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) =>
+        _commands.Add(DrawCommand.ApplyElementEffectCmd(effect, x, y, w, h,
+            captureOriginX, captureOriginY, cornerTL, cornerTR, cornerBR, cornerBL));
 
     // ── Lifecycle ───────────────────────────────────────────────────────
 

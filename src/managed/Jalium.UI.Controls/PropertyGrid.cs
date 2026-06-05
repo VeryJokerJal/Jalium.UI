@@ -392,6 +392,8 @@ public class PropertyGrid : Control
     #region Template
 
     /// <inheritdoc />
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Calls RebuildView, which discovers properties on SelectedObject via reflection and uses TypeDescriptor.GetConverter for the runtime type. PropertyGrid is a developer/inspector control: consumers that bind it to user-defined types must keep those types' properties and converters preserved (e.g. via DynamicDependency or a descriptor) — a documented prerequisite for using PropertyGrid under AOT. The same reflection contract is declared at the public entry points RefreshProperties() and the SelectedObject setter; this template-application leaf merely re-runs that already-documented work.")]
     public override void OnApplyTemplate()
     {
         base.OnApplyTemplate();
@@ -480,6 +482,8 @@ public class PropertyGrid : Control
 
     #region Property Change Callbacks
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Invokes the instance OnSelectedObjectChanged, which discovers properties on SelectedObject via reflection and builds editor rows that use TypeDescriptor.GetConverter. This is the PropertyChangedCallback for the SelectedObject dependency property: the reflection contract is declared at that public surface (assigning SelectedObject is what triggers this). PropertyGrid is a developer/inspector control whose consumers must keep the inspected types' properties and converters preserved under AOT — a documented prerequisite, not a defect of this callback.")]
     private static void OnSelectedObjectChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var grid = (PropertyGrid)d;
@@ -502,6 +506,8 @@ public class PropertyGrid : Control
         grid.SelectedObject = null;
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Calls RebuildView, which rebuilds the rows already discovered for SelectedObject and uses TypeDescriptor.GetConverter for each property's runtime type. The underlying reflection contract is declared at the SelectedObject public surface that originally populated those items; this view-shape callback (sort mode, read-only, column width, etc.) only re-lays-out already-discovered properties. Preserving the inspected types' members and converters is the documented PropertyGrid-under-AOT prerequisite.")]
     private static void OnViewPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var grid = (PropertyGrid)d;
@@ -509,6 +515,8 @@ public class PropertyGrid : Control
         grid.RebuildView();
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Calls RebuildView, which rebuilds the rows already discovered for SelectedObject and uses TypeDescriptor.GetConverter for each property's runtime type. The underlying reflection contract is declared at the SelectedObject public surface that originally populated those items; this visual callback (search box / description / toolbar visibility) only re-lays-out already-discovered properties. Preserving the inspected types' members and converters is the documented PropertyGrid-under-AOT prerequisite.")]
     private static new void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         var grid = (PropertyGrid)d;
@@ -599,6 +607,8 @@ public class PropertyGrid : Control
         RebuildView();
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+        Justification = "GetProperties is called on the runtime type of SelectedObject (obj.GetType()), whose static type is object and therefore cannot carry DynamicallyAccessedMembers. PropertyGrid is a developer/inspector control: consumers that assign a user-defined SelectedObject must keep that type's public instance properties preserved (e.g. via DynamicDependency or a descriptor) — the documented prerequisite for using PropertyGrid under AOT. The reflection contract is already declared at the public RefreshProperties() / SelectedObject surface that reaches this method.")]
     private void BuildPropertyItems(object obj)
     {
         var type = obj.GetType();

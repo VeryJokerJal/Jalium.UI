@@ -30,6 +30,10 @@ internal static class RazorExpressionRuntimeCompiler
         // of spinning up the Roslyn compiler pipeline for every expression.
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Razor runtime expression evaluation is an opt-in feature. The called RazorLightweightExpressionEvaluator.Evaluate carries RequiresUnreferencedCode ('Razor expression evaluator dispatches to RazorExpressionParser, which may reflect on user types') — its preservation is the documented consumer responsibility: applications must register typed property/method accessors via RazorExpressionRegistry for any binding source they use under trimming, otherwise the evaluator falls back to reflection on the runtime source type.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Razor runtime expression evaluation is an opt-in feature. The called RazorLightweightExpressionEvaluator.Evaluate carries RequiresDynamicCode ('Razor expression evaluator dispatches to RazorExpressionParser, which may construct generic types/methods at runtime'). Consumers targeting AOT must register accessors via RazorExpressionRegistry; the reflective fallback is exercised only for unregistered runtime expressions, a documented prerequisite of the Razor binding surface, not a defect of this site.")]
     public static object? Evaluate(RazorExpressionPlan plan, Func<string, object?> resolver)
     {
         // Build-time pre-compiled evaluators use 'dynamic' which requires Microsoft.CSharp.
@@ -52,6 +56,10 @@ internal static class RazorExpressionRuntimeCompiler
         catch { return false; }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Razor runtime expression evaluation is an opt-in feature. The called RazorLightweightExpressionEvaluator.Evaluate carries RequiresUnreferencedCode ('Razor expression evaluator dispatches to RazorExpressionParser, which may reflect on user types') — its preservation is the documented consumer responsibility: applications must register typed property/method accessors via RazorExpressionRegistry for any binding source they use under trimming, otherwise the evaluator falls back to reflection on the runtime source type.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Razor runtime expression evaluation is an opt-in feature. The called RazorLightweightExpressionEvaluator.Evaluate carries RequiresDynamicCode ('Razor expression evaluator dispatches to RazorExpressionParser, which may construct generic types/methods at runtime'). Consumers targeting AOT must register accessors via RazorExpressionRegistry; the reflective fallback is exercised only for unregistered runtime expressions, a documented prerequisite of the Razor binding surface, not a defect of this site.")]
     public static bool TryEvaluate(RazorExpressionPlan plan, Func<string, object?> resolver, out object? value)
     {
         // Build-time pre-compiled evaluators use 'dynamic' — skip when not available
@@ -109,6 +117,8 @@ internal static class RazorExpressionRuntimeCompiler
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Razor runtime expression evaluation is an opt-in feature. The called RazorLightweightExpressionCompiler.CompileExpression carries RequiresUnreferencedCode ('Compiled expression wrapper invokes the lightweight evaluator, which reflects on user types') — its preservation is the documented consumer responsibility: applications must register typed accessors via RazorExpressionRegistry for binding sources used under trimming, otherwise the wrapped evaluator falls back to reflection on the runtime source type.")]
     private static CompiledExpression Compile(RazorExpressionPlan plan)
     {
         var wrapper = RazorLightweightExpressionCompiler.CompileExpression(plan);
@@ -257,6 +267,8 @@ internal static class RazorTemplateRuntimeCompiler
         return sb.ToString();
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Razor runtime template evaluation is an opt-in feature. The called RazorLightweightExpressionCompiler.CompileTemplate carries RequiresUnreferencedCode ('Compiled template wrapper invokes the lightweight expression/code-block evaluators, which reflect on user types') — its preservation is the documented consumer responsibility: applications must register typed accessors via RazorExpressionRegistry for binding sources used under trimming, otherwise the wrapped evaluators fall back to reflection on the runtime source type.")]
     private static CompiledTemplate Compile(RazorTemplate template)
     {
         var wrapper = RazorLightweightExpressionCompiler.CompileTemplate(template);

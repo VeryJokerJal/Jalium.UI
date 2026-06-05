@@ -185,6 +185,10 @@ internal static class RazorTemplateParser
         '.', '_', '[', ']', '$', '#'
     ]);
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "This site only constructs RazorExpressionParser to syntax-validate an @(...) expression at parse time with a null resolver (_ => null), so no user-type reflection runs here. RazorExpressionParser's RUC contract ('Razor expression interpreter reflects on the runtime types of binding sources for any path it cannot resolve through RazorExpressionRegistry.') is declared at that class and already propagated through the runtime Razor reader entry points (RazorBinding.ApplySgLoweredExpression / EvaluateTemplate, reached via XamlReader). Runtime Razor expression evaluation is an opt-in feature whose binding-source preservation is the documented consumer responsibility (register typed accessors via RazorExpressionRegistry for AOT-safe operation).")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "Same site: parse-time syntax validation only. RazorExpressionParser's RDC contract ('Razor expression interpreter may construct generic types/methods for runtime-evaluated expressions.') is declared at that class and propagated through the runtime Razor reader surface (RazorBinding / XamlReader). This is the opt-in runtime Razor reader, not a defect of this validation site.")]
     public static RazorTemplate Parse(string value)
     {
         var segments = new List<RazorSegment>();

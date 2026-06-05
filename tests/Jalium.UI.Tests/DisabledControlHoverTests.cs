@@ -118,7 +118,7 @@ public class DisabledControlHoverTests
         radio.Measure(new Size(100, 30));
         radio.Arrange(new Rect(0, 0, 100, 30));
 
-        var root = (Border)radio.GetVisualChild(0);
+        var root = Assert.IsAssignableFrom<Border>(radio.GetVisualChild(0));
         var baseline = root.Background;
 
         radio.SetIsMouseOver(true);
@@ -134,7 +134,7 @@ public class DisabledControlHoverTests
         radio.Measure(new Size(100, 30));
         radio.Arrange(new Rect(0, 0, 100, 30));
 
-        var root = (Border)radio.GetVisualChild(0);
+        var root = Assert.IsAssignableFrom<Border>(radio.GetVisualChild(0));
         var baseline = root.Background;
 
         radio.SetIsMouseOver(true);

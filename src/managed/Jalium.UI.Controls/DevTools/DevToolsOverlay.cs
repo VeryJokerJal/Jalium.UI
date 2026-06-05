@@ -37,10 +37,10 @@ internal sealed class DevToolsOverlay
     private float _rippleProgress; // 0-1, ripple expansion progress
     private bool _isRippling;
 
-    // Glow effect parameters
-    private const float GlowColorR = 0.0f;    // Blue glow
-    private const float GlowColorG = 0.47f;   // (0, 120, 215) normalized
-    private const float GlowColorB = 0.84f;
+    // Glow effect parameters - signal amber (#FFB22E) normalized to 0..1
+    private const float GlowColorR = 1.0f;
+    private const float GlowColorG = 0.698f;
+    private const float GlowColorB = 0.18f;
     private const float StrokeWidth = 2.0f;   // Thinner base stroke
     private const float TrailLength = 0.44f;  // 24% of perimeter (increased by 20%)
     private const float DimOpacity = 0.35f;   // Slightly less dimming
@@ -54,9 +54,9 @@ internal sealed class DevToolsOverlay
     {
         _targetWindow = targetWindow ?? throw new ArgumentNullException(nameof(targetWindow));
 
-        // Create brushes for margin/padding visualization - cohesive blue theme
-        _marginBrush = new SolidColorBrush(Color.FromArgb(60, 138, 180, 248)); // Light blue for margin
-        _paddingBrush = new SolidColorBrush(Color.FromArgb(60, 180, 140, 255)); // Light purple for padding
+        // Margin/padding bands aligned to the box-model legend: margin = caution amber-orange, padding = green.
+        _marginBrush = new SolidColorBrush(Color.FromArgb(60, DevToolsTheme.WarningColor.R, DevToolsTheme.WarningColor.G, DevToolsTheme.WarningColor.B));
+        _paddingBrush = new SolidColorBrush(Color.FromArgb(60, DevToolsTheme.SuccessColor.R, DevToolsTheme.SuccessColor.G, DevToolsTheme.SuccessColor.B));
 
         // Initialize animation
         _animationStopwatch = new Stopwatch();
@@ -355,8 +355,8 @@ internal sealed class DevToolsOverlay
     /// </summary>
     private void DrawSimpleOverlay(DrawingContext dc, Rect rect)
     {
-        var highlightFillBrush = new SolidColorBrush(Color.FromArgb(50, 0, 120, 215));
-        var highlightBorderBrush = new SolidColorBrush(Color.FromArgb(255, 0, 120, 215));
+        var highlightFillBrush = new SolidColorBrush(Color.FromArgb(50, DevToolsTheme.AccentColor.R, DevToolsTheme.AccentColor.G, DevToolsTheme.AccentColor.B));
+        var highlightBorderBrush = new SolidColorBrush(DevToolsTheme.AccentColor);
 
         // Draw margin area
         if (_highlightedElement is FrameworkElement fe && HasNonZeroMargin(fe.Margin))
@@ -404,16 +404,16 @@ internal sealed class DevToolsOverlay
         var typeName = _highlightedElement.GetType().Name;
 
         // Create formatted text for type name (blue accent color)
-        var typeText = new FormattedText(typeName, "Segoe UI Semibold", 11)
+        var typeText = new FormattedText(typeName, "Bahnschrift SemiBold", 11)
         {
-            Foreground = new SolidColorBrush(Color.FromRgb(100, 180, 255))
+            Foreground = new SolidColorBrush(DevToolsTheme.AccentColor)
         };
         TextMeasurement.MeasureText(typeText);
 
         // Create formatted text for size (white)
-        var sizeText = new FormattedText($"{elementBounds.Width:F0} × {elementBounds.Height:F0}", "Segoe UI", 10)
+        var sizeText = new FormattedText($"{elementBounds.Width:F0} × {elementBounds.Height:F0}", "Cascadia Code", 10)
         {
-            Foreground = new SolidColorBrush(Color.FromRgb(180, 180, 180))
+            Foreground = new SolidColorBrush(DevToolsTheme.TextSecondaryColor)
         };
         TextMeasurement.MeasureText(sizeText);
 
@@ -441,13 +441,13 @@ internal sealed class DevToolsOverlay
 
         // Draw premium dark background with subtle blur effect simulation
         dc.DrawRoundedRectangle(
-            new SolidColorBrush(Color.FromArgb(240, 18, 22, 32)),
+            new SolidColorBrush(Color.FromArgb(240, DevToolsTheme.ChromeColor.R, DevToolsTheme.ChromeColor.G, DevToolsTheme.ChromeColor.B)),
             null,
             panelBounds,
             6, 6);
 
-        // Draw subtle blue glow border matching the animation
-        var borderPen = new Pen(new SolidColorBrush(Color.FromArgb(120, 0, 120, 215)), 1);
+        // Draw subtle amber glow border matching the animation
+        var borderPen = new Pen(new SolidColorBrush(Color.FromArgb(120, DevToolsTheme.AccentColor.R, DevToolsTheme.AccentColor.G, DevToolsTheme.AccentColor.B)), 1);
         dc.DrawRoundedRectangle(
             null,
             borderPen,
@@ -591,8 +591,8 @@ internal sealed class DevToolsOverlay
     }
 
     // Ruler palette — a cool cyan/blue with pop.
-    private static readonly Color RulerColor         = Color.FromRgb(0x3A, 0x9D, 0xFF);
-    private static readonly Color RulerColorLight    = Color.FromRgb(0x8F, 0xC9, 0xFF);
+    private static readonly Color RulerColor         = DevToolsTheme.AccentColor;
+    private static readonly Color RulerColorLight    = DevToolsTheme.AccentHoverColor;
     private static readonly Color RulerShadow        = Color.FromArgb(0x60, 0x00, 0x00, 0x00);
 
     private void DrawRulerOverlay(DrawingContext dc)
@@ -695,7 +695,7 @@ internal sealed class DevToolsOverlay
     {
         var ft = new FormattedText(text, FrameworkElement.DefaultFontFamilyName, 11)
         {
-            Foreground = new SolidColorBrush(Color.FromRgb(0xF5, 0xF5, 0xF5)),
+            Foreground = new SolidColorBrush(DevToolsTheme.TextPrimaryColor),
         };
         TextMeasurement.MeasureText(ft);
         double w = ft.Width + 14;

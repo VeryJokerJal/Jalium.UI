@@ -1070,6 +1070,8 @@ public sealed class BindingExpression : BindingExpressionBase
         return null;
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "PropertyAccessorRegistry.TryReadProperty/TryGetPropertyInfo are the binding engine's reflection fallback for unregistered user view-model types. Per their RUC message — \"Register typed accessors via Register() to opt out of reflection\" — preserving these properties is the documented consumer responsibility for trim/AOT (the SourceGenerator emits Register<T>()/DynamicDependency for jalxaml DataType bindings; see project_trim_view_model_binding). Suppressing here keeps the RUC contract declared at the PropertyAccessorRegistry surface rather than cascading it onto every DependencyObject.SetValue caller of the binding engine.")]
     private void ResolveSourceProperty()
     {
         if (ResolvedSource == null || _binding.Path == null)
@@ -1097,6 +1099,8 @@ public sealed class BindingExpression : BindingExpressionBase
         _sourceProperty = PropertyAccessorRegistry.TryGetPropertyInfo(current, lastSegment);
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "PropertyAccessorRegistry.TryReadProperty is the binding engine's reflection fallback for unregistered user view-model types. Per its RUC message — \"Register typed accessors via Register() to opt out of reflection\" — preserving these properties is the documented consumer responsibility for trim/AOT (the SourceGenerator emits Register<T>()/DynamicDependency for jalxaml DataType bindings; see project_trim_view_model_binding). Suppressing here keeps the RUC contract declared at the PropertyAccessorRegistry surface rather than cascading it onto every binding consumer.")]
     private object? GetSourceValue()
     {
         if (ResolvedSource == null)
@@ -1353,6 +1357,8 @@ public sealed class BindingExpression : BindingExpressionBase
         }
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+        Justification = "current.GetType().GetProperty(segment) reflects the runtime type of an intermediate value-object on the binding path to walk it for INotifyPropertyChanged subscriptions. The source is object.GetType() and cannot carry DynamicallyAccessedMembers. The property being reflected is the same property the binding engine already reads via PropertyAccessorRegistry, whose RUC contract — \"Register typed accessors via Register() to opt out of reflection\" — documents that consumers must preserve their bound view-model properties for trim/AOT (the SourceGenerator emits Register<T>()/DynamicDependency for jalxaml DataType bindings; see project_trim_view_model_binding). This is the same documented consumer responsibility, surfaced here as IL2075 because the walk is a direct reflection site.")]
     private void SubscribeToIntermediates()
     {
         UnsubscribeFromIntermediates();

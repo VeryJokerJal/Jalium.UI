@@ -860,6 +860,10 @@ internal static class RazorCodeBlockPreprocessor
     /// at parse time. Callers must distinguish the two cases (see <see cref="IsRuntimeCodeBlock"/>)
     /// to avoid feeding the verbatim form back into the parser, which would recurse forever.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "RazorLightweightCodeBlockInterpreter.Expand is the opt-in Razor code-block interpreter whose RequiresUnreferencedCode message documents that it 'dispatches to the lightweight expression evaluator, which reflects on user types' and that Trim/AOT-safe usage requires applications to register typed accessors via RazorExpressionRegistry. That consumer prerequisite is the documented preservation responsibility, and the reflective evaluation only runs from the runtime jalxaml reader (JalxamlReader) entry point, which carries the RequiresUnreferencedCode contract for runtime XAML parsing.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "RazorLightweightCodeBlockInterpreter.Expand's RequiresDynamicCode message notes it 'may construct generic types/methods at runtime via the expression evaluator'. Razor runtime expression evaluation is an opt-in feature reached only through the runtime jalxaml reader (JalxamlReader); applications publishing under AOT must register typed accessors so no generic construction is needed, which is the documented consumer responsibility for this site rather than a defect of it.")]
     internal static string ExpandCodeBlock(string code)
     {
         if (string.IsNullOrWhiteSpace(code))

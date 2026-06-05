@@ -5,7 +5,6 @@
 // inline from the audio paths; the query export snapshots them into the
 // caller's POD struct in a single pass.
 
-#define JALIUM_MEDIA_EXPORTS
 #include "jalium_audio.h"
 #include "audio_internal.h"
 

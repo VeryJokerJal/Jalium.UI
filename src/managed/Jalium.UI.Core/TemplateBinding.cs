@@ -109,6 +109,24 @@ internal sealed class TemplateBindingExpression : BindingExpressionBase
             return;
 
         var value = _templatedParent.GetValue(_binding.Property);
+
+        // WPF parity (StyleHelper.GetChildValueHelper, TemplateBinding case): a value the target
+        // property cannot legally hold — null for a non-nullable value type, or an instance of an
+        // incompatible type — must NOT be pinned into the ParentTemplate precedence layer. Doing so
+        // would shadow the target's own default and crash on unbox at layout (e.g. (Thickness)null).
+        // TemplateBinding performs no implicit conversion, so an invalid value degrades to
+        // DependencyProperty.UnsetValue semantics: clear this layer's contribution and let the
+        // property fall through to its default / lower-precedence value.
+        if (!TargetProperty.IsValidType(value))
+        {
+            System.Diagnostics.Trace.WriteLine(
+                $"[Jalium.UI] TemplateBinding skip: 模板父级 {_templatedParent.GetType().Name}.{_binding.Property.Name} 的值 " +
+                $"'{value ?? "<null>"}' 与目标 DP {TargetProperty.OwnerType.Name}.{TargetProperty.Name} " +
+                $"({TargetProperty.PropertyType.Name}) 不兼容，回退默认值。");
+            Target.ClearLayerValue(TargetProperty, DependencyObject.LayerValueSource.ParentTemplate);
+            return;
+        }
+
         Target.SetLayerValue(TargetProperty, value, DependencyObject.LayerValueSource.ParentTemplate);
     }
 

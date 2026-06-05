@@ -80,11 +80,15 @@ internal sealed class ManipulationInertiaProcessor
         InertiaExpansionBehavior? expansionBehavior)
     {
         // Honour caller-provided initial velocity overrides (WPF behavior).
-        if (translationBehavior?.InitialVelocity != default)
+        // Note: `behavior?.InitialVelocity != default` would target-type `default`
+        // to Vector? (null), collapsing the test to a mere null check and never
+        // comparing the velocity value. Mirror the rotation branch below: null-check
+        // the behavior, then compare InitialVelocity against the zero vector.
+        if (translationBehavior != null && translationBehavior.InitialVelocity != default)
             linearVelocity = translationBehavior.InitialVelocity;
         if (rotationBehavior != null && rotationBehavior.InitialVelocity != 0)
             angularVelocity = rotationBehavior.InitialVelocity;
-        if (expansionBehavior?.InitialVelocity != default)
+        if (expansionBehavior != null && expansionBehavior.InitialVelocity != default)
             expansionVelocity = expansionBehavior.InitialVelocity;
 
         _linearVelocity = linearVelocity;

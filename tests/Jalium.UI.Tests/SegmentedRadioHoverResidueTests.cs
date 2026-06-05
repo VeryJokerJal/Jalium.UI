@@ -22,7 +22,7 @@ public class SegmentedRadioHoverResidueTests
         radio.Measure(new Size(100, 30));
         radio.Arrange(new Rect(0, 0, 100, 30));
 
-        var seg = (Border)radio.GetVisualChild(0);
+        var seg = Assert.IsAssignableFrom<Border>(radio.GetVisualChild(0));
 
         // 1) 鼠标进入：IsMouseOver 触发器激活
         radio.SetIsMouseOver(true);
@@ -49,7 +49,7 @@ public class SegmentedRadioHoverResidueTests
         radio.Measure(new Size(100, 30));
         radio.Arrange(new Rect(0, 0, 100, 30));
 
-        var seg = (Border)radio.GetVisualChild(0);
+        var seg = Assert.IsAssignableFrom<Border>(radio.GetVisualChild(0));
 
         radio.IsChecked = true;
         Assert.Equal(CheckedBrush, seg.Background);
@@ -69,7 +69,7 @@ public class SegmentedRadioHoverResidueTests
         radio.Measure(new Size(100, 30));
         radio.Arrange(new Rect(0, 0, 100, 30));
 
-        var seg = (Border)radio.GetVisualChild(0);
+        var seg = Assert.IsAssignableFrom<Border>(radio.GetVisualChild(0));
 
         var baselineBackground = seg.Background;
 
@@ -87,7 +87,7 @@ public class SegmentedRadioHoverResidueTests
         radio.Measure(new Size(100, 30));
         radio.Arrange(new Rect(0, 0, 100, 30));
 
-        var seg = (Border)radio.GetVisualChild(0);
+        var seg = Assert.IsAssignableFrom<Border>(radio.GetVisualChild(0));
 
         radio.IsChecked = true;
         radio.SetIsMouseOver(true);
@@ -109,7 +109,7 @@ public class SegmentedRadioHoverResidueTests
         radio.Measure(new Size(100, 30));
         radio.Arrange(new Rect(0, 0, 100, 30));
 
-        var seg = (Border)radio.GetVisualChild(0);
+        var seg = Assert.IsAssignableFrom<Border>(radio.GetVisualChild(0));
 
         radio.IsChecked = true;
         Assert.Equal(CheckedBrush, seg.Background);
@@ -144,7 +144,7 @@ public class SegmentedRadioHoverResidueTests
         radio.Measure(new Size(100, 30));
         radio.Arrange(new Rect(0, 0, 100, 30));
 
-        var seg = (Border)radio.GetVisualChild(0);
+        var seg = Assert.IsAssignableFrom<Border>(radio.GetVisualChild(0));
 
         radio.SetIsMouseOver(true);
         Assert.Equal(HoverBrush, seg.Background);
@@ -167,7 +167,7 @@ public class SegmentedRadioHoverResidueTests
         radio.Measure(new Size(100, 30));
         radio.Arrange(new Rect(0, 0, 100, 30));
 
-        var seg = (Border)radio.GetVisualChild(0);
+        var seg = Assert.IsAssignableFrom<Border>(radio.GetVisualChild(0));
 
         radio.IsChecked = true;
         radio.SetIsMouseOver(true);

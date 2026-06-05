@@ -161,6 +161,9 @@ internal static class SvgParser
             case "text":
                 // Basic text support - render as path if possible
                 break;
+            case "image":
+                ParseImage(element, parentGroup, defs);
+                break;
             case "use":
                 ParseUse(element, parentGroup, defs);
                 break;
@@ -352,6 +355,107 @@ internal static class SvgParser
             group.Children.Add(useGroup);
     }
 
+    private static void ParseImage(XElement element, DrawingGroup group, Dictionary<string, XElement> defs)
+    {
+        var x = ParseDouble(element, "x");
+        var y = ParseDouble(element, "y");
+        var w = ParseDouble(element, "width");
+        var h = ParseDouble(element, "height");
+
+        // SVG requires a positive width/height for an <image> to be rendered.
+        if (w <= 0 || h <= 0) return;
+
+        // SVG2 uses "href"; SVG1.1 uses "xlink:href". Accept either form.
+        var href = element.Attribute(XlinkNs + "href")?.Value
+                   ?? element.Attribute("href")?.Value;
+        if (string.IsNullOrWhiteSpace(href)) return;
+
+        if (!TryDecodeImageBytes(href, out var bytes))
+            return; // External reference or non-base64 payload — not embedded.
+
+        BitmapImage bitmap;
+        try
+        {
+            bitmap = BitmapImage.FromBytes(bytes);
+        }
+        catch
+        {
+            // Decoder unavailable, or the embedded payload is corrupt/unsupported.
+            // Skip only this <image> rather than aborting the whole SVG parse,
+            // mirroring ParsePath's tolerant handling of bad path data.
+            return;
+        }
+
+        if (bitmap.PixelWidth <= 0 || bitmap.PixelHeight <= 0) return;
+
+        // The decoded BGRA pixels live on this BitmapImage for the lifetime of the
+        // SvgImage's Drawing tree and are intentionally not reclaimed: a resize
+        // triggers a cache-miss re-rasterization (SoftwareVectorRasterizer) that
+        // must re-sample the embedded source. Bounded to one buffer per embedded
+        // image and freed when the owning SvgImage is collected.
+        var imageDrawing = new ImageDrawing(bitmap, new Rect(x, y, w, h));
+        AddDrawing(element, imageDrawing, group);
+    }
+
+    /// <summary>
+    /// Decodes the bytes referenced by an &lt;image&gt; element's href when it is a
+    /// base64 <c>data:</c> URI (e.g. <c>data:image/png;base64,iVBOR…</c>) — the
+    /// standard way raster images are embedded inline in SVG. External references
+    /// (http/file/relative) and percent-encoded text payloads return false.
+    /// </summary>
+    private static bool TryDecodeImageBytes(string href, out byte[] bytes)
+    {
+        bytes = Array.Empty<byte>();
+        href = href.Trim();
+
+        const string scheme = "data:";
+        if (!href.StartsWith(scheme, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var comma = href.IndexOf(',');
+        if (comma < 0) return false;
+
+        // Metadata sits between "data:" and the first comma, e.g. "image/png;base64".
+        var meta = href.Substring(scheme.Length, comma - scheme.Length);
+        if (meta.IndexOf("base64", StringComparison.OrdinalIgnoreCase) < 0)
+            return false;
+
+        var payload = href.Substring(comma + 1);
+        if (string.IsNullOrWhiteSpace(payload)) return false;
+
+        try
+        {
+            bytes = Convert.FromBase64String(payload);
+        }
+        catch (FormatException)
+        {
+            // Convert.FromBase64String ignores embedded whitespace, but some
+            // authoring tools wrap payloads with characters it still rejects;
+            // strip all whitespace and retry once before giving up.
+            try
+            {
+                bytes = Convert.FromBase64String(RemoveWhitespace(payload));
+            }
+            catch (FormatException)
+            {
+                return false;
+            }
+        }
+
+        return bytes.Length > 0;
+    }
+
+    private static string RemoveWhitespace(string value)
+    {
+        var sb = new System.Text.StringBuilder(value.Length);
+        foreach (var ch in value)
+        {
+            if (!char.IsWhiteSpace(ch))
+                sb.Append(ch);
+        }
+        return sb.ToString();
+    }
+
     #endregion
 
     #region Shape Drawing Helper
@@ -370,8 +474,18 @@ internal static class SvgParser
         }
 
         var drawing = new GeometryDrawing(fill, pen, geometry);
+        AddDrawing(element, drawing, group);
+    }
 
-        // Wrap in group if element has transform or opacity
+    /// <summary>
+    /// Appends <paramref name="drawing"/> to <paramref name="group"/>, wrapping it
+    /// in a <see cref="DrawingGroup"/> when the source element carries a transform
+    /// or reduced opacity. Shared by shape (<see cref="AddShapeDrawing"/>) and
+    /// raster image (<see cref="ParseImage"/>) parsing so both honor element-level
+    /// transform / opacity identically.
+    /// </summary>
+    private static void AddDrawing(XElement element, Drawing drawing, DrawingGroup group)
+    {
         var transform = ParseTransform(element);
         var opacity = ParseDoubleAttribute(element, "opacity", 1.0);
 

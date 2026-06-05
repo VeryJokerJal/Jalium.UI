@@ -36,6 +36,12 @@ public sealed class DependencyProperty
     /// </summary>
     private readonly Dictionary<Type, PropertyMetadata> _metadataCache = new();
 
+    // Lazily-synthesized boxed default(T) for a non-nullable value-type property whose registered
+    // metadata default is null (see GetEffectiveDefaultValue). A synthesized value-type default is never
+    // null, so a non-null box is its own publication signal — no separate "computed" flag (which would
+    // carry a store-ordering hole on weak memory models, ARM64), and a benign recompute is harmless.
+    private object? _valueTypeDefaultBox;
+
     /// <summary>
     /// Gets the property name.
     /// </summary>
@@ -95,12 +101,51 @@ public sealed class DependencyProperty
 
     /// <summary>
     /// Runs the registered <see cref="ValidateValueCallback"/> against <paramref name="value"/>.
-    /// Returns <see langword="true"/> when no callback is registered (matching the WPF behaviour
-    /// where the absence of a validator means any value is acceptable).
+    /// Returns <see langword="true"/> when no callback is registered.
     /// </summary>
+    /// <remarks>
+    /// NOTE — divergence from WPF: WPF's <c>IsValidValue</c> is the conjunction
+    /// <c>IsValidType(value) &amp;&amp; (ValidateValueCallback == null || ValidateValueCallback(value))</c>.
+    /// This implementation intentionally runs ONLY the callback and does NOT perform the
+    /// <see cref="IsValidType"/> type-assignability check, so a type-incompatible value (including a
+    /// <see langword="null"/> for a non-nullable value type) passes this gate. Null/mismatch safety for
+    /// value-type properties is instead enforced at the write paths (TemplateBinding/Style transfers, the
+    /// <c>SetLayerValueCore</c> backstop, <c>SetCurrentValue</c>, local promotion) and by value-type
+    /// default synthesis at registration. Folding <see cref="IsValidType"/> into this method (so
+    /// <c>SetValue</c> throws on an illegal value, full WPF parity) is a deliberate larger follow-up that
+    /// would change framework-wide throw semantics and needs separate regression vetting.
+    /// </remarks>
     public bool IsValidValue(object? value)
     {
         return ValidateValueCallback is null || ValidateValueCallback(value);
+    }
+
+    /// <summary>
+    /// Determines whether <paramref name="value"/> is type-compatible with this dependency
+    /// property — i.e. whether it could be stored as the property's value without later throwing
+    /// when the generated CLR accessor casts it back to <see cref="PropertyType"/>.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors WPF's public <c>DependencyProperty.IsValidType</c>. A <see langword="null"/> is
+    /// acceptable only for reference types and <see cref="Nullable{T}"/>; a non-nullable value type
+    /// (<c>Thickness</c>, <c>double</c>, <c>bool</c>, an enum, <c>CornerRadius</c>, …) cannot hold
+    /// <see langword="null"/> and would throw <see cref="NullReferenceException"/> on unbox. A
+    /// non-null value must be assignable to <see cref="PropertyType"/>. This is the type-assignability
+    /// gate that <see cref="IsValidValue"/> deliberately does not perform — the latter only runs the
+    /// registered <see cref="ValidateValueCallback"/>.
+    /// </remarks>
+    public bool IsValidType(object? value)
+    {
+        if (value is null)
+        {
+            return !PropertyType.IsValueType || Nullable.GetUnderlyingType(PropertyType) is not null;
+        }
+
+        // A non-null value must be an instance of the property type. For a Nullable<T> property a
+        // boxed T surfaces with runtime type T (boxed nullables don't exist), so compare against the
+        // underlying T rather than Nullable<T> — otherwise a legal value would be rejected.
+        var targetType = Nullable.GetUnderlyingType(PropertyType) ?? PropertyType;
+        return targetType.IsInstanceOfType(value);
     }
 
     /// <summary>
@@ -237,6 +282,8 @@ public sealed class DependencyProperty
     /// retry. JIT builds are unaffected — RunClassConstructor is a no-op when the cctor has
     /// already run, and the priming flag short-circuits subsequent calls.
     /// </remarks>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2059:RunClassConstructor",
+        Justification = "This is the priming site for the AOT registry described in this method's doc comment: a string-resolved framework Type (e.g. a <Style TargetType=\"Button\"> resolved by name from a ResourceDictionary) reaches us as a runtime System.Type whose cctor has not run, so its FooProperty = DependencyProperty.Register(...) static fields never populated the registry. We force the cctor so the DependencyProperty fields self-register. We never construct instances of the type or call any of its members reflectively here — only its static field initializers run, and those code paths are reachable through normal (non-reflective) use of the same framework controls, so the trimmer already preserves them. There is no DAM member kind that satisfies RunClassConstructor for a runtime-supplied Type; suppressing at this leaf is the documented AOT contract for XAML-driven styling.")]
     public static DependencyProperty? FromName(Type ownerType, string name)
     {
         ArgumentNullException.ThrowIfNull(ownerType);
@@ -336,6 +383,48 @@ public sealed class DependencyProperty
         _metadataCache[forType] = DefaultMetadata;
         return DefaultMetadata;
     }
+
+    /// <summary>
+    /// Returns the effective default value of this property as seen by <paramref name="forType"/>,
+    /// guaranteeing that a non-nullable value-type property never yields <see langword="null"/>.
+    /// </summary>
+    /// <remarks>
+    /// Mirrors WPF's <c>AutoCreateInstance</c> default-value behaviour. If a value-type property is
+    /// registered with a null/absent metadata default (the 3-arg <see cref="Register(string, Type, Type)"/>
+    /// overload, <c>new PropertyMetadata()</c>, or <c>PropertyMetadata(null)</c>), the registered default is
+    /// <see langword="null"/> and the generated CLR getter (<c>(Thickness)GetValue(...)</c>) would unbox
+    /// that null and throw at layout. Here a boxed <c>default(T)</c> is synthesized so a plain
+    /// <see cref="DependencyObject.GetValue"/> with no higher-precedence value still returns a usable
+    /// struct. Reference types and <see cref="Nullable{T}"/> keep their genuine null default.
+    /// </remarks>
+    internal object? GetEffectiveDefaultValue(Type forType)
+    {
+        var metadataDefault = GetMetadata(forType).DefaultValue;
+        if (metadataDefault is not null)
+            return metadataDefault;
+
+        // Null metadata default: legal for reference types and Nullable<T>; for a non-nullable value
+        // type, synthesize default(T) once and reuse the boxed instance.
+        if (!PropertyType.IsValueType || Nullable.GetUnderlyingType(PropertyType) is not null)
+            return null;
+
+        // A synthesized value-type default is never null, so the box doubles as its own "computed"
+        // signal: gating solely on (box is null) is race-free on weak memory models (no separate flag
+        // that could be observed set before the box store is visible) and cannot loop forever.
+        var box = _valueTypeDefaultBox;
+        if (box is null)
+        {
+            box = SynthesizeValueTypeDefault(PropertyType);
+            _valueTypeDefaultBox = box;
+        }
+
+        return box;
+    }
+
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2067:RequiresUnreferencedCode",
+        Justification = "Reached only for a non-nullable value type whose registered default is null. A value type always has an intrinsic parameterless (default) constructor performing zero-initialization that the trimmer never removes, so Activator.CreateInstance's PublicParameterlessConstructor requirement is structurally satisfied even though the value-type Type flowing in here does not carry the DAM annotation. Mirrors the established GetDefaultAnimationValue pattern (UIElement.cs). The AOT-safe DefaultValueTypeBox table handles every primitive/enum/framework struct first; the Activator fallback runs only for an exotic user-defined struct DP registered with a null default.")]
+    private static object SynthesizeValueTypeDefault(Type valueType)
+        => BindingValueCoercion.DefaultValueTypeBox(valueType) ?? System.Activator.CreateInstance(valueType)!;
 
     /// <inheritdoc />
     public override string ToString() => $"{OwnerType.Name}.{Name}";

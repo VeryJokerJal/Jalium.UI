@@ -75,6 +75,10 @@ internal static class SoftwareVectorRasterizer
         {
             RenderGeometryDrawing(geomDrawing, ctx);
         }
+        else if (drawing is ImageDrawing imageDrawing)
+        {
+            RenderImageDrawing(imageDrawing, ctx);
+        }
     }
 
     private static void RenderGeometryDrawing(GeometryDrawing drawing, SoftwareRenderContext ctx)
@@ -110,6 +114,105 @@ internal static class SoftwareVectorRasterizer
             {
                 var strokeWidth = drawing.Pen.Thickness;
                 StrokeGeometry(flatGeometry, geoCtx, sb, sg, sr, sa, strokeWidth);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Blits an <see cref="ImageDrawing"/> (e.g. an SVG <c>&lt;image&gt;</c> carrying a
+    /// base64-embedded raster) into the pixel buffer. Uses inverse texture mapping:
+    /// every destination pixel inside the transformed rect's bounding box is mapped
+    /// back through the context transform to image-local space, then to a source
+    /// pixel via nearest-neighbor sampling. This correctly handles the scale and
+    /// translate of the SVG viewport as well as element-level rotate / skew.
+    /// </summary>
+    private static void RenderImageDrawing(ImageDrawing drawing, SoftwareRenderContext ctx)
+    {
+        // Only raster sources expose a CPU pixel buffer the software path can sample.
+        if (drawing.ImageSource is not BitmapImage bitmap) return;
+
+        var srcPixels = bitmap.RawPixelData;
+        if (srcPixels == null || srcPixels.Length < 4) return;
+
+        int srcW = bitmap.PixelWidth;
+        int srcH = bitmap.PixelHeight;
+        if (srcW <= 0 || srcH <= 0) return;
+        int srcStride = bitmap.PixelStride > 0 ? bitmap.PixelStride : srcW * 4;
+
+        // Defensive: if the declared stride can't fit the actual buffer (e.g. an
+        // injected decoder reported row padding it never allocated), fall back to a
+        // compact stride so right/bottom-edge texels are still sampled instead of
+        // being silently dropped by the per-pixel bounds guard below.
+        if ((long)srcStride * srcH > srcPixels.Length)
+            srcStride = srcW * 4;
+
+        var rect = drawing.Rect;
+        if (rect.IsEmpty || rect.Width <= 0 || rect.Height <= 0) return;
+
+        double opacity = Math.Clamp(ctx.Opacity, 0.0, 1.0);
+        if (opacity <= 0) return;
+
+        // Transform the rect's four corners into pixel space to get the affected
+        // bounding box (a rotated/skewed rect still has an axis-aligned cover).
+        var c0 = ctx.TransformPoint(new Point(rect.X, rect.Y));
+        var c1 = ctx.TransformPoint(new Point(rect.X + rect.Width, rect.Y));
+        var c2 = ctx.TransformPoint(new Point(rect.X + rect.Width, rect.Y + rect.Height));
+        var c3 = ctx.TransformPoint(new Point(rect.X, rect.Y + rect.Height));
+
+        float minXf = Math.Min(Math.Min(c0.X, c1.X), Math.Min(c2.X, c3.X));
+        float maxXf = Math.Max(Math.Max(c0.X, c1.X), Math.Max(c2.X, c3.X));
+        float minYf = Math.Min(Math.Min(c0.Y, c1.Y), Math.Min(c2.Y, c3.Y));
+        float maxYf = Math.Max(Math.Max(c0.Y, c1.Y), Math.Max(c2.Y, c3.Y));
+
+        int xStart = Math.Max(0, (int)Math.Floor(minXf));
+        int xEnd = Math.Min(ctx.Width - 1, (int)Math.Ceiling(maxXf));
+        int yStart = Math.Max(0, (int)Math.Floor(minYf));
+        int yEnd = Math.Min(ctx.Height - 1, (int)Math.Ceiling(maxYf));
+        if (xStart > xEnd || yStart > yEnd) return;
+
+        // Invert the 2×2 linear part of the context transform so a destination
+        // pixel can be mapped back to drawing-local coordinates.
+        double det = ctx.M11 * ctx.M22 - ctx.M12 * ctx.M21;
+        if (Math.Abs(det) < 1e-9) return;
+        double inv11 = ctx.M22 / det;
+        double inv12 = -ctx.M12 / det;
+        double inv21 = -ctx.M21 / det;
+        double inv22 = ctx.M11 / det;
+
+        for (int y = yStart; y <= yEnd; y++)
+        {
+            double dyPix = (y + 0.5) - ctx.Dy;
+            for (int x = xStart; x <= xEnd; x++)
+            {
+                double dxPix = (x + 0.5) - ctx.Dx;
+
+                // Pixel → drawing-local space.
+                double lx = inv11 * dxPix + inv12 * dyPix;
+                double ly = inv21 * dxPix + inv22 * dyPix;
+
+                // Drawing-local → normalized [0,1) within the image rect.
+                double u = (lx - rect.X) / rect.Width;
+                double v = (ly - rect.Y) / rect.Height;
+                if (u < 0.0 || u >= 1.0 || v < 0.0 || v >= 1.0) continue;
+
+                int sx = (int)(u * srcW);
+                int sy = (int)(v * srcH);
+                if (sx >= srcW) sx = srcW - 1;
+                if (sy >= srcH) sy = srcH - 1;
+
+                int soff = sy * srcStride + sx * 4;
+                if (soff + 3 >= srcPixels.Length) continue;
+
+                byte sB = srcPixels[soff];
+                byte sG = srcPixels[soff + 1];
+                byte sR = srcPixels[soff + 2];
+                byte sA = srcPixels[soff + 3];
+                if (sA == 0) continue; // fully transparent source texel
+
+                byte outA = opacity >= 1.0 ? sA : (byte)(sA * opacity);
+                if (outA == 0) continue;
+
+                BlendPixel(ctx.Pixels, ctx.Stride, x, y, sB, sG, sR, outA);
             }
         }
     }

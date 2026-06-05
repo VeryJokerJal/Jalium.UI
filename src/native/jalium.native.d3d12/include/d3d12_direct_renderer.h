@@ -10,6 +10,7 @@
 namespace jalium {
 
 class D3D12VelloRenderer;  // forward declaration
+class D3D12RetainedLayer;  // forward declaration (retained GPU layer fast path)
 
 // ============================================================================
 // 3x2 affine transform (column-major)
@@ -147,6 +148,7 @@ struct DrawBatch {
     bool  hasRoundedClip = false;
     float roundedClipRect[4]        = { 0, 0, 0, 0 }; // left, top, right, bottom
     float roundedClipCornerRadii[4] = { 0, 0, 0, 0 }; // TL, TR, BR, BL (in physical pixels)
+    bool  roundedClipInverse = false;                 // true → keep outside, mask the interior
 };
 
 // ============================================================================
@@ -161,6 +163,9 @@ struct RoundedClipState {
     // Layout matches CornerRadius: TopLeft, TopRight, BottomRight, BottomLeft.
     float x, y, w, h;
     float radiusTL = 0, radiusTR = 0, radiusBR = 0, radiusBL = 0;
+    // When true the clip keeps the area OUTSIDE the rounded rect (masks the
+    // interior) instead of the inside — see PushRoundedClipExclude.
+    bool inverse = false;
     // Captured transform at push time so the clip can be projected to physical
     // pixels regardless of subsequent transform pushes/pops.
     Transform2D transform;
@@ -315,6 +320,12 @@ public:
         float strokeWidth, float dimOpacity,
         float screenWidth, float screenHeight);
 
+    // Emits one radial soft-glow dot (bright centre fading to a transparent
+    // edge) — the building block of the continuous, tapered glow ribbon that
+    // outlines the highlighted element.
+    void EmitSoftGlowDot(float cx, float cy, float diameter,
+                         float r, float g, float b, float peakAlpha);
+
     // --- Offscreen render target (for transition capture) ---
     bool BeginOffscreenCapture(int slot, float x, float y, float w, float h);
     void EndOffscreenCapture(int slot);
@@ -324,6 +335,26 @@ public:
     void DrawOffscreenBitmapCropped(int slot, float x, float y, float w, float h,
         float uvOffsetX, float uvOffsetY, float opacity);
     bool IsInOffscreenCapture() const { return inOffscreenCapture_; }
+
+    // --- Retained GPU layers (damage-driven composited-animation fast path) ---
+    // Realize a content-clean subtree into a PERSISTENT texture once, then
+    // composite it as a transformed/opacity quad each frame. Unlike the 2-slot
+    // transient offscreen pool above, each layer owns its own texture (see
+    // D3D12RetainedLayer) so N layers can coexist across frames.
+    bool SupportsRetainedLayers() const { return true; }
+    // Begin/End mirror BeginOffscreenCapture/EndOffscreenCapture but target the
+    // layer's own RTV. existing may be null (a new layer is allocated). Returns
+    // the layer (== existing on reuse), or nullptr on failure (caller falls back).
+    D3D12RetainedLayer* BeginRetainedLayerCapture(D3D12RetainedLayer* existing,
+                                                  float x, float y, float w, float h);
+    void EndRetainedLayerCapture(D3D12RetainedLayer* layer);
+    // Composite a realized layer as a quad at (x,y,w,h) in current space; honors
+    // the live transform stack (scale+translate) + ambient opacity via AddBitmap.
+    void CompositeRetainedLayer(D3D12RetainedLayer* layer,
+                                float x, float y, float w, float h, float opacity);
+    // Retire the layer's texture (fence-gated) and delete it.
+    void DestroyRetainedLayer(D3D12RetainedLayer* layer);
+
     void DrawCustomShaderEffect(int slot,
         float x, float y, float w, float h,
         const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
@@ -351,8 +382,43 @@ public:
     void PushRoundedClip(float x, float y, float w, float h, float rx, float ry);
     void PushPerCornerRoundedClip(float x, float y, float w, float h,
         float tl, float tr, float br, float bl);
+    // Inverse clip: keeps the area OUTSIDE the rounded rect and masks the
+    // interior. Do NOT pair it with PushScissor (that would re-confine drawing
+    // back inside the rect). Used for outer-glow effects hugging an element.
+    void PushRoundedClipExclude(float x, float y, float w, float h, float rx, float ry);
     void PopRoundedClip();
     bool HasRoundedClip() const { return !roundedClipStack_.empty(); }
+
+    // Forced rounded-clip override, used when replaying snapshotted Impeller
+    // batches.  Each Impeller batch carries the rounded-clip state it was
+    // captured under (already projected to physical px); since batches now
+    // accumulate across clip boundaries instead of forcing a flush, the live
+    // roundedClipStack_ no longer matches.  The render target sets the forced
+    // payload per batch so ResolveRoundedClipForBatch uses it instead of the
+    // live stack.  SetForcedRoundedClipNone marks "this batch had no clip";
+    // ClearForcedRoundedClip restores normal live-stack resolution.
+    void SetForcedRoundedClip(const float rect[4], const float radii[4]) {
+        forcedRoundedClipActive_ = true;
+        forcedRoundedClipPresent_ = true;
+        forcedRoundedClipRect_[0] = rect[0]; forcedRoundedClipRect_[1] = rect[1];
+        forcedRoundedClipRect_[2] = rect[2]; forcedRoundedClipRect_[3] = rect[3];
+        forcedRoundedClipRadii_[0] = radii[0]; forcedRoundedClipRadii_[1] = radii[1];
+        forcedRoundedClipRadii_[2] = radii[2]; forcedRoundedClipRadii_[3] = radii[3];
+    }
+    void SetForcedRoundedClipNone() {
+        forcedRoundedClipActive_ = true;
+        forcedRoundedClipPresent_ = false;
+    }
+    void ClearForcedRoundedClip() {
+        forcedRoundedClipActive_ = false;
+        forcedRoundedClipPresent_ = false;
+    }
+
+    // Resolves the innermost live rounded clip into physical-pixel rect/radii
+    // (same projection ResolveRoundedClipForBatch applies to its own batches).
+    // The render target mirrors this into the Impeller engine so its batches
+    // snapshot the matching clip.  Returns false when no rounded clip is active.
+    bool ResolveCurrentRoundedClip(float outRect[4], float outRadii[4]) const;
     void SetOpacity(float opacity) { currentOpacity_ = opacity; }
     float GetOpacity() const { return currentOpacity_; }
     void SetShapeType(float type, float n) { currentShapeType_ = type; currentShapeN_ = n; }
@@ -367,6 +433,11 @@ public:
     // --- DPI ---
     void SetDpiScale(float dpiScale);
     float GetDpiScale() const { return dpiScale_; }
+
+    // --- Path MSAA quality (1/2/4/8) ---
+    // Takes effect at the next BeginFrame. Values are clamped to {1,2,4,8}.
+    void SetPathMsaaSampleCount(uint32_t sampleCount);
+    uint32_t GetPathMsaaSampleCount() const { return pathMsaaSampleCount_; }
 
     // --- Format ---
     DXGI_FORMAT GetSwapChainFormat() const { return swapChainFormat_; }
@@ -449,6 +520,15 @@ private:
     bool CreateFrameResources();
     bool CreateBlurResources();
     bool CreateStencilPathResources();
+    // Rebuilds only the stencil/cover PSOs against the current
+    // pathMsaaSampleCount_ (shaders + root sig + heaps are reused). Called once
+    // from CreateStencilPathResources and again whenever the sample count
+    // changes at a frame boundary.
+    bool RebuildStencilCoverPSOs();
+    // Applies a pending path-MSAA sample-count change (rebuild PSOs + force the
+    // scratch RT/depth to recreate). Invoked from BeginFrame after the fence
+    // wait so the old MSAA resources are guaranteed idle.
+    void ApplyPendingPathMsaaSampleCount();
     bool EnsureStencilDepthBuffer(UINT width, UINT height);
     void WaitForGpuIdle();
     bool EnsureSnapshotTexture();
@@ -507,6 +587,87 @@ private:
     ComPtr<ID3D12Fence> fence_;
     HANDLE fenceEvent_ = nullptr;
     uint64_t nextFenceValue_ = 1;
+
+    // ── Frame-pacing instrumentation (DevTools Perf tab) ────────────────
+    // The native side surfaces this through QueryGpuStats so DevTools can
+    // tell apart "BeginDraw is slow because GPU is busy" from "BeginDraw is
+    // slow because the recording itself is slow". accumulatingFrameWaitNs_
+    // sums up the fence-wait time across every BeginFrame attempt the
+    // managed Window made for one logical frame (the 50 ms timeout +
+    // 1 ms retry loop on slow iGPUs can pile up multiple failed attempts).
+    // Once the BeginFrame finally succeeds we flush the accumulator into
+    // lastFrameGpuWaitNs_, which is what QueryGpuStats reports.
+    uint64_t accumulatingFrameWaitNs_ = 0;
+    uint64_t lastFrameGpuWaitNs_ = 0;
+    // QPC tick at the moment EndFrame issues queue Signal(fence_, …) for the
+    // *previous* frame.  Diff against the QPC tick when the next BeginFrame
+    // observes that fence as completed → wall clock between Present submit
+    // and the swap chain being ready to draw again. NOT pure GPU work —
+    // includes DWM composition + DXGI queue latency. The hardware-timestamp
+    // GPU breakdown is the canonical "what did the GPU actually do" number.
+    uint64_t lastPresentSignalQpc_ = 0;
+    uint64_t lastFramePresentToReadyNs_ = 0;
+
+    // ── GPU work breakdown via hardware timestamp queries ────────────────
+    // Categories track GPU time per work-class so DevTools Perf can answer
+    // "what is consuming the GPU?" (typically backdrop blur on iGPU). One
+    // ID3D12QueryHeap of TIMESTAMP queries is partitioned per frame; each
+    // BeginFrame records start, MarkGpuTimingPoint(category) records the
+    // boundary between two categories, EndFrame records end + resolves the
+    // queries into the per-frame readback buffer. The *next* frame's
+    // BeginFrame reads the readback after the fence wait, decodes spans,
+    // and accumulates into lastGpuTimingSnapshot_.
+public:
+    enum class GpuTimingCategory : uint8_t {
+        Other = 0,
+        SdfRect = 1,
+        Text = 2,
+        Bitmap = 3,
+        Path = 4,
+        Backdrop = 5,
+        LiquidGlass = 6,
+        kCount = 7,
+        kFrameEnd = 0xFF,  // sentinel — not a real category, marks the trailing timestamp
+    };
+
+    /// Marks the boundary in command-list recording where the previous
+    /// span ends and a new span (of `category`) begins. Issues a TIMESTAMP
+    /// EndQuery on the open command list and remembers the category so
+    /// the readback decoder knows where to accumulate the delta. Safe
+    /// no-op when timing is disabled or no slot is available.
+    void MarkGpuTimingPoint(GpuTimingCategory category);
+
+    struct GpuTimingSnapshot {
+        uint64_t totalNs = 0;
+        uint64_t categoryNs[static_cast<size_t>(GpuTimingCategory::kCount)] = {};
+        uint32_t batchCount = 0;
+        bool valid = false;
+    };
+    GpuTimingSnapshot GetGpuTimingSnapshot() const { return lastGpuTimingSnapshot_; }
+
+    // Accessors used by D3D12RenderTarget::QueryGpuStats. Returned values
+    // are last-completed-frame snapshots — point-in-time, not accumulators.
+    uint64_t GetLastFrameGpuWaitNs() const { return lastFrameGpuWaitNs_; }
+    uint64_t GetLastFramePresentToReadyNs() const { return lastFramePresentToReadyNs_; }
+private:
+    // Decode the previous frame's resolved timestamps and update
+    // lastGpuTimingSnapshot_. Called from BeginFrame after fence wait
+    // confirms the GPU resolved the queries.
+    void DecodeGpuTimingForCompletedFrame(UINT frameIndex);
+
+    static constexpr UINT kMaxTimingSlotsPerFrame = 512;
+    ComPtr<ID3D12QueryHeap> timingQueryHeap_;
+    bool timingSupported_ = false;
+    uint64_t timestampFrequency_ = 0;
+    struct PerFrameTiming {
+        ComPtr<ID3D12Resource> readback;
+        UINT nextSlot = 0;
+        std::vector<GpuTimingCategory> spanCategories;
+        uint32_t batchCountAtFinalize = 0;
+        bool hasResolvedData = false;
+    };
+    PerFrameTiming timing_[kMaxFrames];
+    GpuTimingSnapshot lastGpuTimingSnapshot_{};
 
     // RTV descriptor heap (for swap chain back buffers + offscreen RTs)
     ComPtr<ID3D12DescriptorHeap> rtvHeap_;
@@ -610,7 +771,14 @@ private:
     ComPtr<ID3D12DescriptorHeap> stencilDsvHeap_;  // 8× DSV for pathMsaaDepth_
     UINT  pathMsaaWidth_  = 0;
     UINT  pathMsaaHeight_ = 0;
-    static constexpr UINT kPathMsaaSampleCount = 8;
+    // Path stencil-then-cover MSAA sample count. Runtime-configurable (1/2/4/8)
+    // so low-end GPUs / high-load scenes can trade path edge AA quality for
+    // GPU time — 8× is the highest quality default; 4× roughly halves the
+    // path GPU cost. `pending` is applied at the next BeginFrame boundary
+    // (GPU idle after the fence wait), which rebuilds the stencil/cover PSOs
+    // and forces the MSAA scratch RT + depth to be recreated at the new count.
+    UINT  pathMsaaSampleCount_        = 8;
+    UINT  pendingPathMsaaSampleCount_ = 8;
     D3D12_RESOURCE_STATES pathMsaaColorState_   = D3D12_RESOURCE_STATE_RENDER_TARGET;
     D3D12_RESOURCE_STATES pathResolveTexState_  = D3D12_RESOURCE_STATE_COMMON;
     bool  stencilPathReady_   = false;
@@ -682,11 +850,22 @@ private:
     std::stack<Transform2D> transformStack_;
     std::vector<RoundedClipState> roundedClipStack_;
 
+    // Forced rounded-clip override (see SetForcedRoundedClip).  When active,
+    // ResolveRoundedClipForBatch short-circuits to this snapshot instead of
+    // reading roundedClipStack_.back().
+    bool forcedRoundedClipActive_ = false;
+    bool forcedRoundedClipPresent_ = false;
+    float forcedRoundedClipRect_[4] = {0, 0, 0, 0};
+    float forcedRoundedClipRadii_[4] = {0, 0, 0, 0};
+
     // Resolves the active rounded-clip stack into the per-batch payload that
     // RecordDrawCommands writes to the b2 root constants.  Returns false when
     // no rounded clip is active or the resolution failed (e.g. inverse-singular
     // transform); in that case the caller leaves DrawBatch.hasRoundedClip=false.
     bool ResolveRoundedClipForBatch(DrawBatch& batch) const;
+    // Shared live-stack resolution backing both ResolveRoundedClipForBatch and
+    // ResolveCurrentRoundedClip.
+    bool ResolveLiveRoundedClip(float outRect[4], float outRadii[4], bool* outInverse = nullptr) const;
     float currentOpacity_ = 1.0f;
     float currentShapeType_ = 0.0f;  // 0 = RoundedRect, 1 = SuperEllipse
     float currentShapeN_ = 4.0f;
@@ -759,6 +938,13 @@ private:
     bool snapshotValid_ = false;   // content validity for the current frame
     bool snapshotUsedThisFrame_ = false;
     D3D12_RESOURCE_STATES snapshotState_ = D3D12_RESOURCE_STATE_COMMON;
+    // drawOrder_ snapshot taken right after the last CaptureSnapshot() copy.
+    // If the caller invokes CaptureSnapshot a second time without any draw
+    // having fired in between, the back buffer is still bit-identical and we
+    // can skip the (expensive) CopyResource + barrier dance entirely. Reset
+    // to a sentinel at BeginFrame so a stale value from the prior frame
+    // never matches the new frame's drawOrder_=0.
+    float snapshotCaptureDrawOrder_ = -1.0f;
 
     // --- Desktop capture resources ---
     ComPtr<ID3D12Resource> desktopTexture_;
@@ -779,6 +965,11 @@ private:
     bool inOffscreenCapture_ = false;
     bool offscreenResourcesUsedThisFrame_ = false;
     std::stack<D3D12_RECT> savedScissorStack_;  // scissor stack saved during offscreen capture
+
+    // --- Retained layer capture (shares the RT-redirect machinery; mutually
+    //     exclusive with offscreen capture to avoid nested RT redirects) ---
+    bool inRetainedCapture_ = false;
+    class D3D12RetainedLayer* activeRealizeLayer_ = nullptr;
 
     // --- Gaussian blur compute resources ---
     ComPtr<ID3D12RootSignature> blurRootSignature_;

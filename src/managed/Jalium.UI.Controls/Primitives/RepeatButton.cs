@@ -186,7 +186,10 @@ public class RepeatButton : ButtonBase
         // Raise Click event on the UI thread
         Dispatcher?.Invoke(() =>
         {
-            if (IsPressed && IsEnabled)
+            // CanRespondToInput (not raw IsEnabled) so a ReactiveCommand's async CanExecute flap
+            // mid-hold doesn't drop auto-repeat ticks — RepeatButton is the worst case for the
+            // swallowed-input bug since it fires OnClick continuously while pressed.
+            if (IsPressed && CanRespondToInput())
             {
                 OnClick();
             }

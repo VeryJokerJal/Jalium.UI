@@ -119,8 +119,12 @@ public class Path : Shape
 
         if (SizeIsInvalidOrEmpty(stretchedSize))
         {
+            // Don't null out _definingGeometry here: a zero finalSize can occur transiently
+            // (e.g. before the parent has allocated real space), and discarding the source
+            // geometry is irreversible — the element could then never render again even once
+            // it is given real space. Just skip producing rendered geometry this pass.
             _renderedGeometry = null;
-            _definingGeometry = null;
+            _hasStretchMatrix = false;
             return new Size(0, 0);
         }
 
@@ -279,7 +283,21 @@ public class Path : Shape
         Stretch mode, double strokeThickness, Size availableSize, Rect geometryBounds,
         out double xScale, out double yScale, out double dX, out double dY, out Size stretchedSize)
     {
-        if (!geometryBounds.IsEmpty)
+        // Rect.IsEmpty is true when EITHER dimension is zero, which would wrongly reject a
+        // single-axis geometry — a horizontal line has Height == 0, a vertical line has
+        // Width == 0. The thin-dimension handling below is written precisely to stretch
+        // those (scale the zero dimension by 1 and give it strokeThickness of extent), so
+        // we must NOT bail out here just because one dimension is zero. Only a box with no
+        // extent at all (a single point) or non-finite bounds is genuinely unstretchable.
+        // Using Rect.IsEmpty here previously collapsed lines like "M2,8 L12,8" to a (0,0)
+        // size and made them permanently invisible.
+        bool boundsUsable =
+            !double.IsNaN(geometryBounds.Width) && !double.IsNaN(geometryBounds.Height) &&
+            !double.IsInfinity(geometryBounds.Width) && !double.IsInfinity(geometryBounds.Height) &&
+            geometryBounds.Width >= 0 && geometryBounds.Height >= 0 &&
+            (geometryBounds.Width > 0 || geometryBounds.Height > 0);
+
+        if (boundsUsable)
         {
             var margin = strokeThickness / 2;
 

@@ -51,6 +51,8 @@ public sealed class SystemNotificationManager : IDisposable
     /// </summary>
     public static SystemNotificationManager Current
     {
+        [UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+            Justification = "EnsurePlatformBackendLoaded only resolves the desktop/android Bootstrap types and their public Initialize() method, both of which are preserved by the [DynamicDependency(PublicMethods, ...)] attributes declared on EnsurePlatformBackendLoaded itself. The trimmer therefore cannot remove the reflected targets, so this first-access call site is safe.")]
         get
         {
             if (s_current != null) return s_current;

@@ -29,6 +29,15 @@ public static class TextMeasurement
     private static readonly LinkedList<string> _lruKeys = new();
     private static readonly object _lock = new();
 
+    // 字体度量（行高 / ascent / descent / baseline 等）对固定 (字体族, 字号, 粗细, 样式) 是常量，
+    // 但底层 GetFontMetrics 每次都 P/Invoke 进 DirectWrite。TextBlock.OnRender / MeasureOverride 每帧
+    // 都会调 GetLineHeight/GetFontMetrics（无结果缓存），在 UI 控件密集（如设置面板上百个 TextBlock）
+    // 且首帧布局多轮迭代时，会堆出几千~上万次 native 调用 → 明显卡顿。这里按配置缓存度量结果，
+    // 把重复调用降为一次 O(1) 字典命中（度量是常量，缓存安全；上限防止长会话无界增长）。
+    private const int MaxMetricsCacheEntries = 512;
+    private static readonly Dictionary<string, TextMetrics> _metricsCache = new(StringComparer.Ordinal);
+    private static readonly object _metricsLock = new();
+
     /// <summary>
     /// Measures text and populates the FormattedText with accurate metrics.
     /// Uses DirectWrite for WPF-style text measurement with actual font metrics.
@@ -92,10 +101,20 @@ public static class TextMeasurement
     /// <returns>Text metrics containing font information.</returns>
     public static TextMetrics GetFontMetrics(string fontFamily, double fontSize, int fontWeight = 400, int fontStyle = 0)
     {
+        // 先查度量缓存（按配置常量缓存，命中即 O(1) 返回，免去每帧 native DWrite 调用）。
+        var key = MetricsKey(fontFamily, fontSize, fontWeight, fontStyle);
+        lock (_metricsLock)
+        {
+            if (_metricsCache.TryGetValue(key, out var hit))
+            {
+                return hit;
+            }
+        }
+
         var context = RenderContext.Current;
         if (context == null || !context.IsValid)
         {
-            // Return approximate metrics
+            // 无渲染上下文：返回近似度量，且不缓存（上下文稍后可能就绪，下次应走真实度量）。
             return new TextMetrics
             {
                 LineHeight = (float)(fontSize * 1.2),
@@ -119,8 +138,20 @@ public static class TextMeasurement
             };
         }
 
-        return format.GetFontMetrics();
+        var metrics = format.GetFontMetrics();
+        lock (_metricsLock)
+        {
+            // 上限保护：配置种类极少（一个 UI 通常就几种字体×字号），正常远不到上限；满了就不再增长。
+            if (_metricsCache.Count < MaxMetricsCacheEntries)
+            {
+                _metricsCache[key] = metrics;
+            }
+        }
+        return metrics;
     }
+
+    private static string MetricsKey(string fontFamily, double fontSize, int fontWeight, int fontStyle)
+        => string.Create(CultureInfo.InvariantCulture, $"{fontFamily}|{fontSize:R}|{fontWeight}|{fontStyle}");
 
     /// <summary>
     /// Gets the natural line height for a font using WPF-style calculation.

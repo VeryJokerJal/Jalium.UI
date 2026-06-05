@@ -1,7 +1,11 @@
 #include "d3d12_render_target.h"
 #include "d3d12_resources.h"
+#include "d3d12_retained_layer.h"
 #include "d3d12_triangulate.h"
 #include "d3d12_vello.h"
+#include "jalium_text_stats.h"
+#include <d3dcompiler.h>   // D3DCompile — runtime HLSL→DXBC for DrawShaderEffectFromSource
+#pragma comment(lib, "d3dcompiler.lib")
 #include <cstring>
 #include <cmath>
 #include <algorithm>
@@ -35,6 +39,7 @@ D3D12RenderTarget::~D3D12RenderTarget() {
     WaitForAllFrames();
     directRenderer_.reset();
     if (fenceEvent_) { CloseHandle(fenceEvent_); fenceEvent_ = nullptr; }
+    if (frameLatencyWaitable_) { CloseHandle(frameLatencyWaitable_); frameLatencyWaitable_ = nullptr; }
 }
 
 // ============================================================================
@@ -90,6 +95,45 @@ JaliumResult D3D12RenderTarget::SetRenderingEngine(JaliumRenderingEngine engine)
 // GPU Diagnostics (Perf tab)
 // ============================================================================
 
+JaliumResult D3D12RenderTarget::GetPresentInfo(JaliumPresentInfo* out) const {
+    if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *out = JaliumPresentInfo{};
+    if (!swapChain_) return JALIUM_ERROR_NOT_SUPPORTED;
+
+    // SwapEffect: 当前框架强制 FLIP_SEQUENTIAL（3）；这里**实际查询** swap chain 而非
+    // 用编译期常量 —— 让宿主能感知未来路径变更 / 驱动 fallback。
+    DXGI_SWAP_CHAIN_DESC1 desc{};
+    if (SUCCEEDED(swapChain_->GetDesc1(&desc))) {
+        out->swapEffect  = static_cast<int32_t>(desc.SwapEffect);
+        out->bufferCount = static_cast<int32_t>(desc.BufferCount);
+        out->tearingEnabled  = (desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? 1 : 0;
+        out->waitableEnabled = (desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) ? 1 : 0;
+    } else {
+        // 兜底：用 CreateSwapChain 时记的 flags（已 fallback-stripped）和 swapBufferCount_。
+        out->swapEffect  = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
+        out->bufferCount = static_cast<int32_t>(swapBufferCount_);
+        out->tearingEnabled  = (swapChainCreationFlags_ & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? 1 : 0;
+        out->waitableEnabled = (swapChainCreationFlags_ & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) ? 1 : 0;
+    }
+
+    // Max frame latency 只有 IDXGISwapChain2 才能读回；waitable 路径下我们 SetMaximumFrameLatency(1)，
+    // 这里再 GetMaximumFrameLatency 确认一次驱动是否真的接受了。
+    out->maxFrameLatency = 0;
+    if (out->waitableEnabled) {
+        ComPtr<IDXGISwapChain2> swapChain2;
+        if (SUCCEEDED(const_cast<IDXGISwapChain3*>(swapChain_.Get())->QueryInterface(IID_PPV_ARGS(&swapChain2)))
+            && swapChain2) {
+            UINT latency = 0;
+            if (SUCCEEDED(swapChain2->GetMaximumFrameLatency(&latency))) {
+                out->maxFrameLatency = static_cast<int32_t>(latency);
+            }
+        }
+    }
+
+    out->composition = isComposition_ ? 1 : 0;
+    return JALIUM_OK;
+}
+
 JaliumResult D3D12RenderTarget::QueryGpuStats(JaliumGpuStats* out) const {
     if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
     *out = JaliumGpuStats{};
@@ -117,6 +161,46 @@ JaliumResult D3D12RenderTarget::QueryGpuStats(JaliumGpuStats* out) const {
         out->pathEntries = static_cast<int32_t>(impellerEngine_->GetEncodedPathCount());
     }
 
+    // Frame-pacing diagnostics — answer "why is BeginDraw slow?"
+    // swapBufferCount_ is fixed at swap-chain creation (CreateSwapChain) and
+    // bounds the number of frames the CPU can queue ahead of the GPU; the
+    // wait/work numbers below explain how close we are to that ceiling.
+    out->swapBufferCount = static_cast<int32_t>(swapBufferCount_);
+    if (directRenderer_) {
+        out->frameGpuWaitNs            = static_cast<int64_t>(directRenderer_->GetLastFrameGpuWaitNs());
+        out->lastFramePresentToReadyNs = static_cast<int64_t>(directRenderer_->GetLastFramePresentToReadyNs());
+    }
+    out->frameWaitableWaitNs = static_cast<int64_t>(lastFrameWaitableWaitNs_);
+
+    return JALIUM_OK;
+}
+
+JaliumResult D3D12RenderTarget::QueryGpuTiming(JaliumGpuTimingStats* out) const
+{
+    if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *out = JaliumGpuTimingStats{};
+    if (!directRenderer_) return JALIUM_ERROR_NOT_SUPPORTED;
+
+    auto snap = directRenderer_->GetGpuTimingSnapshot();
+    if (!snap.valid) {
+        // First frame after init, or backend can't initialise the query heap.
+        // Leave the struct zeroed and return success — the caller treats this
+        // as "no breakdown yet" rather than a hard error.
+        out->timingValid = 0;
+        return JALIUM_OK;
+    }
+
+    using Cat = D3D12DirectRenderer::GpuTimingCategory;
+    out->totalGpuNs     = static_cast<int64_t>(snap.totalNs);
+    out->sdfRectNs      = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::SdfRect)]);
+    out->textNs         = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Text)]);
+    out->bitmapNs       = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Bitmap)]);
+    out->pathNs         = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Path)]);
+    out->backdropNs     = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Backdrop)]);
+    out->liquidGlassNs  = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::LiquidGlass)]);
+    out->otherNs        = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Other)]);
+    out->batchCount     = static_cast<int32_t>(snap.batchCount);
+    out->timingValid    = 1;
     return JALIUM_OK;
 }
 
@@ -169,6 +253,18 @@ void D3D12RenderTarget::SyncScissorToImpeller() {
     } else {
         impellerEngine_->ClearScissorRect();
     }
+
+    // Mirror the rounded clip too, so each Impeller batch snapshots the clip it
+    // was recorded under.  This is what lets us drop the flush-at-clip-boundary
+    // barriers: batches at different rounded-clip states simply refuse to merge
+    // (per-batch payload differs) instead of forcing a GPU flush, and on replay
+    // FlushImpellerBatches feeds each batch's snapshot back as a forced override.
+    float rcRect[4], rcRadii[4];
+    if (directRenderer_ && directRenderer_->ResolveCurrentRoundedClip(rcRect, rcRadii)) {
+        impellerEngine_->SetRoundedClip(rcRect, rcRadii);
+    } else {
+        impellerEngine_->ClearRoundedClip();
+    }
 }
 
 // ============================================================================
@@ -182,6 +278,7 @@ bool D3D12RenderTarget::CreateSwapChain() {
 
     // 解析后台缓冲数：默认 kDefaultSwapBufferCount(2)，JALIUM_SWAPCHAIN_BUFFERS
     // 可覆盖并钳到 [2, FrameCount]。只在创建期定一次，后续 Resize 沿用。
+    bool bufferCountFromEnv = false;
     {
         swapBufferCount_ = kDefaultSwapBufferCount;
         wchar_t* val = nullptr; size_t len = 0;
@@ -190,8 +287,22 @@ bool D3D12RenderTarget::CreateSwapChain() {
             if (n < 2) n = 2;
             if (n > FrameCount) n = FrameCount;
             swapBufferCount_ = n;
+            bufferCountFromEnv = true;
         }
         if (val) free(val);
+    }
+
+    // 探测核显仅用于诊断/标签；**不再**据此加深流水线。实测 4 配置 A/B：在这块 UMA 核显
+    // 上 present→ready(DWM flip 释放)≈110ms 是固有成本，改 MaxFrameLatency / buffer 数 /
+    // vsync / waitable-vs-fence 都不改变它，只把等待换地方。之前给核显 MFL=2+3buffer 只是
+    // 多攒一帧输入延迟、毫无收益，故撤回：核显与独显一样用最低延迟 MFL=1 + 2 buffer。
+    // 需要更深队列可用 JALIUM_SWAPCHAIN_BUFFERS 显式覆盖。
+    {
+        JaliumAdapterInfo ai = {};
+        isIntegratedAdapter_ = backend_ && backend_->GetAdapterInfo(&ai) == JALIUM_OK
+                             && ai.adapterType == JALIUM_GPU_ADAPTER_TYPE_INTEGRATED;
+        maxFrameLatency_ = 1u;
+        (void)bufferCountFromEnv;
     }
 
     // Check tearing support
@@ -209,6 +320,18 @@ bool D3D12RenderTarget::CreateSwapChain() {
     desc.SampleDesc.Count = 1;
     desc.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
     desc.BufferCount = swapBufferCount_;
+    // FLIP_SEQUENTIAL is REQUIRED — Jalium's retained-mode renderer uses
+    // partial dirty-rect Present, which depends on the back buffer keeping
+    // its previous-frame contents outside the dirty region. FLIP_DISCARD
+    // makes those regions undefined and produces a white / garbage window.
+    // The latency win we want here comes from FRAME_LATENCY_WAITABLE_OBJECT
+    // + SetMaximumFrameLatency(1) below, which is fully compatible with
+    // FLIP_SEQUENTIAL on both HWND and Composition paths.
+    // D3D12 forbids the legacy BITBLT model entirely: CreateSwapChainForHwnd with
+    // DXGI_SWAP_EFFECT_SEQUENTIAL/DISCARD returns INVALID_CALL on a D3D12 command
+    // queue (verified experimentally 2026-05-30 — the swap chain failed to create
+    // and the RT looped). So flip model is the ONLY option; the zero-latency
+    // software path works only because it uses GDI, not D3D12.
     desc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
 
     ComPtr<IDXGISwapChain1> swapChain1;
@@ -217,7 +340,9 @@ bool D3D12RenderTarget::CreateSwapChain() {
     if (isComposition_) {
         desc.Scaling = DXGI_SCALING_STRETCH;
         desc.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
-        desc.Flags = 0;
+        // DComp path also benefits from the frame-latency waitable: it lets
+        // CPU sync with the DComp present queue instead of busy-polling fences.
+        desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT;
 
         hr = factory->CreateSwapChainForComposition(commandQueue, &desc, nullptr, &swapChain1);
         if (FAILED(hr)) return false;
@@ -241,10 +366,25 @@ bool D3D12RenderTarget::CreateSwapChain() {
         if (FAILED(hr)) return false;
     } else {
         desc.Scaling = DXGI_SCALING_NONE;
-        desc.Flags = tearingSupported_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0;
+        // FRAME_LATENCY_WAITABLE_OBJECT lets the CPU block in lockstep with
+        // swap-chain buffer availability so CPU work happens right before
+        // display, not 2-3 frames ahead. Combined with ALLOW_TEARING (which
+        // is legal on FLIP_SEQUENTIAL too — the model has been supported
+        // since Windows 10 1809), this is the lowest-latency configuration
+        // compatible with our partial dirty-rect Present scheme.
+        desc.Flags = DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT
+                   | (tearingSupported_ ? DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING : 0);
 
         hr = factory->CreateSwapChainForHwnd(commandQueue, hwnd_, &desc, nullptr, nullptr, &swapChain1);
-        if (FAILED(hr) && desc.Flags != 0) {
+        if (FAILED(hr) && (desc.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING)) {
+            // Some adapters reject ALLOW_TEARING — strip and retry but keep
+            // the waitable, which is the more important latency fix.
+            desc.Flags &= ~DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
+            hr = factory->CreateSwapChainForHwnd(commandQueue, hwnd_, &desc, nullptr, nullptr, &swapChain1);
+        }
+        if (FAILED(hr) && (desc.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT)) {
+            // Older runtimes may also reject the waitable flag; final fall-
+            // back is a plain flip-discard swap chain with no extra flags.
             desc.Flags = 0;
             hr = factory->CreateSwapChainForHwnd(commandQueue, hwnd_, &desc, nullptr, nullptr, &swapChain1);
         }
@@ -266,7 +406,56 @@ bool D3D12RenderTarget::CreateSwapChain() {
     swapChain1->SetBackgroundColor(&bgColor);
 
     hr = swapChain1.As(&swapChain_);
-    return SUCCEEDED(hr);
+    if (FAILED(hr)) return false;
+
+    // If the swap chain was created with the waitable flag, take ownership
+    // of the latency-control HANDLE and cap maximum frame latency to 1.
+    // SetMaximumFrameLatency(1) overrides DXGI's default of 3, which is the
+    // single biggest contributor to back-pressure on iGPU: the runtime
+    // queues up to 3 GPU frames ahead, the OS won't release the buffer
+    // until the queue drains. The HANDLE remains owned by us — close it in
+    // the destructor (the swap chain itself only signals it).
+    if (swapChainCreationFlags_ & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) {
+        ComPtr<IDXGISwapChain2> swapChain2;
+        if (SUCCEEDED(swapChain_.As(&swapChain2)) && swapChain2) {
+            // Cap frame latency first so the waitable's initial signal
+            // reflects the new cap rather than the DXGI default of 3.
+            // 1 = 独显最低延迟; 2 = 核显(UMA) 一帧余量（见 CreateSwapChain 顶部说明）。
+            swapChain2->SetMaximumFrameLatency(maxFrameLatency_);
+            HANDLE waitable = swapChain2->GetFrameLatencyWaitableObject();
+            if (waitable) {
+                // Replace any previous handle (Resize path) to avoid leaks.
+                if (frameLatencyWaitable_) CloseHandle(frameLatencyWaitable_);
+                frameLatencyWaitable_ = waitable;
+            }
+        }
+    }
+
+    // Init diagnostics — record the ACTUAL swap-chain config that survived
+    // creation (the driver may strip ALLOW_TEARING / the waitable flag, or the
+    // creation may have fallen back to Flags=0), plus the iGPU pacing knobs and
+    // the SetMaximumFrameLatency round-trip. A degraded present init shows here.
+    {
+        DXGI_SWAP_CHAIN_DESC1 actual = {};
+        swapChain_->GetDesc1(&actual);
+        UINT getMaxLatency = 0;
+        ComPtr<IDXGISwapChain2> sc2;
+        if (SUCCEEDED(swapChain_.As(&sc2)) && sc2) sc2->GetMaximumFrameLatency(&getMaxLatency);
+        char buf[896];
+        sprintf_s(buf,
+            "[D3D12 init] swapchain OK. comp=%d %ux%u bufs=%u swapEffect=%d flags=0x%X "
+            "(tearingFlag=%d waitableFlag=%d) waitableHandle=%d setMaxLatency=%u getMaxLatency=%u | "
+            "iGPU=%d maxFrameLatency_=%u swapBufferCount_=%u tearingSupported=%d vsyncEnabled=%d\n",
+            isComposition_ ? 1 : 0, actual.Width, actual.Height, actual.BufferCount,
+            (int)actual.SwapEffect, actual.Flags,
+            (actual.Flags & DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING) ? 1 : 0,
+            (actual.Flags & DXGI_SWAP_CHAIN_FLAG_FRAME_LATENCY_WAITABLE_OBJECT) ? 1 : 0,
+            frameLatencyWaitable_ ? 1 : 0, maxFrameLatency_, getMaxLatency,
+            isIntegratedAdapter_ ? 1 : 0, maxFrameLatency_, swapBufferCount_,
+            tearingSupported_ ? 1 : 0, vsyncEnabled_ ? 1 : 0);
+        JaliumD3D12InitLog(buf);
+    }
+    return true;
 }
 
 // ============================================================================
@@ -331,6 +520,17 @@ JaliumResult D3D12RenderTarget::Resize(int32_t width, int32_t height) {
     height_ = height;
     frameIndex_ = swapChain_->GetCurrentBackBufferIndex();
 
+    // Re-apply maximum frame latency after ResizeBuffers — the HANDLE itself
+    // stays valid across resize (DXGI keeps GetFrameLatencyWaitableObject
+    // stable for the lifetime of the swap chain), but the cap occasionally
+    // needs reasserting on certain drivers/runtimes. Cheap and defensive.
+    if (frameLatencyWaitable_) {
+        ComPtr<IDXGISwapChain2> swapChain2;
+        if (SUCCEEDED(swapChain_.As(&swapChain2)) && swapChain2) {
+            swapChain2->SetMaximumFrameLatency(maxFrameLatency_);
+        }
+    }
+
     if (directRenderer_) {
         if (!directRenderer_->OnResize(static_cast<UINT>(width), static_cast<UINT>(height))) {
             return backend_ ? backend_->CheckDeviceStatus() : JALIUM_ERROR_RESOURCE_CREATION_FAILED;
@@ -376,6 +576,42 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
         }
     }
 
+    // Block on the swap-chain frame-latency waitable (16 ms timeout). On a
+    // healthy swap chain it signals within ~one vsync; the managed Window retry
+    // path pumps the dispatcher between attempts so input/animation get a turn.
+    // (Earlier this was SKIPPED on iGPU+vsync to "move the wait into Present" —
+    // measured to be pointless: the per-frame DWM flip-release cost is fixed and
+    // just reappears in the fence wait instead. Reverted to the uniform path.)
+    //
+    // The auto-reset waitable means we are the SOLE consumer here. A
+    // hypothetical background "pacer" thread that also waits on this
+    // HANDLE would race us for each signal and the loser would stall until
+    // the next vsync timeout — see project memory v5 retrospective.
+    if (frameLatencyWaitable_) {
+        LARGE_INTEGER waitStart;
+        QueryPerformanceCounter(&waitStart);
+        DWORD waitResult = WaitForSingleObjectEx(frameLatencyWaitable_, 16, FALSE);
+        LARGE_INTEGER waitEnd;
+        QueryPerformanceCounter(&waitEnd);
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        if (freq.QuadPart > 0) {
+            int64_t delta = waitEnd.QuadPart - waitStart.QuadPart;
+            if (delta > 0) {
+                int64_t whole = (delta / freq.QuadPart) * 1'000'000'000LL;
+                int64_t frac  = ((delta % freq.QuadPart) * 1'000'000'000LL) / freq.QuadPart;
+                accumulatingWaitableWaitNs_ += static_cast<uint64_t>(whole + frac);
+            }
+        }
+        if (waitResult == WAIT_TIMEOUT) {
+            lastFrameWaitableWaitNs_ = accumulatingWaitableWaitNs_;
+            if (debugRender) OutputDebugStringA("[BeginDraw] FAIL: swap-chain waitable timed out\n");
+            return JALIUM_ERROR_INVALID_STATE;
+        }
+        lastFrameWaitableWaitNs_ = accumulatingWaitableWaitNs_;
+        accumulatingWaitableWaitNs_ = 0;
+    }
+
     float clearAlpha = isComposition_ ? 0.0f : clearA_;
     bool ok = directRenderer_->BeginFrame(
         frameIndex_,
@@ -407,6 +643,12 @@ JaliumResult D3D12RenderTarget::BeginDraw() {
 
     isDrawing_ = true;
     preGlassSnapshotCaptured_ = false;
+
+    // Defensive: any deferred Push* recorded across a failed frame would
+    // otherwise leak into this one. BeginDraw always starts with a clean
+    // pending list, matching the documented contract that callers issue
+    // a balanced push/pop sequence within each Begin/EndDraw scope.
+    pendingStateOps_.clear();
 
     // Initialize only the active path engine for this frame
     if (IsImpellerActive()) {
@@ -464,6 +706,38 @@ JaliumResult D3D12RenderTarget::EndDraw() {
     fullInvalidation_ = false;
     frameIndex_ = swapChain_->GetCurrentBackBufferIndex();
     isDrawing_ = false;
+
+    // Frame-timing diagnostics → JALIUM_INIT_LOG. Every 120 frames, log the avg
+    // frame interval (fps) and where the per-frame wall-clock goes (present→ready
+    // / waitable / fence). Lets us measure the iGPU present cost across configs
+    // (vsync / buffers / etc.) from the log file without the DevTools UI.
+    {
+        static LARGE_INTEGER s_last = {};
+        static uint64_t s_n = 0, s_intervalNs = 0, s_p2rNs = 0, s_waitNs = 0, s_fenceNs = 0, s_maxIntervalNs = 0;
+        LARGE_INTEGER now; QueryPerformanceCounter(&now);
+        LARGE_INTEGER freq; QueryPerformanceFrequency(&freq);
+        if (s_last.QuadPart != 0 && freq.QuadPart > 0) {
+            uint64_t intervalNs = (uint64_t)(((now.QuadPart - s_last.QuadPart) * 1000000000LL) / freq.QuadPart);
+            s_intervalNs += intervalNs;
+            if (intervalNs > s_maxIntervalNs) s_maxIntervalNs = intervalNs;
+            s_p2rNs += directRenderer_ ? (uint64_t)directRenderer_->GetLastFramePresentToReadyNs() : 0;
+            s_waitNs += lastFrameWaitableWaitNs_;
+            s_fenceNs += directRenderer_ ? (uint64_t)directRenderer_->GetLastFrameGpuWaitNs() : 0;
+            if (++s_n >= 40) {
+                double avgMs = (s_intervalNs / (double)s_n) / 1e6;
+                char buf[320];
+                sprintf_s(buf,
+                    "[D3D12 frametime] %llu frames: avgFrame=%.1fms (%.0ffps) maxFrame=%.1fms | "
+                    "avg present->ready=%.1fms waitable=%.1fms fence=%.1fms | vsync=%d iGPU=%d MFL=%u bufs=%u\n",
+                    (unsigned long long)s_n, avgMs, avgMs > 0 ? 1000.0 / avgMs : 0.0, s_maxIntervalNs / 1e6,
+                    (s_p2rNs / (double)s_n) / 1e6, (s_waitNs / (double)s_n) / 1e6, (s_fenceNs / (double)s_n) / 1e6,
+                    vsyncEnabled_ ? 1 : 0, isIntegratedAdapter_ ? 1 : 0, maxFrameLatency_, swapBufferCount_);
+                JaliumD3D12InitLog(buf);
+                s_n = 0; s_intervalNs = 0; s_p2rNs = 0; s_waitNs = 0; s_fenceNs = 0; s_maxIntervalNs = 0;
+            }
+        }
+        s_last = now;
+    }
     return endResult;
 }
 
@@ -543,8 +817,29 @@ void D3D12RenderTarget::Clear(float r, float g, float b, float a) {
 }
 
 void D3D12RenderTarget::FlushVelloIfNeeded() {
-    // Skip entirely when Impeller is active — no Vello code should execute.
-    if (IsImpellerActive()) return;
+    // First commit any deferred Push* — every real draw method calls this
+    // hook, so it is the single right place to materialise queued state
+    // before the draw observes it. Skipping when there is nothing pending
+    // keeps the no-state-change hot path branch-only.
+    if (!pendingStateOps_.empty()) {
+        CommitDeferredState();
+    }
+
+    // When Impeller is active, drain any path geometry the engine has
+    // accumulated since the last non-path draw. Encode{Fill,Stroke}Path use
+    // PushBatchWithCoverage to coalesce N back-to-back path emits into a
+    // single GPU batch — but that coalescing only works as long as we do NOT
+    // call FlushImpellerBatches between them. Doing it here (lazily, right
+    // before the next non-path draw observes the result) preserves
+    // painter-order correctness while letting 87 consecutive StrokePath
+    // calls collapse to a single AddTrianglesPreTransformed → 1
+    // DrawIndexedInstanced at record time.
+    if (IsImpellerActive()) {
+        if (impellerEngine_ && impellerEngine_->HasPendingWork()) {
+            FlushImpellerBatches();
+        }
+        return;
+    }
     if (!directRenderer_ || !directRenderer_->HasVelloPaths()) return;
 
     // Vello accumulates all path encodes (FillPath / StrokePath) across the
@@ -585,6 +880,14 @@ void D3D12RenderTarget::FlushImpellerBatches() {
     // Impeller vertices are in pixel-space; DirectRenderer shader expects DIP-space.
     float invDpi = 1.0f / directRenderer_->GetDpiScale();
 
+    // Reused across the loop AND across frames so the index→flat-triangle
+    // expansion never allocates after the first big-batch frame warmed it.
+    // This is the spike-killer for "next non-path draw triggers a flush of
+    // N accumulated path batches": the per-batch vector previously did a
+    // fresh malloc/free pair, which dominated the per-call latency on the
+    // first non-path draw of a path-heavy frame.
+    thread_local std::vector<TriangleVertex> s_flushExpand;
+
     for (auto& batch : impellerEngine_->GetBatches()) {
         if (batch.indices.empty() || batch.vertices.empty()) continue;
 
@@ -603,23 +906,43 @@ void D3D12RenderTarget::FlushImpellerBatches() {
             pushedScissor = true;
         }
 
-        // Expand indexed vertices to flat triangle list, converting pixel→DIP
-        std::vector<TriangleVertex> expanded;
-        expanded.reserve(batch.indices.size());
+        // Feed the batch's snapshotted rounded clip back as a forced override so
+        // ResolveRoundedClipForBatch (inside AddTrianglesPreTransformed) masks these
+        // triangles with the clip they were RECORDED under — not whatever rounded
+        // clip is live now (batches accumulate across clip boundaries instead of
+        // flushing, so the live stack has typically moved on).
+        if (batch.hasRoundedClip) {
+            directRenderer_->SetForcedRoundedClip(batch.roundedClipRect, batch.roundedClipCornerRadii);
+        } else {
+            directRenderer_->SetForcedRoundedClipNone();
+        }
+
+        // Expand indexed vertices to flat triangle list, converting pixel→DIP.
+        // resize(N) + indexed write is faster than reserve + N push_backs:
+        // push_back has an inline capacity check at each call, resize sets
+        // capacity once. For a 32K-vertex batch this is the dominant
+        // expand-phase win on top of the cross-frame reuse.
+        s_flushExpand.resize(batch.indices.size());
+        size_t outIdx = 0;
+        const auto& verts = batch.vertices;
+        const size_t vN = verts.size();
         for (auto idx : batch.indices) {
-            if (idx < batch.vertices.size()) {
-                auto& v = batch.vertices[idx];
-                expanded.push_back({ v.x * invDpi, v.y * invDpi, v.r, v.g, v.b, v.a });
+            if (idx < vN) {
+                const auto& v = verts[idx];
+                s_flushExpand[outIdx++] = { v.x * invDpi, v.y * invDpi, v.r, v.g, v.b, v.a };
             }
         }
-        if (!expanded.empty()) {
-            directRenderer_->AddTrianglesPreTransformed(expanded.data(), (uint32_t)expanded.size());
+        if (outIdx > 0) {
+            directRenderer_->AddTrianglesPreTransformed(s_flushExpand.data(), (uint32_t)outIdx);
         }
 
         if (pushedScissor) {
             directRenderer_->PopScissor();
         }
     }
+    // Restore normal live-stack rounded-clip resolution for subsequent
+    // non-Impeller (direct) draws in this frame.
+    directRenderer_->ClearForcedRoundedClip();
     impellerEngine_->ClearBatches();
 }
 
@@ -911,6 +1234,66 @@ void D3D12RenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* 
 void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) {
     if (!isDrawing_ || !brush || !directRenderer_ || pointCount < 3) return;
 
+    // Path emit reads transform / scissor / opacity directly off DirectRenderer
+    // instead of going through FlushVelloIfNeeded, so we must materialize any
+    // deferred Push* here too.
+    CommitDeferredState();
+
+    // ── Thin-fill stencil-then-cover fast path (solid color brushes only).
+    //
+    // The Impeller / fan-triangulation paths below rasterize through the
+    // single-sampled triangle pipeline (trianglePSO is SampleDesc.Count = 1, no
+    // MSAA). A thin axis-aligned fill — e.g. the 1px-tall title-bar *minimize*
+    // glyph — then loses coverage on sub-pixel rows and renders blank or faint,
+    // while the *maximize* glyph (authored as a nested compound path, so it
+    // reaches FillPath) renders crisply via the 8x MSAA stencil-then-cover path.
+    //
+    // Give thin solid fills that same robust MSAA coverage WITHOUT disturbing the
+    // well-tuned, coalesced Impeller route for normal-sized polygons: route ONLY
+    // near-degenerate thin polygons (device-space minor extent of a few pixels)
+    // through stencil-then-cover. Normal shapes are untouched, so there is no
+    // coverage/perf regression for them.
+    //
+    // GUARD: stencil-path batches honor only the rectangular scissor — the cover
+    // PS has no rounded-clip SDF (the Impeller triangle path snapshots the
+    // rounded clip per batch instead). So skip this fast path whenever a rounded
+    // clip is active, otherwise a thin polygon inside a rounded-clipped region
+    // would escape the rounding.
+    if (!directRenderer_->HasRoundedClip() && brush->GetType() == JALIUM_BRUSH_SOLID) {
+        float minX = points[0], minY = points[1], maxX = points[0], maxY = points[1];
+        for (uint32_t i = 1; i < pointCount; i++) {
+            float x = points[i * 2], y = points[i * 2 + 1];
+            if (x < minX) minX = x; else if (x > maxX) maxX = x;
+            if (y < minY) minY = y; else if (y > maxY) maxY = y;
+        }
+        auto t = directRenderer_->GetCurrentTransform();
+        float sx = std::sqrt(t.m11 * t.m11 + t.m12 * t.m12);
+        float sy = std::sqrt(t.m21 * t.m21 + t.m22 * t.m22);
+        float scale = std::max(sx, sy) * directRenderer_->GetDpiScale();
+        float devMinExtent = std::min(maxX - minX, maxY - minY) * scale;
+
+        if (devMinExtent < 4.0f) {
+            float r, g, b, a;
+            if (ExtractBrushColor(brush, r, g, b, a)) {
+                // points → path commands: implicit MoveTo(start) + LineTo(rest) +
+                // ClosePath. Tags match jalium_triangulate.h (LineTo = 0, Close = 5).
+                std::vector<float> cmds;
+                cmds.reserve(static_cast<size_t>(pointCount) * 3 + 1);
+                for (uint32_t i = 1; i < pointCount; i++) {
+                    cmds.push_back(0.0f);                 // LineTo
+                    cmds.push_back(points[i * 2]);
+                    cmds.push_back(points[i * 2 + 1]);
+                }
+                cmds.push_back(5.0f);                      // ClosePath
+                auto geom = directRenderer_->GetOrBuildStencilPathGeometry(
+                    points[0], points[1], cmds.data(), (uint32_t)cmds.size());
+                if (directRenderer_->AddStencilPath(geom, r, g, b, a, fillRule)) {
+                    return;
+                }
+            }
+        }
+    }
+
     // Impeller engine path
     if (IsImpellerActive() && EnsureImpellerEngine()) {
         float r, g, b, a;
@@ -930,7 +1313,9 @@ void D3D12RenderTarget::FillPolygon(const float* points, uint32_t pointCount, Br
 
             FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
             if (impellerEngine_->EncodeFillPolygon(points, pointCount, bd, fr, et)) {
-                FlushImpellerBatches();
+                // Lazy flush: the next non-path draw (or EndDraw) drains
+                // the engine into DirectRenderer, letting N consecutive
+                // path emits coalesce into one GPU batch.
                 return;
             }
         }
@@ -1001,6 +1386,8 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
     int32_t lineJoin, float miterLimit) {
     if (!isDrawing_ || !brush || !directRenderer_ || pointCount < 2) return;
 
+    CommitDeferredState();
+
     // Impeller engine path: convert polygon to LineTo commands and stroke via Impeller
     if (IsImpellerActive() && EnsureImpellerEngine()) {
         float r, g, b, a;
@@ -1033,7 +1420,7 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
             if (impellerEngine_->EncodeStrokePath(
                     points[0], points[1], cmds.data(), (uint32_t)cmds.size(),
                     bd, strokeWidth, closed, lineJoin, miterLimit, 0, nullptr, 0, 0.0f, et)) {
-                FlushImpellerBatches();
+                // Lazy flush: see FillPolygon for the coalescing rationale.
                 return;
             }
         }
@@ -1130,6 +1517,8 @@ void D3D12RenderTarget::DrawPolygon(const float* points, uint32_t pointCount, Br
 void D3D12RenderTarget::FillPath(float startX, float startY, const float* commands, uint32_t commandLength, Brush* brush, int32_t fillRule, int32_t edgeMode) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
 
+    CommitDeferredState();
+
     // ── Stencil-then-cover fast path (solid color brushes only).
     //
     // Mirrors docs/reference/pure_d3d12_path_renderer.h:
@@ -1176,7 +1565,7 @@ void D3D12RenderTarget::FillPath(float startX, float startY, const float* comman
 
                 FillRule fr = (fillRule == 1) ? FillRule::NonZero : FillRule::EvenOdd;
                 if (impellerEngine_->EncodeFillPath(startX, startY, commands, commandLength, bd, fr, et, edgeMode)) {
-                    FlushImpellerBatches();
+                    // Lazy flush: see FillPolygon for the coalescing rationale.
                     return;
                 }
             }
@@ -1245,6 +1634,8 @@ void D3D12RenderTarget::StrokePath(float startX, float startY, const float* comm
     const float* dashPattern, uint32_t dashCount, float dashOffset, int32_t edgeMode) {
     if (!isDrawing_ || !brush || !directRenderer_) return;
 
+    CommitDeferredState();
+
     // Route based on active rendering engine
     if (IsImpellerActive()) {
         // Impeller engine: CPU stroke expansion + D3D12 rasterization
@@ -1267,7 +1658,7 @@ void D3D12RenderTarget::StrokePath(float startX, float startY, const float* comm
                 if (impellerEngine_->EncodeStrokePath(startX, startY, commands, commandLength,
                         bd, strokeWidth, closed, lineJoin, miterLimit, lineCap,
                         dashPattern, dashCount, dashOffset, et, edgeMode)) {
-                    FlushImpellerBatches();
+                    // Lazy flush: see FillPolygon for the coalescing rationale.
                     return;
                 }
             }
@@ -1342,6 +1733,7 @@ void D3D12RenderTarget::RenderText(
 {
     if (!isDrawing_ || !directRenderer_ || !format || !text || textLength == 0) return;
     FlushVelloIfNeeded();
+    jalium::text_stats::AddDrawTextCall();
 
     auto* tf = static_cast<D3D12TextFormat*>(format);
     float r = 1, g = 1, b = 1, a = 1;
@@ -1409,86 +1801,233 @@ void D3D12RenderTarget::BlitInkLayer(D3D12InkLayerBitmap* inkBitmap,
         1.0f, 1.0f, 0 /* unspecified scaling */);
 }
 
+// ─── Retained GPU layers ────────────────────────────────────────────────────
+// Forward to the direct renderer, flushing any deferred Vello/state first so the
+// RT redirect (realize) and the composite quad see committed state — mirrors the
+// FlushVelloIfNeeded() guard in BlitInkLayer above.
+bool D3D12RenderTarget::SupportsRetainedLayers() const
+{
+    return directRenderer_ && directRenderer_->SupportsRetainedLayers();
+}
+
+void* D3D12RenderTarget::RealizeLayerBegin(void* existingLayer, float x, float y, float w, float h)
+{
+    if (!isDrawing_ || !directRenderer_) return nullptr;
+    FlushVelloIfNeeded();
+    return directRenderer_->BeginRetainedLayerCapture(
+        reinterpret_cast<D3D12RetainedLayer*>(existingLayer), x, y, w, h);
+}
+
+void D3D12RenderTarget::RealizeLayerEnd(void* layer)
+{
+    if (!isDrawing_ || !directRenderer_) return;
+    FlushVelloIfNeeded();
+    directRenderer_->EndRetainedLayerCapture(reinterpret_cast<D3D12RetainedLayer*>(layer));
+}
+
+void D3D12RenderTarget::CompositeLayer(void* layer, float x, float y, float w, float h, float opacity)
+{
+    if (!isDrawing_ || !directRenderer_ || !layer) return;
+    FlushVelloIfNeeded();
+    directRenderer_->CompositeRetainedLayer(
+        reinterpret_cast<D3D12RetainedLayer*>(layer), x, y, w, h, opacity);
+}
+
+void D3D12RenderTarget::DestroyRetainedLayer(void* layer)
+{
+    if (!layer) return;
+    if (directRenderer_) {
+        directRenderer_->DestroyRetainedLayer(reinterpret_cast<D3D12RetainedLayer*>(layer));
+    } else {
+        // Renderer already torn down — the layer's destructor still retires its
+        // texture through the backend graveyard it captured at creation.
+        delete reinterpret_cast<D3D12RetainedLayer*>(layer);
+    }
+}
+
 // ============================================================================
-// State — Transform, Clip, Opacity
+// State — Transform, Clip, Opacity (deferred / peephole-collapsing)
 // ============================================================================
+//
+// Each Push* records its op into pendingStateOps_ and returns immediately.
+// CommitDeferredState() is called at the entry of every real draw method
+// (via FlushVelloIfNeeded for non-path draws, explicitly inside the path
+// emit methods) and walks the pending list in order, replaying each op
+// onto DirectRenderer's state stacks.
+//
+// A Pop* that finds a matching push at the tail of pendingStateOps_ — i.e.
+// no draw has fired since that push — simply pops the pending entry. Both
+// the directRenderer state mutation and the SyncScissorToImpeller copy are
+// skipped entirely, which is the dominant case for tree-traversal templates
+// that visit empty branches.
+
+bool D3D12RenderTarget::IdentityMatrixSkip(const float* m)
+{
+    constexpr float kEpsilon = 1e-7f;
+    return std::abs(m[0] - 1.0f) < kEpsilon &&
+           std::abs(m[1])        < kEpsilon &&
+           std::abs(m[2])        < kEpsilon &&
+           std::abs(m[3] - 1.0f) < kEpsilon &&
+           std::abs(m[4])        < kEpsilon &&
+           std::abs(m[5])        < kEpsilon;
+}
+
+void D3D12RenderTarget::EmitDeferredOp(const DeferredStateOp& op)
+{
+    if (!directRenderer_) return;
+    switch (op.kind) {
+        case DeferredOpKind::Transform:
+            directRenderer_->PushTransform(op.data[0], op.data[1], op.data[2],
+                                           op.data[3], op.data[4], op.data[5]);
+            break;
+        case DeferredOpKind::ClipAxisAligned:
+        case DeferredOpKind::ClipAxisAlignedAliased:
+            directRenderer_->PushScissor(op.data[0], op.data[1], op.data[2], op.data[3]);
+            clipFrameIsRounded_.push_back(false);
+            SyncScissorToImpeller();
+            break;
+        case DeferredOpKind::ClipRoundedRect:
+            // No flush at the clip boundary: Impeller batches snapshot the rounded
+            // clip per batch (SyncScissorToImpeller mirrors it into the engine), so
+            // pending batches keep their draw-time clip even after the live stack
+            // moves on. This is what lets path batches coalesce across rounded-clip
+            // pushes instead of forcing a GPU flush at every Border/titlebar.
+            directRenderer_->PushScissor(op.data[0], op.data[1], op.data[2], op.data[3]);
+            directRenderer_->PushRoundedClip(op.data[0], op.data[1], op.data[2], op.data[3],
+                                              op.data[4], op.data[5]);
+            clipFrameIsRounded_.push_back(true);
+            SyncScissorToImpeller();
+            break;
+        case DeferredOpKind::ClipPerCornerRounded:
+            // See ClipRoundedRect: per-batch rounded-clip snapshot, no flush.
+            directRenderer_->PushScissor(op.data[0], op.data[1], op.data[2], op.data[3]);
+            directRenderer_->PushPerCornerRoundedClip(op.data[0], op.data[1], op.data[2], op.data[3],
+                                                       op.data[4], op.data[5], op.data[6], op.data[7]);
+            clipFrameIsRounded_.push_back(true);
+            SyncScissorToImpeller();
+            break;
+        case DeferredOpKind::Opacity:
+            opacityStack_.push(directRenderer_->GetOpacity());
+            directRenderer_->SetOpacity(directRenderer_->GetOpacity() * op.data[0]);
+            break;
+    }
+}
+
+void D3D12RenderTarget::CommitDeferredState()
+{
+    if (pendingStateOps_.empty()) return;
+    // Replay in insertion order — LIFO is preserved because EmitDeferredOp
+    // mirrors each Push* exactly onto DirectRenderer's matching stack.
+    for (auto& op : pendingStateOps_) {
+        EmitDeferredOp(op);
+    }
+    pendingStateOps_.clear();
+}
 
 void D3D12RenderTarget::PushTransform(const float* matrix) {
-    if (!directRenderer_) return;
-    directRenderer_->PushTransform(matrix[0], matrix[1], matrix[2], matrix[3], matrix[4], matrix[5]);
+    if (!directRenderer_ || !matrix) return;
+    // Identity transform is a true no-op. The matching PopTransform below
+    // can still pop the implicit identity entry from pendingStateOps_ even
+    // when none was pushed because we encode an Identity-Transform op
+    // anyway — that keeps the LIFO invariant trivially correct for nested
+    // pushes that interleave identities with real transforms.
+    DeferredStateOp op{ DeferredOpKind::Transform, {} };
+    op.data[0] = matrix[0]; op.data[1] = matrix[1];
+    op.data[2] = matrix[2]; op.data[3] = matrix[3];
+    op.data[4] = matrix[4]; op.data[5] = matrix[5];
+    pendingStateOps_.push_back(op);
 }
 
 void D3D12RenderTarget::PopTransform() {
-    if (directRenderer_) directRenderer_->PopTransform();
+    if (!directRenderer_) return;
+    if (!pendingStateOps_.empty() && pendingStateOps_.back().kind == DeferredOpKind::Transform) {
+        // Peephole: the matching push never reached DirectRenderer — drop it.
+        pendingStateOps_.pop_back();
+        return;
+    }
+    directRenderer_->PopTransform();
 }
 
 void D3D12RenderTarget::PushClip(float x, float y, float w, float h) {
-    if (directRenderer_ && directRenderer_->IsInOffscreenCapture()) {
-        OutputDebugStringA("[PushClipRect OFFSCREEN] called\n");
-    }
-    if (directRenderer_) directRenderer_->PushScissor(x, y, w, h);
-    clipFrameIsRounded_.push_back(false);
-    SyncScissorToImpeller();
+    if (!directRenderer_) return;
+    DeferredStateOp op{ DeferredOpKind::ClipAxisAligned, {} };
+    op.data[0] = x; op.data[1] = y; op.data[2] = w; op.data[3] = h;
+    pendingStateOps_.push_back(op);
 }
 
 void D3D12RenderTarget::PushClipAliased(float x, float y, float w, float h) {
-    if (directRenderer_) directRenderer_->PushScissor(x, y, w, h);
-    clipFrameIsRounded_.push_back(false);
-    SyncScissorToImpeller();
+    if (!directRenderer_) return;
+    DeferredStateOp op{ DeferredOpKind::ClipAxisAlignedAliased, {} };
+    op.data[0] = x; op.data[1] = y; op.data[2] = w; op.data[3] = h;
+    pendingStateOps_.push_back(op);
 }
 
 void D3D12RenderTarget::PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry) {
-    // The axis-aligned scissor handles fast hardware culling; the rounded clip
-    // stack drives a per-pixel SDF discard inside the four batched pixel
-    // shaders so the corners are actually masked instead of leaking through.
-    if (directRenderer_) {
-        directRenderer_->PushScissor(x, y, w, h);
-        directRenderer_->PushRoundedClip(x, y, w, h, rx, ry);
-    }
-    clipFrameIsRounded_.push_back(true);
-    SyncScissorToImpeller();
+    if (!directRenderer_) return;
+    DeferredStateOp op{ DeferredOpKind::ClipRoundedRect, {} };
+    op.data[0] = x;  op.data[1] = y; op.data[2] = w; op.data[3] = h;
+    op.data[4] = rx; op.data[5] = ry;
+    pendingStateOps_.push_back(op);
 }
 
 void D3D12RenderTarget::PushPerCornerRoundedRectClip(float x, float y, float w, float h,
     float tl, float tr, float br, float bl)
 {
-    if (directRenderer_) {
-        directRenderer_->PushScissor(x, y, w, h);
-        directRenderer_->PushPerCornerRoundedClip(x, y, w, h, tl, tr, br, bl);
-    }
-    clipFrameIsRounded_.push_back(true);
-    SyncScissorToImpeller();
+    if (!directRenderer_) return;
+    DeferredStateOp op{ DeferredOpKind::ClipPerCornerRounded, {} };
+    op.data[0] = x;  op.data[1] = y;  op.data[2] = w;  op.data[3] = h;
+    op.data[4] = tl; op.data[5] = tr; op.data[6] = br; op.data[7] = bl;
+    pendingStateOps_.push_back(op);
 }
 
 void D3D12RenderTarget::PopClip() {
-    if (directRenderer_ && directRenderer_->IsInOffscreenCapture()) {
-        OutputDebugStringA("[PopClipRect OFFSCREEN] called\n");
+    if (!directRenderer_) return;
+    if (!pendingStateOps_.empty()) {
+        auto kind = pendingStateOps_.back().kind;
+        if (kind == DeferredOpKind::ClipAxisAligned ||
+            kind == DeferredOpKind::ClipAxisAlignedAliased ||
+            kind == DeferredOpKind::ClipRoundedRect ||
+            kind == DeferredOpKind::ClipPerCornerRounded) {
+            pendingStateOps_.pop_back();
+            return;
+        }
     }
     bool wasRounded = false;
     if (!clipFrameIsRounded_.empty()) {
         wasRounded = clipFrameIsRounded_.back();
         clipFrameIsRounded_.pop_back();
     }
-    if (directRenderer_) {
-        if (wasRounded) directRenderer_->PopRoundedClip();
-        directRenderer_->PopScissor();
+    if (wasRounded) {
+        // No flush on pop: pending path batches already snapshotted this rounded
+        // clip (per-batch payload), so popping it here doesn't disturb them — on
+        // replay FlushImpellerBatches feeds each batch's snapshot back as a forced
+        // override. (See EmitDeferredOp::ClipRoundedRect.)
+        directRenderer_->PopRoundedClip();
     }
+    directRenderer_->PopScissor();
     SyncScissorToImpeller();
 }
 
 void D3D12RenderTarget::PunchTransparentRect(float x, float y, float w, float h) {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     directRenderer_->PunchTransparentRect(x, y, w, h);
 }
 
 void D3D12RenderTarget::PushOpacity(float opacity) {
     if (!directRenderer_) return;
-    opacityStack_.push(directRenderer_->GetOpacity());
-    directRenderer_->SetOpacity(directRenderer_->GetOpacity() * opacity);
+    DeferredStateOp op{ DeferredOpKind::Opacity, {} };
+    op.data[0] = opacity;
+    pendingStateOps_.push_back(op);
 }
 
 void D3D12RenderTarget::PopOpacity() {
-    if (!directRenderer_ || opacityStack_.empty()) return;
+    if (!directRenderer_) return;
+    if (!pendingStateOps_.empty() && pendingStateOps_.back().kind == DeferredOpKind::Opacity) {
+        pendingStateOps_.pop_back();
+        return;
+    }
+    if (opacityStack_.empty()) return;
     directRenderer_->SetOpacity(opacityStack_.top());
     opacityStack_.pop();
 }
@@ -1498,6 +2037,10 @@ void D3D12RenderTarget::SetShapeType(int type, float n) {
 }
 
 void D3D12RenderTarget::SetVSyncEnabled(bool enabled) { vsyncEnabled_ = enabled; }
+
+void D3D12RenderTarget::SetPathMsaaSampleCount(uint32_t sampleCount) {
+    if (directRenderer_) directRenderer_->SetPathMsaaSampleCount(sampleCount);
+}
 
 void D3D12RenderTarget::SetDpi(float dpiX, float dpiY) {
     dpiX_ = dpiX;
@@ -1653,10 +2196,22 @@ void D3D12RenderTarget::DrawBackdropFilter(
     float cornerRadiusTL, float, float, float)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     directRenderer_->FlushGraphicsForCompute();
-    if (!directRenderer_->CaptureSnapshot()) return;
+    // Tag everything from here through DrawSnapshotBlurred as the Backdrop
+    // GPU category. FlushGraphicsForCompute() above drained pending batches
+    // (those already have their own per-batch category marks inside
+    // RecordDrawCommands), so the next span is genuinely backdrop work.
+    directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::Backdrop);
+    if (!directRenderer_->CaptureSnapshot()) {
+        // Failure path: hand the span back to Other so we don't leave the
+        // next batch (whose PSO switch will re-tag anyway) attributed to Backdrop.
+        directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::Other);
+        return;
+    }
     float avgRadius = cornerRadiusTL;
     directRenderer_->DrawSnapshotBlurred(x, y, w, h, blurRadius, 0, 0, 0, tintOpacity, avgRadius);
+    directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::Other);
 }
 
 void D3D12RenderTarget::DrawGlowingBorderHighlight(
@@ -1666,6 +2221,7 @@ void D3D12RenderTarget::DrawGlowingBorderHighlight(
     float screenWidth, float screenHeight)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     directRenderer_->DrawGlowingBorderHighlight(x, y, w, h, animationPhase, r, g, b,
         strokeWidth, trailLength, dimOpacity, screenWidth, screenHeight);
 }
@@ -1679,6 +2235,7 @@ void D3D12RenderTarget::DrawGlowingBorderTransition(
     float screenWidth, float screenHeight)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     directRenderer_->DrawGlowingBorderTransition(
         fromX, fromY, fromW, fromH, toX, toY, toW, toH,
         headProgress, tailProgress, animationPhase, r, g, b,
@@ -1692,6 +2249,7 @@ void D3D12RenderTarget::DrawRippleEffect(
     float screenWidth, float screenHeight)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     directRenderer_->DrawRippleEffect(x, y, w, h, rippleProgress, r, g, b,
         strokeWidth, dimOpacity, screenWidth, screenHeight);
 }
@@ -1706,11 +2264,16 @@ void D3D12RenderTarget::DrawLiquidGlass(
     int neighborCount, float fusionRadius, const float* neighborData)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     directRenderer_->FlushGraphicsForCompute();
+    directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::LiquidGlass);
     if (neighborCount > 0 && preGlassSnapshotCaptured_) {
         // Reuse existing pre-glass snapshot for fused panels
     } else {
-        if (!directRenderer_->CaptureSnapshot()) return;
+        if (!directRenderer_->CaptureSnapshot()) {
+            directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::Other);
+            return;
+        }
         if (neighborCount > 0) preGlassSnapshotCaptured_ = true;
     }
     directRenderer_->DrawLiquidGlass(x, y, w, h, cornerRadius, blurRadius,
@@ -1719,6 +2282,7 @@ void D3D12RenderTarget::DrawLiquidGlass(
         lightX, lightY, highlightBoost,
         shapeType, shapeExponent,
         neighborCount, fusionRadius, neighborData);
+    directRenderer_->MarkGpuTimingPoint(D3D12DirectRenderer::GpuTimingCategory::Other);
 }
 
 void D3D12RenderTarget::CaptureDesktopArea(int32_t screenX, int32_t screenY, int32_t width, int32_t height) {
@@ -1731,6 +2295,7 @@ void D3D12RenderTarget::DrawDesktopBackdrop(
     float /*noiseIntensity*/, float /*saturation*/)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     directRenderer_->DrawDesktopBackdrop(x, y, w, h, blurRadius, tintR, tintG, tintB, tintOpacity);
 }
 
@@ -1740,11 +2305,17 @@ void D3D12RenderTarget::DrawDesktopBackdrop(
 
 void D3D12RenderTarget::BeginTransitionCapture(int slot, float x, float y, float w, float h) {
     if (!isDrawing_ || !directRenderer_ || slot < 0 || slot > 1) return;
+    CommitDeferredState();
+    // Drain pending Impeller batches to the back buffer before redirecting the
+    // render target to the offscreen slot (see BeginEffectCapture for the full
+    // rationale — otherwise pre-capture strokes leak into the captured texture).
+    FlushImpellerBatches();
     directRenderer_->BeginOffscreenCapture(slot, x, y, w, h);
 }
 
 void D3D12RenderTarget::EndTransitionCapture(int slot) {
     if (!isDrawing_ || !directRenderer_ || slot < 0 || slot > 1) return;
+    CommitDeferredState();
     directRenderer_->EndOffscreenCapture(slot);
 }
 
@@ -1755,6 +2326,7 @@ void D3D12RenderTarget::DrawTransitionShader(float x, float y, float w, float h,
 
 void D3D12RenderTarget::DrawCapturedTransition(int slot, float x, float y, float w, float h, float opacity) {
     if (!isDrawing_ || !directRenderer_ || slot < 0 || slot > 1) return;
+    CommitDeferredState();
     directRenderer_->DrawOffscreenBitmap(slot, x, y, w, h, opacity);
 }
 
@@ -1764,6 +2336,17 @@ void D3D12RenderTarget::DrawCapturedTransition(int slot, float x, float y, float
 
 void D3D12RenderTarget::BeginEffectCapture(float x, float y, float w, float h) {
     if (!isDrawing_ || !directRenderer_) { lastEffectCaptureOk_ = false; return; }
+    CommitDeferredState();
+    // Drain any pending Impeller stroke/fill batches to the DirectRenderer's
+    // triangle list BEFORE we redirect the render target to the offscreen
+    // capture. Without this, an element rendered just before an effect element
+    // (e.g. a card's arrow glyph immediately preceding the NEXT card's drop
+    // shadow) is still queued in the Impeller engine; it would otherwise be
+    // drained mid-capture and drawn into the effect's offscreen texture instead
+    // of the back buffer, so every such element except the last (which has no
+    // following capture) silently vanished. FlushGraphicsForCompute then paints
+    // the now-materialised triangles to the current (back-buffer) target.
+    FlushImpellerBatches();
     directRenderer_->FlushGraphicsForCompute();
     lastEffectCaptureOk_ = directRenderer_->BeginOffscreenCapture(0, x, y, w, h);
     if (!lastEffectCaptureOk_) {
@@ -1776,6 +2359,7 @@ void D3D12RenderTarget::BeginEffectCapture(float x, float y, float w, float h) {
 
 void D3D12RenderTarget::EndEffectCapture() {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     if (lastEffectCaptureOk_) {
         directRenderer_->EndOffscreenCapture(0);
     }
@@ -1785,6 +2369,7 @@ void D3D12RenderTarget::DrawBlurEffect(float x, float y, float w, float h, float
     float uvOffsetX, float uvOffsetY)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     if (!lastEffectCaptureOk_) return;
 
     // (x,y,w,h) = element's actual screen bounds (stable position).
@@ -1804,38 +2389,50 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
     float cornerTL, float cornerTR, float cornerBR, float cornerBL)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     if (!lastEffectCaptureOk_) return;
 
-    // (x,y,w,h) = element's actual screen bounds.
-    // Shadow area = element bounds shifted by offset, expanded by blurRadius.
-    float shadowCX = x + offsetX - blurRadius;
-    float shadowCY = y + offsetY - blurRadius;
-    float shadowCW = w + 2 * blurRadius;
-    float shadowCH = h + 2 * blurRadius;
-
-    // Render the shadow into offscreen slot 1 so we can blur it without
-    // corrupting the main render target's existing content.
-    if (directRenderer_->BeginOffscreenCapture(1, shadowCX, shadowCY, shadowCW, shadowCH)) {
-        // Draw shadow fill rect into slot 1 (position is in screen DIP coords;
-        // the offscreen transform shifts it to offscreen-local automatically).
-        SdfRectInstance inst = {};
-        inst.posX = x + offsetX; inst.posY = y + offsetY;
-        inst.sizeX = w; inst.sizeY = h;
-        inst.cornerTL = cornerTL; inst.cornerTR = cornerTR;
-        inst.cornerBR = cornerBR; inst.cornerBL = cornerBL;
-        inst.fillR = r * a; inst.fillG = g * a; inst.fillB = b * a; inst.fillA = a;
-        inst.opacity = directRenderer_->GetOpacity();
-        directRenderer_->AddSdfRect(inst);
-
-        directRenderer_->EndOffscreenCapture(1);
-
-        // Blur the shadow in the offscreen texture
-        if (blurRadius > 0) {
-            directRenderer_->BlurOffscreenSlot(1, blurRadius);
+    // Soft drop shadow via layered SDF rounded-rects drawn DIRECTLY on the main RT.
+    //
+    // 2026-06-02 refactor: the previous implementation rendered the shadow into offscreen
+    // slot 1 and ran a compute-shader gaussian blur (BlurOffscreenSlot). That element-level
+    // path was fragile and had never been exercised by real XAML:
+    //   * BlurOffscreenSlot's return value was ignored, so whenever the blur was skipped or
+    //     failed (e.g. blur resources not ready, or the per-frame offscreen-temp guard tripped
+    //     for the 2nd+ shadowed element in a frame) an UNBLURRED hard rounded-rect was still
+    //     composited — the "ghost rectangle" artifact;
+    //   * the compute-blur / offscreen round-trip could leave the command list / pipeline in a
+    //     state that dropped subsequent draws in the frame (observed: the title bar and other
+    //     chrome vanished when a page used many element shadows).
+    // Approximating the blur with N concentric, expanding, equal-alpha rounded rects drawn
+    // straight to the main RT removes the offscreen + compute round-trip entirely: no ghost
+    // rectangles and no pipeline corruption. Intensity stays faithful to the requested alpha
+    // (cumulative centre alpha ≈ a, since over-blending N layers of a/N gives 1-(1-a/N)^N ≈ a),
+    // so callers still tune the shadow purely from DropShadowEffect.Opacity — no native rebuild.
+    float baseOpacity = directRenderer_->GetOpacity();
+    if (a > 0.0f && baseOpacity > 0.0f) {
+        const int LAYERS = 7;
+        float perLayerA = a / static_cast<float>(LAYERS);
+        float maxSpread = (blurRadius > 0.0f) ? blurRadius : 0.0f;
+        // Outermost (largest) first so closer-to-element layers paint last on top.
+        for (int i = LAYERS; i >= 1; --i) {
+            float spread = maxSpread * (static_cast<float>(i) / static_cast<float>(LAYERS));
+            SdfRectInstance inst = {};
+            inst.posX = x + offsetX - spread;
+            inst.posY = y + offsetY - spread;
+            inst.sizeX = w + 2.0f * spread;
+            inst.sizeY = h + 2.0f * spread;
+            inst.cornerTL = cornerTL + spread; inst.cornerTR = cornerTR + spread;
+            inst.cornerBR = cornerBR + spread; inst.cornerBL = cornerBL + spread;
+            // Straight (non-premultiplied) color: the SdfRect PS does fill.rgb * coverage
+            // and the normal fill path passes straight color (inst.fillR = r). Premultiplying
+            // here by perLayerA dimmed the RGB an extra factor relative to the alpha, washing
+            // a colored glow/shadow (e.g. GlowEmerald #34D399) out to a neutral gray halo.
+            inst.fillR = r; inst.fillG = g;
+            inst.fillB = b; inst.fillA = perLayerA;
+            inst.opacity = baseOpacity;
+            directRenderer_->AddSdfRect(inst);
         }
-
-        // Composite the blurred shadow onto the main RT
-        directRenderer_->DrawOffscreenBitmap(1, shadowCX, shadowCY, shadowCW, shadowCH, 1.0f);
     }
 
     // Composite original element content on top of shadow
@@ -1843,8 +2440,57 @@ void D3D12RenderTarget::DrawDropShadowEffect(float x, float y, float w, float h,
         uvOffsetX, uvOffsetY, 1.0f);
 }
 
+void D3D12RenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
+    float glowSize, float r, float g, float b, float a, float intensity,
+    float uvOffsetX, float uvOffsetY,
+    float cornerTL, float cornerTR, float cornerBR, float cornerBL)
+{
+    if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
+    if (!lastEffectCaptureOk_) return;
+
+    // Soft outer glow via layered SDF rounded-rects drawn DIRECTLY on the main RT.
+    // Mirrors the DrawDropShadowEffect refactor (2026-06-02): the previous offscreen
+    // slot-1 + compute-blur path produced hard halos when the blur was skipped and could
+    // leave pipeline state that dropped later draws (vanishing title bar / chrome). Here the
+    // glow is the element silhouette expanded by glowSize on every side, approximated by N
+    // concentric, expanding, equal-alpha rounded rects painted straight to the main RT —
+    // centered (no directional offset) and tinted by the glow color — then the captured
+    // element content is composited on top so it stays crisp.
+    float ga = a * intensity;
+    if (ga > 1.0f) ga = 1.0f;
+    float baseOpacity = directRenderer_->GetOpacity();
+    if (ga > 0.0f && glowSize > 0.0f && baseOpacity > 0.0f) {
+        const int LAYERS = 7;
+        float perLayerA = ga / static_cast<float>(LAYERS);
+        for (int i = LAYERS; i >= 1; --i) {
+            float spread = glowSize * (static_cast<float>(i) / static_cast<float>(LAYERS));
+            SdfRectInstance inst = {};
+            inst.posX = x - spread;
+            inst.posY = y - spread;
+            inst.sizeX = w + 2.0f * spread;
+            inst.sizeY = h + 2.0f * spread;
+            inst.cornerTL = cornerTL + spread; inst.cornerTR = cornerTR + spread;
+            inst.cornerBR = cornerBR + spread; inst.cornerBL = cornerBL + spread;
+            // Straight (non-premultiplied) color: the SdfRect PS does fill.rgb * coverage
+            // and the normal fill path passes straight color (inst.fillR = r). Premultiplying
+            // here by perLayerA dimmed the RGB an extra factor relative to the alpha, washing
+            // a colored glow/shadow (e.g. GlowEmerald #34D399) out to a neutral gray halo.
+            inst.fillR = r; inst.fillG = g;
+            inst.fillB = b; inst.fillA = perLayerA;
+            inst.opacity = baseOpacity;
+            directRenderer_->AddSdfRect(inst);
+        }
+    }
+
+    // Composite original element content on top of the glow so it stays crisp.
+    directRenderer_->DrawOffscreenBitmapCropped(0, x, y, w, h,
+        uvOffsetX, uvOffsetY, 1.0f);
+}
+
 void D3D12RenderTarget::DrawColorMatrixEffect(float x, float y, float w, float h, const float* /*matrix*/) {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     // Fallback: just draw the captured content without transformation
     directRenderer_->DrawOffscreenBitmap(0, x, y, w, h, 1.0f);
 }
@@ -1853,6 +2499,7 @@ void D3D12RenderTarget::DrawEmbossEffect(float x, float y, float w, float h,
     float /*amount*/, float /*lightDirX*/, float /*lightDirY*/, float /*relief*/)
 {
     if (!isDrawing_ || !directRenderer_) return;
+    CommitDeferredState();
     directRenderer_->DrawOffscreenBitmap(0, x, y, w, h, 1.0f);
 }
 
@@ -1862,10 +2509,62 @@ void D3D12RenderTarget::DrawShaderEffect(float x, float y, float w, float h,
 {
     if (!isDrawing_ || !directRenderer_ || !lastEffectCaptureOk_) return;
 
+    CommitDeferredState();
     directRenderer_->DrawCustomShaderEffect(
         0,
         x, y, w, h,
         shaderBytecode, shaderBytecodeSize,
+        constants, constantFloatCount);
+}
+
+void D3D12RenderTarget::DrawShaderEffectFromSource(float x, float y, float w, float h,
+    const char* hlslSource, const float* constants, uint32_t constantFloatCount)
+{
+    if (!isDrawing_ || !directRenderer_ || !lastEffectCaptureOk_ || !hlslSource) return;
+
+    // FNV-1a hash of the source keys the compiled-bytecode cache.
+    uint64_t hash = 1469598103934665603ull;
+    for (const char* p = hlslSource; *p; ++p) {
+        hash ^= static_cast<uint8_t>(*p);
+        hash *= 1099511628211ull;
+    }
+
+    ComPtr<ID3DBlob> psBlob;
+    auto it = customShaderHlslCache_.find(hash);
+    if (it != customShaderHlslCache_.end()) {
+        psBlob = it->second;
+    } else {
+        UINT flags = 0;
+#ifdef _DEBUG
+        flags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+        flags = D3DCOMPILE_OPTIMIZATION_LEVEL3;
+#endif
+        ComPtr<ID3DBlob> errors;
+        HRESULT hr = D3DCompile(hlslSource, std::strlen(hlslSource),
+                                "jalium_shader_effect.ps.hlsl", nullptr, nullptr,
+                                "main", "ps_5_1", flags, 0,
+                                psBlob.GetAddressOf(), errors.GetAddressOf());
+        if (FAILED(hr)) {
+            if (errors) {
+                OutputDebugStringA("[Jalium shader effect] HLSL compile error: ");
+                OutputDebugStringA(static_cast<const char*>(errors->GetBufferPointer()));
+                OutputDebugStringA("\n");
+            }
+            // Fallback: draw the captured content unmodified (matches the DXBC
+            // path's compile-failure behaviour).
+            CommitDeferredState();
+            directRenderer_->DrawCustomShaderEffect(0, x, y, w, h, nullptr, 0, constants, constantFloatCount);
+            return;
+        }
+        customShaderHlslCache_.emplace(hash, psBlob);
+    }
+
+    CommitDeferredState();
+    directRenderer_->DrawCustomShaderEffect(
+        0, x, y, w, h,
+        static_cast<const uint8_t*>(psBlob->GetBufferPointer()),
+        static_cast<uint32_t>(psBlob->GetBufferSize()),
         constants, constantFloatCount);
 }
 

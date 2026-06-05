@@ -23,7 +23,6 @@
     #pragma warning(pop)
 #endif
 
-#define JALIUM_MEDIA_EXPORTS
 #include "jalium_audio.h"
 #include "audio_internal.h"
 

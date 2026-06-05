@@ -23,6 +23,8 @@ public static class TextRenderingBridge
     private static int s_initialized;
 
     [ModuleInitializer]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2255:The 'ModuleInitializer' attribute should not be used in libraries",
+        Justification = "Pushes the managed default text-rendering mode into the native glyph atlas before any glyph is rasterized; running at module load is the documented integration point, with EnsureInitialized() as a reflection/first-assignment fallback when the trimmer removes the initializer.")]
     internal static void ModuleInit()
     {
         EnsureInitialized();

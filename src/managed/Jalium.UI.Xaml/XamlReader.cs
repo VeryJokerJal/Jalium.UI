@@ -1382,6 +1382,8 @@ public static class XamlReader
         return reader.GetAttribute("Key", xamlNamespace);
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "This is the runtime XAML markup-extension resolution tail; invoking it is the documented consumer responsibility under AOT. The base MarkupExtension.ProvideValue carries RequiresDynamicCode only because 'some extensions (e.g. x:Array) construct arrays of a runtime-supplied element Type' — that single extension is the dynamic-code case. The built-in extensions reachable here (Binding/StaticResource/DynamicResource/TemplateBinding/x:Static etc.) construct no runtime-typed arrays, so no dynamic code is emitted at this call site.")]
     private static object? ResolveMarkupExtensionValueIfNeeded(
         object? value,
         object targetObject,
@@ -3720,6 +3722,10 @@ internal sealed class XamlParserContext : IAmbientResourceProvider
         return null;
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "This is the user-defined-type fallback of the runtime XAML reader, reached only after the AOT-safe XamlTypeRegistry (which preserves every framework type) misses. Resolving a user type named in jalxaml via Assembly.GetType is the documented consumer responsibility under AOT — the RUC contract is already declared at the public XamlReader.Load/Parse boundary (see the class-level RequiresUnreferencedCode), and user code-behind types reachable from XAML are preserved via XamlTypeRegistry registration / the SourceGenerator's DynamicDependency emission.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2073:DynamicallyAccessedMembers",
+        Justification = "The [return: DynamicallyAccessedMembers] promises preserved members on the resolved type so downstream reflective construction is safe. For the registry hit path that guarantee holds (registered types carry the DAM annotation on Register<T>/RegisterType<T>). For this Assembly.GetType fallback the resolved user type is a runtime-discovered token that cannot carry DAM statically; its preservation is the documented consumer responsibility (XamlReader.Load/Parse RUC contract + SourceGenerator DynamicDependency), so the return annotation is satisfied by the consumer-side preservation rather than a static flow.")]
     [return: DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicConstructors |
         DynamicallyAccessedMemberTypes.PublicProperties |
@@ -4005,6 +4011,11 @@ public static class XamlTypeRegistry
         Register<ToolBarOverflowPanel>(types);
         Register<ToolBarPanel>(types);
         Register<UniformGrid>(types);
+        // 抽象基类 VirtualizingPanel 也要注册：VirtualizingPanel.IsVirtualizing /
+        // VirtualizationMode / ScrollUnit 等附加属性的 owner 是这个基类，jalxaml 里
+        // <VirtualizingStackPanel VirtualizingPanel.IsVirtualizing="True" /> 解析 owner 时
+        // 需按简单名找到它（否则 SetAttachedProperty 抛 "Cannot resolve attached property owner type"）。
+        Register<VirtualizingPanel>(types);
         Register<VirtualizingStackPanel>(types);
 
         // Static service classes used as attached-property owners
@@ -4116,6 +4127,8 @@ public static class XamlTypeRegistry
     /// <summary>
     /// Gets a type by its simple name.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2073:DynamicallyAccessedMembers",
+        Justification = "The _types dictionary is populated exclusively by the DAM-annotated Register<T>/RegisterType<T> generics (each carries the same PublicConstructors|PublicProperties|PublicFields|PublicMethods|NonPublicFields annotation on T), so every stored Type already has those members preserved. The trimmer cannot propagate DAM through the Dictionary<string,Type> value type, so it cannot statically prove the returned token satisfies the [return: DAM] promise; the promise is in fact upheld by those registration generics.")]
     [return: DynamicallyAccessedMembers(
         DynamicallyAccessedMemberTypes.PublicConstructors |
         DynamicallyAccessedMemberTypes.PublicProperties |
@@ -4287,6 +4300,8 @@ public static class XamlTypeRegistry
     /// </summary>
     /// <param name="component">The component instance to apply the bundle to.</param>
     /// <param name="bundle">The compiled UI bundle.</param>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Forwards to the three-arg ApplyBundle with namedElements=null, which per its RequiresUnreferencedCode contract 'walks the component runtime type via reflection to assign named fields. Pass a non-null namedElements dictionary for AOT-safe operation.' This compatibility overload is the runtime (non-SourceGenerator) JALXAML application path whose reflective named-element wiring is the documented consumer responsibility; AOT consumers use the SourceGenerator-emitted three-arg call that supplies a non-null namedElements dictionary (see JalxamlLoader).")]
     public static void ApplyBundle(object component, Gpu.CompiledUIBundle bundle)
         => ApplyBundle(component, bundle, null);
 
@@ -4450,6 +4465,8 @@ public static class XamlTypeRegistry
         return root;
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "The default case calls TryAttachFallbackChild, whose RequiresUnreferencedCode contract is 'Reads ContentPropertyAttribute and the matching property via reflection on the parent runtime type.' AttachFallbackVisual is reached only from the reflective (non-AOT, namedElements==null) ApplyBundle fallback path, which already declares the RequiresUnreferencedCode contract; preserving the parent type's ContentPropertyAttribute-named property is the documented consumer responsibility on that runtime path.")]
     private static void AttachFallbackVisual(object component, UIElement root)
     {
         switch (component)

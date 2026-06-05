@@ -133,6 +133,7 @@ public sealed class ItemsPanelTemplate
     /// When set, <see cref="CreatePanel"/> will instantiate this type directly
     /// without going through the XAML parser.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)]
     public Type? PanelType { get; set; }
 
     /// <summary>

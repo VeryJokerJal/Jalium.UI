@@ -505,6 +505,8 @@ public class CollectionView : ICollectionView, INotifyPropertyChanged
             return 0;
         }
 
+        [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+            Justification = "CollectionView sorts by reflecting the property named in SortDescription.PropertyName on the runtime type of each user-defined data item (item.GetType()). The runtime type is supplied by the consumer's source collection and cannot carry DynamicallyAccessedMembers. Keeping the sorted properties of bound model types reflectable is the documented consumer responsibility when using SortDescriptions under trimming/AOT, mirroring the data-binding reflection fallback; it is not a defect of this site.")]
         private static object? GetPropertyValue(object item, string propertyName)
         {
             if (string.IsNullOrEmpty(propertyName))

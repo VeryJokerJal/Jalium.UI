@@ -69,6 +69,17 @@ JALIUM_API JaliumResult jalium_context_get_adapter_info(
     JaliumContext* ctx,
     JaliumAdapterInfo* info);
 
+/// Returns the render target's current swap chain present configuration
+/// (SwapEffect / tearing / frame-latency-waitable / max latency / composition).
+/// Useful for diagnosing why a render path is slow — e.g. flip 退化到 BLT，
+/// 或 frame-latency-waitable 因为驱动拒绝被静默禁用。
+/// @param rt The render target.
+/// @param info Output structure to receive present information.
+/// @return JALIUM_OK on success, NOT_SUPPORTED if backend doesn't implement.
+JALIUM_API JaliumResult jalium_render_target_get_present_info(
+    JaliumRenderTarget* rt,
+    JaliumPresentInfo* info);
+
 // ============================================================================
 // Rendering Engine Selection (Hot-Switchable)
 // ============================================================================
@@ -113,6 +124,30 @@ JALIUM_API JaliumRenderingEngine jalium_context_get_default_engine(JaliumContext
 JALIUM_API JaliumResult jalium_render_target_query_gpu_stats(
     JaliumRenderTarget* rt,
     JaliumGpuStats* out);
+
+/// Reads back per-frame GPU timing collected from hardware timestamp queries
+/// on the graphics queue. The numbers are for the *previous* frame — the
+/// readback resource is populated when the next BeginFrame observes the
+/// fence as completed. Backends that do not implement timestamp queries
+/// zero-fill the struct and return JALIUM_ERROR_NOT_SUPPORTED; managed
+/// callers treat that as "no breakdown available".
+/// @param rt The render target.
+/// @param out Output structure to receive the timing breakdown.
+/// @return JALIUM_OK on success, JALIUM_ERROR_NOT_SUPPORTED if unimplemented.
+JALIUM_API JaliumResult jalium_render_target_query_gpu_timing(
+    JaliumRenderTarget* rt,
+    JaliumGpuTimingStats* out);
+
+/// Returns the OS HANDLE (as intptr_t) used by this render target's swap
+/// chain as its frame-latency waitable. Callers wait on the handle from
+/// a background thread to drive vsync-aligned rendering; the handle stays
+/// owned by the backend (do NOT close it). Returns 0 when the backend
+/// has no waitable (older platforms, non-D3D12 backends, or swap chain
+/// created without FRAME_LATENCY_WAITABLE_OBJECT flag).
+/// @param rt The render target.
+/// @return The waitable HANDLE cast to intptr_t, or 0 if none.
+JALIUM_API intptr_t jalium_render_target_get_frame_latency_waitable(
+    JaliumRenderTarget* rt);
 
 /// Asks the render target's backend to drop any reusable GPU / CPU caches it
 /// has accumulated (path tessellation results, rasterized text bitmaps, glyph
@@ -241,6 +276,16 @@ JALIUM_API void jalium_render_target_add_dirty_rect(JaliumRenderTarget* rt, floa
 /// Marks the entire render target as needing full redraw.
 /// @param rt The render target.
 JALIUM_API void jalium_render_target_set_full_invalidation(JaliumRenderTarget* rt);
+
+/// Retained GPU layer API (damage-driven composited-animation fast path).
+/// Realize a content-clean subtree into a persistent offscreen texture once,
+/// then composite it as a transformed/opacity quad each frame. Backends without
+/// offscreen-RT capture return unsupported (0 / null) so callers fall back.
+JALIUM_API int   jalium_render_target_supports_retained_layers(JaliumRenderTarget* rt);
+JALIUM_API void* jalium_render_target_realize_layer_begin(JaliumRenderTarget* rt, void* existingLayer, float x, float y, float w, float h);
+JALIUM_API void  jalium_render_target_realize_layer_end(JaliumRenderTarget* rt, void* layer);
+JALIUM_API void  jalium_render_target_composite_layer(JaliumRenderTarget* rt, void* layer, float x, float y, float w, float h, float opacity);
+JALIUM_API void  jalium_render_target_destroy_retained_layer(JaliumRenderTarget* rt, void* layer);
 
 /// Returns whether the render target supports partial redraw + dirty-rect presentation.
 /// Returns 1 when partial presentation is supported, otherwise 0.
@@ -971,6 +1016,7 @@ JALIUM_API void jalium_draw_drop_shadow_effect(JaliumRenderTarget* rt,
 JALIUM_API void jalium_draw_outer_glow_effect(JaliumRenderTarget* rt,
     float x, float y, float w, float h,
     float glowSize, float r, float g, float b, float a, float intensity,
+    float uvOffsetX, float uvOffsetY,
     float cornerTL, float cornerTR, float cornerBR, float cornerBL);
 
 JALIUM_API void jalium_draw_inner_shadow_effect(JaliumRenderTarget* rt,

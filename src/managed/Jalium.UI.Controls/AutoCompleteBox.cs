@@ -833,6 +833,8 @@ public class AutoCompleteBox : TextBoxBase, IImeSupport
         };
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+        Justification = "TextMemberPath resolves a named property on the consumer's item type via reflection. The item Type comes from object.GetType() on the application's own bound data objects, which cannot carry DynamicallyAccessedMembers. This is an opt-in display-path feature: consumers that set TextMemberPath are responsible for keeping the referenced property preserved under trimming/AOT (the same documented prerequisite as any data-bound member-path), not a defect of this site. When TextMemberPath is unset no reflection occurs.")]
     private string GetItemText(object item)
     {
         if (item == null) return string.Empty;

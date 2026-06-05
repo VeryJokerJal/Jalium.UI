@@ -114,6 +114,14 @@ public class ItemsControl : Control
     protected Panel? ItemsHost => _itemsPresenter?.ItemsPanel ?? _fallbackItemsHost;
 
     /// <summary>
+    /// Internal accessor for the items-host panel. Used by the DevTools inspector to
+    /// map a right-clicked item container back to its item index for delete/undo
+    /// (the generator map is only populated on the virtualizing path). Mirrors the
+    /// protected <see cref="ItemsHost"/>.
+    /// </summary>
+    internal Panel? ItemsHostInternal => ItemsHost;
+
+    /// <summary>
     /// Gets the ItemContainerGenerator associated with this control.
     /// </summary>
     public ItemContainerGenerator ItemContainerGenerator
@@ -198,7 +206,8 @@ public class ItemsControl : Control
     /// <summary>
     /// Creates an <see cref="ItemsPanelTemplate"/> that instantiates the specified panel type.
     /// </summary>
-    protected static ItemsPanelTemplate CreateItemsPanelTemplate(Type panelType)
+    protected static ItemsPanelTemplate CreateItemsPanelTemplate(
+        [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicParameterlessConstructor)] Type panelType)
     {
         var template = new ItemsPanelTemplate { PanelType = panelType };
         template.Seal();

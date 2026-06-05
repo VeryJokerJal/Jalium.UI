@@ -41,6 +41,23 @@ public sealed class MediaRenderCacheHost : IRenderCacheHost
         return recorder;
     }
 
+    /// <summary>
+    /// Whole-frame recorder for the render-thread path: captures the entire visual
+    /// tree (including per-child offsets) as a self-contained <see cref="Drawing"/>
+    /// with no live target. Released via <see cref="FinishRecord"/> like a normal
+    /// recorder; replayed via <see cref="Replay"/>.
+    /// </summary>
+    public DrawingContext CreateFrameRecorder()
+    {
+        DrawingRecorder recorder;
+        lock (_poolLock)
+        {
+            recorder = _pool.Count > 0 ? _pool.Pop() : new DrawingRecorder();
+        }
+        recorder.BindWholeFrame();
+        return recorder;
+    }
+
     public object FinishRecord(DrawingContext recorder)
     {
         var r = (DrawingRecorder)recorder;

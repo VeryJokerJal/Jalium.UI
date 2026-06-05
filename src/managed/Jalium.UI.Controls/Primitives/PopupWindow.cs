@@ -293,7 +293,15 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
             }
 
             _renderTarget.SetFullInvalidation();
-            _renderTarget.BeginDraw();
+            // 合成 / 可等待 swapchain 的 BeginDraw 在 GPU 仍在 present 上一帧时返回 InvalidState（D3D12 正常背压，
+            // 见 RenderTarget.TryBeginDraw 注释 + Window 主循环用法）。用 TryBeginDraw 跳过本帧并稍后重画，
+            // 绝不能在原生 WM_PAINT / dispatcher-critical 回调里抛 RenderPipelineException —— 异常穿过原生回调会
+            // 触发 0xC000041D（用户回调期间未处理异常）进程级崩溃。
+            if (!_renderTarget.TryBeginDraw())
+            {
+                ScheduleRenderAfterRecovery();
+                return;
+            }
             bool drawSessionActive = true;
 
             try
@@ -329,12 +337,9 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
         }
         catch (RenderPipelineException ex)
         {
-            if (string.Equals(ex.Stage, "Begin", StringComparison.OrdinalIgnoreCase))
-            {
-                LogRenderFailure(ex, "RenderFrame");
-                throw;
-            }
-
+            // 本方法运行在原生 WM_PAINT / dispatcher-critical 回调内：异常【绝不能】逃逸到原生边界
+            // （会触发 0xC000041D 进程级崩溃）。一律走恢复 / 重排 —— 连旧代码特判重抛的 Begin 阶段
+            // 可恢复失败也走恢复，不再 throw。
             if (TryRecoverFromRenderPipelineFailure(ex, "RenderFrame"))
             {
                 return;
@@ -346,15 +351,14 @@ internal sealed partial class PopupWindow : Decorator, IWindowHost, ILayoutManag
                 return;
             }
 
+            // 不可恢复也只记录并放弃本帧：popup 渲染失败不应拖垮整个应用。
             LogRenderFailure(ex, "RenderFrame");
-            throw;
         }
         catch (Exception ex)
         {
             // Schedule a full re-render so the stale error frame gets cleared.
             ScheduleRenderAfterRecovery();
             LogRenderFailure(ex, "RenderFrame");
-            throw;
         }
         finally
         {

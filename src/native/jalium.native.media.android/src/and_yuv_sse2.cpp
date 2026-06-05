@@ -1,4 +1,3 @@
-#define JALIUM_MEDIA_EXPORTS
 #include "and_yuv_simd.h"
 
 // SSE2 kernels for x86_64 / i386 (Android emulator). Vectorised implementation

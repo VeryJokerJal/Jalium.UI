@@ -1,5 +1,6 @@
 #include "d3d12_glyph_atlas.h"
 #include "jalium_text_options.h"
+#include "jalium_text_stats.h"
 #include <wincodec.h>
 #include <mutex>
 #include <cstring>
@@ -347,6 +348,7 @@ void D3D12GlyphAtlas::Reset()
     // generation so the resolved-glyph memo treats all its entries (which
     // hold now-stale atlas UVs) as misses.
     ++atlasGeneration_;
+    jalium::text_stats::AddAtlasReset();
     cache_.clear();
     std::fill(atlasBitmap_.begin(), atlasBitmap_.end(), (uint8_t)0);
     packX_ = 0;
@@ -1358,7 +1360,6 @@ bool D3D12GlyphAtlas::RasterizeColorGlyph(const GlyphKey& key, GlyphEntry& entry
 // ============================================================================
 
 uint64_t D3D12GlyphAtlas::HashInstanceKey(uint64_t layoutKey,
-                                          float originX, float originY,
                                           float dpiScale,
                                           int32_t aaMode,
                                           int32_t hintingMode) noexcept
@@ -1369,13 +1370,17 @@ uint64_t D3D12GlyphAtlas::HashInstanceKey(uint64_t layoutKey,
         for (size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 0x100000001B3ull; }
     };
     mix(&layoutKey, sizeof(layoutKey));
-    mix(&originX, sizeof(originX));
-    mix(&originY, sizeof(originY));
     mix(&dpiScale, sizeof(dpiScale));
-    // Mode bits must enter the key — two text elements at the same origin
-    // with the same layoutKey but different TextRenderingMode/TextHintingMode
-    // would otherwise hand back the cached run rasterized in the other
-    // element's mode (e.g. ClearType glyphs served to a Grayscale element).
+    // Mode bits must enter the key — two text elements with the same
+    // layoutKey but different TextRenderingMode/TextHintingMode would
+    // otherwise hand back the cached run rasterized in the other element's
+    // mode (e.g. ClearType glyphs served to a Grayscale element).
+    //
+    // Origin (originX/Y) is intentionally NOT in the key: cached instances
+    // store quad positions in layout-local coords (Draw was issued with
+    // origin (0, 0)), and emitRun adds the caller's origin when serving the
+    // hit. That lets a scrolling / dragged text run reuse its shaped layout
+    // across every screen position it visits within the cache lifetime.
     mix(&aaMode, sizeof(aaMode));
     mix(&hintingMode, sizeof(hintingMode));
     return h;
@@ -1419,10 +1424,18 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
         effectiveHintingMode = 0;
     }
 
-    // Apply this call's premultiplied colour to a colour-neutral run (cached
-    // or freshly built) and append it to the caller's buffers. Decorations
-    // are always built so the memo is correct even if outDecorations varies
-    // between calls; they're only emitted when the caller asked for them.
+    // Apply this call's premultiplied colour + screen-origin translation to a
+    // colour-neutral, origin-relative run (cached or freshly built) and
+    // append it to the caller's buffers. Decorations are always built so the
+    // memo is correct even if outDecorations varies between calls; they're
+    // only emitted when the caller asked for them.
+    //
+    // Origin handling: cached instances store quad positions in the layout's
+    // own coordinate space (origin = (0, 0)) so the cache key can be
+    // origin-independent — scrolling / dragging text doesn't invalidate the
+    // memo just because its position moved. Emit translates each quad by
+    // (originX, originY) here, so cache reuses work across every screen
+    // location the same shaped run ever appears at.
     //
     // Colour-emoji entries are flagged in the cached run by colorR == -1 (a
     // value the regular premultiplied path could never produce — premultiplied
@@ -1432,45 +1445,81 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     auto emitRun = [&](const CachedGlyphRun& run) -> uint32_t {
         const float pr = colorR * colorA, pg = colorG * colorA,
                     pb = colorB * colorA, pa = colorA;
-        outInstances.reserve(outInstances.size() + run.instances.size());
-        for (GlyphQuadInstance gi : run.instances) {
-            if (gi.colorR < 0.0f) {
-                // Colour emoji: keep the sentinel and only propagate the text
-                // alpha (so opacity from Foreground still applies).
-                gi.colorR = -1.0f;
-                gi.colorG = 0.0f;
-                gi.colorB = 0.0f;
-                gi.colorA = pa;
-            } else {
-                gi.colorR = pr; gi.colorG = pg; gi.colorB = pb; gi.colorA = pa;
+
+        // Bulk-copy the colour-neutral, origin-relative instances into the
+        // caller's buffer in one memcpy, then sweep the freshly appended
+        // slice once to apply (origin translate + premultiplied colour). The
+        // hit path used to do one push_back per glyph with a per-element
+        // branch on the colour-emoji sentinel; resize+memcpy avoids the
+        // hidden capacity / size bookkeeping per element, and the single
+        // sweep folds the translate and colour writes into one cache-friendly
+        // pass over a contiguous slice. GlyphQuadInstance is trivially
+        // copyable (POD floats), enforced by the static_assert on its
+        // layout, so memcpy is well-defined.
+        const size_t glyphN = run.instances.size();
+        if (glyphN > 0) {
+            const size_t base = outInstances.size();
+            outInstances.resize(base + glyphN);
+            std::memcpy(outInstances.data() + base,
+                        run.instances.data(),
+                        glyphN * sizeof(GlyphQuadInstance));
+            GlyphQuadInstance* dst = outInstances.data() + base;
+            for (size_t i = 0; i < glyphN; ++i) {
+                GlyphQuadInstance& gi = dst[i];
+                gi.posX += originX;
+                gi.posY += originY;
+                if (gi.colorR < 0.0f) {
+                    // Colour emoji: cached R/G/B are already (-1, 0, 0)
+                    // sentinel — only alpha needs the per-call value so
+                    // Foreground opacity still applies.
+                    gi.colorA = pa;
+                } else {
+                    gi.colorR = pr; gi.colorG = pg;
+                    gi.colorB = pb; gi.colorA = pa;
+                }
             }
-            outInstances.push_back(gi);
         }
-        if (outDecorations) {
-            for (TextDecorationRect dr : run.decos) {
-                dr.colorR = pr; dr.colorG = pg; dr.colorB = pb; dr.colorA = pa;
-                outDecorations->push_back(dr);
+
+        const size_t decoN = run.decos.size();
+        if (outDecorations && decoN > 0) {
+            const size_t dbase = outDecorations->size();
+            outDecorations->resize(dbase + decoN);
+            std::memcpy(outDecorations->data() + dbase,
+                        run.decos.data(),
+                        decoN * sizeof(TextDecorationRect));
+            TextDecorationRect* ddst = outDecorations->data() + dbase;
+            for (size_t i = 0; i < decoN; ++i) {
+                TextDecorationRect& dr = ddst[i];
+                dr.x += originX;
+                dr.y += originY;
+                dr.colorR = pr; dr.colorG = pg;
+                dr.colorB = pb; dr.colorA = pa;
             }
+            jalium::text_stats::AddEmittedDecorations(decoN);
         }
-        return (uint32_t)run.instances.size();
+        jalium::text_stats::AddEmittedGlyphs(glyphN);
+        return (uint32_t)glyphN;
     };
 
     // Cache hit: skip layout->Draw + the entire per-glyph atlas walk. The
     // generation guard rejects any entry built before a Reset()/GrowAtlas()
     // (its cached UVs would now point at the wrong atlas slots) so stale-UV
-    // garbled text is impossible.
+    // garbled text is impossible. Key is origin-independent — same shaped
+    // run hits every frame regardless of where on screen it lands.
     if (layoutKey != 0) {
-        const uint64_t ck = HashInstanceKey(layoutKey, originX, originY, dpiScale_,
+        const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
                                             effectiveAaMode, effectiveHintingMode);
         auto mit = instMap_.find(ck);
         if (mit != instMap_.end()) {
             if (mit->second->run.gen == atlasGeneration_) {
                 instLru_.splice(instLru_.begin(), instLru_, mit->second);
+                jalium::text_stats::AddInstanceHit();
                 return emitRun(mit->second->run);
             }
             instLru_.erase(mit->second);   // stale generation → rebuild
             instMap_.erase(mit);
         }
+        jalium::text_stats::AddInstanceMiss();
     }
 
     // Atlas overflow recycling happens at the real frame boundary inside
@@ -1486,12 +1535,23 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
     // Extract glyph runs from the text layout.
     // Pixel snapping is disabled in the collector — DirectWrite reports exact
     // layout positions, and we handle sub-pixel alignment ourselves.
+    //
+    // Draw origin is (0, 0): collector baselines come back in the layout's
+    // own coordinate space. emitRun adds the caller's (originX, originY) so
+    // a single shaped run can serve every screen position the same text
+    // appears at, which is the whole point of dropping origin from the
+    // cache key above. Sub-pixel ClearType still works — subpixelQuant is
+    // computed from the layout-internal penX, baked into the GlyphKey, and
+    // RasterizeGlyph emits one atlas slot per (glyph, quant) variant.
     GlyphRunCollector collector;
-    layout->Draw(nullptr, &collector, originX, originY);
+    layout->Draw(nullptr, &collector, 0.0f, 0.0f);
 
     CachedGlyphRun built;
     float invW = 1.0f / static_cast<float>(atlasW_);
     float invH = 1.0f / static_cast<float>(atlasH_);
+
+    uint64_t glyphRasterHitsThisRun = 0;
+    uint64_t glyphRasterMissesThisRun = 0;
 
     for (auto& run : collector.runs) {
         float penX = run.baselineX;
@@ -1535,9 +1595,15 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
             auto it = cache_.find(key);
             if (it == cache_.end()) {
                 GlyphCacheValue val = {};
-                if (!RasterizeGlyph(key, val.entry)) continue;
+                if (!RasterizeGlyph(key, val.entry)) {
+                    ++glyphRasterMissesThisRun;
+                    continue;
+                }
                 val.fontFaceRef = run.fontFace;
                 it = cache_.emplace(key, std::move(val)).first;
+                ++glyphRasterMissesThisRun;
+            } else {
+                ++glyphRasterHitsThisRun;
             }
 
             auto& entry = it->second.entry;
@@ -1590,11 +1656,14 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
         built.decos.push_back(rect);
     }
 
+    jalium::text_stats::AddGlyphRasterHit(glyphRasterHitsThisRun);
+    jalium::text_stats::AddGlyphRasterMiss(glyphRasterMissesThisRun);
+
     const uint32_t count = emitRun(built);
 
     if (layoutKey != 0) {
         built.gen = atlasGeneration_;
-        const uint64_t ck = HashInstanceKey(layoutKey, originX, originY, dpiScale_,
+        const uint64_t ck = HashInstanceKey(layoutKey, dpiScale_,
                                             effectiveAaMode, effectiveHintingMode);
         if (auto ex = instMap_.find(ck); ex != instMap_.end()) {
             instLru_.erase(ex->second);
@@ -1603,6 +1672,7 @@ uint32_t D3D12GlyphAtlas::GenerateGlyphs(
         if (instLru_.size() >= kInstCacheCap) {
             instMap_.erase(instLru_.back().key);
             instLru_.pop_back();
+            jalium::text_stats::AddInstanceEviction(1);
         }
         instLru_.push_front(InstNode{ ck, std::move(built) });
         instMap_[ck] = instLru_.begin();

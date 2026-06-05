@@ -1,5 +1,7 @@
 ﻿# Jalium.UI
 
+**English** | [简体中文](README.zh-CN.md) | [日本語](README.ja.md) | [한국어](README.ko.md)
+
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/VeryJokerJal/Jalium.UI)
 
 Jalium.UI is a GPU-accelerated, cross-platform UI framework for .NET 10.

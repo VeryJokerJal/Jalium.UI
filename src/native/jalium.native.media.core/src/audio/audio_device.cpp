@@ -2,7 +2,6 @@
 // reinterprets the opaque jalium_audio_device_t* as an audio_device_impl* and
 // dispatches into the miniaudio backend declared in audio_internal.h.
 
-#define JALIUM_MEDIA_EXPORTS
 #include "jalium_audio.h"
 #include "audio_internal.h"
 

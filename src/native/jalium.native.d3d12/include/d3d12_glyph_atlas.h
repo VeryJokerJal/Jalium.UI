@@ -132,7 +132,7 @@ public:
     /// `layoutKey` (0 = uncacheable) is a stable content hash of the source
     /// text + format + constraints (from D3D12TextFormat::CreateLayout). When
     /// non-zero the resolved glyph quads + decorations are memoized per
-    /// (layoutKey, origin, aaMode, hintingMode) so repeat frames skip
+    /// (layoutKey, dpiScale, aaMode, hintingMode) so repeat frames skip
     /// layout->Draw + the per-glyph atlas walk — the dominant DrawText cost
     /// once the layout itself is cached. Entries are tagged with the atlas
     /// generation and ignored after any Reset()/GrowAtlas() so stale atlas
@@ -263,12 +263,15 @@ private:
     // impossible by construction.
     uint32_t atlasGeneration_ = 0;
 
-    // Resolved-glyph memo: color-neutral quads + decorations for a shaped
-    // run at a given (layoutKey, origin). Caller applies its premultiplied
-    // colour at emit, so different-coloured draws of the same text still hit.
+    // Resolved-glyph memo: colour-neutral, origin-relative quads + decorations
+    // for a shaped run keyed by layoutKey alone (no origin, no colour). emit
+    // applies the caller's premultiplied colour AND translates each quad by
+    // the screen-space origin, so the same shaped run hits across every
+    // origin it appears at (scrolling, drag, animation) and across every
+    // foreground colour.
     struct CachedGlyphRun {
-        std::vector<GlyphQuadInstance> instances;  // colour left unset (filled at emit)
-        std::vector<TextDecorationRect> decos;     // colour left unset (filled at emit)
+        std::vector<GlyphQuadInstance> instances;  // posX/posY = layout-local; colour unset
+        std::vector<TextDecorationRect> decos;     // x/y = layout-local; colour unset
         uint32_t gen = 0;
     };
     struct InstNode { uint64_t key; CachedGlyphRun run; };
@@ -277,7 +280,6 @@ private:
     static constexpr size_t kInstCacheCap = 4096;
 
     static uint64_t HashInstanceKey(uint64_t layoutKey,
-                                    float originX, float originY,
                                     float dpiScale,
                                     int32_t aaMode,
                                     int32_t hintingMode) noexcept;

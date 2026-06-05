@@ -35,8 +35,13 @@ public:
     void DrawRectangle(float x, float y, float w, float h, Brush* brush, float strokeWidth) override;
     void FillRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush) override;
     void DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth) override;
+    void FillPerCornerRoundedRectangle(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, Brush* brush) override;
+    void DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, Brush* brush, float strokeWidth) override;
     void FillEllipse(float cx, float cy, float rx, float ry, Brush* brush) override;
     void DrawEllipse(float cx, float cy, float rx, float ry, Brush* brush, float strokeWidth) override;
+    void FillEllipseBatch(const float* data, uint32_t count) override;
     void DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth) override;
     void FillPolygon(const float* points, uint32_t pointCount, Brush* brush, int32_t fillRule) override;
     void DrawPolygon(const float* points, uint32_t pointCount, Brush* brush, float strokeWidth, bool closed, int32_t lineJoin = 0, float miterLimit = 10.0f) override;
@@ -47,6 +52,7 @@ public:
     void PushTransform(const float* matrix) override;
     void PopTransform() override;
     void PushClip(float x, float y, float w, float h) override;
+    void PushClipAliased(float x, float y, float w, float h) override;
     void PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry) override;
     void PushPerCornerRoundedRectClip(float x, float y, float w, float h,
         float tl, float tr, float br, float bl) override;
@@ -56,6 +62,13 @@ public:
     void PopOpacity() override;
     void SetShapeType(int type, float n) override;
     void SetVSyncEnabled(bool enabled) override;
+    // Vulkan has no stencil-then-cover MSAA path renderer (paths tessellate to
+    // the triangle-fill pipeline); the base contract lets such backends map
+    // this knob differently. We treat it as a path-quality control: a higher
+    // sample count raises the curve tessellation density (FillPath cache bucket
+    // + StrokePath flatten tolerance), smoothing curved path edges at the cost
+    // of more geometry — the same quality-vs-GPU-time tradeoff D3D12 exposes.
+    void SetPathMsaaSampleCount(uint32_t sampleCount) override;
     void SetDpi(float dpiX, float dpiY) override;
     void AddDirtyRect(float x, float y, float w, float h) override;
     void SetFullInvalidation() override;
@@ -63,6 +76,11 @@ public:
     void DrawBitmap(Bitmap* bitmap, float x, float y, float w, float h, float opacity, int scalingMode) override;
     void DrawVideoSurface(VideoSurface* surface, float x, float y, float w, float h,
                           float opacity, int scalingMode) override;
+    // Composites a VulkanInkLayerBitmap onto the frame. The handle is the
+    // backend-native pointer (the C ABI already unwrapped its wrapper). The ink
+    // image is resident on the same device, so this samples it directly (no
+    // per-frame upload) via the bitmap pipeline — matching D3D12 BlitInkLayer.
+    void BlitInkLayer(void* inkLayerBitmap, float dstX, float dstY, float opacity) override;
     void DrawBackdropFilter(float x, float y, float w, float h, const char* backdropFilter, const char* material, const char* materialTint, float tintOpacity, float blurRadius, float cornerRadiusTL, float cornerRadiusTR, float cornerRadiusBR, float cornerRadiusBL) override;
     void DrawGlowingBorderHighlight(float x, float y, float w, float h, float animationPhase, float glowColorR, float glowColorG, float glowColorB, float strokeWidth, float trailLength, float dimOpacity, float screenWidth, float screenHeight) override;
     void DrawGlowingBorderTransition(float fromX, float fromY, float fromW, float fromH, float toX, float toY, float toW, float toH, float headProgress, float tailProgress, float animationPhase, float glowColorR, float glowColorG, float glowColorB, float strokeWidth, float trailLength, float dimOpacity, float screenWidth, float screenHeight) override;
@@ -77,9 +95,35 @@ public:
     void EndEffectCapture() override;
     void DrawBlurEffect(float x, float y, float w, float h, float radius, float uvOffsetX = 0, float uvOffsetY = 0) override;
     void DrawDropShadowEffect(float x, float y, float w, float h, float blurRadius, float offsetX, float offsetY, float r, float g, float b, float a, float uvOffsetX = 0, float uvOffsetY = 0, float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0) override;
+    // Outer glow over the captured element content. D3D12 paints 7 concentric
+    // expanding equal-alpha SDF rounded-rects then composites the capture; the
+    // Vulkan port reaches the same soft-glow result through the proven
+    // DrawDropShadowEffect path — a centred (zero-offset) blurred, tinted
+    // silhouette of the capture spread outward by glowSize, with the crisp
+    // content composited on top. Without this override the base no-op never even
+    // composites the capture, so a glowing element renders NOTHING on Vulkan.
+    void DrawOuterGlowEffect(float x, float y, float w, float h,
+        float glowSize, float r, float g, float b, float a, float intensity,
+        float uvOffsetX, float uvOffsetY,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
+    // Real per-pixel implementations over the captured element content (D3D12
+    // currently stubs both — Vulkan ends up ahead here). The 5x4 color matrix
+    // and the directional emboss run on the captured buffer, then composite
+    // through the same GPU pixel-buffer + CPU BlendBuffer path the other
+    // effect-capture effects use.
+    void DrawColorMatrixEffect(float x, float y, float w, float h, const float* matrix) override;
+    void DrawEmbossEffect(float x, float y, float w, float h,
+        float amount, float lightDirX, float lightDirY, float relief) override;
     void DrawShaderEffect(float x, float y, float w, float h,
         const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
         const float* constants, uint32_t constantFloatCount) override;
+    // HLSL-source custom shader: compiles the SM6 PS via DXC→SPIR-V at runtime
+    // and runs it over the captured element content (Texture2D@t0 / Sampler@s0,
+    // constants in cbuffer@b0, uv 0..1 element-local — matching the D3D12
+    // convention). Falls back to drawing the captured content unmodified when
+    // DXC / compilation is unavailable.
+    void DrawShaderEffectFromSource(float x, float y, float w, float h,
+        const char* hlslSource, const float* constants, uint32_t constantFloatCount) override;
     void DrawLiquidGlass(float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost, int shapeType, float shapeExponent, int neighborCount, float fusionRadius, const float* neighborData) override;
 
     /// Override: set rendering engine with hot-switch support.
@@ -98,6 +142,24 @@ public:
 
     /// Override: report glyph atlas / path / texture usage for DevTools Perf tab.
     JaliumResult QueryGpuStats(JaliumGpuStats* out) const override;
+
+    /// Override: hardware-timestamp GPU breakdown for the previous frame.
+    /// Vulkan implementation issues vkCmdWriteTimestamp at category boundaries
+    /// (one VkQueryPool slot per boundary), resolves them through
+    /// vkGetQueryPoolResults once the per-frame fence is observed complete,
+    /// and reports the decoded snapshot here. Returns JALIUM_OK with
+    /// timingValid == 0 on the very first frame after init (the previous
+    /// frame's data hasn't been collected yet) and when the physical device
+    /// does not support timestamp queries on the graphics queue.
+    JaliumResult QueryGpuTiming(JaliumGpuTimingStats* out) const override;
+
+    /// Override: report current Vulkan swap chain configuration —
+    /// mapped from VkPresentModeKHR / swap image count / composition mode
+    /// so DevTools' "Present" status line shows "FIFO 3-buf composition"
+    /// or "IMMEDIATE 2-buf" right next to the D3D12 backend's equivalent.
+    /// Vulkan has no frame-latency-waitable equivalent, so those fields
+    /// are always 0 / not-applicable in the returned struct.
+    JaliumResult GetPresentInfo(JaliumPresentInfo* out) const override;
 
     /// Override: drop the host-side path-geometry and text-rasterization caches
     /// when the managed reclaimer signals idle. Both caches hold
@@ -294,6 +356,52 @@ private:
         int mode = 0;
     };
 
+    // Custom pixel-shader effect (DrawShaderEffectFromSource). Holds the
+    // cropped captured element content (BGRA), the rect, the FNV-1a hash of the
+    // HLSL source (the compiled pipeline is cached in the Impl and looked up by
+    // this hash at replay time, keeping Vulkan types out of this header), and
+    // the user constant floats bound to cbuffer@b0.
+    struct GpuCustomShaderCommand {
+        std::vector<uint8_t> pixels;
+        uint32_t pixelWidth  = 0;
+        uint32_t pixelHeight = 0;
+        float    x = 0.0f;
+        float    y = 0.0f;
+        float    w = 0.0f;
+        float    h = 0.0f;
+        uint64_t shaderHash = 0;
+        std::vector<float> constants;
+    };
+
+    // Per-vertex-coloured triangle batch — the GPU analogue of D3D12's
+    // AddTriangles(TriangleVertex*, count) path. Each vertex carries its
+    // own RGBA (pre-multiplied), letting the pixel shader interpolate alpha
+    // across the primitive. Used by DrawLine to render 3-strip manual AA
+    // (core + 2 feather strips) so oblique strokes don't show GPU rasterizer
+    // staircase aliasing. Vertex layout matches the vc shader: 6 floats per
+    // vertex (x, y, r, g, b, a) — `vertices.size()` is `vertexCount * 6`.
+    struct GpuVcTrianglesCommand {
+        std::vector<float> vertices;   // interleaved [x, y, r, g, b, a, ...]
+        uint32_t vertexCount = 0;
+    };
+
+    // Composites a resident ink-layer image (InkCanvas committed-ink layer)
+    // onto the frame. Holds a non-owning pointer to the VulkanInkLayerBitmap
+    // (kept alive for the frame by the managed InkCanvas); DrawReplayFrame reads
+    // its VkImageView and samples it through the bitmap pipeline. Stored as
+    // void* so the GpuReplayCommand structs stay free of Vulkan types.
+    struct GpuInkLayerCommand {
+        void*    inkLayer = nullptr;     // VulkanInkLayerBitmap* (non-owning)
+        // Transformed axis-aligned draw rect (same convention as GpuBitmapCommand:
+        // x/y = bbox min, w/h = bbox extent). The sampled UV always spans the
+        // whole ink image (uvScale = 1), since the descriptor binds that image.
+        float    x        = 0.0f;
+        float    y        = 0.0f;
+        float    w        = 0.0f;
+        float    h        = 0.0f;
+        float    opacity  = 1.0f;
+    };
+
     enum class GpuReplayCommandKind {
         SolidRect,
         ClearRect,
@@ -303,7 +411,10 @@ private:
         Backdrop,
         Glow,
         LiquidGlass,
-        Transition
+        Transition,
+        VcTriangles,    // per-vertex-coloured triangle list (DrawLine 3-strip AA, etc.)
+        InkLayer,       // composite a resident ink-layer image (InkCanvas)
+        CustomShader,   // runtime-compiled custom pixel-shader effect
     };
 
     struct GpuReplayCommand {
@@ -327,6 +438,12 @@ private:
         float innerRoundedClipBottom = 0.0f;
         float innerRoundedClipRadiusX = 0.0f;
         float innerRoundedClipRadiusY = 0.0f;
+        // Per-corner radii in (TL, TR, BR, BL) order. When any of the X or Y
+        // values are non-zero the SolidRect shader switches into
+        // CoveragePerCornerRoundRect for the outer clip; uniform-radius
+        // commands must leave these all zero (which is the default).
+        float perCornerRadiusX[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+        float perCornerRadiusY[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
         bool hasCustomQuad = false;
         float quadPoint0X = 0.0f;
         float quadPoint0Y = 0.0f;
@@ -344,6 +461,9 @@ private:
         GpuGlowCommand glow {};
         GpuLiquidGlassCommand liquidGlass {};
         GpuTransitionCommand transition {};
+        GpuVcTrianglesCommand vcTriangles {};
+        GpuInkLayerCommand inkLayer {};
+        GpuCustomShaderCommand customShader {};
     };
 
     struct EffectCaptureState {
@@ -450,12 +570,38 @@ private:
     bool TryRecordGpuSolidRectCommand(float x, float y, float w, float h, Brush* brush);
     bool TryRecordGpuRoundedRectFillCommand(float x, float y, float w, float h, float rx, float ry, Brush* brush);
     bool TryRecordGpuRoundedRectStrokeCommand(float x, float y, float w, float h, float rx, float ry, float strokeWidth, Brush* brush);
+    // Per-corner variants — same wire format as the uniform-radius helpers
+    // but also write the 4 (rx, ry) pairs into the GpuReplayCommand so the
+    // SolidRect shader picks each corner's radius separately at fragment
+    // time (CoveragePerCornerRoundRect path). Used by Fill/Draw
+    // PerCornerRoundedRectangle so Tab / Card-style "rounded top, square
+    // bottom" shapes render correctly instead of degrading to a single
+    // average radius.
+    bool TryRecordGpuPerCornerRoundedRectFillCommand(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, Brush* brush);
+    bool TryRecordGpuPerCornerRoundedRectStrokeCommand(float x, float y, float w, float h,
+        float tl, float tr, float br, float bl, float strokeWidth, Brush* brush);
     bool TryRecordGpuEllipseFillCommand(float cx, float cy, float rx, float ry, Brush* brush);
     bool TryRecordGpuEllipseStrokeCommand(float cx, float cy, float rx, float ry, float strokeWidth, Brush* brush);
     bool TryRecordGpuLineCommand(float x1, float y1, float x2, float y2, float strokeWidth, Brush* brush);
+    // 3-strip manual AA variant — mirrors D3D12RenderTarget::DrawLine (see
+    // [[project_d3d12_line_manual_aa]]). Builds 18 vertices (core + 2 feather
+    // strips) with per-vertex alpha so the pixel shader interpolates a
+    // 1-px AA ramp across the stroke edges. Emits one
+    // GpuReplayCommandKind::VcTriangles command.
+    bool TryRecordGpuLineAACommand(float x1, float y1, float x2, float y2, float strokeWidth, Brush* brush);
     bool TryRecordGpuPolylineCommand(const std::vector<float>& points, bool closed, float strokeWidth, Brush* brush);
     bool TryRecordGpuRectangleStrokeCommand(float x, float y, float w, float h, float strokeWidth, Brush* brush);
     bool TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, float y, float w, float h, float opacity);
+    // Records an InkLayer replay command sampling a resident VulkanInkLayerBitmap
+    // image. Returns false (caller falls back to CPU readback-and-blend) when GPU
+    // replay isn't active or the layer/extent is degenerate.
+    bool TryRecordGpuInkLayerCommand(void* inkLayer, float x, float y, float opacity);
+    // Records a CustomShader command (cropped captured content + source hash +
+    // constants). Returns false when GPU replay isn't active or the captured
+    // content is empty — caller then composites the captured content unmodified.
+    bool TryRecordGpuCustomShaderCommand(float x, float y, float w, float h,
+        uint64_t shaderHash, const float* constants, uint32_t constantFloatCount);
     void TouchFrame() const;
 
     VulkanBackend* backend_ = nullptr;
@@ -519,6 +665,20 @@ private:
     // O(N) and trivially cheap. See path_cache.h.
     std::unique_ptr<PathGeometryCache> pathCache_;
     static constexpr size_t            kMaxPathCacheEntries = 512;
+
+    // Path-quality knob set by SetPathMsaaSampleCount (1/2/4/8). Folded into the
+    // tessellation scale so higher values yield denser curve subdivision (the
+    // Vulkan analogue of D3D12's path MSAA sample count). See
+    // PathTessellationQualityScale().
+    uint32_t pathMsaaSampleCount_ = 1;
+    float PathTessellationQualityScale() const {
+        switch (pathMsaaSampleCount_) {
+            case 2:  return 1.25f;
+            case 4:  return 1.5f;
+            case 8:  return 1.75f;
+            default: return 1.0f;
+        }
+    }
 
     // Fast-path used by RenderText to emit a cached text bitmap straight into
     // the GPU replay command list, skipping both the VulkanBitmap wrapper

@@ -1,4 +1,3 @@
-#define JALIUM_MEDIA_EXPORTS
 #include "and_video_decoder.h"
 #include "and_media_init.h"
 #include "and_yuv_simd.h"

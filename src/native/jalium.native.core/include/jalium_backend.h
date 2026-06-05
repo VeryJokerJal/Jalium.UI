@@ -32,6 +32,23 @@ public:
     /// Returns JALIUM_OK if the device is healthy, non-zero if device is lost.
     virtual JaliumResult CheckDeviceStatus() { return JALIUM_OK; }
 
+    /// Fills <paramref name="out"/> with the currently selected GPU adapter's
+    /// description (name, type, VRAM, vendor / device IDs). Used by host apps
+    /// to show "current GPU" in status bars / Help/About dialogs and to
+    /// diagnose hybrid-graphics misconfiguration (e.g. independent GPU
+    /// disabled in Device Manager → DXGI falls back to WARP / Microsoft Basic
+    /// Render Driver, which causes 30fps + input lag).
+    ///
+    /// Default implementation returns JALIUM_ERROR_NOT_SUPPORTED so legacy
+    /// backends keep building; D3D12 overrides this with the actual
+    /// `DXGI_ADAPTER_DESC1` captured at device creation.
+    virtual JaliumResult GetAdapterInfo(JaliumAdapterInfo* out) const
+    {
+        if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+        *out = JaliumAdapterInfo{};
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+
     /// Creates a render target for a window handle.
     virtual RenderTarget* CreateRenderTarget(void* hwnd, int32_t width, int32_t height) = 0;
 
@@ -339,6 +356,42 @@ public:
         (void)inkLayerBitmap; (void)dstX; (void)dstY; (void)opacity;
     }
 
+    /// Retained GPU layers (damage-driven composited-animation fast path).
+    /// A subtree's CONTENT is rendered ONCE into a persistent offscreen texture,
+    /// then composited as a transformed/opacity quad on subsequent frames so a
+    /// composited (Opacity/RenderTransform) animation on a content-clean subtree
+    /// does not re-emit the whole subtree every frame. Default: unsupported, so
+    /// callers fall back to full re-emission with no behavior change (backends
+    /// without offscreen-RT capture, e.g. Vulkan today).
+    ///
+    /// Whether this render target can realize/composite retained layers now.
+    virtual bool SupportsRetainedLayers() const { return false; }
+
+    /// Begins capturing subsequent draws into a persistent layer texture covering
+    /// (x,y,w,h) in DIP screen space. Reuses/resizes existingLayer when non-null.
+    /// Returns the layer handle (opaque), or null if a layer could not be realized
+    /// (caller must fall back and must NOT call RealizeLayerEnd).
+    virtual void* RealizeLayerBegin(void* existingLayer, float x, float y, float w, float h)
+    {
+        (void)existingLayer; (void)x; (void)y; (void)w; (void)h;
+        return nullptr;
+    }
+
+    /// Closes the capture scope opened by RealizeLayerBegin and finalizes the layer
+    /// texture for sampling (restores the previous render target / viewport / clip).
+    virtual void RealizeLayerEnd(void* layer) { (void)layer; }
+
+    /// Composites a realized layer as a single quad at (x,y,w,h) in the current
+    /// (offset/transform) space with the given opacity, honoring the live clip.
+    virtual void CompositeLayer(void* layer, float x, float y, float w, float h, float opacity)
+    {
+        (void)layer; (void)x; (void)y; (void)w; (void)h; (void)opacity;
+    }
+
+    /// Destroys a retained layer, fence-gating its GPU texture release. Safe to
+    /// call at any time (the texture is retired, not freed, while in flight).
+    virtual void DestroyRetainedLayer(void* layer) { (void)layer; }
+
     /// Draws text.
     virtual void RenderText(
         const wchar_t* text, uint32_t textLength,
@@ -392,6 +445,11 @@ public:
     /// Sets whether VSync is enabled.
     /// When disabled, Present returns immediately for faster frame updates during resize.
     virtual void SetVSyncEnabled(bool enabled) = 0;
+
+    /// Sets the path stencil-then-cover MSAA sample count (1/2/4/8). Applied at
+    /// the next frame boundary. Backends without an MSAA path renderer ignore it.
+    /// Lets callers trade path edge anti-aliasing quality for GPU time.
+    virtual void SetPathMsaaSampleCount(uint32_t /*sampleCount*/) {}
 
     /// Sets the DPI for the render target.
     /// Updates D2D context DPI so DIP coordinates are correctly mapped to physical pixels.
@@ -625,6 +683,7 @@ public:
     /// @param intensity Glow brightness multiplier.
     virtual void DrawOuterGlowEffect(float x, float y, float w, float h,
         float glowSize, float r, float g, float b, float a, float intensity,
+        float uvOffsetX, float uvOffsetY,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL) {}
 
     /// Applies an inner shadow effect inside the element bounds.
@@ -651,6 +710,23 @@ public:
     virtual void DrawShaderEffect(float x, float y, float w, float h,
         const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
         const float* constants, uint32_t constantFloatCount) {}
+
+    /// Applies a custom pixel shader supplied as SM6 HLSL *source* (compiled at
+    /// runtime by the backend) instead of precompiled DXBC bytecode. This is the
+    /// cross-backend custom-shader path: D3D12 compiles the source with
+    /// D3DCompile, Vulkan with DXC→SPIR-V, so one authored shader works on both.
+    /// The captured content is exposed as Texture2D@t0 + SamplerState@s0 and the
+    /// constants buffer is bound to cbuffer@b0; the framework vertex shader
+    /// supplies a fullscreen quad with float2 uv : TEXCOORD0.
+    /// Default: draw the captured content unmodified (matches the DXBC path's
+    /// compile-failure fallback) so backends that don't implement it degrade
+    /// exactly like a no-op shader.
+    virtual void DrawShaderEffectFromSource(float x, float y, float w, float h,
+        const char* hlslSource, const float* constants, uint32_t constantFloatCount)
+    {
+        (void)x; (void)y; (void)w; (void)h;
+        (void)hlslSource; (void)constants; (void)constantFloatCount;
+    }
 
     /// Draws a liquid glass effect with SDF-based refraction, highlight, and inner shadow.
     /// Captures current render target content, applies blur, then renders the full
@@ -683,6 +759,42 @@ public:
     {
         if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
         *out = JaliumGpuStats{};
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+
+    /// Reads the previous frame's GPU-side timing breakdown. The data
+    /// is populated asynchronously: the backend issues timestamp queries
+    /// during the frame, resolves them at EndFrame, and the readback
+    /// becomes valid once the frame's fence is observed complete by the
+    /// next BeginFrame. Default implementation returns NOT_SUPPORTED;
+    /// D3D12 overrides this with real measurements.
+    virtual JaliumResult QueryGpuTiming(JaliumGpuTimingStats* out) const
+    {
+        if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+        *out = JaliumGpuTimingStats{};
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+
+    /// Returns the OS HANDLE (cast to intptr_t for portability) that the
+    /// backend uses as its frame-latency waitable, or 0 when no such
+    /// object exists (older platforms, non-D3D12 backends). Callers use
+    /// this for vsync-aligned scheduling — block on the handle in a
+    /// background thread, marshal a "ready" signal to the UI thread so
+    /// the next RenderFrame happens right after the swap chain releases
+    /// a back buffer. The HANDLE remains owned by the render target;
+    /// callers must NOT CloseHandle it.
+    virtual intptr_t GetFrameLatencyWaitable() const { return 0; }
+
+    /// Fills <paramref name="out"/> with the swap chain / present configuration
+    /// currently in use. Lets host apps display "FLIP / tearing on / 1 frame
+    /// latency" in status bars and confirm the low-latency path is actually
+    /// enabled (driver / OS can silently strip flags during swap chain creation).
+    /// Default implementation returns NOT_SUPPORTED so non-D3D12 backends
+    /// keep building.
+    virtual JaliumResult GetPresentInfo(JaliumPresentInfo* out) const
+    {
+        if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+        *out = JaliumPresentInfo{};
         return JALIUM_ERROR_NOT_SUPPORTED;
     }
 
