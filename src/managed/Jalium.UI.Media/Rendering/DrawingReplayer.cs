@@ -188,6 +188,44 @@ internal static class DrawingReplayer
                     target.DrawLiquidGlass((LiquidGlassParameters)c.A!);
                     break;
 
+                case DrawCommandKind.SetOffset:
+                    // Whole-frame replay: drive the target's absolute Offset so the
+                    // raw-local coords of the following draws land where the live
+                    // render's per-child Offset put them.
+                    if (target is IOffsetDrawingContext offsetSink)
+                    {
+                        offsetSink.Offset = new Point(c.V0, c.V1);
+                    }
+                    break;
+
+                case DrawCommandKind.BeginEffectCapture:
+                    if (target is IEffectDrawingContext beginEffectSink)
+                    {
+                        beginEffectSink.BeginEffectCapture(
+                            (float)c.V0, (float)c.V1, (float)c.V2, (float)c.V3);
+                    }
+                    break;
+
+                case DrawCommandKind.EndEffectCapture:
+                    if (target is IEffectDrawingContext endEffectSink)
+                    {
+                        endEffectSink.EndEffectCapture();
+                    }
+                    break;
+
+                case DrawCommandKind.ApplyElementEffect:
+                    if (target is IEffectDrawingContext applyEffectSink)
+                    {
+                        var corners = (double[])c.C!;   // { cornerBR, cornerBL }
+                        applyEffectSink.ApplyElementEffect(
+                            (IEffect)c.A!,
+                            (float)c.V0, (float)c.V1, (float)c.V2, (float)c.V3,
+                            (float)c.V4, (float)c.V5,
+                            (float)c.V6, (float)c.V7,
+                            (float)corners[0], (float)corners[1]);
+                    }
+                    break;
+
             }
         }
     }

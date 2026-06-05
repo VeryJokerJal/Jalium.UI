@@ -12,6 +12,10 @@ public partial class DevToolsWindow
     private TextBox? _eventsFilterTextBox;
     private DispatcherTimer? _eventsRefreshTimer;
     private TextBlock? _eventsCountText;
+    // Count pill in the framed card header. Mirrors the exact same entries.Count
+    // value that _eventsCountText already shows — the in-panel count line remains
+    // the source of truth; this is an additive header view, no new computation.
+    private TextBlock? _eventsHeaderPillText;
 
     // Map each rendered row → the entry reference that produced it so we can
     // do incremental updates (prepend the latest samples, trim the oldest)
@@ -54,7 +58,9 @@ public partial class DevToolsWindow
 
         toolbar.Children.Add(DevToolsUi.VerticalDivider());
 
-        toolbar.Children.Add(DevToolsUi.Muted("Suppress events:"));
+        var suppressLabel = DevToolsUi.Muted(DevToolsUi.Tracked("SUPPRESS EVENTS:"));
+        suppressLabel.FontFamily = DevToolsTheme.DisplayFont;
+        toolbar.Children.Add(suppressLabel);
         _eventsFilterTextBox = DevToolsUi.TextInput(240, "e.g. MouseMove, PreviewMouseMove");
         _eventsFilterTextBox.Margin = new Thickness(DevToolsTheme.GutterSm, 0, DevToolsTheme.GutterSm, 0);
         _eventsFilterTextBox.Text = string.Join(", ", RoutedEventDiagnostics.GetFilter());
@@ -75,14 +81,19 @@ public partial class DevToolsWindow
         root.Children.Add(toolbarBar);
 
         // ── Graph panel ──────────────────────────────────────────────────
+        // The count now lives in the framed card header pill (set in refresh).
+        // _eventsCountText is preserved as child[0] of the graph panel — refresh
+        // and reset logic keep updating its .Text and rely on its index — but it
+        // is collapsed so the count is not shown twice.
         _eventsCountText = new TextBlock
         {
             Text = "EVENTS · 0",
             FontSize = DevToolsTheme.FontXS,
-            FontFamily = DevToolsTheme.UiFont,
+            FontFamily = DevToolsTheme.DisplayFont,
             FontWeight = FontWeights.SemiBold,
             Foreground = DevToolsTheme.TextMuted,
             Margin = new Thickness(DevToolsTheme.GutterSm, DevToolsTheme.GutterSm, DevToolsTheme.GutterSm, DevToolsTheme.GutterBase),
+            Visibility = Visibility.Collapsed,
         };
         _eventsGraphPanel = new StackPanel { Margin = new Thickness(DevToolsTheme.GutterBase) };
         _eventsGraphPanel.Children.Add(_eventsCountText);
@@ -93,15 +104,42 @@ public partial class DevToolsWindow
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
         };
-        var card = new Border
+
+        // Self-built card header: [ EVENTS eyebrow ........ count pill ].
+        // Panel() has no pill slot, so we frame with Card() and lay out the
+        // header ourselves. The pill mirrors entries.Count (set in refresh).
+        var headerRow = new Grid();
+        headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        headerRow.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+        var headerEyebrow = DevToolsUi.Eyebrow("Events", DevToolsTheme.TextSecondary);
+        Grid.SetColumn(headerEyebrow, 0);
+        headerRow.Children.Add(headerEyebrow);
+
+        var headerPill = DevToolsUi.Pill("0", DevToolsTheme.Accent);
+        _eventsHeaderPillText = headerPill.Child as TextBlock;
+        Grid.SetColumn(headerPill, 1);
+        headerRow.Children.Add(headerPill);
+
+        var headerStack = new StackPanel { Orientation = Orientation.Vertical };
+        headerStack.Children.Add(headerRow);
+        headerStack.Children.Add(new Border
         {
-            Background = DevToolsTheme.Chrome,
-            BorderBrush = DevToolsTheme.BorderSubtle,
-            BorderThickness = DevToolsTheme.ThicknessHairline,
-            Margin = new Thickness(DevToolsTheme.GutterBase),
-            Child = scroll,
-            ClipToBounds = true,
-        };
+            Height = 1,
+            Background = DevToolsTheme.BorderSubtle,
+            Margin = new Thickness(0, DevToolsTheme.GutterSm, 0, DevToolsTheme.GutterBase),
+        });
+
+        var cardBody = new Grid();
+        cardBody.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        cardBody.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        Grid.SetRow(headerStack, 0);
+        cardBody.Children.Add(headerStack);
+        Grid.SetRow(scroll, 1);
+        cardBody.Children.Add(scroll);
+
+        var card = DevToolsUi.Card(cardBody);
+        card.Margin = new Thickness(DevToolsTheme.GutterBase);
         Grid.SetRow(card, 1);
         root.Children.Add(card);
 
@@ -200,6 +238,8 @@ public partial class DevToolsWindow
             _eventsGraphPanel.Children.Add(_eventsCountText);
         if (_eventsCountText != null)
             _eventsCountText.Text = "EVENTS · 0";
+        if (_eventsHeaderPillText != null)
+            _eventsHeaderPillText.Text = DevToolsUi.Tracked("0");
     }
 
     /// <summary>
@@ -215,6 +255,8 @@ public partial class DevToolsWindow
 
         var entries = RoutedEventDiagnostics.Snapshot();
         _eventsCountText.Text = $"EVENTS · {entries.Count}";
+        if (_eventsHeaderPillText != null)
+            _eventsHeaderPillText.Text = DevToolsUi.Tracked(entries.Count.ToString());
 
         if (entries.Count == 0)
         {
@@ -223,7 +265,9 @@ public partial class DevToolsWindow
                 _eventsGraphPanel.Children.RemoveAt(_eventsGraphPanel.Children.Count - 1);
             _eventsRowByEntry.Clear();
             var empty = DevToolsUi.Muted("No events recorded yet. Start recording and interact with the target window.");
-            empty.Margin = new Thickness(DevToolsTheme.GutterLg, 0, 0, 0);
+            empty.Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterLg, DevToolsTheme.GutterLg, 0);
+            empty.HorizontalAlignment = HorizontalAlignment.Center;
+            empty.TextAlignment = TextAlignment.Center;
             _eventsGraphPanel.Children.Add(empty);
             return;
         }

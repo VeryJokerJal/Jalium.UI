@@ -37,9 +37,9 @@ public partial class DevToolsWindow
         // Tab intro header
         root.Children.Add(new TextBlock
         {
-            Text = "TOOLS",
+            Text = DevToolsUi.Tracked("TOOLS"),
             FontSize = DevToolsTheme.FontXS,
-            FontFamily = DevToolsTheme.UiFont,
+            FontFamily = DevToolsTheme.DisplayFont,
             FontWeight = FontWeights.SemiBold,
             Foreground = DevToolsTheme.TextMuted,
             Margin = new Thickness(0, 0, 0, DevToolsTheme.GutterXS),
@@ -59,7 +59,7 @@ public partial class DevToolsWindow
         _rulerToggleButton = DevToolsUi.Button("Start ruler", ToggleRuler, DevToolsUi.ButtonStyle.Primary, icon: "▶");
         root.Children.Add(MakeToolCard(
             icon: "📏",
-            title: "Ruler · Measure",
+            title: DevToolsUi.Tracked("RULER · MEASURE"),
             description: "Measure pixel distance between two points on the target window. Hold Shift while picking the second point to snap to 0° / 45° / 90°.",
             accent: DevToolsTheme.Info,
             actions: new[] { _rulerToggleButton },
@@ -72,7 +72,7 @@ public partial class DevToolsWindow
         _pickerToggleButton = DevToolsUi.Button("Pick color", ToggleColorPicker, DevToolsUi.ButtonStyle.Primary, icon: "▶");
         root.Children.Add(MakeToolCard(
             icon: "◉",
-            title: "Color Picker",
+            title: DevToolsUi.Tracked("COLOR PICKER"),
             description: "Sample any on-screen pixel inside the target window; result is shown in status with the hex value.",
             accent: DevToolsTheme.TokenKeyword,
             actions: new[] { _pickerToggleButton },
@@ -90,7 +90,7 @@ public partial class DevToolsWindow
         var overlayHint = DevToolsUi.Muted("Requires native backends to call RenderDiagnostics.RecordDraw / RecordDirtyRegion.", DevToolsTheme.FontXS);
         root.Children.Add(MakeToolCard(
             icon: "▦",
-            title: "Render Overlays",
+            title: DevToolsUi.Tracked("RENDER OVERLAYS"),
             description: "Paint the target window with diagnostics — overdraw heatmap or dirty-region outlines.",
             accent: DevToolsTheme.Warning,
             actions: new UIElement[] { _overdrawButton, _dirtyRegionsButton },
@@ -102,7 +102,7 @@ public partial class DevToolsWindow
         _focusStatusText = DevToolsUi.Muted("Highlights the currently focused element.");
         root.Children.Add(MakeToolCard(
             icon: "◎",
-            title: "Focus Visualization",
+            title: DevToolsUi.Tracked("FOCUS VISUALIZATION"),
             description: "Draw a ring around whichever element currently owns keyboard focus.",
             accent: DevToolsTheme.Success,
             actions: new UIElement[] { _focusToggleButton },
@@ -158,7 +158,7 @@ public partial class DevToolsWindow
         {
             Text = title,
             FontSize = DevToolsTheme.FontLg,
-            FontFamily = DevToolsTheme.UiFont,
+            FontFamily = DevToolsTheme.DisplayFont,
             FontWeight = FontWeights.SemiBold,
             Foreground = DevToolsTheme.TextPrimary,
         };
@@ -345,7 +345,7 @@ public partial class DevToolsWindow
         {
             Text = dist.ToString("F1"),
             FontSize = 28,
-            FontFamily = DevToolsTheme.UiFont,
+            FontFamily = DevToolsTheme.MonoFont,
             FontWeight = FontWeights.Bold,
             Foreground = DevToolsTheme.Info,
             VerticalAlignment = VerticalAlignment.Bottom,

@@ -18,9 +18,11 @@ set(HEADERS
     include/text_cache.h
     include/vulkan_backend.h
     include/vulkan_impeller_engine.h
+    include/vulkan_ink_layer.h
     include/vulkan_render_target.h
     include/vulkan_resources.h
     include/vulkan_runtime.h
+    include/vulkan_shader_compiler.h
     include/vulkan_vello_engine.h
 )
 
@@ -29,9 +31,11 @@ set(SOURCES
     src/vulkan_backend.cpp
     src/vulkan_impeller_engine.cpp
     src/vulkan_init.cpp
+    src/vulkan_ink_layer.cpp
     src/vulkan_render_target.cpp
     src/vulkan_resources.cpp
     src/vulkan_runtime.cpp
+    src/vulkan_shader_compiler.cpp
     src/vulkan_video_surface.cpp
     src/vulkan_vello_engine.cpp
 )

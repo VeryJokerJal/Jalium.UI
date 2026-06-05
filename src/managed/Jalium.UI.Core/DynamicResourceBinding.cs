@@ -116,6 +116,29 @@ internal static class DynamicResourceBindingOperations
         }
     }
 
+    /// <summary>
+    /// Re-resolves every dynamic-resource subscription registered on <paramref name="target"/>.
+    /// Called when the element's resource-lookup scope may have widened — most importantly
+    /// when it is attached to a visual parent (see <c>FrameworkElement.OnVisualParentChanged</c>).
+    /// A subscription created during XAML construction, before the element could reach
+    /// ancestor / application resources, resolves to null at that point; without this retry
+    /// it would stay null permanently. No-op (a single dictionary probe) for elements that
+    /// have no subscriptions, and idempotent for properties already resolved.
+    /// </summary>
+    internal static void RefreshElement(FrameworkElement target)
+    {
+        if (target == null)
+            return;
+
+        if (!Subscriptions.TryGetValue(target, out var subscriptions) || subscriptions.Count == 0)
+            return;
+
+        foreach (var property in subscriptions.Keys.ToArray())
+        {
+            RefreshDynamicResource(target, property);
+        }
+    }
+
     internal static void RefreshAll()
     {
         // Theme switches are infrequent; a full sweep is acceptable and avoids

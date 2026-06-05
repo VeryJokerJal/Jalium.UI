@@ -65,4 +65,17 @@ public interface IRenderCacheHost
     /// re-running user code.
     /// </summary>
     void Replay(object drawing, DrawingContext targetDrawingContext);
+
+    /// <summary>
+    /// Starts a WHOLE-FRAME recording scope (the entire visual tree, not a single
+    /// <c>OnRender</c>) with no live target: per-child
+    /// <c>IOffsetDrawingContext.Offset</c> sets are RECORDED rather than proxied,
+    /// so the resulting <em>Drawing</em> is a self-contained command list that can
+    /// be replayed later / on another thread (the render-thread path). Pass the
+    /// returned recorder to <see cref="FinishRecord"/> exactly once, then
+    /// <see cref="Replay"/> the handle against the live context.
+    /// </summary>
+    /// <returns>A whole-frame recorder, or <c>null</c> if the host does not
+    /// support whole-frame capture (callers must fall back to direct render).</returns>
+    DrawingContext? CreateFrameRecorder() => null;
 }

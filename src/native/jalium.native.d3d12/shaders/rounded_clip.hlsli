@@ -18,7 +18,8 @@
 cbuffer RoundedClipConstants : register(b2)
 {
     uint  hasRoundedClip;
-    uint3 _padRoundedClip;
+    uint  inverseRoundedClip;      // 1 = mask OUT the interior (keep the outside)
+    uint2 _padRoundedClip;
     float4 roundedClipRect;        // (left, top, right, bottom)
     float4 roundedClipCornerRadii; // per-corner: (TL, TR, BR, BL)
 }
@@ -69,7 +70,11 @@ float RoundedClipCoverage(float2 fragPos)
     // small floor so corners on very sharp transforms still get one pixel
     // of smoothing instead of collapsing to a step function.
     float aa = max(fwidth(d), 0.0001);
-    return 1.0 - smoothstep(-aa * 0.5, aa * 0.5, d);
+    float cov = 1.0 - smoothstep(-aa * 0.5, aa * 0.5, d);
+    // Inverse mode keeps the *outside* of the rounded rect (0 inside, 1 out).
+    // Used by the DevTools highlight's outer glow to keep light off the element
+    // body while its glow dots stay anchored on the boundary line.
+    return (inverseRoundedClip != 0u) ? (1.0 - cov) : cov;
 }
 
 // Legacy hard-discard variant.  Retained for callers that have not yet

@@ -4,6 +4,7 @@
 #include "vulkan_runtime.h"
 
 #include <cstring>
+#include <cwchar>
 
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_NO_STDIO
@@ -77,6 +78,116 @@ bool VulkanBackend::Initialize()
 
     initialized_ = true;
     return true;
+}
+
+JaliumResult VulkanBackend::GetAdapterInfo(JaliumAdapterInfo* out) const
+{
+    if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *out = JaliumAdapterInfo{};
+    if (!adapterInfoValid_) return JALIUM_ERROR_NOT_SUPPORTED;
+    *out = adapterInfo_;
+    return JALIUM_OK;
+}
+
+void VulkanBackend::RegisterAdapterInfo(VkPhysicalDevice physicalDevice,
+                                        const VkPhysicalDeviceProperties& props,
+                                        const VkPhysicalDeviceMemoryProperties& memProps)
+{
+    // 同一物理设备重复调用时短路：第一帧之后每帧都会"重新"经过这条路径，
+    // 但 cache 已经稳定，避免重复转换/转码。
+    if (adapterInfoValid_ && cachedPhysicalDevice_ == physicalDevice) {
+        return;
+    }
+
+    JaliumAdapterInfo info{};
+
+    // VkPhysicalDeviceProperties::deviceName 是定长 char[VK_MAX_PHYSICAL_DEVICE_NAME_SIZE]
+    // (= 256, UTF-8)。Jalium 用 wchar_t[128]，做 UTF-8→UTF-16 转换 + 截断。
+    // 在 Windows 上用 MultiByteToWideChar；其它平台用 std::mbstowcs 作为最简兜底
+    // （足够覆盖 ASCII GPU 名字，特殊字符会被替换为 '?' 但不会越界）。
+#if defined(_WIN32)
+    int wlen = MultiByteToWideChar(
+        CP_UTF8, 0, props.deviceName, -1, nullptr, 0);
+    if (wlen > 0) {
+        const int cap = static_cast<int>(_countof(info.name));
+        if (wlen > cap) wlen = cap;
+        MultiByteToWideChar(CP_UTF8, 0, props.deviceName, -1, info.name, wlen);
+        info.name[cap - 1] = L'\0';
+    }
+#else
+    std::mbstowcs(info.name, props.deviceName,
+                  sizeof(info.name) / sizeof(info.name[0]) - 1);
+    info.name[sizeof(info.name) / sizeof(info.name[0]) - 1] = L'\0';
+#endif
+
+    // adapterType: 直接映射 VkPhysicalDeviceType → JaliumGpuAdapterType。
+    switch (props.deviceType) {
+    case VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU:
+        info.adapterType = JALIUM_GPU_ADAPTER_TYPE_DISCRETE;
+        break;
+    case VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU:
+        info.adapterType = JALIUM_GPU_ADAPTER_TYPE_INTEGRATED;
+        break;
+    case VK_PHYSICAL_DEVICE_TYPE_CPU:
+        info.adapterType = JALIUM_GPU_ADAPTER_TYPE_SOFTWARE;
+        break;
+    case VK_PHYSICAL_DEVICE_TYPE_VIRTUAL_GPU:
+        // virtual GPU (云端 / 容器) 没专属类别，归 Discrete 让 DevTools 至少
+        // 不显示 "Unknown"；UI 已经能从 vendorId 看出端倪。
+        info.adapterType = JALIUM_GPU_ADAPTER_TYPE_DISCRETE;
+        break;
+    case VK_PHYSICAL_DEVICE_TYPE_OTHER:
+    default:
+        // Vulkan 把"未分类"GPU 归到 OTHER；按 D3D12 端 fallback 习惯，
+        // 凭 DEVICE_LOCAL 堆大小猜测：>= 256 MiB 视作离散，否则集成。
+        {
+            VkDeviceSize deviceLocalBytes = 0;
+            for (uint32_t i = 0; i < memProps.memoryHeapCount; ++i) {
+                if ((memProps.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0) {
+                    deviceLocalBytes += memProps.memoryHeaps[i].size;
+                }
+            }
+            info.adapterType = deviceLocalBytes >= (256ull << 20)
+                ? JALIUM_GPU_ADAPTER_TYPE_DISCRETE
+                : JALIUM_GPU_ADAPTER_TYPE_INTEGRATED;
+        }
+        break;
+    }
+
+    // VRAM 估算：DEVICE_LOCAL 总和 → dedicatedVideoMemory；
+    //            HOST_VISIBLE && !DEVICE_LOCAL 总和 → sharedSystemMemory。
+    // 这跟 DXGI_ADAPTER_DESC1 的语义并不完全对齐——DXGI 的 dedicated 是
+    // "GPU 独占且 CPU 不可见"的部分，UMA iGPU 那一栏会是 0，分享内存进
+    // sharedSystemMemory。Vulkan 的 DEVICE_LOCAL 在 UMA 上同样涵盖系统内存，
+    // 所以 iGPU 这里会把"看得到的系统内存"算进 dedicatedVideoMemory。
+    // DevTools 文案标注 "GPU memory (Vulkan: best-effort)" 已经给宿主对齐预期。
+    uint64_t deviceLocalBytes = 0;
+    uint64_t hostVisibleNonDeviceLocalBytes = 0;
+    for (uint32_t i = 0; i < memProps.memoryHeapCount; ++i) {
+        const auto& heap = memProps.memoryHeaps[i];
+        const bool deviceLocal = (heap.flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) != 0;
+        if (deviceLocal) {
+            deviceLocalBytes += heap.size;
+        } else {
+            // 找一条引用此 heap 的 host-visible memory type 才算共享系统内存。
+            for (uint32_t t = 0; t < memProps.memoryTypeCount; ++t) {
+                if (memProps.memoryTypes[t].heapIndex == i &&
+                    (memProps.memoryTypes[t].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0) {
+                    hostVisibleNonDeviceLocalBytes += heap.size;
+                    break;
+                }
+            }
+        }
+    }
+    info.dedicatedVideoMemory = deviceLocalBytes;
+    info.sharedSystemMemory   = hostVisibleNonDeviceLocalBytes;
+
+    info.vendorId = props.vendorID;
+    info.deviceId = props.deviceID;
+
+    adapterInfo_ = info;
+    cachedPhysicalDevice_ = physicalDevice;
+    adapterInfoValid_ = true;
 }
 
 RenderTarget* VulkanBackend::CreateRenderTarget(void* hwnd, int32_t width, int32_t height)
@@ -204,6 +315,103 @@ Bitmap* VulkanBackend::CreateBitmapFromPixels(const uint8_t* pixels, uint32_t wi
     }
 
     return new VulkanBitmap(width, height, std::move(packedPixels));
+}
+
+// ── InkCanvas GPU pipeline ──────────────────────────────────────────────────
+
+void VulkanBackend::RegisterDeviceContext(const VulkanDeviceContext& ctx)
+{
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    if (deviceContext_.valid && deviceContext_.device == ctx.device) {
+        return;  // same device already registered
+    }
+    // A different device superseded the old one (e.g. the first window closed
+    // and a new one opened). Drop the stale pipeline so it rebuilds on demand.
+    if (deviceContext_.valid && deviceContext_.device != ctx.device) {
+        brushPipeline_.reset();
+        brushPipelineAttempted_ = false;
+    }
+    deviceContext_ = ctx;
+}
+
+VulkanBrushPipeline* VulkanBackend::EnsureBrushPipeline()
+{
+    if (brushPipeline_ && brushPipeline_->IsReady()) return brushPipeline_.get();
+    if (brushPipelineAttempted_) return nullptr;
+    if (!deviceContext_.valid || deviceContext_.device == VK_NULL_HANDLE) return nullptr;
+    brushPipelineAttempted_ = true;
+    auto pipeline = std::make_unique<VulkanBrushPipeline>(deviceContext_);
+    if (!pipeline->Initialize()) {
+        return nullptr;  // DXC missing or GPU object failure → CPU fallback
+    }
+    brushPipeline_ = std::move(pipeline);
+    return brushPipeline_.get();
+}
+
+void* VulkanBackend::CreateInkLayerBitmap(uint32_t width, uint32_t height)
+{
+    if (width == 0 || height == 0) return nullptr;
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    VulkanBrushPipeline* pipeline = EnsureBrushPipeline();
+    if (!pipeline) return nullptr;
+    auto* bitmap = new (std::nothrow) VulkanInkLayerBitmap(pipeline);
+    if (!bitmap) return nullptr;
+    if (!bitmap->Initialize(width, height)) {
+        delete bitmap;
+        return nullptr;
+    }
+    return bitmap;
+}
+
+void VulkanBackend::DestroyInkLayerBitmap(void* bitmap)
+{
+    if (!bitmap) return;
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    delete reinterpret_cast<VulkanInkLayerBitmap*>(bitmap);
+}
+
+int32_t VulkanBackend::ResizeInkLayerBitmap(void* bitmap, uint32_t width, uint32_t height)
+{
+    if (!bitmap || width == 0 || height == 0) return -1;
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    return reinterpret_cast<VulkanInkLayerBitmap*>(bitmap)->Resize(width, height) ? 0 : -2;
+}
+
+void VulkanBackend::ClearInkLayerBitmap(void* bitmap, float r, float g, float b, float a)
+{
+    if (!bitmap) return;
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    reinterpret_cast<VulkanInkLayerBitmap*>(bitmap)->Clear(r, g, b, a);
+}
+
+void* VulkanBackend::CreateBrushShader(const char* shaderKey, const char* brushMainHlsl, int32_t blendMode)
+{
+    if (!brushMainHlsl) return nullptr;
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    VulkanBrushPipeline* pipeline = EnsureBrushPipeline();
+    if (!pipeline) return nullptr;
+    auto shader = pipeline->CreateBrushShader(
+        shaderKey, brushMainHlsl, static_cast<VulkanBrushBlendMode>(blendMode));
+    return shader.release();
+}
+
+void VulkanBackend::DestroyBrushShader(void* shader)
+{
+    if (!shader) return;
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    delete reinterpret_cast<VulkanBrushShader*>(shader);
+}
+
+int32_t VulkanBackend::DispatchBrush(void* bitmap, void* shader,
+                                     const void* strokePoints, uint32_t pointCount,
+                                     const void* constants,
+                                     const void* extraParams, uint32_t extraParamsSize)
+{
+    if (!bitmap || !shader || !strokePoints || !constants) return -1;
+    std::lock_guard<std::mutex> lk(inkMutex_);
+    return reinterpret_cast<VulkanInkLayerBitmap*>(bitmap)->DispatchBrush(
+        reinterpret_cast<VulkanBrushShader*>(shader),
+        strokePoints, pointCount, constants, extraParams, extraParamsSize);
 }
 
 IRenderBackend* CreateVulkanBackend()

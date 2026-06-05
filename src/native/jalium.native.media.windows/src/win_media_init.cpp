@@ -1,4 +1,3 @@
-#define JALIUM_MEDIA_EXPORTS
 #include "win_media_init.h"
 #include "win_mf_aac_decoder.h"
 #include "../../jalium.native.media.core/src/audio/audio_internal.h"

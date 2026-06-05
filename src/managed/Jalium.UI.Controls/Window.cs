@@ -21,6 +21,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private static readonly bool ForceFullReplayForD3D12 = IsEnvironmentSwitchEnabled("JALIUM_D3D12_FORCE_FULL_REPLAY");
     private static readonly bool DebugRender = IsEnvironmentSwitchEnabled("JALIUM_DEBUG_RENDER");
 
+    // VSync 默认是否禁用（env 缓存，运行期不变）。EnsureRenderTarget 与 WM_EXITSIZEMOVE
+    // 共用这唯一来源，避免魔法字符串重复，也保证 resize 结束后不会无视用户的 opt-out。
+    private static readonly bool VSyncDisabledByEnv = IsEnvironmentSwitchEnabled("JALIUM_DISABLE_VSYNC");
+
     /// <inheritdoc />
     protected override Jalium.UI.Automation.AutomationPeer? OnCreateAutomationPeer()
     {
@@ -289,6 +293,22 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private long _lastRenderTicks;          // Timestamp of last completed render (for rate-limiting)
     private Timer? _renderThrottleTimer;    // Deferred render when rate-limited or waiting for the GPU
     private long _suppressEscapeUntilTick;
+
+    // ── Frame-latency-waitable scheduling ────────────────────────────────
+    // When the underlying render target supports an OS-level frame-latency
+    // waitable HANDLE (currently: D3D12 with FRAME_LATENCY_WAITABLE_OBJECT
+    // flag), a background thread blocks on it and pokes the dispatcher
+    // every time the swap chain releases a back buffer. ScheduleDeferredRender
+    // is then a near-no-op — the pacer fires the next render exactly at the
+    // moment the GPU pipeline can accept it, so the BeginDraw fast-fail
+    // retry loop disappears. Falls back to timer-based scheduling when
+    // _frameLatencyWaitable is zero (older platforms / non-D3D12 backends).
+    private nint _frameLatencyWaitable;
+    private Thread? _framePacerThread;
+    private int _framePending; // 0 = idle, 1 = a frame is queued for the next waitable signal
+    private const uint FRAME_PACER_TIMEOUT_MS = 1000;
+    private const uint WAIT_OBJECT_0_CONST = 0;
+    private const uint WAIT_TIMEOUT_CONST = 0x00000102;
     // Per-dirty-element state.  PreLayoutBounds captures where the element WAS
     // when AddDirtyElement was first called in this frame (before UpdateLayout).
     // PreciseLocalRects (optional) lets callers mark only a sub-rectangle of the
@@ -951,31 +971,18 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     /// Gets or sets a value that indicates whether the window allows transparency.
     /// Must be set before the window is shown.
     /// </summary>
-    public bool AllowsTransparency { get; set; }
-
-    /// <summary>Identifies the AllowTransparentBackground dependency property.</summary>
-    public static readonly DependencyProperty AllowTransparentBackgroundProperty =
-        DependencyProperty.Register(nameof(AllowTransparentBackground), typeof(bool), typeof(Window),
-            new PropertyMetadata(false));
-
-    /// <summary>
-    /// 当 <see cref="SystemBackdrop"/> 为 <see cref="WindowBackdropType.None"/> 时，框架默认会
-    /// 把半透明 <see cref="UIElement.Background"/>（A&lt;255 的 SolidColorBrush 或 null）强制改成
-    /// 不透明，避免 PREMULTIPLIED swap chain 与桌面合成时的"鬼影"伪影（侧边栏文字重影、桌面
-    /// 内容透过控件可见）。设此开关 = <c>true</c> 表示调用方明确接受该风险，框架不再强制不透明：
+    /// <remarks>
+    /// 设为 <c>true</c> 时窗口走 DirectComposition 渲染路径（<c>WS_EX_NOREDIRECTIONBITMAP</c>），
+    /// 半透明 / 透明的 <see cref="UIElement.Background"/> 会被真实合成到桌面：
     /// <list type="bullet">
     /// <item><see cref="UIElement.Background"/>=半透明色 → 保留 alpha，DWM 直接合成下方桌面 / 应用</item>
     /// <item><see cref="UIElement.Background"/>=null → ClearBackground 走 <c>Clear(0,0,0,0)</c> 透明路径</item>
     /// </list>
-    /// 仅对走 DirectComposition 渲染路径（<see cref="AllowsTransparency"/>=true 触发的
-    /// <c>WS_EX_NOREDIRECTIONBITMAP</c>）的 Window 有意义；非合成路径下设此 flag 不会让 Window 透明。
-    /// </summary>
-    [DevToolsPropertyCategory(DevToolsPropertyCategory.Appearance)]
-    public bool AllowTransparentBackground
-    {
-        get => (bool)GetValue(AllowTransparentBackgroundProperty)!;
-        set => SetValue(AllowTransparentBackgroundProperty, value);
-    }
+    /// 设为 <c>false</c> 时，若 Window 因内嵌 WebView 等被动进入合成路径，框架会把半透明
+    /// <see cref="UIElement.Background"/>（A&lt;255 的 SolidColorBrush 或 null）强制改成不透明，
+    /// 避免 PREMULTIPLIED swap chain 与桌面合成时的"鬼影"伪影（侧边栏文字重影、桌面内容透过控件可见）。
+    /// </remarks>
+    public bool AllowsTransparency { get; set; }
 
     /// <summary>
     /// Gets or sets the window that owns this window.
@@ -2883,11 +2890,21 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         _owner?.RemoveOwnedWindow(this);
         _owner = null;
 
+        // Stop the render thread FIRST — it owns _drawingContext + RenderTarget and
+        // must be joined before either is cleared/disposed below (else use-after-free
+        // on the swap chain / drawing context mid-present).
+        StopRenderThread();
+
         // Release large image resources before dropping the drawing context reference.
         // Avoid full ClearCache() here because text/brush teardown order can still be sensitive
         // during process shutdown.
         _drawingContext?.ClearBitmapCache();
         _drawingContext = null;
+
+        // Stop the pacer thread before disposing the render target — the
+        // waitable HANDLE belongs to the swap chain and is closed during
+        // RenderTarget.Dispose, so the pacer must already be off the wait.
+        StopFramePacer();
 
         // Dispose render target
         RenderTarget?.Dispose();
@@ -4356,6 +4373,19 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         float dpi = (float)(_dpiScale * 96.0);
         RenderTarget?.SetDpi(dpi, dpi);
 
+        // VSync default: ON. With FRAME_LATENCY_WAITABLE_OBJECT +
+        // SetMaximumFrameLatency(1) the swap chain already aligns CPU pacing
+        // to vsync, and Present(1) lets the BeginDraw waitable wait collapse
+        // to ~0 ms (buffer is genuinely ready when CPU returns from Present)
+        // instead of the ~100 ms waitable-timeout pattern observed when
+        // Present(0) is used. The matching DisableVSync override on
+        // WM_ENTERSIZEMOVE keeps resizes snappy.
+        // Opt-out via JALIUM_DISABLE_VSYNC=1 for benchmark / animation cases.
+        RenderTarget?.SetVSyncEnabled(!VSyncDisabledByEnv);
+
+        StartFramePacerIfSupported();
+        StartRenderThreadIfSupported();
+
         if (trace)
         {
             static long Ms(long start, long end) =>
@@ -4452,10 +4482,10 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             // artifacts (sidebar text doubled, desktop bleeding through).
             // Force the background to fully opaque to prevent the bleed-through.
             //
-            // AllowTransparentBackground=true 表示调用方明确想要真透明背景（接受 ghost-image
+            // AllowsTransparency=true 表示调用方明确想要真透明背景（接受 ghost-image
             // 风险），跳过强制不透明逻辑——典型场景是浮动 / 拖拽指示器 window 故意要透明
             // 给用户看到下方内容。
-            if (!AllowTransparentBackground &&
+            if (!AllowsTransparency &&
                 SystemBackdrop == WindowBackdropType.None &&
                 Background is Media.SolidColorBrush bgBrush &&
                 bgBrush.Color.A < 255)
@@ -5160,6 +5190,8 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
+        Justification = "The WM_GETOBJECT path passes an IRawElementProviderSimple to the UiaReturnRawElementProvider P/Invoke for native UIA interop. That COM interface is preserved by the <type fullname=\"Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple\" preserve=\"all\" /> entry in Jalium.UI.Controls/ILLink.Descriptors.xml (as documented on UiaNativeMethods), so the trimmer keeps the vtable members the runtime calls through this P/Invoke.")]
     private nint WndProcCore(nint hWnd, uint msg, nint wParam, nint lParam)
     {
         Window? window = null;
@@ -5578,8 +5610,9 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
                 case WM_EXITSIZEMOVE:
                     window._isSizing = false;
-                    // Re-enable VSync after resize
-                    window.RenderTarget?.SetVSyncEnabled(true);
+                    // Re-enable VSync after resize (honour the JALIUM_DISABLE_VSYNC
+                    // opt-out so a benchmark session that disabled it stays disabled).
+                    window.RenderTarget?.SetVSyncEnabled(!VSyncDisabledByEnv);
                     // Do final resize to ensure correct buffer size (physical pixels)
                     int finalPhysW = (int)(window.Width * window._dpiScale);
                     int finalPhysH = (int)(window.Height * window._dpiScale);
@@ -5887,7 +5920,76 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         }
     }
 
+    // ── Swap-chain resize serialization (0xC000041D fix) ────────────────────
+    // Root cause of the "resize too fast" crash: during a drag-resize the OS
+    // delivers WM_SIZE / WM_WINDOWPOSCHANGED as *sent* messages that reenter
+    // this WndProc through KiUserCallbackDispatcher — including while we are in
+    // the middle of a RenderFrame (between BeginDraw and EndDraw). Resizing the
+    // swap chain there makes the native backend AbortFrame()+ResizeBuffers() out
+    // from under the still-running managed frame, which then keeps issuing draw
+    // commands into freed back buffers → AccessViolation. An AVE is a corrupted-
+    // state exception that NEITHER the inner nor the outer WndProc catch(Exception)
+    // can intercept (the CLR does not deliver CSEs to managed handlers by
+    // default), so it escapes the user callback and Windows raises
+    // STATUS_FATAL_USER_CALLBACK_EXCEPTION (0xC000041D).
+    //
+    // Fix: never touch the swap chain while a frame is in flight. A resize that
+    // arrives at an unsafe moment is stashed and applied at the next safe point
+    // (top of RenderFrame, before BeginDraw — see FlushPendingRenderTargetResize).
+    private bool _resizeInProgress;
+    private bool _hasPendingResize;
+    private int _pendingResizeWidth;
+    private int _pendingResizeHeight;
+
     private void TryResizeRenderTarget(int physicalWidth, int physicalHeight, string stage)
+    {
+        if (physicalWidth <= 0 || physicalHeight <= 0)
+            return;
+
+        // Defer if it is unsafe to touch the swap chain right now:
+        //   • inside RenderFrame (a command list may be open), or
+        //   • the render target is mid BeginDraw..EndDraw, or
+        //   • another resize's native call is already in flight (reentrancy).
+        // Stash the LATEST requested size; a scheduled frame flushes it safely.
+        var rt = RenderTarget;
+        if (_resizeInProgress || HasRenderFlag(RenderFlag_Rendering) || (rt != null && rt.IsDrawing))
+        {
+            _pendingResizeWidth = physicalWidth;
+            _pendingResizeHeight = physicalHeight;
+            _hasPendingResize = true;
+            // Ensure a frame is scheduled to apply the pending size and repaint
+            // at the new dimensions even if the caller does not invalidate.
+            RequestFullInvalidation();
+            return;
+        }
+
+        ApplyRenderTargetResize(physicalWidth, physicalHeight, stage);
+
+        // A resize may have been deferred while we held _resizeInProgress above
+        // (native ResizeBuffers can pump a reentrant WM_SIZE). Drain the latest
+        // one now that the swap chain is idle again.
+        FlushPendingRenderTargetResize();
+    }
+
+    // Applies a resize that was deferred because it arrived mid-frame. MUST only
+    // be called from a safe point — never between BeginDraw and EndDraw. Called
+    // by RenderFrame just before it begins drawing.
+    private void FlushPendingRenderTargetResize()
+    {
+        if (!_hasPendingResize || _resizeInProgress)
+            return;
+
+        int w = _pendingResizeWidth;
+        int h = _pendingResizeHeight;
+        _hasPendingResize = false;
+        ApplyRenderTargetResize(w, h, "PendingResize");
+
+        // ResizeBuffers discarded the back-buffer contents — force a full repaint
+        // at the new size so no stale/black pixels survive.
+        RequestFullInvalidation();
+    }
+
+    private void ApplyRenderTargetResize(int physicalWidth, int physicalHeight, string stage)
     {
         var renderTarget = RenderTarget;
         if (renderTarget == null || !renderTarget.IsValid)
@@ -5901,9 +6003,27 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 return;
         }
 
+        // Reentrancy gate for the actual native call. While this is set, both
+        // TryResizeRenderTarget and RenderFrame defer rather than touch the swap
+        // chain — see their guards.
+        _resizeInProgress = true;
+
+        // Park the render thread before ResizeBuffers — it must NOT be mid-
+        // BeginDraw..EndDraw when DXGI discards/recreates the back buffers.
+        // (No-op when the render thread is disabled, which is the default.)
+        RequestRenderThreadIdle();
         try
         {
-            _debugHud.OnResize(); renderTarget.Resize(physicalWidth, physicalHeight);
+            // Defensive: if a draw session is somehow still open, close it before
+            // touching the swap chain. The guards above should prevent this, but a
+            // half-open session here would corrupt the resize.
+            if (renderTarget.IsDrawing)
+            {
+                try { _ = renderTarget.TryEndDraw(); } catch { /* best effort */ }
+            }
+
+            _debugHud.OnResize();
+            renderTarget.Resize(physicalWidth, physicalHeight);
         }
         catch (RenderPipelineException ex)
         {
@@ -5919,6 +6039,11 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             }
 
             LogRenderFailure(ex, stage);
+        }
+        finally
+        {
+            ResumeRenderThread();
+            _resizeInProgress = false;
         }
     }
 
@@ -6227,6 +6352,46 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private Interop.NativeMethods.JaliumBitmapStats _prevBitmapStats;
     private long _prevBitmapDownscaleEvictions;
 
+    // Unified text stats last-frame snapshot.  Same pattern as path / bitmap:
+    // diff against the next call to publish per-frame deltas.
+    private Interop.NativeMethods.JaliumTextStats _prevTextStats;
+
+    private void PublishTextCacheStatsFromNative()
+    {
+        Interop.NativeMethods.JaliumTextStats cur = default;
+        try
+        {
+            unsafe
+            {
+                Interop.NativeMethods.QueryTextStats(&cur);
+            }
+        }
+        catch
+        {
+            return;
+        }
+        var prev = _prevTextStats;
+        _prevTextStats = cur;
+
+        Jalium.UI.Diagnostics.RenderDiagnostics.PublishTextCacheStats(
+            new Jalium.UI.Diagnostics.RenderDiagnostics.TextCacheFrameStats
+            {
+                Timestamp          = DateTime.Now,
+                LayoutHits         = (long)(cur.LayoutHits         - prev.LayoutHits),
+                LayoutMisses       = (long)(cur.LayoutMisses       - prev.LayoutMisses),
+                LayoutEvictions    = (long)(cur.LayoutEvictions    - prev.LayoutEvictions),
+                InstanceHits       = (long)(cur.InstanceHits       - prev.InstanceHits),
+                InstanceMisses     = (long)(cur.InstanceMisses     - prev.InstanceMisses),
+                InstanceEvictions  = (long)(cur.InstanceEvictions  - prev.InstanceEvictions),
+                GlyphRasterHits    = (long)(cur.GlyphRasterHits    - prev.GlyphRasterHits),
+                GlyphRasterMisses  = (long)(cur.GlyphRasterMisses  - prev.GlyphRasterMisses),
+                AtlasResets        = (long)(cur.AtlasResets        - prev.AtlasResets),
+                DrawTextCalls      = (long)(cur.DrawTextCalls      - prev.DrawTextCalls),
+                EmittedGlyphs      = (long)(cur.EmittedGlyphs      - prev.EmittedGlyphs),
+                EmittedDecorations = (long)(cur.EmittedDecorations - prev.EmittedDecorations),
+            });
+    }
+
     // Retained-cache last-frame snapshots — Visual.s_retainedCache* are global
     // counters incremented by every Visual that runs RenderDirect this frame.
     private long _prevRetainedRecords;
@@ -6275,6 +6440,29 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     gpuStats.GlyphSlotsUsed, gpuStats.GlyphSlotsTotal, gpuStats.GlyphBytes,
                     gpuStats.PathEntries, gpuStats.PathBytes,
                     gpuStats.TextureCount, gpuStats.TextureBytes);
+                // Frame-pacing: roll up the managed BeginDraw attempt counters
+                // (incremented inside RenderTarget.TryBeginDraw) with the
+                // native backend's fence-wait + GPU work timings so DevTools
+                // shows one cohesive "Frame pacing" block per frame.
+                Jalium.UI.Diagnostics.RenderDiagnostics.PublishFramePacing(
+                    gpuStats.FrameGpuWaitNs,
+                    gpuStats.SwapBufferCount,
+                    gpuStats.LastFramePresentToReadyNs,
+                    gpuStats.FrameWaitableWaitNs);
+            }
+            // GPU breakdown via hardware timestamp queries — gated behind the
+            // same ApiStatsEnabled flag the path/bitmap/retained queries use.
+            // Backends without timestamp support return NOT_SUPPORTED here and
+            // DevTools renders a "—" placeholder.
+            if (Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled &&
+                renderTarget.TryQueryGpuTiming(out var gpuTiming))
+            {
+                Jalium.UI.Diagnostics.RenderDiagnostics.PublishGpuTiming(
+                    gpuTiming.TimingValid,
+                    gpuTiming.TotalGpuNs,
+                    gpuTiming.SdfRectNs, gpuTiming.TextNs, gpuTiming.BitmapNs, gpuTiming.PathNs,
+                    gpuTiming.BackdropNs, gpuTiming.LiquidGlassNs, gpuTiming.OtherNs,
+                    gpuTiming.BatchCount);
             }
             // Per-frame draw-API call counters → DevTools Perf tab. Only
             // publishes when ApiStatsEnabled (set by the Perf tab while it's
@@ -6286,6 +6474,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             if (Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled)
             {
                 PublishPathCacheStatsFromNative();
+                PublishTextCacheStatsFromNative();
                 PublishRetainedCacheStatsFromManaged();
             }
             _lastRenderTicks = Environment.TickCount64;
@@ -6453,6 +6642,16 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             return;
         }
 
+        // Timer-based retry — the proven path. Letting the UI thread return
+        // to the dispatcher between BeginDraw attempts is the reason input
+        // and animation stay responsive while waiting on a busy GPU. An
+        // earlier attempt to route this through a waitable-driven pacer
+        // thread (see project memory v5) backfired: the fence wait inside
+        // BeginDraw still blocks the UI thread on iGPU for ~120 ms per
+        // frame, so removing the retry just shifted that 120 ms from a
+        // dispersed wait to a synchronous one — same wall clock, much
+        // worse perceived responsiveness. The pacer code below is kept
+        // behind an env-var gate for future experimentation.
         var deferredTimer = new Timer(_ =>
         {
             _dispatcher?.BeginInvokeCritical(ProcessRender);
@@ -6460,6 +6659,270 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
 
         var previousTimer = Interlocked.Exchange(ref _renderThrottleTimer, deferredTimer);
         previousTimer?.Dispose();
+    }
+
+    // ── Frame-latency pacer thread ──────────────────────────────────────
+    // Blocks on the swap-chain frame-latency waitable HANDLE and pokes the
+    // dispatcher to drive ProcessRender exactly when the swap chain can
+    // accept another frame. This replaces the previous "fire-and-retry"
+    // loop: when ScheduleDeferredRender used a 1 ms timer, every iteration
+    // hit BeginDraw → waitable timeout → return INVALID_STATE → retry,
+    // wasting ~100 ms per frame on iGPU. With the pacer driving the
+    // schedule, BeginDraw runs exactly once per frame, on the right tick.
+    //
+    // Polling cadence: 16 ms (≈ 1 vsync) keeps the loop alive even when the
+    // waitable never signals (window minimised etc.), so Stop() doesn't have
+    // to set up a second wait handle.
+    [LibraryImport("kernel32.dll", SetLastError = true)]
+    private static partial uint WaitForSingleObjectEx(nint hHandle, uint dwMilliseconds, [MarshalAs(UnmanagedType.Bool)] bool bAlertable);
+
+    private const uint FRAME_PACER_POLL_MS = 16;
+    private volatile int _framePacerStopFlag;
+
+    // Pacer thread is opt-in via JALIUM_ENABLE_FRAME_PACER=1.  The default
+    // path uses the timer-based retry in ScheduleDeferredRender, which keeps
+    // input responsive on iGPU by letting the dispatcher run between
+    // BeginDraw attempts. The pacer experiment is preserved so a future
+    // change that also moves the fence wait off the UI thread can re-enable
+    // it cleanly — see the v5 retrospective in the project memory.
+    private static readonly bool EnableFramePacer = IsEnvironmentSwitchEnabled("JALIUM_ENABLE_FRAME_PACER");
+
+    // Render-thread path (JALIUM_RENDER_THREAD=1), default OFF. Increment 1 (now):
+    // record the whole visual tree into a self-contained Drawing on the UI thread,
+    // then replay it into the live context on the SAME thread — proves the capture
+    // is pixel-identical before Increment 2 moves the replay onto a render thread,
+    // which is what finally takes the ~110ms iGPU present off the message pump.
+    private static readonly bool EnableRenderThread = IsEnvironmentSwitchEnabled("JALIUM_RENDER_THREAD");
+
+    /// <summary>
+    /// Default path: directly walk the tree into the live context. Render-thread
+    /// path (env-gated): record the whole frame into a self-contained Drawing then
+    /// replay it into the live context (same thread for Increment 1). Falls back to
+    /// direct render if the cache host doesn't support whole-frame capture.
+    /// </summary>
+    private void RenderTreeOrCapture(Jalium.UI.Interop.RenderTargetDrawingContext ctx)
+    {
+        if (!EnableRenderThread)
+        {
+            Render(ctx);
+            return;
+        }
+
+        var host = Visual.RenderCacheHost;
+        var recorder = host?.CreateFrameRecorder();
+        if (host == null || recorder == null)
+        {
+            Render(ctx);
+            return;
+        }
+
+        Render(recorder);                              // walk tree → command list
+        var drawing = host.FinishRecord(recorder);     // immutable Drawing
+
+        var savedOffset = ctx.Offset;
+        ctx.Offset = Point.Zero;                       // whole-frame Drawing is absolute from 0
+        host.Replay(drawing, ctx);                     // issue native draws
+        ctx.Offset = savedOffset;
+    }
+
+    // ── Render thread (Increment 2) ─────────────────────────────────────
+    // When EnableRenderThread is on AND the window is a non-composition HWND, the
+    // GPU-blocking work (BeginDraw waitable+fence, Replay, EndDraw/Present) runs on
+    // this dedicated thread instead of the UI/message-pump thread. The UI thread
+    // records the whole frame into a Drawing and publishes it (latest-frame-wins
+    // mailbox) then returns to GetMessage immediately — so the ~110ms iGPU present
+    // no longer blocks input/animation. FULL render only in this first version
+    // (no dirty-rect partial present): on iGPU the present cost is dominated by the
+    // DWM flip release regardless of dirty area, so full-frame is the simpler, safe
+    // path. DComp/composition windows fall back to the inline same-thread path.
+    private sealed class FrameCapture { public object Drawing = null!; }
+
+    private Thread? _renderThread;
+    private volatile bool _renderThreadStop;
+    private readonly object _rtChannelLock = new();
+    private FrameCapture? _rtPendingFrame;
+    private AutoResetEvent? _rtFrameAvailable;
+    private volatile bool _rtPause;
+    private ManualResetEventSlim? _rtIdle;
+    private volatile bool _rtActive;
+
+    private void StartRenderThreadIfSupported()
+    {
+        if (!EnableRenderThread || _renderThread != null) return;
+        if (RenderTarget == null || ShouldUseCompositionRenderTarget()) return;  // DComp → inline path
+        if (Visual.RenderCacheHost == null) return;                              // no whole-frame capture
+        _renderThreadStop = false;
+        _rtFrameAvailable ??= new AutoResetEvent(false);
+        _rtIdle ??= new ManualResetEventSlim(false);
+        var t = new Thread(RenderThreadLoop) { IsBackground = true, Name = "Jalium.Render" };
+        _renderThread = t;
+        _rtActive = true;
+        t.Start();
+    }
+
+    private void StopRenderThread()
+    {
+        var t = _renderThread;
+        if (t == null) return;
+        _rtActive = false;
+        _renderThreadStop = true;
+        _rtPause = false;
+        _rtFrameAvailable?.Set();
+        t.Join(500);
+        _renderThread = null;
+        lock (_rtChannelLock) { _rtPendingFrame = null; }
+    }
+
+    // Park the render thread (provably out of BeginDraw..EndDraw) so the UI thread
+    // can safely Resize / Dispose / recreate the RenderTarget the render thread owns.
+    private void RequestRenderThreadIdle()
+    {
+        var t = _renderThread;
+        if (t == null || !t.IsAlive) return;
+        _rtIdle?.Reset();
+        _rtPause = true;
+        _rtFrameAvailable?.Set();
+        _rtIdle?.Wait(1000);
+    }
+
+    private void ResumeRenderThread()
+    {
+        if (_renderThread == null) return;
+        _rtPause = false;
+        _rtFrameAvailable?.Set();
+    }
+
+    private void RenderThreadLoop()
+    {
+        var wake = _rtFrameAvailable;
+        while (!_renderThreadStop)
+        {
+            wake?.WaitOne(250);   // short poll: keeps the loop alive even with no frames queued
+            if (_renderThreadStop) break;
+            if (_rtPause) { _rtIdle?.Set(); continue; }   // drain barrier — parked for lifecycle ops
+            FrameCapture? cap;
+            lock (_rtChannelLock) { cap = _rtPendingFrame; _rtPendingFrame = null; }
+            if (cap == null) continue;
+            try { PresentCaptureOnRenderThread(cap); }
+            catch (RenderPipelineException ex) { MarshalRenderRecovery(ex); }
+            catch { /* swallow — the next published frame will retry */ }
+        }
+    }
+
+    private void PresentCaptureOnRenderThread(FrameCapture cap)
+    {
+        var rt = RenderTarget;
+        if (rt == null || !rt.IsValid) return;
+        var host = Visual.RenderCacheHost;
+        if (host == null) return;
+
+        rt.SetFullInvalidation();
+        if (!rt.TryBeginDraw()) return;   // GPU busy → drop this frame; UI thread will publish another
+
+        bool ended = false;
+        try
+        {
+            ClearBackground();
+            _drawingContext!.Offset = Point.Zero;
+            host.Replay(cap.Drawing, _drawingContext);
+            OnRender(rt);
+            ended = rt.TryEndDraw() == JaliumResult.Ok;   // non-throwing; Ok or failure result
+        }
+        finally
+        {
+            if (!ended && rt.IsDrawing) { try { rt.TryEndDraw(); } catch { } }
+        }
+    }
+
+    private void MarshalRenderRecovery(RenderPipelineException ex)
+    {
+        try
+        {
+            _dispatcher?.BeginInvokeCritical(() =>
+            {
+                RequestRenderThreadIdle();
+                if (RenderTarget?.IsDrawing == true) { try { RenderTarget.TryEndDraw(); } catch { } }
+                HandleRecoverableRenderPipelineFailure(ex, "RenderThread");
+                ResumeRenderThread();
+            });
+        }
+        catch { /* shutting down */ }
+    }
+
+    // UI thread: record the whole tree into a Drawing and hand it to the render
+    // thread (overwriting any un-consumed pending frame = latest-frame-wins), then
+    // return immediately. Never blocks on the present.
+    private void PublishFrameToRenderThread()
+    {
+        var host = Visual.RenderCacheHost;
+        var recorder = host?.CreateFrameRecorder();
+        if (host == null || recorder == null)
+        {
+            _rtActive = false;   // host can't capture → fall back to inline next frame
+            return;
+        }
+        Render(recorder);
+        try { DevToolsOverlay?.DrawOverlay(recorder); } catch { }
+        var drawing = host.FinishRecord(recorder);
+
+        lock (_dirtyLock) { _dirtyElements.Clear(); _dirtyFreeRects.Clear(); _fullInvalidation = false; }
+
+        var cap = new FrameCapture { Drawing = drawing };
+        lock (_rtChannelLock) { _rtPendingFrame = cap; }
+        _rtFrameAvailable?.Set();
+    }
+
+    private void StartFramePacerIfSupported()
+    {
+        if (!EnableFramePacer) return;
+        if (_framePacerThread != null) return;  // already started
+        var rt = RenderTarget;
+        if (rt == null) return;
+        nint waitable = rt.GetFrameLatencyWaitable();
+        if (waitable == nint.Zero) return;  // backend doesn't expose a waitable — fall back to timer
+        _frameLatencyWaitable = waitable;
+        _framePacerStopFlag = 0;
+        var thread = new Thread(FramePacerLoop)
+        {
+            IsBackground = true,
+            Name = "Jalium.FramePacer",
+        };
+        _framePacerThread = thread;
+        thread.Start();
+    }
+
+    private void StopFramePacer()
+    {
+        var thread = _framePacerThread;
+        if (thread == null) return;
+        _framePacerStopFlag = 1;
+        // Up to one poll period (~16 ms) for the loop to observe the flag.
+        // Don't block on Join indefinitely — if the wait API is hung the
+        // background thread is harmless once the swap chain handle is gone.
+        thread.Join(200);
+        _framePacerThread = null;
+        _frameLatencyWaitable = nint.Zero;
+        Interlocked.Exchange(ref _framePending, 0);
+    }
+
+    private void FramePacerLoop()
+    {
+        nint waitable = _frameLatencyWaitable;
+        while (_framePacerStopFlag == 0 && waitable != nint.Zero)
+        {
+            // Short poll: blocks at most one vsync. WAIT_OBJECT_0 means the
+            // swap chain just released a back buffer; the pacer's only job
+            // is to translate that into a dispatcher post when a frame is
+            // pending. WAIT_TIMEOUT means no signal yet — loop, re-check stop.
+            uint waitResult = WaitForSingleObjectEx(waitable, FRAME_PACER_POLL_MS, false);
+            if (_framePacerStopFlag != 0) break;
+            if (waitResult != 0 /* WAIT_OBJECT_0 */) continue;  // timeout or APC abandon — loop
+            if (Interlocked.Exchange(ref _framePending, 0) != 1) continue;  // no pending render
+            // Hand off to the UI dispatcher. BeginInvokeCritical schedules
+            // ProcessRender in the high-priority queue so it runs before
+            // ordinary input/dispatch work piles up.
+            try { _dispatcher?.BeginInvokeCritical(ProcessRender); } catch { /* shutdown race */ }
+        }
     }
 
     private bool TryBeginDrawOrScheduleRetry()
@@ -6503,6 +6966,13 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
     private void RenderFrame()
     { _debugHud.OnRenderFrame();
         if (HasRenderFlag(RenderFlag_Rendering)) return;
+        // A swap-chain resize is mid-flight (native ResizeBuffers can pump a
+        // reentrant WM_PAINT through the kernel callback). Beginning a frame now
+        // would draw into buffers that are being recreated → AccessViolation.
+        // Skip this frame; a render is already scheduled to run once the resize
+        // finishes (TryResizeRenderTarget/FlushPendingRenderTargetResize call
+        // RequestFullInvalidation).
+        if (_resizeInProgress) return;
         // Same rationale as ProcessRender: DWM ignores presents to a minimized
         // window. The early-out here is defence-in-depth for callers that
         // bypass ProcessRender (WM_PAINT, ForceRenderFrame on a stale
@@ -6532,6 +7002,14 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     Console.Error.WriteLine($"[RenderFrame] SKIP: RT still null/invalid after ensure");
                 return;
             }
+
+            // Apply any resize that was deferred because it arrived mid-frame.
+            // Safe here: RenderFlag_Rendering is set (so a reentrant resize defers
+            // instead of racing) and we have not begun drawing yet. Recovery inside
+            // the flush may recreate the render target, so re-validate afterwards.
+            FlushPendingRenderTargetResize();
+            if (RenderTarget == null || !RenderTarget.IsValid)
+                return;
 
             // Perform layout before rendering (queue-based: only dirty elements).
             // UpdateLayout may trigger further invalidations via AddDirtyElement.
@@ -6586,16 +7064,32 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
             var context = RenderContext.GetOrCreateCurrent(RenderBackend.Auto);
             _drawingContext ??= new RenderTargetDrawingContext(RenderTarget, context);
             _drawingContext.SimplifyGpuEffects = _isSizing;
+            // Destroy retained GPU layers orphaned by idle-eviction / detach since
+            // the last frame (fence-gated native release) before drawing.
+            _drawingContext.DrainPendingRetainedLayers();
             _debugHud.SetBackend(RenderTarget.Backend.ToString());
             _debugHud.SetEngine(RenderTarget.RenderingEngine.ToString());
             _debugHud.SetWindowSize(RenderTarget.Width, RenderTarget.Height);
             _debugHud.SetDpiScale((float)_dpiScale);
 
-            // VSync disabled — let the compositor / display handle pacing.
-            // This minimizes input-to-display latency for all scenarios.
-            RenderTarget.SetVSyncEnabled(false);
+            // VSync 状态由 EnsureRenderTarget（JALIUM_DISABLE_VSYNC-gated，默认 ON）与
+            // WM_ENTERSIZEMOVE/EXITSIZEMOVE 的 resize 开关统一拥有——不再每帧重设。
+            // 历史教训：之前这里无条件 SetVSyncEnabled(false) 强制每帧 Present(0)，在核显
+            // + 窗口 DWM 合成下让 swap-chain frame-latency waitable 错过 16ms 预算，
+            // BeginDraw 的 16ms-超时重试循环每帧累积 ~100ms 卡顿（见 project memory frame-pacing）。
 
             var windowBounds = new Rect(0, 0, ActualWidth, ActualHeight);
+
+            // Render-thread path (Increment 2): record the whole frame on this (UI)
+            // thread and hand it to the render thread, which does BeginDraw/Replay/
+            // EndDraw — so the ~110ms iGPU present never blocks the message pump.
+            // Full-render only; DComp windows keep _rtActive=false (inline path).
+            if (_rtActive)
+            {
+                PublishFrameToRenderThread();
+                _drawingContext?.TrimCacheIfNeeded();
+                return;
+            }
 
             if (fullInvalidation)
             {
@@ -6627,7 +7121,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                     ClearBackground();
                     if (firstFrameTrace) fAfterClear = Stopwatch.GetTimestamp();
                     _drawingContext.Offset = Point.Zero;
-                    Render(_drawingContext);
+                    RenderTreeOrCapture(_drawingContext);
                     _debugHud.MarkRender();
                     if (firstFrameTrace) fAfterRender = Stopwatch.GetTimestamp();
                     DevToolsOverlay?.DrawOverlay(_drawingContext);
@@ -6732,7 +7226,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         _debugHud.OnPromoted();
                         ClearBackground();
                         _drawingContext.Offset = Point.Zero;
-                        Render(_drawingContext);
+                        RenderTreeOrCapture(_drawingContext);
                         _debugHud.MarkRender();
                         DevToolsOverlay?.DrawOverlay(_drawingContext);
                         _debugHud.UpdateOverlay(_debugHudOverlay);
@@ -6786,7 +7280,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                         _drawingContext.PushDirtyRegionClip(clipRegion);
 
                         ClearBackground(clipRegion);
-                        Render(_drawingContext);
+                        RenderTreeOrCapture(_drawingContext);
                         _debugHud.MarkRender();
 
                         _drawingContext.PopDirtyRegionClip();
@@ -6975,7 +7469,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 var a = c.A / 255f;
                 RenderTarget!.Clear(c.R / 255f * a, c.G / 255f * a, c.B / 255f * a, a);
             }
-            else if (SystemBackdrop != WindowBackdropType.None || AllowTransparentBackground)
+            else if (SystemBackdrop != WindowBackdropType.None || AllowsTransparency)
             {
                 RenderTarget!.Clear(0.0f, 0.0f, 0.0f, 0.0f);
             }
@@ -7033,7 +7527,7 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
                 }
             }
         }
-        else if (SystemBackdrop != WindowBackdropType.None || AllowTransparentBackground)
+        else if (SystemBackdrop != WindowBackdropType.None || AllowsTransparency)
         {
             RenderTarget!.PunchTransparentRect(
                 (float)r.X, (float)r.Y,
@@ -7087,12 +7581,52 @@ public partial class Window : ContentControl, IWindowHost, ILayoutManagerHost, I
         if (_isFirstLayout)
         {
             _isFirstLayout = false;
+            // First-layout fast path bypasses the LayoutManager queue and times
+            // measure / arrange directly so DevTools sees the same breakdown
+            // shape on the first frame as on every subsequent one.
+            long fStart = System.Diagnostics.Stopwatch.GetTimestamp();
+            long fMeasureStart = fStart;
             Measure(availableSize);
+            long fMeasureEnd = System.Diagnostics.Stopwatch.GetTimestamp();
             Arrange(new Rect(0, 0, availableSize.Width, availableSize.Height));
+            long fEnd = System.Diagnostics.Stopwatch.GetTimestamp();
+            PublishLayoutPassStatsFromTicks(
+                totalTicks:   fEnd - fStart,
+                measureTicks: fMeasureEnd - fMeasureStart,
+                arrangeTicks: fEnd - fMeasureEnd,
+                measureCount: 1, arrangeCount: 1, iterations: 1);
             return;
         }
 
-        _layoutManager.UpdateLayout(this, availableSize);
+        var result = _layoutManager.UpdateLayout(this, availableSize);
+        PublishLayoutPassStatsFromTicks(
+            result.TotalTicks, result.MeasureTicks, result.ArrangeTicks,
+            result.MeasureCount, result.ArrangeCount, result.Iterations);
+    }
+
+    private static void PublishLayoutPassStatsFromTicks(
+        long totalTicks, long measureTicks, long arrangeTicks,
+        int measureCount, int arrangeCount, int iterations)
+    {
+        if (!Jalium.UI.Diagnostics.RenderDiagnostics.ApiStatsEnabled) return;
+        // Stopwatch ticks → ns: tick_ns = 1e9 / Frequency. Multiplying first
+        // keeps a 1 ns floor without overflow at Frequency = 10 MHz (typical
+        // Windows QPC) for sub-second deltas.
+        long freq = System.Diagnostics.Stopwatch.Frequency;
+        long totalNs   = totalTicks   * 1_000_000_000L / freq;
+        long measureNs = measureTicks * 1_000_000_000L / freq;
+        long arrangeNs = arrangeTicks * 1_000_000_000L / freq;
+        Jalium.UI.Diagnostics.RenderDiagnostics.PublishLayoutPassStats(
+            new Jalium.UI.Diagnostics.RenderDiagnostics.LayoutPassFrameStats
+            {
+                Timestamp     = DateTime.Now,
+                TotalNs       = totalNs,
+                MeasureNs     = measureNs,
+                ArrangeNs     = arrangeNs,
+                MeasureCount  = measureCount,
+                ArrangeCount  = arrangeCount,
+                Iterations    = iterations,
+            });
     }
 
     /// <summary>

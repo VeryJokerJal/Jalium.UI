@@ -285,6 +285,23 @@ public class PathShapeTests
 
     #endregion
 
+    [Fact]
+    public void Path_SingleAxisHorizontalLine_StillRendersWhenStretchedUniform()
+    {
+        // A horizontal line ("M2,8 L12,8") has geometry-bounds height 0. GetStretchMetrics
+        // previously guarded on Rect.IsEmpty, which is true when EITHER dimension is 0, so
+        // the line was treated as having no bounds: the stretched size collapsed to (0,0),
+        // ArrangeOverride nulled the defining geometry, and the line never rendered again.
+        // It must still produce a drawable geometry after a Uniform stretch into a real box.
+        var path = CreatePath("M2,8 L12,8", 12, 12, ShapeStretch.Uniform);
+        var drawingContext = new RecordingDrawingContext();
+
+        path.Render(drawingContext);
+
+        var geometry = Assert.IsType<PathGeometry>(drawingContext.LastGeometry);
+        Assert.NotEmpty(geometry.Figures);
+    }
+
     private static TestPath CreatePath(string data, double width, double height, ShapeStretch stretch)
     {
         var path = new TestPath

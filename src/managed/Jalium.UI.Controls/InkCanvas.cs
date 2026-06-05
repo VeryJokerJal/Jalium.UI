@@ -31,6 +31,13 @@ public class InkCanvas : FrameworkElement
     private readonly InkPresenter _dynamicInkPresenter = new();
     private DynamicRenderer _dynamicRenderer;
     private readonly InkCollectionStylusPlugIn _inkCollectionStylusPlugIn;
+    // RTS background-thread preview plugin. Owns the realtime stylus stroke
+    // accumulation that used to happen on the UI thread inside
+    // InkCollectionStylusPlugIn / DynamicRenderer — packets are appended on
+    // the Jalium.RTS thread, then a Processed callback on the UI thread
+    // invalidates the canvas and (on StylusUp) commits the stroke into
+    // Strokes. See RealTimeInkPreviewStylusPlugIn.cs for the threading model.
+    private readonly RealTimeInkPreviewStylusPlugIn _realTimePreviewPlugIn;
 
     // Committed strokes are rendered into a dedicated child visual so the
     // system-level retained-mode cache (Visual.RenderCacheHost) can replay
@@ -173,6 +180,13 @@ public class InkCanvas : FrameworkElement
         _dynamicRenderer.SetInkPresenter(_dynamicInkPresenter);
 
         _inkCollectionStylusPlugIn = new InkCollectionStylusPlugIn(this);
+        _realTimePreviewPlugIn = new RealTimeInkPreviewStylusPlugIn(this);
+        // Order matters: the RTS-capable preview plug-in goes first so the
+        // background-thread bucket processes it before any UI-thread plug-in
+        // partition runs. RealTimeStylus.PartitionPlugIns splits by
+        // IsRealTimeCapable, so the visible append-then-DynamicRenderer order
+        // in this list is what surface-collection-order users would expect.
+        StylusPlugIns.Add(_realTimePreviewPlugIn);
         StylusPlugIns.Add(_dynamicRenderer);
         StylusPlugIns.Add(_inkCollectionStylusPlugIn);
 
@@ -394,10 +408,40 @@ public class InkCanvas : FrameworkElement
                     DispatchStrokeToInkLayer(session.Stroke, _previewInkLayer);
             }
 
-            // Stylus DynamicRenderer preview — exposed via CurrentPreviewStroke.
-            var stylusStroke = _dynamicRenderer.CurrentPreviewStroke;
-            if (stylusStroke != null && !IsEraserStroke(stylusStroke))
-                DispatchStrokeToInkLayer(stylusStroke, _previewInkLayer);
+            // Real-time stylus preview — accumulated on the Jalium.RTS thread
+            // by RealTimeInkPreviewStylusPlugIn. Each session owns a thread-safe
+            // point buffer; snapshot it on the UI thread, wrap in a transient
+            // Stroke, and dispatch through the same brush-shader path as mouse
+            // / touch. Eraser sessions are *both* dispatched to the preview
+            // layer (so the user sees the cursor cap) AND incrementally
+            // applied to the committed layer below — same as the mouse path.
+            var rtsSessions = _realTimePreviewPlugIn.SnapshotSessions();
+            for (int i = 0; i < rtsSessions.Length; i++)
+            {
+                var s = rtsSessions[i];
+                if (s.Attributes is null) continue;
+                var pts = s.SnapshotPoints();
+                if (pts.Length < 2) continue;
+                if (s.IsEraser)
+                {
+                    // Eraser: paint into committed layer (idempotent erase
+                    // pass) and also paint the cursor ring below.
+                    DispatchStrokePointsToInkLayer(pts, s.Attributes, _inkLayer);
+                }
+                else
+                {
+                    DispatchStrokePointsToInkLayer(pts, s.Attributes, _previewInkLayer);
+                }
+            }
+
+            // Legacy DynamicRenderer preview — only consulted when the RTS
+            // plug-in has no active session (e.g. RTS disabled in a test).
+            if (rtsSessions.Length == 0)
+            {
+                var stylusStroke = _dynamicRenderer.CurrentPreviewStroke;
+                if (stylusStroke != null && !IsEraserStroke(stylusStroke))
+                    DispatchStrokeToInkLayer(stylusStroke, _previewInkLayer);
+            }
 
             rtdc.BlitInkLayer(_previewInkLayer, 0, 0, 1.0f);
 
@@ -415,6 +459,21 @@ public class InkCanvas : FrameworkElement
                 var ringPen = new Media.Pen(ringBrush, 1.5);
                 dc.DrawEllipse(null, ringPen, new Point(last.X, last.Y), radius, radius);
             }
+            // RTS-session eraser cursor: mirror the mouse path so the user
+            // sees a ring under the pen tip during a stylus EraseByPoint drag.
+            for (int i = 0; i < rtsSessions.Length; i++)
+            {
+                var s = rtsSessions[i];
+                if (!s.IsEraser || s.Attributes is null) continue;
+                var pts = s.SnapshotPoints();
+                if (pts.Length == 0) continue;
+                var last = pts[pts.Length - 1];
+                var radius = EraserDiameter * 0.5;
+                var ringBrush = new Media.SolidColorBrush(
+                    Media.Color.FromArgb(160, 128, 128, 128));
+                var ringPen = new Media.Pen(ringBrush, 1.5);
+                dc.DrawEllipse(null, ringPen, new Point(last.X, last.Y), radius, radius);
+            }
             return;
         }
 
@@ -422,7 +481,24 @@ public class InkCanvas : FrameworkElement
         _currentStroke?.Draw(dc);
         foreach (var session in _activeTouchStrokes.Values)
             session.Stroke.Draw(dc);
-        _dynamicRenderer.DrawPreview(dc);
+        // RTS sessions on the CPU fallback: synthesize a transient Stroke
+        // from the snapshot points and draw it through the legacy CPU path.
+        var rtsSessionsCpu = _realTimePreviewPlugIn.SnapshotSessions();
+        for (int i = 0; i < rtsSessionsCpu.Length; i++)
+        {
+            var s = rtsSessionsCpu[i];
+            if (s.Attributes is null) continue;
+            var pts = s.SnapshotPoints();
+            if (pts.Length < 2) continue;
+            var coll = new InkStylusPointCollection(pts);
+            new Stroke(coll, s.Attributes).Draw(dc);
+        }
+        // Legacy DynamicRenderer preview — only consulted when the RTS plug-in
+        // has no active session, mirroring the RTDC branch above. Both plug-ins
+        // accumulate the same stylus stream, so drawing both here would render
+        // the in-flight stroke twice.
+        if (rtsSessionsCpu.Length == 0)
+            _dynamicRenderer.DrawPreview(dc);
     }
 
     #endregion
@@ -754,6 +830,70 @@ public class InkCanvas : FrameworkElement
             IgnorePressure = true,
             BrushShader    = Jalium.UI.Controls.Ink.Shaders.EraserBrushShader.Instance,
         };
+
+    /// <summary>
+    /// UI-thread snapshot of the active Ink-mode brush. Called once per stylus
+    /// session by <see cref="RealTimeInkPreviewStylusPlugIn"/>'s Down Processed
+    /// callback so the RTS background thread never has to touch the canvas DPs.
+    /// </summary>
+    internal DrawingAttributes BuildInkAttributesForRtsPreview() => DefaultDrawingAttributes.Clone();
+
+    /// <summary>
+    /// UI-thread snapshot of the eraser brush — counterpart to
+    /// <see cref="BuildInkAttributesForRtsPreview"/> for the EraseByPoint
+    /// editing mode.
+    /// </summary>
+    internal DrawingAttributes BuildEraserAttributesForRtsPreview() => BuildEraserAttributes();
+
+    /// <summary>
+    /// UI-thread entry point fired from the RTS plug-in's Processed callbacks.
+    /// Invalidates the preview region so <see cref="OnPostRender"/> re-blits
+    /// the per-frame preview bitmap with the latest snapshot points.
+    /// </summary>
+    internal void NotifyRealTimePreviewInvalidate(RealTimePreviewSession session)
+    {
+        if (session is null) return;
+        var bounds = session.SnapshotBounds();
+        // Inflate by half the stroke radius (clamped at 2 px) so the bitmap
+        // rebuild covers the full stroke cap, not just the centerline bbox.
+        if (session.Attributes is { } attrs)
+        {
+            double pad = Math.Max(2.0, Math.Max(attrs.Width, attrs.Height) * 0.5 + 2.0);
+            if (!bounds.IsEmpty)
+            {
+                bounds = new Rect(bounds.X - pad, bounds.Y - pad,
+                    bounds.Width + pad * 2, bounds.Height + pad * 2);
+            }
+        }
+        if (bounds.IsEmpty)
+            InvalidateVisual();
+        else
+            InvalidateVisual(bounds);
+    }
+
+    /// <summary>
+    /// UI-thread entry point fired from the RTS plug-in's StylusUp Processed
+    /// callback. Materialises the accumulated points as a real
+    /// <see cref="Stroke"/> + appends it to <see cref="Strokes"/>; the
+    /// StrokeCollection change handler picks it up and bakes the stroke into
+    /// the committed ink-layer bitmap.
+    /// </summary>
+    internal void CommitRealTimePreviewSession(RealTimePreviewSession session)
+    {
+        if (session is null || session.Attributes is null) return;
+        var pts = session.SnapshotPoints();
+        if (pts.Length == 0) return;
+
+        var coll = new InkStylusPointCollection(pts);
+        var stroke = new Stroke(coll, session.Attributes)
+        {
+            TaperMode = DefaultStrokeTaperMode
+        };
+        var finishedBounds = stroke.GetBounds();
+        Strokes.Add(stroke);
+        OnStrokeCollected(new InkCanvasStrokeCollectedEventArgs(stroke));
+        InvalidateVisual(finishedBounds);
+    }
 
     private void FinishDrawing()
     {
@@ -1099,6 +1239,21 @@ public class InkCanvas : FrameworkElement
     /// the active CPU preview path still shows the stroke visually, just
     /// without the baked-in pixel-shader effect.
     /// </summary>
+    /// <summary>
+    /// Pure-points overload used by the RTS preview pipeline — there is no
+    /// live <see cref="Stroke"/> object yet (it's only constructed at commit
+    /// time, on the UI thread). Wraps the points in a transient
+    /// <see cref="Stroke"/> + delegates so a single brush dispatch path
+    /// covers both the live-stroke and the snapshot-points caller.
+    /// </summary>
+    private void DispatchStrokePointsToInkLayer(InkStylusPoint[] points, DrawingAttributes attrs, InkLayerBitmap? target)
+    {
+        if (points is null || points.Length < 2 || attrs is null) return;
+        var coll = new InkStylusPointCollection(points);
+        var transient = new Stroke(coll, attrs);
+        DispatchStrokeToInkLayer(transient, target);
+    }
+
     private void DispatchStrokeToInkLayer(Stroke stroke, InkLayerBitmap? target = null)
     {
         target ??= _inkLayer;
@@ -1246,6 +1401,10 @@ public class InkCanvas : FrameworkElement
 
             canvas._dynamicRenderer?.Reset();
             canvas._inkCollectionStylusPlugIn?.Reset();
+            // Drop any in-flight RTS preview sessions — a mid-stroke editing-mode
+            // change must not leave a stale Ink session bleeding into the next
+            // editing mode (eraser, select, etc.).
+            canvas._realTimePreviewPlugIn?.Reset();
             canvas.EditingModeChanged?.Invoke(canvas, new RoutedEventArgs());
         }
     }
@@ -1253,115 +1412,42 @@ public class InkCanvas : FrameworkElement
     private sealed class InkCollectionStylusPlugIn : StylusPlugIn
     {
         private readonly InkCanvas _owner;
-        private InkStylusPointCollection? _activeStrokePoints;
-        // When the active stroke is being driven in EraseByPoint mode we
-        // also keep the (persistent) Stroke + eraser attrs so ContinueDrawing-
-        // style incremental ink-layer dispatch can happen on each move.
-        private Stroke?             _activeEraserStroke;
-        private DrawingAttributes?  _activeEraserAttrs;
 
         public InkCollectionStylusPlugIn(InkCanvas owner)
         {
             _owner = owner ?? throw new ArgumentNullException(nameof(owner));
         }
 
-        public void Reset()
-        {
-            _activeStrokePoints = null;
-            _activeEraserStroke = null;
-            _activeEraserAttrs  = null;
-        }
+        public void Reset() { }
 
+        // This plug-in now only owns the whole-stroke erase path. Ink and
+        // EraseByPoint are handled by RealTimeInkPreviewStylusPlugIn on the
+        // RTS background thread (which then commits on the UI thread via
+        // InkCanvas.CommitRealTimePreviewSession). Keeping the two modes
+        // here would double-commit each stroke.
         protected override bool IsActiveForInput(RawStylusInput rawStylusInput)
         {
-            return _owner.EditingMode is InkCanvasEditingMode.Ink
-                or InkCanvasEditingMode.EraseByStroke
-                or InkCanvasEditingMode.EraseByPoint;
+            return _owner.EditingMode is InkCanvasEditingMode.EraseByStroke;
         }
 
         protected override void OnStylusDown(RawStylusInput rawStylusInput)
         {
             var points = rawStylusInput.GetStylusPoints();
-            switch (_owner.EditingMode)
-            {
-                case InkCanvasEditingMode.Ink:
-                    _activeStrokePoints = ConvertToInkPoints(points);
-                    break;
-
-                case InkCanvasEditingMode.EraseByStroke:
-                    // Whole-stroke erase: hit-test + Strokes.Remove.
-                    _owner.EraseStrokesAt(points);
-                    break;
-
-                case InkCanvasEditingMode.EraseByPoint:
-                    // Per-point erase: build an eraser stroke and walk the
-                    // same accumulate-while-dragging path Ink takes.
-                    _activeStrokePoints = ConvertToInkPoints(points);
-                    _activeEraserAttrs  = _owner.BuildEraserAttributes();
-                    _activeEraserStroke = new Stroke(_activeStrokePoints, _activeEraserAttrs);
-                    // Fire a first dispatch right away so drag-start reveals
-                    // the eraser cap immediately.
-                    _owner.IncrementalEraserDispatch(_activeEraserStroke);
-                    break;
-            }
-
+            _owner.EraseStrokesAt(points);
             rawStylusInput.NotifyWhenProcessed(this);
         }
 
         protected override void OnStylusMove(RawStylusInput rawStylusInput)
         {
             var points = rawStylusInput.GetStylusPoints();
-            switch (_owner.EditingMode)
-            {
-                case InkCanvasEditingMode.Ink:
-                    _activeStrokePoints ??= new InkStylusPointCollection();
-                    AppendInkPoints(_activeStrokePoints, points);
-                    break;
-
-                case InkCanvasEditingMode.EraseByStroke:
-                    _owner.EraseStrokesAt(points);
-                    break;
-
-                case InkCanvasEditingMode.EraseByPoint:
-                    _activeStrokePoints ??= new InkStylusPointCollection();
-                    AppendInkPoints(_activeStrokePoints, points);
-                    if (_activeEraserStroke != null)
-                        _owner.IncrementalEraserDispatch(_activeEraserStroke);
-                    break;
-            }
-
+            _owner.EraseStrokesAt(points);
             rawStylusInput.NotifyWhenProcessed(this);
         }
 
         protected override void OnStylusUp(RawStylusInput rawStylusInput)
         {
             var points = rawStylusInput.GetStylusPoints();
-            switch (_owner.EditingMode)
-            {
-                case InkCanvasEditingMode.Ink:
-                    _activeStrokePoints ??= new InkStylusPointCollection();
-                    AppendInkPoints(_activeStrokePoints, points);
-                    _owner.CommitStylusStroke(_activeStrokePoints);
-                    _activeStrokePoints = null;
-                    break;
-
-                case InkCanvasEditingMode.EraseByStroke:
-                    _owner.EraseStrokesAt(points);
-                    break;
-
-                case InkCanvasEditingMode.EraseByPoint:
-                    _activeStrokePoints ??= new InkStylusPointCollection();
-                    AppendInkPoints(_activeStrokePoints, points);
-                    if (_activeEraserStroke != null)
-                        _owner.IncrementalEraserDispatch(_activeEraserStroke);
-                    // Commit the eraser stroke to Strokes so undo/replay sees it.
-                    _owner.CommitStylusStroke(_activeStrokePoints, _activeEraserAttrs);
-                    _activeStrokePoints = null;
-                    _activeEraserStroke = null;
-                    _activeEraserAttrs  = null;
-                    break;
-            }
-
+            _owner.EraseStrokesAt(points);
             rawStylusInput.NotifyWhenProcessed(this);
         }
 
@@ -1369,20 +1455,6 @@ public class InkCanvas : FrameworkElement
         protected override void OnStylusMoveProcessed(RawStylusInput rawStylusInput) => _owner.InvalidateVisual();
         protected override void OnStylusUpProcessed(RawStylusInput rawStylusInput) => _owner.InvalidateVisual();
 
-        private static InkStylusPointCollection ConvertToInkPoints(InputStylusPoints points)
-        {
-            var result = new InkStylusPointCollection(points.Count);
-            AppendInkPoints(result, points);
-            return result;
-        }
-
-        private static void AppendInkPoints(InkStylusPointCollection target, InputStylusPoints points)
-        {
-            foreach (var point in points)
-            {
-                target.Add(new InkStylusPoint(point.X, point.Y, point.PressureFactor));
-            }
-        }
     }
 
     #endregion

@@ -268,6 +268,21 @@ public sealed class Setter
 
         // Convert value to the correct type if needed
         var valueToSet = ConvertValueIfNeeded(Value, actualProperty.PropertyType);
+
+        // Defense (WPF StyleHelper parity): if the post-conversion value cannot legally inhabit the
+        // target DP — an unconvertible string / type-mismatched object into a value-type property, or a
+        // null into a non-nullable value type — do NOT pin it into the StyleSetter layer; the getter
+        // would throw InvalidCastException / NullReferenceException at layout. Degrade to default by
+        // clearing this layer's contribution, mirroring the TemplateBinding transfer guards.
+        if (!actualProperty.IsValidType(valueToSet))
+        {
+            System.Diagnostics.Trace.WriteLine(
+                $"[Jalium.UI] Style Setter skip: 值 '{valueToSet ?? "<null>"}' 与目标 DP " +
+                $"{actualProperty.OwnerType.Name}.{actualProperty.Name} ({actualProperty.PropertyType.Name}) 不兼容，回退默认值。");
+            target.ClearLayerValue(actualProperty, DependencyObject.LayerValueSource.StyleSetter);
+            return;
+        }
+
         target.SetLayerValue(actualProperty, valueToSet, DependencyObject.LayerValueSource.StyleSetter);
     }
 
@@ -589,22 +604,21 @@ public abstract class TriggerBase
                 continue;
             }
 
-            // 防御：如果 setter.Value 类型与目标 DP 不兼容（典型场景：上游 markup
-            // extension 在 Setter 上下文下没解析成可用值），跳过 SetLayerValue 而不是
-            // 把脏值塞进 DP。否则后续渲染从该 DP 强转目标类型会抛 InvalidCastException
-            // （例如 Brush DP 里塞了一个 BindingBase 子类实例）。
-            if (setter.Value != null &&
-                !actualProperty.PropertyType.IsInstanceOfType(setter.Value) &&
-                setter.Value is not string)
-            {
-                System.Diagnostics.Trace.WriteLine(
-                    $"[Jalium.UI] ApplyTriggerSetters skip: setter.Value 类型 {setter.Value.GetType().Name} 与 DP {actualProperty.OwnerType.Name}.{actualProperty.Name} ({actualProperty.PropertyType.Name}) 不兼容。");
-                continue;
-            }
-
             // Trigger 走动态状态切换路径，必须参与自动过渡 — 这是 hover/pressed
             // 反馈动画的入口；Style.Setter (baseline) 走 allowAutoTransition=false。
             var valueToSet = ConvertValueIfNeeded(setter.Value, actualProperty.PropertyType);
+
+            // 防御（WPF StyleHelper 对齐）：转换后若值仍无法合法存入目标 DP —— 类型不匹配的对象、
+            // 没命中转换器的字符串，或 null 写入非 nullable 值类型 —— 跳过本 setter，而不是把脏值塞进
+            // layer（否则渲染时从该 DP 强转目标类型会抛 InvalidCastException / NullReferenceException）。
+            // 这取代了之前“转换前判断 + 排除 string”的守卫——后者漏掉了无法转换的字符串这一情形。
+            if (!actualProperty.IsValidType(valueToSet))
+            {
+                System.Diagnostics.Trace.WriteLine(
+                    $"[Jalium.UI] ApplyTriggerSetters skip: 值 '{valueToSet ?? "<null>"}' 与 DP {actualProperty.OwnerType.Name}.{actualProperty.Name} ({actualProperty.PropertyType.Name}) 不兼容。");
+                continue;
+            }
+
             target.SetLayerValue(actualProperty, valueToSet, layerSource, allowAutoTransition: true);
             EnsureSetterInvalidation(target, actualProperty);
         }

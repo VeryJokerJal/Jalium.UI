@@ -348,6 +348,8 @@ public abstract class DataSourceProvider : INotifyPropertyChanged
     /// <summary>
     /// Initiates a refresh of the data source.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "BeginQuery is an opt-in reflective extension point. Only ObjectDataProvider's override reflects on user types, and it already declares that contract at its own BeginQuery/QueryWorker: 'Application is responsible for keeping the bound type trim-safe via DAM annotations or explicit registrations.' XmlDataProvider's override performs no reflection. Refresh is the public driver invoked by property setters; whether reflection actually runs is determined by the concrete provider the consumer chose, so preservation remains the documented consumer responsibility at that boundary rather than a defect of this dispatch site.")]
     public void Refresh()
     {
         if (!IsRefreshDeferred)

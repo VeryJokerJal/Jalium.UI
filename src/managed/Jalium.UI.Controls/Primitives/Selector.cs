@@ -356,6 +356,8 @@ public abstract class Selector : ItemsControl
 
     #region Selected Value Helpers
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Reached only from the SelectedIndex/SelectedItem/SelectedValuePath property-changed callbacks, whose PropertyChangedCallback signature is fixed by the property system and cannot carry the RUC contract. The only reflective work is the opt-in SelectedValuePath lookup via GetSelectedValueForItem -> TryResolvePathValue -> PropertyAccessorRegistry.TryReadProperty, which is a no-op unless the consumer sets a non-empty SelectedValuePath. Per PropertyAccessorRegistry's RUC contract ('Register typed accessors via Register() to opt out of reflection.'), applications that bind SelectedValuePath against user data types under AOT must register accessors for those types; this is a documented consumer prerequisite, not a defect of this site.")]
     private void UpdateSelectedValueFromSelection(object? selectedItem)
     {
         var newValue = GetSelectedValueForItem(selectedItem);
@@ -365,6 +367,8 @@ public abstract class Selector : ItemsControl
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Reached only from the SelectedValue property-changed callback, whose PropertyChangedCallback signature is fixed by the property system and cannot carry the RUC contract. The only reflective work is the opt-in SelectedValuePath lookup via GetSelectedValueForItem -> TryResolvePathValue -> PropertyAccessorRegistry.TryReadProperty, which is a no-op unless the consumer sets a non-empty SelectedValuePath. Per PropertyAccessorRegistry's RUC contract ('Register typed accessors via Register() to opt out of reflection.'), applications that bind SelectedValuePath against user data types under AOT must register accessors for those types; this is a documented consumer prerequisite, not a defect of this site.")]
     private (int index, object? item) FindItemBySelectedValue(object? selectedValue)
     {
         if (selectedValue == null)

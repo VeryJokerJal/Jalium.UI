@@ -28,14 +28,15 @@ public partial class DevToolsWindow
             TerminalColumns = 120,
             TerminalRows = 40,
             Focusable = false,                   // Focus stays on the host Border so we can own input.
-            Background = new SolidColorBrush(Color.FromRgb(12, 12, 16)),
-            Foreground = new SolidColorBrush(Color.FromRgb(220, 220, 220)),
+            Background = new SolidColorBrush(DevToolsTheme.ChromeColor),
+            Foreground = new SolidColorBrush(DevToolsTheme.TextPrimaryColor),
+            FontFamily = DevToolsTheme.MonoFont,
         };
 
         _replFocusHost = new Border
         {
-            Background = new SolidColorBrush(Color.FromRgb(12, 12, 16)),
-            BorderBrush = new SolidColorBrush(Color.FromRgb(60, 60, 70)),
+            Background = new SolidColorBrush(DevToolsTheme.ChromeColor),
+            BorderBrush = new SolidColorBrush(DevToolsTheme.BorderColor),
             BorderThickness = new Thickness(1),
             Focusable = true,
             Child = _replTerminal,
@@ -65,7 +66,7 @@ public partial class DevToolsWindow
     {
         if (_replGreeted || _replTerminal == null) return;
         _replGreeted = true;
-        _replTerminal.Write("\x1b[1;36mJalium.UI DevTools REPL\x1b[0m\r\n");
+        _replTerminal.Write("\x1b[1;33mJalium.UI DevTools REPL\x1b[0m\r\n");
         _replTerminal.Write("Type expressions. ");
         _replTerminal.Write("\x1b[2m$ = selected visual, window, app, root; let name = expr; name.Prop = val;\x1b[0m\r\n");
         _replTerminal.Write("\x1b[2mEnter to run, Backspace to delete, Up/Down history, Ctrl+L clears, Ctrl+C cancels.\x1b[0m\r\n\r\n");
@@ -111,7 +112,7 @@ public partial class DevToolsWindow
 
             case Key.L when ctrl:
                 _replTerminal.Clear();
-                _replTerminal.Write("\x1b[1;36mJalium.UI DevTools REPL\x1b[0m\r\n\r\n");
+                _replTerminal.Write("\x1b[1;33mJalium.UI DevTools REPL\x1b[0m\r\n\r\n");
                 WritePrompt();
                 // Re-echo any partial line the user had typed before Ctrl+L
                 if (_replLineBuffer.Length > 0)

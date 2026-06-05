@@ -33,6 +33,8 @@ internal static class GpuPrewarmInitializer
     public static long ModuleLoadTimestamp;
 
     [ModuleInitializer]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2255:The 'ModuleInitializer' attribute should not be used in libraries",
+        Justification = "The whole point is to start native GPU device init in parallel the instant the control library loads, before the consumer's Application/Window construction reaches the UI thread; an explicit init call would run too late to overlap. Failures are swallowed and retried on the synchronous UI-thread path.")]
     public static void Prewarm()
     {
         // Capture the module-load instant.  Stopwatch.GetTimestamp is monotonic

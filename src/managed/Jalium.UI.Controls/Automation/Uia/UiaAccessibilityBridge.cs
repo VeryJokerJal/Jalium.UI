@@ -22,6 +22,8 @@ internal static class UiaAccessibilityBridge
         return s_providers.TryGetValue(peer, out provider);
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
+        Justification = "The IRawElementProviderSimple COM interface marshalled through UiaRaiseAutomationEvent is required for native UIA interop and is preserved via ILLink.Descriptors.xml (<type fullname=\"Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple\" preserve=\"all\" />); its vtable members are exercised through this P/Invoke so the trimmer cannot remove them.")]
     internal static void RaiseAutomationEvent(AutomationPeer peer, AutomationEvents eventId)
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -33,6 +35,8 @@ internal static class UiaAccessibilityBridge
             UiaNativeMethods.UiaRaiseAutomationEvent(provider, uiaEventId);
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
+        Justification = "The IRawElementProviderSimple COM interface marshalled through UiaRaiseAutomationPropertyChangedEvent is required for native UIA interop and is preserved via ILLink.Descriptors.xml (<type fullname=\"Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple\" preserve=\"all\" />); its vtable members are exercised through this P/Invoke so the trimmer cannot remove them.")]
     internal static void RaisePropertyChanged(AutomationPeer peer, AutomationProperty property, object? oldValue, object? newValue)
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -44,6 +48,8 @@ internal static class UiaAccessibilityBridge
             UiaNativeMethods.UiaRaiseAutomationPropertyChangedEvent(provider, uiaPropertyId, oldValue!, newValue!);
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
+        Justification = "The IRawElementProviderSimple COM interface marshalled through UiaRaiseAutomationEvent is required for native UIA interop and is preserved via ILLink.Descriptors.xml (<type fullname=\"Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple\" preserve=\"all\" />); its vtable members are exercised through this P/Invoke so the trimmer cannot remove them.")]
     internal static void RaiseFocusChanged(AutomationPeer peer)
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -53,6 +59,8 @@ internal static class UiaAccessibilityBridge
         UiaNativeMethods.UiaRaiseAutomationEvent(provider, UiaConstants.UIA_AutomationFocusChangedEventId);
     }
 
+    [UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfComInteropCannotBeGuaranteed",
+        Justification = "The IRawElementProviderSimple COM interface marshalled through UiaRaiseStructureChangedEvent is required for native UIA interop and is preserved via ILLink.Descriptors.xml (<type fullname=\"Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple\" preserve=\"all\" />); its vtable members are exercised through this P/Invoke so the trimmer cannot remove them.")]
     internal static void RaiseStructureChanged(AutomationPeer peer, StructureChangeType changeType)
     {
         if (!OperatingSystem.IsWindows()) return;

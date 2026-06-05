@@ -7,7 +7,6 @@
 //      open for follow-up TUs.
 // If a specific codec hint is passed, the probe is skipped.
 
-#define JALIUM_MEDIA_EXPORTS
 #include "jalium_audio.h"
 #include "audio_internal.h"
 

@@ -141,12 +141,16 @@ internal class PropertyEditorSelector
             FontSize = 12
         };
 
-        var values = Enum.GetValues(item.PropertyType);
+        // Enumerate enum members via the underlying-type overload so AOT does not need to
+        // synthesize an array of the (runtime-only) enum type; box each raw value back to the
+        // already-loaded enum Type via Enum.ToObject so ToString()/Equals behave identically.
+        var rawValues = Enum.GetValuesAsUnderlyingType(item.PropertyType);
         var selectedIndex = -1;
         var index = 0;
 
-        foreach (var enumValue in values)
+        foreach (var raw in rawValues)
         {
+            var enumValue = Enum.ToObject(item.PropertyType, raw!);
             comboBox.Items.Add(new ComboBoxItem { Content = enumValue.ToString(), Tag = enumValue });
             if (Equals(enumValue, item.Value))
                 selectedIndex = index;
@@ -267,6 +271,8 @@ internal class PropertyEditorSelector
         return textBox;
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "owner.CreatePropertyRow carries the RUC contract \"Defers to CreatePropertyRowInternal which uses TypeDescriptor.GetConverter for the property's runtime type.\" That same contract is already declared at this selector's public entry point CreateEditor; this method is reached only via CreateEditor for the opt-in PropertyGrid inspector, whose consumers are documented as responsible for keeping their property converters preserved under AOT. The deferred call lives in an Expanded-event closure, so the suppression is hoisted to the enclosing method.")]
     private FrameworkElement CreateExpandableEditor(PropertyItem item, PropertyGrid owner)
     {
         var panel = new StackPanel { Orientation = Orientation.Vertical };

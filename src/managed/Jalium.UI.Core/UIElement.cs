@@ -174,6 +174,12 @@ public abstract partial class UIElement : Visual, IInputElement
         {
             Source = source.Source,
         };
+        // WPF 一贯行为：OriginalSource 在整个事件路由过程中保持为 hit test 最初命中的元素。
+        // 不复制 OriginalSource 会让 element.RaiseEvent 里的 SetOriginalSource(this) 把
+        // 当前 path 节点（如 designer/window 这样的 host）当成 OriginalSource，破坏 hit
+        // 命中元素的可追溯性 —— 任何按 OriginalSource 判断"用户点了哪个真实元素"的 handler
+        // 都会拿到错误的祖先节点而不是叶子。
+        args.SetOriginalSource(source.OriginalSource);
         element.RaiseEvent(args);
         if (args.Handled) source.Handled = true;
     }
@@ -1021,7 +1027,14 @@ public abstract partial class UIElement : Visual, IInputElement
     private IWindowHost? _cachedWindowHost;
     private LayoutManager? _cachedLayoutManager;
     private Point _cachedScreenOffset;
-    private bool _isScreenOffsetValid;
+    // Screen-offset cache validity is tracked by epoch comparison rather than a
+    // per-element bool. A single global counter bump invalidates every element's
+    // cached screen offset in O(1); each element lazily recomputes (walking its
+    // full parent chain) the next time GetScreenBounds is called and its stored
+    // epoch is stale. This replaces a recursive subtree invalidation that ran on
+    // every Arrange — see InvalidateScreenOffsetCache for the full rationale.
+    private long _screenOffsetEpoch = -1;
+    private static long s_screenOffsetEpoch;
 
     /// <summary>
     /// Gets the desired size computed during the measure pass.
@@ -1336,7 +1349,7 @@ public abstract partial class UIElement : Visual, IInputElement
     {
         _cachedWindowHost = null;
         _cachedLayoutManager = null;
-        InvalidateScreenOffsetCacheRecursive();
+        InvalidateScreenOffsetCache();
 
         // Recursively invalidate children's host caches too
         var count = VisualChildrenCount;
@@ -1347,16 +1360,31 @@ public abstract partial class UIElement : Visual, IInputElement
         }
     }
 
-    internal void InvalidateScreenOffsetCacheRecursive()
+    /// <summary>
+    /// Invalidates the cached screen-space offset of this element and, by
+    /// construction, every other element in the process.
+    /// </summary>
+    /// <remarks>
+    /// This used to walk the entire visual subtree setting a per-element
+    /// "invalid" bool. Because <see cref="Arrange"/> calls it and
+    /// <c>ArrangeCore</c> recurses into every child's <see cref="Arrange"/>,
+    /// each descendant was re-invalidated once per ancestor on the way down —
+    /// an O(n·depth) blow-up that dominated the arrange pass on deep/wide
+    /// trees (measured ~31 ms for a single Canvas-heavy frame).
+    ///
+    /// Since <see cref="GetScreenBounds"/> always recomputes from the full
+    /// parent chain (it never trusts a parent's cached value), cache validity
+    /// only needs a cheap "is my cached value from the current layout state?"
+    /// check. A monotonic global epoch gives exactly that: bumping it here is
+    /// O(1) and every element's next <see cref="GetScreenBounds"/> sees a
+    /// stale epoch and recomputes lazily. Over-invalidation (elements that
+    /// didn't actually move also recompute on next query) is bounded by O(n)
+    /// total per frame and only paid when the value is read, versus the old
+    /// O(n·depth) eager walk paid on every arrange.
+    /// </remarks>
+    internal void InvalidateScreenOffsetCache()
     {
-        _isScreenOffsetValid = false;
-
-        var count = VisualChildrenCount;
-        for (int i = 0; i < count; i++)
-        {
-            if (GetVisualChild(i) is UIElement uiChild)
-                uiChild.InvalidateScreenOffsetCacheRecursive();
-        }
+        unchecked { s_screenOffsetEpoch++; }
     }
 
     /// <summary>
@@ -1366,7 +1394,7 @@ public abstract partial class UIElement : Visual, IInputElement
     /// </summary>
     internal Rect GetScreenBounds()
     {
-        if (!_isScreenOffsetValid)
+        if (_screenOffsetEpoch != s_screenOffsetEpoch)
         {
             double x = 0, y = 0;
             Visual? current = this;
@@ -1383,7 +1411,7 @@ public abstract partial class UIElement : Visual, IInputElement
                 current = current.VisualParent;
             }
             _cachedScreenOffset = new Point(x, y);
-            _isScreenOffsetValid = true;
+            _screenOffsetEpoch = s_screenOffsetEpoch;
         }
 
         // Include RenderOffset — animation systems (ProgressBar indeterminate,
@@ -1454,7 +1482,7 @@ public abstract partial class UIElement : Visual, IInputElement
 
         var oldRenderSize = _renderSize;
         _previousFinalRect = finalRect;
-        InvalidateScreenOffsetCacheRecursive();
+        InvalidateScreenOffsetCache();
 
         bool trace = LayoutDiagnostics.IsRecording;
         long startTicks = trace ? Stopwatch.GetTimestamp() : 0;
@@ -3825,7 +3853,8 @@ public abstract partial class UIElement : Visual, IInputElement
             return;
 
         var hasRunningAnimation = false;
-        var hasNonCompositionAnimation = false;
+        var anyVisibleChange = false;
+        var anyNonCompositionChange = false;
 
         foreach (var (dp, anim) in _activeAnimations.ToArray())
         {
@@ -3833,7 +3862,8 @@ public abstract partial class UIElement : Visual, IInputElement
             {
                 anim.Clock.Begin();
                 hasRunningAnimation = true;
-                if (!IsCompositionOnlyDp(dp)) hasNonCompositionAnimation = true;
+                // The first animated value is written on the next tick; nothing
+                // changed this frame, so do not force an invalidation here.
                 continue;
             }
 
@@ -3841,30 +3871,37 @@ public abstract partial class UIElement : Visual, IInputElement
                 continue;
 
             hasRunningAnimation = true;
-            if (!IsCompositionOnlyDp(dp)) hasNonCompositionAnimation = true;
 
             // Update clock progress
             anim.Clock.Tick();
 
-            // Update animated value (which routes through SetAnimatedValue → metadata
-            // callback → InvalidateVisual or InvalidateComposition as appropriate).
-            UpdateAnimatedValue(dp);
+            // Update animated value (routes through SetAnimatedValue → metadata
+            // callback → InvalidateVisual / InvalidateComposition). Crucially this
+            // now reports whether the value actually MOVED this frame: a live clock
+            // that produced a pixel-identical value contributes no invalidation.
+            if (UpdateAnimatedValue(dp))
+            {
+                anyVisibleChange = true;
+                if (!IsCompositionOnlyDp(dp)) anyNonCompositionChange = true;
+            }
         }
 
-        if (hasRunningAnimation)
+        // Change-gated consolidated invalidation. SetAnimatedValue already routes a
+        // precise per-DP invalidation when a value changes; this single lightweight
+        // call is the backup that also covers render-affecting DPs whose metadata
+        // callback may not itself invalidate. It is gated on a REAL value change so a
+        // frame where every running clock produced an unchanged value submits zero
+        // GPU work (it reaches Window's idle-frame skip) instead of forcing a present
+        // every refresh interval for the entire lifetime of the animation.
+        if (anyVisibleChange)
         {
-            // Per-frame backup invalidation. Most animations get their schedule-
-            // present hook from SetAnimatedValue's metadata callback; but some
-            // animations may write equal values that don't fire OnPropertyChanged.
-            // Use the lightest-weight path that still covers every active animation:
-            //   - all animations target composition-only DPs   → InvalidateComposition
-            //   - any animation targets a render-affecting DP  → InvalidateVisual
-            if (hasNonCompositionAnimation)
+            if (anyNonCompositionChange)
                 InvalidateVisual();
             else
                 InvalidateComposition();
         }
-        else
+
+        if (!hasRunningAnimation)
         {
             UnsubscribeFromRenderingIfNeeded();
         }
@@ -3875,10 +3912,16 @@ public abstract partial class UIElement : Visual, IInputElement
         return dp.GetMetadata(GetType()) is FrameworkPropertyMetadata fpm && fpm.AffectsCompositionOnly;
     }
 
-    private void UpdateAnimatedValue(DependencyProperty dp)
+    /// <summary>
+    /// Recomputes and applies the current value for an animated dependency property.
+    /// </summary>
+    /// <returns><c>true</c> if the value actually changed this frame (a present was
+    /// scheduled); <c>false</c> if it produced a pixel-identical value or could not be
+    /// evaluated.</returns>
+    private bool UpdateAnimatedValue(DependencyProperty dp)
     {
         if (_activeAnimations == null || !_activeAnimations.TryGetValue(dp, out var anim))
-            return;
+            return false;
 
         try
         {
@@ -3886,14 +3929,17 @@ public abstract partial class UIElement : Visual, IInputElement
             var currentValue = anim.Animation.GetCurrentValue(baseValue, baseValue, anim.Clock);
 
             var holdEnd = anim.Animation.AnimationFillBehavior == AnimationFillBehavior.HoldEnd;
-            SetAnimatedValue(dp, currentValue, holdEnd);
+            return SetAnimatedValue(dp, currentValue, holdEnd);
         }
         catch
         {
             // If animation value calculation fails, silently continue
+            return false;
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2072:RequiresUnreferencedCode",
+        Justification = "Activator.CreateInstance is reached only when type.IsValueType is true. A value type always has an intrinsic parameterless (default) constructor that performs zero-initialization; the trimmer never removes a struct's default construction, so the PublicParameterlessConstructor requirement is structurally satisfied here even though DependencyProperty.PropertyType does not flow the DAM annotation.")]
     private static object GetDefaultAnimationValue(DependencyProperty dp)
     {
         var type = dp.PropertyType;

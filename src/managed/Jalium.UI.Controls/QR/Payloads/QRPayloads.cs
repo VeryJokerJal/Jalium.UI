@@ -51,7 +51,7 @@ public static class UrlPayload
     }
 }
 
-/// <summary>Email payload: mailto:to?subject=...&body=...</summary>
+/// <summary>Email payload: mailto:to?subject=...&amp;body=...</summary>
 public static class MailPayload
 {
     public static string For(string to, string? subject = null, string? body = null)

@@ -46,6 +46,27 @@ public partial class DevToolsWindow
         menu.Items.Add(MakeMenuItem("Save whole window screenshot…", "◱",
             () => Defer(() => SaveWholeWindowScreenshot())));
 
+        menu.Items.Add(new Separator());
+
+        // Delete removes the element from the live tree; it is offered always but
+        // disabled (with an explanatory tooltip) when the parent container has no
+        // safe removal API. Undo only appears when there is something to restore.
+        bool canDelete = CanDeleteElement(target, out var deleteReason);
+        var deleteItem = MakeMenuItem("Delete element", "✕",
+            () => Defer(() => DeleteElement(target)));
+        if (!canDelete)
+        {
+            deleteItem.IsEnabled = false;
+            deleteItem.ToolTip = deleteReason;
+        }
+        menu.Items.Add(deleteItem);
+
+        if (_deleteRecord != null)
+        {
+            menu.Items.Add(MakeMenuItem($"Undo delete ({_deleteRecord.Label})", "↩",
+                () => Defer(() => UndoDelete())));
+        }
+
         // MousePoint placement pops the menu up at the current cursor location, which
         // is exactly where the right-click happened.
         menu.IsOpen = true;

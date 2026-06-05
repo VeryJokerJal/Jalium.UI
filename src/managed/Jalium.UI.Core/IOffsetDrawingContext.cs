@@ -94,6 +94,59 @@ public interface ITransformDrawingContext
 }
 
 /// <summary>
+/// Interface for drawing contexts that can realize a visual subtree into a
+/// persistent GPU texture once and composite that texture as a transformed /
+/// opacity-scaled quad on subsequent frames. This lets a composited animation
+/// (Opacity / RenderTransform — <c>AffectsCompositionOnly</c>) on a content-clean
+/// subtree skip re-emitting the whole subtree's draw commands every frame:
+/// instead the parent draws one cached-layer quad with the live transform/opacity.
+/// </summary>
+/// <remarks>
+/// The live render-target context implements this; recording / probing contexts
+/// (the retained-mode recorder, the whole-frame recorder) do NOT, so a caller that
+/// only sees a recorder transparently falls back to full re-emission. A layer is a
+/// content snapshot at identity transform/opacity: it is rebuilt only when the
+/// subtree's CONTENT changes (render-dirty / size / DPI), never when the animated
+/// transform/opacity changes (those are applied at composite time).
+/// </remarks>
+public interface ILayerCompositingDrawingContext
+{
+    /// <summary>
+    /// Whether this context can realize and composite retained GPU layers right now
+    /// (false on backends without offscreen-RT capture, e.g. so callers fall back to
+    /// full re-emission with no behavior change).
+    /// </summary>
+    bool SupportsRetainedLayers { get; }
+
+    /// <summary>
+    /// Opens a capture scope that redirects subsequent draws into a persistent layer
+    /// texture covering <paramref name="worldBounds"/> (in current offset/screen
+    /// space). Reuses/resizes <paramref name="existingLayer"/> when non-zero. The
+    /// caller renders the subtree's CONTENT (no animated transform/opacity) between
+    /// this call and <see cref="EndLayerCapture"/>. Returns the layer handle, or
+    /// <c>0</c> if a layer could not be realized (caller must fall back to direct
+    /// rendering and must not call <see cref="EndLayerCapture"/>).
+    /// </summary>
+    nint BeginLayerCapture(nint existingLayer, Rect worldBounds);
+
+    /// <summary>
+    /// Closes the capture scope opened by <see cref="BeginLayerCapture"/> and
+    /// finalizes the layer texture for sampling. Restores the previous render target
+    /// / viewport / clip state.
+    /// </summary>
+    void EndLayerCapture(nint layer);
+
+    /// <summary>
+    /// Composites a realized layer as a single quad at <paramref name="worldBounds"/>
+    /// with the live <paramref name="opacity"/> and <paramref name="transform"/>
+    /// (applied around the given origin), honoring the current clip/scissor and
+    /// z-order. Cheap and O(1) regardless of how many draw commands the subtree had.
+    /// </summary>
+    void CompositeLayer(nint layer, Rect worldBounds, double opacity,
+        Transform? transform, double originX, double originY);
+}
+
+/// <summary>
 /// Interface for drawing contexts that support element effect capture and rendering.
 /// </summary>
 public interface IEffectDrawingContext

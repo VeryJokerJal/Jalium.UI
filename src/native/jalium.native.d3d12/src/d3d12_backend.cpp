@@ -3,6 +3,7 @@
 #include "d3d12_resources.h"
 #include <algorithm>
 #include <cstdlib>
+#include <cstdio>
 #include <cwchar>
 #include <vector>
 
@@ -12,6 +13,17 @@
 #pragma comment(lib, "windowscodecs.lib")
 
 namespace jalium {
+
+void JaliumD3D12InitLog(const char* msg) {
+    if (!msg) return;
+    OutputDebugStringA(msg);
+    char* path = nullptr; size_t len = 0;
+    if (_dupenv_s(&path, &len, "JALIUM_INIT_LOG") == 0 && path && path[0]) {
+        FILE* f = nullptr;
+        if (fopen_s(&f, path, "a") == 0 && f) { fputs(msg, f); fclose(f); }
+    }
+    if (path) free(path);
+}
 
 namespace {
 bool IsWarpForced()
@@ -176,6 +188,52 @@ void D3D12Backend::ReleasePartialInit() {
     dxgiFactory_.Reset();
 }
 
+JaliumResult D3D12Backend::GetAdapterInfo(JaliumAdapterInfo* out) const {
+    if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *out = JaliumAdapterInfo{};
+    if (!adapterDescValid_) return JALIUM_ERROR_NOT_SUPPORTED;
+
+    // 名字：DXGI_ADAPTER_DESC1::Description 是 128 wide-char 定长缓冲；
+    // JaliumAdapterInfo::name 也是 wchar_t[128]，直接 wcsncpy_s 即可。
+    wcsncpy_s(out->name, _countof(out->name),
+              adapterDesc_.Description, _TRUNCATE);
+
+    // 类型分类：
+    //   - SOFTWARE flag → Software（WARP）
+    //   - Microsoft 厂商 + 零 VRAM → Software（Basic Render Driver 无 SOFTWARE flag 时的兜底）
+    //   - UMA（统一内存架构）→ Integrated（核显 / APU 与 CPU 共享系统内存）
+    //   - 否则 → Discrete
+    // 注意：不能用 DedicatedVideoMemory==0 判核显。AMD / Intel APU 的 BIOS 常划一块
+    // UMA carveout 当"专用显存"（512MB~2GB），DedicatedVideoMemory 非零，旧逻辑会把它
+    // 误判成 Discrete（实测 "AMD Radeon(TM) Graphics" APU 被标成 Discrete）。可靠信号是
+    // D3D12 的 D3D12_FEATURE_ARCHITECTURE1.UMA flag。
+    bool isSoftware = (adapterDesc_.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0
+                    || (adapterDesc_.VendorId == 0x1414 && adapterDesc_.DedicatedVideoMemory == 0);
+    if (isSoftware) {
+        out->adapterType = JALIUM_GPU_ADAPTER_TYPE_SOFTWARE;
+    } else {
+        // 先用 UMA flag 判定；CheckFeatureSupport 失败才回退到 DedicatedVideoMemory 启发式。
+        bool isIntegrated = (adapterDesc_.DedicatedVideoMemory == 0);
+        if (device_) {
+            D3D12_FEATURE_DATA_ARCHITECTURE1 arch = {};
+            arch.NodeIndex = 0;
+            if (SUCCEEDED(device_->CheckFeatureSupport(
+                    D3D12_FEATURE_ARCHITECTURE1, &arch, sizeof(arch)))) {
+                isIntegrated = (arch.UMA != FALSE);
+            }
+        }
+        out->adapterType = isIntegrated
+            ? JALIUM_GPU_ADAPTER_TYPE_INTEGRATED
+            : JALIUM_GPU_ADAPTER_TYPE_DISCRETE;
+    }
+
+    out->dedicatedVideoMemory = adapterDesc_.DedicatedVideoMemory;
+    out->sharedSystemMemory   = adapterDesc_.SharedSystemMemory;
+    out->vendorId             = adapterDesc_.VendorId;
+    out->deviceId             = adapterDesc_.DeviceId;
+    return JALIUM_OK;
+}
+
 JaliumResult D3D12Backend::CheckDeviceStatus() {
     if (!device_) return JALIUM_ERROR_DEVICE_LOST;
 
@@ -268,10 +326,25 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
             return false;
         }
 
-        return SUCCEEDED(D3D12CreateDevice(
+        if (!SUCCEEDED(D3D12CreateDevice(
             warpAdapter.Get(),
             D3D_FEATURE_LEVEL_11_0,
-            IID_PPV_ARGS(&device_)));
+            IID_PPV_ARGS(&device_)))) {
+            return false;
+        }
+
+        // WARP adapter exposes itself as IDXGIAdapter1 too — capture its desc so
+        // GetAdapterInfo can report "Microsoft Basic Render Driver / Software"
+        // (helps users notice they fell into WARP because driver / config is broken).
+        ComPtr<IDXGIAdapter1> warpAdapter1;
+        if (SUCCEEDED(warpAdapter.As(&warpAdapter1))) {
+            DXGI_ADAPTER_DESC1 desc{};
+            if (SUCCEEDED(warpAdapter1->GetDesc1(&desc))) {
+                adapterDesc_ = desc;
+                adapterDescValid_ = true;
+            }
+        }
+        return true;
     };
 
     auto tryCreateDeviceForAdapter = [this](IDXGIAdapter1* adapter) -> bool {
@@ -299,7 +372,17 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
                 adapter,
                 D3D_FEATURE_LEVEL_11_0,
                 IID_PPV_ARGS(&device_));
-        return SUCCEEDED(hrCreate);
+        if (!SUCCEEDED(hrCreate)) {
+            return false;
+        }
+
+        // Cache the adapter description for later GetAdapterInfo() queries —
+        // users see this in the IDE status bar, and it lets us prove which GPU
+        // actually got picked (vs. hoping DXGI HighPerformance preference did
+        // the right thing under hybrid graphics).
+        adapterDesc_ = desc;
+        adapterDescValid_ = true;
+        return true;
     };
 
     // Map JaliumGpuPreference to DXGI_GPU_PREFERENCE for adapter enumeration.
@@ -412,6 +495,30 @@ bool D3D12Backend::CreateD3D12Device(void* preferredWindow) {
     hr = device_->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&commandQueue_));
     if (FAILED(hr)) {
         return false;
+    }
+
+    // Init diagnostics — record exactly which adapter/device we ended up on and
+    // whether the UMA/architecture query succeeded, so a degraded init (WARP
+    // fallback, wrong adapter under hybrid graphics, failed UMA query) is visible
+    // in JALIUM_INIT_LOG without attaching a debugger.
+    {
+        D3D12_FEATURE_DATA_ARCHITECTURE1 arch = {};
+        arch.NodeIndex = 0;
+        bool umaOk = SUCCEEDED(device_->CheckFeatureSupport(
+            D3D12_FEATURE_ARCHITECTURE1, &arch, sizeof(arch)));
+        bool isWarp = (adapterDesc_.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) != 0
+                    || adapterDesc_.VendorId == 0x1414;
+        char buf[768];
+        sprintf_s(buf,
+            "[D3D12 init] device OK. adapter='%ls' vendor=0x%04X device=0x%04X "
+            "dedVRAM=%lluMB sharedMem=%lluMB WARP=%d archQueryOK=%d UMA=%d cacheCoherentUMA=%d "
+            "tileBased=%d cmdQueue=%d gpuPrefEnv=%d\n",
+            adapterDesc_.Description, adapterDesc_.VendorId, adapterDesc_.DeviceId,
+            (unsigned long long)(adapterDesc_.DedicatedVideoMemory / (1024ull * 1024ull)),
+            (unsigned long long)(adapterDesc_.SharedSystemMemory / (1024ull * 1024ull)),
+            isWarp ? 1 : 0, umaOk ? 1 : 0, arch.UMA ? 1 : 0, arch.CacheCoherentUMA ? 1 : 0,
+            arch.TileBasedRenderer ? 1 : 0, commandQueue_ ? 1 : 0, (int)gpuPrefFromEnv_);
+        JaliumD3D12InitLog(buf);
     }
 
     return true;

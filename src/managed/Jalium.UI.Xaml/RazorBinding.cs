@@ -88,6 +88,8 @@ internal static class RazorValueResolver
         return false;
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Calls RazorValueResolver.TryReadMember, whose RUC contract is the documented Razor opt-in: \"Razor binding falls back to reflection when no PropertyAccessor is registered for the source type. Register accessors via RazorExpressionRegistry.RegisterPropertyAccessor for AOT-safe usage.\" The same contract is declared upstream at the public Razor/XAML surface (XamlReader.Load is annotated RequiresUnreferencedCode, and the SG-emitted bindings reach this resolver only through the XamlBuilder.*Impl delegates whose ModuleInitializer registration carries IL2026). Reflection here is the path/member resolver for the runtime data source; preserving those members is the consumer's responsibility per that message.")]
     private static bool TryResolvePath(object? source, string path, out bool found, out object? value)
     {
         found = false;
@@ -476,6 +478,10 @@ internal static class RazorBindingEngine
     /// time so we skip the reflection walk in <see cref="RazorExpressionAnalyzer"/>.
     /// Mirrors the runtime <see cref="TryApplyRazorValue"/> path otherwise.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+        Justification = "GetProperty is invoked on the runtime type of the SG-lowered Razor binding target. The source is object.GetType() and cannot carry DynamicallyAccessedMembers. The target type is reachable from XAML and is preserved via XamlTypeRegistry / DAM annotations on the XAML surface; the public Razor/XAML entry point (XamlReader.Load) already declares the RequiresUnreferencedCode contract that covers this reflective property lookup, and these SG-emitted bindings reach here only through the XamlBuilder.*Impl delegates whose ModuleInitializer registration carries the IL2026 suppression.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Falls back to XamlReader.BuilderSetProperty, whose RUC message is \"XamlBuilder.SetProperty forwards to the runtime XamlReader.SetProperty path which uses reflection / type converters / markup extensions.\" That contract is already declared at the public XAML surface (XamlReader.Load is RequiresUnreferencedCode) and re-asserted by the XamlBuilder.SetPropertyImpl ModuleInitializer registration (IL2026 suppressed there). This forwarder is invoked only via the SG-emitted XamlBuilder.SetRazorBindingImpl delegate, never as an independent public API.")]
     internal static void ApplySgLoweredExpression(
         object target,
         string propertyName,
@@ -523,6 +529,8 @@ internal static class RazorBindingEngine
     /// SG-emitted <see cref="XamlBuilder.SetContentRazorBinding"/> calls for text-nodes like
     /// <c>&lt;TextBlock&gt;Count: @Items.Count&lt;/TextBlock&gt;</c>.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Calls ResolveContentPropertyName, whose RUC message is \"Reads ContentPropertyAttribute via reflection on the runtime type.\" Mirrors XamlReader's annotated content-property resolution (\"Reads ContentPropertyAttribute and the matching property via reflection on the runtime type.\"); the RUC contract is declared upstream at the public XAML/Razor surface (XamlReader.Load) and this forwarder is reached only through the SG-emitted XamlBuilder.SetContentRazorBindingImpl delegate whose ModuleInitializer registration carries IL2026.")]
     internal static void ApplySgLoweredContentExpression(
         object target,
         string expression,

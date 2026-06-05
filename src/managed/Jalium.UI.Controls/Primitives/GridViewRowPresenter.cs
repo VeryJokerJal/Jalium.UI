@@ -164,6 +164,8 @@ public class GridViewRowPresenter : FrameworkElement
         return null;
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:RequiresUnreferencedCode",
+        Justification = "Property-path resolution here implements GridViewColumn.DisplayMemberBinding (and the header-name fallback), the data-binding reflection fallback over a user-supplied data item whose concrete Type is only known at runtime via object.GetType(). Consumers that bind a GridView column to a property of a user-defined data type must keep that type's public instance properties preserved — the same documented prerequisite that applies to the data-binding surface under trimming/AOT — so this leaf is not a defect of this site.")]
     private static object? ResolvePropertyPath(object obj, string path)
     {
         var current = obj;

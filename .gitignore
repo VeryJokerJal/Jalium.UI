@@ -42,7 +42,7 @@ bld/
 
 # CMake build output
 build/
-build_x64/
+build_x64*/
 
 # Jalium temporary build/test artifacts
 .tmp-build/
@@ -394,4 +394,5 @@ samples/
 
 # Native build output
 src/native/build-*/
+src/native/build_*/
 src/native/out/

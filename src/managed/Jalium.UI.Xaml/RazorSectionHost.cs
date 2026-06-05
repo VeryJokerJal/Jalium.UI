@@ -43,6 +43,8 @@ public sealed class RazorSectionHost : ContentControl
             Content = null;
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "Only the runtime-preprocessor fallback reaches XamlReader.Parse, and that path runs solely for @section bodies that were loaded through the runtime XAML reader rather than the source generator. The RUC contract ('XAML loading uses XamlTypeRegistry types whose ctors / overrides may use reflection on user-supplied targets, and may invoke Razor reflection.') is already declared at the public XamlReader.Parse boundary; preserving those XamlTypeRegistry/Razor reflection targets is the documented prerequisite for using the runtime XAML reader under trimming, not a defect of this site. SG-compiled @section bodies take the factory branch above and never touch XamlReader.")]
     private void TryLoadSection()
     {
         var name = SectionName;

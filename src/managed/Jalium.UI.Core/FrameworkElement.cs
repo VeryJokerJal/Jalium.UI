@@ -984,7 +984,7 @@ public partial class FrameworkElement : UIElement
     {
         if (_visualBounds != bounds)
         {
-            InvalidateScreenOffsetCacheRecursive();
+            InvalidateScreenOffsetCache();
         }
 
         _visualBounds = bounds;
@@ -1138,9 +1138,15 @@ public partial class FrameworkElement : UIElement
             }
         }
 
-        // Pixel-snap the arranged origin so centered/animated children don't drift between
-        // fractional device pixels across frames. Keep the arranged size as computed.
-        _visualBounds = new Rect(SnapLayoutValue(x), SnapLayoutValue(y), renderSize.Width, renderSize.Height);
+        // Keep the arranged origin as continuous floating-point. Rounding here turns
+        // smooth animations (e.g. a spring oscillating margin by ±0.4px) into 1px
+        // step jitter because consecutive frames snap to different integer pixels.
+        // The renderer is responsible for sub-pixel positioning / AA — that's its
+        // job. Static layouts don't suffer from "drift" because the inputs to x/y
+        // don't actually drift when nothing is animating; this comment used to claim
+        // otherwise but the real defect it was masking was elsewhere.
+        // (WPF parity: layout rounding is opt-in via UseLayoutRounding, off by default.)
+        _visualBounds = new Rect(x, y, renderSize.Width, renderSize.Height);
 
         // Update _renderSize BEFORE firing SizeChanged so that handlers
         // reading ActualWidth/ActualHeight/RenderSize see the new values.
@@ -1188,13 +1194,7 @@ public partial class FrameworkElement : UIElement
     /// <inheritdoc />
     protected override HitTestResult? HitTestCore(Point point)
     {
-        // Check if point is within our visual bounds
-        if (!_visualBounds.Contains(point))
-        {
-            return null;
-        }
-
-        // Skip the entire subtree when the element is not visible or not hit-test visible.
+        // 整个子树的"接收输入"开关：Visibility 不可见或显式拒收 → 子和自己都不会被命中。
         if (Visibility != Visibility.Visible || !IsHitTestVisible)
         {
             return null;
@@ -1203,30 +1203,28 @@ public partial class FrameworkElement : UIElement
         // Transform point to local coordinates (relative to this element)
         var localPoint = new Point(point.X - _visualBounds.X, point.Y - _visualBounds.Y);
 
-        // Layout clip match: the renderer pushes GetLayoutClip() before drawing this
-        // element AND its children (see Visual.RenderDirect). Hit-testing must obey
-        // the same clip so input never lands on content that the user cannot see —
-        // e.g. a TextBox scrolled outside a ScrollViewer viewport whose VisualBounds
-        // still reach into a sibling title bar above. Without this the click would
-        // fall through to the invisible control and focus would jump unexpectedly.
+        // Layout clip 是真正的"硬遮罩"——渲染时父对自己 + children 都 PushClip(GetLayoutClip())，
+        // 视觉上看不见的内容就不该接收输入。典型场景：TextBox 被 ScrollViewer 滚出视口、
+        // 标题栏被 Clip 切掉一半。clip 之外的子也算被遮挡 → 整个子树 return null。
         if (!IsPointInsideLayoutClip(localPoint))
         {
             return null;
         }
 
-        int scannedChildren = 0;
-
-        // Check children in reverse order (top to bottom in z-order)
+        // ⚠ WPF 一致性关键：child 递归不受 self _visualBounds.Contains 约束。
+        // 子元素可以通过负 Margin、Canvas.Left/Top、RenderTransform(Scale/Translate) 自由
+        // 落到 self 名义 bounds 之外（典型：ZoomableCanvas 内 Canvas 名义 822×209，
+        // 缩放平移后视觉区域和 layout size 完全脱钩；积木 BlockItem 负下边距让末块底部
+        // 凸起落在父 StackPanel bounds 之外）。如果在这里用 `if (!_visualBounds.Contains
+        // (point)) return null;` 拦截，整个子树就被一刀切，深嵌套 / 重叠 / 平移的子完全
+        // 不可点。正确做法：先无条件递归 children，children 不命中再回头判定 self。
         for (int i = VisualChildrenCount - 1; i >= 0; i--)
         {
-            scannedChildren++;
             var child = GetVisualChild(i);
             if (child is FrameworkElement fe)
             {
-                // 若子有 RenderTransform，将 localPoint 反向变换到子的"原始"局部空间，
-                // 与渲染时父对子做 PushTransform(child.RenderTransform, originX, originY)
-                // 对偶。否则缩放/平移过的子（如 ZoomableCanvas 内部的 Canvas）的
-                // _visualBounds.Contains(point) 永远不命中，鼠标位置和可见控件错位。
+                // 子有 RenderTransform 则反向变换 localPoint 到子的"原始"局部空间，
+                // 与渲染时父对子做 PushTransform(child.RenderTransform, originX, originY) 对偶。
                 var pointForChild = localPoint;
                 var childTransform = fe.RenderTransform;
                 if (childTransform != null)
@@ -1234,7 +1232,6 @@ public partial class FrameworkElement : UIElement
                     var matrix = childTransform.Value;
                     if (matrix.TryInvert(out var inv))
                     {
-                        // Transform 围绕 (child._visualBounds.position + origin*RenderSize) 应用
                         var origin = fe.RenderTransformOrigin;
                         var size = fe.RenderSize;
                         var originAbsX = fe._visualBounds.X + origin.X * size.Width;
@@ -1246,7 +1243,7 @@ public partial class FrameworkElement : UIElement
                     }
                     else
                     {
-                        // 非可逆 transform (例如 ScaleTransform 0)，子整体不可见
+                        // 非可逆 transform（如 ScaleTransform 0）：子整体不可见，跳过。
                         continue;
                     }
                 }
@@ -1257,6 +1254,15 @@ public partial class FrameworkElement : UIElement
                     return childResult;
                 }
             }
+        }
+
+        // children 没命中 → 再判定 self：必须落在自己的 _visualBounds 内才算命中 self。
+        // 与 WPF 一致：self bounds 决定的是"是否命中 self"，不参与决定"能否递归 children"。
+        // Panel 等无 Background 控件还有第二层过滤 (Panel.HitTestCore override)，把"hit 自己
+        // 又无 Background"的情况进一步丢弃，让下层 z-order sibling 接住空白点击。
+        if (!_visualBounds.Contains(point))
+        {
+            return null;
         }
 
         return HitTestResult.GetReusable(this);
@@ -1479,6 +1485,19 @@ public partial class FrameworkElement : UIElement
             // re-evaluate so that closer-scope user-defined implicit styles take
             // precedence over theme styles.
             ReEvaluateImplicitStylesRecursive(this);
+
+            // Re-resolve dynamic resources for this entire subtree, for the SAME reason the
+            // implicit-style pass above runs: attaching to a visual parent widens the
+            // resource-lookup scope to include ancestor / application resources that were
+            // unreachable while the subtree was detached. A {DynamicResource} written inline
+            // as element content (e.g. <Path Stroke="{DynamicResource ...}">) is resolved
+            // only once, at construction time. If it resolved to null then — because
+            // Application.Current / its resources were not yet reachable at that instant —
+            // it would otherwise stay null forever (Shape.Stroke/Fill default to null, so
+            // the shape simply draws nothing), since nothing re-resolves inline dynamic
+            // resources on attach. This mirrors WPF, which re-evaluates resource references
+            // when the tree changes.
+            RefreshDynamicResourcesRecursive(this);
 
             // Recursively reactivate bindings on this element and ALL descendants,
             // because descendants may have bindings that depend on DataContext
@@ -1705,6 +1724,31 @@ public partial class FrameworkElement : UIElement
             if (child != null)
             {
                 ReEvaluateImplicitStylesRecursive(child);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Recursively re-resolves dynamic-resource references for the given subtree.
+    /// Companion to <see cref="ReEvaluateImplicitStylesRecursive"/>: when a subtree gains a
+    /// visual parent, its resource-lookup scope may now reach ancestor / application
+    /// resources that were unreachable before, so every dynamic-resource subscription that
+    /// previously resolved to null is retried. Cheap for elements without subscriptions
+    /// (a single dictionary probe) and idempotent for properties already resolved.
+    /// </summary>
+    private static void RefreshDynamicResourcesRecursive(Visual visual)
+    {
+        if (visual is FrameworkElement fe)
+        {
+            DynamicResourceBindingOperations.RefreshElement(fe);
+        }
+
+        for (int i = 0; i < visual.VisualChildrenCount; i++)
+        {
+            var child = visual.GetVisualChild(i);
+            if (child != null)
+            {
+                RefreshDynamicResourcesRecursive(child);
             }
         }
     }

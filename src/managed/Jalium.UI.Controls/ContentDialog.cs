@@ -134,6 +134,7 @@ public class ContentDialog : ContentControl
     private FrameworkElement? _titleHost;
     private FrameworkElement? _buttonPanel;
     private Border? _dialogCard;
+    private ScrollViewer? _contentScrollViewer;
     private Button? _primaryButton;
     private Button? _secondaryButton;
     private Button? _closeButton;
@@ -465,6 +466,7 @@ public class ContentDialog : ContentControl
         _titleHost = GetTemplateChild("PART_TitleHost") as FrameworkElement;
         _buttonPanel = GetTemplateChild("PART_ButtonPanel") as FrameworkElement;
         _dialogCard = GetTemplateChild("PART_DialogCard") as Border;
+        _contentScrollViewer = GetTemplateChild("PART_ContentScrollViewer") as ScrollViewer;
         _primaryButton = GetTemplateChild("PART_PrimaryButton") as Button;
         _secondaryButton = GetTemplateChild("PART_SecondaryButton") as Button;
         _closeButton = GetTemplateChild("PART_CloseButton") as Button;
@@ -985,6 +987,23 @@ public class ContentDialog : ContentControl
             _dialogCard.MaxHeight = ClampMaximumToAvailable(MaxHeight, availableCardHeight);
         }
 
+        // 内容滚动区封顶：把 PART_ContentScrollViewer 的 MaxHeight 限到"可用窗口高 − 标题/按钮/内边距"。
+        // 这样任意高内容（如分类很多的设置面板、长列表）在对话框内滚动，而不会把卡片撑出屏幕；
+        // 内容不超高时该 MaxHeight 触不到，卡片照旧贴合内容（短对话框依旧紧凑、不留空白）。
+        // 不直接给 Card 设 MaxHeight —— 那会让 Card 的 '*' 内容行被有限高填满、反而对短内容留白（既有注释所述）。
+        if (_contentScrollViewer != null)
+        {
+            if (double.IsInfinity(availableCardHeight) || availableCardHeight <= 0)
+            {
+                _contentScrollViewer.MaxHeight = double.PositiveInfinity;
+            }
+            else
+            {
+                var chrome = (_titleHost?.ActualHeight ?? 0) + (_buttonPanel?.ActualHeight ?? 0) + 56;
+                _contentScrollViewer.MaxHeight = Math.Max(160, availableCardHeight - chrome);
+            }
+        }
+
         _dialogCard.ClipToBounds = true;
     }
 
@@ -1007,12 +1026,29 @@ public class ContentDialog : ContentControl
 
     private Size ResolveViewportSize()
     {
-        var width = ActualWidth > 0
-            ? ActualWidth
-            : _popupHost?.Width ?? (_hostWindow?.ActualWidth > 0 ? _hostWindow.ActualWidth : _hostWindow?.Width ?? 0);
-        var height = ActualHeight > 0
-            ? ActualHeight
-            : _popupHost?.Height ?? (_hostWindow?.ActualHeight > 0 ? _hostWindow.ActualHeight : _hostWindow?.Height ?? 0);
+        // 模态弹层（有 _popupHost）：viewport 取"宿主窗口实际尺寸"——它在窗口 resize 时始终是最新的。
+        // 不能优先用 this.ActualWidth/Height：对话框自身的 ActualSize 在 resize 期间滞后一帧（要等下一轮
+        // Arrange 才更新），会导致"窗口放大后对话框尺寸/内容封顶不刷新"。
+        // InPlace（无 _popupHost）：viewport 取自身实际尺寸（它就嵌在某个区域里，不该用整窗）。
+        double width, height;
+        if (_popupHost != null)
+        {
+            width = _hostWindow?.ActualWidth > 0
+                ? _hostWindow.ActualWidth
+                : (_popupHost.Width > 0 ? _popupHost.Width : (_hostWindow?.Width ?? 0));
+            height = _hostWindow?.ActualHeight > 0
+                ? _hostWindow.ActualHeight
+                : (_popupHost.Height > 0 ? _popupHost.Height : (_hostWindow?.Height ?? 0));
+        }
+        else
+        {
+            width = ActualWidth > 0
+                ? ActualWidth
+                : (_hostWindow?.ActualWidth > 0 ? _hostWindow.ActualWidth : _hostWindow?.Width ?? 0);
+            height = ActualHeight > 0
+                ? ActualHeight
+                : (_hostWindow?.ActualHeight > 0 ? _hostWindow.ActualHeight : _hostWindow?.Height ?? 0);
+        }
 
         return new Size(Math.Max(0, width), Math.Max(0, height));
     }

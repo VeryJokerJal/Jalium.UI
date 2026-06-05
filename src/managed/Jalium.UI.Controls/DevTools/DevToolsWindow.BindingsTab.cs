@@ -54,31 +54,23 @@ public partial class DevToolsWindow
         Grid.SetRow(toolbarBar, 0);
         root.Children.Add(toolbarBar);
 
+        // ── Overview section: framed as an instrument Panel. The same
+        //    _bindingsOverviewPanel instance is re-parented into the Panel body
+        //    (via its ScrollViewer); refresh logic still clears/appends to it.
         _bindingsOverviewPanel = new StackPanel();
         var overviewScroll = new ScrollViewer { Content = _bindingsOverviewPanel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var overviewCard = new Border
-        {
-            Background = DevToolsTheme.SurfaceAlt,
-            BorderBrush = DevToolsTheme.BorderSubtle,
-            BorderThickness = DevToolsTheme.ThicknessHairline,
-            Margin = new Thickness(DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterSm),
-            Child = overviewScroll,
-            ClipToBounds = true,
-        };
-        Grid.SetRow(overviewCard, 1);
-        root.Children.Add(overviewCard);
+        var overviewPanel = DevToolsUi.Panel("ACTIVE BINDINGS · SELECTED ELEMENT", overviewScroll, DevToolsTheme.Accent);
+        overviewPanel.Margin = new Thickness(DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase, DevToolsTheme.GutterSm);
+        Grid.SetRow(overviewPanel, 1);
+        root.Children.Add(overviewPanel);
 
+        // ── Event log section: framed as a Card. The count header (Eyebrow +
+        //    Pill) is built inside _bindingsEventsPanel by RefreshBindingsEvents
+        //    because the live count changes every refresh (Panel has no pill slot).
         _bindingsEventsPanel = new StackPanel();
         var eventsScroll = new ScrollViewer { Content = _bindingsEventsPanel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
-        var eventsCard = new Border
-        {
-            Background = DevToolsTheme.Chrome,
-            BorderBrush = DevToolsTheme.BorderSubtle,
-            BorderThickness = DevToolsTheme.ThicknessHairline,
-            Margin = new Thickness(DevToolsTheme.GutterBase, 0, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase),
-            Child = eventsScroll,
-            ClipToBounds = true,
-        };
+        var eventsCard = DevToolsUi.Card(eventsScroll);
+        eventsCard.Margin = new Thickness(DevToolsTheme.GutterBase, 0, DevToolsTheme.GutterBase, DevToolsTheme.GutterBase);
         Grid.SetRow(eventsCard, 2);
         root.Children.Add(eventsCard);
 
@@ -135,26 +127,23 @@ public partial class DevToolsWindow
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "EnumerateDependencyProperties walks the inheritance chain reflecting over DependencyProperty static fields, as its own RequiresUnreferencedCode message documents. DevTools is an opt-in developer/inspector control; preserving the DependencyProperty static fields of inspected types under trimming/AOT is the documented consumer responsibility for using the DevTools Bindings tab, not a defect of this site.")]
     private void RefreshBindingsOverview()
     {
         if (_bindingsOverviewPanel == null) return;
         _bindingsOverviewPanel.Children.Clear();
 
-        var titleRow = new TextBlock
-        {
-            Text = "ACTIVE BINDINGS · SELECTED ELEMENT",
-            FontSize = DevToolsTheme.FontXS,
-            FontFamily = DevToolsTheme.UiFont,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = DevToolsTheme.TextMuted,
-            Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
-        };
-        _bindingsOverviewPanel.Children.Add(titleRow);
-
+        // The section title + divider are now provided by the enclosing
+        // DevToolsUi.Panel("ACTIVE BINDINGS · SELECTED ELEMENT", ...), so the
+        // overview content starts directly with the binding cards or an
+        // empty-state caption.
         if (_selectedVisual is not FrameworkElement fe)
         {
             var empty = DevToolsUi.Muted("Select a FrameworkElement in the Inspector to see its bindings.");
-            empty.Margin = new Thickness(DevToolsTheme.GutterLg, 0, DevToolsTheme.GutterLg, DevToolsTheme.GutterBase);
+            empty.HorizontalAlignment = HorizontalAlignment.Center;
+            empty.TextAlignment = TextAlignment.Center;
+            empty.Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterBase);
             _bindingsOverviewPanel.Children.Add(empty);
             return;
         }
@@ -172,6 +161,8 @@ public partial class DevToolsWindow
         if (shown == 0)
         {
             var empty = DevToolsUi.Muted("(no active bindings on selected element)");
+            empty.HorizontalAlignment = HorizontalAlignment.Center;
+            empty.TextAlignment = TextAlignment.Center;
             empty.Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterSm, DevToolsTheme.GutterLg, DevToolsTheme.GutterBase);
             _bindingsOverviewPanel.Children.Add(empty);
         }
@@ -361,7 +352,7 @@ public partial class DevToolsWindow
         panel.Children.Add(new TextBlock
         {
             Text = glyph,
-            FontSize = 20,
+            FontSize = DevToolsTheme.Font2XL,
             FontFamily = DevToolsTheme.UiFont,
             Foreground = accent,
             HorizontalAlignment = HorizontalAlignment.Center,
@@ -429,30 +420,79 @@ public partial class DevToolsWindow
         _bindingsEventsPanel.Children.Clear();
         var entries = BindingDiagnostics.Snapshot();
 
-        var header = new TextBlock
+        // Count header: "EVENT LOG" eyebrow + live-count pill (Panel has no pill
+        // slot, so the header is built here and the count stays visible).
+        var header = new StackPanel
         {
-            Text = $"EVENT LOG · {entries.Count}",
-            FontSize = DevToolsTheme.FontXS,
-            FontFamily = DevToolsTheme.UiFont,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = DevToolsTheme.TextMuted,
-            Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
+            Orientation = Orientation.Horizontal,
+            Margin = new Thickness(DevToolsTheme.GutterLg, 0, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
         };
+        header.Children.Add(DevToolsUi.Eyebrow("EVENT LOG"));
+        header.Children.Add(DevToolsUi.Pill(
+            entries.Count.ToString(),
+            entries.Count > 0 ? DevToolsTheme.Accent : DevToolsTheme.TextSecondary));
         _bindingsEventsPanel.Children.Add(header);
 
         if (entries.Count == 0)
         {
             var empty = DevToolsUi.Muted("No binding events yet. Start recording and interact with bound controls.");
-            empty.Margin = new Thickness(DevToolsTheme.GutterLg, 0, DevToolsTheme.GutterLg, DevToolsTheme.GutterLg);
+            empty.HorizontalAlignment = HorizontalAlignment.Center;
+            empty.TextAlignment = TextAlignment.Center;
+            empty.Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterLg);
             _bindingsEventsPanel.Children.Add(empty);
             return;
         }
+
+        // Column-caption header row mirroring BuildBindingEventRow's 5-column grid
+        // (TIME / KIND / TARGET / arrow / SOURCE), with a hairline beneath it.
+        _bindingsEventsPanel.Children.Add(BuildBindingEventColumnHeader());
+        _bindingsEventsPanel.Children.Add(new Border
+        {
+            Height = 1,
+            Background = DevToolsTheme.BorderSubtle,
+            Margin = new Thickness(DevToolsTheme.GutterBase, 0, DevToolsTheme.GutterBase, DevToolsTheme.GutterXS),
+        });
 
         int show = Math.Min(entries.Count, 120);
         for (int i = entries.Count - 1; i >= entries.Count - show; i--)
         {
             _bindingsEventsPanel.Children.Add(BuildBindingEventRow(entries[i]));
         }
+    }
+
+    // Column captions for the event log, mirroring the 5-column layout of
+    // BuildBindingEventRow so the TIME / KIND / TARGET / SOURCE headers sit
+    // directly above their data. The horizontal inset matches a data row's
+    // outer margin + accent border + inner padding so columns line up.
+    private static UIElement BuildBindingEventColumnHeader()
+    {
+        var grid = new Grid
+        {
+            Margin = new Thickness(
+                DevToolsTheme.GutterBase + 2 + DevToolsTheme.GutterLg,
+                DevToolsTheme.GutterXS,
+                DevToolsTheme.GutterBase + DevToolsTheme.GutterLg,
+                DevToolsTheme.GutterXS),
+        };
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(90) });       // timestamp
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(110) });      // kind pill
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // target
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });          // arrow
+        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) }); // source
+
+        var time = DevToolsUi.Eyebrow("TIME");
+        var kind = DevToolsUi.Eyebrow("KIND");
+        var target = DevToolsUi.Eyebrow("TARGET");
+        var source = DevToolsUi.Eyebrow("SOURCE");
+        Grid.SetColumn(time, 0);
+        Grid.SetColumn(kind, 1);
+        Grid.SetColumn(target, 2);
+        Grid.SetColumn(source, 4);
+        grid.Children.Add(time);
+        grid.Children.Add(kind);
+        grid.Children.Add(target);
+        grid.Children.Add(source);
+        return grid;
     }
 
     private static UIElement BuildBindingEventRow(BindingDiagnostics.BindingEventEntry entry)

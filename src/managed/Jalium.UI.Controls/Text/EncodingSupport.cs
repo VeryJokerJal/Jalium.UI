@@ -25,6 +25,8 @@ internal static class EncodingSupport
     /// first loaded.
     /// </summary>
     [ModuleInitializer]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Usage", "CA2255:The 'ModuleInitializer' attribute should not be used in libraries",
+        Justification = "The encoding provider must be registered before any control touches Encoding.GetEncoding for a legacy code page; a module initializer is the only place that reliably runs ahead of all consumer code, and registration is idempotent and order-independent.")]
     internal static void Register()
     {
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);

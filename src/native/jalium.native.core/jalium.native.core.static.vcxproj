@@ -90,6 +90,7 @@
     <ClInclude Include="include\jalium_bitmap_stats.h" />
     <ClInclude Include="include\jalium_text_options.h" />
     <ClInclude Include="include\jalium_video_surface.h" />
+    <ClInclude Include="include\jalium_text_stats.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\context.cpp" />
@@ -103,6 +104,7 @@
     <ClCompile Include="src\jalium_bitmap_stats.cpp" />
     <ClCompile Include="src\jalium_text_options.cpp" />
     <ClCompile Include="src\video_surface.cpp" />
+    <ClCompile Include="src\jalium_text_stats.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets" />

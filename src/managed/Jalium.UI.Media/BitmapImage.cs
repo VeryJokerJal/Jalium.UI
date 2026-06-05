@@ -329,7 +329,9 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
 
             if (dispatcher != null)
             {
-                dispatcher.BeginInvoke(() => LoadFromBytes(bytes));
+                // Fire-and-forget marshal back to the UI thread; BeginInvoke now returns a
+                // DispatcherOperation (awaitable), so discard it to signal intentional no-await.
+                _ = dispatcher.BeginInvoke(() => LoadFromBytes(bytes));
             }
             else
             {

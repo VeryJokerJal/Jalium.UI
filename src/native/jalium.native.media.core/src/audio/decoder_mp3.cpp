@@ -15,7 +15,6 @@
 #endif
 #include "minimp3_ex.h"
 
-#define JALIUM_MEDIA_EXPORTS
 #include "jalium_audio.h"
 #include "audio_internal.h"
 

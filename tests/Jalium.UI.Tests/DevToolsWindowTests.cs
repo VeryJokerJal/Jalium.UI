@@ -3,6 +3,7 @@ using Jalium.UI;
 using Jalium.UI.Controls;
 using Jalium.UI.Controls.DevTools;
 using Jalium.UI.Controls.Themes;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI.Tests;
 
@@ -172,6 +173,101 @@ public class DevToolsWindowTests
         }
     }
 
+    [Fact]
+    public void CloseDevTools_ShouldStopOverlayHighlightAnimation()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var button = new Button { Content = "Inspect me" };
+            var host = new Window
+            {
+                Title = "Host",
+                Content = button
+            };
+
+            var devTools = new DevToolsWindow(host);
+
+            // The overlay is created by the DevToolsWindow ctor and published on the
+            // target window. Capture it now — CloseDevTools nulls the field.
+            var overlay = host.DevToolsOverlay;
+            Assert.NotNull(overlay);
+
+            // Highlighting starts the per-frame highlight animation. Its 1ms
+            // DispatcherTimer piggybacks on the static CompositionTarget.Rendering
+            // event — the root that otherwise keeps an orphaned overlay (and the
+            // target window + element subtree) alive and repainting every frame.
+            overlay!.HighlightElement(button);
+
+            var animationTimer = GetPrivateField<DispatcherTimer>(overlay, "_animationTimer");
+            Assert.True(animationTimer.IsEnabled);
+            Assert.True(
+                RenderingHasSubscriberTarget(animationTimer),
+                "Highlight animation timer should be subscribed to CompositionTarget.Rendering while highlighting.");
+
+            // Act: close DevTools via the public API. Before the fix this nulled the
+            // overlay references without stopping the animation, leaking the timer.
+            devTools.CloseDevTools();
+
+            // The animation must be fully torn down: timer unsubscribed from the
+            // static frame event (GC root released, repaints stop) and overlay
+            // state cleared.
+            Assert.False(
+                RenderingHasSubscriberTarget(animationTimer),
+                "CloseDevTools must unsubscribe the overlay animation timer from CompositionTarget.Rendering.");
+            Assert.False(animationTimer.IsEnabled);
+            Assert.Null(GetPrivateFieldOrNull(overlay, "_animationTimer"));
+            Assert.Null(GetPrivateFieldOrNull(overlay, "_highlightedElement"));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
+    [Fact]
+    public void OnDevToolsClosing_ShouldStopOverlayHighlightAnimation()
+    {
+        ResetApplicationState();
+        var app = new Application();
+
+        try
+        {
+            var button = new Button { Content = "Inspect me" };
+            var host = new Window
+            {
+                Title = "Host",
+                Content = button
+            };
+
+            var devTools = new DevToolsWindow(host);
+            var overlay = host.DevToolsOverlay;
+            Assert.NotNull(overlay);
+
+            overlay!.HighlightElement(button);
+            var animationTimer = GetPrivateField<DispatcherTimer>(overlay, "_animationTimer");
+            Assert.True(RenderingHasSubscriberTarget(animationTimer));
+
+            // Act: drive the Closing handler directly. This is the close-via-OS
+            // (window X button) route, which fires Closing without ever going
+            // through CloseDevTools, so it must independently stop the animation.
+            InvokePrivate(devTools, "OnDevToolsClosing", null, EventArgs.Empty);
+
+            Assert.False(
+                RenderingHasSubscriberTarget(animationTimer),
+                "OnDevToolsClosing must unsubscribe the overlay animation timer from CompositionTarget.Rendering.");
+            Assert.False(animationTimer.IsEnabled);
+            Assert.Null(GetPrivateFieldOrNull(overlay, "_animationTimer"));
+            Assert.Null(GetPrivateFieldOrNull(overlay, "_highlightedElement"));
+        }
+        finally
+        {
+            ResetApplicationState();
+        }
+    }
+
     private static T GetPrivateField<T>(object instance, string fieldName) where T : class
     {
         var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
@@ -188,10 +284,38 @@ public class DevToolsWindowTests
         return value!;
     }
 
+    private static object? GetPrivateFieldOrNull(object instance, string fieldName)
+    {
+        var field = instance.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        return field!.GetValue(instance);
+    }
+
     private static void InvokePrivate(object instance, string methodName, params object?[]? args)
     {
         var method = instance.GetType().GetMethod(methodName, BindingFlags.Instance | BindingFlags.NonPublic);
         Assert.NotNull(method);
         method!.Invoke(instance, args);
+    }
+
+    /// <summary>
+    /// Returns true if any handler currently subscribed to the static
+    /// <see cref="CompositionTarget.Rendering"/> event is bound to
+    /// <paramref name="target"/>. Used to assert that the overlay's animation
+    /// <see cref="DispatcherTimer"/> is (or, after teardown, is no longer) rooted
+    /// by the centralized frame event.
+    /// </summary>
+    private static bool RenderingHasSubscriberTarget(object target)
+    {
+        var field = typeof(CompositionTarget).GetField("Rendering",
+            BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(field);
+
+        if (field!.GetValue(null) is not Delegate handlers)
+        {
+            return false;
+        }
+
+        return handlers.GetInvocationList().Any(d => ReferenceEquals(d.Target, target));
     }
 }

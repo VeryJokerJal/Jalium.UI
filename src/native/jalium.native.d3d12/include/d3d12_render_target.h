@@ -33,6 +33,22 @@ public:
     /// Override: report glyph atlas / path cache / texture usage for DevTools.
     JaliumResult QueryGpuStats(JaliumGpuStats* out) const override;
 
+    /// Override: hardware-timestamp GPU breakdown for the previous frame.
+    JaliumResult QueryGpuTiming(JaliumGpuTimingStats* out) const override;
+
+    /// Override: return the swap-chain frame-latency waitable HANDLE as
+    /// intptr_t. Returns 0 when the swap chain was created without the
+    /// FRAME_LATENCY_WAITABLE_OBJECT flag (older runtimes).
+    intptr_t GetFrameLatencyWaitable() const override {
+        return reinterpret_cast<intptr_t>(frameLatencyWaitable_);
+    }
+
+    /// Override: report current swap chain present configuration (SwapEffect /
+    /// tearing / frame-latency waitable / max latency / composition). Lets the
+    /// host show "D3D12 FLIP-tearing-1f" in status bars and immediately notice
+    /// if driver stripped optional flags during swap chain creation.
+    JaliumResult GetPresentInfo(JaliumPresentInfo* out) const override;
+
     /// Override: drop the D3D12 glyph atlas at the next BeginFrame boundary.
     /// We deliberately do NOT call `D3D12GlyphAtlas::Reset()` directly here —
     /// glyph entries already emitted earlier in the frame carry baked UV
@@ -97,6 +113,7 @@ public:
     void PopOpacity() override;
     void SetShapeType(int type, float n) override;
     void SetVSyncEnabled(bool enabled) override;
+    void SetPathMsaaSampleCount(uint32_t sampleCount) override;
     void SetDpi(float dpiX, float dpiY) override;
     void AddDirtyRect(float x, float y, float w, float h) override;
     void SetFullInvalidation() override;
@@ -121,6 +138,14 @@ public:
         BlitInkLayer(reinterpret_cast<D3D12InkLayerBitmap*>(inkLayerBitmap),
                      dstX, dstY, opacity);
     }
+
+    /// --- Retained GPU layers (forward to the direct renderer) ---
+    bool  SupportsRetainedLayers() const override;
+    void* RealizeLayerBegin(void* existingLayer, float x, float y, float w, float h) override;
+    void  RealizeLayerEnd(void* layer) override;
+    void  CompositeLayer(void* layer, float x, float y, float w, float h, float opacity) override;
+    void  DestroyRetainedLayer(void* layer) override;
+
     void DrawBackdropFilter(
         float x, float y, float w, float h,
         const char* backdropFilter, const char* material, const char* materialTint,
@@ -182,6 +207,10 @@ public:
         float r, float g, float b, float a,
         float uvOffsetX = 0, float uvOffsetY = 0,
         float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0) override;
+    void DrawOuterGlowEffect(float x, float y, float w, float h,
+        float glowSize, float r, float g, float b, float a, float intensity,
+        float uvOffsetX, float uvOffsetY,
+        float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
     void DrawColorMatrixEffect(float x, float y, float w, float h,
         const float* matrix) override;
     void DrawEmbossEffect(float x, float y, float w, float h,
@@ -189,6 +218,12 @@ public:
     void DrawShaderEffect(float x, float y, float w, float h,
         const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
         const float* constants, uint32_t constantFloatCount) override;
+    // HLSL-source custom shader: compile the source to DXBC at runtime
+    // (D3DCompile, cached by source hash) and reuse the DXBC DrawShaderEffect
+    // path. Mirrors the Vulkan backend's DXC path so one authored SM6 HLSL drives
+    // both backends.
+    void DrawShaderEffectFromSource(float x, float y, float w, float h,
+        const char* hlslSource, const float* constants, uint32_t constantFloatCount) override;
 
 private:
     // 编译期上限：仅用于定长数组(fenceValues_)与不变循环边界。运行期实际
@@ -202,16 +237,56 @@ private:
     static constexpr uint32_t kDefaultSwapBufferCount = 2;
     uint32_t swapBufferCount_ = kDefaultSwapBufferCount;
 
+    // SetMaximumFrameLatency 的值。独显=1(最低延迟)；核显(UMA)=2(给 CPU 一帧余量，
+    // 吸收 DWM 窗口合成的 back-buffer 释放抖动)。在 CreateSwapChain() 按 adapter 定一次。
+    uint32_t maxFrameLatency_ = 1;
+
+    // 是否核显(UMA)。仅用于诊断/标签。
+    bool isIntegratedAdapter_ = false;
+
     bool CreateSwapChain();
     void WaitForAllFrames();
 
     // Flush pending Vello paths before non-Vello draws to maintain correct Z-order.
-    // Call this before any non-path draw (FillRect, DrawText, DrawBitmap, etc.).
+    // Also commits any deferred clip / transform pushes so the upcoming draw
+    // observes the correct scissor and transform stacks. Call this before any
+    // non-path draw (FillRect, DrawText, DrawBitmap, etc.).
     void FlushVelloIfNeeded();
 
     // Flush Impeller tessellated batches into DirectRenderer's triangle pipeline.
     // Called after each Impeller path encode to maintain correct Z-order.
     void FlushImpellerBatches();
+
+    // ── Deferred clip + transform state ──────────────────────────────────
+    // PushClip / PushTransform are extremely common (thousands per frame in
+    // tree-traversal rendering) and most of them are followed by a Pop with
+    // no actual draw in between (control templates that conditionally route
+    // through an empty branch, transform-then-untransform helpers, etc.).
+    // Eagerly pushing each one onto DirectRenderer's scissor / transform
+    // stack burns CPU on scissor-rect rebuilds and forces SyncScissorToImpeller
+    // to copy the scissor across engines for nothing.
+    //
+    // Instead we record each push into pendingStateOps_ and only commit it
+    // to DirectRenderer at the first real draw (CommitDeferredState, invoked
+    // from FlushVelloIfNeeded and from each path emit). A Pop that matches
+    // the most recent pending push is collapsed in place — peephole
+    // elimination of empty push/pop pairs costs zero state-machine churn.
+    enum class DeferredOpKind : uint8_t {
+        Transform,                // 6-float matrix
+        ClipAxisAligned,          // (x, y, w, h)
+        ClipAxisAlignedAliased,   // (x, y, w, h)
+        ClipRoundedRect,          // (x, y, w, h, rx, ry)
+        ClipPerCornerRounded,     // (x, y, w, h, tl, tr, br, bl)
+        Opacity,                  // single float
+    };
+    struct DeferredStateOp {
+        DeferredOpKind kind;
+        float data[8];            // discriminated payload
+    };
+    std::vector<DeferredStateOp> pendingStateOps_;
+    bool IdentityMatrixSkip(const float* m);
+    void CommitDeferredState();
+    void EmitDeferredOp(const DeferredStateOp& op);
 
     // Brush → SdfRectInstance helpers
     bool FillBrushToInstance(Brush* brush, SdfRectInstance& inst);
@@ -263,6 +338,27 @@ private:
     // Actual swap chain creation flags (tracked for correct ResizeBuffers calls)
     UINT swapChainCreationFlags_ = 0;
 
+    // Frame-latency waitable handle. Owned by the swap chain; we use it to
+    // block in BeginFrame until the back buffer is genuinely ready, instead
+    // of polling the fence with a 50 ms timeout. Set during CreateSwapChain
+    // when FRAME_LATENCY_WAITABLE_OBJECT was requested; reset on Resize and
+    // closed in the destructor. nullptr means "feature unavailable" — the
+    // BeginFrame path still works through the fence wait fallback.
+    HANDLE frameLatencyWaitable_ = nullptr;
+
+    // Frame-pacing: waitable wait time, accumulated across every BeginDraw
+    // attempt for one logical frame and flushed when the first successful
+    // BeginDraw of that frame returns. Mirrors the fence-wait accumulator
+    // on D3D12DirectRenderer but lives here because the waitable wait
+    // happens in D3D12RenderTarget::BeginDraw, before the renderer is
+    // invoked. Cleared on Resize.
+    mutable uint64_t accumulatingWaitableWaitNs_ = 0;
+    mutable uint64_t lastFrameWaitableWaitNs_ = 0;
+    // Note: the public IRenderBackend override GetFrameLatencyWaitable() returns
+    // the same HANDLE cast to intptr_t at the top of the class. No additional
+    // typed accessor needed — D3D12DirectRenderer reads frameLatencyWaitable_
+    // directly through friendship-equivalent (lives in the same translation unit).
+
     // DirectComposition resources (used when isComposition_ == true)
     ComPtr<IDCompositionDevice> dcompDevice_;
     ComPtr<IDCompositionTarget> dcompTarget_;
@@ -306,6 +402,10 @@ private:
 
     // Pre-glass snapshot flag for fused liquid glass panels
     bool preGlassSnapshotCaptured_ = false;
+
+    // Runtime-compiled custom shader effect bytecode, keyed by FNV-1a hash of the
+    // HLSL source so a repeated DrawShaderEffectFromSource skips re-compilation.
+    std::unordered_map<uint64_t, ComPtr<ID3DBlob>> customShaderHlslCache_;
 
     // sRGB to linear conversion for Clear() color values
     static float SrgbToLinear(float s) {

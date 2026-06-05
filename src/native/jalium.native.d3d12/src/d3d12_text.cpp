@@ -1,4 +1,5 @@
 #include "d3d12_resources.h"
+#include "jalium_text_stats.h"
 
 namespace jalium {
 
@@ -148,8 +149,7 @@ void D3D12TextFormat::SetMaxLines(uint32_t maxLines) {
 }
 
 uint64_t D3D12TextFormat::HashLayoutKey(
-    const wchar_t* text, uint32_t textLength,
-    float maxWidth, float maxHeight) const noexcept
+    const wchar_t* text, uint32_t textLength) const noexcept
 {
     uint64_t h = 0xCBF29CE484222325ull;  // FNV-1a 64-bit
     auto mix = [&h](const void* p, size_t n) {
@@ -159,8 +159,6 @@ uint64_t D3D12TextFormat::HashLayoutKey(
     mix(&textLength, sizeof(textLength));
     if (text && textLength)
         mix(text, static_cast<size_t>(textLength) * sizeof(wchar_t));
-    mix(&maxWidth, sizeof(maxWidth));
-    mix(&maxHeight, sizeof(maxHeight));
     mix(&maxLines_, sizeof(maxLines_));
     return h;
 }
@@ -169,6 +167,49 @@ void D3D12TextFormat::InvalidateLayoutCache() noexcept
 {
     layoutMap_.clear();
     layoutLru_.clear();
+}
+
+void D3D12TextFormat::ApplyMaxLinesClamp(IDWriteTextLayout* layout) const noexcept
+{
+    if (!layout || maxLines_ == 0) return;
+    // DirectWrite doesn't have a SetMaxLines API. Approximate by constraining
+    // max height to lineHeight * maxLines, so the layout clips at that boundary.
+    DWRITE_TEXT_METRICS tm = {};
+    if (SUCCEEDED(layout->GetMetrics(&tm)) && tm.lineCount > maxLines_) {
+        std::vector<DWRITE_LINE_METRICS> lineMetrics(tm.lineCount);
+        uint32_t actualLines = 0;
+        if (SUCCEEDED(layout->GetLineMetrics(lineMetrics.data(), tm.lineCount, &actualLines))) {
+            float totalH = 0;
+            for (uint32_t i = 0; i < maxLines_ && i < actualLines; ++i) {
+                totalH += lineMetrics[i].height;
+            }
+            // Clamp the height in place rather than recreating the layout —
+            // SetMaxHeight only re-runs layout pass 2 (line breaking),
+            // skipping the heavy text-analysis / shaping work.
+            layout->SetMaxHeight(totalH);
+        }
+    }
+}
+
+// Cache hit/miss/eviction telemetry has moved to the unified core atomics
+// (jalium::text_stats — see jalium_text_stats.h). The legacy
+// QueryLayoutCache* statics now read directly from there so any caller that
+// still pokes them keeps working; new code should query the unified C ABI
+// jalium_query_text_stats which also exposes instance / glyph-raster caches.
+uint64_t D3D12TextFormat::QueryLayoutCacheHits() noexcept {
+    JaliumTextStats s{};
+    jalium_query_text_stats(&s);
+    return s.layoutHits;
+}
+uint64_t D3D12TextFormat::QueryLayoutCacheMisses() noexcept {
+    JaliumTextStats s{};
+    jalium_query_text_stats(&s);
+    return s.layoutMisses;
+}
+uint64_t D3D12TextFormat::QueryLayoutCacheEvictions() noexcept {
+    JaliumTextStats s{};
+    jalium_query_text_stats(&s);
+    return s.layoutEvictions;
 }
 
 HRESULT D3D12TextFormat::CreateLayout(
@@ -182,52 +223,59 @@ HRESULT D3D12TextFormat::CreateLayout(
     *layout = nullptr;
     if (!factory_ || !format_) return E_FAIL;
 
-    const uint64_t key = HashLayoutKey(text, textLength, maxWidth, maxHeight);
+    // Two-tier key design:
+    //   - `key` (text + maxLines only) drives the physical layoutMap_ cache.
+    //     SetMaxWidth/SetMaxHeight can replay the cached shaped layout against
+    //     any new dimensions without re-running DirectWrite's heavy text
+    //     analysis + glyph shaping, so width/height fluctuations no longer
+    //     thrash the layout cache.
+    //   - `outKey` (text + maxLines + width + height + format identity) drives
+    //     the glyph-INSTANCE cache one tier above, where positioned glyph
+    //     quads do depend on the layout dimensions — different maxWidth can
+    //     produce different wrap points, so that cache MUST miss on width
+    //     changes even though the layout cache hit.
+    const uint64_t key = HashLayoutKey(text, textLength);
     if (outKey) {
-        // Globally-unique key for the atlas glyph memo: the per-format layout
-        // key disambiguated by THIS format object (different font/size/weight
-        // ⇒ different glyphs for identical text/constraints).
         uint64_t gk = key;
         gk ^= (uint64_t)reinterpret_cast<uintptr_t>(this)
               + 0x9E3779B97F4A7C15ull + (gk << 6) + (gk >> 2);
+        auto mixGk = [&gk](const void* p, size_t n) {
+            const uint8_t* b = static_cast<const uint8_t*>(p);
+            for (size_t i = 0; i < n; ++i) { gk ^= b[i]; gk *= 0x100000001B3ull; }
+        };
+        mixGk(&maxWidth,  sizeof(maxWidth));
+        mixGk(&maxHeight, sizeof(maxHeight));
         *outKey = gk;
     }
     if (auto it = layoutMap_.find(key); it != layoutMap_.end()) {
-        // Hit: promote to MRU and hand back a ref. The cache keeps its own.
+        // Hit. Promote to MRU and re-apply the caller's dimensions to the
+        // cached layout (cheap: just invalidates the layout's internal layout
+        // calc — the heavy text-analysis / shaping work is preserved).
         layoutLru_.splice(layoutLru_.begin(), layoutLru_, it->second);
         IDWriteTextLayout* cached = it->second->layout.Get();
         if (cached) {
+            cached->SetMaxWidth(maxWidth);
+            cached->SetMaxHeight(maxHeight);
+            // Re-apply the maxLines clamp: SetMaxHeight(maxHeight) above just
+            // overwrote any clamp baked in on a prior call, and the cache key
+            // excludes maxWidth so a width change still lands here as a hit.
+            ApplyMaxLinesClamp(cached);
             cached->AddRef();
             *layout = cached;
+            jalium::text_stats::AddLayoutHit();
             return S_OK;
         }
         // Defensive: empty slot — drop and fall through to recreate.
         layoutMap_.erase(it);
     }
 
+    jalium::text_stats::AddLayoutMiss();
+
     HRESULT hr = factory_->CreateTextLayout(
         text, textLength, format_.Get(), maxWidth, maxHeight, layout);
 
-    if (SUCCEEDED(hr) && *layout && maxLines_ > 0) {
-        // DirectWrite doesn't have a SetMaxLines API. Approximate by constraining
-        // max height to lineHeight * maxLines, so the layout clips at that boundary.
-        DWRITE_TEXT_METRICS tm = {};
-        if (SUCCEEDED((*layout)->GetMetrics(&tm)) && tm.lineCount > maxLines_) {
-            // Get line metrics to compute height of first N lines
-            std::vector<DWRITE_LINE_METRICS> lineMetrics(tm.lineCount);
-            uint32_t actualLines = 0;
-            if (SUCCEEDED((*layout)->GetLineMetrics(lineMetrics.data(), tm.lineCount, &actualLines))) {
-                float totalH = 0;
-                for (uint32_t i = 0; i < maxLines_ && i < actualLines; ++i) {
-                    totalH += lineMetrics[i].height;
-                }
-                // Recreate layout with constrained height
-                (*layout)->Release();
-                *layout = nullptr;
-                hr = factory_->CreateTextLayout(
-                    text, textLength, format_.Get(), maxWidth, totalH, layout);
-            }
-        }
+    if (SUCCEEDED(hr) && *layout) {
+        ApplyMaxLinesClamp(*layout);
     }
 
     if (SUCCEEDED(hr) && *layout) {
@@ -237,6 +285,7 @@ HRESULT D3D12TextFormat::CreateLayout(
         if (layoutLru_.size() >= kLayoutCacheCap) {
             layoutMap_.erase(layoutLru_.back().key);
             layoutLru_.pop_back();
+            jalium::text_stats::AddLayoutEviction(1);
         }
         layoutLru_.push_front({ key, ComPtr<IDWriteTextLayout>(*layout) });
         layoutMap_[key] = layoutLru_.begin();

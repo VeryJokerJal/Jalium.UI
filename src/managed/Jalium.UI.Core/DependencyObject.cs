@@ -125,6 +125,7 @@ public class DependencyObject : DispatcherObject
     public void SetValue(DependencyProperty dp, object? value)
     {
         ArgumentNullException.ThrowIfNull(dp);
+        CheckSealedAccess();
         ValidateValueOrThrow(dp, value);
         MutateValue(
             dp,
@@ -145,7 +146,18 @@ public class DependencyObject : DispatcherObject
     public void SetCurrentValue(DependencyProperty dp, object? value)
     {
         ArgumentNullException.ThrowIfNull(dp);
+        CheckSealedAccess();
         ValidateValueOrThrow(dp, value);
+
+        // A null can never be the effective value of a non-nullable value-type property — the generated
+        // CLR getter unboxes it (e.g. (Thickness)GetValue(...)) and would throw at layout. SetCurrentValue
+        // is a "soft" set; degrade an illegal null to a no-op so the property keeps its current valid
+        // value / synthesized default rather than pinning a null. This covers the Default/Inherited and
+        // Local re-dispatch branches of SetCurrentValueForSource that write _currentValues/_localValues
+        // directly, bypassing the SetLayerValueCore backstop.
+        if (IsNullForNonNullableValueType(dp, value))
+            return;
+
         var source = GetValueSourceInternal(dp);
         SetCurrentValueForSource(dp, value, source.BaseValueSource, allowAutoTransition: true);
     }
@@ -283,6 +295,7 @@ public class DependencyObject : DispatcherObject
     {
         ArgumentNullException.ThrowIfNull(dp);
         ArgumentNullException.ThrowIfNull(binding);
+        CheckSealedAccess();
 
         // Remove existing binding
         ClearBinding(dp);
@@ -361,6 +374,7 @@ public class DependencyObject : DispatcherObject
     public void ClearValue(DependencyProperty dp)
     {
         ArgumentNullException.ThrowIfNull(dp);
+        CheckSealedAccess();
         MutateValue(
             dp,
             () => ClearLocalValueCore(dp),
@@ -388,22 +402,30 @@ public class DependencyObject : DispatcherObject
             if (_currentValues.TryGetValue(dp, out var current) && current.source == mappedSource)
                 _currentValues.Remove(dp);
 
-            switch (source)
+            // Never promote a null local onto a non-nullable value-type layer (mirrors the
+            // SetLayerValueCore backstop, which this direct-write loop bypasses): drop it so the
+            // property falls through to its synthesized/registered default instead of unbox-crashing at
+            // layout. The local was already removed above, so skipping the write degrades to default; the
+            // change notification below still fires for the null -> default transition.
+            if (!IsNullForNonNullableValueType(dp, localValue))
             {
-                case LayerValueSource.ParentTemplate:
-                    _parentTemplateValues[dp] = localValue;
-                    break;
-                case LayerValueSource.StyleTrigger:
-                    _styleTriggerValues[dp] = localValue;
-                    break;
-                case LayerValueSource.TemplateTrigger:
-                    _templateTriggerValues[dp] = localValue;
-                    break;
-                case LayerValueSource.StyleSetter:
-                    _styleSetterValues[dp] = localValue;
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(source), source, null);
+                switch (source)
+                {
+                    case LayerValueSource.ParentTemplate:
+                        _parentTemplateValues[dp] = localValue;
+                        break;
+                    case LayerValueSource.StyleTrigger:
+                        _styleTriggerValues[dp] = localValue;
+                        break;
+                    case LayerValueSource.TemplateTrigger:
+                        _templateTriggerValues[dp] = localValue;
+                        break;
+                    case LayerValueSource.StyleSetter:
+                        _styleSetterValues[dp] = localValue;
+                        break;
+                    default:
+                        throw new ArgumentOutOfRangeException(nameof(source), source, null);
+                }
             }
 
             var newValue = GetValue(dp);
@@ -461,7 +483,14 @@ public class DependencyObject : DispatcherObject
     /// <param name="dp">The dependency property to animate.</param>
     /// <param name="value">The current animated value.</param>
     /// <param name="holdEndValue">Whether to hold the final value after animation ends (FillBehavior.HoldEnd).</param>
-    internal void SetAnimatedValue(DependencyProperty dp, object? value, bool holdEndValue)
+    /// <returns>
+    /// <c>true</c> if the animated value actually changed this call (and therefore a
+    /// present was scheduled); <c>false</c> if the new value equals the currently
+    /// displayed one. A running clock that produces an unchanged value (settled spring
+    /// tail, held end value, paused timeline) returns <c>false</c> so the render loop is
+    /// NOT forced to submit a frame for a pixel-identical result.
+    /// </returns>
+    internal bool SetAnimatedValue(DependencyProperty dp, object? value, bool holdEndValue)
     {
         ArgumentNullException.ThrowIfNull(dp);
 
@@ -479,24 +508,31 @@ public class DependencyObject : DispatcherObject
             _animatedValues[dp] = existing with { CurrentValue = value, HoldEndValue = holdEndValue };
         }
 
-        if (!Equals(oldValue, value))
+        if (Equals(oldValue, value))
         {
-            OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, value));
-
-            // The metadata-callback path is the primary invalidation hook (e.g.
-            // OnRenderPropertyChanged → InvalidateVisual, OnCompositionPropertyChanged
-            // → InvalidateComposition). Without an explicit callback nothing would
-            // schedule a present, so animated DPs without a callback need a fallback.
-            // AddDirtyElement deduplicates so double-calls are harmless when both
-            // paths fire.
-            if (this is UIElement uiElement && !DpHasInvalidationCallback(dp))
-            {
-                if (DpAffectsCompositionOnly(dp))
-                    uiElement.InvalidateComposition();
-                else
-                    uiElement.InvalidateVisual();
-            }
+            // No visible change: do not fire OnPropertyChanged and do not schedule a
+            // present. This is the single source of truth that lets a frame on which
+            // the animated value did not move skip rendering entirely.
+            return false;
         }
+
+        OnPropertyChanged(new DependencyPropertyChangedEventArgs(dp, oldValue, value));
+
+        // The metadata-callback path is the primary invalidation hook (e.g.
+        // OnRenderPropertyChanged → InvalidateVisual, OnCompositionPropertyChanged
+        // → InvalidateComposition). Without an explicit callback nothing would
+        // schedule a present, so animated DPs without a callback need a fallback.
+        // AddDirtyElement deduplicates so double-calls are harmless when both
+        // paths fire.
+        if (this is UIElement uiElement && !DpHasInvalidationCallback(dp))
+        {
+            if (DpAffectsCompositionOnly(dp))
+                uiElement.InvalidateComposition();
+            else
+                uiElement.InvalidateVisual();
+        }
+
+        return true;
     }
 
     private bool DpHasInvalidationCallback(DependencyProperty dp)
@@ -702,7 +738,10 @@ public class DependencyObject : DispatcherObject
         if (_currentValues.TryGetValue(dp, out var current))
             return current;
 
-        return (dp.GetMetadata(GetType()).DefaultValue, BaseValueSource.Default);
+        // GetEffectiveDefaultValue (not the raw metadata DefaultValue) guarantees a non-nullable
+        // value-type property never resolves to null here — a DP mis-registered with a null/absent
+        // default still yields a synthesized default(T) instead of crashing the getter on unbox.
+        return (dp.GetEffectiveDefaultValue(GetType()), BaseValueSource.Default);
     }
 
     private ValueState GetBaseValueState(DependencyProperty dp, bool forceCoerce = false)
@@ -831,6 +870,20 @@ public class DependencyObject : DispatcherObject
 
     private void SetLocalValueCore(DependencyProperty dp, object? value)
     {
+        // Local-value backstop (WPF parity): a null can never be the effective value of a non-nullable
+        // value-type property — the generated CLR getter unboxes it and crashes at layout. This is the
+        // canonical write path: plain SetValue AND the data-binding pipeline's coerced target write (a
+        // {Binding} to a null source whose target type is absent from BindingValueCoercion's default
+        // table — Color/GridLength/Duration/… — lands a boxed null here). Drop the local instead of
+        // pinning the null, so resolution falls through to the registered/synthesized default. This
+        // matches the layer / SetCurrentValue / promotion guards and keeps reflection out of the binding
+        // hot path (the read-side GetEffectiveDefaultValue supplies the typed default).
+        if (IsNullForNonNullableValueType(dp, value))
+        {
+            ClearLocalValueCore(dp);
+            return;
+        }
+
         if (_currentValues.TryGetValue(dp, out var current) && current.source == BaseValueSource.Local)
         {
             _currentValues.Remove(dp);
@@ -841,8 +894,31 @@ public class DependencyObject : DispatcherObject
 
     private bool ClearLocalValueCore(DependencyProperty dp) => _localValues.Remove(dp);
 
+    // A null can never be the effective value of a non-nullable value-type dependency property:
+    // the generated CLR accessor unboxes it (e.g. (Thickness)GetValue(BorderThicknessProperty)) and
+    // throws NullReferenceException during layout. Reference types and Nullable<T> accept null.
+    private static bool IsNullForNonNullableValueType(DependencyProperty dp, object? value)
+        => value is null && dp.PropertyType.IsValueType && Nullable.GetUnderlyingType(dp.PropertyType) is null;
+
     private void SetLayerValueCore(DependencyProperty dp, object? value, LayerValueSource source)
     {
+        // Central backstop (WPF parity, mirroring StyleHelper's "if (!IsValidValue) value = UnsetValue"):
+        // never pin a null into a non-nullable value-type layer. No legitimate writer needs to — doing
+        // so shadows the registered default and crashes on unbox — so degrade it to "no contribution":
+        // drop any existing value at this layer and let resolution fall through to a valid
+        // lower-precedence value / the default. This guards every caller that funnels a LAYER write
+        // through here — template-binding transfers, Style setters/triggers, {DynamicResource}, and the
+        // SetCurrentValue re-dispatch for layer base-sources — and runs before the auto-transition path
+        // ever snapshots a value-type base value, so the animator never interpolates to/from null.
+        // (SetCurrentValue's Default/Inherited/Local branches write _currentValues/_localValues directly,
+        // bypassing this method; that null is caught at the SetCurrentValue entry instead. Local promotion
+        // is guarded in PromoteLocalValuesToLayer.)
+        if (IsNullForNonNullableValueType(dp, value))
+        {
+            ClearLayerValueCore(dp, source);
+            return;
+        }
+
         var mappedSource = MapLayerValueSource(source);
         if (_currentValues.TryGetValue(dp, out var current) && current.source == mappedSource)
         {
@@ -889,6 +965,51 @@ public class DependencyObject : DispatcherObject
             LayerValueSource.StyleSetter => BaseValueSource.Style,
             _ => BaseValueSource.Unknown
         };
+
+    #endregion
+
+    #region Freezable clone / freeze support
+
+    // WPF 的 Freezable.CloneCore 只复制"本地设置"(local) 的基值（ReadLocalValue 对
+    // style/trigger/inherited 返回 UnsetValue 而被跳过）。Freezable 子类(Brush/Geometry/
+    // Transform…) 的属性几乎都经 CLR 包装器 SetValue 落到 _localValues，因此 base 克隆
+    // 枚举 _localValues 即与 WPF 行为一致。返回 (dp, 原始 base 值) 包含显式 null。
+    internal KeyValuePair<DependencyProperty, object?>[] GetLocalValueEntriesInternal()
+        => _localValues.ToArray();
+
+    // CloneCurrentValue / FreezeCore 需要"所有高于默认值的有效属性"集合，对应 WPF 的
+    // EffectiveValues 数组（不含纯默认值）。排除纯 Inherited 值，避免把继承值烤进克隆体
+    // （Freezable 极少参与属性继承），但保留 SetCurrentValue 写出的 modified-default。
+    internal DependencyProperty[] GetEffectiveSetPropertiesInternal()
+    {
+        var set = new HashSet<DependencyProperty>();
+        foreach (var k in _localValues.Keys) set.Add(k);
+        foreach (var k in _parentTemplateValues.Keys) set.Add(k);
+        foreach (var k in _styleTriggerValues.Keys) set.Add(k);
+        foreach (var k in _templateTriggerValues.Keys) set.Add(k);
+        foreach (var k in _styleSetterValues.Keys) set.Add(k);
+        foreach (var kv in _currentValues)
+        {
+            if (kv.Value.source != BaseValueSource.Inherited)
+                set.Add(kv.Key);
+        }
+        foreach (var k in _animatedValues.Keys) set.Add(k);
+        var result = new DependencyProperty[set.Count];
+        set.CopyTo(result);
+        return result;
+    }
+
+    // True 当该属性绑定了表达式（WPF 中表达式不可冻结、且 base 克隆需特殊复制）。
+    internal bool HasBindingInternal(DependencyProperty dp) => _bindings.ContainsKey(dp);
+
+    /// <summary>
+    /// 值写入守卫钩子。基类不封闭；Freezable 冻结后重写为抛异常，使属性系统层面（而非
+    /// 仅靠个别派生 setter 调用 WritePreamble）即可拒绝对冻结对象的任何写入 —— 对齐 WPF
+    /// 中 SetValue/ClearValue 对冻结 Freezable 直接抛 InvalidOperationException 的语义。
+    /// </summary>
+    private protected virtual void CheckSealedAccess()
+    {
+    }
 
     #endregion
 }

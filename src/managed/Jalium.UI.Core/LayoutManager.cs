@@ -1,4 +1,33 @@
+using System.Diagnostics;
+
 namespace Jalium.UI;
+
+/// <summary>
+/// Per-pass layout telemetry returned by <see cref="LayoutManager.UpdateLayout"/>.
+/// Lets the Window publish a per-frame "Layout" breakdown to DevTools so we can
+/// tell apart "measure ate 20 ms" from "arrange ate 20 ms" from "we ran 12
+/// invalidate→measure iterations because the tree is fighting itself".
+/// </summary>
+internal readonly struct LayoutPassResult
+{
+    public readonly long TotalTicks;
+    public readonly long MeasureTicks;
+    public readonly long ArrangeTicks;
+    public readonly int MeasureCount;
+    public readonly int ArrangeCount;
+    public readonly int Iterations;
+
+    public LayoutPassResult(long totalTicks, long measureTicks, long arrangeTicks,
+                            int measureCount, int arrangeCount, int iterations)
+    {
+        TotalTicks = totalTicks;
+        MeasureTicks = measureTicks;
+        ArrangeTicks = arrangeTicks;
+        MeasureCount = measureCount;
+        ArrangeCount = arrangeCount;
+        Iterations = iterations;
+    }
+}
 
 /// <summary>
 /// Manages the layout invalidation cycle for a visual tree.
@@ -77,24 +106,41 @@ internal sealed class LayoutManager
     /// </summary>
     /// <param name="root">The root element (Window).</param>
     /// <param name="availableSize">The available size for the root.</param>
-    public void UpdateLayout(UIElement root, Size availableSize)
+    public LayoutPassResult UpdateLayout(UIElement root, Size availableSize)
     {
         if (_isUpdating)
-            return;
+            return default;
 
         _isUpdating = true;
         _layoutIterations = 0;
         int measuredItems = 0;
         int arrangedItems = 0;
+        // Wall-clock breakdown so DevTools can answer "is layout slow because
+        // measure is heavy, arrange is heavy, or we're stuck iterating?" without
+        // needing per-element diagnostics turned on. Stopwatch.GetTimestamp() is
+        // ~10 ns on Windows so the inner deltas don't perturb the measurement.
+        long totalStart = Stopwatch.GetTimestamp();
+        long measureTicks = 0;
+        long arrangeTicks = 0;
 
         try
         {
             // If queues are empty, do a full tree layout.
             if (_measureQueue.Count == 0 && _arrangeQueue.Count == 0)
             {
+                long mStart = Stopwatch.GetTimestamp();
                 root.Measure(availableSize);
+                measureTicks += Stopwatch.GetTimestamp() - mStart;
+                measuredItems++;
+
+                long aStart = Stopwatch.GetTimestamp();
                 root.Arrange(new Rect(0, 0, availableSize.Width, availableSize.Height));
-                return;
+                arrangeTicks += Stopwatch.GetTimestamp() - aStart;
+                arrangedItems++;
+                return new LayoutPassResult(
+                    Stopwatch.GetTimestamp() - totalStart,
+                    measureTicks, arrangeTicks,
+                    measuredItems, arrangedItems, 1);
             }
 
             // Iterative layout: measure and arrange may trigger further invalidations.
@@ -112,6 +158,7 @@ internal sealed class LayoutManager
                     PrecomputeDepths(_measureSorted);
                     _measureSorted.Sort((a, b) => GetCachedDepth(a).CompareTo(GetCachedDepth(b)));
 
+                    long mStart = Stopwatch.GetTimestamp();
                     foreach (var element in _measureSorted)
                     {
                         if (!element.IsMeasureValid)
@@ -124,6 +171,7 @@ internal sealed class LayoutManager
                             measuredItems++;
                         }
                     }
+                    measureTicks += Stopwatch.GetTimestamp() - mStart;
                 }
 
                 // Process arrange queue: sort by depth (shallowest first).
@@ -134,6 +182,7 @@ internal sealed class LayoutManager
                     PrecomputeDepths(_arrangeSorted);
                     _arrangeSorted.Sort((a, b) => GetCachedDepth(a).CompareTo(GetCachedDepth(b)));
 
+                    long aStart = Stopwatch.GetTimestamp();
                     foreach (var element in _arrangeSorted)
                     {
                         if (!element.IsArrangeValid)
@@ -146,9 +195,13 @@ internal sealed class LayoutManager
                             arrangedItems++;
                         }
                     }
+                    arrangeTicks += Stopwatch.GetTimestamp() - aStart;
                 }
             }
-
+            return new LayoutPassResult(
+                Stopwatch.GetTimestamp() - totalStart,
+                measureTicks, arrangeTicks,
+                measuredItems, arrangedItems, _layoutIterations);
         }
         finally
         {

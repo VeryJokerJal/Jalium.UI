@@ -7,7 +7,6 @@
 // The refcount exists so future global resources (a process-wide mixer,
 // codec factory tables, etc.) have a single place to lifecycle-tie to.
 
-#define JALIUM_MEDIA_EXPORTS
 #include "jalium_audio.h"
 #include "audio_internal.h"
 

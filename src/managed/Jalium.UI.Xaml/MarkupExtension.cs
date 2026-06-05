@@ -888,6 +888,26 @@ internal sealed class DeferredTemplateBindingExpression : BindingExpressionBase
             return;
 
         var value = _templatedParent.GetValue(_sourceProperty);
+
+        // WPF parity (StyleHelper.GetChildValueHelper, TemplateBinding case): a value the target
+        // property cannot legally hold — null for a non-nullable value type, or an instance of an
+        // incompatible type — must NOT be pinned into the ParentTemplate precedence layer. Doing so
+        // would shadow the target's own default and crash on unbox at layout (e.g. (Thickness)null).
+        // The source property here is resolved by NAME against the templated parent's type, so a
+        // type mismatch (or a null reference-typed source bound onto a value-type target) is entirely
+        // possible. TemplateBinding performs no implicit conversion, so an invalid value degrades to
+        // DependencyProperty.UnsetValue semantics: clear this layer's contribution and let the
+        // property fall through to its default / lower-precedence value.
+        if (!TargetProperty.IsValidType(value))
+        {
+            System.Diagnostics.Trace.WriteLine(
+                $"[Jalium.UI] TemplateBinding skip: 模板父级 {_templatedParent.GetType().Name}.{_binding.PropertyName} 的值 " +
+                $"'{value ?? "<null>"}' 与目标 DP {TargetProperty.OwnerType.Name}.{TargetProperty.Name} " +
+                $"({TargetProperty.PropertyType.Name}) 不兼容，回退默认值。");
+            Target.ClearLayerValue(TargetProperty, DependencyObject.LayerValueSource.ParentTemplate);
+            return;
+        }
+
         Target.SetLayerValue(TargetProperty, value, DependencyObject.LayerValueSource.ParentTemplate);
     }
 
@@ -966,6 +986,8 @@ internal static class MarkupExtensionParser
     /// <c>{Binding ...}</c>.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("MarkupExtension.ProvideValue may reflect on resolved types.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "This is the runtime XAML markup-extension parser; invoking it is the documented consumer responsibility under AOT. The base MarkupExtension.ProvideValue carries RequiresDynamicCode only because 'some extensions (e.g. x:Array) construct arrays of a runtime-supplied element Type' — that single extension is the dynamic-code case. The built-in extensions reachable through TryParse here (Binding/StaticResource/DynamicResource/x:Static etc.) construct no runtime-typed arrays, so no dynamic code is emitted at this call site.")]
     internal static object? ProvideExtensionValue(
         MarkupExtension extension,
         object targetObject,
@@ -1216,6 +1238,8 @@ internal static class MarkupExtensionParser
     /// Resolves a nested markup extension value (e.g., {StaticResource BoolToVis}) or returns null if not a markup extension.
     /// </summary>
     [System.Diagnostics.CodeAnalysis.RequiresUnreferencedCode("Some markup extensions (e.g. x:Static) reflect on the resolved Type to read fields/properties.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "This resolves a nested binding-parameter markup extension (e.g. {StaticResource X}, {x:Static}) for the runtime XAML parser — the documented consumer responsibility under AOT. The base MarkupExtension.ProvideValue carries RequiresDynamicCode only because 'some extensions (e.g. x:Array) construct arrays of a runtime-supplied element Type'; the nested extensions valid as Binding parameters here construct no runtime-typed arrays, so no dynamic code is emitted at this call site.")]
     private static object? ResolveNestedValue(string value, IAmbientResourceProvider? ambientProvider)
     {
         var trimmed = value.Trim();

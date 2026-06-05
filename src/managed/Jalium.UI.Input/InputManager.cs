@@ -14,6 +14,69 @@ public sealed class InputManager
     /// </summary>
     public static InputManager Current => _current.Value;
 
+    #region InputBlocked Attached Property
+
+    /// <summary>
+    /// Marks a UIElement subtree as "input-transparent" — the
+    /// <see cref="Jalium.UI.Controls.Input.WindowInputDispatcher"/> redirects any mouse / pointer / touch
+    /// input that hit-tests into this subtree back up to the blocked element itself, so descendant
+    /// controls (Buttons, TextBoxes, Sliders, …) never receive routed input events.
+    ///
+    /// Designed for designer / preview hosts that need to render real controls without their
+    /// runtime behaviors (clicks, drags, hover states). Set <c>InputManager.SetInputBlocked(host, true)</c>
+    /// on the host element; descendants stay visually and structurally intact but become input-inert.
+    ///
+    /// Implementation notes:
+    ///   - <see cref="FindInputBlockedAncestor"/> walks the visual parent chain looking for any
+    ///     element with this property set to true.
+    ///   - Dispatcher consults this helper after hit-testing and rewrites the input target to the
+    ///     blocked element itself; routed events fire on the host, not on the descendant.
+    ///   - <see cref="IsHitTestVisible"/> remains true on descendants so the host can still
+    ///     hit-test them geometrically for its own purposes (e.g. designer-selection lookup).
+    /// </summary>
+    public static readonly DependencyProperty InputBlockedProperty =
+        DependencyProperty.RegisterAttached(
+            "InputBlocked",
+            typeof(bool),
+            typeof(InputManager),
+            new PropertyMetadata(false));
+
+    /// <summary>
+    /// Gets the value of the <see cref="InputBlockedProperty"/> attached property.
+    /// </summary>
+    public static bool GetInputBlocked(UIElement element)
+    {
+        if (element == null) return false;
+        return (bool)(element.GetValue(InputBlockedProperty) ?? false);
+    }
+
+    /// <summary>
+    /// Sets the value of the <see cref="InputBlockedProperty"/> attached property.
+    /// </summary>
+    public static void SetInputBlocked(UIElement element, bool value)
+    {
+        if (element == null) return;
+        element.SetValue(InputBlockedProperty, value);
+    }
+
+    /// <summary>
+    /// Walks the visual parent chain (starting from <paramref name="element"/> inclusive) and
+    /// returns the first element with <see cref="InputBlockedProperty"/> set to true, or
+    /// <see langword="null"/> if no ancestor is input-blocked.
+    /// </summary>
+    public static UIElement? FindInputBlockedAncestor(UIElement? element)
+    {
+        var cur = element;
+        while (cur != null)
+        {
+            if (GetInputBlocked(cur)) return cur;
+            cur = cur.VisualParent as UIElement;
+        }
+        return null;
+    }
+
+    #endregion
+
     /// <summary>
     /// Occurs after input is processed.
     /// </summary>

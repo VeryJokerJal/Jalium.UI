@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
 using Jalium.UI.Core.Platform;
+using Jalium.UI.Threading;
 
 namespace Jalium.UI;
 
@@ -13,13 +14,23 @@ public sealed partial class Dispatcher : IDisposable
     private static readonly ThreadLocal<Dispatcher?> _currentDispatcher = new();
     private static Dispatcher? _mainDispatcher;
     private static readonly object _lock = new();
+    private static readonly ConcurrentDictionary<Thread, Dispatcher> _dispatchers = new();
 
     private readonly Thread _thread;
     private readonly uint _threadId;
-    private readonly ConcurrentQueue<DispatcherWorkItem> _queue = new();
+
+    // WPF 语义：调度队列按优先级出队（高优先级先执行），同优先级内 FIFO。
+    // 用一个插入有序的链表 + 出队时扫描最高优先级实现：节点小、改优先级/中止天然支持。
+    // 现有所有 enqueue 一律走 DispatcherPriority.Normal，因此对既有调用者而言出队顺序与
+    // 旧的单一 FIFO 队列完全一致（优先级排序是其严格超集）。
+    private readonly LinkedList<DispatcherOperation> _queue = new();
+    private readonly object _instanceLock = new();
     private readonly ManualResetEventSlim _workAvailable = new(false);
+
     private volatile bool _isShutdown;
     private bool _disposed;
+    private int _disableProcessingCount;
+    private DispatcherHooks? _hooks;
 
     // Platform-abstracted dispatcher wake mechanism
     private IDispatcherWake? _dispatcherWake;
@@ -32,18 +43,7 @@ public sealed partial class Dispatcher : IDisposable
 
     private static readonly bool s_isWindows = RuntimeInformation.IsOSPlatform(OSPlatform.Windows);
 
-    private readonly struct DispatcherWorkItem
-    {
-        public DispatcherWorkItem(Action callback, bool isCritical)
-        {
-            Callback = callback;
-            IsCritical = isCritical;
-        }
-
-        public Action Callback { get; }
-
-        public bool IsCritical { get; }
-    }
+    private const int MinDispatchPriority = (int)DispatcherPriority.SystemIdle; // 1; Inactive(0)/Invalid(-1) never run
 
     /// <summary>
     /// Gets the <see cref="Dispatcher"/> for the thread currently executing.
@@ -68,7 +68,28 @@ public sealed partial class Dispatcher : IDisposable
     /// <summary>
     /// Gets a value indicating whether the dispatcher has finished shutting down.
     /// </summary>
-    public bool HasShutdownFinished => _isShutdown && _queue.IsEmpty;
+    public bool HasShutdownFinished
+    {
+        get { lock (_instanceLock) { return _isShutdown && _queue.Count == 0; } }
+    }
+
+    /// <summary>
+    /// Gets the collection of hooks that provide additional event information about the <see cref="Dispatcher"/>.
+    /// </summary>
+    public DispatcherHooks Hooks => _hooks ??= new DispatcherHooks();
+
+    internal DispatcherHooks? HooksInternal => _hooks;
+
+    /// <summary>
+    /// Occurs when a thread exception is thrown and uncaught during execution of a delegate by way of Invoke or BeginInvoke.
+    /// </summary>
+    public event DispatcherUnhandledExceptionEventHandler? UnhandledException;
+
+    /// <summary>
+    /// Occurs when a thread exception is thrown and uncaught during execution of a delegate, before the
+    /// <see cref="UnhandledException"/> event, to determine whether the exception should be caught.
+    /// </summary>
+    public event DispatcherUnhandledExceptionFilterEventHandler? UnhandledExceptionFilter;
 
     /// <summary>
     /// Initializes a new instance of the <see cref="Dispatcher"/> class for the current thread.
@@ -107,6 +128,7 @@ public sealed partial class Dispatcher : IDisposable
         {
             var dispatcher = new Dispatcher();
             _currentDispatcher.Value = dispatcher;
+            _dispatchers[dispatcher._thread] = dispatcher;
 
             // First dispatcher becomes the main dispatcher
             lock (_lock)
@@ -116,6 +138,16 @@ public sealed partial class Dispatcher : IDisposable
         }
 
         return _currentDispatcher.Value;
+    }
+
+    /// <summary>
+    /// Returns the <see cref="Dispatcher"/> for the specified thread, or <see langword="null"/> if none exists.
+    /// </summary>
+    /// <param name="thread">The thread whose dispatcher is requested.</param>
+    public static Dispatcher? FromThread(Thread thread)
+    {
+        ArgumentNullException.ThrowIfNull(thread);
+        return _dispatchers.TryGetValue(thread, out var dispatcher) ? dispatcher : null;
     }
 
     /// <summary>
@@ -154,197 +186,334 @@ public sealed partial class Dispatcher : IDisposable
         }
     }
 
+    #region Invoke (synchronous)
+
     /// <summary>
-    /// Executes the specified <see cref="Action"/> synchronously on the thread the <see cref="Dispatcher"/> is associated with.
+    /// Executes the specified <see cref="Action"/> synchronously on the dispatcher thread at <see cref="DispatcherPriority.Send"/>.
     /// </summary>
-    /// <param name="callback">The delegate to invoke.</param>
-    public void Invoke(Action callback)
+    public void Invoke(Action callback) => Invoke(callback, DispatcherPriority.Send);
+
+    /// <summary>
+    /// Executes the specified <see cref="Action"/> synchronously on the dispatcher thread at the given priority.
+    /// </summary>
+    public void Invoke(Action callback, DispatcherPriority priority)
     {
         ArgumentNullException.ThrowIfNull(callback);
+        ValidatePriority(priority);
 
-        if (CheckAccess())
+        if (CheckAccess() && priority == DispatcherPriority.Send)
         {
             callback();
             return;
         }
 
-        using var completed = new ManualResetEventSlim(false);
-        Exception? exception = null;
+        var op = CreateOperation(callback, priority, critical: false, observed: true);
+        EnqueueOperation(op);
+        op.Wait();
 
-        EnqueueWorkItem(() =>
+        if (op.OperationException != null)
         {
-            try
-            {
-                callback();
-            }
-            catch (Exception ex)
-            {
-                exception = ex;
-            }
-            finally
-            {
-                completed.Set();
-            }
-        }, isCritical: false);
-        completed.Wait();
-
-        if (exception != null)
-        {
-            throw new InvalidOperationException("An error occurred while executing on the dispatcher thread.", exception);
+            throw new InvalidOperationException(
+                "An error occurred while executing on the dispatcher thread.", op.OperationException);
         }
     }
 
     /// <summary>
-    /// Executes the specified <see cref="Func{TResult}"/> synchronously on the thread the <see cref="Dispatcher"/> is associated with.
+    /// Executes the specified <see cref="Func{TResult}"/> synchronously on the dispatcher thread at <see cref="DispatcherPriority.Send"/>.
     /// </summary>
-    /// <typeparam name="TResult">The return value type of the specified delegate.</typeparam>
-    /// <param name="callback">The delegate to invoke.</param>
-    /// <returns>The value returned by <paramref name="callback"/>.</returns>
-    public TResult Invoke<TResult>(Func<TResult> callback)
+    public TResult Invoke<TResult>(Func<TResult> callback) => Invoke(callback, DispatcherPriority.Send);
+
+    /// <summary>
+    /// Executes the specified <see cref="Func{TResult}"/> synchronously on the dispatcher thread at the given priority.
+    /// </summary>
+    public TResult Invoke<TResult>(Func<TResult> callback, DispatcherPriority priority)
     {
         ArgumentNullException.ThrowIfNull(callback);
+        ValidatePriority(priority);
 
-        if (CheckAccess())
+        if (CheckAccess() && priority == DispatcherPriority.Send)
         {
             return callback();
         }
 
         TResult result = default!;
-        using var completed = new ManualResetEventSlim(false);
-        Exception? exception = null;
+        var op = CreateOperation(() => result = callback(), priority, critical: false, observed: true);
+        EnqueueOperation(op);
+        op.Wait();
 
-        EnqueueWorkItem(() =>
+        if (op.OperationException != null)
         {
-            try
-            {
-                result = callback();
-            }
-            catch (Exception ex)
-            {
-                exception = ex;
-            }
-            finally
-            {
-                completed.Set();
-            }
-        }, isCritical: false);
-        completed.Wait();
-
-        if (exception != null)
-        {
-            throw new InvalidOperationException("An error occurred while executing on the dispatcher thread.", exception);
+            throw new InvalidOperationException(
+                "An error occurred while executing on the dispatcher thread.", op.OperationException);
         }
 
         return result;
     }
 
+    #endregion
+
+    #region BeginInvoke (asynchronous, returns DispatcherOperation)
+
     /// <summary>
-    /// Executes the specified <see cref="Action"/> asynchronously on the thread the <see cref="Dispatcher"/> is associated with.
+    /// Schedules the specified <see cref="Action"/> for asynchronous execution at <see cref="DispatcherPriority.Normal"/>.
     /// </summary>
-    /// <param name="callback">The delegate to invoke.</param>
-    public void BeginInvoke(Action callback)
+    /// <returns>A <see cref="DispatcherOperation"/> tracking the scheduled work.</returns>
+    public DispatcherOperation BeginInvoke(Action callback) => BeginInvoke(DispatcherPriority.Normal, callback);
+
+    /// <summary>
+    /// Schedules the specified <see cref="Action"/> for asynchronous execution at the given priority.
+    /// </summary>
+    public DispatcherOperation BeginInvoke(DispatcherPriority priority, Action callback)
     {
         ArgumentNullException.ThrowIfNull(callback);
-
-        EnqueueWorkItem(callback, isCritical: false);
+        ValidatePriority(priority);
+        var op = CreateOperation(callback, priority, critical: false, observed: false);
+        EnqueueOperation(op);
+        return op;
     }
 
     /// <summary>
-    /// Executes the specified <see cref="Action"/> asynchronously on the thread the <see cref="Dispatcher"/> is associated with.
-    /// Exceptions from critical callbacks are rethrown by <see cref="ProcessQueue"/>.
+    /// Schedules a delegate for asynchronous execution at <see cref="DispatcherPriority.Normal"/>.
     /// </summary>
-    /// <param name="callback">The delegate to invoke.</param>
-    public void BeginInvokeCritical(Action callback)
-    {
-        ArgumentNullException.ThrowIfNull(callback);
+    public DispatcherOperation BeginInvoke(Delegate method, params object?[]? args)
+        => BeginInvoke(DispatcherPriority.Normal, method, args);
 
-        EnqueueWorkItem(callback, isCritical: true);
+    /// <summary>
+    /// Schedules a delegate for asynchronous execution at the given priority.
+    /// </summary>
+    public DispatcherOperation BeginInvoke(DispatcherPriority priority, Delegate method, params object?[]? args)
+    {
+        ArgumentNullException.ThrowIfNull(method);
+        ValidatePriority(priority);
+        var op = CreateOperation(() => method.DynamicInvoke(args), priority, critical: false, observed: false);
+        EnqueueOperation(op);
+        return op;
     }
 
     /// <summary>
-    /// Executes the specified <see cref="Action"/> asynchronously on the thread the <see cref="Dispatcher"/> is associated with.
+    /// Schedules the specified <see cref="Action"/> for asynchronous execution. Exceptions from critical
+    /// callbacks are rethrown by <see cref="ProcessQueue"/> instead of being routed to <see cref="UnhandledException"/>.
     /// </summary>
-    /// <param name="callback">The delegate to invoke.</param>
-    /// <returns>A task that represents the asynchronous operation.</returns>
-    public Task InvokeAsync(Action callback)
+    public DispatcherOperation BeginInvokeCritical(Action callback)
     {
         ArgumentNullException.ThrowIfNull(callback);
+        var op = CreateOperation(callback, DispatcherPriority.Normal, critical: true, observed: false);
+        EnqueueOperation(op);
+        return op;
+    }
 
-        if (CheckAccess())
+    #endregion
+
+    #region InvokeAsync (Task-returning, Jalium convention)
+
+    /// <summary>
+    /// Executes the specified <see cref="Action"/> asynchronously on the dispatcher thread.
+    /// </summary>
+    public Task InvokeAsync(Action callback) => InvokeAsync(callback, DispatcherPriority.Normal);
+
+    /// <summary>
+    /// Executes the specified <see cref="Action"/> asynchronously on the dispatcher thread at the given priority.
+    /// </summary>
+    public Task InvokeAsync(Action callback, DispatcherPriority priority)
+    {
+        ArgumentNullException.ThrowIfNull(callback);
+        ValidatePriority(priority);
+
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var op = CreateOperation(callback, priority, critical: false, observed: true);
+        op.Completed += (_, _) =>
         {
-            callback();
-            return Task.CompletedTask;
-        }
-
-        var tcs = new TaskCompletionSource();
-
-        EnqueueWorkItem(() =>
-        {
-            try
-            {
-                callback();
-                tcs.SetResult();
-            }
-            catch (Exception ex)
-            {
-                tcs.SetException(ex);
-            }
-        }, isCritical: false);
+            if (op.OperationException != null) tcs.TrySetException(op.OperationException);
+            else tcs.TrySetResult();
+        };
+        op.Aborted += (_, _) => tcs.TrySetCanceled();
+        EnqueueOperation(op);
         return tcs.Task;
     }
 
     /// <summary>
-    /// Executes the specified <see cref="Func{TResult}"/> asynchronously on the thread the <see cref="Dispatcher"/> is associated with.
+    /// Executes the specified <see cref="Func{TResult}"/> asynchronously on the dispatcher thread.
     /// </summary>
-    /// <typeparam name="TResult">The return value type of the specified delegate.</typeparam>
-    /// <param name="callback">The delegate to invoke.</param>
-    /// <returns>A task that represents the asynchronous operation.</returns>
-    public Task<TResult> InvokeAsync<TResult>(Func<TResult> callback)
+    public Task<TResult> InvokeAsync<TResult>(Func<TResult> callback) => InvokeAsync(callback, DispatcherPriority.Normal);
+
+    /// <summary>
+    /// Executes the specified <see cref="Func{TResult}"/> asynchronously on the dispatcher thread at the given priority.
+    /// </summary>
+    public Task<TResult> InvokeAsync<TResult>(Func<TResult> callback, DispatcherPriority priority)
     {
         ArgumentNullException.ThrowIfNull(callback);
+        ValidatePriority(priority);
 
-        if (CheckAccess())
+        var tcs = new TaskCompletionSource<TResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        TResult result = default!;
+        var op = CreateOperation(() => result = callback(), priority, critical: false, observed: true);
+        op.Completed += (_, _) =>
         {
-            return Task.FromResult(callback());
-        }
-
-        var tcs = new TaskCompletionSource<TResult>();
-
-        EnqueueWorkItem(() =>
-        {
-            try
-            {
-                tcs.SetResult(callback());
-            }
-            catch (Exception ex)
-            {
-                tcs.SetException(ex);
-            }
-        }, isCritical: false);
+            if (op.OperationException != null) tcs.TrySetException(op.OperationException);
+            else tcs.TrySetResult(result);
+        };
+        op.Aborted += (_, _) => tcs.TrySetCanceled();
+        EnqueueOperation(op);
         return tcs.Task;
     }
 
+    #endregion
+
+    #region Queue engine
+
+    private DispatcherOperation CreateOperation(Action action, DispatcherPriority priority, bool critical, bool observed)
+        => new(this, priority, action, critical, observed);
+
+    private void EnqueueOperation(DispatcherOperation op)
+    {
+        bool wake;
+        lock (_instanceLock)
+        {
+            if (_isShutdown)
+            {
+                // Cannot queue work after shutdown has begun.
+                op.AbortInternal();
+                return;
+            }
+            op.Node = _queue.AddLast(op);
+            wake = true;
+        }
+
+        _hooks?.RaiseOperationPosted(op, EventArgs.Empty);
+        if (wake)
+            NotifyDispatcherThread();
+    }
+
+    // 出队最高优先级的待执行操作（同优先级 FIFO）；顺带剔除已中止节点；Inactive/Invalid 不出队。
+    private DispatcherOperation? DequeueNextOperation()
+    {
+        lock (_instanceLock)
+        {
+            LinkedListNode<DispatcherOperation>? best = null;
+            var node = _queue.First;
+            while (node != null)
+            {
+                var next = node.Next;
+                var op = node.Value;
+
+                if (op.Status == DispatcherOperationStatus.Aborted)
+                {
+                    _queue.Remove(node);
+                    op.Node = null;
+                }
+                else if ((int)op.Priority >= MinDispatchPriority &&
+                         (best == null || (int)op.Priority > (int)best.Value.Priority))
+                {
+                    best = node;
+                }
+
+                node = next;
+            }
+
+            if (best == null)
+                return null;
+
+            _queue.Remove(best);
+            best.Value.Node = null;
+            return best.Value;
+        }
+    }
+
+    internal void RemoveOperation(DispatcherOperation op)
+    {
+        lock (_instanceLock)
+        {
+            if (op.Node != null)
+            {
+                _queue.Remove(op.Node);
+                op.Node = null;
+            }
+        }
+    }
+
+    internal void OnOperationPriorityChanged(DispatcherOperation op)
+    {
+        // 链表出队时按 op.Priority 实时判定，无需重排；仅唤醒一次以便重新评估。
+        _hooks?.RaiseOperationPriorityChanged(op, EventArgs.Empty);
+        NotifyDispatcherThread();
+    }
+
     /// <summary>
-    /// Processes all pending work items in the dispatcher queue.
-    /// This should be called from the dispatcher's thread during the message loop.
+    /// Processes pending work items in the dispatcher queue in priority order.
+    /// This is invoked from the dispatcher thread by the platform message pump.
     /// </summary>
     public void ProcessQueue()
     {
         VerifyAccess();
 
-        while (_queue.TryDequeue(out var workItem))
+        if (Volatile.Read(ref _disableProcessingCount) > 0)
+            return; // processing disabled; work stays queued until re-enabled re-posts a wake
+
+        while (true)
         {
-            try
-            {
-                workItem.Callback();
-            }
-            catch when (!workItem.IsCritical)
-            {
-                // Exception silently handled to prevent dispatcher crash
-            }
+            if (Volatile.Read(ref _disableProcessingCount) > 0)
+                break;
+
+            var op = DequeueNextOperation();
+            if (op == null)
+                break;
+
+            DispatchOperation(op);
         }
 
-        _workAvailable.Reset();
+        lock (_instanceLock)
+        {
+            if (_queue.Count == 0)
+                _workAvailable.Reset();
+        }
+    }
+
+    private void DispatchOperation(DispatcherOperation op)
+    {
+        try
+        {
+            op.InvokeInternal();
+        }
+        catch (Exception ex)
+        {
+            if (op.IsCritical)
+                throw; // critical: propagate out of the pump (legacy BeginInvokeCritical contract)
+
+            if (!RaiseUnhandledException(ex))
+            {
+                // Unhandled and not requested-catch: rethrow to crash like WPF would.
+                throw;
+            }
+            // else: handled / requested-catch -> swallow
+        }
+    }
+
+    // Returns true if the exception was handled (or a filter requested catching it and an
+    // UnhandledException handler marked it Handled). Returns false to let it propagate.
+    private bool RaiseUnhandledException(Exception ex)
+    {
+        bool requestCatch = true;
+        var filter = UnhandledExceptionFilter;
+        if (filter != null)
+        {
+            var filterArgs = new DispatcherUnhandledExceptionFilterEventArgs(this, ex);
+            filter(this, filterArgs);
+            requestCatch = filterArgs.RequestCatch;
+        }
+
+        if (!requestCatch)
+            return false; // a filter explicitly asked us NOT to catch -> let it propagate
+
+        var handler = UnhandledException;
+        if (handler != null)
+        {
+            var args = new DispatcherUnhandledExceptionEventArgs(this, ex);
+            handler(this, args);
+        }
+
+        // Jalium historically swallowed non-critical dispatcher exceptions to keep the pump alive;
+        // preserve that default once a filter/handler has had a chance to observe it.
+        return true;
     }
 
     /// <summary>
@@ -353,8 +522,125 @@ public sealed partial class Dispatcher : IDisposable
     public void BeginInvokeShutdown()
     {
         _isShutdown = true;
+        ShutdownStarted?.Invoke(this, EventArgs.Empty);
         NotifyDispatcherThread();
     }
+
+    private static void ValidatePriority(DispatcherPriority priority)
+    {
+        if (priority < DispatcherPriority.Inactive || priority > DispatcherPriority.Send)
+            throw new ArgumentOutOfRangeException(nameof(priority), priority, "Invalid DispatcherPriority.");
+    }
+
+    #endregion
+
+    #region Frames / pumping
+
+    private static int s_frameDepth;
+
+    /// <summary>
+    /// Enters an execute loop, pumping the platform message queue (and dispatcher work) until the
+    /// specified <see cref="DispatcherFrame"/> is instructed to stop.
+    /// </summary>
+    public void PushFrame(DispatcherFrame frame)
+    {
+        ArgumentNullException.ThrowIfNull(frame);
+        VerifyAccess();
+        if (_isShutdown)
+            throw new InvalidOperationException("Cannot perform this operation while dispatcher processing is suspended.");
+
+        Interlocked.Increment(ref s_frameDepth);
+        try
+        {
+            if (s_isWindows)
+            {
+                // Classic Win32 modal pump. The dispatcher's message-only window delivers
+                // WM_DISPATCHER_INVOKE -> ProcessQueue, so queued work runs here too.
+                while (frame.Continue)
+                {
+                    int result = GetMessageW(out var msg, nint.Zero, 0, 0);
+                    if (result == 0) // WM_QUIT
+                    {
+                        // Re-post so the outermost loop also sees the quit, then exit this frame.
+                        PostQuitMessage((int)msg.wParam);
+                        break;
+                    }
+                    if (result == -1) // error
+                        break;
+
+                    TranslateMessageW(ref msg);
+                    DispatchMessageW(ref msg);
+                }
+            }
+            else
+            {
+                // Cross-platform: drain dispatcher work then block until more arrives.
+                while (frame.Continue)
+                {
+                    ProcessQueue();
+                    if (!frame.Continue)
+                        break;
+                    _workAvailable.Wait(15);
+                }
+            }
+        }
+        finally
+        {
+            Interlocked.Decrement(ref s_frameDepth);
+        }
+    }
+
+    /// <summary>
+    /// Enters an execute loop using a default <see cref="DispatcherFrame"/>.
+    /// </summary>
+    public void Run() => PushFrame(new DispatcherFrame());
+
+    /// <summary>
+    /// Requests that all frames exit, including nested frames.
+    /// </summary>
+    public void ExitAllFrames()
+    {
+        // Frames observe HasShutdownStarted via DispatcherFrame.Continue when exitWhenRequested;
+        // explicit exit is signalled by marking shutdown-pending semantics. We post a wake so any
+        // pumping frame re-evaluates Continue.
+        NotifyDispatcherThread();
+    }
+
+    /// <summary>
+    /// Disables processing of the queue until the returned structure is disposed.
+    /// </summary>
+    public DispatcherProcessingDisabled DisableProcessing()
+    {
+        VerifyAccess();
+        Interlocked.Increment(ref _disableProcessingCount);
+        return new DispatcherProcessingDisabled(this);
+    }
+
+    internal void EnableProcessing()
+    {
+        if (Interlocked.Decrement(ref _disableProcessingCount) == 0)
+        {
+            // Re-evaluate the queue now that processing is allowed again.
+            NotifyDispatcherThread();
+        }
+    }
+
+    /// <summary>
+    /// Yields control to other pending operations on the dispatcher (await-able).
+    /// </summary>
+    public static DispatcherPriorityAwaitable Yield() => Yield(DispatcherPriority.Background);
+
+    /// <summary>
+    /// Yields control to operations at or above the specified priority on the current dispatcher.
+    /// </summary>
+    public static DispatcherPriorityAwaitable Yield(DispatcherPriority priority)
+    {
+        var dispatcher = CurrentDispatcher
+            ?? throw new InvalidOperationException("Dispatcher.Yield requires a dispatcher on the current thread.");
+        return new DispatcherPriorityAwaitable(dispatcher, priority);
+    }
+
+    #endregion
 
 #pragma warning disable CS0067
     /// <summary>
@@ -442,12 +728,6 @@ public sealed partial class Dispatcher : IDisposable
         }
     }
 
-    private void EnqueueWorkItem(Action callback, bool isCritical)
-    {
-        _queue.Enqueue(new DispatcherWorkItem(callback, isCritical));
-        NotifyDispatcherThread();
-    }
-
     #endregion
 
     #region IDisposable
@@ -456,6 +736,8 @@ public sealed partial class Dispatcher : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
+
+        _dispatchers.TryRemove(_thread, out _);
 
         if (s_isWindows)
         {
@@ -490,6 +772,18 @@ public sealed partial class Dispatcher : IDisposable
         public string? lpszMenuName;
         public string lpszClassName;
         public nint hIconSm;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public nint hwnd;
+        public uint message;
+        public nint wParam;
+        public nint lParam;
+        public uint time;
+        public int ptX;
+        public int ptY;
     }
 
     [LibraryImport("kernel32.dll")]
@@ -528,14 +822,42 @@ public sealed partial class Dispatcher : IDisposable
     [LibraryImport("user32.dll", EntryPoint = "DefWindowProcW")]
     private static partial nint DefWindowProcW(nint hWnd, uint Msg, nint wParam, nint lParam);
 
+    [LibraryImport("user32.dll", EntryPoint = "GetMessageW")]
+    private static partial int GetMessageW(out MSG lpMsg, nint hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [LibraryImport("user32.dll", EntryPoint = "TranslateMessage")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool TranslateMessageW(ref MSG lpMsg);
+
+    [LibraryImport("user32.dll", EntryPoint = "DispatchMessageW")]
+    private static partial nint DispatchMessageW(ref MSG lpMsg);
+
+    [LibraryImport("user32.dll")]
+    private static partial void PostQuitMessage(int nExitCode);
+
     #endregion
 }
+
+/// <summary>
+/// Represents the method that handles the <see cref="Dispatcher.UnhandledException"/> event.
+/// </summary>
+public delegate void DispatcherUnhandledExceptionEventHandler(object sender, DispatcherUnhandledExceptionEventArgs e);
+
+/// <summary>
+/// Represents the method that handles the <see cref="Dispatcher.UnhandledExceptionFilter"/> event.
+/// </summary>
+public delegate void DispatcherUnhandledExceptionFilterEventHandler(object sender, DispatcherUnhandledExceptionFilterEventArgs e);
 
 /// <summary>
 /// Specifies the priority at which operations can be invoked via the <see cref="Dispatcher"/>.
 /// </summary>
 public enum DispatcherPriority
 {
+    /// <summary>
+    /// The enumeration value is -1. This is an invalid priority.
+    /// </summary>
+    Invalid = -1,
+
     /// <summary>
     /// The operation will not be processed.
     /// </summary>

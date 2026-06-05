@@ -258,8 +258,14 @@ public class ScrollContentPresenter : ContentPresenter, IScrollInfo
         if (content == null)
             return finalSize;
 
-        // Update viewport
-        if (_scrollInfo == null)
+        // Update viewport. Only re-invalidate the owning ScrollViewer's arrange
+        // when the viewport actually changed — issuing it unconditionally forced
+        // a second full arrange pass every single frame (the ScrollViewer got
+        // re-queued, LayoutManager ran another iteration), which showed up as a
+        // "tree re-invalidate / Iterations=2" warning and doubled arrange cost.
+        // Once the viewport stabilises, the owner stays clean and layout settles
+        // in one pass.
+        if (_scrollInfo == null && _viewport != finalSize)
         {
             _viewport = finalSize;
             ScrollOwner?.InvalidateArrange();

@@ -1,4 +1,5 @@
 using Jalium.UI;
+using System.Diagnostics;
 
 namespace Jalium.UI.Media.Animation;
 
@@ -88,8 +89,12 @@ public abstract class AnimationTimeline<T> : AnimationTimeline
 public sealed class AnimationClock : IAnimationClock
 {
     private readonly Timeline _timeline;
-    private DateTime _startTime;
-    private DateTime _firstStartTime;
+    // High-resolution monotonic timestamps (Stopwatch ticks). DateTime.Now has only
+    // ~15.6ms resolution on Windows → animation time quantizes into 15.6ms steps →
+    // visible micro-stutter/judder regardless of frame rate. Stopwatch is sub-µs and
+    // monotonic (immune to wall-clock adjustments).
+    private long _startTime;
+    private long _firstStartTime;
     private bool _isRunning;
     private double _currentProgress;
     private bool _isReversing;
@@ -143,10 +148,12 @@ public sealed class AnimationClock : IAnimationClock
     /// </summary>
     public void Begin()
     {
-        _startTime = DateTime.Now;
+        _startTime = Stopwatch.GetTimestamp();
         if (_timeline.BeginTime.HasValue)
         {
-            _startTime = _startTime.Add(_timeline.BeginTime.Value);
+            // BeginTime delays the start: shift the start timestamp into the future so
+            // elapsed stays negative until the delay passes (same as old DateTime.Add).
+            _startTime += (long)(_timeline.BeginTime.Value.TotalSeconds * Stopwatch.Frequency);
         }
         _firstStartTime = _startTime;
         _isRunning = true;
@@ -186,7 +193,7 @@ public sealed class AnimationClock : IAnimationClock
     {
         if (!_isRunning) return;
 
-        var elapsed = DateTime.Now - _startTime;
+        var elapsed = Stopwatch.GetElapsedTime(_startTime);
         var duration = _timeline.Duration.HasTimeSpan
             ? _timeline.Duration.TimeSpan
             : TimeSpan.FromSeconds(1);
@@ -205,7 +212,7 @@ public sealed class AnimationClock : IAnimationClock
             if (_timeline.AutoReverse && !_isReversing)
             {
                 _isReversing = true;
-                _startTime = DateTime.Now;
+                _startTime = Stopwatch.GetTimestamp();
                 rawProgress = 1.0;
             }
             else
@@ -225,12 +232,12 @@ public sealed class AnimationClock : IAnimationClock
                 else if (rb.HasDuration)
                 {
                     // Calculate total elapsed since first start
-                    shouldRepeat = (DateTime.Now - _firstStartTime) < rb.Duration;
+                    shouldRepeat = Stopwatch.GetElapsedTime(_firstStartTime) < rb.Duration;
                 }
 
                 if (shouldRepeat)
                 {
-                    _startTime = DateTime.Now;
+                    _startTime = Stopwatch.GetTimestamp();
                     _isReversing = false;
                     rawProgress = 0;
                 }

@@ -44,19 +44,20 @@ public partial class DevToolsWindow
         root.Children.Add(toolbarBar);
 
         // ── Chain viewport ──
+        // The chain content panel is the tracked, refreshable container. We re-parent
+        // it (unchanged instance) into an instrument Panel that supplies the framed
+        // "RESOURCE MERGE CHAIN" eyebrow header + hairline divider.
         _resourcesChainPanel = new StackPanel();
+        var chainPanel = DevToolsUi.Panel("Resource Merge Chain", _resourcesChainPanel);
+        chainPanel.Margin = new Thickness(DevToolsTheme.GutterBase);
         var scroll = new ScrollViewer
         {
-            Content = _resourcesChainPanel,
+            Content = chainPanel,
             VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
             HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled,
         };
         var card = new Border
         {
-            Background = DevToolsTheme.SurfaceAlt,
-            BorderBrush = DevToolsTheme.BorderSubtle,
-            BorderThickness = DevToolsTheme.ThicknessHairline,
-            Margin = new Thickness(DevToolsTheme.GutterBase),
             Child = scroll,
             ClipToBounds = true,
         };
@@ -97,20 +98,7 @@ public partial class DevToolsWindow
         if (_resourcesChainPanel == null) return;
         _resourcesChainPanel.Children.Clear();
 
-        var title = new TextBlock
-        {
-            Text = "RESOURCE MERGE CHAIN",
-            FontSize = DevToolsTheme.FontXS,
-            FontFamily = DevToolsTheme.UiFont,
-            FontWeight = FontWeights.SemiBold,
-            Foreground = DevToolsTheme.TextMuted,
-            Margin = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
-        };
-        _resourcesChainPanel.Children.Add(title);
-
-        var subtitle = DevToolsUi.Muted("From the selected element walking up the tree to the Application.");
-        subtitle.Margin = new Thickness(DevToolsTheme.GutterLg, 0, DevToolsTheme.GutterLg, DevToolsTheme.GutterBase);
-        _resourcesChainPanel.Children.Add(subtitle);
+        // Section title is now carried by the enclosing instrument Panel header.
 
         // Collect ordered chain: selected element → ancestors → Application.
         var chain = new List<(string ScopeName, ResourceDictionary? Dict)>();
@@ -138,7 +126,9 @@ public partial class DevToolsWindow
         if (chain.Count == 0)
         {
             var empty = DevToolsUi.Muted("Select an element to view its resource resolution path.");
-            empty.Margin = new Thickness(DevToolsTheme.GutterLg, 0, DevToolsTheme.GutterLg, DevToolsTheme.GutterBase);
+            empty.HorizontalAlignment = HorizontalAlignment.Center;
+            empty.TextAlignment = TextAlignment.Center;
+            empty.Margin = new Thickness(0, DevToolsTheme.GutterBase, 0, DevToolsTheme.GutterBase);
             _resourcesChainPanel.Children.Add(empty);
             return;
         }
@@ -170,6 +160,10 @@ public partial class DevToolsWindow
 
         _resourcesChainPanel.Children.Add(MakeSummaryRow(chain.Count, totalKeys, winnerKeys));
 
+        var subtitle = DevToolsUi.Muted("From the selected element walking up the tree to the Application.", DevToolsTheme.FontXS);
+        subtitle.Margin = new Thickness(0, 0, 0, DevToolsTheme.GutterBase);
+        _resourcesChainPanel.Children.Add(subtitle);
+
         for (int depth = 0; depth < chain.Count; depth++)
         {
             var (scope, dict) = chain[depth];
@@ -182,7 +176,7 @@ public partial class DevToolsWindow
         var row = new StackPanel
         {
             Orientation = Orientation.Horizontal,
-            Margin = new Thickness(DevToolsTheme.GutterLg, 0, DevToolsTheme.GutterLg, DevToolsTheme.GutterBase),
+            Margin = new Thickness(0, 0, 0, DevToolsTheme.GutterBase),
         };
         row.Children.Add(DevToolsUi.Pill($"{scopes} scopes", DevToolsTheme.Info));
         row.Children.Add(DevToolsUi.Pill($"{totalKeys} keys total", DevToolsTheme.TextMuted));
@@ -306,7 +300,7 @@ public partial class DevToolsWindow
             BorderBrush = DevToolsTheme.BorderSubtle,
             BorderThickness = DevToolsTheme.ThicknessHairline,
             CornerRadius = DevToolsTheme.RadiusBase,
-            Margin = new Thickness(DevToolsTheme.GutterLg, 0, DevToolsTheme.GutterLg, DevToolsTheme.GutterSm),
+            Margin = new Thickness(0, 0, 0, DevToolsTheme.GutterSm),
             Padding = new Thickness(DevToolsTheme.GutterLg, DevToolsTheme.GutterBase, DevToolsTheme.GutterLg, DevToolsTheme.GutterBase),
             Child = body,
         };
@@ -397,8 +391,7 @@ public partial class DevToolsWindow
             Width = 18,
             Height = 18,
             CornerRadius = new CornerRadius(3),
-            Background = new SolidColorBrush(Color.FromArgb(0x22,
-                (byte)0x80, (byte)0x80, (byte)0x80)),
+            Background = DevToolsTheme.Control,
             VerticalAlignment = VerticalAlignment.Center,
             HorizontalAlignment = HorizontalAlignment.Center,
             Child = new TextBlock

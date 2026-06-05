@@ -85,15 +85,21 @@ internal static class BindingValueCoercion
     }
 
     /// <summary>
-    /// Returns a boxed default for the given non-nullable value type without using reflection.
-    /// Covers all primitives via <see cref="Type.GetTypeCode"/> and the framework value types
-    /// commonly used as DP types (Thickness/CornerRadius/GridLength/Point/Rect/Size/Color, etc.).
-    /// Enums dispatch through <see cref="Enum.ToObject(Type, long)"/>, which has no AOT
-    /// reflection requirements. Unknown user-defined value types fall back to <c>null</c>;
-    /// callers that need a typed default must register a coercion converter or supply a
-    /// non-null PropertyMetadata default.
+    /// Returns a boxed default for the given non-nullable value type without using reflection, or
+    /// <c>null</c> for a value type this table does not know.
     /// </summary>
-    private static object? DefaultValueTypeBox(Type targetType)
+    /// <remarks>
+    /// Covers all primitives via <see cref="Type.GetTypeCode"/>, enums via <see cref="Enum.ToObject(Type, long)"/>,
+    /// and the framework structs Thickness/CornerRadius/Size/Point/Rect/TimeSpan/Guid/DateTimeOffset. It
+    /// deliberately stays reflection-free (AOT/trim-safe), so value types NOT in the table — including the
+    /// framework structs <c>Color</c>, <c>GridLength</c> and <c>Duration</c>, plus any user-defined struct —
+    /// fall back to <c>null</c>. Therefore EVERY value-type consumer of this helper must either apply its own
+    /// typed fallback (as <c>DependencyProperty.GetEffectiveDefaultValue</c> does via <c>Activator.CreateInstance</c>
+    /// on the read path) OR be protected by a null-into-value-type backstop (as the DP write paths are, via
+    /// <c>IsNullForNonNullableValueType</c>): a <c>null</c> returned here must never be pinned as a value-type
+    /// property's effective value, or the generated CLR getter will unbox-crash at layout.
+    /// </remarks>
+    internal static object? DefaultValueTypeBox(Type targetType)
     {
         if (targetType.IsEnum)
             return Enum.ToObject(targetType, 0L);

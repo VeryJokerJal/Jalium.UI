@@ -348,12 +348,16 @@ public class ToggleSwitch : Control
         _switchThumb.Height = thumbH;
         _switchThumb.CornerRadius = new CornerRadius(thumbH / 2.0);
 
-        // Thumb position — use the TARGET width for margin calculation so that
-        // underdamped size oscillations don't cause the thumb to jitter horizontally.
-        // VerticalAlignment is Top, so we compute the vertical centering ourselves
-        // with pixel rounding to avoid subpixel jitter.
-        double marginLeft = ComputeThumbMarginLeft(progress, _thumbWidthSpring.Target);
-        double marginTop = Math.Round((TrackInnerHeight - thumbH) / 2.0);
+        // marginTop AND marginLeft must both stay as continuous doubles. The
+        // previous code used _thumbWidthSpring.Target (a step value of 14 or
+        // 15) to "avoid underdamped horizontal jitter" — but that swapped a
+        // smooth oscillation for a hard 1px step at every hover enter/exit
+        // (target jumps 14→15 → marginLeft jumps 25→24 in a single frame).
+        // Driving marginLeft off the live spring Position gives smooth
+        // horizontal motion that tracks the size change; any overshoot is
+        // sub-pixel and visually identical to the size animation producing it.
+        double marginLeft = ComputeThumbMarginLeft(progress, thumbW);
+        double marginTop = (TrackInnerHeight - thumbH) / 2.0;
         _switchThumb.Margin = new Thickness(marginLeft, marginTop, 0, 0);
 
         // Track colors (interpolate based on position)

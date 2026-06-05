@@ -48,7 +48,7 @@ public class ScrollBar : RangeBase
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Layout)]
     public static readonly DependencyProperty ViewportSizeProperty =
         DependencyProperty.Register(nameof(ViewportSize), typeof(double), typeof(ScrollBar),
-            new PropertyMetadata(0.0, OnLayoutPropertyChanged));
+            new PropertyMetadata(0.0, OnViewportSizeChanged));
 
     /// <summary>
     /// Identifies the ThumbStyle dependency property.
@@ -829,6 +829,25 @@ public class ScrollBar : RangeBase
         {
             scrollBar.UpdateTrackBindings();
             scrollBar.InvalidateMeasure();
+        }
+    }
+
+    // ViewportSize changes every frame as content extent fluctuates (e.g. a
+    // live-updating panel). Unlike Orientation, it does NOT affect the
+    // ScrollBar's own desired size — MeasureOverride derives that purely from
+    // Orientation + Width/Height. The value is forwarded to the Track via
+    // UpdateTrackBindings, and Track.OnLayoutPropertyChanged invalidates the
+    // Track's arrange to reposition the thumb — which is absorbed within the
+    // SAME arrange pass when the ScrollBar arranges its template. Calling
+    // InvalidateMeasure here (as the shared layout callback did) re-queued the
+    // ScrollBar for measure during the arrange pass, forcing LayoutManager to
+    // run a second iteration every frame ("tree re-invalidate", Iterations=2).
+    // Routing only the binding update keeps layout settling in one pass.
+    private static void OnViewportSizeChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+    {
+        if (d is ScrollBar scrollBar)
+        {
+            scrollBar.UpdateTrackBindings();
         }
     }
 

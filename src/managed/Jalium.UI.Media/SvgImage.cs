@@ -183,7 +183,9 @@ public sealed class SvgImage : ImageSource, IDisposable
 
             if (dispatcher != null)
             {
-                dispatcher.BeginInvoke(() => LoadFromString(svgContent));
+                // Fire-and-forget marshal back to the UI thread; BeginInvoke now returns a
+                // DispatcherOperation (awaitable), so discard it to signal intentional no-await.
+                _ = dispatcher.BeginInvoke(() => LoadFromString(svgContent));
             }
             else
             {

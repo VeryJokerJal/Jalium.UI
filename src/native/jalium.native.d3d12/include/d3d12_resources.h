@@ -247,12 +247,32 @@ public:
                          IDWriteTextLayout** layout,
                          uint64_t* outKey = nullptr);
 
+    /// Reports cache hit / miss / eviction counters since last reset.
+    /// Used by DevTools to verify CreateLayout cache effectiveness.
+    static uint64_t QueryLayoutCacheHits() noexcept;
+    static uint64_t QueryLayoutCacheMisses() noexcept;
+    static uint64_t QueryLayoutCacheEvictions() noexcept;
+
 private:
-    uint64_t HashLayoutKey(const wchar_t* text, uint32_t textLength,
-                           float maxWidth, float maxHeight) const noexcept;
+    /// Cache key intentionally excludes maxWidth / maxHeight: those dimensions
+    /// are re-applied to the cached layout via SetMaxWidth/SetMaxHeight on hit
+    /// (cheap — DirectWrite just invalidates internal layout calc), while the
+    /// expensive CreateTextLayout (text parsing + script analysis + font
+    /// fallback + glyph shaping) runs only when the text content or the
+    /// maxLines clamp actually changes. This is what turns animated TextBlock
+    /// content with a fluctuating element width — previously a guaranteed
+    /// miss every frame — into a 95%+ hit-rate scenario.
+    uint64_t HashLayoutKey(const wchar_t* text, uint32_t textLength) const noexcept;
     /// Drop all cached layouts. Called by every setter that mutates a
     /// layout-affecting format property so stale layouts are never served.
     void InvalidateLayoutCache() noexcept;
+    /// Apply the maxLines_ height clamp to a layout. DirectWrite has no
+    /// SetMaxLines API, so we constrain max height to the summed height of the
+    /// first maxLines_ lines. Must run on BOTH the cache-miss and cache-hit
+    /// paths: the cache key excludes maxWidth, so a width change yields a hit
+    /// whose re-applied SetMaxHeight(maxHeight) would otherwise wipe the clamp
+    /// and re-wrap text past the line limit.
+    void ApplyMaxLinesClamp(IDWriteTextLayout* layout) const noexcept;
 
     ComPtr<IDWriteTextFormat> format_;
     IDWriteFactory* factory_ = nullptr;

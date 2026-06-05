@@ -31,6 +31,7 @@ public sealed class PixelShader : DependencyObject
     private byte[]? _shaderBytecode;
     private short _shaderMajorVersion;
     private short _shaderMinorVersion;
+    private string? _sourceHlsl;
 
     #endregion
 
@@ -72,6 +73,22 @@ public sealed class PixelShader : DependencyObject
     {
         get => (ShaderRenderMode)(GetValue(ShaderRenderModeProperty) ?? ShaderRenderMode.Auto);
         set => SetValue(ShaderRenderModeProperty, value);
+    }
+
+    /// <summary>
+    /// Optional SM6 HLSL <b>source</b> for this shader. When set, backends compile
+    /// it at runtime (D3D12 via D3DCompile, Vulkan via DXC→SPIR-V) instead of using
+    /// the precompiled <see cref="UriSource"/> DXBC bytecode. This is the only way
+    /// a custom pixel-shader effect runs on the Vulkan backend, which cannot consume
+    /// DirectX bytecode. The shader must follow the custom-effect convention:
+    /// <c>float4 main(float2 uv : TEXCOORD0) : SV_Target</c> sampling the captured
+    /// content via <c>Texture2D : register(t0)</c> + <c>SamplerState : register(s0)</c>
+    /// with user constants in <c>cbuffer : register(b0)</c>.
+    /// </summary>
+    public string? SourceHlsl
+    {
+        get => _sourceHlsl;
+        set => _sourceHlsl = value;
     }
 
     #endregion

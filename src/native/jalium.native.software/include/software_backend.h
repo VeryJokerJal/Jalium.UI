@@ -371,6 +371,7 @@ public:
         float cornerTL = 0, float cornerTR = 0, float cornerBR = 0, float cornerBL = 0) override;
     void DrawOuterGlowEffect(float x, float y, float w, float h,
         float glowSize, float r, float g, float b, float a, float intensity,
+        float uvOffsetX, float uvOffsetY,
         float cornerTL, float cornerTR, float cornerBR, float cornerBL) override;
     void DrawInnerShadowEffect(float x, float y, float w, float h,
         float blurRadius, float offsetX, float offsetY,

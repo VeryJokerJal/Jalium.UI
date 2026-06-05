@@ -1,4 +1,3 @@
-#define JALIUM_MEDIA_EXPORTS
 #include "jalium_media.h"
 #include "jalium_media_internal.h"
 

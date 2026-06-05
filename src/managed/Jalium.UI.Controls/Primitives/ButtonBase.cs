@@ -167,12 +167,19 @@ public abstract class ButtonBase : ContentControl
 
     private void OnMouseDownHandler(object sender, MouseButtonEventArgs e)
     {
-        if (!IsEnabled) return;
+        if (!CanRespondToInput()) return;
 
         if (e.ChangedButton == MouseButton.Left)
         {
             // Capture mouse to receive mouse events even when mouse moves outside
             CaptureMouse();
+            // Re-assert hover: a mouse-down means the pointer is over this button, but a
+            // just-finished command's async CanExecute flap may have driven IsEnabled false
+            // for a beat, and OnIsEnabledChanged clears IsMouseOver when that happens. Without
+            // restoring it the ClickMode.Release condition (wasPressed && IsMouseOver) in
+            // OnMouseUpHandler would silently drop the click. CanRespondToInput already healed
+            // IsEnabled to true above, so SetIsMouseOver's enabled-guard passes.
+            SetIsMouseOver(true);
             SetIsPressed(true);
             Focus();
 
@@ -187,7 +194,7 @@ public abstract class ButtonBase : ContentControl
 
     private void OnMouseUpHandler(object sender, MouseButtonEventArgs e)
     {
-        if (!IsEnabled) return;
+        if (!CanRespondToInput()) return;
 
         if (e.ChangedButton == MouseButton.Left)
         {
@@ -209,7 +216,10 @@ public abstract class ButtonBase : ContentControl
 
     private void OnMouseEnterHandler(object sender, MouseEventArgs e)
     {
-        if (ClickMode == ClickMode.Hover)
+        // ClickMode.Hover fires on mouse-enter. Gate it through CanRespondToInput so a disabled
+        // button no longer auto-activates on hover (it previously had no IsEnabled check at all),
+        // while a button only transiently disabled by a command's async CanExecute flap still works.
+        if (ClickMode == ClickMode.Hover && CanRespondToInput())
         {
             OnClick();
         }
@@ -246,7 +256,7 @@ public abstract class ButtonBase : ContentControl
 
     private void OnTouchDownHandler(object sender, RoutedEventArgs e)
     {
-        if (!IsEnabled || e is not TouchEventArgs touchArgs) return;
+        if (!CanRespondToInput() || e is not TouchEventArgs touchArgs) return;
         if (!TouchHelper.GetIsTouchInteractive(this)) return;
 
         _activeTouchId = touchArgs.TouchDevice.Id;
@@ -356,7 +366,7 @@ public abstract class ButtonBase : ContentControl
 
     private void OnKeyDownHandler(object sender, KeyEventArgs e)
     {
-        if (!IsEnabled) return;
+        if (!CanRespondToInput()) return;
 
         if (e.Key == Key.Space)
         {
@@ -381,7 +391,7 @@ public abstract class ButtonBase : ContentControl
 
     private void OnKeyUpHandler(object sender, KeyEventArgs e)
     {
-        if (!IsEnabled) return;
+        if (!CanRespondToInput()) return;
 
         if (e.Key == Key.Space && IsPressed)
         {
@@ -461,6 +471,49 @@ public abstract class ButtonBase : ContentControl
         {
             command.Execute(parameter);
         }
+    }
+
+    /// <summary>
+    /// Determines whether the control should respond to an input gesture (mouse / touch / key
+    /// down and up, and <see cref="Primitives.RepeatButton"/> auto-repeat). This is the input-side
+    /// counterpart to <see cref="ExecuteCommand"/>.
+    /// <para>
+    /// When the bound <see cref="Command"/> toggles its <c>CanExecute</c> while it executes
+    /// (e.g. a ReactiveCommand), the change notification is delivered asynchronously, so
+    /// <see cref="UpdateCanExecute"/> can leave <see cref="UIElement.IsEnabled"/> stuck at
+    /// <see langword="false"/> for a beat after the command has already finished. That swallows
+    /// rapid repeat clicks — the user has to move the pointer off the button and back to click
+    /// again. To avoid it, when the element is disabled solely through that transient we re-query
+    /// the command live and, if it can run right now, treat the cached disabled state as stale.
+    /// </para>
+    /// </summary>
+    internal bool CanRespondToInput()
+    {
+        // Effectively enabled (own value AND every ancestor enabled): the common path, no work.
+        if (IsEnabled) return true;
+
+        // Effectively disabled. The only state we override is a transient, command-driven disable.
+        var command = Command;
+        if (command == null) return false; // disabled by the app with no command to re-query: honor it.
+
+        // A disabled ancestor is a real disable, never a command flap — never override it.
+        if (VisualParent is UIElement parent && !parent.IsEnabled) return false;
+
+        // The local IsEnabled is the only thing keeping us disabled. Ask the command whether it can
+        // run at this instant: an async command genuinely mid-flight (or one whose CanExecute is
+        // legitimately false) still reports false and stays blocked; a just-finished command reports
+        // true, revealing the disabled state as a stale async flap.
+        bool canExecuteNow = command is RoutedCommand routedCommand
+            ? routedCommand.CanExecute(CommandParameter, CommandTarget ?? this)
+            : command.CanExecute(CommandParameter);
+        if (!canExecuteNow) return false;
+
+        // Stale flap: heal the local IsEnabled value so the IsEnabled=False style trigger reverts at
+        // once and OnIsEnabledChanged stops clearing IsMouseOver/IsPressed (which ClickMode.Release
+        // depends on). SetCurrentValue keeps any IsEnabled binding intact; the next CanExecuteChanged
+        // writes true as well, so this is idempotent.
+        SetCurrentValue(UIElement.IsEnabledProperty, true);
+        return true;
     }
 
     #endregion

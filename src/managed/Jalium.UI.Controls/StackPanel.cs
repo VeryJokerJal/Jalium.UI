@@ -6,8 +6,10 @@ namespace Jalium.UI.Controls;
 /// </summary>
 public class StackPanel : Panel, IScrollInfo
 {
-    private static double SnapLayoutValue(double value) =>
-        Math.Round(value, MidpointRounding.AwayFromZero);
+    // Layout snapping uses the inherited DPI-aware FrameworkElement.SnapLayoutValue,
+    // which rounds to the nearest physical-pixel boundary. A previous local override
+    // here did a plain Math.Round and silently lost DPI awareness on fractional scales
+    // (1.5 / 1.75), so scroll arrange offsets landed off the physical grid.
 
     #region Dependency Properties
 

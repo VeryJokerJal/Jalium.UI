@@ -63,10 +63,21 @@ public sealed class PathSegmentCollection : Collection<PathSegment>
 }
 
 /// <summary>
-/// Represents a collection of GradientStop objects.
+/// Represents a collection of <see cref="GradientStop"/> objects.
 /// </summary>
+/// <remarks>
+/// Raises <see cref="Changed"/> whenever the collection is structurally mutated (add/insert/
+/// remove/replace/clear) <em>or</em> when any contained stop's <c>Color</c>/<c>Offset</c> changes.
+/// This lets an owning <see cref="GradientBrush"/> invalidate its cached content hash automatically
+/// — closing the previous gap where a raw <c>List&lt;GradientStop&gt;</c> could not notify the brush
+/// that a stop had been added or recoloured. Stays a <see cref="Collection{T}"/> so existing
+/// index/Count/Add/foreach usage is unchanged.
+/// </remarks>
 public sealed class GradientStopCollection : Collection<GradientStop>
 {
+    /// <summary>Occurs when the collection or any contained stop changes.</summary>
+    public event EventHandler? Changed;
+
     /// <summary>
     /// Initializes a new empty GradientStopCollection.
     /// </summary>
@@ -77,9 +88,60 @@ public sealed class GradientStopCollection : Collection<GradientStop>
     /// </summary>
     public GradientStopCollection(IEnumerable<GradientStop> collection)
     {
+        ArgumentNullException.ThrowIfNull(collection);
         foreach (var item in collection)
             Add(item);
     }
+
+    /// <inheritdoc />
+    protected override void InsertItem(int index, GradientStop item)
+    {
+        base.InsertItem(index, item);
+        Subscribe(item);
+        OnChanged();
+    }
+
+    /// <inheritdoc />
+    protected override void SetItem(int index, GradientStop item)
+    {
+        Unsubscribe(this[index]);
+        base.SetItem(index, item);
+        Subscribe(item);
+        OnChanged();
+    }
+
+    /// <inheritdoc />
+    protected override void RemoveItem(int index)
+    {
+        Unsubscribe(this[index]);
+        base.RemoveItem(index);
+        OnChanged();
+    }
+
+    /// <inheritdoc />
+    protected override void ClearItems()
+    {
+        foreach (var stop in this)
+            Unsubscribe(stop);
+        base.ClearItems();
+        OnChanged();
+    }
+
+    private void Subscribe(GradientStop? stop)
+    {
+        if (stop != null)
+            stop.PropertyChangedInternal += OnStopPropertyChanged;
+    }
+
+    private void Unsubscribe(GradientStop? stop)
+    {
+        if (stop != null)
+            stop.PropertyChangedInternal -= OnStopPropertyChanged;
+    }
+
+    private void OnStopPropertyChanged(DependencyProperty property, object? oldValue, object? newValue) => OnChanged();
+
+    private void OnChanged() => Changed?.Invoke(this, EventArgs.Empty);
 }
 
 /// <summary>

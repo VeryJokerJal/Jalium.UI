@@ -1,4 +1,3 @@
-#define JALIUM_MEDIA_EXPORTS
 #include "win_wic_decoder.h"
 #include "win_media_init.h"
 #include "jalium_media_internal.h"

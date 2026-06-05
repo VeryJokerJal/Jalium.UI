@@ -3,10 +3,13 @@
 #include "jalium_path_stats.h"
 #include "jalium_text_options.h"  // JALIUM_TEXT_AA_* enum (TextRenderingMode mapping)
 #include "jalium_flatten.h"
+#include "jalium_triangulate.h"  // FlattenPathToContours / TriangulateCompoundPath / DispatchPathCommand
 
 #include "vulkan_backend.h"
+#include "vulkan_shader_compiler.h"  // runtime HLSL→SPIR-V for DrawShaderEffectFromSource
 #include "vulkan_embedded_shaders.h"
 #include "vulkan_impeller_shaders.h"   // kImpellerSolidFillVertShaderSpv etc. — used by EnsureEngineBatchPipeline
+#include "vulkan_triangle_vc_shaders.h" // kTriangleFillVc{Vert,Frag}ShaderSpv — DrawLine 3-strip AA
 #include "vulkan_minimal.h"
 #include "vulkan_resources.h"
 #include "vulkan_runtime.h"
@@ -17,6 +20,7 @@
 #include <limits>
 #include <cstdio>
 #include <cstdint>
+#include <unordered_map>
 
 #ifdef __ANDROID__
 #include <android/log.h>
@@ -55,6 +59,35 @@ T LoadDeviceProc(PFN_vkGetDeviceProcAddr getProc, VkDevice device, const char* n
 uint32_t ClampExtent(uint32_t value, uint32_t minValue, uint32_t maxValue)
 {
     return std::max(minValue, std::min(value, maxValue));
+}
+
+// ── Monotonic wall-clock helpers for frame-pacing instrumentation ───────
+// Mirrors the QpcNow / QpcDiffNs helpers in d3d12_direct_renderer.cpp so
+// frameGpuWaitNs is measured in the same units across backends.
+inline uint64_t MonotonicNowNs() noexcept
+{
+#if defined(_WIN32)
+    static LARGE_INTEGER s_freq = []() {
+        LARGE_INTEGER f{};
+        QueryPerformanceFrequency(&f);
+        return f;
+    }();
+    LARGE_INTEGER t{};
+    QueryPerformanceCounter(&t);
+    if (s_freq.QuadPart <= 0) return 0;
+    int64_t whole = (t.QuadPart / s_freq.QuadPart) * 1'000'000'000LL;
+    int64_t frac  = ((t.QuadPart % s_freq.QuadPart) * 1'000'000'000LL) / s_freq.QuadPart;
+    return static_cast<uint64_t>(whole + frac);
+#else
+    struct timespec ts{};
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return static_cast<uint64_t>(ts.tv_sec) * 1'000'000'000ull
+         + static_cast<uint64_t>(ts.tv_nsec);
+#endif
+}
+inline uint64_t MonotonicDiffNs(uint64_t start, uint64_t end) noexcept
+{
+    return end > start ? (end - start) : 0;
 }
 
 /// Returns a B8G8R8A8 format matching the sRGB-ness of the swapchain format.
@@ -230,6 +263,12 @@ struct SolidRectPushConstants {
     float quadPoint23[4];
     float geometryFlags[2];
     float padding3[2];
+    // Per-corner radii (TL, TR, BR, BL). Switching the fragment shader
+    // into per-corner-SDF mode is implicit: any non-zero entry here
+    // overrides roundedClipRadius for the outer rounded clip pass.
+    // Uniform-radius callers MUST leave these as all zero.
+    float perCornerRadiusX[4];
+    float perCornerRadiusY[4];
 };
 
 struct BitmapQuadPushConstants {
@@ -264,6 +303,25 @@ struct TriangleFillPushConstants {
     // having the CPU pre-transform every vertex on each FillPath hit.
     float transformRow0[4]; // (m11, m12, dx, _)
     float transformRow1[4]; // (m21, m22, dy, _)
+};
+
+// Layout matches triangle_fill_vc.{vert,frag}.hlsl push-constant block:
+//   float4 color;          // multiplied with per-vertex color in fragment shader
+//   float2 screenSize;     // for clip-space mapping
+//   float2 padding;
+//   float4 roundedClipRect;
+//   float2 roundedClipRadius;
+//   float2 clipFlags;      // clipFlags.x toggles the rounded-clip test
+// Vertices are passed PRE-TRANSFORMED in screen / pixel space — the vc
+// shader does not multiply by any matrix, so callers must apply the active
+// transform CPU-side before recording.
+struct TriangleFillVcPushConstants {
+    float color[4];
+    float screenSize[2];
+    float padding[2];
+    float roundedClipRect[4];
+    float roundedClipRadius[2];
+    float clipFlags[2];
 };
 
 struct TransitionPushConstants {
@@ -333,6 +391,15 @@ struct GlowPushConstants {
     float padding[2];
 };
 
+// Custom-shader-effect vertex-shader push constant (32 bytes): positions the
+// fullscreen quad over the element rect and scales the element-local 0..1 UV
+// into the captured-content sub-region of the (possibly larger) upload image.
+struct CustomShaderGeomPushConstants {
+    float rect[4];        // x, y, w, h (screen px)
+    float screenSize[2];  // viewport px
+    float uvScale[2];     // pixelW/uploadW, pixelH/uploadH
+};
+
 } // namespace
 
 class VulkanRenderTarget::Impl {
@@ -390,6 +457,7 @@ public:
     PFN_vkDestroyDescriptorPool destroyDescriptorPool = nullptr;
     PFN_vkAllocateDescriptorSets allocateDescriptorSets = nullptr;
     PFN_vkUpdateDescriptorSets updateDescriptorSets = nullptr;
+    PFN_vkResetDescriptorPool resetDescriptorPool = nullptr;
     PFN_vkCreatePipelineLayout createPipelineLayout = nullptr;
     PFN_vkDestroyPipelineLayout destroyPipelineLayout = nullptr;
     PFN_vkCreateShaderModule createShaderModule = nullptr;
@@ -406,6 +474,7 @@ public:
     PFN_vkCmdPipelineBarrier cmdPipelineBarrier = nullptr;
     PFN_vkCmdClearColorImage cmdClearColorImage = nullptr;
     PFN_vkCmdCopyBufferToImage cmdCopyBufferToImage = nullptr;
+    PFN_vkCmdBlitImage cmdBlitImage = nullptr;
     PFN_vkCmdBeginRenderPass cmdBeginRenderPass = nullptr;
     PFN_vkCmdEndRenderPass cmdEndRenderPass = nullptr;
     PFN_vkCmdBindPipeline cmdBindPipeline = nullptr;
@@ -423,6 +492,13 @@ public:
     PFN_vkWaitForFences waitForFences = nullptr;
     PFN_vkResetFences resetFences = nullptr;
     PFN_vkDeviceWaitIdle deviceWaitIdle = nullptr;
+
+    // Timestamp queries — optional, gated by timingSupported_ at runtime.
+    PFN_vkCreateQueryPool createQueryPool = nullptr;
+    PFN_vkDestroyQueryPool destroyQueryPool = nullptr;
+    PFN_vkGetQueryPoolResults getQueryPoolResults = nullptr;
+    PFN_vkCmdResetQueryPool cmdResetQueryPool = nullptr;
+    PFN_vkCmdWriteTimestamp cmdWriteTimestamp = nullptr;
 
     VkInstance instance = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
@@ -461,6 +537,16 @@ public:
     VkPipeline glowPipeline = VK_NULL_HANDLE;
     VkPipelineLayout triangleFillPipelineLayout = VK_NULL_HANDLE;
     VkPipeline triangleFillPipeline = VK_NULL_HANDLE;
+    // Per-vertex-coloured triangle pipeline. Same render pass + blend state
+    // as triangleFillPipeline, but vertex format is (vec2 pos + vec4 color)
+    // and the fragment shader interpolates the vertex colour instead of
+    // using a single push-constant color. Drives the DrawLine 3-strip AA
+    // path so each strip can fade out at the feather edges. Shader SPIR-V
+    // lives in vulkan_triangle_vc_shaders.h. Vertex data rides the same
+    // per-frame staging buffer that bitmap/backdrop uploads use — no extra
+    // VkBuffer needed; DrawReplayFrame computes the byte offset.
+    VkPipelineLayout vcTrianglePipelineLayout = VK_NULL_HANDLE;
+    VkPipeline vcTrianglePipeline = VK_NULL_HANDLE;
     // Engine-batches pipeline (VkImpellerVertex / VkVelloVertex: pos+color, 24B):
     // Used by RenderEngineBatches to drain Impeller / Vello engines' GetBatches()
     // into draw calls on the swap-chain. Vertex shader takes a 4×4 MVP push
@@ -478,6 +564,43 @@ public:
     VkDescriptorSet transitionDescriptorSet = VK_NULL_HANDLE;
     VkPipelineLayout transitionPipelineLayout = VK_NULL_HANDLE;
     VkPipeline transitionPipeline = VK_NULL_HANDLE;
+    // Ink-layer blit: per-frame descriptor pools (frameDescriptorSetLayout:
+    // sampled image + sampler) for compositing the resident ink image through
+    // the bitmap pipeline. Sets are allocated FRESH each frame pointing at the
+    // ink layer's *current* image view and the pool is reset at frame start —
+    // never caching across frames, because VkImageView handles can be recycled
+    // after an ink layer is resized/destroyed (a cached set would then dangle).
+    // One pool per in-flight frame so a reset never touches sets still
+    // referenced by the previous frame's command buffer. Sized by literal 2
+    // (MAX_FRAMES_IN_FLIGHT is declared further down — same pattern as timing[2];
+    // the static_assert there pins the two together).
+    VkDescriptorPool inkBlitDescriptorPools[2] = {};
+
+    // ── Custom pixel-shader effect (DrawShaderEffectFromSource) ────────────
+    // Runtime-compiled (DXC) custom shaders. The framework VS + descriptor /
+    // pipeline layouts are shared; one VkPipeline is cached per HLSL source
+    // hash. Per-frame transient descriptor pools (reset at frame start, like
+    // the ink blit) bind the upload image (t0@16), shared sampler (s0@32), and
+    // a slice of the per-frame user-constants UBO (b0@0). Sized [2] = literal
+    // MAX_FRAMES_IN_FLIGHT (declared later; static_assert below pins them).
+    VulkanShaderCompiler customShaderCompiler;
+    VkShaderModule        customShaderVs = VK_NULL_HANDLE;
+    std::vector<uint32_t> customShaderVsSpirv;
+    VkDescriptorSetLayout customShaderDescLayout = VK_NULL_HANDLE;
+    VkPipelineLayout      customShaderPipelineLayout = VK_NULL_HANDLE;
+    std::unordered_map<uint64_t, VkShaderModule> customShaderPsModules;
+    std::unordered_map<uint64_t, VkPipeline>     customShaderPipelines;
+    bool customShaderBaseAttempted = false;
+    bool customShaderBaseReady = false;
+    VkDescriptorPool customShaderDescPools[2] = {};
+    VkBuffer         customShaderConstantsBuffers[2] = {};
+    VkDeviceMemory   customShaderConstantsMemory[2] = {};
+    void*            customShaderConstantsMapped[2] = {};
+    VkDeviceSize     customShaderConstantsCapacity[2] = {};
+
+    bool EnsureCustomShaderBase();
+    VkPipeline EnsureCustomShaderPipeline(uint64_t hash, const char* hlslSource);
+
     VkSemaphore imageAvailable = VK_NULL_HANDLE;
     VkFence inFlight = VK_NULL_HANDLE;
     void* mappedPixels = nullptr;
@@ -490,11 +613,110 @@ public:
     std::vector<VkImageLayout> imageLayouts;
     std::vector<VkImageView> imageViews;
     std::vector<VkFramebuffer> framebuffers;
+    // True when the swapchain was created with TRANSFER_SRC usage, so the
+    // live-scene capture (CaptureLiveSceneToUpload) can blit the rendered colour
+    // image into uploadImage for Backdrop/LiquidGlass instead of sampling the
+    // empty CPU pixelBuffer_ snapshot. Set in RecreateSwapchain from the surface
+    // capabilities; when false the effects fall back to the CPU-pixel source.
+    bool sceneCaptureSupported = false;
     VkImageLayout uploadImageLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     uint32_t uploadWidth = 0;
     uint32_t uploadHeight = 0;
     bool submitted = false;
     bool initialized = false;
+
+    // ── Present-info cache (for VulkanRenderTarget::GetPresentInfo) ────
+    // Captured at the tail of RecreateSwapchain so the host doesn't pay a
+    // surface-capabilities query just to read these. Updated on every
+    // RecreateSwapchain call (resize / vsync toggle).
+    VkPresentModeKHR currentPresentMode = VK_PRESENT_MODE_FIFO_KHR;
+    uint32_t swapImageCount = 0;
+
+    // ── Frame-pacing wait accumulator ───────────────────────────────────
+    // Mirrors D3D12DirectRenderer::accumulatingFrameWaitNs_ / lastFrameGpuWaitNs_
+    // (see project_d3d12_frame_pacing_diagnostics memory entry). Sums the
+    // wall-clock time spent inside vkWaitForFences + vkAcquireNextImageKHR
+    // across every DrawFrame / DrawReplayFrame attempt for one logical
+    // frame; when the attempt succeeds we flush the accumulator into
+    // lastFrameWaitNs_, which QueryGpuStats hands to DevTools as
+    // frameGpuWaitNs. Failed attempts (e.g. waitForFences returns
+    // VK_TIMEOUT — currently unreachable because we pass UINT64_MAX, but
+    // kept for symmetry with the D3D12 timeout-retry path) keep the
+    // accumulator nonzero so the next attempt continues appending.
+    uint64_t accumulatingWaitNs = 0;
+    uint64_t lastFrameWaitNs = 0;
+
+    // ── Present→ready wall clock ────────────────────────────────────────
+    // Mirrors D3D12DirectRenderer::lastFramePresentToReadyNs (see
+    // [[project_d3d12_frame_pacing_diagnostics]] v4 retrospective). Each
+    // successful queueSubmit stamps lastSubmitMonotonicNs; the next frame's
+    // BeginFrame, after observing the fence as complete, diffs that against
+    // the current QPC to derive "wall clock between previous submit and the
+    // moment this frame learned its GPU work was ready to drain".  NOT pure
+    // GPU work — includes Vulkan WSI queue latency / DWM composition / vsync
+    // alignment.  The hardware-timestamp totalGpuNs surfaced through
+    // QueryGpuTiming is the canonical "GPU work" number.  Reset to 0 by
+    // RecreateSwapchain so a stale submit timestamp from a destroyed swap
+    // chain never feeds into the new one.
+    uint64_t lastSubmitMonotonicNs = 0;
+    uint64_t lastFramePresentToReadyNs = 0;
+
+    // ── GPU timestamp queries ───────────────────────────────────────────
+    // One VK_QUERY_TYPE_TIMESTAMP pool sized for kMaxTimingSlotsPerFrame
+    // slots times MAX_FRAMES_IN_FLIGHT (we partition by currentFrame_).
+    // Per-frame state mirrors D3D12's PerFrameTiming: how many slots were
+    // written, what category opened each span, and whether the previous
+    // frame's data is awaiting decode.
+    //
+    // Feature-gated by timingSupported_, set during Initialize when
+    // VkPhysicalDeviceLimits::timestampPeriod > 0 AND the graphics queue
+    // family advertises timestampValidBits > 0 AND query-pool creation
+    // succeeds.  Failure is non-fatal: timingSupported_ stays false and
+    // QueryGpuTiming reports timingValid == 0.
+    static constexpr uint32_t kMaxTimingSlotsPerFrame = 64;
+    enum class GpuTimingCategory : uint8_t {
+        Other = 0,
+        SdfRect = 1,
+        Text = 2,
+        Bitmap = 3,
+        Path = 4,
+        Backdrop = 5,
+        LiquidGlass = 6,
+        kCount = 7,
+        kFrameEnd = 0xFF,
+    };
+    struct GpuTimingSnapshot {
+        uint64_t totalNs = 0;
+        uint64_t categoryNs[static_cast<size_t>(GpuTimingCategory::kCount)] = {};
+        uint32_t batchCount = 0;
+        bool valid = false;
+    };
+    struct PerFrameTiming {
+        uint32_t nextSlot = 0;
+        uint32_t batchCountAtFinalize = 0;
+        bool hasResolvedData = false;
+        std::vector<GpuTimingCategory> spanCategories;
+    };
+
+    VkQueryPool timingQueryPool = VK_NULL_HANDLE;
+    bool timingSupported = false;
+    float timestampPeriodNs = 0.0f;          // VkPhysicalDeviceLimits::timestampPeriod
+    uint64_t timestampValidBitMask = 0;       // (timestampValidBits == 64) ? ~0 : (1<<bits)-1
+    // Sized by literal 2 instead of MAX_FRAMES_IN_FLIGHT — the constexpr is
+    // declared further down in the class body so using it here for an array
+    // bound trips C++ "incomplete-class" rules. The static_assert below
+    // pins the two definitions together: if anyone ever bumps the in-flight
+    // count, the compile error here flags this field for matching update.
+    PerFrameTiming timing[2];
+    GpuTimingSnapshot lastGpuTimingSnapshot{};
+
+    // Record a TIMESTAMP query at the current command-buffer position
+    // tagging the span that opens with `category`. No-op when timing is
+    // disabled or the per-frame budget is exhausted (drop & continue).
+    void MarkGpuTimingPoint(GpuTimingCategory category);
+    // After waitForFences observes the previous submission complete,
+    // decode that frame's resolved timestamps into lastGpuTimingSnapshot_.
+    void DecodeGpuTimingForCompletedFrame(uint32_t frameIndex);
 
     // Multi-frames-in-flight: each frame needs its own command buffer, fences,
     // semaphores, staging buffer (+mapped pointer), upload image, and descriptor set.
@@ -503,6 +725,8 @@ public:
     // writes alias back. Existing helpers (EnsureStagingBuffer / EnsureUploadImage /
     // UpdateFrameDescriptorSet) still operate on the alias with no changes.
     static constexpr uint32_t MAX_FRAMES_IN_FLIGHT = 2;
+    static_assert(MAX_FRAMES_IN_FLIGHT == 2,
+                  "PerFrameTiming timing[2] above must be resized in lockstep with MAX_FRAMES_IN_FLIGHT");
     struct PerFrameState {
         VkCommandBuffer commandBuffer = VK_NULL_HANDLE;
         VkFence inFlight = VK_NULL_HANDLE;
@@ -543,12 +767,27 @@ public:
     void DestroyPerFrameResources();
     void ShrinkPerFrameBuffers();
 
-    bool Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync);
+    bool Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync,
+                    VulkanBackend* ownerBackend = nullptr);
     bool RecreateSwapchain(int32_t width, int32_t height, bool vsync);
     bool EnsureStagingCapacity(VkDeviceSize requiredSize);
     bool EnsureStagingBuffer(uint32_t width, uint32_t height);
     bool EnsureUploadImage(uint32_t width, uint32_t height);
     bool EnsureUploadImageCapacity(uint32_t width, uint32_t height);
+    // Live-scene capture for Backdrop / LiquidGlass: blit the colour image
+    // rendered so far (images[imageIndex], left in COLOR_ATTACHMENT_OPTIMAL by
+    // the previous load-pass) into uploadImage's [0,dstWidth]x[0,dstHeight]
+    // region — the exact region the CPU-pixel cmdCopyBufferToImage would have
+    // filled — so the effect shader samples the real scene instead of the empty
+    // GPU-path pixelBuffer_ snapshot. Leaves uploadImage in
+    // SHADER_READ_ONLY_OPTIMAL and the colour image back in
+    // COLOR_ATTACHMENT_OPTIMAL (ready for the next beginLoadRenderPass). Must be
+    // called OUTSIDE a render pass. Returns false (caller keeps the CPU-pixel
+    // upload) when capture is unavailable.
+    bool CaptureLiveSceneToUpload(uint32_t imageIndex,
+                                  const VkImageSubresourceRange& range,
+                                  VkExtent2D srcExtent,
+                                  uint32_t dstWidth, uint32_t dstHeight);
     bool EnsureTransitionImagesCapacity(uint32_t width, uint32_t height);
     bool EnsureGraphicsResources();
     bool DrawFrame(const uint8_t* pixels, uint32_t width, uint32_t height);
@@ -600,7 +839,7 @@ VulkanRenderTarget::VulkanRenderTarget(
     transformStack_.push_back(CpuTransform {});
     opacityStack_.push_back(1.0f);
     ResizeCpuCanvas();
-    if (!impl_->Initialize(surface, width, height, vsyncEnabled_)) {
+    if (!impl_->Initialize(surface, width, height, vsyncEnabled_, backend_)) {
         VK_LOG("[Vulkan] VulkanRenderTarget: initialization failed, GPU presentation will not work\n");
     }
     // Lazy-construct the default-active engine so the first frame already has
@@ -658,7 +897,176 @@ JaliumResult VulkanRenderTarget::QueryGpuStats(JaliumGpuStats* out) const
         out->pathEntries = static_cast<int32_t>(impellerEngine_->GetEncodedPathCount());
     }
 
+    // Frame-pacing diagnostics (DevTools Perf tab "Frame pacing" block).
+    //   - swapBufferCount: real swap-chain image count resolved during
+    //     RecreateSwapchain (driver may round the requested count up to its
+    //     minimum). Fallback to MAX_FRAMES_IN_FLIGHT when the swap chain
+    //     hasn't been created yet — keeps a sensible non-zero value.
+    //   - frameGpuWaitNs: wall-clock time the UI thread spent inside the
+    //     last frame's vkWaitForFences + vkAcquireNextImageKHR. The Vulkan
+    //     impl issues one big wait per frame (no D3D12-style retry loop
+    //     yet), so this is effectively "GPU + DWM pacing" wall time.
+    //   - swap-chain frame-latency waitable is a DXGI concept; Vulkan
+    //     has no equivalent, so frameWaitableWaitNs stays 0 here.
+    if (impl_) {
+        out->swapBufferCount = impl_->swapImageCount > 0
+            ? static_cast<int32_t>(impl_->swapImageCount)
+            : static_cast<int32_t>(Impl::MAX_FRAMES_IN_FLIGHT);
+        out->frameGpuWaitNs            = static_cast<int64_t>(impl_->lastFrameWaitNs);
+        out->lastFramePresentToReadyNs = static_cast<int64_t>(impl_->lastFramePresentToReadyNs);
+    } else {
+        out->swapBufferCount = static_cast<int32_t>(Impl::MAX_FRAMES_IN_FLIGHT);
+    }
+
     return JALIUM_OK;
+}
+
+JaliumResult VulkanRenderTarget::GetPresentInfo(JaliumPresentInfo* out) const
+{
+    if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *out = JaliumPresentInfo{};
+    if (!impl_ || !impl_->initialized || impl_->swapImageCount == 0) {
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+
+    // swapEffect 字段对 Vulkan 没有 DXGI 那种 enum；我们把 VkPresentModeKHR
+    // 原值放进去（FIFO=2、MAILBOX=1、IMMEDIATE=0、FIFO_RELAXED=3），并在
+    // DevTools 文案里通过 backend 类型分辨语义。这样 host 拿到的不是 0/3/4
+    // 的 D3D12 数字，而是 Vulkan 原值，需要根据 backend 决定怎么解读。
+    // 跟 D3D12 后端共用同一 struct 的代价就是这点歧义，但比每个 backend
+    // 各自定一份 struct 更稳。
+    out->swapEffect = static_cast<int32_t>(impl_->currentPresentMode);
+    out->bufferCount = static_cast<int32_t>(impl_->swapImageCount);
+
+    // Vulkan 的 IMMEDIATE present mode 等价于 D3D12 的 ALLOW_TEARING 路径
+    //（驱动允许在 vsync 之外把帧 flush 出去）。这是 DevTools "tearing on"
+    // 指示灯唯一关心的语义对应。
+    out->tearingEnabled = (impl_->currentPresentMode == VK_PRESENT_MODE_IMMEDIATE_KHR) ? 1 : 0;
+
+    // Vulkan 无 frame-latency-waitable HANDLE 对应物（VK_EXT_present_wait /
+    // VK_GOOGLE_display_timing 是可选 extension，本框架尚未启用），所以这两
+    // 个字段固定为 0。host 据此渲染成 "—" 而不是 "0 frame latency"。
+    out->waitableEnabled = 0;
+    out->maxFrameLatency = 0;
+
+    out->composition = isComposition_ ? 1 : 0;
+    return JALIUM_OK;
+}
+
+JaliumResult VulkanRenderTarget::QueryGpuTiming(JaliumGpuTimingStats* out) const
+{
+    if (!out) return JALIUM_ERROR_INVALID_ARGUMENT;
+    *out = JaliumGpuTimingStats{};
+    if (!impl_ || !impl_->timingSupported) {
+        // Hardware doesn't support TIMESTAMP queries on the graphics queue, or
+        // query-pool creation failed at Impl::Initialize. NOT_SUPPORTED tells
+        // the managed caller "no breakdown ever, don't keep polling".
+        return JALIUM_ERROR_NOT_SUPPORTED;
+    }
+
+    auto snap = impl_->lastGpuTimingSnapshot;
+    if (!snap.valid) {
+        // Successful frame hasn't completed yet — JALIUM_OK + timingValid=0
+        // matches D3D12's contract for "no breakdown yet".
+        out->timingValid = 0;
+        return JALIUM_OK;
+    }
+
+    using Cat = Impl::GpuTimingCategory;
+    out->totalGpuNs     = static_cast<int64_t>(snap.totalNs);
+    out->sdfRectNs      = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::SdfRect)]);
+    out->textNs         = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Text)]);
+    out->bitmapNs       = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Bitmap)]);
+    out->pathNs         = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Path)]);
+    out->backdropNs     = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Backdrop)]);
+    out->liquidGlassNs  = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::LiquidGlass)]);
+    out->otherNs        = static_cast<int64_t>(snap.categoryNs[static_cast<size_t>(Cat::Other)]);
+    out->batchCount     = static_cast<int32_t>(snap.batchCount);
+    out->timingValid    = 1;
+    return JALIUM_OK;
+}
+
+void VulkanRenderTarget::Impl::MarkGpuTimingPoint(GpuTimingCategory category)
+{
+    if (!timingSupported || !cmdWriteTimestamp || timingQueryPool == VK_NULL_HANDLE) return;
+    auto& tf = timing[currentFrame_];
+    if (tf.nextSlot >= kMaxTimingSlotsPerFrame) return;  // budget exhausted — drop.
+
+    uint32_t slot = currentFrame_ * kMaxTimingSlotsPerFrame + tf.nextSlot;
+    // BOTTOM_OF_PIPE_BIT measures *after* all prior commands for this slot
+    // finish — matches D3D12 EndQuery semantics so the deltas are
+    // apples-to-apples across backends.
+    cmdWriteTimestamp(commandBuffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, timingQueryPool, slot);
+    tf.spanCategories.push_back(category);
+    tf.nextSlot += 1;
+}
+
+void VulkanRenderTarget::Impl::DecodeGpuTimingForCompletedFrame(uint32_t frameIndex)
+{
+    if (!timingSupported || !getQueryPoolResults || timingQueryPool == VK_NULL_HANDLE
+        || frameIndex >= MAX_FRAMES_IN_FLIGHT) {
+        return;
+    }
+    auto& tf = timing[frameIndex];
+    if (!tf.hasResolvedData || tf.nextSlot < 2) {
+        return;
+    }
+
+    // Snap the values out of the query pool into a stack array. WAIT bit not
+    // set because the fence on this slot already completed (the caller of
+    // DecodeGpuTimingForCompletedFrame is BeginFrame after vkWaitForFences).
+    std::vector<uint64_t> timestamps(tf.nextSlot, 0);
+    uint32_t base = frameIndex * kMaxTimingSlotsPerFrame;
+    VkResult r = getQueryPoolResults(
+        device, timingQueryPool,
+        base, tf.nextSlot,
+        timestamps.size() * sizeof(uint64_t),
+        timestamps.data(),
+        sizeof(uint64_t),
+        VK_QUERY_RESULT_64_BIT);
+    if (r != VK_SUCCESS) {
+        // VK_NOT_READY can happen on first-frame races; we just skip and
+        // try again next frame. Mark consumed so we don't busy-loop.
+        tf.hasResolvedData = false;
+        return;
+    }
+
+    // Mask off invalid bits (queues with timestampValidBits < 64 leave the
+    // upper bits as garbage — the standard requires us to ignore them).
+    if (timestampValidBitMask != std::numeric_limits<uint64_t>::max()) {
+        for (auto& v : timestamps) v &= timestampValidBitMask;
+    }
+
+    GpuTimingSnapshot snap;
+    snap.batchCount = tf.batchCountAtFinalize;
+    auto ticksToNs = [this](uint64_t ticks) -> uint64_t {
+        // VkPhysicalDeviceLimits::timestampPeriod is "the number of ns
+        // each tick represents" — a floating-point value (typically 1.0
+        // on discrete NVIDIA, ~80 on certain mobile GPUs). Multiplying by
+        // a float keeps full 64-bit ns range without precision loss on
+        // realistic frame durations (under 1 second).
+        return static_cast<uint64_t>(static_cast<double>(ticks) * static_cast<double>(timestampPeriodNs));
+    };
+
+    for (uint32_t i = 0; i + 1 < tf.nextSlot; ++i) {
+        GpuTimingCategory cat = tf.spanCategories[i];
+        if (cat == GpuTimingCategory::kFrameEnd) continue;
+        uint64_t a = timestamps[i];
+        uint64_t b = timestamps[i + 1];
+        if (b <= a) continue;
+        uint64_t ns = ticksToNs(b - a);
+        size_t catIdx = static_cast<size_t>(cat);
+        if (catIdx < static_cast<size_t>(GpuTimingCategory::kCount)) {
+            snap.categoryNs[catIdx] += ns;
+        }
+    }
+    if (tf.nextSlot >= 2) {
+        uint64_t total = timestamps[tf.nextSlot - 1] - timestamps[0];
+        snap.totalNs = ticksToNs(total);
+    }
+    snap.valid = true;
+    lastGpuTimingSnapshot = snap;
+    tf.hasResolvedData = false;
 }
 
 JaliumResult VulkanRenderTarget::Resize(int32_t width, int32_t height)
@@ -907,13 +1315,18 @@ void VulkanRenderTarget::Clear(float r, float g, float b, float a)
     }
 }
 
-bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync)
+bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surfaceDescriptor, int32_t width, int32_t height, bool vsync,
+                                          VulkanBackend* ownerBackend)
 {
+    // Stash the backend pointer so we can publish the chosen physical device
+    // to it once selection succeeds (see the RegisterAdapterInfo call below).
+    VulkanBackend* backend = ownerBackend;
 #if !defined(_WIN32) && !defined(__linux__) && !defined(__ANDROID__)
     (void)surfaceDescriptor;
     (void)width;
     (void)height;
     (void)vsync;
+    (void)backend;
     VK_LOG("[Vulkan] Initialize failed: unsupported platform\n");
     return false;
 #else
@@ -1089,6 +1502,45 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     anisotropySupported = supportedFeatures.samplerAnisotropy == VK_TRUE;
     deviceMaxAnisotropy = anisotropySupported ? physProps.limits.maxSamplerAnisotropy : 1.0f;
 
+    // GPU timing infrastructure (best-effort). Three preconditions must hold:
+    //   1. The device advertises a non-zero timestampPeriod (ns per tick).
+    //   2. The chosen graphics queue family advertises timestampValidBits > 0
+    //      — pure compute queues sometimes have 0 here.
+    //   3. CreateQueryPool below succeeds.
+    // When any of these fail we leave timingSupported_ == false and the
+    // renderer keeps working; QueryGpuTiming simply reports timingValid=0.
+    timestampPeriodNs = physProps.limits.timestampPeriod;
+    {
+        // Probe the queue family's timestampValidBits the cheap way: re-query
+        // the queue family properties we already iterated above. (Re-doing
+        // the call here is simpler than threading the value out of the
+        // selection loop.)
+        uint32_t queueFamilyCount = 0;
+        getPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, nullptr);
+        std::vector<VkQueueFamilyProperties> queueFamilyProps(queueFamilyCount);
+        getPhysicalDeviceQueueFamilyProperties(physicalDevice, &queueFamilyCount, queueFamilyProps.data());
+        uint32_t validBits = (queueFamilyIndex < queueFamilyCount)
+            ? queueFamilyProps[queueFamilyIndex].timestampValidBits
+            : 0;
+        if (validBits == 64) {
+            timestampValidBitMask = std::numeric_limits<uint64_t>::max();
+        } else if (validBits > 0) {
+            timestampValidBitMask = (uint64_t(1) << validBits) - 1u;
+        } else {
+            timestampValidBitMask = 0;
+        }
+    }
+
+    // Publish the chosen adapter to the backend so future GetAdapterInfo
+    // calls can hand out a cached snapshot without re-enumerating physical
+    // devices. Need both VkPhysicalDeviceProperties (already fetched in
+    // physProps) and VkPhysicalDeviceMemoryProperties for the VRAM split.
+    if (backend && getPhysicalDeviceMemoryProperties) {
+        VkPhysicalDeviceMemoryProperties memProps{};
+        getPhysicalDeviceMemoryProperties(physicalDevice, &memProps);
+        backend->RegisterAdapterInfo(physicalDevice, physProps, memProps);
+    }
+
     VkPhysicalDeviceFeatures enabledFeatures {};
     enabledFeatures.samplerAnisotropy = anisotropySupported ? VK_TRUE : VK_FALSE;
 
@@ -1144,6 +1596,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     destroyDescriptorPool = LoadDeviceProc<PFN_vkDestroyDescriptorPool>(getDeviceProcAddr, device, "vkDestroyDescriptorPool");
     allocateDescriptorSets = LoadDeviceProc<PFN_vkAllocateDescriptorSets>(getDeviceProcAddr, device, "vkAllocateDescriptorSets");
     updateDescriptorSets = LoadDeviceProc<PFN_vkUpdateDescriptorSets>(getDeviceProcAddr, device, "vkUpdateDescriptorSets");
+    resetDescriptorPool = LoadDeviceProc<PFN_vkResetDescriptorPool>(getDeviceProcAddr, device, "vkResetDescriptorPool");
     createPipelineLayout = LoadDeviceProc<PFN_vkCreatePipelineLayout>(getDeviceProcAddr, device, "vkCreatePipelineLayout");
     destroyPipelineLayout = LoadDeviceProc<PFN_vkDestroyPipelineLayout>(getDeviceProcAddr, device, "vkDestroyPipelineLayout");
     createShaderModule = LoadDeviceProc<PFN_vkCreateShaderModule>(getDeviceProcAddr, device, "vkCreateShaderModule");
@@ -1160,6 +1613,7 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     cmdPipelineBarrier = LoadDeviceProc<PFN_vkCmdPipelineBarrier>(getDeviceProcAddr, device, "vkCmdPipelineBarrier");
     cmdClearColorImage = LoadDeviceProc<PFN_vkCmdClearColorImage>(getDeviceProcAddr, device, "vkCmdClearColorImage");
     cmdCopyBufferToImage = LoadDeviceProc<PFN_vkCmdCopyBufferToImage>(getDeviceProcAddr, device, "vkCmdCopyBufferToImage");
+    cmdBlitImage = LoadDeviceProc<PFN_vkCmdBlitImage>(getDeviceProcAddr, device, "vkCmdBlitImage");
     cmdBeginRenderPass = LoadDeviceProc<PFN_vkCmdBeginRenderPass>(getDeviceProcAddr, device, "vkCmdBeginRenderPass");
     cmdEndRenderPass = LoadDeviceProc<PFN_vkCmdEndRenderPass>(getDeviceProcAddr, device, "vkCmdEndRenderPass");
     cmdBindPipeline = LoadDeviceProc<PFN_vkCmdBindPipeline>(getDeviceProcAddr, device, "vkCmdBindPipeline");
@@ -1177,6 +1631,14 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     waitForFences = LoadDeviceProc<PFN_vkWaitForFences>(getDeviceProcAddr, device, "vkWaitForFences");
     resetFences = LoadDeviceProc<PFN_vkResetFences>(getDeviceProcAddr, device, "vkResetFences");
     deviceWaitIdle = LoadDeviceProc<PFN_vkDeviceWaitIdle>(getDeviceProcAddr, device, "vkDeviceWaitIdle");
+
+    // Timestamp-query entry points. Treated as optional — null pointers
+    // disable the timing path without failing Initialize.
+    createQueryPool      = LoadDeviceProc<PFN_vkCreateQueryPool>(getDeviceProcAddr, device, "vkCreateQueryPool");
+    destroyQueryPool     = LoadDeviceProc<PFN_vkDestroyQueryPool>(getDeviceProcAddr, device, "vkDestroyQueryPool");
+    getQueryPoolResults  = LoadDeviceProc<PFN_vkGetQueryPoolResults>(getDeviceProcAddr, device, "vkGetQueryPoolResults");
+    cmdResetQueryPool    = LoadDeviceProc<PFN_vkCmdResetQueryPool>(getDeviceProcAddr, device, "vkCmdResetQueryPool");
+    cmdWriteTimestamp    = LoadDeviceProc<PFN_vkCmdWriteTimestamp>(getDeviceProcAddr, device, "vkCmdWriteTimestamp");
     if (!destroyDevice || !getDeviceQueue || !createSwapchain || !destroySwapchain || !getSwapchainImages ||
         !acquireNextImage || !queuePresent || !createCommandPool || !destroyCommandPool ||
         !allocateCommandBuffers || !createBuffer || !destroyBuffer || !getBufferMemoryRequirements ||
@@ -1200,6 +1662,23 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     if (queue == VK_NULL_HANDLE) {
         VK_LOG("[Vulkan] Initialize failed: vkGetDeviceQueue returned null queue\n");
         return false;
+    }
+
+    // Publish the live device to the backend so backend-owned ink layers /
+    // brush shaders build their GPU objects on the same device this window
+    // composites with (the InkCanvas blit samples them directly). See
+    // VulkanBackend::RegisterDeviceContext.
+    if (backend) {
+        VulkanDeviceContext ctx{};
+        ctx.instance            = instance;
+        ctx.physicalDevice      = physicalDevice;
+        ctx.device              = device;
+        ctx.graphicsQueue       = queue;
+        ctx.graphicsQueueFamily = queueFamilyIndex;
+        ctx.getInstanceProcAddr = getInstanceProcAddr;
+        ctx.getDeviceProcAddr   = getDeviceProcAddr;
+        ctx.valid               = true;
+        backend->RegisterDeviceContext(ctx);
     }
 
     VkCommandPoolCreateInfo commandPoolInfo {};
@@ -1251,6 +1730,28 @@ bool VulkanRenderTarget::Impl::Initialize(const JaliumSurfaceDescriptor& surface
     // Start on frame 0; pull its (empty) resources into the alias.
     currentFrame_ = 0;
     BeginFrame();
+
+    // GPU timestamp query pool — best-effort, gated on every precondition.
+    // Total slot count = kMaxTimingSlotsPerFrame * MAX_FRAMES_IN_FLIGHT so
+    // each frame can address its own contiguous slot range without aliasing
+    // the previous (still in-flight) frame's data.
+    if (createQueryPool && destroyQueryPool && getQueryPoolResults &&
+        cmdResetQueryPool && cmdWriteTimestamp &&
+        timestampPeriodNs > 0.0f && timestampValidBitMask != 0)
+    {
+        VkQueryPoolCreateInfo qpInfo{};
+        qpInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+        qpInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qpInfo.queryCount = kMaxTimingSlotsPerFrame * MAX_FRAMES_IN_FLIGHT;
+        if (createQueryPool(device, &qpInfo, nullptr, &timingQueryPool) == VK_SUCCESS &&
+            timingQueryPool != VK_NULL_HANDLE)
+        {
+            timingSupported = true;
+            for (auto& tf : timing) {
+                tf.spanCategories.reserve(kMaxTimingSlotsPerFrame);
+            }
+        }
+    }
 
     initialized = RecreateSwapchain(width, height, vsync);
     if (!initialized) {
@@ -1412,10 +1913,19 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
         }
     }
 
-    const VkImageUsageFlags imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    if ((capabilities.supportedUsageFlags & imageUsage) == 0) {
+    if ((capabilities.supportedUsageFlags & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) == 0) {
         return false;
     }
+    // COLOR_ATTACHMENT is mandatory. The replay path also clears the swapchain
+    // image via cmdClearColorImage (needs TRANSFER_DST) and the Backdrop /
+    // LiquidGlass live-scene capture blits FROM it (needs TRANSFER_SRC). Declare
+    // both transfer bits when the surface advertises them; sceneCaptureSupported
+    // gates the capture so it degrades to the CPU-pixel source when TRANSFER_SRC
+    // is unavailable.
+    VkImageUsageFlags imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+    imageUsage |= (capabilities.supportedUsageFlags &
+                   (VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT));
+    sceneCaptureSupported = (capabilities.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
 
     VkSwapchainKHR oldSwapchain = swapchain;
     VkSwapchainCreateInfoKHR swapchainInfo {};
@@ -1461,6 +1971,19 @@ bool VulkanRenderTarget::Impl::RecreateSwapchain(int32_t width, int32_t height, 
     extent = newExtent;
     format = selectedFormat.format;
     submitted = false;
+
+    // Cache the present-info fields so VulkanRenderTarget::GetPresentInfo
+    // can answer without re-querying surface capabilities. imageCount comes
+    // from the actual swap-chain image count we just resolved, not the
+    // requested one — the driver may round up to the supported minimum.
+    currentPresentMode = selectedPresentMode;
+    swapImageCount = static_cast<uint32_t>(images.size());
+
+    // Reset present-pacing state — a submit timestamp from the destroyed
+    // swap chain is meaningless for the new one and would otherwise show as
+    // a giant lastFramePresentToReadyNs spike on the first frame after resize.
+    lastSubmitMonotonicNs = 0;
+    lastFramePresentToReadyNs = 0;
 
     // Recreate per-image renderFinished semaphores sized to the new image count.
     for (VkSemaphore sem : renderFinishedPerImage) {
@@ -1580,6 +2103,102 @@ bool VulkanRenderTarget::Impl::EnsureUploadImageCapacity(uint32_t width, uint32_
     }
 
     return EnsureUploadImage(width, height);
+}
+
+bool VulkanRenderTarget::Impl::CaptureLiveSceneToUpload(uint32_t imageIndex,
+                                                        const VkImageSubresourceRange& range,
+                                                        VkExtent2D srcExtent,
+                                                        uint32_t dstWidth, uint32_t dstHeight)
+{
+    if (!sceneCaptureSupported || cmdBlitImage == nullptr || cmdPipelineBarrier == nullptr ||
+        uploadImage == VK_NULL_HANDLE || imageIndex >= images.size() ||
+        images[imageIndex] == VK_NULL_HANDLE ||
+        srcExtent.width == 0 || srcExtent.height == 0 || dstWidth == 0 || dstHeight == 0) {
+        return false;
+    }
+    // Clamp the destination region to the allocated upload image.
+    dstWidth = std::min(dstWidth, uploadWidth);
+    dstHeight = std::min(dstHeight, uploadHeight);
+    if (dstWidth == 0 || dstHeight == 0) {
+        return false;
+    }
+
+    // Colour image: COLOR_ATTACHMENT_OPTIMAL (load-pass finalLayout) -> TRANSFER_SRC.
+    VkImageMemoryBarrier colorToSrc {};
+    colorToSrc.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    colorToSrc.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorToSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    colorToSrc.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    colorToSrc.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    colorToSrc.image = images[imageIndex];
+    colorToSrc.subresourceRange = range;
+    colorToSrc.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    colorToSrc.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &colorToSrc);
+
+    // Upload image: current layout -> TRANSFER_DST.
+    VkImageMemoryBarrier uploadToDst {};
+    uploadToDst.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    uploadToDst.oldLayout = uploadImageLayout;
+    uploadToDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uploadToDst.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    uploadToDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    uploadToDst.image = uploadImage;
+    uploadToDst.subresourceRange = range;
+    uploadToDst.srcAccessMask = uploadImageLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        ? VK_ACCESS_SHADER_READ_BIT : 0;
+    uploadToDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    const VkPipelineStageFlags uploadSrcStage = uploadImageLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+        ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
+        : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    cmdPipelineBarrier(commandBuffer, uploadSrcStage, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       0, 0, nullptr, 0, nullptr, 1, &uploadToDst);
+
+    // Blit the rendered colour image into the [0,dst] region of uploadImage —
+    // the same region the CPU-pixel cmdCopyBufferToImage targets, so the effect
+    // shader's UV math (1/pixelWidth, 1/pixelHeight) is unchanged.
+    VkImageBlit blit {};
+    blit.srcSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.srcSubresource.layerCount = 1;
+    blit.srcOffsets[0] = { 0, 0, 0 };
+    blit.srcOffsets[1] = { static_cast<int32_t>(srcExtent.width), static_cast<int32_t>(srcExtent.height), 1 };
+    blit.dstSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    blit.dstSubresource.layerCount = 1;
+    blit.dstOffsets[0] = { 0, 0, 0 };
+    blit.dstOffsets[1] = { static_cast<int32_t>(dstWidth), static_cast<int32_t>(dstHeight), 1 };
+    cmdBlitImage(commandBuffer, images[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                 uploadImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_LINEAR);
+
+    // Upload image -> SHADER_READ for sampling by the effect pipeline.
+    VkImageMemoryBarrier uploadToRead {};
+    uploadToRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    uploadToRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    uploadToRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    uploadToRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    uploadToRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    uploadToRead.image = uploadImage;
+    uploadToRead.subresourceRange = range;
+    uploadToRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    uploadToRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+    cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                       0, 0, nullptr, 0, nullptr, 1, &uploadToRead);
+    uploadImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+    // Colour image back to COLOR_ATTACHMENT_OPTIMAL for the next beginLoadRenderPass.
+    VkImageMemoryBarrier colorBack {};
+    colorBack.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    colorBack.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    colorBack.newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+    colorBack.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    colorBack.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    colorBack.image = images[imageIndex];
+    colorBack.subresourceRange = range;
+    colorBack.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+    colorBack.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+    cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, 0, 0, nullptr, 0, nullptr, 1, &colorBack);
+    return true;
 }
 
 bool VulkanRenderTarget::Impl::EnsureTransitionImagesCapacity(uint32_t width, uint32_t height)
@@ -2826,6 +3445,150 @@ bool VulkanRenderTarget::Impl::EnsureGraphicsResources()
         }
     }
 
+    // ── Per-vertex-coloured triangle pipeline (vc) ─────────────────────
+    // Used by the DrawLine 3-strip AA path (and any future per-vertex-colour
+    // primitive). Push-constant layout = TriangleFillVcPushConstants. Vertex
+    // input format: (vec2 pos at location 0, vec4 color at location 1) with
+    // 24-byte stride — matches both the shader and the interleaved layout
+    // recorded in GpuVcTrianglesCommand.vertices.
+    if (vcTrianglePipelineLayout == VK_NULL_HANDLE) {
+        VkPushConstantRange pushConstantRange {};
+        pushConstantRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT;
+        pushConstantRange.size = sizeof(TriangleFillVcPushConstants);
+
+        VkPipelineLayoutCreateInfo layoutInfo {};
+        layoutInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+        layoutInfo.pushConstantRangeCount = 1;
+        layoutInfo.pPushConstantRanges = &pushConstantRange;
+        if (createPipelineLayout(device, &layoutInfo, nullptr, &vcTrianglePipelineLayout) != VK_SUCCESS || vcTrianglePipelineLayout == VK_NULL_HANDLE) {
+            return false;
+        }
+    }
+
+    if (vcTrianglePipeline == VK_NULL_HANDLE) {
+        VkShaderModule vertexShader = VK_NULL_HANDLE;
+        VkShaderModule fragmentShader = VK_NULL_HANDLE;
+
+        VkShaderModuleCreateInfo vertexShaderInfo {};
+        vertexShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        vertexShaderInfo.codeSize = kTriangleFillVcVertShaderSpvSize;
+        vertexShaderInfo.pCode = kTriangleFillVcVertShaderSpv;
+        if (createShaderModule(device, &vertexShaderInfo, nullptr, &vertexShader) != VK_SUCCESS || vertexShader == VK_NULL_HANDLE) {
+            return false;
+        }
+
+        VkShaderModuleCreateInfo fragmentShaderInfo {};
+        fragmentShaderInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+        fragmentShaderInfo.codeSize = kTriangleFillVcFragShaderSpvSize;
+        fragmentShaderInfo.pCode = kTriangleFillVcFragShaderSpv;
+        if (createShaderModule(device, &fragmentShaderInfo, nullptr, &fragmentShader) != VK_SUCCESS || fragmentShader == VK_NULL_HANDLE) {
+            destroyShaderModule(device, vertexShader, nullptr);
+            return false;
+        }
+
+        VkPipelineShaderStageCreateInfo shaderStages[2] {};
+        shaderStages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        shaderStages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+        shaderStages[0].module = vertexShader;
+        shaderStages[0].pName = "main";
+        shaderStages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        shaderStages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+        shaderStages[1].module = fragmentShader;
+        shaderStages[1].pName = "main";
+
+        VkVertexInputBindingDescription bindingDescription {};
+        bindingDescription.binding = 0;
+        bindingDescription.stride = sizeof(float) * 6;  // pos(2) + color(4)
+        bindingDescription.inputRate = VK_VERTEX_INPUT_RATE_VERTEX;
+
+        VkVertexInputAttributeDescription attributeDescriptions[2] {};
+        attributeDescriptions[0].location = 0;
+        attributeDescriptions[0].binding = 0;
+        attributeDescriptions[0].format = VK_FORMAT_R32G32_SFLOAT;
+        attributeDescriptions[0].offset = 0;
+        attributeDescriptions[1].location = 1;
+        attributeDescriptions[1].binding = 0;
+        attributeDescriptions[1].format = VK_FORMAT_R32G32B32A32_SFLOAT;
+        attributeDescriptions[1].offset = sizeof(float) * 2;
+
+        VkPipelineVertexInputStateCreateInfo vertexInputInfo {};
+        vertexInputInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = 2;
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions;
+
+        VkPipelineInputAssemblyStateCreateInfo inputAssemblyInfo {};
+        inputAssemblyInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+        inputAssemblyInfo.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+
+        VkPipelineViewportStateCreateInfo viewportStateInfo {};
+        viewportStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+        viewportStateInfo.viewportCount = 1;
+        viewportStateInfo.scissorCount = 1;
+
+        VkPipelineRasterizationStateCreateInfo rasterizationInfo {};
+        rasterizationInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+        rasterizationInfo.polygonMode = VK_POLYGON_MODE_FILL;
+        rasterizationInfo.cullMode = VK_CULL_MODE_NONE;
+        rasterizationInfo.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+        rasterizationInfo.lineWidth = 1.0f;
+
+        VkPipelineMultisampleStateCreateInfo multisampleInfo {};
+        multisampleInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+        multisampleInfo.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+
+        // Premultiplied-alpha blending — the AA strips emit (R*a, G*a, B*a, a)
+        // at full-coverage vertices and (0,0,0,0) at the feather edge, so
+        // straight SRC_ALPHA blending interpolates the right colour while
+        // letting the destination show through the feather.
+        VkPipelineColorBlendAttachmentState colorBlendAttachment {};
+        colorBlendAttachment.blendEnable = VK_TRUE;
+        colorBlendAttachment.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachment.colorBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachment.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+        colorBlendAttachment.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+        colorBlendAttachment.alphaBlendOp = VK_BLEND_OP_ADD;
+        colorBlendAttachment.colorWriteMask =
+            VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+
+        VkPipelineColorBlendStateCreateInfo colorBlendInfo {};
+        colorBlendInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+        colorBlendInfo.attachmentCount = 1;
+        colorBlendInfo.pAttachments = &colorBlendAttachment;
+
+        VkDynamicState dynamicStates[] = {
+            VK_DYNAMIC_STATE_VIEWPORT,
+            VK_DYNAMIC_STATE_SCISSOR,
+        };
+        VkPipelineDynamicStateCreateInfo dynamicStateInfo {};
+        dynamicStateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+        dynamicStateInfo.dynamicStateCount = static_cast<uint32_t>(std::size(dynamicStates));
+        dynamicStateInfo.pDynamicStates = dynamicStates;
+
+        VkGraphicsPipelineCreateInfo pipelineInfo {};
+        pipelineInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+        pipelineInfo.stageCount = static_cast<uint32_t>(std::size(shaderStages));
+        pipelineInfo.pStages = shaderStages;
+        pipelineInfo.pVertexInputState = &vertexInputInfo;
+        pipelineInfo.pInputAssemblyState = &inputAssemblyInfo;
+        pipelineInfo.pViewportState = &viewportStateInfo;
+        pipelineInfo.pRasterizationState = &rasterizationInfo;
+        pipelineInfo.pMultisampleState = &multisampleInfo;
+        pipelineInfo.pColorBlendState = &colorBlendInfo;
+        pipelineInfo.pDynamicState = &dynamicStateInfo;
+        pipelineInfo.layout = vcTrianglePipelineLayout;
+        pipelineInfo.renderPass = frameRenderPass;
+        pipelineInfo.subpass = 0;
+        const VkResult pipelineResult = createGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pipelineInfo, nullptr, &vcTrianglePipeline);
+        destroyShaderModule(device, fragmentShader, nullptr);
+        destroyShaderModule(device, vertexShader, nullptr);
+        if (pipelineResult != VK_SUCCESS || vcTrianglePipeline == VK_NULL_HANDLE) {
+            return false;
+        }
+    }
+
 
     if (transitionDescriptorSetLayout == VK_NULL_HANDLE) {
         VkDescriptorSetLayoutBinding bindings[3] {};
@@ -3152,7 +3915,13 @@ bool VulkanRenderTarget::Impl::EnsureStagingCapacity(VkDeviceSize requiredSize)
     VkBufferCreateInfo bufferInfo {};
     bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
     bufferInfo.size = requiredSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    // TRANSFER_SRC is the legacy use (bitmap / backdrop / etc. upload via
+    // vkCmdCopyBufferToImage). VERTEX_BUFFER lets the DrawLine 3-strip AA
+    // path bind a slice of this same staging buffer directly as the vertex
+    // buffer — host-visible memory is slower for vertex fetch than
+    // DEVICE_LOCAL, but the data volume is tiny (~108 bytes per line) and
+    // we save the round trip through an intermediate device-local buffer.
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
     if (createBuffer(device, &bufferInfo, nullptr, &stagingBuffer) != VK_SUCCESS || stagingBuffer == VK_NULL_HANDLE) {
         return false;
@@ -3270,6 +4039,8 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
         glowPipelineLayout = VK_NULL_HANDLE;
         triangleFillPipeline = VK_NULL_HANDLE;
         triangleFillPipelineLayout = VK_NULL_HANDLE;
+        vcTrianglePipeline = VK_NULL_HANDLE;
+        vcTrianglePipelineLayout = VK_NULL_HANDLE;
         transitionPipeline = VK_NULL_HANDLE;
         transitionPipelineLayout = VK_NULL_HANDLE;
         transitionDescriptorSet = VK_NULL_HANDLE;
@@ -3326,6 +4097,9 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     if (destroyPipeline && triangleFillPipeline != VK_NULL_HANDLE) {
         destroyPipeline(device, triangleFillPipeline, nullptr);
     }
+    if (destroyPipeline && vcTrianglePipeline != VK_NULL_HANDLE) {
+        destroyPipeline(device, vcTrianglePipeline, nullptr);
+    }
     if (destroyPipeline && engineBatchPipeline != VK_NULL_HANDLE) {
         destroyPipeline(device, engineBatchPipeline, nullptr);
     }
@@ -3356,6 +4130,9 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     if (destroyPipelineLayout && triangleFillPipelineLayout != VK_NULL_HANDLE) {
         destroyPipelineLayout(device, triangleFillPipelineLayout, nullptr);
     }
+    if (destroyPipelineLayout && vcTrianglePipelineLayout != VK_NULL_HANDLE) {
+        destroyPipelineLayout(device, vcTrianglePipelineLayout, nullptr);
+    }
     if (destroyPipelineLayout && engineBatchPipelineLayout != VK_NULL_HANDLE) {
         destroyPipelineLayout(device, engineBatchPipelineLayout, nullptr);
     }
@@ -3371,6 +4148,60 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     if (destroyDescriptorPool && frameDescriptorPool != VK_NULL_HANDLE) {
         destroyDescriptorPool(device, frameDescriptorPool, nullptr);
     }
+    if (destroyDescriptorPool) {
+        for (auto& inkPool : inkBlitDescriptorPools) {
+            if (inkPool != VK_NULL_HANDLE) {
+                destroyDescriptorPool(device, inkPool, nullptr);
+                inkPool = VK_NULL_HANDLE;
+            }
+        }
+        for (auto& csPool : customShaderDescPools) {
+            if (csPool != VK_NULL_HANDLE) {
+                destroyDescriptorPool(device, csPool, nullptr);
+                csPool = VK_NULL_HANDLE;
+            }
+        }
+    }
+    // Custom shader effect: pipelines, PS modules, shared VS + layouts, and the
+    // per-frame constants UBOs.
+    if (destroyPipeline) {
+        for (auto& kv : customShaderPipelines) {
+            if (kv.second != VK_NULL_HANDLE) destroyPipeline(device, kv.second, nullptr);
+        }
+        customShaderPipelines.clear();
+    }
+    if (destroyShaderModule) {
+        for (auto& kv : customShaderPsModules) {
+            if (kv.second != VK_NULL_HANDLE) destroyShaderModule(device, kv.second, nullptr);
+        }
+        customShaderPsModules.clear();
+        if (customShaderVs != VK_NULL_HANDLE) { destroyShaderModule(device, customShaderVs, nullptr); customShaderVs = VK_NULL_HANDLE; }
+    }
+    if (destroyPipelineLayout && customShaderPipelineLayout != VK_NULL_HANDLE) {
+        destroyPipelineLayout(device, customShaderPipelineLayout, nullptr);
+        customShaderPipelineLayout = VK_NULL_HANDLE;
+    }
+    if (destroyDescriptorSetLayout && customShaderDescLayout != VK_NULL_HANDLE) {
+        destroyDescriptorSetLayout(device, customShaderDescLayout, nullptr);
+        customShaderDescLayout = VK_NULL_HANDLE;
+    }
+    for (uint32_t i = 0; i < MAX_FRAMES_IN_FLIGHT; ++i) {
+        if (customShaderConstantsMapped[i] && customShaderConstantsMemory[i] != VK_NULL_HANDLE) {
+            unmapMemory(device, customShaderConstantsMemory[i]);
+            customShaderConstantsMapped[i] = nullptr;
+        }
+        if (customShaderConstantsBuffers[i] != VK_NULL_HANDLE && destroyBuffer) {
+            destroyBuffer(device, customShaderConstantsBuffers[i], nullptr);
+            customShaderConstantsBuffers[i] = VK_NULL_HANDLE;
+        }
+        if (customShaderConstantsMemory[i] != VK_NULL_HANDLE && freeMemory) {
+            freeMemory(device, customShaderConstantsMemory[i], nullptr);
+            customShaderConstantsMemory[i] = VK_NULL_HANDLE;
+        }
+        customShaderConstantsCapacity[i] = 0;
+    }
+    customShaderBaseReady = false;
+    customShaderBaseAttempted = false;
     if (destroyDescriptorSetLayout && transitionDescriptorSetLayout != VK_NULL_HANDLE) {
         destroyDescriptorSetLayout(device, transitionDescriptorSetLayout, nullptr);
     }
@@ -3396,6 +4227,8 @@ void VulkanRenderTarget::Impl::DestroyGraphicsResources()
     glowPipelineLayout = VK_NULL_HANDLE;
     triangleFillPipeline = VK_NULL_HANDLE;
     triangleFillPipelineLayout = VK_NULL_HANDLE;
+    vcTrianglePipeline = VK_NULL_HANDLE;
+    vcTrianglePipelineLayout = VK_NULL_HANDLE;
     engineBatchPipeline = VK_NULL_HANDLE;
     engineBatchPipelineLayout = VK_NULL_HANDLE;
     transitionPipeline = VK_NULL_HANDLE;
@@ -3655,10 +4488,39 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     // its resources. Fence was created SIGNALED so the very first call falls
     // through immediately. Two frames in flight means this waits at most 1 frame,
     // letting the CPU work of frame N overlap with GPU work of frame N-1.
-    if (waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max()) != VK_SUCCESS) {
-        VK_LOG("[Vulkan] DrawFrame: waitForFences failed\n");
-        EndFrame();
-        return false;
+    //
+    // Frame-pacing instrumentation: every wait (success path) accumulates into
+    // accumulatingWaitNs; the next successful BeginCommandBuffer flushes the
+    // accumulator into lastFrameWaitNs so QueryGpuStats can surface it as
+    // frameGpuWaitNs. Mirrors D3D12DirectRenderer::BeginFrame.
+    {
+        uint64_t waitStart = MonotonicNowNs();
+        VkResult waitResult = waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max());
+        accumulatingWaitNs += MonotonicDiffNs(waitStart, MonotonicNowNs());
+        if (waitResult != VK_SUCCESS) {
+            VK_LOG("[Vulkan] DrawFrame: waitForFences failed\n");
+            // Unlike D3D12 where a failed BeginFrame attempt is part of a
+            // retry loop that keeps the accumulator, Vulkan has no
+            // per-frame retry — the next DrawFrame call is a fresh logical
+            // frame. Zero the accumulator so the next frame's wait time is
+            // not polluted with leftover ticks from this failed attempt.
+            lastFrameWaitNs = accumulatingWaitNs;
+            accumulatingWaitNs = 0;
+            EndFrame();
+            return false;
+        }
+    }
+
+    // Fence observed complete → the per-frame timing data the previous
+    // submission resolved into the query pool is safe to read back now.
+    if (timingSupported) {
+        DecodeGpuTimingForCompletedFrame(currentFrame_);
+    }
+    // Present→ready wall clock: now that the fence signaled, diff from the
+    // last successful queueSubmit's QPC stamp.  Skipped on the very first
+    // frame (lastSubmitMonotonicNs == 0).
+    if (lastSubmitMonotonicNs != 0) {
+        lastFramePresentToReadyNs = MonotonicDiffNs(lastSubmitMonotonicNs, MonotonicNowNs());
     }
 
     if (!EnsureStagingBuffer(width, height)) {
@@ -3680,15 +4542,27 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     std::memcpy(mappedPixels, pixels, static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
 
     uint32_t imageIndex = 0;
-    const VkResult acquireResult = acquireNextImage(device, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailable, VK_NULL_HANDLE, &imageIndex);
-    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-        EndFrame();
-        return true;
-    }
-    if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
-        VK_LOG("[Vulkan] DrawFrame: acquireNextImage failed (%d)\n", static_cast<int>(acquireResult));
-        EndFrame();
-        return false;
+    {
+        // acquireNextImage shares the frame-pacing accumulator with the
+        // fence wait — both are CPU stalls waiting for the GPU / OS to be
+        // ready, so they count toward the same "wait" total reported to
+        // DevTools.
+        uint64_t acqStart = MonotonicNowNs();
+        const VkResult acquireResult = acquireNextImage(device, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailable, VK_NULL_HANDLE, &imageIndex);
+        accumulatingWaitNs += MonotonicDiffNs(acqStart, MonotonicNowNs());
+        if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+            lastFrameWaitNs = accumulatingWaitNs;
+            accumulatingWaitNs = 0;
+            EndFrame();
+            return true;
+        }
+        if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+            VK_LOG("[Vulkan] DrawFrame: acquireNextImage failed (%d)\n", static_cast<int>(acquireResult));
+            lastFrameWaitNs = accumulatingWaitNs;
+            accumulatingWaitNs = 0;
+            EndFrame();
+            return false;
+        }
     }
 
     if (resetFences(device, 1, &inFlight) != VK_SUCCESS) {
@@ -3708,6 +4582,29 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     if (beginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
         return false;
+    }
+
+    // Frame-pacing flush: every wait + acquire that fed into accumulatingWaitNs
+    // is now consumed by a successful frame attempt. Publish the total to the
+    // reader-visible field and reset for the next frame.
+    lastFrameWaitNs = accumulatingWaitNs;
+    accumulatingWaitNs = 0;
+
+    // GPU timing: reset this frame's portion of the query pool, start span 0
+    // tagged as "Other" (covers everything before the first explicit category
+    // mark — pipeline barriers, blit setup, etc.). DrawFrame is the CPU-upload
+    // fallback path, so most of the work after the initial Other slot is
+    // bitmap blit + render-pass composition — recorded as a single Bitmap span
+    // by the explicit Mark below.
+    if (timingSupported && cmdResetQueryPool && cmdWriteTimestamp && timingQueryPool != VK_NULL_HANDLE) {
+        auto& tf = timing[currentFrame_];
+        tf.nextSlot = 0;
+        tf.spanCategories.clear();
+        tf.batchCountAtFinalize = 0;
+        tf.hasResolvedData = false;
+        uint32_t base = currentFrame_ * kMaxTimingSlotsPerFrame;
+        cmdResetQueryPool(commandBuffer, timingQueryPool, base, kMaxTimingSlotsPerFrame);
+        MarkGpuTimingPoint(GpuTimingCategory::Other);
     }
 
     VkImageSubresourceRange subresourceRange {};
@@ -3731,6 +4628,11 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
         ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT
         : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
     cmdPipelineBarrier(commandBuffer, uploadSrcStage, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &uploadToTransfer);
+
+    // The CPU-upload fallback bottleneck is the BufferToImage copy + render
+    // pass composition. Tag the span up to the final timestamp as "Bitmap"
+    // so DevTools sees that DrawFrame is paying for blit, not draw work.
+    MarkGpuTimingPoint(GpuTimingCategory::Bitmap);
 
     VkBufferImageCopy bufferImageCopy {};
     bufferImageCopy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
@@ -3811,6 +4713,18 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
     toPresent.subresourceRange = subresourceRange;
     cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
 
+    // Final timestamp for this frame. kFrameEnd is a sentinel — the decoder
+    // computes total span as (last − first) but skips the kFrameEnd entry
+    // when accumulating per-category time.
+    if (timingSupported && cmdWriteTimestamp && timingQueryPool != VK_NULL_HANDLE) {
+        MarkGpuTimingPoint(GpuTimingCategory::kFrameEnd);
+        timing[currentFrame_].hasResolvedData = true;
+        // DrawFrame doesn't carry a "batch count" concept (it uploads the
+        // full CPU canvas as one blit), so report 1 for "one bitmap blit
+        // per frame" — matches the user-visible expectation.
+        timing[currentFrame_].batchCountAtFinalize = 1;
+    }
+
     if (endCommandBuffer(commandBuffer) != VK_SUCCESS) {
         VK_LOG("[Vulkan] DrawFrame: endCommandBuffer failed\n");
         return false;
@@ -3841,6 +4755,10 @@ bool VulkanRenderTarget::Impl::DrawFrame(const uint8_t* pixels, uint32_t width, 
         EndFrame();
         return false;
     }
+    // Stamp QPC right after the submit returns — the next BeginFrame uses
+    // this to compute lastFramePresentToReadyNs once the corresponding
+    // fence signals.
+    lastSubmitMonotonicNs = MonotonicNowNs();
 
     VkPresentInfoKHR presentInfo {};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -4244,6 +5162,185 @@ void VulkanRenderTarget::Impl::RenderEngineBatches(
     cmdEndRenderPass(cmd);
 }
 
+// ── Custom pixel-shader effect (DrawShaderEffectFromSource) ─────────────────
+// Framework vertex shader: a 6-vertex fullscreen quad positioned over the
+// element rect, emitting element-local UV scaled into the captured content's
+// sub-region of the upload image. Authored for DXC (Vulkan-only) — uses the
+// [[vk::push_constant]] attribute, which FXC would reject but DXC accepts.
+static const char* kCustomShaderVsHlsl = R"__HLSL__(
+struct Geom { float4 rect; float2 screenSize; float2 uvScale; };
+[[vk::push_constant]] Geom geom;
+
+struct VsOut { float4 pos : SV_Position; float2 uv : TEXCOORD0; };
+
+VsOut main(uint vid : SV_VertexID)
+{
+    float2 corners[6] = {
+        float2(0,0), float2(1,0), float2(1,1),
+        float2(0,0), float2(1,1), float2(0,1)
+    };
+    float2 c  = corners[vid];
+    float2 px = geom.rect.xy + c * geom.rect.zw;
+    // Vulkan framebuffer Y increases downward — no Y flip.
+    float2 ndc = (px / geom.screenSize) * 2.0f - 1.0f;
+    VsOut o;
+    o.pos = float4(ndc, 0.0f, 1.0f);
+    o.uv  = c * geom.uvScale;
+    return o;
+}
+)__HLSL__";
+
+bool VulkanRenderTarget::Impl::EnsureCustomShaderBase()
+{
+    if (customShaderBaseReady) return true;
+    if (customShaderBaseAttempted) return false;
+    customShaderBaseAttempted = true;
+
+    if (!customShaderCompiler.Available()) {
+        return false;  // no DXC → caller composites captured content unmodified
+    }
+
+    std::string err;
+    customShaderVsSpirv = customShaderCompiler.Compile(kCustomShaderVsHlsl, "main", "vs_6_0", err);
+    if (customShaderVsSpirv.empty()) {
+        VK_LOG("[Vulkan] custom shader VS compile failed: %s", err.c_str());
+        return false;
+    }
+    VkShaderModuleCreateInfo vsInfo{};
+    vsInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    vsInfo.codeSize = customShaderVsSpirv.size() * sizeof(uint32_t);
+    vsInfo.pCode = customShaderVsSpirv.data();
+    if (createShaderModule(device, &vsInfo, nullptr, &customShaderVs) != VK_SUCCESS) return false;
+
+    // Descriptor layout: b0 UBO (user constants, FS), t0 sampled image (FS),
+    // s0 sampler (FS) — bindings follow the compiler's register→binding shifts.
+    VkDescriptorSetLayoutBinding binds[3]{};
+    binds[0].binding = VulkanShaderCompiler::kBShift + 0;
+    binds[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+    binds[0].descriptorCount = 1;
+    binds[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    binds[1].binding = VulkanShaderCompiler::kTShift + 0;
+    binds[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+    binds[1].descriptorCount = 1;
+    binds[1].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    binds[2].binding = VulkanShaderCompiler::kSShift + 0;
+    binds[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+    binds[2].descriptorCount = 1;
+    binds[2].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT;
+    VkDescriptorSetLayoutCreateInfo dslInfo{};
+    dslInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO;
+    dslInfo.bindingCount = 3;
+    dslInfo.pBindings = binds;
+    if (createDescriptorSetLayout(device, &dslInfo, nullptr, &customShaderDescLayout) != VK_SUCCESS) return false;
+
+    VkPushConstantRange pcRange{};
+    pcRange.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
+    pcRange.offset = 0;
+    pcRange.size = sizeof(CustomShaderGeomPushConstants);
+    VkPipelineLayoutCreateInfo plInfo{};
+    plInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
+    plInfo.setLayoutCount = 1;
+    plInfo.pSetLayouts = &customShaderDescLayout;
+    plInfo.pushConstantRangeCount = 1;
+    plInfo.pPushConstantRanges = &pcRange;
+    if (createPipelineLayout(device, &plInfo, nullptr, &customShaderPipelineLayout) != VK_SUCCESS) return false;
+
+    customShaderBaseReady = true;
+    return true;
+}
+
+VkPipeline VulkanRenderTarget::Impl::EnsureCustomShaderPipeline(uint64_t hash, const char* hlslSource)
+{
+    auto it = customShaderPipelines.find(hash);
+    if (it != customShaderPipelines.end()) return it->second;
+    if (!EnsureCustomShaderBase() || !hlslSource) return VK_NULL_HANDLE;
+
+    std::string err;
+    std::vector<uint32_t> psSpirv = customShaderCompiler.Compile(hlslSource, "main", "ps_6_0", err);
+    if (psSpirv.empty()) {
+        VK_LOG("[Vulkan] custom shader PS compile failed: %s", err.c_str());
+        customShaderPipelines.emplace(hash, VK_NULL_HANDLE);  // cache failure → don't retry
+        return VK_NULL_HANDLE;
+    }
+    VkShaderModuleCreateInfo psInfo{};
+    psInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
+    psInfo.codeSize = psSpirv.size() * sizeof(uint32_t);
+    psInfo.pCode = psSpirv.data();
+    VkShaderModule psModule = VK_NULL_HANDLE;
+    if (createShaderModule(device, &psInfo, nullptr, &psModule) != VK_SUCCESS) {
+        customShaderPipelines.emplace(hash, VK_NULL_HANDLE);
+        return VK_NULL_HANDLE;
+    }
+    customShaderPsModules.emplace(hash, psModule);
+
+    VkPipelineShaderStageCreateInfo stages[2]{};
+    stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
+    stages[0].module = customShaderVs;
+    stages[0].pName = "main";
+    stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+    stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
+    stages[1].module = psModule;
+    stages[1].pName = "main";
+
+    VkPipelineVertexInputStateCreateInfo vi{};
+    vi.sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO;
+    VkPipelineInputAssemblyStateCreateInfo ia{};
+    ia.sType = VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO;
+    ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    VkPipelineViewportStateCreateInfo vp{};
+    vp.sType = VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO;
+    vp.viewportCount = 1; vp.scissorCount = 1;
+    VkPipelineRasterizationStateCreateInfo rs{};
+    rs.sType = VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO;
+    rs.polygonMode = VK_POLYGON_MODE_FILL;
+    rs.cullMode = VK_CULL_MODE_NONE;
+    rs.frontFace = VK_FRONT_FACE_COUNTER_CLOCKWISE;
+    rs.lineWidth = 1.0f;
+    VkPipelineMultisampleStateCreateInfo ms{};
+    ms.sType = VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO;
+    ms.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+    // Premultiplied source-over (matches the rest of the Vulkan composite path).
+    VkPipelineColorBlendAttachmentState ba{};
+    ba.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
+                        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+    ba.blendEnable = VK_TRUE;
+    ba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+    ba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    ba.colorBlendOp = VK_BLEND_OP_ADD;
+    ba.srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+    ba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
+    ba.alphaBlendOp = VK_BLEND_OP_ADD;
+    VkPipelineColorBlendStateCreateInfo cb{};
+    cb.sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO;
+    cb.attachmentCount = 1; cb.pAttachments = &ba;
+    VkDynamicState dyn[2] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
+    VkPipelineDynamicStateCreateInfo dynInfo{};
+    dynInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO;
+    dynInfo.dynamicStateCount = 2; dynInfo.pDynamicStates = dyn;
+
+    VkGraphicsPipelineCreateInfo pInfo{};
+    pInfo.sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO;
+    pInfo.stageCount = 2; pInfo.pStages = stages;
+    pInfo.pVertexInputState = &vi;
+    pInfo.pInputAssemblyState = &ia;
+    pInfo.pViewportState = &vp;
+    pInfo.pRasterizationState = &rs;
+    pInfo.pMultisampleState = &ms;
+    pInfo.pColorBlendState = &cb;
+    pInfo.pDynamicState = &dynInfo;
+    pInfo.layout = customShaderPipelineLayout;
+    pInfo.renderPass = frameRenderPass;
+    pInfo.subpass = 0;
+
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    if (createGraphicsPipelines(device, VK_NULL_HANDLE, 1, &pInfo, nullptr, &pipeline) != VK_SUCCESS) {
+        pipeline = VK_NULL_HANDLE;
+    }
+    customShaderPipelines.emplace(hash, pipeline);
+    return pipeline;
+}
+
 bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTarget::GpuReplayCommand>& commands,
                                                const float clearColor[4],
                                                const std::vector<VkImpellerDrawBatch>* engineBatches)
@@ -4257,11 +5354,26 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     }
     // Wait for this slot's previous submission before touching its command buffer
     // or per-frame resources. Fence is SIGNALED-initialized so the first call
-    // returns immediately.
-    if (waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max()) != VK_SUCCESS) {
-        VK_LOG("[Vulkan] DrawReplayFrame: waitForFences failed");
-        EndFrame();
-        return false;
+    // returns immediately. See DrawFrame for the frame-pacing accumulator
+    // rationale — same instrumentation here.
+    {
+        uint64_t waitStart = MonotonicNowNs();
+        VkResult waitResult = waitForFences(device, 1, &inFlight, VK_TRUE, std::numeric_limits<uint64_t>::max());
+        accumulatingWaitNs += MonotonicDiffNs(waitStart, MonotonicNowNs());
+        if (waitResult != VK_SUCCESS) {
+            VK_LOG("[Vulkan] DrawReplayFrame: waitForFences failed");
+            // See DrawFrame for the accumulator-zeroing rationale.
+            lastFrameWaitNs = accumulatingWaitNs;
+            accumulatingWaitNs = 0;
+            EndFrame();
+            return false;
+        }
+    }
+    if (timingSupported) {
+        DecodeGpuTimingForCompletedFrame(currentFrame_);
+    }
+    if (lastSubmitMonotonicNs != 0) {
+        lastFramePresentToReadyNs = MonotonicDiffNs(lastSubmitMonotonicNs, MonotonicNowNs());
     }
     if (!EnsureGraphicsResources()) {
         VK_LOG("[Vulkan] DrawReplayFrame: EnsureGraphicsResources failed");
@@ -4281,6 +5393,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     std::vector<VkDeviceSize> polygonOffsets(commands.size(), 0);
     std::vector<VkDeviceSize> transitionFromOffsets(commands.size(), 0);
     std::vector<VkDeviceSize> transitionToOffsets(commands.size(), 0);
+    std::vector<VkDeviceSize> vcTriangleOffsets(commands.size(), 0);
+    std::vector<VkDeviceSize> customShaderOffsets(commands.size(), 0);
     uint32_t maxBitmapWidth = 0;
     uint32_t maxBitmapHeight = 0;
     uint32_t maxBackdropWidth = 0;
@@ -4297,12 +5411,18 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     VkDeviceSize totalBlurBytes = 0;
     VkDeviceSize totalPolygonBytes = 0;
     VkDeviceSize totalTransitionBytes = 0;
+    VkDeviceSize totalVcTriangleBytes = 0;
+    VkDeviceSize totalCustomShaderBytes = 0;
+    uint32_t maxCustomShaderWidth = 0;
+    uint32_t maxCustomShaderHeight = 0;
+    bool hasCustomShaderCommands = false;
     bool hasBitmapCommands = false;
     bool hasBackdropCommands = false;
     bool hasLiquidGlassCommands = false;
     bool hasBlurCommands = false;
     bool hasPolygonCommands = false;
     bool hasTransitionCommands = false;
+    bool hasVcTriangleCommands = false;
 
     for (size_t index = 0; index < commands.size(); ++index) {
         const auto& command = commands[index];
@@ -4395,22 +5515,54 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             maxTransitionWidth = std::max(maxTransitionWidth, command.transition.pixelWidth);
             maxTransitionHeight = std::max(maxTransitionHeight, command.transition.pixelHeight);
             hasTransitionCommands = true;
+            continue;
+        }
+
+        if (command.kind == GpuReplayCommandKind::VcTriangles) {
+            // Validate vertex stride invariant (6 floats per vertex).
+            const auto& verts = command.vcTriangles.vertices;
+            if (verts.size() < 6 || (verts.size() % 6) != 0 ||
+                verts.size() != static_cast<size_t>(command.vcTriangles.vertexCount) * 6u) {
+                return false;
+            }
+            vcTriangleOffsets[index] = totalVcTriangleBytes;
+            totalVcTriangleBytes += static_cast<VkDeviceSize>(verts.size() * sizeof(float));
+            hasVcTriangleCommands = true;
+        }
+
+        if (command.kind == GpuReplayCommandKind::CustomShader) {
+            const auto& cs = command.customShader;
+            const size_t expectedSize = static_cast<size_t>(cs.pixelWidth) * static_cast<size_t>(cs.pixelHeight) * 4u;
+            if (cs.pixelWidth == 0 || cs.pixelHeight == 0 || cs.pixels.size() != expectedSize) {
+                return false;
+            }
+            customShaderOffsets[index] = totalCustomShaderBytes;
+            totalCustomShaderBytes += static_cast<VkDeviceSize>(expectedSize);
+            maxCustomShaderWidth = std::max(maxCustomShaderWidth, cs.pixelWidth);
+            maxCustomShaderHeight = std::max(maxCustomShaderHeight, cs.pixelHeight);
+            hasCustomShaderCommands = true;
         }
     }
 
-    if (hasBitmapCommands || hasBackdropCommands || hasLiquidGlassCommands || hasBlurCommands) {
+    // Custom-shader commands also upload their (cropped) captured content to the
+    // shared upload image and live in the staging buffer's trailing region, so
+    // they participate in the upload-image sizing + staging total below.
+    const VkDeviceSize totalStagingBytes = totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes
+        + totalBlurBytes + totalPolygonBytes + totalTransitionBytes + totalVcTriangleBytes + totalCustomShaderBytes;
+    if (hasBitmapCommands || hasBackdropCommands || hasLiquidGlassCommands || hasBlurCommands || hasCustomShaderCommands) {
         if ((hasBitmapCommands && bitmapPipeline == VK_NULL_HANDLE) ||
             (hasBackdropCommands && backdropPipeline == VK_NULL_HANDLE) ||
             (hasLiquidGlassCommands && liquidGlassPipeline == VK_NULL_HANDLE) ||
             (hasBlurCommands && blurPipeline == VK_NULL_HANDLE) ||
             !EnsureUploadImageCapacity(
-                std::max(std::max(std::max(maxBitmapWidth, maxBackdropWidth), maxBlurWidth), maxLiquidGlassWidth),
-                std::max(std::max(std::max(maxBitmapHeight, maxBackdropHeight), maxBlurHeight), maxLiquidGlassHeight)) ||
+                std::max(std::max(std::max(std::max(maxBitmapWidth, maxBackdropWidth), maxBlurWidth), maxLiquidGlassWidth), maxCustomShaderWidth),
+                std::max(std::max(std::max(std::max(maxBitmapHeight, maxBackdropHeight), maxBlurHeight), maxLiquidGlassHeight), maxCustomShaderHeight)) ||
             !UpdateFrameDescriptorSet() ||
-            !EnsureStagingCapacity(totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes + totalBlurBytes + totalPolygonBytes + totalTransitionBytes)) {
+            !EnsureStagingCapacity(totalStagingBytes)) {
             return false;
         }
-    } else if ((hasPolygonCommands || hasTransitionCommands) && !EnsureStagingCapacity(totalPolygonBytes + totalTransitionBytes)) {
+    } else if ((hasPolygonCommands || hasTransitionCommands || hasVcTriangleCommands)
+               && !EnsureStagingCapacity(totalPolygonBytes + totalTransitionBytes + totalVcTriangleBytes)) {
         return false;
     }
 
@@ -4423,7 +5575,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     }
 
     auto* stagingBytes = static_cast<uint8_t*>(mappedPixels);
-    if ((hasBitmapCommands || hasBackdropCommands || hasLiquidGlassCommands || hasBlurCommands || hasPolygonCommands || hasTransitionCommands) && !stagingBytes) {
+    if ((hasBitmapCommands || hasBackdropCommands || hasLiquidGlassCommands || hasBlurCommands
+         || hasPolygonCommands || hasTransitionCommands || hasVcTriangleCommands || hasCustomShaderCommands) && !stagingBytes) {
         return false;
     }
 
@@ -4450,18 +5603,38 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             const VkDeviceSize baseOffset = totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes + totalBlurBytes + totalPolygonBytes;
             std::memcpy(stagingBytes + baseOffset + transitionFromOffsets[index], command.transition.fromPixels.data(), pixelBytes);
             std::memcpy(stagingBytes + baseOffset + transitionToOffsets[index], command.transition.toPixels.data(), pixelBytes);
+        } else if (command.kind == GpuReplayCommandKind::VcTriangles) {
+            const auto& verts = command.vcTriangles.vertices;
+            const size_t vertexBytes = verts.size() * sizeof(float);
+            const VkDeviceSize baseOffset = totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes
+                                          + totalBlurBytes + totalPolygonBytes + totalTransitionBytes;
+            std::memcpy(stagingBytes + baseOffset + vcTriangleOffsets[index], verts.data(), vertexBytes);
+        } else if (command.kind == GpuReplayCommandKind::CustomShader) {
+            const auto& cs = command.customShader;
+            const size_t pixelBytes = static_cast<size_t>(cs.pixelWidth) * static_cast<size_t>(cs.pixelHeight) * 4u;
+            const VkDeviceSize baseOffset = totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes
+                                          + totalBlurBytes + totalPolygonBytes + totalTransitionBytes + totalVcTriangleBytes;
+            std::memcpy(stagingBytes + baseOffset + customShaderOffsets[index], cs.pixels.data(), pixelBytes);
         }
     }
 
     uint32_t imageIndex = 0;
-    const VkResult acquireResult = acquireNextImage(device, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailable, VK_NULL_HANDLE, &imageIndex);
-    if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
-        EndFrame();
-        return true;
-    }
-    if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
-        EndFrame();
-        return false;
+    {
+        uint64_t acqStart = MonotonicNowNs();
+        const VkResult acquireResult = acquireNextImage(device, swapchain, std::numeric_limits<uint64_t>::max(), imageAvailable, VK_NULL_HANDLE, &imageIndex);
+        accumulatingWaitNs += MonotonicDiffNs(acqStart, MonotonicNowNs());
+        if (acquireResult == VK_ERROR_OUT_OF_DATE_KHR) {
+            lastFrameWaitNs = accumulatingWaitNs;
+            accumulatingWaitNs = 0;
+            EndFrame();
+            return true;
+        }
+        if (acquireResult != VK_SUCCESS && acquireResult != VK_SUBOPTIMAL_KHR) {
+            lastFrameWaitNs = accumulatingWaitNs;
+            accumulatingWaitNs = 0;
+            EndFrame();
+            return false;
+        }
     }
 
     if (resetFences(device, 1, &inFlight) != VK_SUCCESS) {
@@ -4480,6 +5653,25 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     if (beginCommandBuffer(commandBuffer, &beginInfo) != VK_SUCCESS) {
         EndFrame();
         return false;
+    }
+
+    // Frame-pacing flush — see DrawFrame for the rationale.
+    lastFrameWaitNs = accumulatingWaitNs;
+    accumulatingWaitNs = 0;
+
+    // Reset this frame's slot of the timestamp query pool and write the
+    // initial "Other" timestamp.  Subsequent MarkGpuTimingPoint calls in
+    // the per-command loop below add per-category boundaries; the final
+    // kFrameEnd timestamp is written right before endCommandBuffer.
+    if (timingSupported && cmdResetQueryPool && cmdWriteTimestamp && timingQueryPool != VK_NULL_HANDLE) {
+        auto& tf = timing[currentFrame_];
+        tf.nextSlot = 0;
+        tf.spanCategories.clear();
+        tf.batchCountAtFinalize = 0;
+        tf.hasResolvedData = false;
+        uint32_t base = currentFrame_ * kMaxTimingSlotsPerFrame;
+        cmdResetQueryPool(commandBuffer, timingQueryPool, base, kMaxTimingSlotsPerFrame);
+        MarkGpuTimingPoint(GpuTimingCategory::Other);
     }
 
     VkImageSubresourceRange subresourceRange {};
@@ -4546,6 +5738,29 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         cmdSetViewport(commandBuffer, 0, 1, &viewport);
     };
 
+    // Per-command timing category — only emits a TIMESTAMP boundary when the
+    // category actually changes, so a run of N SolidRect commands costs just
+    // one MarkGpuTimingPoint at the start of the run instead of N. The
+    // initial value of `lastTimingCategory` matches the "Other" span the
+    // BeginCommandBuffer-time mark opened, so the very first non-Other
+    // command in the list still triggers a boundary write.
+    GpuTimingCategory lastTimingCategory = GpuTimingCategory::Other;
+
+    // Reset this frame's ink-blit descriptor pool on the first InkLayer command
+    // encountered (lazily, so frames with no ink pay nothing). The pool for this
+    // frame slot is safe to reset because waitForFences at frame start already
+    // observed its previous use complete.
+    bool inkBlitPoolReset = false;
+    // Custom-shader effect: same per-frame transient pattern. The constants
+    // cursor sub-allocates the per-frame user-constants UBO (256-aligned).
+    bool customShaderPoolReset = false;
+    VkDeviceSize customConstantsCursor = 0;
+    const VkDeviceSize kCustomConstantsAlign = 256;  // ≥ any minUniformBufferOffsetAlignment
+
+    // Staging base offset of the custom-shader region (after every other region).
+    const VkDeviceSize customShaderStagingBase = totalBitmapBytes + totalBackdropBytes + totalLiquidGlassBytes
+        + totalBlurBytes + totalPolygonBytes + totalTransitionBytes + totalVcTriangleBytes;
+
     for (size_t index = 0; index < commands.size(); ++index) {
         const auto& command = commands[index];
         VkRect2D commandScissor = scissor;
@@ -4561,6 +5776,40 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
         if (commandScissor.extent.width == 0 || commandScissor.extent.height == 0) {
             continue;
+        }
+
+        if (timingSupported) {
+            GpuTimingCategory cat;
+            switch (command.kind) {
+            case GpuReplayCommandKind::SolidRect:
+            case GpuReplayCommandKind::ClearRect:
+                cat = GpuTimingCategory::SdfRect; break;
+            case GpuReplayCommandKind::Bitmap:
+            case GpuReplayCommandKind::InkLayer:
+            case GpuReplayCommandKind::CustomShader:
+                cat = GpuTimingCategory::Bitmap; break;
+            case GpuReplayCommandKind::FilledPolygon:
+                cat = GpuTimingCategory::Path; break;
+            case GpuReplayCommandKind::Backdrop:
+            case GpuReplayCommandKind::Blur:         // Blur shares the backdrop blur pipeline
+                cat = GpuTimingCategory::Backdrop; break;
+            case GpuReplayCommandKind::LiquidGlass:
+                cat = GpuTimingCategory::LiquidGlass; break;
+            case GpuReplayCommandKind::VcTriangles:
+                // Used by DrawLine 3-strip AA — treat as SdfRect-class
+                // (analytical edge-aliased rect-ish primitive). Lets the
+                // DevTools breakdown account stroke AA work against the
+                // same bucket as the SDF rect / rounded-rect pipelines.
+                cat = GpuTimingCategory::SdfRect; break;
+            case GpuReplayCommandKind::Glow:
+            case GpuReplayCommandKind::Transition:
+            default:
+                cat = GpuTimingCategory::Other; break;
+            }
+            if (cat != lastTimingCategory) {
+                MarkGpuTimingPoint(cat);
+                lastTimingCategory = cat;
+            }
         }
 
         if (command.kind == GpuReplayCommandKind::SolidRect) {
@@ -4585,6 +5834,12 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
                 pushConstants.roundedClipRadius[0] = command.roundedClipRadiusX;
                 pushConstants.roundedClipRadius[1] = command.roundedClipRadiusY;
                 pushConstants.clipFlags[0] = 1.0f;
+                // Per-corner radii. Default-initialised to zero, so the
+                // memcpy only matters for PerCornerRoundedRectangle paths
+                // that actually set non-zero values; otherwise the shader's
+                // perCornerSum stays at 0 and the uniform-radius path runs.
+                std::memcpy(pushConstants.perCornerRadiusX, command.perCornerRadiusX, sizeof(pushConstants.perCornerRadiusX));
+                std::memcpy(pushConstants.perCornerRadiusY, command.perCornerRadiusY, sizeof(pushConstants.perCornerRadiusY));
             }
             if (command.hasInnerRoundedClip) {
                 pushConstants.innerRoundedClipRect[0] = command.innerRoundedClipLeft;
@@ -4810,6 +6065,11 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
 
         if (command.kind == GpuReplayCommandKind::Backdrop) {
+            // Prefer the live rendered scene (real refraction/blur source); fall
+            // back to the CPU-pixel upload when TRANSFER_SRC capture is
+            // unavailable (then the source is the GPU-path pixelBuffer_ snapshot).
+            if (!CaptureLiveSceneToUpload(imageIndex, subresourceRange, extent,
+                                          command.backdrop.pixelWidth, command.backdrop.pixelHeight)) {
             VkImageMemoryBarrier uploadToTransfer {};
             uploadToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             uploadToTransfer.oldLayout = uploadImageLayout;
@@ -4846,6 +6106,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             uploadToShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &uploadToShaderRead);
             uploadImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
 
             beginLoadRenderPass();
             cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
@@ -4890,6 +6151,10 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         }
 
         if (command.kind == GpuReplayCommandKind::LiquidGlass) {
+            // Live rendered scene as the refraction/blur source; CPU-pixel
+            // fallback when TRANSFER_SRC capture is unavailable.
+            if (!CaptureLiveSceneToUpload(imageIndex, subresourceRange, extent,
+                                          command.liquidGlass.pixelWidth, command.liquidGlass.pixelHeight)) {
             VkImageMemoryBarrier uploadToTransfer {};
             uploadToTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
             uploadToTransfer.oldLayout = uploadImageLayout;
@@ -4926,6 +6191,7 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             uploadToShaderRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
             cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &uploadToShaderRead);
             uploadImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            }
 
             beginLoadRenderPass();
             cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
@@ -5064,6 +6330,337 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
             continue;
         }
 
+        if (command.kind == GpuReplayCommandKind::VcTriangles) {
+            // Per-vertex-coloured triangle list. Vertex data lives at a known
+            // byte offset inside the per-frame staging buffer (which now
+            // doubles as a vertex buffer — see EnsureStagingCapacity's usage
+            // flags). Bind it directly, push the tint = white + clip flags,
+            // and issue a single vkCmdDraw.
+            if (vcTrianglePipeline == VK_NULL_HANDLE || stagingBuffer == VK_NULL_HANDLE) {
+                continue;  // pipeline not ready — skip silently rather than break the frame.
+            }
+            beginLoadRenderPass();
+            cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
+
+            TriangleFillVcPushConstants pushConstants {};
+            // Push-constant color is a tint multiplier — pre-multiplied
+            // alpha colours from the vertex data already encode the line's
+            // intended colour, so the tint is white. Keeping it as a push
+            // constant (rather than removing it from the shader) keeps the
+            // vc pipeline reusable for future gradient / non-AA per-vertex
+            // colour primitives.
+            pushConstants.color[0] = 1.0f;
+            pushConstants.color[1] = 1.0f;
+            pushConstants.color[2] = 1.0f;
+            pushConstants.color[3] = 1.0f;
+            pushConstants.screenSize[0] = static_cast<float>(extent.width);
+            pushConstants.screenSize[1] = static_cast<float>(extent.height);
+            if (command.hasRoundedClip) {
+                pushConstants.roundedClipRect[0] = command.roundedClipLeft;
+                pushConstants.roundedClipRect[1] = command.roundedClipTop;
+                pushConstants.roundedClipRect[2] = command.roundedClipRight;
+                pushConstants.roundedClipRect[3] = command.roundedClipBottom;
+                pushConstants.roundedClipRadius[0] = command.roundedClipRadiusX;
+                pushConstants.roundedClipRadius[1] = command.roundedClipRadiusY;
+                pushConstants.clipFlags[0] = 1.0f;
+            }
+
+            cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, vcTrianglePipeline);
+            cmdPushConstants(
+                commandBuffer,
+                vcTrianglePipelineLayout,
+                VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                0,
+                sizeof(pushConstants),
+                &pushConstants);
+
+            const VkDeviceSize vertexBaseOffset = totalBitmapBytes + totalBackdropBytes
+                                                + totalLiquidGlassBytes + totalBlurBytes
+                                                + totalPolygonBytes + totalTransitionBytes
+                                                + vcTriangleOffsets[index];
+            cmdBindVertexBuffers(commandBuffer, 0, 1, &stagingBuffer, &vertexBaseOffset);
+            cmdDraw(commandBuffer, command.vcTriangles.vertexCount, 1, 0, 0);
+            cmdEndRenderPass(commandBuffer);
+            continue;
+        }
+
+        if (command.kind == GpuReplayCommandKind::InkLayer) {
+            // Composite a resident ink-layer image through the bitmap pipeline,
+            // sampling it directly (no upload). A fresh descriptor set is taken
+            // from this frame's ink pool each frame so it always points at the
+            // ink layer's current view (recyclable handles → never cached).
+            auto* ink = reinterpret_cast<VulkanInkLayerBitmap*>(command.inkLayer.inkLayer);
+            if (!ink) continue;
+            VkImageView inkView = ink->ImageView();
+            if (inkView == VK_NULL_HANDLE || frameSampler == VK_NULL_HANDLE ||
+                bitmapPipeline == VK_NULL_HANDLE || !resetDescriptorPool) {
+                continue;
+            }
+
+            VkDescriptorPool& inkPool = inkBlitDescriptorPools[currentFrame_];
+            if (inkPool == VK_NULL_HANDLE) {
+                VkDescriptorPoolSize inkSizes[2]{};
+                inkSizes[0].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                inkSizes[0].descriptorCount = 32;
+                inkSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+                inkSizes[1].descriptorCount = 32;
+                VkDescriptorPoolCreateInfo inkPoolInfo{};
+                inkPoolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                inkPoolInfo.maxSets = 32;
+                inkPoolInfo.poolSizeCount = 2;
+                inkPoolInfo.pPoolSizes = inkSizes;
+                if (createDescriptorPool(device, &inkPoolInfo, nullptr, &inkPool) != VK_SUCCESS) {
+                    inkPool = VK_NULL_HANDLE;
+                    continue;
+                }
+            }
+            if (!inkBlitPoolReset) {
+                resetDescriptorPool(device, inkPool, 0);
+                inkBlitPoolReset = true;
+            }
+
+            VkDescriptorSet inkSet = VK_NULL_HANDLE;
+            VkDescriptorSetAllocateInfo inkAlloc{};
+            inkAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            inkAlloc.descriptorPool = inkPool;
+            inkAlloc.descriptorSetCount = 1;
+            inkAlloc.pSetLayouts = &frameDescriptorSetLayout;
+            if (allocateDescriptorSets(device, &inkAlloc, &inkSet) != VK_SUCCESS || inkSet == VK_NULL_HANDLE) {
+                continue;  // pool exhausted this frame — drop (cap is generous)
+            }
+
+            VkDescriptorImageInfo imgInfo{};
+            imgInfo.imageView = inkView;
+            imgInfo.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkDescriptorImageInfo sampInfo{};
+            sampInfo.sampler = frameSampler;
+            VkWriteDescriptorSet inkWrites[2]{};
+            inkWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            inkWrites[0].dstSet = inkSet;
+            inkWrites[0].dstBinding = 0;
+            inkWrites[0].descriptorCount = 1;
+            inkWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            inkWrites[0].pImageInfo = &imgInfo;
+            inkWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            inkWrites[1].dstSet = inkSet;
+            inkWrites[1].dstBinding = 1;
+            inkWrites[1].descriptorCount = 1;
+            inkWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+            inkWrites[1].pImageInfo = &sampInfo;
+            updateDescriptorSets(device, 2, inkWrites, 0, nullptr);
+
+            beginLoadRenderPass();
+            cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
+            BitmapQuadPushConstants pushConstants{};
+            pushConstants.rect[0] = command.inkLayer.x;
+            pushConstants.rect[1] = command.inkLayer.y;
+            pushConstants.rect[2] = command.inkLayer.w;
+            pushConstants.rect[3] = command.inkLayer.h;
+            pushConstants.uvOpacity[0] = 1.0f;  // descriptor binds the whole ink image
+            pushConstants.uvOpacity[1] = 1.0f;
+            pushConstants.uvOpacity[2] = command.inkLayer.opacity;
+            pushConstants.screenSize[0] = static_cast<float>(extent.width);
+            pushConstants.screenSize[1] = static_cast<float>(extent.height);
+            if (command.hasRoundedClip) {
+                pushConstants.roundedClipRect[0] = command.roundedClipLeft;
+                pushConstants.roundedClipRect[1] = command.roundedClipTop;
+                pushConstants.roundedClipRect[2] = command.roundedClipRight;
+                pushConstants.roundedClipRect[3] = command.roundedClipBottom;
+                pushConstants.roundedClipRadius[0] = command.roundedClipRadiusX;
+                pushConstants.roundedClipRadius[1] = command.roundedClipRadiusY;
+                pushConstants.clipFlags[0] = 1.0f;
+            }
+            if (command.hasInnerRoundedClip) {
+                pushConstants.innerRoundedClipRect[0] = command.innerRoundedClipLeft;
+                pushConstants.innerRoundedClipRect[1] = command.innerRoundedClipTop;
+                pushConstants.innerRoundedClipRect[2] = command.innerRoundedClipRight;
+                pushConstants.innerRoundedClipRect[3] = command.innerRoundedClipBottom;
+                pushConstants.innerRoundedClipRadius[0] = command.innerRoundedClipRadiusX;
+                pushConstants.innerRoundedClipRadius[1] = command.innerRoundedClipRadiusY;
+                pushConstants.clipFlags[1] = 1.0f;
+            }
+            if (command.hasCustomQuad) {
+                pushConstants.quadPoint01[0] = command.quadPoint0X;
+                pushConstants.quadPoint01[1] = command.quadPoint0Y;
+                pushConstants.quadPoint01[2] = command.quadPoint1X;
+                pushConstants.quadPoint01[3] = command.quadPoint1Y;
+                pushConstants.quadPoint23[0] = command.quadPoint2X;
+                pushConstants.quadPoint23[1] = command.quadPoint2Y;
+                pushConstants.quadPoint23[2] = command.quadPoint3X;
+                pushConstants.quadPoint23[3] = command.quadPoint3Y;
+                pushConstants.geometryFlags[0] = 1.0f;
+            }
+            cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipeline);
+            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, bitmapPipelineLayout, 0, 1, &inkSet, 0, nullptr);
+            cmdPushConstants(commandBuffer, bitmapPipelineLayout,
+                             VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+                             0, sizeof(pushConstants), &pushConstants);
+            cmdDraw(commandBuffer, 6, 1, 0, 0);
+            cmdEndRenderPass(commandBuffer);
+            continue;
+        }
+
+        if (command.kind == GpuReplayCommandKind::CustomShader) {
+            const auto& cs = command.customShader;
+            VkPipeline csPipeline = VK_NULL_HANDLE;
+            {
+                auto pit = customShaderPipelines.find(cs.shaderHash);
+                if (pit != customShaderPipelines.end()) csPipeline = pit->second;
+            }
+            if (csPipeline == VK_NULL_HANDLE || customShaderPipelineLayout == VK_NULL_HANDLE ||
+                frameSampler == VK_NULL_HANDLE || uploadImageView == VK_NULL_HANDLE || !resetDescriptorPool) {
+                continue;
+            }
+
+            // Upload the cropped captured content to the shared upload image.
+            VkImageMemoryBarrier toTransfer {};
+            toTransfer.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            toTransfer.oldLayout = uploadImageLayout;
+            toTransfer.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toTransfer.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toTransfer.image = uploadImage;
+            toTransfer.subresourceRange = subresourceRange;
+            toTransfer.srcAccessMask = uploadImageLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? VK_ACCESS_SHADER_READ_BIT : 0;
+            toTransfer.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            cmdPipelineBarrier(commandBuffer,
+                uploadImageLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL ? VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toTransfer);
+
+            VkBufferImageCopy copy {};
+            copy.bufferOffset = customShaderStagingBase + customShaderOffsets[index];
+            copy.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+            copy.imageSubresource.layerCount = 1;
+            copy.imageExtent = { cs.pixelWidth, cs.pixelHeight, 1 };
+            cmdCopyBufferToImage(commandBuffer, stagingBuffer, uploadImage, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+
+            VkImageMemoryBarrier toRead {};
+            toRead.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+            toRead.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            toRead.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            toRead.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+            toRead.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            toRead.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toRead.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            toRead.image = uploadImage;
+            toRead.subresourceRange = subresourceRange;
+            cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toRead);
+            uploadImageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+
+            // Per-frame transient descriptor pool + user-constants UBO.
+            VkDescriptorPool& csPool = customShaderDescPools[currentFrame_];
+            if (csPool == VK_NULL_HANDLE) {
+                VkDescriptorPoolSize csSizes[3]{};
+                csSizes[0].type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+                csSizes[0].descriptorCount = 32;
+                csSizes[1].type = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+                csSizes[1].descriptorCount = 32;
+                csSizes[2].type = VK_DESCRIPTOR_TYPE_SAMPLER;
+                csSizes[2].descriptorCount = 32;
+                VkDescriptorPoolCreateInfo cpInfo{};
+                cpInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+                cpInfo.maxSets = 32;
+                cpInfo.poolSizeCount = 3;
+                cpInfo.pPoolSizes = csSizes;
+                if (createDescriptorPool(device, &cpInfo, nullptr, &csPool) != VK_SUCCESS) { csPool = VK_NULL_HANDLE; continue; }
+            }
+            if (!customShaderPoolReset) {
+                resetDescriptorPool(device, csPool, 0);
+                customConstantsCursor = 0;
+                customShaderPoolReset = true;
+            }
+
+            // Ensure the per-frame constants UBO (host-visible). One generous
+            // allocation reused across frames; the cursor sub-allocates per draw.
+            VkBuffer&       cBuf = customShaderConstantsBuffers[currentFrame_];
+            VkDeviceMemory& cMem = customShaderConstantsMemory[currentFrame_];
+            void*&          cMap = customShaderConstantsMapped[currentFrame_];
+            VkDeviceSize&   cCap = customShaderConstantsCapacity[currentFrame_];
+            const VkDeviceSize constBytes = std::max<VkDeviceSize>(16, cs.constants.size() * sizeof(float));
+            const VkDeviceSize needed = ((customConstantsCursor + constBytes + kCustomConstantsAlign - 1) / kCustomConstantsAlign) * kCustomConstantsAlign;
+            if (cBuf == VK_NULL_HANDLE || cCap < std::max<VkDeviceSize>(needed, 65536)) {
+                if (cMap) { unmapMemory(device, cMem); cMap = nullptr; }
+                if (cBuf != VK_NULL_HANDLE) { destroyBuffer(device, cBuf, nullptr); cBuf = VK_NULL_HANDLE; }
+                if (cMem != VK_NULL_HANDLE) { freeMemory(device, cMem, nullptr); cMem = VK_NULL_HANDLE; }
+                const VkDeviceSize cap = std::max<VkDeviceSize>(needed, 65536);
+                VkBufferCreateInfo bInfo{};
+                bInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                bInfo.size = cap;
+                bInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+                bInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+                if (createBuffer(device, &bInfo, nullptr, &cBuf) != VK_SUCCESS) { cBuf = VK_NULL_HANDLE; continue; }
+                VkMemoryRequirements mr{};
+                getBufferMemoryRequirements(device, cBuf, &mr);
+                uint32_t ti = FindMemoryType(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+                VkMemoryAllocateInfo ai{};
+                ai.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+                ai.allocationSize = mr.size;
+                ai.memoryTypeIndex = ti;
+                if (allocateMemory(device, &ai, nullptr, &cMem) != VK_SUCCESS) { destroyBuffer(device, cBuf, nullptr); cBuf = VK_NULL_HANDLE; continue; }
+                bindBufferMemory(device, cBuf, cMem, 0);
+                mapMemory(device, cMem, 0, VK_WHOLE_SIZE, 0, &cMap);
+                cCap = cap;
+            }
+            const VkDeviceSize constOffset = ((customConstantsCursor + kCustomConstantsAlign - 1) / kCustomConstantsAlign) * kCustomConstantsAlign;
+            if (cMap) {
+                std::memset(static_cast<uint8_t*>(cMap) + constOffset, 0, static_cast<size_t>(constBytes));
+                if (!cs.constants.empty()) {
+                    std::memcpy(static_cast<uint8_t*>(cMap) + constOffset, cs.constants.data(), cs.constants.size() * sizeof(float));
+                }
+            }
+            customConstantsCursor = constOffset + constBytes;
+
+            VkDescriptorSet csSet = VK_NULL_HANDLE;
+            VkDescriptorSetAllocateInfo dsAlloc{};
+            dsAlloc.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+            dsAlloc.descriptorPool = csPool;
+            dsAlloc.descriptorSetCount = 1;
+            dsAlloc.pSetLayouts = &customShaderDescLayout;
+            if (allocateDescriptorSets(device, &dsAlloc, &csSet) != VK_SUCCESS || csSet == VK_NULL_HANDLE) continue;
+
+            VkDescriptorBufferInfo bInfoW{ cBuf, constOffset, constBytes };
+            VkDescriptorImageInfo imgInfoW{};
+            imgInfoW.imageView = uploadImageView;
+            imgInfoW.imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+            VkDescriptorImageInfo sampInfoW{};
+            sampInfoW.sampler = frameSampler;
+            VkWriteDescriptorSet csWrites[3]{};
+            csWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            csWrites[0].dstSet = csSet;
+            csWrites[0].dstBinding = VulkanShaderCompiler::kBShift + 0;
+            csWrites[0].descriptorCount = 1;
+            csWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
+            csWrites[0].pBufferInfo = &bInfoW;
+            csWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            csWrites[1].dstSet = csSet;
+            csWrites[1].dstBinding = VulkanShaderCompiler::kTShift + 0;
+            csWrites[1].descriptorCount = 1;
+            csWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+            csWrites[1].pImageInfo = &imgInfoW;
+            csWrites[2].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+            csWrites[2].dstSet = csSet;
+            csWrites[2].dstBinding = VulkanShaderCompiler::kSShift + 0;
+            csWrites[2].descriptorCount = 1;
+            csWrites[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
+            csWrites[2].pImageInfo = &sampInfoW;
+            updateDescriptorSets(device, 3, csWrites, 0, nullptr);
+
+            beginLoadRenderPass();
+            cmdSetScissor(commandBuffer, 0, 1, &commandScissor);
+            CustomShaderGeomPushConstants geom{};
+            geom.rect[0] = cs.x; geom.rect[1] = cs.y; geom.rect[2] = cs.w; geom.rect[3] = cs.h;
+            geom.screenSize[0] = static_cast<float>(extent.width);
+            geom.screenSize[1] = static_cast<float>(extent.height);
+            geom.uvScale[0] = uploadWidth == 0 ? 1.0f : static_cast<float>(cs.pixelWidth) / static_cast<float>(uploadWidth);
+            geom.uvScale[1] = uploadHeight == 0 ? 1.0f : static_cast<float>(cs.pixelHeight) / static_cast<float>(uploadHeight);
+            cmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, csPipeline);
+            cmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, customShaderPipelineLayout, 0, 1, &csSet, 0, nullptr);
+            cmdPushConstants(commandBuffer, customShaderPipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(geom), &geom);
+            cmdDraw(commandBuffer, 6, 1, 0, 0);
+            cmdEndRenderPass(commandBuffer);
+            continue;
+        }
+
         if (command.bitmap.pixelWidth == 0 || command.bitmap.pixelHeight == 0 || command.bitmap.GetPixels().empty()) {
             return false;
         }
@@ -5186,6 +6783,22 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
     toPresent.subresourceRange = subresourceRange;
     cmdPipelineBarrier(commandBuffer, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
 
+    // Final timestamp + finalize the per-frame timing record so the next
+    // BeginFrame's DecodeGpuTimingForCompletedFrame knows to resolve.
+    // batchCount is the engine-batch count when one of the path engines
+    // (Impeller / Vello) drained into this frame, plus the GPU-replay
+    // command count — both are user-visible "draws per frame".
+    if (timingSupported && cmdWriteTimestamp && timingQueryPool != VK_NULL_HANDLE) {
+        MarkGpuTimingPoint(GpuTimingCategory::kFrameEnd);
+        auto& tf = timing[currentFrame_];
+        tf.hasResolvedData = true;
+        uint32_t batchCount = static_cast<uint32_t>(commands.size());
+        if (engineBatches) {
+            batchCount += static_cast<uint32_t>(engineBatches->size());
+        }
+        tf.batchCountAtFinalize = batchCount;
+    }
+
     if (endCommandBuffer(commandBuffer) != VK_SUCCESS) {
         EndFrame();
         return false;
@@ -5213,6 +6826,8 @@ bool VulkanRenderTarget::Impl::DrawReplayFrame(const std::vector<VulkanRenderTar
         EndFrame();
         return false;
     }
+    // See DrawFrame queueSubmit — same present→ready stamp.
+    lastSubmitMonotonicNs = MonotonicNowNs();
 
     VkPresentInfoKHR presentInfo {};
     presentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
@@ -5248,6 +6863,10 @@ void VulkanRenderTarget::Impl::Destroy()
         // the command pool and descriptor pool are destroyed because it relies on
         // them still being valid.
         DestroyPerFrameResources();
+        if (destroyQueryPool && timingQueryPool != VK_NULL_HANDLE) {
+            destroyQueryPool(device, timingQueryPool, nullptr);
+            timingQueryPool = VK_NULL_HANDLE;
+        }
         if (destroyCommandPool && commandPool != VK_NULL_HANDLE) {
             destroyCommandPool(device, commandPool, nullptr);
         }
@@ -5299,6 +6918,8 @@ void VulkanRenderTarget::Impl::Destroy()
     glowPipeline = VK_NULL_HANDLE;
     triangleFillPipelineLayout = VK_NULL_HANDLE;
     triangleFillPipeline = VK_NULL_HANDLE;
+    vcTrianglePipelineLayout = VK_NULL_HANDLE;
+    vcTrianglePipeline = VK_NULL_HANDLE;
     engineBatchPipelineLayout = VK_NULL_HANDLE;
     engineBatchPipeline = VK_NULL_HANDLE;
     transitionPipelineLayout = VK_NULL_HANDLE;
@@ -5831,6 +7452,17 @@ void VulkanRenderTarget::ReplayCommandToCpu(const GpuReplayCommand& command)
             // to read from), or they are GPU-only effects with no CPU fallback.
             // In either case, there is nothing to replay here.
             break;
+        case GpuReplayCommandKind::VcTriangles:
+            // DrawLine 3-strip AA path: the matching CPU-side draw is the
+            // unconditional StrokePolyline at the end of DrawLine, which
+            // self-guards on cpuRasterNeeded_ and runs through pixelBuffer_
+            // directly when CPU fallback is active. Nothing to replay here.
+            break;
+        case GpuReplayCommandKind::InkLayer:
+            // The CPU-fallback composite (image readback + BlendBuffer) is done
+            // inline in BlitInkLayer when cpuRasterNeeded_ is set, so the
+            // committed ink is already in pixelBuffer_. Nothing to replay here.
+            break;
     }
 }
 
@@ -6154,11 +7786,32 @@ bool VulkanRenderTarget::TryRecordGpuFilledPolygonCommand(const std::vector<floa
         return false;
     }
 
+    // Two-tier triangulation matching D3D12 FillPolygon's fallback chain:
+    //   1. Core's TriangulatePolygonRobust (jalium_triangulate.h) — same
+    //      algorithm D3D12 calls. Cascades through fan / Y-monotone /
+    //      improved ear-clip; returns index buffer.
+    //   2. If robust fails, fall back to local TriangulateSimplePolygon
+    //      (the pure ear-clip already in this TU). Most paths will hit
+    //      tier 1; tier 2 is a safety net for shapes that even robust
+    //      bails on.
     std::vector<float> triangleVertices;
     {
         path_stats::ScopedTriangulateTimer triTimer;
-        bool ok = TriangulateSimplePolygon(points, triangleVertices);
-        if (ok) triTimer.MarkOk();
+        const uint32_t pointCount = static_cast<uint32_t>(points.size() / 2);
+        std::vector<uint32_t> indices;
+        bool ok = TriangulatePolygonRobust(points.data(), pointCount, indices)
+                  && indices.size() >= 3;
+        if (ok) {
+            triangleVertices.reserve(indices.size() * 2);
+            for (uint32_t idx : indices) {
+                triangleVertices.push_back(points[idx * 2]);
+                triangleVertices.push_back(points[idx * 2 + 1]);
+            }
+            triTimer.MarkOk();
+        } else {
+            ok = TriangulateSimplePolygon(points, triangleVertices);
+            if (ok) triTimer.MarkOk();
+        }
         if (!ok) return false;
     }
 
@@ -6259,95 +7912,78 @@ void VulkanRenderTarget::DecomposePathToLocalPoints(float startX, float startY,
     if (!commands || commandLength == 0) return;
     outLocalPoints.reserve(static_cast<size_t>(commandLength) * 2u);
 
-    // Adaptive segment count. Historic baselines: 16 (cubic) / 8 (quad) at
-    // 1.0×. We scale linearly with the transform max-scale so a 4× zoom uses
-    // 64/32 samples — keeping per-pixel vertex density roughly flat. Floor
-    // matches the historic baseline so we never *under-sample* relative to
-    // pre-scale-aware behavior. Ceiling caps cost on extreme zoom-in
-    // (the ear-clip step downstream is O(N²)+, see project_vulkan_path_cache).
-    const int cubicSteps = std::clamp(
-        static_cast<int>(16.0f * (scaleFactor > 1.0f ? scaleFactor : 1.0f)),
-        16, 64);
-    const int quadSteps = std::clamp(
-        static_cast<int>(8.0f * (scaleFactor > 1.0f ? scaleFactor : 1.0f)),
-        8, 32);
+    // Delegate per-command flattening to the shared core utilities used by
+    // D3D12's CPU fallback (jalium_triangulate.h::DispatchPathCommand). The
+    // shared path covers LineTo / CubicTo (adaptive subdivision) / QuadTo
+    // (adaptive) / **ArcTo** (FlattenSvgArc) / ClosePath uniformly — Vulkan's
+    // hand-rolled loop previously dropped ArcTo entirely (`break` on tag 4),
+    // which truncated any SVG icon containing an arc.
+    //
+    // Tolerance: smaller value → denser flattening → more vertices but
+    // smoother curves. We match the D3D12 fallback's 0.5px tolerance at
+    // baseline scale and tighten proportionally on zoom-in to keep per-pixel
+    // vertex density roughly flat (4× scale → 0.125px tolerance ≈ 4× density).
+    // Caps at 0.05px so extreme zoom doesn't explode the downstream ear-clip
+    // (O(N²)+, see project_vulkan_path_cache).
+    const float tolerance = std::max(0.05f, 0.5f / std::max(1.0f, scaleFactor));
 
     float currentX = startX;
     float currentY = startY;
+    float subpathStartX = startX;
+    float subpathStartY = startY;
     outLocalPoints.push_back(currentX);
     outLocalPoints.push_back(currentY);
 
-    uint32_t index = 0;
-    while (index < commandLength) {
-        const int tag = static_cast<int>(commands[index++]);
-        if (tag == 0 && index + 1 < commandLength) {
-            // LineTo
-            currentX = commands[index++];
-            currentY = commands[index++];
-            outLocalPoints.push_back(currentX);
-            outLocalPoints.push_back(currentY);
-        } else if (tag == 1 && index + 5 < commandLength) {
-            // CubicBezier
-            const float cp1x = commands[index++];
-            const float cp1y = commands[index++];
-            const float cp2x = commands[index++];
-            const float cp2y = commands[index++];
-            const float endX = commands[index++];
-            const float endY = commands[index++];
-            const float invSteps = 1.0f / static_cast<float>(cubicSteps);
-            for (int step = 1; step <= cubicSteps; ++step) {
-                const float t = static_cast<float>(step) * invSteps;
-                const float omt = 1.0f - t;
-                const float bx =
-                    omt * omt * omt * currentX +
-                    3.0f * omt * omt * t * cp1x +
-                    3.0f * omt * t * t * cp2x +
-                    t * t * t * endX;
-                const float by =
-                    omt * omt * omt * currentY +
-                    3.0f * omt * omt * t * cp1y +
-                    3.0f * omt * t * t * cp2y +
-                    t * t * t * endY;
-                outLocalPoints.push_back(bx);
-                outLocalPoints.push_back(by);
+    uint32_t i = 0;
+    bool seenMoveTo = false;
+    while (i < commandLength) {
+        const int tag = static_cast<int>(commands[i]);
+        if (tag == kTagMoveTo && i + 2 < commandLength) {
+            const float targetX = commands[i + 1];
+            const float targetY = commands[i + 2];
+            const bool moveJumpsAway = std::abs(targetX - currentX) > 1e-4f
+                                     || std::abs(targetY - currentY) > 1e-4f;
+            // True new sub-path = an already-emitted contour, followed by a
+            // MoveTo that lifts the pen to a different point. The single-
+            // polygon ear-clip path can't express disjoint contours, so
+            // signal multi-contour by clearing the output; the caller
+            // (FillPath) falls back to FlattenPathToContours +
+            // TriangulateCompoundPath. Redundant MoveTo at the very start
+            // (path opens with an explicit MoveTo that happens to match
+            // startX/startY) is consumed in place, NOT treated as multi-contour.
+            if (seenMoveTo && moveJumpsAway) {
+                outLocalPoints.clear();
+                return;
             }
-            currentX = endX;
-            currentY = endY;
-        } else if (tag == 2 && index + 1 < commandLength) {
-            // MoveTo: new sub-path
-            currentX = commands[index++];
-            currentY = commands[index++];
-            outLocalPoints.push_back(currentX);
-            outLocalPoints.push_back(currentY);
-        } else if (tag == 3 && index + 3 < commandLength) {
-            // QuadraticBezier
-            const float cpx = commands[index++];
-            const float cpy = commands[index++];
-            const float endX = commands[index++];
-            const float endY = commands[index++];
-            const float invSteps = 1.0f / static_cast<float>(quadSteps);
-            for (int step = 1; step <= quadSteps; ++step) {
-                const float t = static_cast<float>(step) * invSteps;
-                const float omt = 1.0f - t;
-                const float qx = omt * omt * currentX + 2.0f * omt * t * cpx + t * t * endX;
-                const float qy = omt * omt * currentY + 2.0f * omt * t * cpy + t * t * endY;
-                outLocalPoints.push_back(qx);
-                outLocalPoints.push_back(qy);
+            currentX = targetX;
+            currentY = targetY;
+            subpathStartX = currentX;
+            subpathStartY = currentY;
+            if (!seenMoveTo) {
+                // Replace the implicit start we pushed above so it tracks the
+                // path's explicit MoveTo target (the more common shape for
+                // SVG-style command streams).
+                outLocalPoints[0] = currentX;
+                outLocalPoints[1] = currentY;
             }
-            currentX = endX;
-            currentY = endY;
-        } else if (tag == 5) {
-            // ClosePath: line back to sub-path start (the very first point)
-            const float firstX = outLocalPoints[0];
-            const float firstY = outLocalPoints[1];
-            if (std::abs(currentX - firstX) > 1e-4f || std::abs(currentY - firstY) > 1e-4f) {
-                currentX = firstX;
-                currentY = firstY;
-                outLocalPoints.push_back(currentX);
-                outLocalPoints.push_back(currentY);
+            seenMoveTo = true;
+            i += 3;
+        } else if (tag == kTagClosePath) {
+            // Line back to sub-path start if not already there.
+            if (std::abs(currentX - subpathStartX) > 1e-4f
+                || std::abs(currentY - subpathStartY) > 1e-4f) {
+                outLocalPoints.push_back(subpathStartX);
+                outLocalPoints.push_back(subpathStartY);
             }
+            currentX = subpathStartX;
+            currentY = subpathStartY;
+            i += 1;
         } else {
-            break;
+            uint32_t consumed = DispatchPathCommand(commands, i, commandLength,
+                                                    currentX, currentY,
+                                                    outLocalPoints, tolerance);
+            if (consumed == 0) break;
+            i += consumed;
         }
     }
 }
@@ -7324,9 +8960,10 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectStrokeCommand(float x, float y, 
     if (strokeWidth <= 0.0f) {
         return false;
     }
-    if (rx <= 0.0f && ry <= 0.0f) {
-        return TryRecordGpuRectangleStrokeCommand(x, y, w, h, strokeWidth, brush);
-    }
+    // rx == 0 && ry == 0 used to dispatch to TryRecordGpuRectangleStrokeCommand,
+    // but Rectangle stroke now itself routes through here (with rx = ry = 0)
+    // to ride the SDF AA. The shader's CoverageRoundRect handles zero radius
+    // as a pure AABB SDF, so we just keep going through the rounded path.
 
     if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
         return false;
@@ -7418,6 +9055,77 @@ bool VulkanRenderTarget::TryRecordGpuRoundedRectStrokeCommand(float x, float y, 
     return true;
 }
 
+bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectFillCommand(float x, float y, float w, float h,
+    float tl, float tr, float br, float bl, Brush* brush)
+{
+    // First do the uniform-radius record using the largest corner — that
+    // populates every common field (scissor, brush, rect transform, outer
+    // rounded clip rect) for us. We then overwrite the per-corner radii so
+    // the shader switches to CoveragePerCornerRoundRect at fragment time.
+    const float maxRadius = std::max({ tl, tr, br, bl, 0.0f });
+    if (maxRadius <= 0.0f) {
+        return TryRecordGpuSolidRectCommand(x, y, w, h, brush);
+    }
+    if (!TryRecordGpuRoundedRectFillCommand(x, y, w, h, maxRadius, maxRadius, brush)) {
+        return false;
+    }
+    if (gpuReplayCommands_.empty()) return true;  // record was dropped (cull / no-op).
+    GpuReplayCommand& cmd = gpuReplayCommands_.back();
+    if (cmd.kind != GpuReplayCommandKind::SolidRect || !cmd.hasRoundedClip) {
+        return true;  // record fell into a fast path that doesn't honour per-corner.
+    }
+    // Bake the transform's per-axis scale into the radii so they live in the
+    // same screen-space units as roundedClipRect.
+    const auto transform = GetCurrentTransform();
+    const float sx = std::fabs(transform.m11);
+    const float sy = std::fabs(transform.m22);
+    cmd.perCornerRadiusX[0] = std::max(tl * sx, 0.0f);  // TL
+    cmd.perCornerRadiusX[1] = std::max(tr * sx, 0.0f);  // TR
+    cmd.perCornerRadiusX[2] = std::max(br * sx, 0.0f);  // BR
+    cmd.perCornerRadiusX[3] = std::max(bl * sx, 0.0f);  // BL
+    cmd.perCornerRadiusY[0] = std::max(tl * sy, 0.0f);
+    cmd.perCornerRadiusY[1] = std::max(tr * sy, 0.0f);
+    cmd.perCornerRadiusY[2] = std::max(br * sy, 0.0f);
+    cmd.perCornerRadiusY[3] = std::max(bl * sy, 0.0f);
+    return true;
+}
+
+bool VulkanRenderTarget::TryRecordGpuPerCornerRoundedRectStrokeCommand(float x, float y, float w, float h,
+    float tl, float tr, float br, float bl, float strokeWidth, Brush* brush)
+{
+    const float maxRadius = std::max({ tl, tr, br, bl, 0.0f });
+    if (!TryRecordGpuRoundedRectStrokeCommand(x, y, w, h, maxRadius, maxRadius, strokeWidth, brush)) {
+        return false;
+    }
+    if (gpuReplayCommands_.empty()) return true;
+    GpuReplayCommand& cmd = gpuReplayCommands_.back();
+    if (cmd.kind != GpuReplayCommandKind::SolidRect || !cmd.hasRoundedClip) {
+        return true;
+    }
+    const auto transform = GetCurrentTransform();
+    const float sx = std::fabs(transform.m11);
+    const float sy = std::fabs(transform.m22);
+    const float halfStroke = strokeWidth * 0.5f;
+    // Outer rounded clip uses (corner + halfStroke) — expand each radius
+    // so the rounded-band edge matches RoundedRectStroke's behaviour for
+    // uniform radii.
+    cmd.perCornerRadiusX[0] = std::max((tl + halfStroke) * sx, 0.0f);
+    cmd.perCornerRadiusX[1] = std::max((tr + halfStroke) * sx, 0.0f);
+    cmd.perCornerRadiusX[2] = std::max((br + halfStroke) * sx, 0.0f);
+    cmd.perCornerRadiusX[3] = std::max((bl + halfStroke) * sx, 0.0f);
+    cmd.perCornerRadiusY[0] = std::max((tl + halfStroke) * sy, 0.0f);
+    cmd.perCornerRadiusY[1] = std::max((tr + halfStroke) * sy, 0.0f);
+    cmd.perCornerRadiusY[2] = std::max((br + halfStroke) * sy, 0.0f);
+    cmd.perCornerRadiusY[3] = std::max((bl + halfStroke) * sy, 0.0f);
+    // Inner rounded clip (the stroke's inside edge) inherits the uniform
+    // average that TryRecordGpuRoundedRectStrokeCommand already set. A
+    // truly per-corner inner radius would need a second perCorner slot
+    // in the push constant — deferred; current stroke is one-sided
+    // (outer per-corner, inner uniform), which is visually identical at
+    // most stroke widths.
+    return true;
+}
+
 bool VulkanRenderTarget::TryRecordGpuEllipseFillCommand(float cx, float cy, float rx, float ry, Brush* brush)
 {
     if (rx <= 0.0f || ry <= 0.0f) {
@@ -7434,6 +9142,160 @@ bool VulkanRenderTarget::TryRecordGpuEllipseStrokeCommand(float cx, float cy, fl
     }
 
     return TryRecordGpuRoundedRectStrokeCommand(cx - rx, cy - ry, rx * 2.0f, ry * 2.0f, rx, ry, strokeWidth, brush);
+}
+
+bool VulkanRenderTarget::TryRecordGpuLineAACommand(float x1, float y1, float x2, float y2, float strokeWidth, Brush* brush)
+{
+    if (strokeWidth <= 0.0f) {
+        return false;
+    }
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) {
+        return false;
+    }
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return false;
+    }
+
+    uint8_t bb = 0, bg = 0, br = 0, ba = 0;
+    if (!TryGetApproximateBrushColor(brush, bb, bg, br, ba)) {
+        return false;
+    }
+
+    // Build the 18 vertices in DIP space, then ApplyTransform per-vertex
+    // before recording. This matches D3D12's behaviour where AddTriangles
+    // applies the current transform to each TriangleVertex internally — the
+    // perpendicular offset (and therefore the stroke width) gets scaled
+    // along with everything else. If we transformed the endpoints first and
+    // then computed the perpendicular in screen space, strokeWidth would
+    // ignore the transform's scale, so a 2× zoom would still draw a 1-px
+    // stroke instead of a 2-px stroke.
+    const auto transform = GetCurrentTransform();
+
+    const float dx = x2 - x1;
+    const float dy = y2 - y1;
+    const float len = std::sqrt(dx * dx + dy * dy);
+    if (len < 0.001f) return true;  // degenerate — silently consume.
+
+    // Unit perpendicular to the line direction in DIP space.
+    const float invLen = 1.0f / len;
+    const float nx = -dy * invLen;
+    const float ny =  dx * invLen;
+
+    // Convert brush colour to normalised [0, 1] premultiplied form. Vulkan
+    // colour blend is set up for premultiplied alpha — see vc pipeline
+    // creation — so we bake the alpha into rgb here.
+    const float opacity = std::clamp(GetCurrentOpacity(), 0.0f, 1.0f);
+    const float r = br / 255.0f;
+    const float g = bg / 255.0f;
+    const float b = bb / 255.0f;
+    const float baseA = (ba / 255.0f) * opacity;
+    const float pr = r * baseA;
+    const float pg = g * baseA;
+    const float pb = b * baseA;
+
+    // Manual analytical AA: render the line as three side-by-side strips —
+    // a solid core flanked by a 1-pixel alpha-ramp on each side. Same
+    // construction as D3D12RenderTarget::DrawLine — see
+    // [[project_d3d12_line_manual_aa]] for the rationale.
+    //
+    //   Stroke ≥ 1px: core half-width = (stroke - 1) * 0.5, then 1px feather
+    //                  on each side ramping alpha 1 → 0.
+    //   Stroke < 1px: no core; the whole stroke becomes the feather and we
+    //                  fade alpha by the stroke's pixel coverage so thin
+    //                  lines don't pop.
+    constexpr float kFeather = 1.0f;
+    const float halfStroke = strokeWidth * 0.5f;
+    float coreHalf, outerHalf, coverage;
+    if (strokeWidth >= kFeather) {
+        coreHalf  = halfStroke - kFeather * 0.5f;
+        outerHalf = halfStroke + kFeather * 0.5f;
+        coverage  = 1.0f;
+    } else {
+        coreHalf  = 0.0f;
+        outerHalf = kFeather * 0.5f;
+        coverage  = strokeWidth / kFeather;
+    }
+
+    const float caPr = pr * coverage;
+    const float caPg = pg * coverage;
+    const float caPb = pb * coverage;
+    const float caPa = baseA * coverage;
+
+    // Build 8 reference points in DIP space (4 endpoints × {inner core,
+    // outer feather} × {positive perp, negative perp}). Then transform
+    // each individually to screen space — keeps the perpendicular offset
+    // (stroke width) responsive to the current transform's scale, matching
+    // D3D12 AddTriangles semantics.
+    const float p1cxDip  = x1 + nx * coreHalf,  p1cyDip  = y1 + ny * coreHalf;
+    const float p1cnxDip = x1 - nx * coreHalf,  p1cnyDip = y1 - ny * coreHalf;
+    const float p2cxDip  = x2 + nx * coreHalf,  p2cyDip  = y2 + ny * coreHalf;
+    const float p2cnxDip = x2 - nx * coreHalf,  p2cnyDip = y2 - ny * coreHalf;
+    const float p1oxDip  = x1 + nx * outerHalf, p1oyDip  = y1 + ny * outerHalf;
+    const float p1onxDip = x1 - nx * outerHalf, p1onyDip = y1 - ny * outerHalf;
+    const float p2oxDip  = x2 + nx * outerHalf, p2oyDip  = y2 + ny * outerHalf;
+    const float p2onxDip = x2 - nx * outerHalf, p2onyDip = y2 - ny * outerHalf;
+
+    float p1cx, p1cy, p1cnx, p1cny, p2cx, p2cy, p2cnx, p2cny;
+    float p1ox, p1oy, p1onx, p1ony, p2ox, p2oy, p2onx, p2ony;
+    ApplyTransform(transform, p1cxDip,  p1cyDip,  p1cx,  p1cy);
+    ApplyTransform(transform, p1cnxDip, p1cnyDip, p1cnx, p1cny);
+    ApplyTransform(transform, p2cxDip,  p2cyDip,  p2cx,  p2cy);
+    ApplyTransform(transform, p2cnxDip, p2cnyDip, p2cnx, p2cny);
+    ApplyTransform(transform, p1oxDip,  p1oyDip,  p1ox,  p1oy);
+    ApplyTransform(transform, p1onxDip, p1onyDip, p1onx, p1ony);
+    ApplyTransform(transform, p2oxDip,  p2oyDip,  p2ox,  p2oy);
+    ApplyTransform(transform, p2onxDip, p2onyDip, p2onx, p2ony);
+
+    GpuReplayCommand cmd {};
+    cmd.kind = GpuReplayCommandKind::VcTriangles;
+    if (!TryPopulateReplayClip(cmd)) {
+        return false;
+    }
+    if (cmd.scissorRight <= cmd.scissorLeft || cmd.scissorBottom <= cmd.scissorTop) {
+        return true;  // entirely outside the clip — drop, but consume.
+    }
+
+    auto pushVert = [&cmd](float x, float y, float pr_, float pg_, float pb_, float pa_) {
+        cmd.vcTriangles.vertices.push_back(x);
+        cmd.vcTriangles.vertices.push_back(y);
+        cmd.vcTriangles.vertices.push_back(pr_);
+        cmd.vcTriangles.vertices.push_back(pg_);
+        cmd.vcTriangles.vertices.push_back(pb_);
+        cmd.vcTriangles.vertices.push_back(pa_);
+    };
+
+    cmd.vcTriangles.vertices.reserve(18 * 6);
+
+    // Core strip (solid alpha). Skipped for sub-pixel lines (coreHalf == 0).
+    if (coreHalf > 0.0f) {
+        pushVert(p1cx,  p1cy,  caPr, caPg, caPb, caPa);
+        pushVert(p1cnx, p1cny, caPr, caPg, caPb, caPa);
+        pushVert(p2cx,  p2cy,  caPr, caPg, caPb, caPa);
+        pushVert(p2cx,  p2cy,  caPr, caPg, caPb, caPa);
+        pushVert(p1cnx, p1cny, caPr, caPg, caPb, caPa);
+        pushVert(p2cnx, p2cny, caPr, caPg, caPb, caPa);
+    }
+
+    // Outer feather, positive-perpendicular side.
+    pushVert(p1cx, p1cy, caPr, caPg, caPb, caPa);
+    pushVert(p1ox, p1oy, 0.0f, 0.0f, 0.0f, 0.0f);
+    pushVert(p2cx, p2cy, caPr, caPg, caPb, caPa);
+    pushVert(p2cx, p2cy, caPr, caPg, caPb, caPa);
+    pushVert(p1ox, p1oy, 0.0f, 0.0f, 0.0f, 0.0f);
+    pushVert(p2ox, p2oy, 0.0f, 0.0f, 0.0f, 0.0f);
+
+    // Outer feather, negative-perpendicular side.
+    pushVert(p1cnx, p1cny, caPr, caPg, caPb, caPa);
+    pushVert(p2cnx, p2cny, caPr, caPg, caPb, caPa);
+    pushVert(p1onx, p1ony, 0.0f, 0.0f, 0.0f, 0.0f);
+    pushVert(p1onx, p1ony, 0.0f, 0.0f, 0.0f, 0.0f);
+    pushVert(p2cnx, p2cny, caPr, caPg, caPb, caPa);
+    pushVert(p2onx, p2ony, 0.0f, 0.0f, 0.0f, 0.0f);
+
+    cmd.vcTriangles.vertexCount = static_cast<uint32_t>(cmd.vcTriangles.vertices.size() / 6);
+    if (cmd.vcTriangles.vertexCount == 0) return true;
+    gpuReplayCommands_.push_back(std::move(cmd));
+    return true;
 }
 
 bool VulkanRenderTarget::TryRecordGpuLineCommand(float x1, float y1, float x2, float y2, float strokeWidth, Brush* brush)
@@ -7550,28 +9412,13 @@ bool VulkanRenderTarget::TryRecordGpuRectangleStrokeCommand(float x, float y, fl
         return false;
     }
 
-    const size_t originalCount = gpuReplayCommands_.size();
-    const float halfStroke = strokeWidth * 0.5f;
-    const float innerHeight = std::max(0.0f, h - strokeWidth);
-
-    const bool topOk = TryRecordGpuSolidRectCommand(x - halfStroke, y - halfStroke, w + strokeWidth, strokeWidth, brush);
-    const bool bottomOk = TryRecordGpuSolidRectCommand(x - halfStroke, y + h - halfStroke, w + strokeWidth, strokeWidth, brush);
-    if (innerHeight <= 0.0001f) {
-        if (topOk && bottomOk) {
-            return true;
-        }
-        gpuReplayCommands_.resize(originalCount);
-        return false;
-    }
-
-    const bool leftOk = TryRecordGpuSolidRectCommand(x - halfStroke, y + halfStroke, strokeWidth, innerHeight, brush);
-    const bool rightOk = TryRecordGpuSolidRectCommand(x + w - halfStroke, y + halfStroke, strokeWidth, innerHeight, brush);
-    if (topOk && bottomOk && leftOk && rightOk) {
-        return true;
-    }
-
-    gpuReplayCommands_.resize(originalCount);
-    return false;
+    // Delegate to the rounded-rect stroke path with radius = 0. The shader's
+    // CoverageRoundRect handles the zero-radius case as a pure AABB SDF (with
+    // smoothstep AA on the rectangle edges), and the outer/inner clip pair
+    // gives a single-draw stroke band — no corner overlap and no double-alpha
+    // artefacts that the older 4×SolidRect approach produced for translucent
+    // strokes.
+    return TryRecordGpuRoundedRectStrokeCommand(x, y, w, h, 0.0f, 0.0f, strokeWidth, brush);
 }
 
 bool VulkanRenderTarget::TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, float y, float w, float h, float opacity)
@@ -7587,6 +9434,93 @@ bool VulkanRenderTarget::TryRecordGpuBitmapCommand(Bitmap* bitmap, float x, floa
     }
 
     return TryRecordGpuPixelBufferCommandShared(std::move(sharedPixels), sourceBitmap->GetWidth(), sourceBitmap->GetHeight(), x, y, w, h, opacity);
+}
+
+bool VulkanRenderTarget::TryRecordGpuInkLayerCommand(void* inkLayer, float x, float y, float opacity)
+{
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_ || !inkLayer || opacity <= 0.0f) {
+        return false;
+    }
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) {
+        return false;
+    }
+
+    auto* ink = reinterpret_cast<VulkanInkLayerBitmap*>(inkLayer);
+    const uint32_t iw = ink->Width();
+    const uint32_t ih = ink->Height();
+    if (iw == 0 || ih == 0 || ink->ImageView() == VK_NULL_HANDLE) {
+        return false;
+    }
+    const float w = static_cast<float>(iw);
+    const float h = static_cast<float>(ih);
+
+    const auto transform = GetCurrentTransform();
+    constexpr float kEpsilon = 0.0001f;
+    float p0x, p0y, p1x, p1y, p2x, p2y, p3x, p3y;
+    ApplyTransform(transform, x, y, p0x, p0y);
+    ApplyTransform(transform, x + w, y, p1x, p1y);
+    ApplyTransform(transform, x + w, y + h, p2x, p2y);
+    ApplyTransform(transform, x, y + h, p3x, p3y);
+
+    GpuReplayCommand cmd {};
+    cmd.kind = GpuReplayCommandKind::InkLayer;
+    cmd.inkLayer.inkLayer = inkLayer;
+    cmd.inkLayer.x = std::min(std::min(p0x, p1x), std::min(p2x, p3x));
+    cmd.inkLayer.y = std::min(std::min(p0y, p1y), std::min(p2y, p3y));
+    cmd.inkLayer.w = std::max(std::max(p0x, p1x), std::max(p2x, p3x)) - cmd.inkLayer.x;
+    cmd.inkLayer.h = std::max(std::max(p0y, p1y), std::max(p2y, p3y)) - cmd.inkLayer.y;
+    cmd.inkLayer.opacity = std::clamp(opacity * GetCurrentOpacity(), 0.0f, 1.0f);
+    if (cmd.inkLayer.w <= kEpsilon || cmd.inkLayer.h <= kEpsilon || cmd.inkLayer.opacity <= 0.0f) {
+        return false;
+    }
+
+    if (!TryPopulateReplayClip(cmd)) {
+        return false;
+    }
+    if (cmd.scissorRight <= cmd.scissorLeft || cmd.scissorBottom <= cmd.scissorTop) {
+        return true;  // fully clipped — nothing to draw, but stay on the GPU path
+    }
+    if (std::fabs(transform.m12) > kEpsilon || std::fabs(transform.m21) > kEpsilon) {
+        cmd.hasCustomQuad = true;
+        cmd.quadPoint0X = p0x; cmd.quadPoint0Y = p0y;
+        cmd.quadPoint1X = p1x; cmd.quadPoint1Y = p1y;
+        cmd.quadPoint2X = p2x; cmd.quadPoint2Y = p2y;
+        cmd.quadPoint3X = p3x; cmd.quadPoint3Y = p3y;
+    }
+
+    gpuReplayCommands_.push_back(std::move(cmd));
+    return true;
+}
+
+void VulkanRenderTarget::BlitInkLayer(void* inkLayerBitmap, float dstX, float dstY, float opacity)
+{
+    TouchFrame();
+    if (!inkLayerBitmap || opacity <= 0.0f) {
+        return;
+    }
+
+    // Primary path: record an InkLayer replay command that samples the resident
+    // ink image directly on the GPU (parity with D3D12 BlitInkLayer / AddBitmap).
+    TryRecordGpuInkLayerCommand(inkLayerBitmap, dstX, dstY, opacity);
+
+    if (!cpuRasterNeeded_) {
+        return;
+    }
+
+    // CPU fallback (rare — whole frame on CPU): read the ink image back and
+    // blend it axis-aligned. A transform on the blit is not honoured here; the
+    // GPU path above handles the rotated case.
+    auto* ink = reinterpret_cast<VulkanInkLayerBitmap*>(inkLayerBitmap);
+    if (ink->Width() == 0 || ink->Height() == 0) {
+        return;
+    }
+    std::vector<uint8_t> bgra;
+    if (!ink->ReadbackBgra(bgra)) {
+        return;
+    }
+    BlendBuffer(bgra, static_cast<int>(ink->Width()), static_cast<int>(ink->Height()),
+                dstX, dstY, static_cast<float>(ink->Width()), static_cast<float>(ink->Height()),
+                std::clamp(opacity * GetCurrentOpacity(), 0.0f, 1.0f));
 }
 
 void VulkanRenderTarget::RasterizePolygon(const std::vector<float>& points, int fillRule, uint8_t b, uint8_t g, uint8_t r, uint8_t a)
@@ -7804,6 +9738,64 @@ void VulkanRenderTarget::FillRoundedRectangle(float x, float y, float w, float h
     PopTemporaryClip();
 }
 
+// Per-corner rounded rectangles. The fragment shader now picks an
+// independent (rx, ry) per corner quadrant via CoveragePerCornerRoundRect,
+// mirroring D3D12's SdfRect-with-4-corner-radii path — tabs / cards /
+// any UI that mixes rounded with square corners renders correctly
+// instead of degrading to a single uniform radius.
+void VulkanRenderTarget::FillPerCornerRoundedRectangle(float x, float y, float w, float h,
+    float tl, float tr, float br, float bl, Brush* brush)
+{
+    TouchFrame();
+    if (!TryRecordGpuPerCornerRoundedRectFillCommand(x, y, w, h, tl, tr, br, bl, brush)) {
+        // GPU path can't represent this (effect capture, rotated transform,
+        // non-replayable brush). Degrade to the largest-radius uniform
+        // rounded rect — visual diff is minor and the frame stays alive.
+        const float maxR = std::max({ tl, tr, br, bl, 0.0f });
+        FillRoundedRectangle(x, y, w, h, maxR, maxR, brush);
+        return;
+    }
+
+    if (cpuRasterNeeded_) {
+        // CPU fallback uses the same per-corner clip stack entry the
+        // public PushPerCornerRoundedRectClip API maintains — pushing
+        // it transiently lets FillSolidRect respect the asymmetric shape.
+        uint8_t bb = 0, bg = 0, br8 = 0, ba = 0;
+        if (TryGetSolidBrushColor(brush, bb, bg, br8, ba)) {
+            ClipState clip {};
+            clip.rounded = true;
+            clip.x = x; clip.y = y; clip.w = w; clip.h = h;
+            clip.radiusTL = tl; clip.radiusTR = tr;
+            clip.radiusBR = br; clip.radiusBL = bl;
+            clip.transform = GetCurrentTransform();
+            clip.hasInverse = TryInvertTransform(clip.transform, clip.inverseTransform);
+            clipStack_.push_back(clip);
+
+            const auto transform = GetCurrentTransform();
+            float px0, py0, px1, py1;
+            ApplyTransform(transform, x, y, px0, py0);
+            ApplyTransform(transform, x + w, y + h, px1, py1);
+            FillSolidRect(
+                static_cast<int>(std::floor(std::min(px0, px1))),
+                static_cast<int>(std::floor(std::min(py0, py1))),
+                static_cast<int>(std::ceil(std::max(px0, px1))),
+                static_cast<int>(std::ceil(std::max(py0, py1))),
+                bb, bg, br8, ba);
+            clipStack_.pop_back();
+        }
+    }
+}
+
+void VulkanRenderTarget::DrawPerCornerRoundedRectangle(float x, float y, float w, float h,
+    float tl, float tr, float br, float bl, Brush* brush, float strokeWidth)
+{
+    TouchFrame();
+    if (!TryRecordGpuPerCornerRoundedRectStrokeCommand(x, y, w, h, tl, tr, br, bl, strokeWidth, brush)) {
+        const float maxR = std::max({ tl, tr, br, bl, 0.0f });
+        DrawRoundedRectangle(x, y, w, h, maxR, maxR, brush, strokeWidth);
+    }
+}
+
 void VulkanRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h, float rx, float ry, Brush* brush, float strokeWidth)
 {
     TouchFrame();
@@ -7824,6 +9816,31 @@ void VulkanRenderTarget::DrawRoundedRectangle(float x, float y, float w, float h
     StrokeRoundedRectApprox(x, y, w, h, rx, ry, strokeWidth, b, g, r, a);
 }
 
+// Adaptive ellipse tessellation. D3D12 renders ellipses through a true SDF
+// SuperEllipse pipeline ([[project_d3d12_ellipse_true_sdf]]) with analytical
+// AA, so a circle of any radius shows zero polygonalisation. The Vulkan
+// backend doesn't have that SDF pipeline, so we compensate by scaling the
+// vertex count with on-screen radius — small icons keep their cheap 32-vert
+// fans, big circles get up to 256 verts so the chord error stays at well
+// under 0.5 px regardless of size.
+//
+// Heuristic: at a screen-space radius of R px, the chord length between
+// two adjacent vertices on a circle is ~2π·R / N, and the chord-to-arc
+// error is ~(π·R / N)². Solving for error ≤ 0.25 px (sub-pixel by enough
+// margin to hide the polygon corners under AA) gives N ≈ 2π·sqrt(R / 0.5).
+// We bucket to multiples of 8 so caches reuse the same vertex topology
+// across many radii, and clamp to [32, 256]. Cost at 256: 1024 floats
+// = 4 KB of staging — negligible.
+static inline int VulkanEllipseSegmentCount(float rx, float ry, float scaleX, float scaleY)
+{
+    const float maxPxRadius = std::max(std::fabs(rx) * std::max(1.0f, scaleX),
+                                       std::fabs(ry) * std::max(1.0f, scaleY));
+    if (maxPxRadius <= 4.0f) return 32;
+    int segments = static_cast<int>(std::ceil(6.2831853f * std::sqrt(maxPxRadius / 0.5f)));
+    segments = ((segments + 7) / 8) * 8;       // round up to multiple of 8
+    return std::clamp(segments, 32, 256);
+}
+
 void VulkanRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Brush* brush)
 {
     TouchFrame();
@@ -7837,10 +9854,17 @@ void VulkanRenderTarget::FillEllipse(float cx, float cy, float rx, float ry, Bru
     }
 
     const auto transform = GetCurrentTransform();
+    // Per-axis scale magnitudes of the current transform — captures both
+    // user transform and the root DPI scale push (BeginDraw).
+    const float scaleX = std::sqrt(transform.m11 * transform.m11 + transform.m21 * transform.m21);
+    const float scaleY = std::sqrt(transform.m12 * transform.m12 + transform.m22 * transform.m22);
+    const int segments = VulkanEllipseSegmentCount(rx, ry, scaleX, scaleY);
+    const float invSeg = 1.0f / static_cast<float>(segments);
+
     std::vector<float> points;
-    points.reserve(64);
-    for (int index = 0; index < 32; ++index) {
-        const float angle = static_cast<float>(index) / 32.0f * 6.28318530718f;
+    points.reserve(static_cast<size_t>(segments) * 2u);
+    for (int index = 0; index < segments; ++index) {
+        const float angle = static_cast<float>(index) * invSeg * 6.28318530718f;
         float worldX = 0.0f;
         float worldY = 0.0f;
         ApplyTransform(transform, cx + std::cos(angle) * rx, cy + std::sin(angle) * ry, worldX, worldY);
@@ -7863,10 +9887,15 @@ void VulkanRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Bru
     }
 
     const auto transform = GetCurrentTransform();
+    const float scaleX = std::sqrt(transform.m11 * transform.m11 + transform.m21 * transform.m21);
+    const float scaleY = std::sqrt(transform.m12 * transform.m12 + transform.m22 * transform.m22);
+    const int segments = VulkanEllipseSegmentCount(rx, ry, scaleX, scaleY);
+    const float invSeg = 1.0f / static_cast<float>(segments);
+
     std::vector<float> points;
-    points.reserve(64);
-    for (int index = 0; index < 32; ++index) {
-        const float angle = static_cast<float>(index) / 32.0f * 6.28318530718f;
+    points.reserve(static_cast<size_t>(segments) * 2u);
+    for (int index = 0; index < segments; ++index) {
+        const float angle = static_cast<float>(index) * invSeg * 6.28318530718f;
         float worldX = 0.0f;
         float worldY = 0.0f;
         ApplyTransform(transform, cx + std::cos(angle) * rx, cy + std::sin(angle) * ry, worldX, worldY);
@@ -7876,11 +9905,58 @@ void VulkanRenderTarget::DrawEllipse(float cx, float cy, float rx, float ry, Bru
     StrokePolyline(points, true, strokeWidth, b, g, r, a);
 }
 
+// Batch ellipse fill — wire format matches D3D12RenderTarget::FillEllipseBatch:
+// stride = 5 floats per element { cx, cy, rx, ry, packedRGBA }, where
+// packedRGBA is a uint32 (R | G<<8 | B<<16 | A<<24) stored as float bits.
+// Reuses the per-element FillEllipse path so each ellipse rides the SDF AA
+// pipeline we added to solid_rect.frag — no special batch GPU pipeline.
+void VulkanRenderTarget::FillEllipseBatch(const float* data, uint32_t count)
+{
+    if (!data || count == 0) return;
+    TouchFrame();
+
+    constexpr uint32_t kStride = 5;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint32_t base = i * kStride;
+        const float cx = data[base + 0];
+        const float cy = data[base + 1];
+        const float rx = data[base + 2];
+        const float ry = data[base + 3];
+
+        uint32_t packed;
+        std::memcpy(&packed, &data[base + 4], sizeof(uint32_t));
+        const uint8_t r = static_cast<uint8_t>(packed         & 0xFFu);
+        const uint8_t g = static_cast<uint8_t>((packed >> 8)  & 0xFFu);
+        const uint8_t b = static_cast<uint8_t>((packed >> 16) & 0xFFu);
+        const uint8_t a = static_cast<uint8_t>((packed >> 24) & 0xFFu);
+
+        // Construct a transient solid brush and route through FillEllipse so
+        // we hit the same GPU SDF path + CPU rasterize fallback as the
+        // per-call API. Allocating a brush per iteration is cheap (the
+        // VulkanSolidBrush constructor is a few field assignments) and
+        // matches how D3D12's FillEllipseBatch loops over individual SDF
+        // instances — both backends accept the same N draws of overhead.
+        VulkanSolidBrush brush(r / 255.0f, g / 255.0f, b / 255.0f, a / 255.0f);
+        FillEllipse(cx, cy, rx, ry, &brush);
+    }
+}
+
 void VulkanRenderTarget::DrawLine(float x1, float y1, float x2, float y2, Brush* brush, float strokeWidth)
 {
     TouchFrame();
-    if (!TryRecordGpuLineCommand(x1, y1, x2, y2, strokeWidth, brush)) {
-        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+
+    // Preferred GPU path: 3-strip manual AA (core + 2 feather strips with
+    // per-vertex alpha ramp). Matches D3D12RenderTarget::DrawLine pixel-for-
+    // pixel; eliminates the GPU rasterizer's staircase aliasing on oblique
+    // strokes that the old GpuLineCommand → SolidRect quad path showed.
+    bool aaRecorded = TryRecordGpuLineAACommand(x1, y1, x2, y2, strokeWidth, brush);
+    if (!aaRecorded) {
+        // Fallback: SolidRect quad (no AA). Triggered when AA path can't
+        // record (e.g. effect capture / transition slot in progress) but
+        // GpuReplay is still otherwise viable.
+        if (!TryRecordGpuLineCommand(x1, y1, x2, y2, strokeWidth, brush)) {
+            /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+        }
     }
 
     uint8_t b = 0, g = 0, r = 0, a = 0;
@@ -8066,7 +10142,11 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
     // a 1.0× icon and a 4.0× icon get separate cache entries — the cached
     // vertex density actually matches the on-screen scale.
     const auto curT = GetCurrentTransform();
-    const float curMaxScale = MaxScaleFromMatrix(curT.m11, curT.m12, curT.m21, curT.m22);
+    // Fold the path-quality knob into the effective scale so a higher
+    // SetPathMsaaSampleCount yields denser curve tessellation AND a distinct
+    // cache bucket (no cache flush needed when the quality changes).
+    const float curMaxScale = MaxScaleFromMatrix(curT.m11, curT.m12, curT.m21, curT.m22)
+                              * PathTessellationQualityScale();
     const uint32_t curScaleBucket = ScaleBucketFromMaxScale(curMaxScale);
     const uint64_t pathHash = HashPathInput(startX, startY, commands, commandLength, fillRule, curScaleBucket);
 
@@ -8093,6 +10173,56 @@ void VulkanRenderTarget::FillPath(float startX, float startY, const float* comma
         }
         pathCache_->Insert(pathHash, fresh);
         geometry = std::move(fresh);
+    }
+
+    // Multi-subpath signal from DecomposePathToLocalPoints: when the path
+    // opens more than one sub-path (e.g. an SVG icon with disjoint contours,
+    // or a glyph outline with internal holes), the single-polygon cache /
+    // ear-clip pipeline can't represent it. Mirror D3D12's CPU fallback —
+    // FlattenPathToContours + TriangulateCompoundPath — which handles both
+    // disjoint contours and fill-rule-correct holes. The result is emitted
+    // through the world-space pre-triangulated path so it still rides the
+    // GPU replay (no fallback to bitmap blit) and the entire frame stays
+    // on the GPU path.
+    if (geometry->localPoints.empty()) {
+        const auto multiTransform = GetCurrentTransform();
+        std::vector<Contour> contours = FlattenPathToContours(
+            startX, startY, commands, commandLength, 0.5f);
+        contours.erase(
+            std::remove_if(contours.begin(), contours.end(),
+                [](const Contour& c) { return c.VertexCount() < 3; }),
+            contours.end());
+        if (contours.empty()) return;
+
+        // Bake current transform into the points before triangulation so the
+        // world-space output is what the GPU path expects.
+        for (auto& c : contours) {
+            for (size_t pi = 0; pi + 1 < c.points.size(); pi += 2) {
+                float wx = 0.0f, wy = 0.0f;
+                ApplyTransform(multiTransform, c.points[pi], c.points[pi + 1], wx, wy);
+                c.points[pi] = wx;
+                c.points[pi + 1] = wy;
+            }
+        }
+
+        std::vector<float> triVerts;
+        if (TriangulateCompoundPath(contours, fillRule, triVerts) && triVerts.size() >= 6) {
+            TryRecordPreTriangulatedFilledPolygon(std::move(triVerts), brush);
+            if (cpuRasterNeeded_) {
+                // CPU canvas needs world-space points — same as cached path.
+                std::vector<float> flatWorld;
+                for (auto& c : contours) {
+                    flatWorld.insert(flatWorld.end(), c.points.begin(), c.points.end());
+                }
+                RasterizePolygon(flatWorld, fillRule, b, g, r, a);
+            }
+            return;
+        }
+        // Even compound triangulation bailed (degenerate / self-intersecting).
+        // Fall through to nothing — the icon was unrenderable. We avoid
+        // RasterizePolygonToGpuBitmap because that path expects a single
+        // polygon outline; compound contours would smear.
+        return;
     }
 
     if (geometry->localPoints.size() < 4) {
@@ -8176,101 +10306,34 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
         }
     }
 
-    std::vector<float> localPoints;
-    localPoints.reserve(commandLength * 2);
-
     uint8_t b = 0, g = 0, r = 0, a = 0;
     if (!commands || commandLength == 0 || !TryGetSolidBrushColor(brush, b, g, r, a)) {
         return;
     }
 
+    // CPU fallback uses the same shared core flattener as D3D12
+    // (jalium_triangulate.h::FlattenPathCommands). The previous hand-rolled
+    // loop dropped ArcTo entirely (tag 4 fell through to `break`), which made
+    // any SVG path stroke with an arc visually truncate. FlattenPathCommands
+    // handles ArcTo via FlattenSvgArc and uses adaptive Bezier subdivision
+    // for cubic/quad — matching D3D12 stroke geometry exactly.
+    // Finer flatten tolerance at higher path-quality settings (Vulkan analogue
+    // of D3D12's path MSAA). 0.5px at quality 1.0 → ~0.29px at quality 8.
+    const float strokeTolerance = 0.5f / PathTessellationQualityScale();
+    std::vector<float> localPoints = FlattenPathCommands(
+        startX, startY, commands, commandLength, strokeTolerance);
+    if (localPoints.size() < 4) {
+        return;
+    }
+
     const auto transform = GetCurrentTransform();
     std::vector<float> points;
-    points.reserve(commandLength * 2);
-
-    float currentX = startX;
-    float currentY = startY;
-    float worldX = 0.0f;
-    float worldY = 0.0f;
-    localPoints.push_back(currentX);
-    localPoints.push_back(currentY);
-    ApplyTransform(transform, currentX, currentY, worldX, worldY);
-    points.push_back(worldX);
-    points.push_back(worldY);
-
-    uint32_t index = 0;
-    while (index < commandLength) {
-        const int tag = static_cast<int>(commands[index++]);
-        if (tag == 0 && index + 1 < commandLength) {
-            currentX = commands[index++];
-            currentY = commands[index++];
-            localPoints.push_back(currentX);
-            localPoints.push_back(currentY);
-            ApplyTransform(transform, currentX, currentY, worldX, worldY);
-            points.push_back(worldX);
-            points.push_back(worldY);
-        } else if (tag == 1 && index + 5 < commandLength) {
-            const float cp1x = commands[index++];
-            const float cp1y = commands[index++];
-            const float cp2x = commands[index++];
-            const float cp2y = commands[index++];
-            const float endX = commands[index++];
-            const float endY = commands[index++];
-            for (int step = 1; step <= 16; ++step) {
-                const float t = static_cast<float>(step) / 16.0f;
-                const float omt = 1.0f - t;
-                const float bezierX =
-                    omt * omt * omt * currentX +
-                    3.0f * omt * omt * t * cp1x +
-                    3.0f * omt * t * t * cp2x +
-                    t * t * t * endX;
-                const float bezierY =
-                    omt * omt * omt * currentY +
-                    3.0f * omt * omt * t * cp1y +
-                    3.0f * omt * t * t * cp2y +
-                    t * t * t * endY;
-                localPoints.push_back(bezierX);
-                localPoints.push_back(bezierY);
-                ApplyTransform(transform, bezierX, bezierY, worldX, worldY);
-                points.push_back(worldX);
-                points.push_back(worldY);
-            }
-            currentX = endX;
-            currentY = endY;
-        } else if (tag == 2 && index + 1 < commandLength) {
-            // MoveTo: new sub-path
-            currentX = commands[index++];
-            currentY = commands[index++];
-            localPoints.push_back(currentX);
-            localPoints.push_back(currentY);
-            ApplyTransform(transform, currentX, currentY, worldX, worldY);
-            points.push_back(worldX);
-            points.push_back(worldY);
-        } else if (tag == 3 && index + 3 < commandLength) {
-            // QuadTo [cx, cy, ex, ey]
-            const float cpx = commands[index++];
-            const float cpy = commands[index++];
-            const float endX = commands[index++];
-            const float endY = commands[index++];
-            for (int step = 1; step <= 8; ++step) {
-                const float t = static_cast<float>(step) / 8.0f;
-                const float omt = 1.0f - t;
-                const float qx = omt * omt * currentX + 2.0f * omt * t * cpx + t * t * endX;
-                const float qy = omt * omt * currentY + 2.0f * omt * t * cpy + t * t * endY;
-                localPoints.push_back(qx);
-                localPoints.push_back(qy);
-                ApplyTransform(transform, qx, qy, worldX, worldY);
-                points.push_back(worldX);
-                points.push_back(worldY);
-            }
-            currentX = endX;
-            currentY = endY;
-        } else if (tag == 5) {
-            // ClosePath
-            closed = true;
-        } else {
-            break;
-        }
+    points.reserve(localPoints.size());
+    for (size_t i = 0; i + 1 < localPoints.size(); i += 2) {
+        float wx = 0.0f, wy = 0.0f;
+        ApplyTransform(transform, localPoints[i], localPoints[i + 1], wx, wy);
+        points.push_back(wx);
+        points.push_back(wy);
     }
 
     if (!TryRecordGpuPolylineCommand(localPoints, closed, strokeWidth, brush)) {
@@ -8281,6 +10344,9 @@ void VulkanRenderTarget::StrokePath(float startX, float startY, const float* com
         RasterizePolylineToGpuBitmap(points, closed, strokeWidth, b, g, r, a);
     }
 
+    // StrokePolyline writes into the CPU canvas pixelBuffer_ — it self-guards
+    // on cpuRasterNeeded_ so this is a no-op when the frame stays on the GPU
+    // replay path.
     StrokePolyline(points, closed, strokeWidth, b, g, r, a);
 }
 
@@ -8488,6 +10554,19 @@ void VulkanRenderTarget::PushClip(float x, float y, float w, float h)
     clipStack_.push_back(clip);
 }
 
+void VulkanRenderTarget::PushClipAliased(float x, float y, float w, float h)
+{
+    // D3D12 distinguishes aliased clip (binary pixel coverage) from the
+    // standard PushClip purely as an AA hint for the SDF rect shader. The
+    // Vulkan SolidRect path uses analytical SDF coverage on rect edges
+    // regardless, so we route aliased clip through the same code path —
+    // the visual difference at clip edges is sub-pixel and the existing
+    // ClipState model has no carve-out for "aliased". When the SDF path is
+    // extended with an aliased-clip uniform later, this is the entry point
+    // to flag it.
+    PushClip(x, y, w, h);
+}
+
 void VulkanRenderTarget::PushRoundedRectClip(float x, float y, float w, float h, float rx, float ry)
 {
     // Symmetric variant: forward to per-corner with min(rx, ry) on every corner
@@ -8603,6 +10682,15 @@ void VulkanRenderTarget::PopOpacity()
 }
 void VulkanRenderTarget::SetShapeType(int /*type*/, float /*n*/) {}
 void VulkanRenderTarget::SetVSyncEnabled(bool enabled) { vsyncEnabled_ = enabled; }
+
+void VulkanRenderTarget::SetPathMsaaSampleCount(uint32_t sampleCount) {
+    // Clamp to the same {1,2,4,8} set D3D12 accepts. Folded into the path
+    // tessellation scale (see PathTessellationQualityScale); a changed value
+    // naturally re-tessellates because FillPath keys its geometry cache by the
+    // boosted scale bucket, so stale lower-quality entries are simply bypassed.
+    uint32_t clamped = (sampleCount >= 8) ? 8u : (sampleCount >= 4) ? 4u : (sampleCount >= 2) ? 2u : 1u;
+    pathMsaaSampleCount_ = clamped;
+}
 void VulkanRenderTarget::SetDpi(float dpiX, float dpiY) { dpiX_ = dpiX; dpiY_ = dpiY; }
 // ── Dirty-rect aggregation helpers ───────────────────────────────────────────
 namespace {
@@ -9661,15 +11749,232 @@ void VulkanRenderTarget::DrawDropShadowEffect(float x, float y, float w, float h
     BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
 }
 
+void VulkanRenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
+    float glowSize, float r, float g, float b, float a, float intensity,
+    float /*uvOffsetX*/, float /*uvOffsetY*/,
+    float /*cornerTL*/, float /*cornerTR*/, float /*cornerBR*/, float /*cornerBL*/)
+{
+    TouchFrame();
+
+    if (lastCapturedPixels_.empty()) {
+        return;
+    }
+
+    // Soft outer glow = a centred, blurred, tinted silhouette of the captured
+    // element (spread outward by glowSize) with the crisp content composited on
+    // top. This mirrors DrawDropShadowEffect with a zero offset; D3D12 reaches
+    // the same look via 7 concentric SDF rounded-rects. Driving the glow from the
+    // capture's own alpha silhouette is actually MORE faithful to the element
+    // shape than the rounded-rect approximation, so the per-corner radii are
+    // intentionally ignored.
+    const float ga = std::clamp(a * intensity, 0.0f, 1.0f);
+    const float glowRadius = std::max(0.0f, glowSize);
+
+    if (ga > 0.0f && glowRadius > 0.0f) {
+        const int blurRadius = std::max(1, static_cast<int>(std::round(glowRadius)));
+        auto blurred = BlurPixels(lastCapturedPixels_, width_, height_, blurRadius, x, y, w, h);
+
+        std::vector<uint8_t> glowPixels = blurred;
+        const uint8_t glowB = static_cast<uint8_t>(std::clamp(b, 0.0f, 1.0f) * 255.0f + 0.5f);
+        const uint8_t glowG = static_cast<uint8_t>(std::clamp(g, 0.0f, 1.0f) * 255.0f + 0.5f);
+        const uint8_t glowR = static_cast<uint8_t>(std::clamp(r, 0.0f, 1.0f) * 255.0f + 0.5f);
+
+        for (size_t offset = 0; offset + 3 < glowPixels.size(); offset += 4) {
+            const uint8_t alpha = static_cast<uint8_t>(glowPixels[offset + 3] * ga);
+            glowPixels[offset + 0] = glowB;
+            glowPixels[offset + 1] = glowG;
+            glowPixels[offset + 2] = glowR;
+            glowPixels[offset + 3] = alpha;
+        }
+
+        // GPU fast path: a tinted blur of the capture (centred, no offset). CPU
+        // fallback path blends the same tinted-blur silhouette.
+        if (!TryRecordGpuBlurCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, glowRadius, 1.0f, true, r, g, b, ga)) {
+            /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+        }
+        BlendBuffer(glowPixels, width_, height_, x, y, w, h, 1.0f);
+    }
+
+    // Composite the crisp captured content on top of the glow.
+    if (!TryRecordGpuPixelBufferCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, 1.0f)) {
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+    }
+    BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
+}
+
+void VulkanRenderTarget::DrawColorMatrixEffect(float x, float y, float w, float h, const float* matrix)
+{
+    TouchFrame();
+    if (lastCapturedPixels_.empty() || !matrix) {
+        return;
+    }
+
+    // 5x4 row-major color matrix (feColorMatrix convention). Each output channel
+    // = dot(row, [r,g,b,a]) + row[4] offset, on STRAIGHT (non-premultiplied)
+    // RGBA in [0,1] — the standard WPF / Direct2D color-matrix input space.
+    std::vector<uint8_t> out = lastCapturedPixels_;  // BGRA8, width_*height_*4
+    for (size_t o = 0; o + 3 < out.size(); o += 4) {
+        const float b = lastCapturedPixels_[o + 0] / 255.0f;
+        const float g = lastCapturedPixels_[o + 1] / 255.0f;
+        const float r = lastCapturedPixels_[o + 2] / 255.0f;
+        const float a = lastCapturedPixels_[o + 3] / 255.0f;
+        const float nr = matrix[0]  * r + matrix[1]  * g + matrix[2]  * b + matrix[3]  * a + matrix[4];
+        const float ng = matrix[5]  * r + matrix[6]  * g + matrix[7]  * b + matrix[8]  * a + matrix[9];
+        const float nb = matrix[10] * r + matrix[11] * g + matrix[12] * b + matrix[13] * a + matrix[14];
+        const float na = matrix[15] * r + matrix[16] * g + matrix[17] * b + matrix[18] * a + matrix[19];
+        out[o + 0] = static_cast<uint8_t>(std::clamp(nb, 0.0f, 1.0f) * 255.0f + 0.5f);
+        out[o + 1] = static_cast<uint8_t>(std::clamp(ng, 0.0f, 1.0f) * 255.0f + 0.5f);
+        out[o + 2] = static_cast<uint8_t>(std::clamp(nr, 0.0f, 1.0f) * 255.0f + 0.5f);
+        out[o + 3] = static_cast<uint8_t>(std::clamp(na, 0.0f, 1.0f) * 255.0f + 0.5f);
+    }
+
+    if (!TryRecordGpuPixelBufferCommand(out, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, 1.0f)) {
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+    }
+    BlendBuffer(out, width_, height_, x, y, w, h, 1.0f);
+}
+
+void VulkanRenderTarget::DrawEmbossEffect(float x, float y, float w, float h,
+    float amount, float lightDirX, float lightDirY, float relief)
+{
+    TouchFrame();
+    if (lastCapturedPixels_.empty() || width_ <= 0 || height_ <= 0) {
+        return;
+    }
+
+    // Directional emboss: per-pixel luminance difference between the pixel and a
+    // neighbour offset along the (inverted) light direction, biased to mid-grey.
+    // amount scales contrast; relief sets the sample distance in pixels.
+    float len = std::sqrt(lightDirX * lightDirX + lightDirY * lightDirY);
+    const float lx = (len > 1e-5f) ? (lightDirX / len) : 1.0f;
+    const float ly = (len > 1e-5f) ? (lightDirY / len) : 0.0f;
+    const int sampleDist = std::max(1, static_cast<int>(std::round(relief <= 0.0f ? 1.0f : relief)));
+    const int dx = static_cast<int>(std::round(lx * sampleDist));
+    const int dy = static_cast<int>(std::round(ly * sampleDist));
+    const float amt = (amount <= 0.0f) ? 1.0f : amount;
+
+    auto lumaAt = [&](int px, int py) -> float {
+        px = std::clamp(px, 0, width_ - 1);
+        py = std::clamp(py, 0, height_ - 1);
+        const size_t o = (static_cast<size_t>(py) * static_cast<size_t>(width_) + static_cast<size_t>(px)) * 4u;
+        return (0.114f * lastCapturedPixels_[o + 0] +
+                0.587f * lastCapturedPixels_[o + 1] +
+                0.299f * lastCapturedPixels_[o + 2]) / 255.0f;
+    };
+
+    std::vector<uint8_t> out = lastCapturedPixels_;
+    for (int py = 0; py < height_; ++py) {
+        for (int px = 0; px < width_; ++px) {
+            const size_t o = (static_cast<size_t>(py) * static_cast<size_t>(width_) + static_cast<size_t>(px)) * 4u;
+            const float diff = lumaAt(px, py) - lumaAt(px - dx, py - dy);
+            const float v = std::clamp(0.5f + diff * amt, 0.0f, 1.0f);
+            const uint8_t grey = static_cast<uint8_t>(v * 255.0f + 0.5f);
+            out[o + 0] = grey;
+            out[o + 1] = grey;
+            out[o + 2] = grey;
+            // alpha (out[o+3]) preserved from the copy
+        }
+    }
+
+    if (!TryRecordGpuPixelBufferCommand(out, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, 1.0f)) {
+        /* drop: skip this primitive but keep replay path */ (void)__FUNCTION__;
+    }
+    BlendBuffer(out, width_, height_, x, y, w, h, 1.0f);
+}
+
 void VulkanRenderTarget::DrawShaderEffect(float x, float y, float w, float h,
     const uint8_t* shaderBytecode, uint32_t shaderBytecodeSize,
     const float* constants, uint32_t constantFloatCount)
 {
+    // DXBC bytecode path: Vulkan can't consume DirectX bytecode, so compose the
+    // captured content unmodified (DrawBlurEffect radius 0). This matches the
+    // D3D12 backend's fallback when a custom-shader PSO can't be built. Effects
+    // that want their shader applied on Vulkan must supply HLSL source via the
+    // DrawShaderEffectFromSource path below.
     (void)shaderBytecode;
     (void)shaderBytecodeSize;
     (void)constants;
     (void)constantFloatCount;
     DrawBlurEffect(x, y, w, h, 0.0f);
+}
+
+void VulkanRenderTarget::DrawShaderEffectFromSource(float x, float y, float w, float h,
+    const char* hlslSource, const float* constants, uint32_t constantFloatCount)
+{
+    TouchFrame();
+    if (lastCapturedPixels_.empty() || !hlslSource) {
+        return;
+    }
+
+    // FNV-1a hash keys the compiled-pipeline cache.
+    uint64_t hash = 1469598103934665603ull;
+    for (const char* p = hlslSource; *p; ++p) {
+        hash ^= static_cast<uint8_t>(*p);
+        hash *= 1099511628211ull;
+    }
+
+    VkPipeline pipeline = impl_->EnsureCustomShaderPipeline(hash, hlslSource);
+    if (pipeline == VK_NULL_HANDLE) {
+        // No DXC or compile failed → composite the captured content unmodified
+        // (same as the DXBC path's fallback).
+        if (!TryRecordGpuPixelBufferCommand(lastCapturedPixels_, static_cast<uint32_t>(width_), static_cast<uint32_t>(height_), x, y, w, h, 1.0f)) {
+            /* drop */ (void)__FUNCTION__;
+        }
+        BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
+        return;
+    }
+
+    if (!TryRecordGpuCustomShaderCommand(x, y, w, h, hash, constants, constantFloatCount)) {
+        // GPU replay inactive for this primitive — fall through to CPU.
+    }
+
+    // CPU fallback: a custom GPU shader can't run on the CPU rasterizer, so the
+    // captured content is composed unmodified when the whole frame is on CPU.
+    BlendBuffer(lastCapturedPixels_, width_, height_, x, y, w, h, 1.0f);
+}
+
+bool VulkanRenderTarget::TryRecordGpuCustomShaderCommand(float x, float y, float w, float h,
+    uint64_t shaderHash, const float* constants, uint32_t constantFloatCount)
+{
+    if (!gpuReplaySupported_ || !gpuReplayHasClear_) return false;
+    if (!effectCaptureStack_.empty() || activeTransitionSlot_ >= 0) return false;
+    if (w <= 0.0f || h <= 0.0f || width_ <= 0 || height_ <= 0) return false;
+
+    // Crop the captured full-frame buffer to the element rect → element-sized
+    // BGRA, so the user PS sees uv 0..1 over the element (D3D12 parity: D3D12's
+    // offscreen RT is element-sized).
+    const int left   = std::max(0, static_cast<int>(std::floor(x)));
+    const int top    = std::max(0, static_cast<int>(std::floor(y)));
+    const int right  = std::min(width_, static_cast<int>(std::ceil(x + w)));
+    const int bottom = std::min(height_, static_cast<int>(std::ceil(y + h)));
+    if (right <= left || bottom <= top) return false;
+    const int cw = right - left;
+    const int ch = bottom - top;
+
+    GpuReplayCommand cmd {};
+    cmd.kind = GpuReplayCommandKind::CustomShader;
+    cmd.customShader.pixelWidth = static_cast<uint32_t>(cw);
+    cmd.customShader.pixelHeight = static_cast<uint32_t>(ch);
+    cmd.customShader.x = static_cast<float>(left);
+    cmd.customShader.y = static_cast<float>(top);
+    cmd.customShader.w = static_cast<float>(cw);
+    cmd.customShader.h = static_cast<float>(ch);
+    cmd.customShader.shaderHash = shaderHash;
+    if (constants && constantFloatCount > 0) {
+        cmd.customShader.constants.assign(constants, constants + constantFloatCount);
+    }
+    cmd.customShader.pixels.resize(static_cast<size_t>(cw) * static_cast<size_t>(ch) * 4u);
+    for (int row = 0; row < ch; ++row) {
+        const uint8_t* src = lastCapturedPixels_.data() + (static_cast<size_t>(top + row) * static_cast<size_t>(width_) + static_cast<size_t>(left)) * 4u;
+        uint8_t* dst = cmd.customShader.pixels.data() + static_cast<size_t>(row) * static_cast<size_t>(cw) * 4u;
+        std::memcpy(dst, src, static_cast<size_t>(cw) * 4u);
+    }
+
+    if (!TryPopulateReplayClip(cmd)) return false;
+    if (cmd.scissorRight <= cmd.scissorLeft || cmd.scissorBottom <= cmd.scissorTop) return true;
+
+    gpuReplayCommands_.push_back(std::move(cmd));
+    return true;
 }
 
 void VulkanRenderTarget::DrawLiquidGlass(float x, float y, float w, float h, float cornerRadius, float blurRadius, float refractionAmount, float chromaticAberration, float tintR, float tintG, float tintB, float tintOpacity, float lightX, float lightY, float highlightBoost, int shapeType, float shapeExponent, int neighborCount, float fusionRadius, const float* neighborData)

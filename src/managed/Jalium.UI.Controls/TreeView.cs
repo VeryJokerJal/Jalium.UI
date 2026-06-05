@@ -213,6 +213,8 @@ public class TreeView : ItemsControl
     }
 
     /// <inheritdoc />
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "ApplyHierarchicalDataTemplate is reached only when a consumer assigns a HierarchicalDataTemplate to ItemTemplate and binds TreeView to user-defined data items. Its RUC contract — \"HierarchicalDataTemplate ItemsSource may resolve via PropertyAccessorRegistry reflection on data items\" — is the documented prerequisite for that opt-in feature; consumers binding reflective data types must keep their child/state properties preserved (or register typed accessors via PropertyAccessorRegistry), not a defect of this container-preparation site.")]
     protected override void PrepareContainerForItem(FrameworkElement element, object item)
     {
         base.PrepareContainerForItem(element, item);
@@ -645,6 +647,8 @@ public class TreeViewItem : HeaderedItemsControl
     }
 
     /// <inheritdoc />
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "ApplyHierarchicalDataTemplate is reached only when a consumer assigns a HierarchicalDataTemplate (directly or inherited from the parent TreeView) and binds child nodes to user-defined data items. Its RUC contract — \"HierarchicalDataTemplate ItemsSource may resolve via PropertyAccessorRegistry reflection on data items\" — is the documented prerequisite for that opt-in feature; consumers binding reflective data types must keep their child/state properties preserved (or register typed accessors via PropertyAccessorRegistry), not a defect of this container-preparation site.")]
     protected override void PrepareContainerForItem(FrameworkElement element, object item)
     {
         base.PrepareContainerForItem(element, item);
@@ -1604,6 +1608,8 @@ public class TreeViewItem : HeaderedItemsControl
 
     #region Property Changed Callbacks
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "TryWriteProperty here writes back IsExpanded only when _bridgedDataItem is non-null, i.e. only in the HierarchicalDataTemplate data-item bridging path the consumer opted into. Its RUC contract — \"PropertyAccessorRegistry falls back to Type.GetProperty when no setter is registered. Register typed setters via RegisterSetter() to opt out of reflection.\" — names the documented consumer responsibility; the data type's IsExpanded setter must be preserved (or a typed setter registered), not a defect of this state-sync callback.")]
     private static void OnIsExpandedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is TreeViewItem tvi)
@@ -1646,6 +1652,8 @@ public class TreeViewItem : HeaderedItemsControl
         }
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "TryWriteProperty here writes back IsSelected only when _bridgedDataItem is non-null, i.e. only in the HierarchicalDataTemplate data-item bridging path the consumer opted into. Its RUC contract — \"PropertyAccessorRegistry falls back to Type.GetProperty when no setter is registered. Register typed setters via RegisterSetter() to opt out of reflection.\" — names the documented consumer responsibility; the data type's IsSelected setter must be preserved (or a typed setter registered), not a defect of this state-sync callback.")]
     private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
     {
         if (d is TreeViewItem tvi)
@@ -1873,6 +1881,8 @@ public class TreeViewItem : HeaderedItemsControl
     /// Realizes deferred child items. Called when the node is first expanded.
     /// Uses batch operations to minimize notifications, style lookups, and layout invalidations.
     /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "ApplyHierarchicalDataTemplate is invoked here only when a deferred HierarchicalDataTemplate (_deferredTemplate) was stored, i.e. only in the HierarchicalDataTemplate path the consumer opted into. Its RUC contract — \"HierarchicalDataTemplate ItemsSource may resolve via PropertyAccessorRegistry reflection on data items\" — is the documented prerequisite for that opt-in feature; consumers binding reflective data types must keep their child/state properties preserved (or register typed accessors via PropertyAccessorRegistry), not a defect of this deferred-realization site.")]
     internal void EnsureChildrenRealized()
     {
         if (_childrenRealized || _deferredItemsSource == null)

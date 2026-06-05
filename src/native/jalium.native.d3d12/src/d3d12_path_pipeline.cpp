@@ -39,6 +39,7 @@
 
 #include <d3dcompiler.h>
 #include <cstring>
+#include <cstdlib>
 
 #pragma comment(lib, "d3dcompiler.lib")
 
@@ -133,6 +134,22 @@ float4 PSMain(VSOut input) : SV_TARGET {
 bool D3D12DirectRenderer::CreateStencilPathResources()
 {
     if (!device_) return false;
+
+    // Optional startup override of the path MSAA quality, e.g.
+    // JALIUM_PATH_MSAA=4 to halve path GPU cost on low-end adapters.
+    // Runtime changes go through SetPathMsaaSampleCount; this only seeds the
+    // initial value so the first PSO/RT build uses it.
+    // _dupenv_s is the CRT-safe form (plain getenv trips C4996-as-error here).
+    {
+        char* env = nullptr;
+        size_t envLen = 0;
+        if (_dupenv_s(&env, &envLen, "JALIUM_PATH_MSAA") == 0 && env) {
+            int requested = std::atoi(env);
+            SetPathMsaaSampleCount(requested > 0 ? (uint32_t)requested : 8u);
+            pathMsaaSampleCount_ = pendingPathMsaaSampleCount_;  // seed active too
+            free(env);
+        }
+    }
 
     if (!stencilPathCache_) {
         stencilPathCache_ = std::make_unique<StencilPathCache>(kStencilPathCacheCapacity);
@@ -248,10 +265,69 @@ bool D3D12DirectRenderer::CreateStencilPathResources()
         }
     }
 
-    // ── Stencil/Cover PSO setup. RT format = MSAA scratch color
-    //    (R16G16B16A16_FLOAT keeps premult intermediate values without
-    //    clamping; sRGB conversion happens at the resolve blit since the
-    //    back buffer is sRGB-aware).
+    // ── Stencil/Cover PSOs — depend on the path MSAA sample count, so they
+    //    live in a helper that can be re-run when the count changes at runtime.
+    if (!RebuildStencilCoverPSOs()) return false;
+
+    // Resolve PSO — 1× target = back buffer, no MSAA, premult alpha blend.
+    {
+        D3D12_GRAPHICS_PIPELINE_STATE_DESC rd = {};
+        rd.pRootSignature = pathResolveRootSig_.Get();
+        rd.VS = { pathResolveVS_->GetBufferPointer(), pathResolveVS_->GetBufferSize() };
+        rd.PS = { pathResolvePS_->GetBufferPointer(), pathResolvePS_->GetBufferSize() };
+        rd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+        rd.SampleMask = UINT_MAX;
+        rd.NumRenderTargets = 1;
+        rd.RTVFormats[0] = swapChainFormat_;
+        rd.SampleDesc.Count = 1;
+        rd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
+        rd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+        rd.RasterizerState.DepthClipEnable = FALSE;
+        rd.DepthStencilState.DepthEnable = FALSE;
+        rd.DepthStencilState.StencilEnable = FALSE;
+
+        D3D12_BLEND_DESC bd = {};
+        bd.RenderTarget[0].BlendEnable = TRUE;
+        bd.RenderTarget[0].SrcBlend       = D3D12_BLEND_ONE;
+        bd.RenderTarget[0].DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
+        bd.RenderTarget[0].BlendOp        = D3D12_BLEND_OP_ADD;
+        bd.RenderTarget[0].SrcBlendAlpha  = D3D12_BLEND_ONE;
+        bd.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        bd.RenderTarget[0].BlendOpAlpha   = D3D12_BLEND_OP_ADD;
+        bd.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        rd.BlendState = bd;
+
+        if (FAILED(device_->CreateGraphicsPipelineState(&rd,
+                IID_PPV_ARGS(&psoPathResolve_)))) return false;
+    }
+
+    // RTV/DSV heaps for the MSAA scratch. The resolve SRV lives in srvHeap_
+    // ring (allocated lazily in RecordDrawCommands).
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC rh = {};
+        rh.NumDescriptors = 1;
+        rh.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+        if (FAILED(device_->CreateDescriptorHeap(&rh, IID_PPV_ARGS(&pathMsaaRtvHeap_)))) return false;
+
+        D3D12_DESCRIPTOR_HEAP_DESC dh = {};
+        dh.NumDescriptors = 1;
+        dh.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        if (FAILED(device_->CreateDescriptorHeap(&dh, IID_PPV_ARGS(&stencilDsvHeap_)))) return false;
+    }
+
+    stencilPathReady_ = true;
+    return true;
+}
+
+bool D3D12DirectRenderer::RebuildStencilCoverPSOs()
+{
+    if (!device_ || !stencilPathRootSig_ || !stencilPathVS_ || !stencilPathPS_) {
+        return false;
+    }
+
+    // RT format = MSAA scratch color (R16G16B16A16_FLOAT keeps premult
+    // intermediate values without clamping; sRGB conversion happens at the
+    // resolve blit since the back buffer is sRGB-aware).
     constexpr DXGI_FORMAT kMsaaColorFormat = DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr DXGI_FORMAT kMsaaDsFormat    = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
@@ -269,7 +345,7 @@ bool D3D12DirectRenderer::CreateStencilPathResources()
     psoDesc.SampleMask = UINT_MAX;
     psoDesc.NumRenderTargets = 1;
     psoDesc.RTVFormats[0] = kMsaaColorFormat;
-    psoDesc.SampleDesc.Count = kPathMsaaSampleCount;
+    psoDesc.SampleDesc.Count = pathMsaaSampleCount_;
     psoDesc.DSVFormat = kMsaaDsFormat;
 
     psoDesc.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
@@ -337,54 +413,44 @@ bool D3D12DirectRenderer::CreateStencilPathResources()
                 IID_PPV_ARGS(&psoStencilCover_)))) return false;
     }
 
-    // Resolve PSO — 1× target = back buffer, no MSAA, premult alpha blend.
-    {
-        D3D12_GRAPHICS_PIPELINE_STATE_DESC rd = {};
-        rd.pRootSignature = pathResolveRootSig_.Get();
-        rd.VS = { pathResolveVS_->GetBufferPointer(), pathResolveVS_->GetBufferSize() };
-        rd.PS = { pathResolvePS_->GetBufferPointer(), pathResolvePS_->GetBufferSize() };
-        rd.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-        rd.SampleMask = UINT_MAX;
-        rd.NumRenderTargets = 1;
-        rd.RTVFormats[0] = swapChainFormat_;
-        rd.SampleDesc.Count = 1;
-        rd.RasterizerState.FillMode = D3D12_FILL_MODE_SOLID;
-        rd.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-        rd.RasterizerState.DepthClipEnable = FALSE;
-        rd.DepthStencilState.DepthEnable = FALSE;
-        rd.DepthStencilState.StencilEnable = FALSE;
-
-        D3D12_BLEND_DESC bd = {};
-        bd.RenderTarget[0].BlendEnable = TRUE;
-        bd.RenderTarget[0].SrcBlend       = D3D12_BLEND_ONE;
-        bd.RenderTarget[0].DestBlend      = D3D12_BLEND_INV_SRC_ALPHA;
-        bd.RenderTarget[0].BlendOp        = D3D12_BLEND_OP_ADD;
-        bd.RenderTarget[0].SrcBlendAlpha  = D3D12_BLEND_ONE;
-        bd.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
-        bd.RenderTarget[0].BlendOpAlpha   = D3D12_BLEND_OP_ADD;
-        bd.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
-        rd.BlendState = bd;
-
-        if (FAILED(device_->CreateGraphicsPipelineState(&rd,
-                IID_PPV_ARGS(&psoPathResolve_)))) return false;
-    }
-
-    // RTV/DSV heaps for the MSAA scratch. The resolve SRV lives in srvHeap_
-    // ring (allocated lazily in RecordDrawCommands).
-    {
-        D3D12_DESCRIPTOR_HEAP_DESC rh = {};
-        rh.NumDescriptors = 1;
-        rh.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
-        if (FAILED(device_->CreateDescriptorHeap(&rh, IID_PPV_ARGS(&pathMsaaRtvHeap_)))) return false;
-
-        D3D12_DESCRIPTOR_HEAP_DESC dh = {};
-        dh.NumDescriptors = 1;
-        dh.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
-        if (FAILED(device_->CreateDescriptorHeap(&dh, IID_PPV_ARGS(&stencilDsvHeap_)))) return false;
-    }
-
-    stencilPathReady_ = true;
     return true;
+}
+
+void D3D12DirectRenderer::ApplyPendingPathMsaaSampleCount()
+{
+    if (pendingPathMsaaSampleCount_ == pathMsaaSampleCount_) return;
+    if (!stencilPathReady_) {
+        // Pipeline not initialised yet — just latch the value so the first
+        // CreateStencilPathResources picks it up.
+        pathMsaaSampleCount_ = pendingPathMsaaSampleCount_;
+        return;
+    }
+
+    pathMsaaSampleCount_ = pendingPathMsaaSampleCount_;
+
+    // Caller (BeginFrame) has already waited the per-frame fence, so the old
+    // MSAA PSOs and scratch RT are guaranteed idle on the GPU.
+    if (!RebuildStencilCoverPSOs()) {
+        // PSO rebuild failed (extremely unlikely) — fall back to disabling the
+        // stencil fast path so we don't bind a mismatched PSO to the new RT.
+        stencilPathReady_ = false;
+        return;
+    }
+
+    // Force EnsureStencilDepthBuffer to recreate the scratch color + depth at
+    // the new sample count on the next path batch this frame.
+    pathMsaaWidth_  = 0;
+    pathMsaaHeight_ = 0;
+}
+
+void D3D12DirectRenderer::SetPathMsaaSampleCount(uint32_t sampleCount)
+{
+    // Clamp to the MSAA counts D3D12 hardware universally supports for this use.
+    uint32_t clamped = (sampleCount >= 8) ? 8u
+                     : (sampleCount >= 4) ? 4u
+                     : (sampleCount >= 2) ? 2u
+                                          : 1u;
+    pendingPathMsaaSampleCount_ = clamped;
 }
 
 bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
@@ -407,7 +473,7 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
     constexpr DXGI_FORMAT kColorFmt = DXGI_FORMAT_R16G16B16A16_FLOAT;
     constexpr DXGI_FORMAT kDsFmt    = DXGI_FORMAT_D24_UNORM_S8_UINT;
 
-    // 8× MSAA color.
+    // MSAA color (sample count is runtime-configurable).
     {
         D3D12_RESOURCE_DESC rd = {};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -416,7 +482,7 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
         rd.Format = kColorFmt;
-        rd.SampleDesc.Count = kPathMsaaSampleCount;
+        rd.SampleDesc.Count = pathMsaaSampleCount_;
         rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
         rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 
@@ -438,7 +504,7 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
             pathMsaaRtvHeap_->GetCPUDescriptorHandleForHeapStart());
     }
 
-    // 8× MSAA depth-stencil (we only use stencil — depth is permanently disabled).
+    // MSAA depth-stencil (we only use stencil — depth is permanently disabled).
     {
         D3D12_RESOURCE_DESC rd = {};
         rd.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
@@ -447,7 +513,7 @@ bool D3D12DirectRenderer::EnsureStencilDepthBuffer(UINT width, UINT height)
         rd.DepthOrArraySize = 1;
         rd.MipLevels = 1;
         rd.Format = kDsFmt;
-        rd.SampleDesc.Count = kPathMsaaSampleCount;
+        rd.SampleDesc.Count = pathMsaaSampleCount_;
         rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL;
         rd.Layout = D3D12_TEXTURE_LAYOUT_UNKNOWN;
 

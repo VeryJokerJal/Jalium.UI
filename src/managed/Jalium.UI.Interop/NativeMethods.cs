@@ -266,6 +266,10 @@ internal static partial class NativeMethods
     /// <summary>
     /// Mirrors native <c>JaliumGpuStats</c> — sequential layout matches the C struct.
     /// Used by the DevTools Perf tab to surface GPU resource usage.
+    ///
+    /// Frame-pacing fields (FrameGpuWaitNs / SwapBufferCount / LastFrameGpuWorkNs)
+    /// are zero for backends that have not implemented the measurement yet;
+    /// DevTools renders "—" for those cells.
     /// </summary>
     [StructLayout(LayoutKind.Sequential)]
     internal struct GpuStatsNative
@@ -277,6 +281,11 @@ internal static partial class NativeMethods
         public long PathBytes;
         public int TextureCount;
         public long TextureBytes;
+        public long FrameGpuWaitNs;
+        public int SwapBufferCount;
+        public int Reserved0;
+        public long LastFramePresentToReadyNs;
+        public long FrameWaitableWaitNs;
     }
 
     /// <summary>
@@ -286,6 +295,42 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_query_gpu_stats")]
     internal static partial int RenderTargetQueryGpuStats(nint renderTarget, out GpuStatsNative stats);
+
+    /// <summary>
+    /// Mirrors native <c>JaliumGpuTimingStats</c> — per-category GPU work
+    /// breakdown for the previously completed frame, sourced from hardware
+    /// timestamp queries. Layout matches the C struct (Sequential, default pack).
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct GpuTimingNative
+    {
+        public long TotalGpuNs;
+        public long SdfRectNs;
+        public long TextNs;
+        public long BitmapNs;
+        public long PathNs;
+        public long BackdropNs;
+        public long LiquidGlassNs;
+        public long OtherNs;
+        public int BatchCount;
+        public int TimingValid;
+    }
+
+    /// <summary>
+    /// Reads back hardware-timestamp GPU breakdown for the previous frame.
+    /// Returns JALIUM_OK (0) on success (TimingValid may still be 0 if no
+    /// frame has been decoded yet); JALIUM_ERROR_NOT_SUPPORTED (3) if the
+    /// backend has no timestamp-query implementation at all.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_query_gpu_timing")]
+    internal static partial int RenderTargetQueryGpuTiming(nint renderTarget, out GpuTimingNative timing);
+
+    /// <summary>
+    /// Returns the OS HANDLE (cast to nint) the render target uses as its
+    /// frame-latency waitable, or 0 if the backend has none.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_get_frame_latency_waitable")]
+    internal static partial nint RenderTargetGetFrameLatencyWaitable(nint renderTarget);
 
     /// <summary>
     /// Asks the backend to drop any reusable GPU / CPU caches it has accumulated
@@ -364,6 +409,13 @@ internal static partial class NativeMethods
     internal static partial void RenderTargetSetVSync(nint renderTarget, int enabled);
 
     /// <summary>
+    /// Sets the path stencil-then-cover MSAA sample count (1/2/4/8). Applied at
+    /// the next frame boundary; backends without an MSAA path renderer ignore it.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_path_msaa")]
+    internal static partial void RenderTargetSetPathMsaa(nint renderTarget, uint sampleCount);
+
+    /// <summary>
     /// Sets the DPI for the render target so D2D maps DIP coordinates to physical pixels.
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_dpi")]
@@ -380,6 +432,28 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_set_full_invalidation")]
     internal static partial void RenderTargetSetFullInvalidation(nint renderTarget);
+
+    // ── Retained GPU layers (damage-driven composited-animation fast path) ──
+    // Realize a content-clean subtree into a persistent offscreen texture once,
+    // then composite it as a transformed/opacity quad each frame. Returns 0 /
+    // null when the backend lacks offscreen-RT capture so callers fall back.
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_supports_retained_layers")]
+    internal static partial int RenderTargetSupportsRetainedLayers(nint renderTarget);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_realize_layer_begin")]
+    internal static partial nint RenderTargetRealizeLayerBegin(
+        nint renderTarget, nint existingLayer, float x, float y, float w, float h);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_realize_layer_end")]
+    internal static partial void RenderTargetRealizeLayerEnd(nint renderTarget, nint layer);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_composite_layer")]
+    internal static partial void RenderTargetCompositeLayer(
+        nint renderTarget, nint layer, float x, float y, float w, float h, float opacity);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_render_target_destroy_retained_layer")]
+    internal static partial void RenderTargetDestroyRetainedLayer(nint renderTarget, nint layer);
 
     /// <summary>
     /// Returns whether the render target supports partial redraw + dirty-rect presentation.
@@ -631,6 +705,44 @@ internal static partial class NativeMethods
     [LibraryImport(CoreLib, EntryPoint = "jalium_reset_bitmap_stats")]
     internal static partial void ResetBitmapStats();
 
+    /// <summary>
+    /// Unified text-rendering telemetry from jalium.native.core. Cross-backend
+    /// (D3D12 + Vulkan + software all feed the same atomics in core.dll).
+    /// Covers the three caches on the DrawText hot path: shaped layout cache
+    /// (D3D12TextFormat::CreateLayout), resolved-glyph instance cache
+    /// (D3D12GlyphAtlas::GenerateGlyphs memo), and per-glyph rasterized atlas
+    /// slot cache (D3D12GlyphAtlas::cache_). DevTools subtracts the
+    /// last-frame snapshot to get per-frame deltas.
+    ///
+    /// Layout MUST stay in sync with JaliumTextStats in jalium_text_stats.h.
+    /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct JaliumTextStats
+    {
+        public ulong Version;
+        public ulong LayoutHits;
+        public ulong LayoutMisses;
+        public ulong LayoutEvictions;
+        public ulong InstanceHits;
+        public ulong InstanceMisses;
+        public ulong InstanceEvictions;
+        public ulong GlyphRasterHits;
+        public ulong GlyphRasterMisses;
+        public ulong AtlasResets;
+        public ulong DrawTextCalls;
+        public ulong EmittedGlyphs;
+        public ulong EmittedDecorations;
+        // Reserved 16 ulong slots to match the C-side reserved[16] cushion.
+        private ulong _r0, _r1, _r2, _r3, _r4, _r5, _r6, _r7;
+        private ulong _r8, _r9, _r10, _r11, _r12, _r13, _r14, _r15;
+    }
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_query_text_stats")]
+    internal static unsafe partial void QueryTextStats(JaliumTextStats* outStats);
+
+    [LibraryImport(CoreLib, EntryPoint = "jalium_reset_text_stats")]
+    internal static partial void ResetTextStats();
+
 
     // ═══════════════════════════════════════════════════════════════════════
     //  Ink layer bitmap + brush-shader pipeline
@@ -738,6 +850,17 @@ internal static partial class NativeMethods
     /// </summary>
     [LibraryImport(CoreLib, EntryPoint = "jalium_draw_text")]
     internal static unsafe partial void DrawTextRaw(nint renderTarget, char* text, int textLength, nint textFormat, float x, float y, float width, float height, nint brush);
+
+    /// <summary>
+    /// Bundles PushTransform(inverse) + DrawText + PopTransform into a
+    /// single P/Invoke. Used by DrawText under a non-identity native
+    /// matrix where the inverse is purely transient.
+    /// </summary>
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_text_with_inverse_transform")]
+    internal static unsafe partial void DrawTextWithInverseRaw(
+        nint renderTarget, char* text, int textLength, nint textFormat,
+        float x, float y, float width, float height, nint brush,
+        float* inverseMatrix);
 
     /// <summary>
     /// Draws a backdrop filter effect.
@@ -891,6 +1014,16 @@ internal static partial class NativeMethods
     internal static partial void DrawShaderEffect(nint renderTarget,
         float x, float y, float w, float h,
         [In] byte[] shaderBytecode, uint shaderBytecodeSize,
+        [In] float[] constants, uint constantFloatCount);
+
+    // HLSL-source custom shader effect — the cross-backend path. Both backends
+    // compile the supplied SM6 HLSL at runtime (D3D12: D3DCompile, Vulkan:
+    // DXC→SPIR-V), so an effect that carries HLSL source works on either backend
+    // (the byte[] DXBC path above is D3D12-only — Vulkan can't consume it).
+    [LibraryImport(CoreLib, EntryPoint = "jalium_draw_shader_effect_hlsl", StringMarshalling = StringMarshalling.Utf8)]
+    internal static partial void DrawShaderEffectFromSource(nint renderTarget,
+        float x, float y, float w, float h,
+        string hlslSource,
         [In] float[] constants, uint constantFloatCount);
 
     /// <summary>

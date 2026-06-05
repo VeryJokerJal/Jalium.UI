@@ -1,4 +1,3 @@
-#define JALIUM_MEDIA_EXPORTS
 #include "and_image_decoder.h"
 #include "and_media_init.h"
 #include "jalium_media_internal.h"

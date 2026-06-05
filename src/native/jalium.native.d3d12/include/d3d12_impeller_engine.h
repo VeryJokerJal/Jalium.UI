@@ -53,6 +53,17 @@ struct ImpellerDrawBatch {
     bool hasScissor = false;
     float scissorL = 0, scissorT = 0, scissorR = 0, scissorB = 0;
 
+    // --- Per-batch rounded clip (snapshot at encode time, ALREADY-RESOLVED
+    //     physical-pixel space). The engine has no transform/dpiScale, so the
+    //     render target resolves the live roundedClipStack_ to physical px and
+    //     mirrors it in via SetRoundedClip. Mirrors scissor so flush replays each
+    //     batch's DRAW-TIME clip instead of the live stack (titlebar-glyph bug),
+    //     and so batching only splits when the clip actually differs (no flush
+    //     barrier → restores path batching across Borders/cards/buttons). ---
+    bool hasRoundedClip = false;
+    float roundedClipRect[4] = { 0, 0, 0, 0 };        // L, T, R, B (physical px)
+    float roundedClipCornerRadii[4] = { 0, 0, 0, 0 }; // TL, TR, BR, BL (physical px)
+
     // --- Tile coverage (Flutter Impeller: Entity::GetCoverage) ---
     // Screen-space AABB of this batch. Used to cull batches outside the
     // viewport/scissor and to tighten the rasterizer scissor on submission,
@@ -84,6 +95,12 @@ public:
     void BeginFrame(uint32_t viewportWidth, uint32_t viewportHeight) override;
     void SetScissorRect(float left, float top, float right, float bottom) override;
     void ClearScissorRect() override;
+
+    // Per-batch rounded-clip mirror (parallel to scissor). The render target
+    // feeds ALREADY-RESOLVED physical-pixel clip values here at draw time so each
+    // emitted batch snapshots its draw-time clip. Not part of IRenderingEngine.
+    void SetRoundedClip(const float rect[4], const float radii[4]);
+    void ClearRoundedClip();
 
     bool EncodeFillPath(
         float startX, float startY,
@@ -136,6 +153,13 @@ public:
             batch.scissorR = scissorRight_;
             batch.scissorB = scissorBottom_;
         }
+        batch.hasRoundedClip = hasRoundedClip_;
+        if (hasRoundedClip_) {
+            batch.roundedClipRect[0] = roundedClipRect_[0]; batch.roundedClipRect[1] = roundedClipRect_[1];
+            batch.roundedClipRect[2] = roundedClipRect_[2]; batch.roundedClipRect[3] = roundedClipRect_[3];
+            batch.roundedClipCornerRadii[0] = roundedClipCornerRadii_[0]; batch.roundedClipCornerRadii[1] = roundedClipCornerRadii_[1];
+            batch.roundedClipCornerRadii[2] = roundedClipCornerRadii_[2]; batch.roundedClipCornerRadii[3] = roundedClipCornerRadii_[3];
+        }
         ComputeBatchCoverage(batch);
         batches_.push_back(std::move(batch));
     }
@@ -158,6 +182,13 @@ public:
             batch.scissorT = scissorTop_;
             batch.scissorR = scissorRight_;
             batch.scissorB = scissorBottom_;
+        }
+        batch.hasRoundedClip = hasRoundedClip_;
+        if (hasRoundedClip_) {
+            batch.roundedClipRect[0] = roundedClipRect_[0]; batch.roundedClipRect[1] = roundedClipRect_[1];
+            batch.roundedClipRect[2] = roundedClipRect_[2]; batch.roundedClipRect[3] = roundedClipRect_[3];
+            batch.roundedClipCornerRadii[0] = roundedClipCornerRadii_[0]; batch.roundedClipCornerRadii[1] = roundedClipCornerRadii_[1];
+            batch.roundedClipCornerRadii[2] = roundedClipCornerRadii_[2]; batch.roundedClipCornerRadii[3] = roundedClipCornerRadii_[3];
         }
         bool batchHasCoverage = (coverR > coverL && coverB > coverT);
         if (batchHasCoverage) {
@@ -184,7 +215,17 @@ public:
                   last.scissorT == batch.scissorT &&
                   last.scissorR == batch.scissorR &&
                   last.scissorB == batch.scissorB));
-            if (last.pipelineType == 0 && last.stencilContours.empty() && scissorEq)
+            bool roundedClipEq = (last.hasRoundedClip == batch.hasRoundedClip) &&
+                (!batch.hasRoundedClip ||
+                 (last.roundedClipRect[0] == batch.roundedClipRect[0] &&
+                  last.roundedClipRect[1] == batch.roundedClipRect[1] &&
+                  last.roundedClipRect[2] == batch.roundedClipRect[2] &&
+                  last.roundedClipRect[3] == batch.roundedClipRect[3] &&
+                  last.roundedClipCornerRadii[0] == batch.roundedClipCornerRadii[0] &&
+                  last.roundedClipCornerRadii[1] == batch.roundedClipCornerRadii[1] &&
+                  last.roundedClipCornerRadii[2] == batch.roundedClipCornerRadii[2] &&
+                  last.roundedClipCornerRadii[3] == batch.roundedClipCornerRadii[3]));
+            if (last.pipelineType == 0 && last.stencilContours.empty() && scissorEq && roundedClipEq)
             {
                 uint32_t baseVertex = (uint32_t)last.vertices.size();
                 size_t oldIndexCount = last.indices.size();
@@ -386,6 +427,11 @@ private:
 
     float scissorLeft_ = 0, scissorTop_ = 0, scissorRight_ = 0, scissorBottom_ = 0;
     bool hasScissor_ = false;
+
+    // Rounded-clip mirror state (physical px, pre-resolved by the render target).
+    bool hasRoundedClip_ = false;
+    float roundedClipRect_[4] = { 0, 0, 0, 0 };
+    float roundedClipCornerRadii_[4] = { 0, 0, 0, 0 };
 
     std::vector<float> flatPoints_;
 

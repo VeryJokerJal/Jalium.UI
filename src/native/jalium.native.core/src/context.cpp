@@ -268,8 +268,11 @@ JALIUM_API JaliumResult jalium_context_check_device_status(JaliumContext* ctx) {
 
 JALIUM_API JaliumResult jalium_context_get_adapter_info(JaliumContext* ctx, JaliumAdapterInfo* info) {
     if (!ctx || !info) return JALIUM_ERROR_INVALID_ARGUMENT;
-    *info = {};
-    return JALIUM_ERROR_NOT_SUPPORTED;
+    *info = JaliumAdapterInfo{};
+    auto* impl = reinterpret_cast<jalium::Context*>(ctx)->GetBackendImpl();
+    if (!impl) return JALIUM_ERROR_INVALID_ARGUMENT;
+    // 转发到具体 backend；D3D12 已实现，其他 backend 暂时走基类的 NOT_SUPPORTED 默认。
+    return impl->GetAdapterInfo(info);
 }
 
 JALIUM_API JaliumRenderingEngine jalium_render_target_get_engine(JaliumRenderTarget* rt) {
@@ -305,6 +308,29 @@ JALIUM_API JaliumResult jalium_render_target_query_gpu_stats(
 {
     if (!rt || !out) return JALIUM_ERROR_INVALID_ARGUMENT;
     return reinterpret_cast<jalium::RenderTarget*>(rt)->QueryGpuStats(out);
+}
+
+JALIUM_API JaliumResult jalium_render_target_get_present_info(
+    JaliumRenderTarget* rt,
+    JaliumPresentInfo* out)
+{
+    if (!rt || !out) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->GetPresentInfo(out);
+}
+
+JALIUM_API JaliumResult jalium_render_target_query_gpu_timing(
+    JaliumRenderTarget* rt,
+    JaliumGpuTimingStats* out)
+{
+    if (!rt || !out) return JALIUM_ERROR_INVALID_ARGUMENT;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->QueryGpuTiming(out);
+}
+
+JALIUM_API intptr_t jalium_render_target_get_frame_latency_waitable(
+    JaliumRenderTarget* rt)
+{
+    if (!rt) return 0;
+    return reinterpret_cast<jalium::RenderTarget*>(rt)->GetFrameLatencyWaitable();
 }
 
 JALIUM_API JaliumResult jalium_render_target_reclaim_idle_resources(

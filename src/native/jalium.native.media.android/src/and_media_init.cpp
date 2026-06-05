@@ -1,4 +1,3 @@
-#define JALIUM_MEDIA_EXPORTS
 #include "and_media_init.h"
 
 #include <android/api-level.h>

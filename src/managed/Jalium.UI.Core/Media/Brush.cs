@@ -62,7 +62,25 @@ public abstract class GradientBrush : Brush
     /// <summary>
     /// Gets the collection of gradient stops.
     /// </summary>
-    public List<GradientStop> GradientStops { get; } = new();
+    /// <remarks>
+    /// A <see cref="GradientStopCollection"/> whose <see cref="GradientStopCollection.Changed"/>
+    /// event is wired to <see cref="InvalidateContentHash"/> in the constructor, so adding,
+    /// removing or recolouring a stop now automatically invalidates the cached content hash —
+    /// the render backend rebuilds the native brush without the caller having to signal it.
+    /// </remarks>
+    public GradientStopCollection GradientStops { get; }
+
+    /// <summary>
+    /// Initializes the gradient-stop collection and subscribes to its change notifications so
+    /// that stop mutations invalidate the cached content hash.
+    /// </summary>
+    protected GradientBrush()
+    {
+        GradientStops = new GradientStopCollection();
+        GradientStops.Changed += OnGradientStopsChanged;
+    }
+
+    private void OnGradientStopsChanged(object? sender, EventArgs e) => InvalidateContentHash();
 
     /// <summary>
     /// Gets or sets how the gradient is drawn outside the [0, 1] range.
@@ -75,11 +93,12 @@ public abstract class GradientBrush : Brush
     public BrushMappingMode MappingMode { get; set; } = BrushMappingMode.RelativeToBoundingBox;
 
     // 缓存的 content hash —— 第一次 ComputeContentHash 计算后存到 _cachedContentHash，
-    // 后续直接读，把每帧 O(stops 数) 的 FNV 折叠压成 O(1)。GradientStops 用 List 暴露
-    // 给 user 写入，框架无法订阅 List 变化通知；变更检测的触发点是 user 调用 setter
-    // (StartPoint/EndPoint/Center/Radius/SpreadMethod/MappingMode/Opacity)，那些
-    // 写入路径里调用 InvalidateContentHash() 让 cache 失效。Stops List 直接 Add/Clear
-    // 不会自动失效——这是与 SolidColorBrush 一致的"用户负责通知 mutation"约定。
+    // 后续直接读，把每帧 O(stops 数) 的 FNV 折叠压成 O(1)。失效来源有两类：
+    // ① 标量 setter (StartPoint/EndPoint/Center/Radius/SpreadMethod/MappingMode/Opacity)
+    //    在写入路径里显式调用 InvalidateContentHash()；
+    // ② GradientStops 现为 GradientStopCollection，其 Changed 事件(结构变更 + 每个 stop 的
+    //    Color/Offset 变更)在构造函数里接到 InvalidateContentHash() —— 因此 stops 的 Add/
+    //    Clear/重新着色不再需要用户手动通知（修掉旧 List 暴露下的失效盲区）。
     private long _cachedContentHash;
     private bool _hasCachedContentHash;
 

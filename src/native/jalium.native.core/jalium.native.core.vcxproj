@@ -102,6 +102,7 @@
     <ClInclude Include="include\jalium_stencil_path.h" />
     <ClInclude Include="include\jalium_string_util.h" />
     <ClInclude Include="include\jalium_text_options.h" />
+    <ClInclude Include="include\jalium_text_stats.h" />
     <ClInclude Include="include\jalium_triangulate.h" />
     <ClInclude Include="include\jalium_types.h" />
   </ItemGroup>
@@ -116,6 +117,8 @@
     <ClCompile Include="src\jalium_stencil_path.cpp" />
     <ClCompile Include="src\jalium_bitmap_stats.cpp" />
     <ClCompile Include="src\jalium_text_options.cpp" />
+    <ClCompile Include="src\jalium_text_stats.cpp" />
+    <ClCompile Include="src\video_surface.cpp" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

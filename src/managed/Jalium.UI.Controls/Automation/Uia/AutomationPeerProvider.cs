@@ -72,6 +72,8 @@ internal sealed class AutomationPeerProvider : StandardOleMarshalObject, IRawEle
         _ => null,
     };
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2050:CorrectnessOfCOMInteropCannotBeGuaranteed",
+        Justification = "The COM interface IRawElementProviderSimple is required for native UIA interop and is preserved; its vtable members are exercised through this UiaHostProviderFromHwnd P/Invoke so the trimmer cannot remove them. Preservation is pinned by the type entry <type fullname=\"Jalium.UI.Controls.Automation.Uia.IRawElementProviderSimple\" preserve=\"all\" /> in Jalium.UI.Controls/ILLink.Descriptors.xml, as documented on UiaNativeMethods.")]
     public IRawElementProviderSimple? HostRawElementProvider
     {
         get

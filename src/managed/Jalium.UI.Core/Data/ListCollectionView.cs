@@ -73,6 +73,8 @@ public sealed class ListCollectionView : CollectionView, IEditableCollectionView
     /// Starts an add transaction and returns the pending new item.
     /// </summary>
     /// <returns>The pending new item.</returns>
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2072:RequiresUnreferencedCode",
+        Justification = "AddNew constructs an item of the collection's element type. That element type is derived at runtime either from the consumer's IList<T> generic argument or from object.GetType() of an existing element (see GetItemType), neither of which can carry a DynamicallyAccessedMembers annotation. Preserving the parameterless constructor of types added to an editable collection view is the documented responsibility of the consumer that binds the collection — the same WPF IEditableCollectionView.AddNew contract — not a defect of this call site.")]
     public object? AddNew()
     {
         if (!CanAddNew)
@@ -198,6 +200,8 @@ public sealed class ListCollectionView : CollectionView, IEditableCollectionView
         Refresh();
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2075:UnrecognizedReflectionPattern",
+        Justification = "GetInterfaces is called on _internalList.GetType(), whose source is object.GetType() and therefore cannot carry a DynamicallyAccessedMembers(Interfaces) annotation. The only interface inspected is the well-known IList<> definition (a framework type that is always present), and the element type recovered from its generic argument is only used for construction whose preservation is the consumer's responsibility (see AddNew). No trimmer-removable member of a user type is reflected over here.")]
     private Type? GetItemType()
     {
         // Try to get item type from generic IList<T>

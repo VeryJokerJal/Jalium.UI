@@ -2603,8 +2603,13 @@ void SoftwareRenderTarget::DrawDropShadowEffect(float x, float y, float w, float
 
 void SoftwareRenderTarget::DrawOuterGlowEffect(float x, float y, float w, float h,
     float glowSize, float r, float g, float b, float a, float intensity,
+    float uvOffsetX, float uvOffsetY,
     float cornerTL, float cornerTR, float cornerBR, float cornerBL)
 {
+    // uvOffsetX/uvOffsetY are unused by the software backend: it captures the
+    // element into a single framebuffer (effectCaptureFb_) already positioned at
+    // the element origin, so there is no atlas-style UV offset to compensate for.
+    (void)uvOffsetX; (void)uvOffsetY;
     if (effectCaptureFb_.pixels.empty()) return;
 
     float tx, ty;

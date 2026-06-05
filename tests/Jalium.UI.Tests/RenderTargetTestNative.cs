@@ -41,6 +41,14 @@ internal sealed class RenderTargetTestNative : IRenderTargetNative
     {
     }
 
+    /// <summary>Records the last path MSAA sample count requested (see <see cref="IRenderTargetNative.SetPathMsaaSampleCount"/>).</summary>
+    public uint LastPathMsaaSampleCount { get; private set; }
+
+    public void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount)
+    {
+        LastPathMsaaSampleCount = sampleCount;
+    }
+
     public bool SupportsPartialPresentation(nint renderTarget) => SupportsPartialPresentationValue;
 
     public void Destroy(nint renderTarget)

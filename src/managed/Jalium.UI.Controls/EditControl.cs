@@ -233,6 +233,10 @@ public class EditControl : Control, IImeSupport, IEditorViewMetrics
             new PropertyMetadata(string.Empty, OnTextChanged));
 
     [DevToolsPropertyCategory(DevToolsPropertyCategory.Other)]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "This static field initializer only registers the OnLanguageChanged callback as a PropertyMetadata delegate token; no reflection runs here. The RequiresUnreferencedCode contract for the actual reflective work is declared at OnLanguageChanged (and its callee EnsureLspIntegration), whose message documents it as the opt-in LSP editor feature that uses System.Text.Json reflection — preserving the LSP/JSON types is the documented responsibility of consumers that enable that feature.")]
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("AOT", "IL3050:RequiresDynamicCode",
+        Justification = "This static field initializer only registers the OnLanguageChanged callback as a PropertyMetadata delegate token; no runtime code generation runs here. The RequiresDynamicCode contract is declared at OnLanguageChanged (and its callee EnsureLspIntegration), documented as the opt-in LSP editor feature that uses System.Text.Json runtime code generation; under AOT consumers either avoid that feature or provide a System.Text.Json source-generated context.")]
     public static readonly DependencyProperty LanguageProperty =
         DependencyProperty.Register(nameof(Language), typeof(string), typeof(EditControl),
             new PropertyMetadata("plaintext", OnLanguageChanged));

@@ -14,6 +14,11 @@ struct PushConstants
     float4 quadPoint23;
     float2 geometryFlags;
     float2 padding3;
+    // Per-corner radii (TL, TR, BR, BL). Fragment-shader-only; the
+    // vertex shader declares them solely so the push-constant block
+    // matches the layout the fragment stage consumes.
+    float4 perCornerRadiusX;
+    float4 perCornerRadiusY;
 };
 
 [[vk::push_constant]]

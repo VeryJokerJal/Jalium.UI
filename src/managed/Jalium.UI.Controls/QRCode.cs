@@ -450,11 +450,6 @@ public class QRCode : Control
         qrCode.InvalidateVisual();
     }
 
-    private static void OnVisualPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
-    {
-        if (d is QRCode qr) qr.InvalidateVisual();
-    }
-
     private static object CoerceQuietZoneModules(DependencyObject d, object? value)
         => Math.Max(0, (int)(value ?? 0));
 

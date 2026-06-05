@@ -275,7 +275,13 @@ internal sealed partial class DockIndicatorWindow : IDisposable
             _visual.Arrange(new Rect(0, 0, dipWidth, dipHeight));
 
             _renderTarget.SetFullInvalidation();
-            _renderTarget.BeginDraw();
+            // 同 PopupWindow：合成 swapchain 背压时 BeginDraw 返回 InvalidState；跳过本帧并稍后重画，
+            // 绝不能在原生 WM_PAINT / dispatcher-critical 回调里抛异常（会触发 0xC000041D 进程级崩溃）。
+            if (!_renderTarget.TryBeginDraw())
+            {
+                ScheduleRenderAfterRecovery();
+                return;
+            }
 
             // Clear with fully transparent background
             _renderTarget.Clear(0f, 0f, 0f, 0f);
@@ -290,12 +296,8 @@ internal sealed partial class DockIndicatorWindow : IDisposable
         }
         catch (RenderPipelineException ex)
         {
-            if (string.Equals(ex.Stage, "Begin", StringComparison.OrdinalIgnoreCase))
-            {
-                LogRenderFailure(ex, "RenderFrame");
-                throw;
-            }
-
+            // 运行在原生 WM_PAINT / dispatcher-critical 回调内：异常绝不能逃逸（会触发 0xC000041D 进程级崩溃）。
+            // 一律走恢复 / 重排，连 Begin 阶段可恢复失败也不再重抛。
             if (TryRecoverFromRenderPipelineFailure(ex, "RenderFrame"))
             {
                 return;
@@ -308,12 +310,10 @@ internal sealed partial class DockIndicatorWindow : IDisposable
             }
 
             LogRenderFailure(ex, "RenderFrame");
-            throw;
         }
         catch (Exception ex)
         {
             LogRenderFailure(ex, "RenderFrame");
-            throw;
         }
         finally
         {

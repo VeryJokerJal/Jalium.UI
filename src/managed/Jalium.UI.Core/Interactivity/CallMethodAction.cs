@@ -178,6 +178,12 @@ public sealed class ChangePropertyAction : TriggerAction<DependencyObject>
         PropertyAccessorRegistry.TryWriteProperty(target, PropertyName, ConvertValue(Value, GuessTargetType(target, PropertyName)));
     }
 
+    [System.Diagnostics.CodeAnalysis.UnconditionalSuppressMessage("Trimming", "IL2026:RequiresUnreferencedCode",
+        Justification = "PropertyAccessorRegistry.TryGetPropertyInfo performs Type.GetProperty reflection on the runtime type of the target. " +
+            "GuessTargetType is reached only from ChangePropertyAction.Invoke, the XAML behavior/EventTrigger surface, which already carries the " +
+            "[RequiresUnreferencedCode] contract ('ChangePropertyAction sets a property on the target via reflection.'). Consumers wiring a " +
+            "ChangePropertyAction to a user-defined type under trimming/AOT must preserve that type's property members; this leaf merely propagates " +
+            "the contract already declared at that public entry point.")]
     private static Type GuessTargetType(object target, string propertyName)
     {
         var prop = PropertyAccessorRegistry.TryGetPropertyInfo(target, propertyName);

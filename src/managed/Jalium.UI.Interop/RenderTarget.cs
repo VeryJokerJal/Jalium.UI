@@ -9,6 +9,19 @@ namespace Jalium.UI.Interop;
 /// Snapshot of a render target's GPU resource usage, returned by
 /// <see cref="RenderTarget.TryQueryGpuStats(out GpuResourceStats)"/>.
 /// Field semantics mirror native <c>JaliumGpuStats</c>.
+///
+/// Frame-pacing fields decompose UI-thread BeginDraw cost three ways:
+///  • FrameGpuWaitNs — UI-thread time blocked on the GPU fence (≈ 0 when
+///    the swap-chain waitable does the synchronisation instead).
+///  • FrameWaitableWaitNs — UI-thread time blocked on the swap-chain
+///    frame-latency waitable. This is where DWM / DXGI queue back-pressure
+///    actually shows up on a healthy modern D3D12 setup.
+///  • LastFramePresentToReadyNs — wall clock from EndFrame's queue Signal
+///    to the next BeginFrame observing the fence as completed. **Not pure
+///    GPU work** — includes DWM composition and DXGI queue latency. Use
+///    the hardware-timestamp GPU breakdown (<see cref="GpuTimingStats"/>)
+///    for the canonical "what did the GPU actually do" number.
+/// Unimplemented backends report 0 for these fields.
 /// </summary>
 public readonly record struct GpuResourceStats(
     int GlyphSlotsUsed,
@@ -17,7 +30,33 @@ public readonly record struct GpuResourceStats(
     int PathEntries,
     long PathBytes,
     int TextureCount,
-    long TextureBytes);
+    long TextureBytes,
+    long FrameGpuWaitNs,
+    int SwapBufferCount,
+    long LastFramePresentToReadyNs,
+    long FrameWaitableWaitNs);
+
+/// <summary>
+/// Per-frame GPU work breakdown by draw-call category, sourced from
+/// hardware timestamp queries on the graphics queue. Reports the previously
+/// completed frame's numbers (read back after fence sync).
+///
+/// TimingValid: false when no frame has been decoded yet (first frame after
+/// init, or backend lacks timestamp-query support). Categories sum to
+/// roughly TotalGpuNs minus driver overhead; OtherNs captures everything
+/// outside the classified categories (barriers, MSAA resolves, idle gaps).
+/// </summary>
+public readonly record struct GpuTimingStats(
+    long TotalGpuNs,
+    long SdfRectNs,
+    long TextNs,
+    long BitmapNs,
+    long PathNs,
+    long BackdropNs,
+    long LiquidGlassNs,
+    long OtherNs,
+    int BatchCount,
+    bool TimingValid);
 
 /// <summary>
 /// Represents a native render target for drawing.
@@ -80,6 +119,19 @@ public sealed class RenderTarget : IDisposable
     /// </summary>
     public RenderingEngine RenderingEngine =>
         _handle != nint.Zero ? NativeMethods.RenderTargetGetEngine(_handle) : RenderingEngine.Auto;
+
+    /// <summary>
+    /// Queries the swap chain present configuration (SwapEffect / tearing / waitable /
+    /// max latency / composition). Returns null when backend doesn't expose it
+    /// (older versions of jalium.native.core, or non-D3D12 backends).
+    /// </summary>
+    public PresentInfo? GetPresentInfo()
+    {
+        if (_handle == nint.Zero || _disposed) return null;
+        if (NativeGpuMethods.RenderTargetGetPresentInfo(_handle, out var info) == 0)
+            return info;
+        return null;
+    }
 
     /// <summary>
     /// Sets the rendering engine (hot-switch). Takes effect at the next BeginDraw().
@@ -194,6 +246,10 @@ public sealed class RenderTarget : IDisposable
         long t0 = ApiStart();
         int resultCode = _native.BeginDraw(_handle);
         ApiEnd("BeginDraw", t0);
+        // Frame-pacing: BeginDraw always succeeds-or-throws, so the attempt
+        // outcome is fully determined by the native result code; no separate
+        // "managed-side fail" branch like TryBeginDraw.
+        RenderDiagnostics.OnBeginDrawAttempt(success: resultCode == (int)JaliumResult.Ok);
         ThrowIfNativeFailure("Begin", resultCode);
         _isDrawing = true;
     }
@@ -211,7 +267,12 @@ public sealed class RenderTarget : IDisposable
         long t0 = ApiStart();
         int resultCode = _native.BeginDraw(_handle);
         ApiEnd("BeginDraw", t0);
-        if (resultCode == (int)JaliumResult.Ok)
+        bool success = resultCode == (int)JaliumResult.Ok;
+        // Frame-pacing: every TryBeginDraw call counts as one attempt,
+        // success or failure. Counted here (not in Window) so any callsite
+        // — not just the main render loop — feeds the pacing snapshot.
+        RenderDiagnostics.OnBeginDrawAttempt(success);
+        if (success)
         {
             _isDrawing = true;
             return true;
@@ -291,7 +352,46 @@ public sealed class RenderTarget : IDisposable
         stats = new GpuResourceStats(
             raw.GlyphSlotsUsed, raw.GlyphSlotsTotal, raw.GlyphBytes,
             raw.PathEntries, raw.PathBytes,
-            raw.TextureCount, raw.TextureBytes);
+            raw.TextureCount, raw.TextureBytes,
+            raw.FrameGpuWaitNs, raw.SwapBufferCount,
+            raw.LastFramePresentToReadyNs, raw.FrameWaitableWaitNs);
+        return true;
+    }
+
+    /// <summary>
+    /// Returns the OS HANDLE the backend uses as its swap-chain frame-latency
+    /// waitable, or <see cref="nint.Zero"/> when no such object exists
+    /// (non-D3D12 backends, older runtimes, or swap chain created without the
+    /// FRAME_LATENCY_WAITABLE_OBJECT flag). Callers wait on the handle from a
+    /// background thread to drive vsync-aligned scheduling; ownership stays
+    /// with the render target — DO NOT close it.
+    /// </summary>
+    public nint GetFrameLatencyWaitable()
+    {
+        if (_disposed || _handle == nint.Zero) return nint.Zero;
+        return NativeMethods.RenderTargetGetFrameLatencyWaitable(_handle);
+    }
+
+    /// <summary>
+    /// Snapshots per-category GPU timing for the previous completed frame.
+    /// Returns true when the backend filled the struct (TimingValid may still
+    /// be false if no frame has been decoded yet); false when the handle is
+    /// invalid or the backend doesn't implement timestamp queries at all.
+    /// </summary>
+    public bool TryQueryGpuTiming(out GpuTimingStats timing)
+    {
+        timing = default;
+        if (_disposed || _handle == nint.Zero) return false;
+
+        int resultCode = NativeMethods.RenderTargetQueryGpuTiming(_handle, out var raw);
+        if (resultCode != 0) return false;
+
+        timing = new GpuTimingStats(
+            raw.TotalGpuNs,
+            raw.SdfRectNs, raw.TextNs, raw.BitmapNs, raw.PathNs,
+            raw.BackdropNs, raw.LiquidGlassNs, raw.OtherNs,
+            raw.BatchCount,
+            raw.TimingValid != 0);
         return true;
     }
 
@@ -689,6 +789,47 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Draws text while temporarily applying <paramref name="inverseMatrix"/> as
+    /// a transient transform that is popped automatically. Bundles the
+    /// PushTransform + DrawText + PopTransform sequence into a single P/Invoke;
+    /// used by managed DrawText to cancel the active native matrix when
+    /// glyphs are pre-rasterized at screen resolution.
+    /// </summary>
+    public void DrawTextWithInverseTransform(string text, NativeTextFormat format,
+        float x, float y, float width, float height, NativeBrush brush,
+        ReadOnlySpan<float> inverseMatrix)
+    {
+        ThrowIfDisposed();
+        if (string.IsNullOrEmpty(text) || format == null || !format.IsValid ||
+            brush == null || !brush.IsValid || inverseMatrix.Length < 6)
+        {
+            return;
+        }
+
+        if (_drawTextDepth > 8) return;
+
+        _drawTextDepth++;
+        long t0 = ApiStart();
+        try
+        {
+            unsafe
+            {
+                fixed (char* textPtr = text)
+                fixed (float* matrixPtr = inverseMatrix)
+                {
+                    NativeMethods.DrawTextWithInverseRaw(_handle, textPtr, text.Length,
+                        format.Handle, x, y, width, height, brush.Handle, matrixPtr);
+                }
+            }
+        }
+        finally
+        {
+            _drawTextDepth--;
+            ApiEnd("DrawText", t0);
+        }
+    }
+
+    /// <summary>
     /// Pushes a transform matrix.
     /// </summary>
     public void PushTransform(float[] matrix)
@@ -849,6 +990,19 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Sets the path stencil-then-cover MSAA sample count (clamped to 1/2/4/8).
+    /// Applied at the next frame boundary. Lower counts trade path edge
+    /// anti-aliasing quality for GPU time; 8 is the highest-quality default.
+    /// Backends without an MSAA path renderer ignore this.
+    /// </summary>
+    /// <param name="sampleCount">Desired MSAA sample count (1, 2, 4, or 8).</param>
+    public void SetPathMsaaSampleCount(uint sampleCount)
+    {
+        ThrowIfDisposed();
+        _native.SetPathMsaaSampleCount(_handle, sampleCount);
+    }
+
+    /// <summary>
     /// Sets the DPI for the render target.
     /// D2D will use this to map DIP coordinates to physical pixels.
     /// </summary>
@@ -979,7 +1133,7 @@ public sealed class RenderTarget : IDisposable
 
     /// <summary>
     /// Draws a <see cref="Jalium.UI.Media.NativeVideoSurface"/> at the given rectangle.
-    /// Used by the video render path in <see cref="RenderTargetDrawingContext.DrawImage"/>
+    /// Used by the video render path in <see cref="RenderTargetDrawingContext.DrawImage(Jalium.UI.Media.ImageSource, Jalium.UI.Rect, Jalium.UI.Media.BitmapScalingMode)"/>
     /// when the source is a <see cref="Jalium.UI.Media.D3DImage"/> backed by a
     /// <c>NativeVideoSurface</c>.
     /// </summary>
@@ -1355,6 +1509,25 @@ public sealed class RenderTarget : IDisposable
     }
 
     /// <summary>
+    /// Draws a custom pixel-shader effect from SM6 HLSL <b>source</b>, compiled at
+    /// runtime by the backend (D3D12: D3DCompile, Vulkan: DXC→SPIR-V). This is the
+    /// cross-backend custom-shader path — unlike the DXBC <see cref="DrawShaderEffect"/>
+    /// overload, it works on the Vulkan backend too.
+    /// </summary>
+    public void DrawShaderEffectFromSource(float x, float y, float w, float h,
+        string hlslSource, float[] constants)
+    {
+        ThrowIfDisposed();
+        ArgumentException.ThrowIfNullOrEmpty(hlslSource);
+        ArgumentNullException.ThrowIfNull(constants);
+
+        long t0 = ApiStart();
+        NativeMethods.DrawShaderEffectFromSource(_handle, x, y, w, h,
+            hlslSource, constants, (uint)constants.Length);
+        ApiEnd("DrawShaderEffectFromSource", t0);
+    }
+
+    /// <summary>
     /// Draws a liquid glass effect with SDF-based refraction, highlight, and inner shadow.
     /// </summary>
     public unsafe void DrawLiquidGlass(
@@ -1484,6 +1657,7 @@ internal interface IRenderTargetNative
     int BeginDraw(nint renderTarget);
     int EndDraw(nint renderTarget);
     void SetVSyncEnabled(nint renderTarget, bool enabled);
+    void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount);
     void SetFullInvalidation(nint renderTarget);
     bool SupportsPartialPresentation(nint renderTarget);
     void Destroy(nint renderTarget);
@@ -1517,6 +1691,9 @@ internal sealed class DefaultRenderTargetNative : IRenderTargetNative
 
     public void SetVSyncEnabled(nint renderTarget, bool enabled)
         => NativeMethods.RenderTargetSetVSync(renderTarget, enabled ? 1 : 0);
+
+    public void SetPathMsaaSampleCount(nint renderTarget, uint sampleCount)
+        => NativeMethods.RenderTargetSetPathMsaa(renderTarget, sampleCount);
 
     public void SetFullInvalidation(nint renderTarget)
         => NativeMethods.RenderTargetSetFullInvalidation(renderTarget);
