@@ -19,7 +19,19 @@
     <JalxamlIntermediateOutputPath Condition="'$(_JalxamlUsesDefaultIntermediateOutputPath)' == 'true'">$(MSBuildProjectExtensionsPath)$(_JalxamlResolvedOutputConfigurationSegment)$(_JalxamlResolvedOutputTargetFrameworkSegment)$(_JalxamlResolvedOutputRuntimeIdentifierSegment)Jalxaml\</JalxamlIntermediateOutputPath>
     <JalxamlIntermediateOutputPath Condition="'$(JalxamlIntermediateOutputPath)' == ''">$(MSBuildProjectExtensionsPath)$(_JalxamlResolvedOutputConfigurationSegment)$(_JalxamlResolvedOutputTargetFrameworkSegment)$(_JalxamlResolvedOutputRuntimeIdentifierSegment)Jalxaml\</JalxamlIntermediateOutputPath>
     <JalxamlRazorIntermediateOutputPath Condition="'$(_JalxamlUsesDefaultRazorIntermediateOutputPath)' == 'true'">$(JalxamlIntermediateOutputPath)Razor\</JalxamlRazorIntermediateOutputPath>
-    <EnableJalxamlCodeGeneration Condition="'$(EnableJalxamlCodeGeneration)' == ''">true</EnableJalxamlCodeGeneration>
+    <!--
+      Default to the SourceGenerator path (false), NOT the Build-task .uic path (true).
+      The compiled .uic / ApplyBundle path does NOT wire up x:Name named elements (its name
+      lookup is an explicit "future-compatible" stub), so any code-behind page that references
+      a named element (e.g. `NewButton.Click += ...`) throws NullReferenceException at
+      construction, the StartupUri window is never created, and the app hangs in the background
+      with no visible window. The SourceGenerator emits a complete InitializeComponent
+      (compile-time lowering, or a runtime XamlReader.LoadComponentFromString fallback) that
+      populates named elements correctly and shows the window. Consumers can still opt back into
+      the .uic path with <EnableJalxamlCodeGeneration>true</EnableJalxamlCodeGeneration> once it
+      is finished. See repo history: default flipped to fix "published app opens no window".
+    -->
+    <EnableJalxamlCodeGeneration Condition="'$(EnableJalxamlCodeGeneration)' == ''">false</EnableJalxamlCodeGeneration>
     <EnableJalxamlRazorTransform Condition="'$(EnableJalxamlRazorTransform)' == ''">true</EnableJalxamlRazorTransform>
   </PropertyGroup>
 

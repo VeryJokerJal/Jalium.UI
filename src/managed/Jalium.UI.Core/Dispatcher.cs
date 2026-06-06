@@ -32,6 +32,15 @@ public sealed partial class Dispatcher : IDisposable
     private int _disableProcessingCount;
     private DispatcherHooks? _hooks;
 
+    // Re-entrancy depth of the same-thread inline InvokeAsync fast path (see TryInvokeInline).
+    // Bounds stack growth when UI-thread continuations resume synchronously through
+    // DispatcherSynchronizationContext.Post (e.g. an `await Task.Yield()` storm): above the limit
+    // InvokeAsync falls back to the queue so the chain breaks to the message pump instead of
+    // overflowing the stack. Thread-static because the inline path only ever runs on the dispatcher
+    // thread (it is gated by CheckAccess()).
+    [ThreadStatic] private static int t_inlineInvokeDepth;
+    private const int MaxInlineInvokeDepth = 32;
+
     // Platform-abstracted dispatcher wake mechanism
     private IDispatcherWake? _dispatcherWake;
 
@@ -311,6 +320,24 @@ public sealed partial class Dispatcher : IDisposable
     /// </summary>
     public Task InvokeAsync(Action callback) => InvokeAsync(callback, DispatcherPriority.Normal);
 
+    // Same-thread inline fast-path predicate shared by both InvokeAsync overloads. When true, the
+    // callback may run synchronously on the calling (dispatcher) thread and the returned Task is
+    // already completed — so a continuation posted at Normal/Send priority via
+    // DispatcherSynchronizationContext.Post resumes promptly even when the message pump is not yet
+    // running (the sync-over-async case that otherwise deadlocks the UI thread). Cases that fall
+    // through to the queued path:
+    //   * priority < Normal (Background/Input/Render/idle): explicit deferral is honored.
+    //   * not on the dispatcher thread: cross-thread work must be marshaled via the queue.
+    //   * DisableProcessing in effect: the caller fenced off a re-entrancy-free critical region,
+    //     so deferred continuation work is held back (EnableProcessing re-posts a wake on exit).
+    //   * inline re-entrancy depth at the cap: a same-thread continuation storm (e.g. an
+    //     `await Task.Yield()` loop) is broken back onto the queue so it cannot overflow the stack.
+    private bool TryInvokeInline(DispatcherPriority priority)
+        => priority >= DispatcherPriority.Normal
+           && CheckAccess()
+           && Volatile.Read(ref _disableProcessingCount) == 0
+           && t_inlineInvokeDepth < MaxInlineInvokeDepth;
+
     /// <summary>
     /// Executes the specified <see cref="Action"/> asynchronously on the dispatcher thread at the given priority.
     /// </summary>
@@ -318,6 +345,32 @@ public sealed partial class Dispatcher : IDisposable
     {
         ArgumentNullException.ThrowIfNull(callback);
         ValidatePriority(priority);
+
+        // Inline fast path: run a same-thread Normal/Send callback synchronously and hand back an
+        // already-completed Task. This keeps UI-thread await continuations (forwarded here by
+        // DispatcherSynchronizationContext.Post at Normal priority) from being parked until the pump
+        // runs, which is what otherwise deadlocks sync-over-async on the UI thread. No
+        // DispatcherOperation is created, so OperationPosted/Completed hooks intentionally do not
+        // fire for this path (matching the synchronous Invoke(Send) fast path).
+        if (TryInvokeInline(priority))
+        {
+            t_inlineInvokeDepth++;
+            try
+            {
+                callback();
+                return Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                // Faulted Task mirrors the queued path (op exception -> tcs.TrySetException). These
+                // ops are observed, so the queued path does not route to UnhandledException either.
+                return Task.FromException(ex);
+            }
+            finally
+            {
+                t_inlineInvokeDepth--;
+            }
+        }
 
         var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var op = CreateOperation(callback, priority, critical: false, observed: true);
@@ -343,6 +396,25 @@ public sealed partial class Dispatcher : IDisposable
     {
         ArgumentNullException.ThrowIfNull(callback);
         ValidatePriority(priority);
+
+        // Inline fast path (see the Action overload for rationale): run the same-thread Normal/Send
+        // callback synchronously and return an already-completed Task carrying its result.
+        if (TryInvokeInline(priority))
+        {
+            t_inlineInvokeDepth++;
+            try
+            {
+                return Task.FromResult(callback());
+            }
+            catch (Exception ex)
+            {
+                return Task.FromException<TResult>(ex);
+            }
+            finally
+            {
+                t_inlineInvokeDepth--;
+            }
+        }
 
         var tcs = new TaskCompletionSource<TResult>(TaskCreationOptions.RunContinuationsAsynchronously);
         TResult result = default!;

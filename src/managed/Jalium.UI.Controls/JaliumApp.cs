@@ -190,6 +190,56 @@ public sealed class JaliumApp : IHost
         => _host.StopAsync(cancellationToken);
 
     /// <summary>
+    /// Runs a host lifecycle operation (<see cref="IHost.StartAsync"/> / <see cref="IHost.StopAsync"/>)
+    /// to completion synchronously, with the UI <see cref="SynchronizationContext"/> temporarily
+    /// suspended for the duration of the blocking wait.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The <see cref="Application"/> constructor installs a
+    /// <see cref="Jalium.UI.Threading.DispatcherSynchronizationContext"/> as the current context so
+    /// that <c>async</c>/<c>await</c> continuations resume on the UI dispatcher thread. During
+    /// <see cref="Run(string[])"/> the host is started (and later stopped) by blocking on the
+    /// returned <see cref="Task"/> <em>before</em> the Win32 message loop is running. If a hosted
+    /// service, an <see cref="IHostApplicationLifetime"/> callback, or a <c>BackgroundService</c>
+    /// performs real asynchronous work, its captured continuation would be posted back to the
+    /// dispatcher and could only run once the message loop drains it — which never happens, because
+    /// this thread is blocked waiting for the host operation to finish. The result is a startup
+    /// deadlock (process alive, zero windows, no exception).
+    /// </para>
+    /// <para>
+    /// Suspending the context to <see langword="null"/> for the blocking call lets those
+    /// continuations resume on the thread pool instead, so the host operation can complete. The
+    /// <see cref="Func{Task}"/> shape is essential: the task is created <em>after</em> the context is
+    /// suspended, so the operation's synchronous prefix and its first <c>await</c> capture the
+    /// suspended (null) context. Passing an already-started task would capture the UI context before
+    /// suspension and reintroduce the deadlock.
+    /// </para>
+    /// <para>
+    /// Because the UI message pump is not running during host start/stop, code reached through
+    /// <paramref name="operation"/> must not synchronously block on UI-dispatcher work (for example
+    /// <c>Dispatcher.Invoke(...)</c> from another thread, or
+    /// <c>InvokeAsync(...).GetAwaiter().GetResult()</c> on the UI thread): such a wait still
+    /// deadlocks because no pump is draining the queue. Any <c>await</c> that would resume on the UI
+    /// thread resumes on the thread pool here; startup/shutdown work that needs UI-thread affinity
+    /// must be marshaled explicitly once the application message loop is running.
+    /// </para>
+    /// </remarks>
+    internal static void RunHostOperationBlocking(Func<Task> operation)
+    {
+        var uiContext = SynchronizationContext.Current;
+        SynchronizationContext.SetSynchronizationContext(null);
+        try
+        {
+            operation().GetAwaiter().GetResult();
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(uiContext);
+        }
+    }
+
+    /// <summary>
     /// Starts the host, runs the Jalium.UI message loop until shutdown, then stops
     /// and disposes the host. Uses the command-line arguments originally supplied
     /// to <see cref="AppBuilder.CreateBuilder(string[])"/> (or
@@ -215,7 +265,7 @@ public sealed class JaliumApp : IHost
 
         EnsureApplication();
 
-        _host.StartAsync(CancellationToken.None).GetAwaiter().GetResult();
+        RunHostOperationBlocking(() => _host.StartAsync(CancellationToken.None));
 
         int exitCode;
         try
@@ -226,7 +276,7 @@ public sealed class JaliumApp : IHost
         {
             try
             {
-                _host.StopAsync(CancellationToken.None).GetAwaiter().GetResult();
+                RunHostOperationBlocking(() => _host.StopAsync(CancellationToken.None));
             }
             catch (Exception)
             {
