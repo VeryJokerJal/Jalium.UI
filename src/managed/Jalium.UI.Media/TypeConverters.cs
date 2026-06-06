@@ -20,14 +20,14 @@ public sealed class ImageSourceConverter : TypeConverter
         {
             if (SvgImage.IsSvgFile(path))
                 return new SvgImage(new Uri(path, UriKind.RelativeOrAbsolute));
-            return new BitmapImage(new Uri(path, UriKind.RelativeOrAbsolute));
+            return ImageSourceLoader.FromUri(new Uri(path, UriKind.RelativeOrAbsolute));
         }
         if (value is Uri uri)
         {
             var uriStr = uri.IsAbsoluteUri ? uri.AbsolutePath : uri.OriginalString;
             if (SvgImage.IsSvgFile(uriStr))
                 return new SvgImage(uri);
-            return new BitmapImage(uri);
+            return ImageSourceLoader.FromUri(uri);
         }
         return base.ConvertFrom(context, culture, value);
     }
@@ -290,7 +290,7 @@ public sealed class ImageSourceValueSerializer : ValueSerializer
     {
         if (SvgImage.IsSvgFile(value))
             return new SvgImage(new Uri(value, UriKind.RelativeOrAbsolute));
-        return new BitmapImage(new Uri(value, UriKind.RelativeOrAbsolute));
+        return ImageSourceLoader.FromUri(new Uri(value, UriKind.RelativeOrAbsolute));
     }
 }
 

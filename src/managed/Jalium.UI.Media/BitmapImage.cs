@@ -406,6 +406,24 @@ public sealed class BitmapImage : ImageSource, IDisposable, IReclaimableResource
     }
 
     /// <summary>
+    /// Returns the process-wide image decoder (the one injected via
+    /// <see cref="SetDecoder"/>, otherwise the lazily-created native default).
+    /// Shared with <see cref="AnimatedBitmap"/> and <see cref="ImageSourceLoader"/>
+    /// so frame-count probing and frame decoding always agree.
+    /// </summary>
+    internal static INativeImageDecoder ResolveDecoder() => GetDecoderOrThrow();
+
+    /// <summary>
+    /// Reports how many frames the encoded <paramref name="data"/> contains
+    /// without decoding any pixels. Used by <see cref="ImageSourceLoader"/> to
+    /// pick between a static <see cref="BitmapImage"/> and an animated
+    /// <see cref="AnimatedBitmap"/>; honors a decoder injected via
+    /// <see cref="SetDecoder"/> so tests and custom pipelines stay consistent.
+    /// </summary>
+    internal static int ProbeFrameCount(ReadOnlySpan<byte> data)
+        => ResolveDecoder().ReadFrameCount(data);
+
+    /// <summary>
     /// Cancels any pending HTTP load and releases resources.
     /// </summary>
     public void Dispose()

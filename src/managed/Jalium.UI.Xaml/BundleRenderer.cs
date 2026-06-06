@@ -651,11 +651,11 @@ public sealed class BundleRenderer
         {
             if (File.Exists(path))
             {
-                loaded = BitmapImage.FromFile(path);
+                loaded = ImageSourceLoader.FromFile(path);
             }
             else if (Uri.TryCreate(path, UriKind.RelativeOrAbsolute, out var uri))
             {
-                loaded = new BitmapImage(uri);
+                loaded = ImageSourceLoader.FromUri(uri);
             }
         }
         catch (Exception ex)

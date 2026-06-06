@@ -6,6 +6,13 @@
 
 #define MINIMP3_FLOAT_OUTPUT
 #define MINIMP3_IMPLEMENTATION
+// minimp3 1.x uses x86 SSE-style `__m128 = {f,f,f,f}` brace-initializers in its
+// MINIMP3_FLOAT_OUTPUT SIMD path. On ARM64 MSVC the f4 typedef becomes
+// float32x4_t which does not accept brace-init (C2078). Disable SIMD on ARM64
+// only; x64/x86 stay on SSE.
+#if defined(_M_ARM64) || defined(__aarch64__)
+#define MINIMP3_NO_SIMD
+#endif
 #include "minimp3_ex.h"
 
 #include "jalium_audio.h"
