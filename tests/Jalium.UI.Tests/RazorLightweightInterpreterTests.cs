@@ -384,6 +384,48 @@ public class RazorLightweightInterpreterTests
         Assert.False(RazorCodeBlockPreprocessor.IsRuntimeCodeBlock("@x"));
     }
 
+    [Fact]
+    public void ExpandWithScope_AsyncLocalFunction_IsVisibleToSubsequentAwaitForeach()
+    {
+        const string setup = """
+            async System.Collections.Generic.IAsyncEnumerable<string> Produce() {
+              yield return "X";
+              yield return "Y";
+            }
+            """;
+
+        var (setupOutput, resolver) = RazorLightweightCodeBlockInterpreter.ExpandWithScope(setup, _ => null);
+        Assert.Equal(string.Empty, setupOutput);
+
+        const string loop = """
+            await foreach(var item in Produce()) {
+              <Item Value="@item" />
+            }
+            """;
+
+        var (loopOutput, _) = RazorLightweightCodeBlockInterpreter.ExpandWithScope(loop, resolver);
+        Assert.Contains("Value=\"X\"", loopOutput);
+        Assert.Contains("Value=\"Y\"", loopOutput);
+    }
+
+    [Fact]
+    public void ExpandWithScope_CombinedSetupAndAwaitForeach_ShouldExpand()
+    {
+        const string combined = """
+            async System.Collections.Generic.IAsyncEnumerable<string> Produce() {
+              yield return "X";
+              yield return "Y";
+            }
+            await foreach(var item in Produce()) {
+              <Item Value="@item" />
+            }
+            """;
+
+        var (output, _) = RazorLightweightCodeBlockInterpreter.ExpandWithScope(combined, _ => null);
+        Assert.Contains("Value=\"X\"", output);
+        Assert.Contains("Value=\"Y\"", output);
+    }
+
     // ═══════════════════════════════════════════════════════════
     // Tokenizer Tests
     // ═══════════════════════════════════════════════════════════

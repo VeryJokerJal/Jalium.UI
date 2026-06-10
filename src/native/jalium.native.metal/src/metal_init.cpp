@@ -1,6 +1,8 @@
 #include "jalium_api.h"
 #include "metal_backend.h"
 
+#import <Metal/Metal.h>
+
 #include <atomic>
 
 #ifdef _WIN32

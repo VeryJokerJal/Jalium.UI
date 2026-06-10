@@ -1363,19 +1363,60 @@ internal static class RazorLightweightCodeBlockInterpreter
         // Match keyword
         string? keyword = null;
         int keywordLen = 0;
+        var awaitForeach = false;
         if (remaining >= 7 && markup.AsSpan(pos, 7).SequenceEqual("foreach") && (remaining == 7 || !char.IsLetterOrDigit(markup[pos + 7])))
         { keyword = "foreach"; keywordLen = 7; }
         else if (remaining >= 5 && markup.AsSpan(pos, 5).SequenceEqual("while") && (remaining == 5 || !char.IsLetterOrDigit(markup[pos + 5])))
         { keyword = "while"; keywordLen = 5; }
+        else if (remaining >= 2 && markup.AsSpan(pos, 2).SequenceEqual("do") && (remaining == 2 || !char.IsLetterOrDigit(markup[pos + 2])))
+        { keyword = "do"; keywordLen = 2; }
         else if (remaining >= 3 && markup.AsSpan(pos, 3).SequenceEqual("for") && (remaining == 3 || !char.IsLetterOrDigit(markup[pos + 3])))
         { keyword = "for"; keywordLen = 3; }
         else if (remaining >= 2 && markup.AsSpan(pos, 2).SequenceEqual("if") && (remaining == 2 || !char.IsLetterOrDigit(markup[pos + 2])))
         { keyword = "if"; keywordLen = 2; }
+        else if (remaining >= 5 && markup.AsSpan(pos, 5).SequenceEqual("await") && (remaining == 5 || !char.IsLetterOrDigit(markup[pos + 5])))
+        {
+            var pAwait = pos + 5;
+            while (pAwait < markup.Length && char.IsWhiteSpace(markup[pAwait])) pAwait++;
+            if (pAwait + 7 <= markup.Length && markup.AsSpan(pAwait, 7).SequenceEqual("foreach") && (pAwait + 7 == markup.Length || !char.IsLetterOrDigit(markup[pAwait + 7])))
+            {
+                keyword = "foreach";
+                keywordLen = pAwait + 7 - pos;
+                awaitForeach = true;
+            }
+        }
 
         if (keyword == null) return false;
 
         var p = pos + keywordLen;
         while (p < markup.Length && char.IsWhiteSpace(markup[p])) p++;
+
+        if (keyword == "do")
+        {
+            if (p >= markup.Length || markup[p] != '{') return false;
+
+            var doBodyEnd = FindMatchingChar(markup, p + 1, '{', '}');
+            if (doBodyEnd < 0) return false;
+            var doBody = markup[(p + 1)..doBodyEnd];
+
+            p = doBodyEnd + 1;
+            while (p < markup.Length && char.IsWhiteSpace(markup[p])) p++;
+            if (p + 5 > markup.Length || !markup.AsSpan(p, 5).SequenceEqual("while")) return false;
+            p += 5;
+            while (p < markup.Length && char.IsWhiteSpace(markup[p])) p++;
+            if (p >= markup.Length || markup[p] != '(') return false;
+
+            var doAfterParen = FindMatchingChar(markup, p + 1, '(', ')');
+            if (doAfterParen < 0) return false;
+            var doCondition = markup[(p + 1)..doAfterParen];
+            consumed = doAfterParen + 1;
+            while (consumed < markup.Length && char.IsWhiteSpace(markup[consumed])) consumed++;
+            if (consumed < markup.Length && markup[consumed] == ';') consumed++;
+
+            ExecuteDoWhileInMarkup(doCondition, doBody, output, scope);
+            return true;
+        }
+
         if (p >= markup.Length || markup[p] != '(') return false;
 
         // Find matching ) and {
@@ -1399,7 +1440,10 @@ internal static class RazorLightweightCodeBlockInterpreter
                 ExecuteForInMarkup(condition, body, output, scope);
                 break;
             case "foreach":
-                ExecuteForeachInMarkup(condition, body, output, scope);
+                if (awaitForeach)
+                    ExecuteAwaitForeachInMarkup(condition, body, output, scope);
+                else
+                    ExecuteForeachInMarkup(condition, body, output, scope);
                 break;
             case "while":
                 ExecuteWhileInMarkup(condition, body, output, scope);
@@ -1463,6 +1507,78 @@ internal static class RazorLightweightCodeBlockInterpreter
         }
     }
 
+    private static void ExecuteDoWhileInMarkup(string condition, string body, StringBuilder output, InterpreterScope scope)
+    {
+        var iterLimit = 10000;
+        do
+        {
+            EmitMarkup(body, output, scope);
+            var cond = RazorLightweightExpressionEvaluator.Evaluate(condition.Trim(), scope.Resolve);
+            if (!RazorExpressionParser.IsTruthy(cond)) break;
+        } while (iterLimit-- > 0);
+    }
+
+    private static void ExecuteAwaitForeachInMarkup(string header, string body, StringBuilder output, InterpreterScope scope)
+    {
+        var inIdx = header.IndexOf(" in ", StringComparison.Ordinal);
+        if (inIdx < 0) return;
+        var varName = header[..inIdx].Trim().Split(' ', StringSplitOptions.RemoveEmptyEntries).Last();
+        var collExpr = header[(inIdx + 4)..].Trim();
+        var collection = RazorLightweightExpressionEvaluator.Evaluate(collExpr, scope.Resolve);
+
+        if (collection != null)
+        {
+            var asyncEnumType = collection.GetType().GetInterfaces()
+                .FirstOrDefault(i => i.IsGenericType && i.GetGenericTypeDefinition().FullName == "System.Collections.Generic.IAsyncEnumerable`1");
+
+            if (asyncEnumType != null)
+            {
+                var getEnumerator = asyncEnumType.GetMethod("GetAsyncEnumerator");
+                if (getEnumerator != null)
+                {
+                    var enumerator = getEnumerator.Invoke(collection, new object[] { default(System.Threading.CancellationToken) });
+                    if (enumerator != null)
+                    {
+                        var moveNextAsync = enumerator.GetType().GetMethod("MoveNextAsync");
+                        var currentProp = enumerator.GetType().GetProperty("Current");
+                        if (moveNextAsync != null && currentProp != null)
+                        {
+                            var child = scope.CreateChild();
+                            while (true)
+                            {
+                                var moveResult = moveNextAsync.Invoke(enumerator, null);
+                                bool hasNext;
+                                if (moveResult is System.Threading.Tasks.ValueTask<bool> vt)
+                                    hasNext = vt.AsTask().GetAwaiter().GetResult();
+                                else if (moveResult is System.Threading.Tasks.Task<bool> t)
+                                    hasNext = t.GetAwaiter().GetResult();
+                                else break;
+
+                                if (!hasNext) break;
+                                child.Set(varName, currentProp.GetValue(enumerator));
+                                EmitMarkup(body, output, child);
+                            }
+
+                            if (enumerator is IAsyncDisposable asyncDisposable)
+                                asyncDisposable.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                        }
+                    }
+                }
+                return;
+            }
+        }
+
+        if (collection is IEnumerable enumerable)
+        {
+            var child = scope.CreateChild();
+            foreach (var item in enumerable)
+            {
+                child.Set(varName, item);
+                EmitMarkup(body, output, child);
+            }
+        }
+    }
+
     private static void ExecuteIfInMarkup(string condition, string body, StringBuilder output, InterpreterScope scope)
     {
         var cond = RazorLightweightExpressionEvaluator.Evaluate(condition.Trim(), scope.Resolve);
@@ -1496,6 +1612,14 @@ internal static class RazorLightweightCodeBlockInterpreter
         // If code contains XML elements, use the mixed interpreter
         // which handles statement-level <Element/> as markup output.
         if (ContainsXmlElement(code))
+        {
+            InterpretMixedCode(code, output, scope);
+            return;
+        }
+
+        // Async local function declarations (including async iterators) are
+        // handled by the mixed interpreter's statement reader.
+        if (code.StartsWith("async ", StringComparison.Ordinal) || code.Contains("\nasync ", StringComparison.Ordinal))
         {
             InterpretMixedCode(code, output, scope);
             return;
@@ -2421,12 +2545,12 @@ internal static class RazorLightweightCodeBlockInterpreter
 
     private static object? Increment(object? val) => val switch
     {
-        int i => i + 1, long l => l + 1, double d => d + 1, float f => f + 1, decimal m => m + 1, _ => val
+        int i => i + 1, long l => l + 1, double d => d + 1, float f => f + 1, decimal m => m + 1, null => 1, _ => val
     };
 
     private static object? Decrement(object? val) => val switch
     {
-        int i => i - 1, long l => l - 1, double d => d - 1, float f => f - 1, decimal m => m - 1, _ => val
+        int i => i - 1, long l => l - 1, double d => d - 1, float f => f - 1, decimal m => m - 1, null => -1, _ => val
     };
 
     private static object? AddValues(object? a, object? b)

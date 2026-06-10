@@ -399,7 +399,19 @@ public class Grid : Panel
             cellWidth += Math.Max(0, columnSpan - 1) * columnSpacing;
             cellHeight += Math.Max(0, rowSpan - 1) * rowSpacing;
 
-            fe.Measure(new Size(cellWidth, cellHeight));
+            bool spansAutoLikeRow = false;
+            for (int i = row; i < row + rowSpan; i++)
+            {
+                if (rowDefs[i].Height.IsAuto || (treatStarRowsAsAuto && rowStarValues[i] > 0))
+                {
+                    spansAutoLikeRow = true;
+                    break;
+                }
+            }
+
+            // For wrapped content in auto rows, remeasure with the finalized cell width
+            // but unconstrained height so desired height can grow after width is known.
+            fe.Measure(new Size(cellWidth, spansAutoLikeRow ? double.PositiveInfinity : cellHeight));
 
             // Reconcile auto (and star-as-auto) definitions with final constrained measure.
             // This is important for wrapped text: final column width can increase required row height.

@@ -41,11 +41,19 @@ public class PathIconTests
         var icon = CreateIcon("M 0,0 L 8,0 L 8,4 L 0,4 Z", 20, 20);
         icon.RenderTransform = new RotateTransform { Angle = 90 };
 
+        // PathIcon.OnRender only applies the fit-to-size matrix; a user RenderTransform
+        // is pushed by the parent Visual around the child's draw pass (Visual.RenderDirect).
+        // Reproduce that outer push here so we observe the same composed transform the real
+        // render pipeline produces. This is pure managed math, identical on every platform.
         var drawingContext = new RecordingDrawingContext();
+        var origin = icon.RenderTransformOrigin;
+        var originX = origin.X * icon.RenderSize.Width;
+        var originY = origin.Y * icon.RenderSize.Height;
+        ((ITransformDrawingContext)drawingContext).PushTransform(icon.RenderTransform, originX, originY);
         icon.Render(drawingContext);
 
-        var transform = Assert.IsType<MatrixTransform>(drawingContext.LastTransform);
-        AssertMatrixClose(new Matrix(0, 2.5, -2.5, 0, 15, 0), transform.Matrix);
+        // Rotation (90°) composed with the 2.5x fit transform (translate (0,5)).
+        AssertMatrixClose(new Matrix(0, 2.5, -2.5, 0, 0, 5), drawingContext.GeometryTransform);
     }
 
     private static TestPathIcon CreateIcon(string data, double width, double height)
@@ -70,11 +78,17 @@ public class PathIconTests
         }
     }
 
-    private sealed class RecordingDrawingContext : DrawingContext
+    private sealed class RecordingDrawingContext : DrawingContext, ITransformDrawingContext
     {
+        private readonly Stack<Matrix> _transformStack = new();
+        private Matrix _currentTransform = Matrix.Identity;
+
         public Brush? LastBrush { get; private set; }
         public Geometry? LastGeometry { get; private set; }
         public Transform? LastTransform { get; private set; }
+
+        /// <summary>The composed transform in effect at the most recent DrawGeometry call.</summary>
+        public Matrix GeometryTransform { get; private set; } = Matrix.Identity;
 
         public override void DrawLine(Pen pen, Point point0, Point point1)
         {
@@ -100,6 +114,7 @@ public class PathIconTests
         {
             LastBrush = brush;
             LastGeometry = geometry;
+            GeometryTransform = _currentTransform;
         }
 
         public override void DrawImage(ImageSource imageSource, Rect rectangle)
@@ -113,7 +128,27 @@ public class PathIconTests
         public override void PushTransform(Transform transform)
         {
             LastTransform = transform;
+            _transformStack.Push(_currentTransform);
+            _currentTransform = Matrix.Multiply(_currentTransform, transform.Value);
         }
+
+        // Mirrors RenderTargetDrawingContext: T(-origin) * transform * T(+origin).
+        void ITransformDrawingContext.PushTransform(Transform transform, double originX, double originY)
+        {
+            if (originX != 0 || originY != 0)
+            {
+                var pre = new Matrix(1, 0, 0, 1, -originX, -originY);
+                var post = new Matrix(1, 0, 0, 1, originX, originY);
+                var combined = Matrix.Multiply(Matrix.Multiply(pre, transform.Value), post);
+                PushTransform(new MatrixTransform(combined));
+            }
+            else
+            {
+                PushTransform(transform);
+            }
+        }
+
+        void ITransformDrawingContext.PopTransform() => Pop();
 
         public override void PushClip(Geometry clipGeometry)
         {
@@ -125,6 +160,8 @@ public class PathIconTests
 
         public override void Pop()
         {
+            if (_transformStack.Count > 0)
+                _currentTransform = _transformStack.Pop();
         }
 
         public override void Close()

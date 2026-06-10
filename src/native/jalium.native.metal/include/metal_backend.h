@@ -92,17 +92,13 @@ public:
     JaliumResult GetFontMetrics(JaliumTextMetrics* metrics) override;
 
     JaliumResult HitTestPoint(
-        const wchar_t*, uint32_t, float, float, float, float,
-        JaliumTextHitTestResult* result) override {
-        if (result) memset(result, 0, sizeof(*result));
-        return JALIUM_OK;
-    }
+        const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight, float pointX, float pointY,
+        JaliumTextHitTestResult* result) override;
     JaliumResult HitTestTextPosition(
-        const wchar_t*, uint32_t, float, float, uint32_t, int32_t,
-        JaliumTextHitTestResult* result) override {
-        if (result) memset(result, 0, sizeof(*result));
-        return JALIUM_OK;
-    }
+        const wchar_t* text, uint32_t textLength,
+        float maxWidth, float maxHeight, uint32_t textPosition, int32_t isTrailingHit,
+        JaliumTextHitTestResult* result) override;
 #else
     float fontSize_;
     int32_t alignment_, paragraphAlignment_, trimming_;
@@ -228,6 +224,13 @@ public:
         float blurRadius,
         float cornerRadiusTL, float cornerRadiusTR,
         float cornerRadiusBR, float cornerRadiusBL) override;
+    void BeginEffectCapture(float x, float y, float w, float h) override;
+    void EndEffectCapture() override;
+    void DrawShaderEffect(float x, float y, float w, float h,
+        const uint8_t* shaderBytecode,
+        uint32_t shaderBytecodeSize,
+        const float* constants,
+        uint32_t constantFloatCount) override;
     void DrawGlowingBorderHighlight(
         float x, float y, float w, float h,
         float animationPhase,
@@ -265,6 +268,11 @@ private:
 #endif
 
     std::vector<uint8_t> framebuffer_;
+    std::vector<uint8_t> savedFramebuffer_;
+    std::vector<uint8_t> effectCaptureFb_;
+    float effectCaptureX_ = 0, effectCaptureY_ = 0;
+    float effectCaptureW_ = 0, effectCaptureH_ = 0;
+    bool effectCaptureActive_ = false;
     std::stack<MetalTransformState> transformStack_;
     std::stack<float> opacityStack_;
     int32_t clipDepth_ = 0;

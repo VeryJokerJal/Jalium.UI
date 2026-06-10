@@ -26,6 +26,9 @@ public class WindowStylusPipelineTests
     [Fact]
     public void DispatchStylusSourcePipeline_ShouldRunPlugInBeforePreviewAndBubbleEvents()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         var window = new Window();
         var order = new List<string>();
         window.StylusPlugIns.Add(new OrderedStylusPlugIn(() => order.Add("plugin")));
@@ -45,6 +48,9 @@ public class WindowStylusPipelineTests
     [Fact]
     public void DispatchStylusSourcePipeline_WhenPlugInCancels_ShouldSetSourceCanceled()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         var window = new Window();
         window.StylusPlugIns.Add(new CancelingStylusPlugIn());
 

@@ -927,8 +927,13 @@ internal static class RazorCodeBlockPreprocessor
             if (SkipCSharpLiteral(code, ref pos))
                 continue;
 
-            // Detect XML markup start: < followed by a letter (at statement level)
-            if (code[pos] == '<' && pos + 1 < code.Length && char.IsLetter(code[pos + 1]))
+            // Detect XML markup start: < followed by a letter at statement boundaries.
+            // This must not classify generic type arguments like IAsyncEnumerable<string>
+            // as markup.
+            if (code[pos] == '<' &&
+                pos + 1 < code.Length &&
+                char.IsLetter(code[pos + 1]) &&
+                IsStatementLevelMarkupStart(code, pos))
             {
                 // Emit accumulated C# code
                 if (pos > codeStart)
@@ -950,6 +955,18 @@ internal static class RazorCodeBlockPreprocessor
             segments.Add(new CodeSegment(code[codeStart..pos], false));
 
         return segments;
+    }
+
+    private static bool IsStatementLevelMarkupStart(string code, int markupPos)
+    {
+        var p = markupPos - 1;
+        while (p >= 0 && char.IsWhiteSpace(code[p]))
+            p--;
+
+        if (p < 0)
+            return true;
+
+        return code[p] is ';' or '{' or '}' or ')' or ':';
     }
 
     /// <summary>

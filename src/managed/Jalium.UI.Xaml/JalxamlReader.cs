@@ -584,6 +584,15 @@ internal sealed class JalxamlReader : XmlReader, IXmlLineInfo
         // the global RazorExpressionRegistry when a section isn't defined locally.
         private readonly Dictionary<string, string> _sections = new(StringComparer.Ordinal);
 
+        // Scope resolver for inline Razor code/directive execution during tokenization.
+        // This lets sequential blocks share declarations (e.g. local functions used by
+        // a subsequent @await foreach directive) without leaking outside this document.
+        private Func<string, object?> _inlineRazorResolver = static _ => null;
+
+        // Pure runtime blocks that cannot be safely promoted immediately are retained
+        // as setup candidates for the next flow directive expansion.
+        private readonly List<string> _pendingSetupCodeBlocks = new();
+
         public Tokenizer(string src)
         {
             _src = src;
@@ -1219,6 +1228,15 @@ internal sealed class JalxamlReader : XmlReader, IXmlLineInfo
 
             if (RazorCodeBlockPreprocessor.IsRuntimeCodeBlock(expanded))
             {
+                _pendingSetupCodeBlocks.Add(code);
+
+                // If this pure code block can execute safely right now and it only
+                // contributes scope state (no direct output), keep it in the inline
+                // interpreter scope so following directives can consume declarations.
+                // If not, preserve existing behavior and defer to runtime template eval.
+                if (TryPromoteRuntimeSetupBlock(code))
+                    return;
+
                 // Pure C# code block — defer to the runtime RazorTemplate engine, which
                 // executes the block against the live DataContext. Emit the original
                 // @{ ... } source verbatim as text rather than recursively tokenizing the
@@ -1254,11 +1272,46 @@ internal sealed class JalxamlReader : XmlReader, IXmlLineInfo
             // Advance outer position past the entire directive
             while (_pos < blockEnd) Advance();
 
-            var expanded = RazorCodeBlockPreprocessor.ExpandCodeBlock(code);
+            var codeToExecute = code;
+            if (_pendingSetupCodeBlocks.Count > 0)
+                codeToExecute = string.Join("\n", _pendingSetupCodeBlocks) + "\n" + code;
+
+            string expanded;
+            try
+            {
+                var (output, resolver) = RazorLightweightCodeBlockInterpreter.ExpandWithScope(codeToExecute, _inlineRazorResolver);
+                expanded = output;
+                _inlineRazorResolver = resolver;
+                _pendingSetupCodeBlocks.Clear();
+            }
+            catch
+            {
+                // Keep prior behavior as a fallback if inline lightweight expansion
+                // cannot execute in the current context.
+                expanded = RazorCodeBlockPreprocessor.ExpandCodeBlock(code);
+            }
+
             if (!string.IsNullOrEmpty(expanded))
                 TokenizeNested(expanded);
 
             return true;
+        }
+
+        private bool TryPromoteRuntimeSetupBlock(string code)
+        {
+            try
+            {
+                var (output, resolver) = RazorLightweightCodeBlockInterpreter.ExpandWithScope(code, _inlineRazorResolver);
+                if (!string.IsNullOrEmpty(output))
+                    return false;
+
+                _inlineRazorResolver = resolver;
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         /// <summary>

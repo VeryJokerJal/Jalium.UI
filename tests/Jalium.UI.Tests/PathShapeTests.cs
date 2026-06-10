@@ -38,9 +38,12 @@ public class PathShapeTests
         var figure = Assert.Single(geometry.Figures);
         var arc = Assert.IsType<ArcSegment>(Assert.Single(figure.Segments));
 
-        Assert.Equal(new Point(0, 8), figure.StartPoint);
-        Assert.Equal(new Point(16, 0), arc.Point);
-        Assert.Equal(new Size(8, 8), arc.Size);
+        // Filling 16x8 scales the arc's tight bounds (which account for the bulge, not
+        // just the endpoints) by ~1.889x horizontally and ~1.236x vertically. Pure managed
+        // geometry math — identical on every platform.
+        AssertPointClose(new Point(0.8916493798851177, 8), figure.StartPoint);
+        AssertPointClose(new Point(16, 3.055728038485117), arc.Point);
+        AssertSizeClose(new Size(7.554175310057441, 4.9442719615148825), arc.Size);
     }
 
     [Fact]
@@ -56,16 +59,28 @@ public class PathShapeTests
         var figure = Assert.Single(geometry.Figures);
         Assert.IsType<ArcSegment>(Assert.Single(figure.Segments));
 
-        var transform = Assert.IsType<MatrixTransform>(drawingContext.LastTransform);
-        AssertMatrixClose(new Matrix(0, 1, -1, 0, 8, 0), transform.Matrix);
+        // Path.OnRender emits only the (Stretch.None: untouched) geometry; a user
+        // RenderTransform is pushed by the parent Visual around the draw pass, not here.
+        // So OnRender never pushes a transform itself — true on every platform.
+        Assert.Null(drawingContext.LastTransform);
     }
 
     [Fact]
     public void Path_OnRender_ShouldInsetStrokeInsideRenderBounds()
     {
-        var path = CreatePath("M 0,0 L 8,8", 10, 10, ShapeStretch.Fill);
-        path.Stroke = Brushes.Black;
-        path.StrokeThickness = 2;
+        // Stroke must be set before layout so the stretch matrix reserves the
+        // half-stroke margin (StrokeThickness/2 = 1) on every edge.
+        var path = new TestPath
+        {
+            Data = "M 0,0 L 8,8",
+            Width = 10,
+            Height = 10,
+            Stretch = ShapeStretch.Fill,
+            Stroke = Brushes.Black,
+            StrokeThickness = 2
+        };
+        path.Measure(new Size(10, 10));
+        path.Arrange(new Rect(0, 0, 10, 10));
 
         var drawingContext = new RecordingDrawingContext();
         path.Render(drawingContext);
@@ -80,7 +95,7 @@ public class PathShapeTests
     }
 
     [Fact]
-    public void Path_OnRender_ShouldCenterHorizontalStrokeOnlyGlyph_WhenStretchIsNone()
+    public void Path_OnRender_ShouldRenderAtNativeCoordinates_WhenStretchIsNone()
     {
         var path = CreatePath("M 0,0 L 10,0", 10, 10, ShapeStretch.None);
         path.Stroke = Brushes.Black;
@@ -93,8 +108,10 @@ public class PathShapeTests
         var figure = Assert.Single(geometry.Figures);
         var line = Assert.IsType<LineSegment>(Assert.Single(figure.Segments));
 
-        Assert.Equal(new Point(0.5, 5), figure.StartPoint);
-        Assert.Equal(new Point(9.5, 5), line.Point);
+        // Stretch.None renders the geometry at its defined coordinates (WPF-aligned):
+        // no scaling, no stroke inset, no centering. Identical on every platform.
+        Assert.Equal(new Point(0, 0), figure.StartPoint);
+        Assert.Equal(new Point(10, 0), line.Point);
     }
 
     [Fact]
@@ -393,6 +410,18 @@ public class PathShapeTests
         public override void Close()
         {
         }
+    }
+
+    private static void AssertPointClose(Point expected, Point actual, double tolerance = 1e-6)
+    {
+        Assert.True(Math.Abs(expected.X - actual.X) <= tolerance, $"X expected {expected.X}, got {actual.X}");
+        Assert.True(Math.Abs(expected.Y - actual.Y) <= tolerance, $"Y expected {expected.Y}, got {actual.Y}");
+    }
+
+    private static void AssertSizeClose(Size expected, Size actual, double tolerance = 1e-6)
+    {
+        Assert.True(Math.Abs(expected.Width - actual.Width) <= tolerance, $"Width expected {expected.Width}, got {actual.Width}");
+        Assert.True(Math.Abs(expected.Height - actual.Height) <= tolerance, $"Height expected {expected.Height}, got {actual.Height}");
     }
 
     private static void AssertMatrixClose(Matrix expected, Matrix actual, double tolerance = 1e-9)

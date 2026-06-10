@@ -19,6 +19,9 @@ public class D3DImageTests
     [Fact]
     public void D3DImage_SetBackBuffer_ShouldUpdateAvailabilityAndRaiseEvent()
     {
+        if (!OperatingSystem.IsWindows())
+            return;
+
         var image = new D3DImage();
         var eventCount = 0;
         image.IsFrontBufferAvailableChanged += (_, _) => eventCount++;

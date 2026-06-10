@@ -15,6 +15,7 @@ namespace Jalium.UI.Tests;
 /// 都先 <see cref="AudioStats.Reset"/>,但仍要假设其他 test 可能在并行 thread 中
 /// 同时改 counter 因此用 >= 而非 == 断言开/关比例。Xunit collections 默认 sequential。
 /// </remarks>
+[Collection(AudioStatsExclusiveCollection.Name)]
 public class AudioStatsTests
 {
     private const int SampleRate = 44100;
